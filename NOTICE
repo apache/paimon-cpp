@@ -3,3 +3,7 @@ Copyright 2024-2026 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
+
+This product includes software from RocksDB project (Apache 2.0 and BSD 3-clause)
+Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+Copyright (c) 2011 The LevelDB Authors. All rights reserved.
