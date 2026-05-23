@@ -24,7 +24,10 @@ function(add_paimon_lib LIB_NAME)
     set(multi_value_args
         SOURCES
         STATIC_LINK_LIBS
+        STATIC_INSTALL_INTERFACE_LIBS
         SHARED_LINK_LIBS
+        SHARED_INSTALL_INTERFACE_LIBS
+        SHARED_PRIVATE_LINK_LIBS
         EXTRA_INCLUDES
         PRIVATE_INCLUDES
         DEPENDENCIES)
