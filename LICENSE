@@ -260,9 +260,23 @@ This product includes code from Apache Arrow.
   * cmake_modules/DefineOptions.cmake
   * cmake_modules/san-config.cmake
   * cmake_modules/SetupCxxFlags.cmake
+   * third-party toolchain and patches:
+      - cmake_modules/ThirdpartyToolchain.cmake
+      - cmake_modules/arrow.diff
 
 Copyright: 2016-2024 The Apache Software Foundation.
 Home page: https://arrow.apache.org/
+License: https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+
+This product includes code from Apache ORC.
+
+* ORC patch file:
+   * cmake_modules/orc.diff
+
+Copyright: 2013 and onwards The Apache Software Foundation.
+Home page: https://orc.apache.org/
 License: https://www.apache.org/licenses/LICENSE-2.0
 --------------------------------------------------------------------------------
 

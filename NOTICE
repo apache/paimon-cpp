@@ -7,6 +7,9 @@ The Apache Software Foundation (http://www.apache.org/).
 Apache Arrow
 Copyright 2016-2024 The Apache Software Foundation
 
+Apache ORC
+Copyright 2013 and onwards The Apache Software Foundation
+
 This product includes software from RocksDB project (Apache 2.0 and BSD 3-clause)
 Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
 Copyright (c) 2011 The LevelDB Authors. All rights reserved.
