@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "paimon/core/tag/tag.h"
 
@@ -41,7 +42,11 @@ class TagManager {
 
     Result<std::optional<Tag>> Get(const std::string& tag_name) const;
 
+    Result<std::vector<std::string>> ListTagNames() const;
+
     std::string TagPath(const std::string& tag_name) const;
+
+    std::string TagDirectory() const;
 
  private:
     std::shared_ptr<FileSystem> fs_;

@@ -31,6 +31,7 @@
 
 namespace paimon {
 
+/// Read-only schema wrapper for system tables.
 class SystemTableSchema : public SystemSchema {
  public:
     explicit SystemTableSchema(std::shared_ptr<arrow::Schema> schema);
