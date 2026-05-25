@@ -249,6 +249,7 @@ This product includes code from Apache Arrow.
 
 * Core utilities:
   * docs utilities in docs/ directory
+  * build support utilities in build_support/ directory
   * basic utilities in
     - include/paimon/compare.h
     - include/paimon/macros.h
