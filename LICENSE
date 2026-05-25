@@ -249,13 +249,26 @@ This product includes code from Apache Arrow.
 
 * Core utilities:
   * docs utilities in docs/ directory
-  * build support utilities in build_support/ directory
   * basic utilities in
     - include/paimon/compare.h
     - include/paimon/macros.h
     - include/paimon/status.h
     - include/paimon/string_builder.h
     - src/paimon/common/utils/status.cpp
+* Build support utilities:
+  * build_support/asan-suppressions.txt
+  * build_support/get-upstream-commit.sh
+  * build_support/iwyu/iwyu-filter.awk
+  * build_support/iwyu/iwyu.sh
+  * build_support/iwyu/mappings/*.imp
+  * build_support/lint_exclusions.txt
+  * build_support/lintutils.py
+  * build_support/lsan-suppressions.txt
+  * build_support/run_clang_format.py
+  * build_support/run_clang_tidy.py
+  * build_support/sanitizer-disallowed-entries.txt
+  * build_support/tsan-suppressions.txt
+  * build_support/ubsan-suppressions.txt
 * Build system modules:
   * cmake_modules/BuildUtils.cmake
   * cmake_modules/DefineOptions.cmake
@@ -264,5 +277,36 @@ This product includes code from Apache Arrow.
 
 Copyright: 2016-2024 The Apache Software Foundation.
 Home page: https://arrow.apache.org/
+License: https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+
+This product includes code from LLVM compiler-rt.
+
+* AddressSanitizer symbolization utility:
+  * build_support/asan_symbolize.py
+
+Copyright: University of Illinois / LLVM contributors.
+License: University of Illinois/NCSA Open Source License.
+
+--------------------------------------------------------------------------------
+
+This product includes code from include-what-you-use.
+
+* IWYU driver utility:
+  * build_support/iwyu/iwyu_tool.py
+
+Copyright: 2003-2010 University of Illinois at Urbana-Champaign.
+License: University of Illinois/NCSA Open Source License.
+
+--------------------------------------------------------------------------------
+
+This product includes code from Apache Kudu / Cloudera build support utilities.
+
+* Test and stacktrace utilities:
+  * build_support/run-test.sh
+  * build_support/stacktrace_addr2line.pl
+
+Copyright: 2014 Cloudera, Inc.
 License: https://www.apache.org/licenses/LICENSE-2.0
 --------------------------------------------------------------------------------
