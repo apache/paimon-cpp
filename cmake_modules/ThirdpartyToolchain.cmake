@@ -412,6 +412,36 @@ function(paimon_set_dependency_source_default DEPENDENCY_NAME SOURCE_VALUE REASO
     endif()
 endfunction()
 
+function(paimon_enforce_patched_dependency_policy)
+    paimon_get_dependency_source(Arrow _arrow_source)
+    if(_arrow_source STREQUAL "SYSTEM")
+        message(FATAL_ERROR "Arrow_SOURCE=SYSTEM is not supported because paimon-cpp "
+                            "requires project-specific Arrow patches. Use Arrow_SOURCE=BUNDLED."
+        )
+    elseif(_arrow_source STREQUAL "AUTO")
+        message(STATUS "Forcing Arrow_SOURCE to BUNDLED because paimon-cpp requires "
+                       "project-specific Arrow patches")
+        set(Arrow_SOURCE "BUNDLED"
+            CACHE STRING "Dependency source for Arrow" FORCE)
+        set(Arrow_SOURCE "BUNDLED" PARENT_SCOPE)
+    endif()
+
+    if(PAIMON_ENABLE_ORC)
+        paimon_get_dependency_source(ORC _orc_source)
+        if(_orc_source STREQUAL "SYSTEM")
+            message(FATAL_ERROR "ORC_SOURCE=SYSTEM is not supported because paimon-cpp "
+                                "requires project-specific ORC patches. Use ORC_SOURCE=BUNDLED."
+            )
+        elseif(_orc_source STREQUAL "AUTO")
+            message(STATUS "Forcing ORC_SOURCE to BUNDLED because paimon-cpp requires "
+                           "project-specific ORC patches")
+            set(ORC_SOURCE "BUNDLED"
+                CACHE STRING "Dependency source for ORC" FORCE)
+            set(ORC_SOURCE "BUNDLED" PARENT_SCOPE)
+        endif()
+    endif()
+endfunction()
+
 function(paimon_apply_dependency_source_defaults)
     paimon_get_dependency_source(Arrow _arrow_source)
     if(_arrow_source STREQUAL "SYSTEM" OR _arrow_source STREQUAL "BUNDLED")
@@ -1758,6 +1788,7 @@ endmacro()
 
 resolve_dependency(fmt)
 resolve_dependency(RapidJSON)
+paimon_enforce_patched_dependency_policy()
 paimon_apply_dependency_source_defaults()
 resolve_dependency(RE2)
 resolve_dependency(Snappy)
