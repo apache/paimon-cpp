@@ -421,9 +421,12 @@ function(paimon_enforce_patched_dependency_policy)
     elseif(_arrow_source STREQUAL "AUTO")
         message(STATUS "Forcing Arrow_SOURCE to BUNDLED because paimon-cpp requires "
                        "project-specific Arrow patches")
-        set(Arrow_SOURCE "BUNDLED"
+        set(Arrow_SOURCE
+            "BUNDLED"
             CACHE STRING "Dependency source for Arrow" FORCE)
-        set(Arrow_SOURCE "BUNDLED" PARENT_SCOPE)
+        set(Arrow_SOURCE
+            "BUNDLED"
+            PARENT_SCOPE)
     endif()
 
     if(PAIMON_ENABLE_ORC)
@@ -435,9 +438,12 @@ function(paimon_enforce_patched_dependency_policy)
         elseif(_orc_source STREQUAL "AUTO")
             message(STATUS "Forcing ORC_SOURCE to BUNDLED because paimon-cpp requires "
                            "project-specific ORC patches")
-            set(ORC_SOURCE "BUNDLED"
+            set(ORC_SOURCE
+                "BUNDLED"
                 CACHE STRING "Dependency source for ORC" FORCE)
-            set(ORC_SOURCE "BUNDLED" PARENT_SCOPE)
+            set(ORC_SOURCE
+                "BUNDLED"
+                PARENT_SCOPE)
         endif()
     endif()
 endfunction()
