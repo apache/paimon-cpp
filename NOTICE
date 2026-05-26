@@ -14,5 +14,8 @@ This product includes software from RocksDB project (Apache 2.0 and BSD 3-clause
 Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
 Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 
+This product includes software from xxHash project (BSD 2-clause)
+Copyright (C) 2012-2023 Yann Collet
+
 This product includes software from cppjieba project (MIT)
 Copyright 2013
