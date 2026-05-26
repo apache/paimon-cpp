@@ -122,13 +122,13 @@ class RowKind {
     ///
     /// @see #shortString() for mapping of string and `RowKind`.
     static Result<const RowKind*> FromShortString(const std::string& value) {
-        if (value == "+I") {
+        if (value == "+I" || value == "+i") {
             return Insert();
-        } else if (value == "-U") {
+        } else if (value == "-U" || value == "-u") {
             return UpdateBefore();
-        } else if (value == "+U") {
+        } else if (value == "+U" || value == "+u") {
             return UpdateAfter();
-        } else if (value == "-D") {
+        } else if (value == "-D" || value == "-d") {
             return Delete();
         } else {
             return Status::Invalid(fmt::format("Unsupported short string {} for row kind.", value));

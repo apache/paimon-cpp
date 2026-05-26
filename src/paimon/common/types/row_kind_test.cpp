@@ -43,4 +43,16 @@ TEST(RowKindTest, TestSimple) {
     ASSERT_FALSE(*insert == *delete_kind);
 }
 
+TEST(RowKindTest, TestFromShortStringIgnoresCase) {
+    ASSERT_OK_AND_ASSIGN(const RowKind* insert, RowKind::FromShortString("+i"));
+    ASSERT_OK_AND_ASSIGN(const RowKind* update_before, RowKind::FromShortString("-u"));
+    ASSERT_OK_AND_ASSIGN(const RowKind* update_after, RowKind::FromShortString("+u"));
+    ASSERT_OK_AND_ASSIGN(const RowKind* delete_kind, RowKind::FromShortString("-d"));
+
+    ASSERT_EQ(insert, RowKind::Insert());
+    ASSERT_EQ(update_before, RowKind::UpdateBefore());
+    ASSERT_EQ(update_after, RowKind::UpdateAfter());
+    ASSERT_EQ(delete_kind, RowKind::Delete());
+}
+
 }  // namespace paimon::test
