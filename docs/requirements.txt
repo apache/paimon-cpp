@@ -1,0 +1,13 @@
+#
+# Note: keep this file in sync with conda_env_sphinx.txt !
+#
+
+breathe
+myst-parser[linkify]
+pydata-sphinx-theme~=0.16
+sphinx-autobuild
+sphinx-copybutton
+sphinx-design
+sphinx-lint
+sphinxcontrib-mermaid
+sphinx
