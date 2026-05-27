@@ -298,6 +298,8 @@ This product includes code from include-what-you-use.
 
 * IWYU driver utility:
   * build_support/iwyu/iwyu_tool.py
+* IWYU include rewrite utility:
+   * build_support/fix_includes.py
 
 Copyright: 2003-2010 University of Illinois at Urbana-Champaign.
 License: University of Illinois/NCSA Open Source License.
