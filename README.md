@@ -45,7 +45,7 @@ Paimon-cpp currently provides:
 - **AI-Oriented Features**: supports RowTracking and DataEvolution mode and provides Global Index capabilities including bitmap index, B-tree index, DiskANN-based vector search with Lumina, and Lucene-based full-text search.
 - **Compatibility**: compatibility with Apache Paimon Java format and communication protocols, including commit messages, data splits, and manifests.
 
-The current implementation supports the `x86_64` architecture.
+Note: Linux x86_64 and macOS arm64 builds are currently verified.
 
 ## Building
 

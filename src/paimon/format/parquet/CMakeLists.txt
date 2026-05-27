@@ -37,7 +37,7 @@ add_paimon_lib(paimon_parquet_file_format
                arrow
                glog
                fmt
-               dl
+               ${CMAKE_DL_LIBS}
                Threads::Threads
                SHARED_LINK_LIBS
                paimon_shared
@@ -59,10 +59,8 @@ if(PAIMON_BUILD_TESTS)
                     STATIC_LINK_LIBS
                     paimon_shared
                     test_utils_static
-                    "-Wl,--whole-archive"
-                    paimon_local_file_system_static
-                    paimon_parquet_file_format_static
-                    "-Wl,--no-whole-archive"
+                    ${PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS}
+                    ${PAIMON_LOCAL_FILE_SYSTEM_STATIC_LINK_LIBS}
                     parquet
                     ${GTEST_LINK_TOOLCHAIN})
 endif()
