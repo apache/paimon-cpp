@@ -520,7 +520,7 @@ TEST_F(AppendCompactionInteTest, TestAppendTableCompactionWithIOException) {
 
     bool compaction_run_complete = false;
     auto io_hook = IOHook::GetInstance();
-    for (size_t i = 0; i < 600; ++i) {
+    for (size_t i = 0; i < 2000; ++i) {
         auto dir = UniqueTestDirectory::Create();
         ASSERT_TRUE(dir);
 

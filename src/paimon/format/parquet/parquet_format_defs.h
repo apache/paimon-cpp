@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <limits>
+
 namespace paimon::parquet {
 
 // write
@@ -39,6 +40,10 @@ static inline const char PARQUET_COMPRESSION_CODEC_BROTLI_LEVEL[] = "compression
 static inline const char PARQUET_WRITER_MAX_MEMORY_USE[] = "parquet.writer.max.memory.use";
 static constexpr uint64_t DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE = 512 * 1024 * 1024;  // 512MB
 
+// Enable writing page index (ColumnIndex + OffsetIndex) for page-level filtering on read
+static inline const char PARQUET_WRITE_ENABLE_PAGE_INDEX[] = "parquet.write.enable-page-index";
+static constexpr bool DEFAULT_PARQUET_WRITE_ENABLE_PAGE_INDEX = true;
+
 // read
 static inline const char PARQUET_READ_EXECUTOR_THREAD_COUNT[] =
     "parquet.read.executor.thread-count";
@@ -54,12 +59,17 @@ static inline const char PARQUET_READ_CACHE_OPTION_RANGE_SIZE_LIMIT[] =
 static inline const char PARQUET_READ_PREDICATE_NODE_COUNT_LIMIT[] =
     "parquet.read.predicate-node-count-limit";
 
+// Enable page-level filtering using column index
+static inline const char PARQUET_READ_ENABLE_PAGE_INDEX_FILTER[] =
+    "parquet.read.enable-page-index-filter";
+
 // Default is true. Compaction will set to false to reduce memory consumption.
 static inline const char PARQUET_READ_ENABLE_PRE_BUFFER[] = "parquet.read.enable-pre-buffer";
 
 static constexpr uint32_t DEFAULT_PARQUET_READ_CACHE_OPTION_PREFETCH_LIMIT = 0;
 static constexpr uint32_t DEFAULT_PARQUET_READ_CACHE_OPTION_RANGE_SIZE_LIMIT = 32 * 1024 * 1024;
 static constexpr uint32_t DEFAULT_PARQUET_READ_PREDICATE_NODE_COUNT_LIMIT = 512;
+static constexpr bool DEFAULT_PARQUET_READ_ENABLE_PAGE_INDEX_FILTER = true;
 
 class ParquetMetrics {
  public:
