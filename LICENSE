@@ -202,6 +202,17 @@
 
 --------------------------------------------------------------------------------
 
+This product includes code from Alibaba Havenask.
+
+* include/paimon/factories/singleton.h
+* src/paimon/common/factories/singleton.cpp
+
+Copyright: 2014-present Alibaba Inc.
+Home page: https://havenask.net/
+License: https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+
 This product includes code from RocksDB.
 
 * endian utility in src/paimon/common/utils/math.h
