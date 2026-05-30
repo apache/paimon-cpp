@@ -21,6 +21,10 @@
 
 #include <cstdint>
 
+#include "fmt/format.h"
+#include "paimon/common/utils/string_utils.h"
+#include "paimon/status.h"
+
 namespace paimon {
 
 const RowKind* RowKind::Insert() {
@@ -41,6 +45,21 @@ const RowKind* RowKind::UpdateAfter() {
 const RowKind* RowKind::Delete() {
     static const RowKind kDelete{"-D", "DELETE", static_cast<std::int8_t>(3)};
     return &kDelete;
+}
+
+Result<const RowKind*> RowKind::FromShortString(const std::string& value) {
+    std::string upper_value = StringUtils::ToUpperCase(value);
+    if (upper_value == "+I") {
+        return Insert();
+    } else if (upper_value == "-U") {
+        return UpdateBefore();
+    } else if (upper_value == "+U") {
+        return UpdateAfter();
+    } else if (upper_value == "-D") {
+        return Delete();
+    } else {
+        return Status::Invalid(fmt::format("Unsupported short string {} for row kind.", value));
+    }
 }
 
 }  // namespace paimon

@@ -121,19 +121,7 @@ class RowKind {
     /// Creates a `RowKind` from the given short string.
     ///
     /// @see #shortString() for mapping of string and `RowKind`.
-    static Result<const RowKind*> FromShortString(const std::string& value) {
-        if (value == "+I" || value == "+i") {
-            return Insert();
-        } else if (value == "-U" || value == "-u") {
-            return UpdateBefore();
-        } else if (value == "+U" || value == "+u") {
-            return UpdateAfter();
-        } else if (value == "-D" || value == "-d") {
-            return Delete();
-        } else {
-            return Status::Invalid(fmt::format("Unsupported short string {} for row kind.", value));
-        }
-    }
+    static Result<const RowKind*> FromShortString(const std::string& value);
 
  private:
     /// Creates a `RowKind` with the given short string and byte value representation
