@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,7 @@ class Schema;
 namespace paimon {
 
 class CommitIncrement;
+class ExternalStorageBlobWriter;
 class RecordBatch;
 template <typename T, typename R>
 class RollingFileWriter;
@@ -96,9 +98,10 @@ class AppendOnlyWriter : public BatchWriter {
     using RollingFileWriterResult =
         Result<std::unique_ptr<RollingFileWriter<::ArrowArray*, std::shared_ptr<DataFileMeta>>>>;
 
-    RollingFileWriterResult CreateRollingRowWriter() const;
+    RollingFileWriterResult CreateRollingRowWriter();
     RollingFileWriterResult CreateRollingBlobWriter(
-        const BlobUtils::SeparatedSchemas& schemas) const;
+        const BlobUtils::SeparatedSchemas& schemas,
+        const std::set<std::string>& inline_fields) const;
 
     Result<CommitIncrement> DrainIncrement();
     Status Flush(bool wait_for_latest_compaction, bool forced_full_compaction);
@@ -132,6 +135,8 @@ class AppendOnlyWriter : public BatchWriter {
 
     std::shared_ptr<CompactDeletionFile> compact_deletion_file_;
     std::unique_ptr<RollingFileWriter<::ArrowArray*, std::shared_ptr<DataFileMeta>>> writer_;
+    std::unique_ptr<ExternalStorageBlobWriter> external_storage_writer_;
+    std::set<std::string> inline_descriptor_fields_;
 };
 
 }  // namespace paimon
