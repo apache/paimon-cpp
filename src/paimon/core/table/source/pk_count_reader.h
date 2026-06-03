@@ -19,49 +19,53 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
-#include "paimon/core/operation/internal_read_context.h"
-#include "paimon/core/operation/split_read.h"
-#include "paimon/core/utils/file_store_path_factory.h"
-#include "paimon/reader/batch_reader.h"
+#include "paimon/reader/count_reader.h"
 #include "paimon/result.h"
-#include "paimon/table/source/table_read.h"
+
+namespace arrow {
+class Schema;
+}  // namespace arrow
 
 namespace paimon {
-class Split;
+class DataSplitImpl;
 class Executor;
 class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
+class MergeFileSplitRead;
+class Split;
 
-class KeyValueTableRead : public TableRead {
+class PKCountReader : public CountReader {
  public:
-    static Result<std::unique_ptr<TableRead>> Create(
+    ~PKCountReader() override;
+
+    static Result<std::unique_ptr<PKCountReader>> Create(
+        std::vector<std::shared_ptr<Split>> splits,
         const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<InternalReadContext>& context,
         const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor);
 
-    Result<std::unique_ptr<BatchReader>> CreateReader(const std::shared_ptr<Split>& split) override;
-
-    Result<std::unique_ptr<CountReader>> CreateCountReader(
-        const std::vector<std::shared_ptr<Split>>& splits) override;
-
-    void ForceKeepDelete(bool force_keep_delete);
+    Result<int64_t> CountRows() override;
 
  private:
-    KeyValueTableRead(std::vector<std::unique_ptr<SplitRead>>&& split_reads,
-                      const std::shared_ptr<FileStorePathFactory>& path_factory,
-                      const std::shared_ptr<InternalReadContext>& context,
-                      const std::shared_ptr<MemoryPool>& memory_pool,
-                      const std::shared_ptr<Executor>& executor);
+    PKCountReader(std::vector<std::shared_ptr<Split>> splits,
+                  const std::shared_ptr<InternalReadContext>& context,
+                  std::unique_ptr<MergeFileSplitRead>&& merge_read,
+                  const std::shared_ptr<MemoryPool>& memory_pool);
 
-    std::vector<std::unique_ptr<SplitRead>> split_reads_;
-    std::shared_ptr<FileStorePathFactory> path_factory_;
+    Result<int64_t> CountSingleSplit(const std::shared_ptr<Split>& split);
+    Result<int64_t> MetadataCount(const std::shared_ptr<DataSplitImpl>& split);
+    Result<int64_t> MergeCount(const std::shared_ptr<DataSplitImpl>& split);
+
+ private:
+    std::vector<std::shared_ptr<Split>> splits_;
     std::shared_ptr<InternalReadContext> context_;
-    std::shared_ptr<Executor> executor_;
-    bool force_keep_delete_ = false;
+    std::unique_ptr<MergeFileSplitRead> merge_read_;
+    std::shared_ptr<MemoryPool> pool_;
 };
 
 }  // namespace paimon

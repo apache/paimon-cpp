@@ -21,7 +21,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "arrow/type_fwd.h"
@@ -32,7 +31,6 @@
 #include "paimon/core/operation/split_read.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/table/source/data_split_impl.h"
-#include "paimon/core/table/source/deletion_file.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/reader/batch_reader.h"
@@ -75,14 +73,6 @@ class AbstractSplitRead : public SplitRead {
                       std::unique_ptr<SchemaManager>&& schema_manager,
                       const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
-
-    static std::unordered_map<std::string, DeletionFile> CreateDeletionFileMap(
-        const DataSplitImpl& data_split);
-
-    static std::unordered_map<std::string, DeletionFile> CreateDeletionFileMap(
-        const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-        const std::vector<std::optional<DeletionFile>>& deletion_files);
-
     Result<std::unique_ptr<BatchReader>> ApplyPredicateFilterIfNeeded(
         std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<Predicate>& predicate) const;
 
