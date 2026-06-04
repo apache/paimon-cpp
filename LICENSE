@@ -270,6 +270,7 @@ This product includes code from Apache Arrow.
 
 * Core utilities:
   * docs utilities in docs/ directory
+  * parquet schema convertor in src/paimon/format/parquet/parquet_schema_util.cpp and src/paimon/format/parquet/parquet_schema_util.h
   * basic utilities in
     - include/paimon/compare.h
     - include/paimon/macros.h
