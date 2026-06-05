@@ -23,3 +23,4 @@ Examples
 
    write_commit_scan_read
    clean
+   benchmark
