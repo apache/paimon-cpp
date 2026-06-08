@@ -271,7 +271,6 @@ Status SchemaValidation::ValidateSequenceGroup(const TableSchema& schema,
         for (const auto& sequence_field_name : sequence_field_names) {
             if (std::find(field_names.begin(), field_names.end(), sequence_field_name) ==
                 field_names.end()) {
-                assert(false);
                 return Status::Invalid(
                     fmt::format("The sequence field group: {} can not be found in table schema.",
                                 sequence_field_name));
