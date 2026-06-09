@@ -1,0 +1,76 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <memory>
+
+#include "paimon/result.h"
+
+struct ArrowArray;
+
+namespace paimon {
+
+class CommitIncrement;
+class RecordBatch;
+
+/// The BatchWriter is responsible for writing data and handling in-progress files used to
+/// write yet un-staged data. The incremental files ready to commit is returned to the system by the
+/// `PrepareCommit(bool)`.
+class BatchWriter {
+ public:
+    BatchWriter() = default;
+    virtual ~BatchWriter() = default;
+
+    /// Return current in-memory data usage in bytes
+    virtual uint64_t GetMemoryUsage() const = 0;
+
+    /// Flush in-memory data.
+    virtual Status FlushMemory() = 0;
+
+    /// Add a record batch to the writer.
+    virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;
+
+    /// Compact files related to the writer. Note that compaction process is only submitted and may
+    /// not be completed when the method returns.
+    ///
+    /// @param full_compaction whether to trigger full compaction or just normal compaction
+    virtual Status Compact(bool full_compaction) = 0;
+
+    /// Prepare for a commit.
+    ///
+    /// @param wait_compaction if this method need to wait for current compaction to complete
+    /// @return Incremental files in this snapshot cycle
+    virtual Result<CommitIncrement> PrepareCommit(bool wait_compaction) = 0;
+
+    /// Check if a compaction is in progress, or if a compaction result remains to be fetched, or if
+    /// a compaction should be triggered later.
+    virtual Result<bool> CompactNotCompleted() = 0;
+
+    /// Sync the writer. The structure related to file reading and writing is thread unsafe, there
+    /// are asynchronous threads inside the writer, which should be synced before reading data.
+    virtual Status Sync() = 0;
+
+    /// Close this writer, the call will delete newly generated but not committed files.
+    virtual Status Close() = 0;
+
+    virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
+};
+
+}  // namespace paimon
