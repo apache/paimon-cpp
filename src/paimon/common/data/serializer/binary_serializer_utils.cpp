@@ -106,7 +106,7 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
         if (array_writer) {
             array_writer->SetNullAt(pos, type_id);
             return Status::OK();
-        } else if (type_id != arrow::Type::type::DECIMAL &&
+        } else if (type_id != arrow::Type::type::DECIMAL128 &&
                    type_id != arrow::Type::type::TIMESTAMP) {
             // if row writer, exclude decimal and timestamp when set null
             writer->SetNullAt(pos);
@@ -170,7 +170,7 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
             }
             break;
         }
-        case arrow::Type::type::DECIMAL: {
+        case arrow::Type::type::DECIMAL128: {
             auto* decimal_type = arrow::internal::checked_cast<arrow::Decimal128Type*>(type.get());
             assert(decimal_type);
             auto precision = decimal_type->precision();
