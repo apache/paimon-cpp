@@ -54,7 +54,7 @@ FileStorePathFactory::FileStorePathFactory(
       global_index_external_path_(global_index_external_path),
       index_file_in_data_file_dir_(index_file_in_data_file_dir) {}
 
-Result<std::unique_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
+Result<std::shared_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
     const std::string& root, const std::shared_ptr<arrow::Schema>& schema,
     const std::vector<std::string>& partition_keys, const std::string& default_part_value,
     const std::string& identifier, const std::string& data_file_prefix,
@@ -72,7 +72,7 @@ Result<std::unique_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
         std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
         BinaryRowPartitionComputer::Create(partition_keys, schema, default_part_value,
                                            legacy_partition_name_enabled, memory_pool));
-    return std::unique_ptr<FileStorePathFactory>(new FileStorePathFactory(
+    return std::shared_ptr<FileStorePathFactory>(new FileStorePathFactory(
         root, identifier, data_file_prefix, uuid, std::move(partition_computer), external_paths,
         global_index_external_path, index_file_in_data_file_dir));
 }
@@ -228,7 +228,7 @@ Result<std::string> FileStorePathFactory::GetPartitionString(const BinaryRow& pa
     std::vector<std::pair<std::string, std::string>> part_values;
     PAIMON_ASSIGN_OR_RAISE(part_values, partition_computer_->GeneratePartitionVector(partition));
     PAIMON_ASSIGN_OR_RAISE(std::string part_str,
-                           PartitionPathUtils::GeneratePartitionPath(part_values))
+                           PartitionPathUtils::GeneratePartitionPath(part_values));
     return row_to_str_cache_.insert({partition, part_str}).first->second;
 }
 
