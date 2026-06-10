@@ -20,6 +20,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -42,9 +43,6 @@ class PAIMON_EXPORT MemorySegmentUtils {
  public:
     MemorySegmentUtils() = delete;
     ~MemorySegmentUtils() = delete;
-
-    /// Allocate bytes in pool
-    static std::shared_ptr<Bytes> AllocateBytes(int32_t length, MemoryPool* pool);
 
     /// Copy target segments from source byte[].
     ///

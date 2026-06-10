@@ -17,11 +17,9 @@
  */
 
 #pragma once
-#include <sstream>
 
 #include "fmt/format.h"
 #include "paimon/common/compression/block_compression_type.h"
-#include "paimon/common/memory/memory_slice.h"
 
 namespace paimon {
 

@@ -80,7 +80,7 @@ TEST_F(CacheInputStreamTest, TestProxyMethods) {
     CacheInputStream stream(std::move(underlying), /*cache=*/nullptr);
 
     // Length
-    ASSERT_OK_AND_ASSIGN(uint64_t length, stream.Length());
+    ASSERT_OK_AND_ASSIGN(int64_t length, stream.Length());
     ASSERT_EQ(length, content_.size());
 
     // GetUri
@@ -94,7 +94,7 @@ TEST_F(CacheInputStreamTest, TestProxyMethods) {
 
     // Read (sequential, no offset)
     std::string buffer(3, '\0');
-    ASSERT_OK_AND_ASSIGN(int32_t bytes_read, stream.Read(buffer.data(), 3));
+    ASSERT_OK_AND_ASSIGN(int64_t bytes_read, stream.Read(buffer.data(), 3));
     ASSERT_EQ(bytes_read, 3);
     ASSERT_EQ(buffer, "fgh");
 
@@ -108,7 +108,7 @@ TEST_F(CacheInputStreamTest, TestReadWithOffsetNullCache) {
     CacheInputStream stream(std::move(underlying), /*cache=*/nullptr);
 
     std::string buffer(5, '\0');
-    ASSERT_OK_AND_ASSIGN(int32_t bytes_read, stream.Read(buffer.data(), 5, /*offset=*/2));
+    ASSERT_OK_AND_ASSIGN(int64_t bytes_read, stream.Read(buffer.data(), 5, /*offset=*/2));
     ASSERT_EQ(bytes_read, 5);
     ASSERT_EQ(buffer, "cdefg");
 }
@@ -121,7 +121,7 @@ TEST_F(CacheInputStreamTest, TestReadWithOffsetCacheHit) {
     CacheInputStream stream(std::move(underlying), cache);
 
     std::string buffer(5, '\0');
-    ASSERT_OK_AND_ASSIGN(int32_t bytes_read, stream.Read(buffer.data(), 5, /*offset=*/2));
+    ASSERT_OK_AND_ASSIGN(int64_t bytes_read, stream.Read(buffer.data(), 5, /*offset=*/2));
     ASSERT_EQ(bytes_read, 5);
     ASSERT_EQ(buffer, "cdefg");
 }
@@ -134,7 +134,7 @@ TEST_F(CacheInputStreamTest, TestReadWithOffsetCacheMiss) {
     CacheInputStream stream(std::move(underlying), cache);
 
     std::string buffer(3, '\0');
-    ASSERT_OK_AND_ASSIGN(int32_t bytes_read, stream.Read(buffer.data(), 3, /*offset=*/10));
+    ASSERT_OK_AND_ASSIGN(int64_t bytes_read, stream.Read(buffer.data(), 3, /*offset=*/10));
     ASSERT_EQ(bytes_read, 3);
     ASSERT_EQ(buffer, "klm");
 }

@@ -18,6 +18,7 @@
 
 #include "paimon/format/avro/avro_file_batch_reader.h"
 
+#include <limits>
 #include <memory>
 #include <utility>
 
