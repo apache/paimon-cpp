@@ -21,7 +21,7 @@ source_dir=${1}
 enable_sanitizer=${2:-false}
 check_clang_tidy=${3:-false}
 build_type=${4:-Debug}
-build_dir=${1}/build
+build_dir="${source_dir}/build"
 
 # Display ccache status if available
 if command -v ccache &> /dev/null; then
@@ -32,8 +32,8 @@ else
     echo "=== ccache not found, compiling without cache acceleration ==="
 fi
 
-mkdir ${build_dir}
-pushd ${build_dir}
+mkdir -p "${build_dir}"
+pushd "${build_dir}"
 
 ENABLE_LUMINA="ON"
 if [[ "${CC:-}" == *"gcc-8"* ]] || [[ "${CXX:-}" == *"g++-8"* ]]; then
@@ -56,9 +56,9 @@ if [[ "${enable_sanitizer}" == "true" ]]; then
     )
 fi
 
-cmake "${CMAKE_ARGS[@]}" ${source_dir}
-cmake --build . -- -j$(nproc)
-ctest --output-on-failure -j $(nproc)
+cmake "${CMAKE_ARGS[@]}" "${source_dir}"
+cmake --build . -- -j "$(nproc)"
+ctest --output-on-failure -j "$(nproc)"
 
 if [[ "${check_clang_tidy}" == "true" ]]; then
     cmake --build . --target check-clang-tidy
@@ -72,4 +72,4 @@ fi
 
 popd
 
-rm -rf ${build_dir}
+rm -rf "${build_dir}"
