@@ -383,6 +383,9 @@ This product includes code from Apache ORC.
 
 * ORC patch file:
   * cmake_modules/orc.diff
+* Adapted read-ahead cache:
+  * include/paimon/utils/read_ahead_cache.h (adapted from Cache.hh)
+  * src/paimon/common/utils/read_ahead_cache.cpp (adapted from Cache.cc)
 
 Copyright: 2013 and onwards The Apache Software Foundation.
 Home page: https://orc.apache.org/
