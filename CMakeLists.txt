@@ -482,3 +482,7 @@ install(EXPORT PaimonTargets
 if(PAIMON_BUILD_BENCHMARKS)
     add_subdirectory(benchmark)
 endif()
+
+install(EXPORT PaimonTargets
+        NAMESPACE Paimon::
+        DESTINATION ${PAIMON_CMAKE_INSTALL_DIR})
