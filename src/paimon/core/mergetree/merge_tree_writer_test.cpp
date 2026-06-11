@@ -1,0 +1,1533 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "paimon/core/mergetree/merge_tree_writer.h"
+
+#include <cassert>
+#include <cstddef>
+#include <functional>
+#include <map>
+#include <optional>
+#include <utility>
+
+#include "arrow/api.h"
+#include "arrow/array/array_base.h"
+#include "arrow/c/abi.h"
+#include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
+#include "gtest/gtest.h"
+#include "paimon/common/factories/io_hook.h"
+#include "paimon/common/table/special_fields.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/fields_comparator.h"
+#include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/compact/noop_compact_manager.h"
+#include "paimon/core/disk/io_manager.h"
+#include "paimon/core/io/compact_increment.h"
+#include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/io/data_increment.h"
+#include "paimon/core/manifest/file_source.h"
+#include "paimon/core/mergetree/compact/deduplicate_merge_function.h"
+#include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
+#include "paimon/core/utils/commit_increment.h"
+#include "paimon/defs.h"
+#include "paimon/format/file_format.h"
+#include "paimon/format/file_format_factory.h"
+#include "paimon/fs/file_system.h"
+#include "paimon/fs/local/local_file_system.h"
+#include "paimon/memory/memory_pool.h"
+#include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/io_exception_helper.h"
+#include "paimon/testing/utils/read_result_collector.h"
+#include "paimon/testing/utils/test_helper.h"
+#include "paimon/testing/utils/testharness.h"
+
+namespace paimon {
+template <typename T>
+class MergeFunctionWrapper;
+}  // namespace paimon
+
+namespace paimon::test {
+class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
+ public:
+    class FakeCompactManager : public paimon::CompactManager {
+     public:
+        Status AddNewFile(const std::shared_ptr<DataFileMeta>& file) override {
+            return Status::OK();
+        }
+        std::vector<std::shared_ptr<DataFileMeta>> AllFiles() const override {
+            static std::vector<std::shared_ptr<DataFileMeta>> empty;
+            return empty;
+        }
+        Status TriggerCompaction(bool full_compaction) override {
+            return Status::OK();
+        }
+        Result<std::optional<std::shared_ptr<CompactResult>>> GetCompactionResult(
+            bool blocking) override {
+            get_result_blocking_calls.push_back(blocking);
+            return std::optional<std::shared_ptr<CompactResult>>();
+        }
+        void RequestCancelCompaction() override {}
+        void WaitForCompactionToExit() override {}
+        bool CompactNotCompleted() const override {
+            return false;
+        }
+        bool ShouldWaitForLatestCompaction() const override {
+            return true;
+        }
+        bool ShouldWaitForPreparingCheckpoint() const override {
+            return true;
+        }
+        Status Close() override {
+            return Status::OK();
+        }
+
+        std::vector<bool> get_result_blocking_calls;
+    };
+
+    void SetUp() override {
+        pool_ = GetDefaultPool();
+        file_system_ = std::make_shared<LocalFileSystem>();
+        value_fields_ = {DataField(0, arrow::field("f0", arrow::utf8())),
+                         DataField(1, arrow::field("f1", arrow::int32())),
+                         DataField(2, arrow::field("f2", arrow::int32())),
+                         DataField(3, arrow::field("f3", arrow::float64()))};
+        value_schema_ = DataField::ConvertDataFieldsToArrowSchema(value_fields_);
+        value_type_ = DataField::ConvertDataFieldsToArrowStructType(value_fields_);
+        primary_keys_ = {"f0"};
+        ASSERT_OK_AND_ASSIGN(key_comparator_,
+                             FieldsComparator::Create({value_fields_[0]},
+                                                      /*is_ascending_order=*/true));
+        std::vector<DataField> write_fields = {SpecialFields::SequenceNumber(),
+                                               SpecialFields::ValueKind()};
+        write_fields.insert(write_fields.end(), value_fields_.begin(), value_fields_.end());
+        write_type_ = DataField::ConvertDataFieldsToArrowStructType(write_fields);
+
+        auto mfunc = std::make_unique<DeduplicateMergeFunction>(/*ignore_delete=*/false);
+        merge_function_wrapper_ = std::make_shared<ReducerMergeFunctionWrapper>(std::move(mfunc));
+        noop_compact_manager_ = std::make_shared<NoopCompactManager>();
+    }
+    void TearDown() override {}
+
+    std::unique_ptr<RecordBatch> CreateBatch(
+        const std::shared_ptr<arrow::Array>& array,
+        const std::vector<RecordBatch::RowKind>& row_kinds) const {
+        ::ArrowArray c_array;
+        EXPECT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+        RecordBatchBuilder batch_builder(&c_array);
+        batch_builder.SetRowKinds(row_kinds);
+        EXPECT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch, batch_builder.Finish());
+        return batch;
+    }
+
+    void WriteBatch(const std::shared_ptr<arrow::Array>& array,
+                    const std::vector<RecordBatch::RowKind>& row_kinds,
+                    MergeTreeWriter* writer) const {
+        auto batch = CreateBatch(array, row_kinds);
+        ASSERT_OK(writer->Write(std::move(batch)));
+    }
+
+    void CheckFileContent(const std::string& data_file_name,
+                          const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
+                             file_system_->Open(data_file_name));
+        ASSERT_TRUE(input_stream);
+        ASSERT_OK_AND_ASSIGN(auto file_format, FileFormatFactory::Get("orc", /*options=*/{}));
+        ASSERT_OK_AND_ASSIGN(auto reader_builder,
+                             file_format->CreateReaderBuilder(/*batch_size=*/10));
+        ASSERT_OK_AND_ASSIGN(auto orc_batch_reader, reader_builder->Build(input_stream));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
+                             ReadResultCollector::CollectResult(orc_batch_reader.get()));
+        ASSERT_TRUE(expected_array->Equals(result_array)) << result_array->ToString();
+    }
+
+    std::shared_ptr<DataFileMeta> CreateMeta(const std::string& name, int32_t level) const {
+        return std::make_shared<DataFileMeta>(
+            name, /*file_size=*/100, /*row_count=*/1, DataFileMeta::EmptyMinKey(),
+            DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+            /*min_sequence_number=*/0, /*max_sequence_number=*/1, /*schema_id=*/0, level,
+            /*extra_files=*/std::vector<std::optional<std::string>>(), Timestamp(),
+            /*delete_row_count=*/0,
+            /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+    }
+
+    Result<std::shared_ptr<MergeTreeWriter>> CreateMergeWriter(
+        int64_t last_sequence_number, const std::string& temp_dir,
+        const std::shared_ptr<DataFilePathFactory>& path_factory, int64_t schema_id,
+        const CoreOptions& options,
+        const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator = nullptr,
+        const std::shared_ptr<CompactManager>& compact_manager = nullptr) const {
+        std::shared_ptr<CompactManager> writer_compact_manager =
+            compact_manager ? compact_manager : noop_compact_manager_;
+        std::shared_ptr<IOManager> io_manager =
+            GetParam() ? std::make_shared<IOManager>(temp_dir + "/tmp", file_system_) : nullptr;
+        return MergeTreeWriter::Create(
+            last_sequence_number, primary_keys_, path_factory, key_comparator_,
+            user_defined_seq_comparator, merge_function_wrapper_, schema_id, value_schema_, options,
+            writer_compact_manager, io_manager, /*enable_multi_thread_spill=*/false, pool_);
+    }
+
+ private:
+    std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<FileSystem> file_system_;
+    std::vector<DataField> value_fields_;
+    std::shared_ptr<arrow::Schema> value_schema_;
+    std::shared_ptr<arrow::DataType> value_type_;
+    std::vector<std::string> primary_keys_;
+    std::shared_ptr<arrow::DataType> write_type_;
+    std::shared_ptr<FieldsComparator> key_comparator_;
+    std::shared_ptr<MergeFunctionWrapper<KeyValue>> merge_function_wrapper_;
+    std::shared_ptr<NoopCompactManager> noop_compact_manager_;
+};
+
+TEST_P(MergeTreeWriterTest, TestSimple) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/1, options));
+
+    // write batch
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+
+    // prepare commit
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    // check data file exist and read ok
+    std::string expected_data_file_name = "data-" + uuid + "-0.orc";
+    std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+                         options.GetFileSystem()->GetFileStatus(expected_data_file_path));
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [2, 0, "Alice", 10, 0, 13.1],
+      [0, 0, "Lucy", 20, 1, 14.1],
+      [1, 0, "Paul", 20, 1, null]
+    ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_path, expected_array);
+
+    // check data file meta
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    auto expected_data_file_meta = std::make_shared<DataFileMeta>(
+        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/3,
+        /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+        /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
+        /*key_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Paul")}, {0},
+                                          pool_.get()),
+        /*value_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 13.1},
+                                          {std::string("Paul"), 20, 1, 14.1}, {0, 0, 0, 1},
+                                          pool_.get()),
+        /*min_sequence_number=*/0, /*max_sequence_number=*/2, /*schema_id=*/1,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/commit_increment.GetNewFilesIncrement().NewFiles()[0]->creation_time,
+        /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+    DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
+                                          /*changelog_files=*/{});
+    ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
+}
+
+TEST_P(MergeTreeWriterTest, TestWriteMultiBatch) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/9, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options));
+    // batch1
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1],
+      ["Paul", 20, 1, 15.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+    // batch2
+    std::shared_ptr<arrow::Array> array2 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 114.1],
+      ["Skye", 10, 0, 118.1],
+      ["Alice", 10, 0, 113.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array2, /*row_kinds=*/{}, merge_writer.get());
+
+    // prepare commit
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    // check data file exist and read ok
+    std::string expected_data_file_name = "data-" + uuid + "-0.orc";
+    std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+                         options.GetFileSystem()->GetFileStatus(expected_data_file_path));
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [16, 0, "Alice", 10, 0, 113.1],
+      [14, 0, "Lucy", 20, 1, 114.1],
+      [13, 0, "Paul", 20, 1, 15.1],
+      [15, 0, "Skye", 10, 0, 118.1]
+    ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_path, expected_array);
+
+    // check data file meta
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    auto expected_data_file_meta = std::make_shared<DataFileMeta>(
+        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/4,
+        /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+        /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Skye")}, pool_.get()),
+        /*key_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Skye")}, {0},
+                                          pool_.get()),
+        /*value_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 15.1},
+                                          {std::string("Skye"), 20, 1, 118.1}, {0, 0, 0, 0},
+                                          pool_.get()),
+        /*min_sequence_number=*/13, /*max_sequence_number=*/16, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/commit_increment.GetNewFilesIncrement().NewFiles()[0]->creation_time,
+        /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+    DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
+                                          /*changelog_files=*/{});
+    ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
+}
+
+TEST_P(MergeTreeWriterTest, TestWriteWithDeleteRow) {
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::SEQUENCE_FIELD, "f1"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FieldsComparator> user_defined_seq_comparator,
+                         FieldsComparator::Create({value_fields_[1]},
+                                                  /*is_ascending_order=*/true));
+    assert(user_defined_seq_comparator);
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/9, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options, user_defined_seq_comparator));
+    // batch1
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1],
+      ["Paul", 10, 1, 15.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array1,
+               {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::INSERT,
+                RecordBatch::RowKind::DELETE, RecordBatch::RowKind::INSERT},
+               merge_writer.get());
+
+    // prepare commit
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    // check data file exist and read ok
+    std::string expected_data_file_name = "data-" + uuid + "-0.orc";
+    std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+                         options.GetFileSystem()->GetFileStatus(expected_data_file_path));
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [12, 3, "Alice", 10, 0, 13.1],
+      [10, 0, "Lucy", 20, 1, 14.1],
+      [11, 0, "Paul", 20, 1, null]
+    ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_path, expected_array);
+
+    // check data file meta
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    auto expected_data_file_meta = std::make_shared<DataFileMeta>(
+        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/3,
+        /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+        /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
+        /*key_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Paul")}, {0},
+                                          pool_.get()),
+        /*value_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 13.1},
+                                          {std::string("Paul"), 20, 1, 14.1}, {0, 0, 0, 1},
+                                          pool_.get()),
+        /*min_sequence_number=*/10, /*max_sequence_number=*/12, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/commit_increment.GetNewFilesIncrement().NewFiles()[0]->creation_time,
+        /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+    DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
+                                          /*changelog_files=*/{});
+    ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
+}
+
+TEST_P(MergeTreeWriterTest, TestMultiplePrepareCommit) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {"orc.write.enable-metrics", "true"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/9, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options));
+    // batch1
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1],
+      ["Paul", 20, 1, 15.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+    // prepare commit1
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment1,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    // check metrics
+    auto metrics = merge_writer->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t write_io_count, metrics->GetCounter("orc.write.io.count"));
+    ASSERT_GT(write_io_count, 0);
+
+    // batch2
+    std::shared_ptr<arrow::Array> array2 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 114.1],
+      ["Skye", 10, 0, 118.1],
+      ["Alice", 10, 0, 113.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array2, /*row_kinds=*/{}, merge_writer.get());
+    // prepare commit2
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment2,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    // check metrics
+    metrics = merge_writer->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t write_io_count2, metrics->GetCounter("orc.write.io.count"));
+    ASSERT_GT(write_io_count2, write_io_count);
+
+    ASSERT_OK(merge_writer->Close());
+
+    // check data file exist and read ok
+    std::string expected_data_file_name1 = "data-" + uuid + "-0.orc";
+    std::string expected_data_file_name2 = "data-" + uuid + "-1.orc";
+
+    std::string expected_data_file_dir = dir->Str() + "/";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStatus> data_file_status1,
+        options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name1));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStatus> data_file_status2,
+        options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name2));
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array1;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [12, 0, "Alice", 10, 0, 13.1],
+      [10, 0, "Lucy", 20, 1, 14.1],
+      [13, 0, "Paul", 20, 1, 15.1]
+    ])"},
+                                                                         &expected_array1);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_dir + expected_data_file_name1, expected_array1);
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array2;
+    array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [16, 0, "Alice", 10, 0, 113.1],
+      [14, 0, "Lucy", 20, 1, 114.1],
+      [15, 0, "Skye", 10, 0, 118.1]
+    ])"},
+                                                                    &expected_array2);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_dir + expected_data_file_name2, expected_array2);
+
+    // check data file meta
+    ASSERT_TRUE(commit_increment1.GetCompactIncrement().IsEmpty());
+    ASSERT_TRUE(commit_increment2.GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(1, commit_increment1.GetNewFilesIncrement().NewFiles().size());
+    ASSERT_EQ(1, commit_increment2.GetNewFilesIncrement().NewFiles().size());
+    auto expected_data_file_meta1 = std::make_shared<DataFileMeta>(
+        expected_data_file_name1, /*file_size=*/data_file_status1->GetLen(), /*row_count=*/3,
+        /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+        /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
+        /*key_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Paul")}, {0},
+                                          pool_.get()),
+        /*value_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 13.1},
+                                          {std::string("Paul"), 20, 1, 15.1}, {0, 0, 0, 0},
+                                          pool_.get()),
+        /*min_sequence_number=*/10, /*max_sequence_number=*/13, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/commit_increment1.GetNewFilesIncrement().NewFiles()[0]->creation_time,
+        /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+
+    auto expected_data_file_meta2 = std::make_shared<DataFileMeta>(
+        expected_data_file_name2, /*file_size=*/data_file_status2->GetLen(), /*row_count=*/3,
+        /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+        /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Skye")}, pool_.get()),
+        /*key_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Skye")}, {0},
+                                          pool_.get()),
+        /*value_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 113.1},
+                                          {std::string("Skye"), 20, 1, 118.1}, {0, 0, 0, 0},
+                                          pool_.get()),
+        /*min_sequence_number=*/14, /*max_sequence_number=*/16, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/commit_increment2.GetNewFilesIncrement().NewFiles()[0]->creation_time,
+        /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+    DataIncrement expected_data_increment1({expected_data_file_meta1},
+                                           /*deleted_files=*/{},
+                                           /*changelog_files=*/{});
+    ASSERT_EQ(expected_data_increment1, commit_increment1.GetNewFilesIncrement());
+
+    DataIncrement expected_data_increment2({expected_data_file_meta2},
+                                           /*deleted_files=*/{},
+                                           /*changelog_files=*/{});
+    ASSERT_EQ(expected_data_increment2, commit_increment2.GetNewFilesIncrement());
+}
+
+TEST_P(MergeTreeWriterTest, TestPrepareCommitForEmptyData) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options));
+
+    // prepare commit, without write
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    // check data file meta empty
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_TRUE(commit_increment.GetNewFilesIncrement().NewFiles().empty());
+
+    // write empty batch
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([])").ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+    // prepare commit, without write
+    ASSERT_OK_AND_ASSIGN(commit_increment, merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    // check data file meta empty
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_TRUE(commit_increment.GetNewFilesIncrement().NewFiles().empty());
+
+    ASSERT_OK(merge_writer->Close());
+
+    // check data file not exist
+    std::string expected_data_file_name = "data-" + uuid + "-0.orc";
+    std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
+    ASSERT_FALSE(options.GetFileSystem()->Exists(expected_data_file_path).value());
+}
+
+TEST_P(MergeTreeWriterTest, TestCloseBeforePrepareCommit) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options));
+
+    // write batch
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+    ASSERT_OK(merge_writer->Close());
+}
+
+TEST_P(MergeTreeWriterTest, TestCloseDeletesUncommittedFiles) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options));
+
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+
+    // Force a flush to materialize file on disk, but do not call PrepareCommit.
+    ASSERT_OK(merge_writer->Compact(/*full_compaction=*/false));
+
+    std::string expected_data_file_path = dir->Str() + "/data-" + uuid + "-0.orc";
+    ASSERT_TRUE(options.GetFileSystem()->Exists(expected_data_file_path).value());
+
+    ASSERT_OK(merge_writer->Close());
+    ASSERT_FALSE(options.GetFileSystem()->Exists(expected_data_file_path).value());
+}
+
+TEST_P(MergeTreeWriterTest, TestAutoFlush) {
+    // each batch is a file due to WRITE_BUFFER_SIZE
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "1"},
+                                               {Options::WRITE_BUFFER_SPILLABLE, "false"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/9, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options));
+    // batch1
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1],
+      ["Paul", 20, 1, 15.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+
+    // batch2
+    std::shared_ptr<arrow::Array> array2 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 114.1],
+      ["Skye", 10, 0, 118.1],
+      ["Alice", 10, 0, 113.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array2, /*row_kinds=*/{}, merge_writer.get());
+    // prepare commit
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    // check data file exist and read ok
+    std::string expected_data_file_name1 = "data-" + uuid + "-0.orc";
+    std::string expected_data_file_name2 = "data-" + uuid + "-1.orc";
+
+    std::string expected_data_file_dir = dir->Str() + "/";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStatus> data_file_status1,
+        options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name1));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStatus> data_file_status2,
+        options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name2));
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array1;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [12, 0, "Alice", 10, 0, 13.1],
+      [10, 0, "Lucy", 20, 1, 14.1],
+      [13, 0, "Paul", 20, 1, 15.1]
+    ])"},
+                                                                         &expected_array1);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_dir + expected_data_file_name1, expected_array1);
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array2;
+    array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [16, 0, "Alice", 10, 0, 113.1],
+      [14, 0, "Lucy", 20, 1, 114.1],
+      [15, 0, "Skye", 10, 0, 118.1]
+    ])"},
+                                                                    &expected_array2);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_dir + expected_data_file_name2, expected_array2);
+
+    // check data file meta
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(2, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    auto expected_data_file_meta1 = std::make_shared<DataFileMeta>(
+        expected_data_file_name1, /*file_size=*/data_file_status1->GetLen(), /*row_count=*/3,
+        /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+        /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
+        /*key_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Paul")}, {0},
+                                          pool_.get()),
+        /*value_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 13.1},
+                                          {std::string("Paul"), 20, 1, 15.1}, {0, 0, 0, 0},
+                                          pool_.get()),
+        /*min_sequence_number=*/10, /*max_sequence_number=*/13, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/commit_increment.GetNewFilesIncrement().NewFiles()[0]->creation_time,
+        /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+
+    auto expected_data_file_meta2 = std::make_shared<DataFileMeta>(
+        expected_data_file_name2, /*file_size=*/data_file_status2->GetLen(), /*row_count=*/3,
+        /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+        /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Skye")}, pool_.get()),
+        /*key_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Skye")}, {0},
+                                          pool_.get()),
+        /*value_stats=*/
+        BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 113.1},
+                                          {std::string("Skye"), 20, 1, 118.1}, {0, 0, 0, 0},
+                                          pool_.get()),
+        /*min_sequence_number=*/14, /*max_sequence_number=*/16, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/commit_increment.GetNewFilesIncrement().NewFiles()[1]->creation_time,
+        /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+    DataIncrement expected_data_increment({expected_data_file_meta1, expected_data_file_meta2},
+                                          /*deleted_files=*/{},
+                                          /*changelog_files=*/{});
+    ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
+}
+
+TEST_P(MergeTreeWriterTest, TestIOException) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    bool run_complete = false;
+    auto io_hook = IOHook::GetInstance();
+    for (size_t i = 0; i < 200; i++) {
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
+        io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
+        auto path_factory = std::make_shared<DataFilePathFactory>();
+        ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+        std::string uuid = path_factory->uuid_;
+
+        auto merge_writer_result = CreateMergeWriter(
+            /*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0, options);
+        CHECK_HOOK_STATUS(merge_writer_result.status(), i);
+        auto merge_writer = std::move(merge_writer_result).value();
+
+        // write batch
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+          ["Lucy", 20, 1, 14.1],
+          ["Paul", 20, 1, null],
+          ["Alice", 10, 0, 13.1]
+        ])")
+                .ValueOrDie();
+
+        ::ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+        RecordBatchBuilder batch_builder(&c_array);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch, batch_builder.Finish());
+        CHECK_HOOK_STATUS(merge_writer->Write(std::move(batch)), i);
+        auto commit_increment = merge_writer->PrepareCommit(/*wait_compaction=*/false);
+        CHECK_HOOK_STATUS(commit_increment.status(), i);
+        ASSERT_FALSE(commit_increment.value().GetNewFilesIncrement().NewFiles().empty());
+        ASSERT_OK(merge_writer->Close());
+        run_complete = true;
+        break;
+    }
+    ASSERT_TRUE(run_complete);
+}
+
+TEST_P(MergeTreeWriterTest, TestBulkData) {
+    // each batch is a file due to WRITE_BUFFER_SIZE
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "1"},
+                                               {Options::WRITE_BUFFER_SPILLABLE, "false"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/0, options));
+    // multi batch
+    size_t batch_size = 500;
+    for (size_t i = 0; i < batch_size; ++i) {
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+          ["Lucy", 20, 1, 14.1],
+          ["Paul", 20, 1, null],
+          ["Alice", 10, 0, 13.1],
+          ["Paul", 20, 1, 15.1]
+        ])")
+                .ValueOrDie();
+        WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+    }
+
+    // prepare commit
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    std::string expected_data_file_dir = dir->Str() + "/";
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(batch_size, commit_increment.GetNewFilesIncrement().NewFiles().size());
+
+    for (size_t i = 0; i < batch_size; ++i) {
+        std::string expected_data_file_name = "data-" + uuid + "-" + std::to_string(i) + ".orc";
+        // check data file exist and read ok
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+                             options.GetFileSystem()->GetFileStatus(expected_data_file_dir +
+                                                                    expected_data_file_name));
+        // check data file meta
+        auto expected_data_file_meta = std::make_shared<DataFileMeta>(
+            expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/3,
+            /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
+            /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
+            /*key_stats=*/
+            BinaryRowGenerator::GenerateStats({std::string("Alice")}, {std::string("Paul")}, {0},
+                                              pool_.get()),
+            /*value_stats=*/
+            BinaryRowGenerator::GenerateStats({std::string("Alice"), 10, 0, 13.1},
+                                              {std::string("Paul"), 20, 1, 15.1}, {0, 0, 0, 0},
+                                              pool_.get()),
+            /*min_sequence_number=*/i * 4, /*max_sequence_number=*/i * 4 + 3, /*schema_id=*/0,
+            /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+            /*creation_time=*/commit_increment.GetNewFilesIncrement().NewFiles()[i]->creation_time,
+            /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+            /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+            /*first_row_id=*/std::nullopt,
+            /*write_cols=*/std::nullopt);
+        ASSERT_EQ(*commit_increment.GetNewFilesIncrement().NewFiles()[i], *expected_data_file_meta);
+    }
+}
+
+TEST_P(MergeTreeWriterTest, TestShouldWait) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    auto fake_compact_manager = std::make_shared<FakeCompactManager>();
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0,
+                          options, /*user_defined_seq_comparator=*/nullptr, fake_compact_manager));
+
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Lucy", 20, 1, 14.1],
+      ["Paul", 20, 1, null],
+      ["Alice", 10, 0, 13.1]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+    ASSERT_TRUE(fake_compact_manager->get_result_blocking_calls.empty());
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(fake_compact_manager->get_result_blocking_calls.size(), 2u);
+    ASSERT_TRUE(fake_compact_manager->get_result_blocking_calls[0]);
+    ASSERT_TRUE(fake_compact_manager->get_result_blocking_calls[1]);
+    ASSERT_OK(merge_writer->Close());
+}
+
+TEST_P(MergeTreeWriterTest, TestUpdateCompactResultDeleteIntermediateFile) {
+    // TODO(lisizhuo.lsz): test UpdateCompactResult in inte compaction test.
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    auto fake_compact_manager = std::make_shared<FakeCompactManager>();
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0,
+                          options, /*user_defined_seq_comparator=*/nullptr, fake_compact_manager));
+
+    // Round 1: Before=[A], After=[X]  => compact_before_=[A], compact_after_=[X]
+    // Round 2: Before=[X], After=[Y]  => X is in compact_after_, so it's an intermediate file
+    auto file_a = CreateMeta("file_a", /*level=*/0);
+    auto file_x = CreateMeta("file_x", /*level=*/0);
+    auto file_y = CreateMeta("file_y", /*level=*/1);
+
+    merge_writer->compact_before_ = {file_a};
+    merge_writer->compact_after_ = {file_x};
+
+    auto before = std::vector<std::shared_ptr<DataFileMeta>>({file_x});
+    auto after = std::vector<std::shared_ptr<DataFileMeta>>({file_y});
+    auto compact_result = std::make_shared<CompactResult>(before, after);
+    ASSERT_OK(merge_writer->UpdateCompactResult(compact_result));
+    ASSERT_EQ(merge_writer->compact_before_, std::vector<std::shared_ptr<DataFileMeta>>({file_a}));
+    ASSERT_EQ(merge_writer->compact_after_, std::vector<std::shared_ptr<DataFileMeta>>({file_y}));
+}
+
+TEST_P(MergeTreeWriterTest, TestUpdateCompactResultWithFileInCompactAfter) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    auto fake_compact_manager = std::make_shared<FakeCompactManager>();
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0,
+                          options, /*user_defined_seq_comparator=*/nullptr, fake_compact_manager));
+
+    // Round 1: Before=[A], After=[X@level0] => compact_after_ = [X@level0]
+    // Round 2 (upgrade): Before=[X@level0], After=[X@level1]
+    // X is in compact_after_, but also in after_files => should NOT be deleted.
+    auto file_a = CreateMeta("file_a", /*level=*/0);
+    auto file_x_level0 = CreateMeta("file_x_level0", /*level=*/0);
+    auto file_x_level1 = CreateMeta("file_x_level1", /*level=*/1);
+
+    merge_writer->compact_before_ = {file_a};
+    merge_writer->compact_after_ = {file_x_level0};
+
+    auto before = std::vector<std::shared_ptr<DataFileMeta>>({file_x_level0});
+    auto after = std::vector<std::shared_ptr<DataFileMeta>>({file_x_level1});
+    auto compact_result = std::make_shared<CompactResult>(before, after);
+    ASSERT_OK(merge_writer->UpdateCompactResult(compact_result));
+    ASSERT_EQ(merge_writer->compact_before_, std::vector<std::shared_ptr<DataFileMeta>>({file_a}));
+    ASSERT_EQ(merge_writer->compact_after_,
+              std::vector<std::shared_ptr<DataFileMeta>>({file_x_level1}));
+}
+
+TEST_P(MergeTreeWriterTest, TestUpdateCompactResultWithFileInCompactBefore) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    auto fake_compact_manager = std::make_shared<FakeCompactManager>();
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0,
+                          options, /*user_defined_seq_comparator=*/nullptr, fake_compact_manager));
+
+    // Round 1 (upgrade): Before=[X@level0], After=[X@level1]
+    // X is not in compact_after_ yet, so it goes to compact_before_ = [X].
+    // compact_after_ = [X@level1].
+    // Round 2: Before=[X@level1], After=[Y]
+    // X@level1 is in compact_after_, so it's an intermediate file candidate.
+    // But in_compact_before(X) is true (from round 1), so X should NOT be deleted.
+    auto file_x = CreateMeta("file_x", /*level=*/0);
+    auto file_x_level1 = CreateMeta("file_x_level1", /*level=*/1);
+    auto file_y = CreateMeta("file_y", /*level=*/1);
+
+    merge_writer->compact_before_ = {file_x};
+    merge_writer->compact_after_ = {file_x_level1};
+
+    auto before = std::vector<std::shared_ptr<DataFileMeta>>({file_x_level1});
+    auto after = std::vector<std::shared_ptr<DataFileMeta>>({file_y});
+    auto compact_result = std::make_shared<CompactResult>(before, after);
+    ASSERT_OK(merge_writer->UpdateCompactResult(compact_result));
+    ASSERT_EQ(merge_writer->compact_before_, std::vector<std::shared_ptr<DataFileMeta>>({file_x}));
+    ASSERT_EQ(merge_writer->compact_after_, std::vector<std::shared_ptr<DataFileMeta>>({file_y}));
+}
+
+TEST_P(MergeTreeWriterTest, TestCloseSkipsDeleteForUpgradedFilesInCompactAfter) {
+    // Verifies that DoClose does NOT delete files in compact_after_ that also appear
+    // in compact_before_ (i.e., upgraded files required by previous snapshots).
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    auto fake_compact_manager = std::make_shared<FakeCompactManager>();
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0,
+                          options, /*user_defined_seq_comparator=*/nullptr, fake_compact_manager));
+
+    // Create real files on disk to verify deletion behavior
+    std::string upgraded_file_name = "data-upgraded-0.orc";
+    std::string intermediate_file_name = "data-intermediate-0.orc";
+    std::string upgraded_file_path = dir->Str() + "/" + upgraded_file_name;
+    std::string intermediate_file_path = dir->Str() + "/" + intermediate_file_name;
+
+    // Create placeholder files on disk
+    ASSERT_OK_AND_ASSIGN(auto out1,
+                         options.GetFileSystem()->Create(upgraded_file_path, /*overwrite=*/true));
+    ASSERT_OK(out1->Close());
+    ASSERT_OK_AND_ASSIGN(auto out2, options.GetFileSystem()->Create(intermediate_file_path,
+                                                                    /*overwrite=*/true));
+    ASSERT_OK(out2->Close());
+
+    ASSERT_TRUE(options.GetFileSystem()->Exists(upgraded_file_path).value());
+    ASSERT_TRUE(options.GetFileSystem()->Exists(intermediate_file_path).value());
+
+    auto upgraded_file = CreateMeta(upgraded_file_name, /*level=*/1);
+    auto intermediate_file = CreateMeta(intermediate_file_name, /*level=*/1);
+
+    // Setup: upgraded_file appears in both compact_before_ and compact_after_
+    // (simulating an upgrade operation where the file is promoted to a higher level).
+    // intermediate_file only appears in compact_after_ (normal compaction output).
+    merge_writer->compact_before_ = {upgraded_file};
+    merge_writer->compact_after_ = {upgraded_file, intermediate_file};
+
+    ASSERT_OK(merge_writer->Close());
+
+    // upgraded_file should NOT be deleted (it's in compact_before_)
+    ASSERT_TRUE(options.GetFileSystem()->Exists(upgraded_file_path).value())
+        << "Upgraded file should be preserved because it exists in compact_before_";
+
+    // intermediate_file SHOULD be deleted (it's only in compact_after_)
+    ASSERT_FALSE(options.GetFileSystem()->Exists(intermediate_file_path).value())
+        << "Intermediate file should be deleted because it's not in compact_before_";
+}
+
+TEST_F(MergeTreeWriterTest, TestSpillWithSameKeyDeduplicate) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "1"},
+                                               {Options::WRITE_ONLY, "true"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    std::shared_ptr<IOManager> io_manager =
+        std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_);
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(/*last_sequence_number=*/-1, primary_keys_, path_factory,
+                                key_comparator_, /*user_defined_seq_comparator=*/nullptr,
+                                merge_function_wrapper_, /*schema_id=*/0, value_schema_, options,
+                                noop_compact_manager_, io_manager,
+                                /*enable_multi_thread_spill=*/false, pool_));
+
+    std::shared_ptr<arrow::Array> batch1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 1, 0, 1.0],
+            ["Bob", 2, 0, 2.0]
+        ])")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> batch2 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 10, 0, 10.0],
+            ["Charlie", 3, 0, 3.0]
+        ])")
+            .ValueOrDie();
+
+    WriteBatch(batch1, /*row_kinds=*/{}, merge_writer.get());
+    WriteBatch(batch2, /*row_kinds=*/{}, merge_writer.get());
+    // WRITE_BUFFER_SIZE=1 causes UpdateSpillParameters() to clamp actual_max_fan_in_ to 2,
+    // triggering leveled merge after 2 spill files are produced, merging them into 1.
+    ASSERT_EQ(1u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+
+    std::shared_ptr<arrow::Array> batch3 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Bob", 20, 0, 20.0],
+            ["Charlie", 30, 0, 30.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(batch3, /*row_kinds=*/{}, merge_writer.get());
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_OK(merge_writer->Close());
+
+    // All three keys deduplicated: Alice(seq=2), Bob(seq=4), Charlie(seq=5).
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    std::string expected_data_file_path = dir->Str() + "/data-" + uuid + "-0.orc";
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+            [2, 0, "Alice", 10, 0, 10.0],
+            [4, 0, "Bob", 20, 0, 20.0],
+            [5, 0, "Charlie", 30, 0, 30.0]
+        ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_path, expected_array);
+}
+
+TEST_F(MergeTreeWriterTest, TestIntermediateMergeSpillFileBound) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "1"},
+                                               {Options::LOCAL_SORT_MAX_NUM_FILE_HANDLES, "2"},
+                                               {Options::WRITE_ONLY, "true"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    std::shared_ptr<IOManager> io_manager =
+        std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_);
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(/*last_sequence_number=*/-1, primary_keys_, path_factory,
+                                key_comparator_, /*user_defined_seq_comparator=*/nullptr,
+                                merge_function_wrapper_, /*schema_id=*/0, value_schema_, options,
+                                noop_compact_manager_, io_manager,
+                                /*enable_multi_thread_spill=*/false, pool_));
+
+    std::shared_ptr<arrow::Array> batch1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 1, 0, 1.0]
+        ])")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> batch2 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Bob", 2, 0, 2.0]
+        ])")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> batch3 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 3, 0, 3.0]
+        ])")
+            .ValueOrDie();
+
+    WriteBatch(batch1, /*row_kinds=*/{}, merge_writer.get());
+    // Level 0: [A], total = 1
+    ASSERT_EQ(1u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+
+    WriteBatch(batch2, /*row_kinds=*/{}, merge_writer.get());
+    // Level 0: [A,B] hits max_fan_in=2, merge -> Level 0: [], Level 1: [C], total = 1
+    ASSERT_EQ(1u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+
+    WriteBatch(batch3, /*row_kinds=*/{}, merge_writer.get());
+    // Level 0: [D], Level 1: [C], total = 2 (no single level exceeds max_fan_in)
+    ASSERT_EQ(2u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_OK(merge_writer->Close());
+
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    std::string expected_data_file_path = dir->Str() + "/data-" + uuid + "-0.orc";
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+            [2, 0, "Alice", 3, 0, 3.0],
+            [1, 0, "Bob", 2, 0, 2.0]
+        ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    CheckFileContent(expected_data_file_path, expected_array);
+}
+
+TEST_F(MergeTreeWriterTest, TestDiskQuotaExhaustedFallsBackToFlushWriteBuffer) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "1"},
+                                               {Options::WRITE_BUFFER_SPILL_MAX_DISK_SIZE, "1"},
+                                               {Options::WRITE_ONLY, "true"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    std::shared_ptr<IOManager> io_manager =
+        std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_);
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(/*last_sequence_number=*/-1, primary_keys_, path_factory,
+                                key_comparator_, /*user_defined_seq_comparator=*/nullptr,
+                                merge_function_wrapper_, /*schema_id=*/0, value_schema_, options,
+                                noop_compact_manager_, io_manager,
+                                /*enable_multi_thread_spill=*/false, pool_));
+
+    // Phase 1: Manual FlushMemory path — disk quota exhausted causes fallback.
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 1, 0, 1.0],
+            ["Bob", 2, 0, 2.0],
+            ["Charlie", 3, 0, 3.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+
+    ASSERT_EQ(merge_writer->GetMemoryUsage(), 0);
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit1,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_EQ(1, commit1.GetNewFilesIncrement().NewFiles().size());
+    ASSERT_EQ(3, commit1.GetNewFilesIncrement().NewFiles()[0]->row_count);
+
+    // Phase 2: Auto-spill path — WRITE_BUFFER_SIZE=1 triggers spill on each WriteBatch.
+    // batch1 spills successfully, but disk quota is now exhausted.
+    std::shared_ptr<arrow::Array> batch1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Dave", 4, 0, 4.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(batch1, /*row_kinds=*/{}, merge_writer.get());
+
+    // batch2: spill -> quota exhausted -> FlushWriteBuffer produces a data file.
+    std::shared_ptr<arrow::Array> batch2 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Eve", 5, 0, 5.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(batch2, /*row_kinds=*/{}, merge_writer.get());
+
+    // batch3: another round after flush, accumulates into a fresh buffer.
+    std::shared_ptr<arrow::Array> batch3 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Frank", 6, 0, 6.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(batch3, /*row_kinds=*/{}, merge_writer.get());
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit2,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_OK(merge_writer->Close());
+
+    ASSERT_EQ(3, commit2.GetNewFilesIncrement().NewFiles().size());
+    for (const auto& file_meta : commit2.GetNewFilesIncrement().NewFiles()) {
+        ASSERT_EQ(1, file_meta->row_count);
+    }
+}
+
+TEST_F(MergeTreeWriterTest, TestFlushMemoryQuotaExhaustedFallsBackToFlushWriteBuffer) {
+    // WRITE_BUFFER_SIZE is large enough so WriteBatch does NOT auto-spill.
+    // SPILL_MAX_DISK_SIZE is tiny so the first FlushMemory() exhausts the quota,
+    // triggering the fallback path: FlushMemory() -> quota exhausted -> FlushWriteBuffer.
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "4096000"},
+                                               {Options::WRITE_BUFFER_SPILL_MAX_DISK_SIZE, "1b"},
+                                               {Options::WRITE_ONLY, "true"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    std::shared_ptr<IOManager> io_manager =
+        std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_);
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(/*last_sequence_number=*/-1, primary_keys_, path_factory,
+                                key_comparator_, /*user_defined_seq_comparator=*/nullptr,
+                                merge_function_wrapper_, /*schema_id=*/0, value_schema_, options,
+                                noop_compact_manager_, io_manager,
+                                /*enable_multi_thread_spill=*/false, pool_));
+
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 1, 0, 1.0],
+            ["Bob", 2, 0, 2.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+
+    ASSERT_GT(merge_writer->GetMemoryUsage(), 0);
+
+    // FlushMemory: spill succeeds but disk quota is exhausted -> falls back to FlushWriteBuffer.
+    ASSERT_OK(merge_writer->FlushMemory());
+    ASSERT_EQ(merge_writer->GetMemoryUsage(), 0);
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+
+    // PrepareCommit should produce a data file (from FlushWriteBuffer fallback).
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_EQ(1, commit.GetNewFilesIncrement().NewFiles().size());
+    ASSERT_EQ(2, commit.GetNewFilesIncrement().NewFiles()[0]->row_count);
+    ASSERT_OK(merge_writer->Close());
+}
+
+TEST_F(MergeTreeWriterTest, TestCloseDeletesSpillTempFiles) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "1"},
+                                               {Options::WRITE_ONLY, "true"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    std::shared_ptr<IOManager> io_manager =
+        std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_);
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(/*last_sequence_number=*/-1, primary_keys_, path_factory,
+                                key_comparator_, /*user_defined_seq_comparator=*/nullptr,
+                                merge_function_wrapper_, /*schema_id=*/0, value_schema_, options,
+                                noop_compact_manager_, io_manager,
+                                /*enable_multi_thread_spill=*/false, pool_));
+
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 1, 0, 1.0],
+            ["Bob", 2, 0, 2.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+
+    ASSERT_EQ(1u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_OK(merge_writer->Close());
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+}
+
+TEST_F(MergeTreeWriterTest, TestMultiplePrepareCommitWithSpill) {
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::WRITE_ONLY, "true"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    std::shared_ptr<IOManager> io_manager =
+        std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_);
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(/*last_sequence_number=*/-1, primary_keys_, path_factory,
+                                key_comparator_, /*user_defined_seq_comparator=*/nullptr,
+                                merge_function_wrapper_, /*schema_id=*/0, value_schema_, options,
+                                noop_compact_manager_, io_manager,
+                                /*enable_multi_thread_spill=*/false, pool_));
+
+    std::shared_ptr<arrow::Array> array1 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Alice", 1, 0, 1.0],
+            ["Bob", 2, 0, 2.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(array1, /*row_kinds=*/{}, merge_writer.get());
+    ASSERT_OK(merge_writer->FlushMemory());
+    ASSERT_EQ(1u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit1,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_EQ(1, commit1.GetNewFilesIncrement().NewFiles().size());
+
+    std::string expected_path1 = dir->Str() + "/data-" + uuid + "-0.orc";
+    std::shared_ptr<arrow::ChunkedArray> expected_array1;
+    auto status1 = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+            [0, 0, "Alice", 1, 0, 1.0],
+            [1, 0, "Bob", 2, 0, 2.0]
+        ])"},
+                                                                    &expected_array1);
+    ASSERT_TRUE(status1.ok());
+    CheckFileContent(expected_path1, expected_array1);
+
+    std::shared_ptr<arrow::Array> array2 =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+            ["Dave", 4, 0, 4.0],
+            ["Eve", 5, 0, 5.0]
+        ])")
+            .ValueOrDie();
+    WriteBatch(array2, /*row_kinds=*/{}, merge_writer.get());
+    ASSERT_OK(merge_writer->FlushMemory());
+    ASSERT_EQ(1u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit2,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(0u, TestHelper::CountChannelFiles(file_system_, dir->Str() + "/tmp"));
+    ASSERT_EQ(1, commit2.GetNewFilesIncrement().NewFiles().size());
+
+    std::string expected_path2 = dir->Str() + "/data-" + uuid + "-1.orc";
+    std::shared_ptr<arrow::ChunkedArray> expected_array2;
+    auto status2 = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+            [2, 0, "Dave", 4, 0, 4.0],
+            [3, 0, "Eve", 5, 0, 5.0]
+        ])"},
+                                                                    &expected_array2);
+    ASSERT_TRUE(status2.ok());
+    CheckFileContent(expected_path2, expected_array2);
+
+    ASSERT_OK(merge_writer->Close());
+}
+
+TEST_F(MergeTreeWriterTest, TestSpillWithIOException) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::WRITE_BUFFER_SIZE, "1"},
+                                               {Options::WRITE_ONLY, "true"},
+                                               {Options::LOCAL_SORT_MAX_NUM_FILE_HANDLES, "2"}}));
+
+    bool run_complete = false;
+    auto io_hook = IOHook::GetInstance();
+    for (size_t i = 0; i < 2000; i++) {
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto path_factory = std::make_shared<DataFilePathFactory>();
+        ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+        std::shared_ptr<IOManager> io_manager =
+            std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_);
+        ASSERT_OK_AND_ASSIGN(
+            auto merge_writer,
+            MergeTreeWriter::Create(/*last_sequence_number=*/-1, primary_keys_, path_factory,
+                                    key_comparator_, /*user_defined_seq_comparator=*/nullptr,
+                                    merge_function_wrapper_, /*schema_id=*/0, value_schema_,
+                                    options, noop_compact_manager_, io_manager,
+                                    /*enable_multi_thread_spill=*/false, pool_));
+
+        ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
+        io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
+        // Write 4 batches, each with 2 rows sharing the same key to exercise deduplication.
+        // Batch 1: triggers spill file 1
+        std::shared_ptr<arrow::Array> batch1 =
+            arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+                ["Alice", 1, 0, 1.0],
+                ["Bob", 2, 0, 2.0]
+            ])")
+                .ValueOrDie();
+        auto b1 = CreateBatch(batch1, {});
+        CHECK_HOOK_STATUS(merge_writer->Write(std::move(b1)), i);
+
+        // Batch 2: triggers spill file 2 → intermediate merge (merge 2 files into 1)
+        std::shared_ptr<arrow::Array> batch2 =
+            arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+                ["Alice", 10, 0, 10.0],
+                ["Charlie", 3, 0, 3.0]
+            ])")
+                .ValueOrDie();
+        auto b2 = CreateBatch(batch2, {});
+        CHECK_HOOK_STATUS(merge_writer->Write(std::move(b2)), i);
+
+        // Batch 3: triggers spill file at level 0 again
+        std::shared_ptr<arrow::Array> batch3 =
+            arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+                ["Bob", 20, 0, 20.0],
+                ["Dave", 4, 0, 4.0]
+            ])")
+                .ValueOrDie();
+        auto b3 = CreateBatch(batch3, {});
+        CHECK_HOOK_STATUS(merge_writer->Write(std::move(b3)), i);
+
+        // Batch 4: triggers spill file at level 0 → another merge at level 0,
+        // then level 1 has 2 files → merge at level 1 as well.
+        std::shared_ptr<arrow::Array> batch4 =
+            arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+                ["Charlie", 30, 0, 30.0],
+                ["Eve", 5, 0, 5.0]
+            ])")
+                .ValueOrDie();
+        auto b4 = CreateBatch(batch4, {});
+        CHECK_HOOK_STATUS(merge_writer->Write(std::move(b4)), i);
+
+        // PrepareCommit: triggers FlushWriteBuffer → CreateReaders (RunFinalCleanupIfNeeded)
+        // → sort merge → write output data file
+        auto commit_increment = merge_writer->PrepareCommit(/*wait_compaction=*/false);
+        CHECK_HOOK_STATUS(commit_increment.status(), i);
+        ASSERT_FALSE(commit_increment.value().GetNewFilesIncrement().NewFiles().empty());
+
+        // Verify deduplication: Alice(seq=2), Bob(seq=4), Charlie(seq=5), Dave(seq=6), Eve(seq=7)
+        ASSERT_EQ(1, commit_increment.value().GetNewFilesIncrement().NewFiles().size());
+        ASSERT_EQ(5, commit_increment.value().GetNewFilesIncrement().NewFiles()[0]->row_count);
+
+        ASSERT_OK(merge_writer->Close());
+        run_complete = true;
+        break;
+    }
+    ASSERT_TRUE(run_complete);
+}
+
+INSTANTIATE_TEST_SUITE_P(WithOptionalIOManager, MergeTreeWriterTest,
+                         ::testing::Values(false, true));
+
+}  // namespace paimon::test
