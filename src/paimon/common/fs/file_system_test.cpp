@@ -1089,7 +1089,7 @@ TEST_P(FileSystemTest, TestMkdir2) {
 TEST_P(FileSystemTest, TestMkdirMultiThreadWithSameNonExistParentDir) {
     uint32_t runs_count = 10;
     uint32_t thread_count = 10;
-    auto executor = CreateDefaultExecutor(thread_count);
+    ASSERT_OK_AND_ASSIGN(auto executor, CreateDefaultExecutor(thread_count));
 
     for (uint32_t i = 0; i < runs_count; i++) {
         std::string uuid;
@@ -1114,7 +1114,7 @@ TEST_P(FileSystemTest, TestMkdirMultiThreadWithSameNonExistParentDir) {
 TEST_P(FileSystemTest, TestMkdirMultiThreadWithSameName) {
     uint32_t runs_count = 10;
     uint32_t thread_count = 10;
-    auto executor = CreateDefaultExecutor(thread_count);
+    ASSERT_OK_AND_ASSIGN(auto executor, CreateDefaultExecutor(thread_count));
 
     for (uint32_t i = 0; i < runs_count; i++) {
         std::string uuid;
@@ -1139,7 +1139,7 @@ TEST_P(FileSystemTest, TestMkdirMultiThreadWithSameNameWithRelativePath) {
     }
     uint32_t runs_count = 10;
     uint32_t thread_count = 10;
-    auto executor = CreateDefaultExecutor(thread_count);
+    ASSERT_OK_AND_ASSIGN(auto executor, CreateDefaultExecutor(thread_count));
 
     for (uint32_t i = 0; i < runs_count; i++) {
         std::string uuid;
