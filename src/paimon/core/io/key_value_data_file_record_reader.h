@@ -57,7 +57,9 @@ class KeyValueDataFileRecordReader : public KeyValueRecordReader {
     class Iterator : public KeyValueRecordReader::Iterator {
      public:
         Iterator(KeyValueDataFileRecordReader* reader, int64_t previous_batch_first_row_number)
-            : previous_batch_first_row_number_(previous_batch_first_row_number), reader_(reader) {}
+            : previous_batch_first_row_number_(previous_batch_first_row_number),
+              reader_(reader),
+              selection_cardinality_(reader->selection_bitmap_.Cardinality()) {}
         Result<bool> HasNext() const override;
         Result<KeyValue> Next() override;
         Result<std::pair<int64_t, KeyValue>> NextWithFilePos();
@@ -66,6 +68,7 @@ class KeyValueDataFileRecordReader : public KeyValueRecordReader {
         int64_t previous_batch_first_row_number_;
         mutable int64_t cursor_ = 0;
         KeyValueDataFileRecordReader* reader_ = nullptr;
+        int64_t selection_cardinality_ = 0;
     };
 
     Result<std::unique_ptr<KeyValueRecordReader::Iterator>> NextBatch() override;
