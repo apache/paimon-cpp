@@ -22,7 +22,7 @@
 #include <functional>
 #include <memory>
 
-#include "paimon/common/io/cache/cache.h"
+#include "paimon/cache/cache.h"
 #include "paimon/common/io/cache/cache_key.h"
 #include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/result.h"

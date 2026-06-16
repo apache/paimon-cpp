@@ -374,6 +374,7 @@ struct CoreOptions::Impl {
     std::shared_ptr<FileFormat> file_format;
     std::shared_ptr<FileSystem> file_system;
     std::shared_ptr<FileFormat> manifest_file_format;
+    std::shared_ptr<Cache> cache;
 
     std::optional<int64_t> scan_snapshot_id;
     std::optional<int64_t> scan_timestamp_millis;
@@ -871,7 +872,6 @@ Result<CoreOptions> CoreOptions::FromMap(
     PAIMON_RETURN_NOT_OK(impl->ParseIndexOptions(parser));
     PAIMON_RETURN_NOT_OK(impl->ParseCompactionOptions(parser));
     PAIMON_RETURN_NOT_OK(impl->ParseLookupOptions(parser));
-
     return options;
 }
 
@@ -972,6 +972,15 @@ std::optional<int64_t> CoreOptions::GetScanTimestampMillis() const {
 }
 int64_t CoreOptions::GetManifestTargetFileSize() const {
     return impl_->manifest_target_file_size;
+}
+
+std::shared_ptr<Cache> CoreOptions::GetCache() const {
+    return impl_->cache;
+}
+
+CoreOptions& CoreOptions::WithCache(const std::shared_ptr<Cache>& cache) {
+    impl_->cache = cache;
+    return *this;
 }
 
 int32_t CoreOptions::GetManifestMergeMinCount() const {
