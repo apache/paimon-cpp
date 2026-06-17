@@ -60,11 +60,11 @@ TEST(MapSharedShreddingUtilsTest, DetectShreddingColumnsBasic) {
         CoreOptions::FromMap({{"fields.tags.map.storage-layout", "shared-shredding"},
                               {"fields.metrics.map.storage-layout", "shared-shredding"}}));
 
-    ASSERT_OK_AND_ASSIGN(auto indices,
+    ASSERT_OK_AND_ASSIGN(auto field_names,
                          MapSharedShreddingUtils::DetectShreddingColumns(schema, options));
-    ASSERT_EQ(indices.size(), 2);
-    ASSERT_EQ(indices[0], 1);
-    ASSERT_EQ(indices[1], 2);
+    ASSERT_EQ(field_names.size(), 2);
+    ASSERT_EQ(field_names[0], "tags");
+    ASSERT_EQ(field_names[1], "metrics");
 }
 
 TEST(MapSharedShreddingUtilsTest, DetectShreddingColumnsNoShredding) {
@@ -74,9 +74,9 @@ TEST(MapSharedShreddingUtilsTest, DetectShreddingColumnsNoShredding) {
     });
 
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-    ASSERT_OK_AND_ASSIGN(auto indices,
+    ASSERT_OK_AND_ASSIGN(auto field_names,
                          MapSharedShreddingUtils::DetectShreddingColumns(schema, options));
-    ASSERT_TRUE(indices.empty());
+    ASSERT_TRUE(field_names.empty());
 }
 
 // ---- LogicalToPhysicalSchema ----
@@ -88,13 +88,13 @@ TEST(MapSharedShreddingUtilsTest, LogicalToPhysicalSchemaBasic) {
         arrow::field("name", arrow::utf8()),
     });
 
-    std::map<int32_t, int32_t> column_to_num_columns = {{1, 4}};
+    std::map<std::string, int32_t> field_to_num_columns = {{"tags", 4}};
     ASSERT_OK_AND_ASSIGN(auto physical_schema, MapSharedShreddingUtils::LogicalToPhysicalSchema(
-                                                   schema, column_to_num_columns));
+                                                   schema, field_to_num_columns));
 
     // Build expected schema for comparison
     auto expected_struct = arrow::struct_({
-        arrow::field("__field_mapping", arrow::list(arrow::int32()), false),
+        arrow::field("__field_mapping", arrow::list(arrow::int32()), true),
         arrow::field("__col_0", arrow::utf8(), true),
         arrow::field("__col_1", arrow::utf8(), true),
         arrow::field("__col_2", arrow::utf8(), true),
@@ -116,12 +116,12 @@ TEST(MapSharedShreddingUtilsTest, LogicalToPhysicalSchemaNestedValue) {
     auto map_type = arrow::map(arrow::utf8(), nested_value);
     auto schema = arrow::schema({arrow::field("data", map_type)});
 
-    std::map<int32_t, int32_t> column_to_num_columns = {{0, 2}};
+    std::map<std::string, int32_t> field_to_num_columns = {{"data", 2}};
     ASSERT_OK_AND_ASSIGN(auto physical_schema, MapSharedShreddingUtils::LogicalToPhysicalSchema(
-                                                   schema, column_to_num_columns));
+                                                   schema, field_to_num_columns));
 
     auto expected_struct = arrow::struct_({
-        arrow::field("__field_mapping", arrow::list(arrow::int32()), false),
+        arrow::field("__field_mapping", arrow::list(arrow::int32()), true),
         arrow::field("__col_0", nested_value, true),
         arrow::field("__col_1", nested_value, true),
         arrow::field("__overflow", arrow::map(arrow::int32(), nested_value), true),
@@ -134,7 +134,7 @@ TEST(MapSharedShreddingUtilsTest, LogicalToPhysicalSchemaNullable) {
     // MAP value is nullable
     auto nullable_map = arrow::map(arrow::utf8(), arrow::field("item", arrow::int64(), true));
     auto schema_nullable = arrow::schema({arrow::field("m", nullable_map)});
-    std::map<int32_t, int32_t> col_map = {{0, 2}};
+    std::map<std::string, int32_t> col_map = {{"m", 2}};
 
     ASSERT_OK_AND_ASSIGN(
         auto physical, MapSharedShreddingUtils::LogicalToPhysicalSchema(schema_nullable, col_map));
@@ -159,7 +159,7 @@ TEST(MapSharedShreddingUtilsTest, LogicalToPhysicalSchemaNoShreddingColumns) {
         arrow::field("name", arrow::utf8()),
     });
 
-    std::map<int32_t, int32_t> empty_map;
+    std::map<std::string, int32_t> empty_map;
     ASSERT_OK_AND_ASSIGN(auto physical_schema,
                          MapSharedShreddingUtils::LogicalToPhysicalSchema(schema, empty_map));
     ASSERT_TRUE(physical_schema->Equals(schema));
@@ -179,13 +179,13 @@ TEST(MapSharedShreddingUtilsTest, BuildColumnToNumColumns) {
         CoreOptions::FromMap({{"fields.tags.map.shared-shredding.max-columns", "128"},
                               {"fields.metrics.map.shared-shredding.max-columns", "64"}}));
 
-    std::vector<int32_t> shredding_indices = {1, 2};
+    std::vector<std::string> shredding_field_names = {"tags", "metrics"};
     ASSERT_OK_AND_ASSIGN(auto result, MapSharedShreddingUtils::BuildColumnToNumColumns(
-                                          shredding_indices, schema, options));
+                                          shredding_field_names, options));
 
     ASSERT_EQ(result.size(), 2);
-    ASSERT_EQ(result[1], 128);
-    ASSERT_EQ(result[2], 64);
+    ASSERT_EQ(result.at("tags"), 128);
+    ASSERT_EQ(result.at("metrics"), 64);
 }
 
 TEST(MapSharedShreddingUtilsTest, BuildColumnToNumColumnsDefault) {
@@ -195,10 +195,10 @@ TEST(MapSharedShreddingUtilsTest, BuildColumnToNumColumnsDefault) {
 
     // No explicit max-columns config -> default 256
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-    std::vector<int32_t> shredding_indices = {0};
+    std::vector<std::string> shredding_field_names = {"tags"};
     ASSERT_OK_AND_ASSIGN(auto result, MapSharedShreddingUtils::BuildColumnToNumColumns(
-                                          shredding_indices, schema, options));
-    ASSERT_EQ(result[0], 256);
+                                          shredding_field_names, options));
+    ASSERT_EQ(result.at("tags"), 256);
 }
 
 // ---- SerializeMetadata / DeserializeMetadata roundtrip ----
@@ -214,7 +214,7 @@ TEST(MapSharedShreddingUtilsTest, MetadataRoundtripNoneCompression) {
     auto metadata = std::make_shared<arrow::KeyValueMetadata>();
     ASSERT_OK(MapSharedShreddingUtils::SerializeMetadata(original, "none", metadata.get()));
 
-    // Verify raw KV strings to get intuition of what's stored
+    // Verify raw KV strings
     auto find_value = [&](const char* key) -> std::string {
         int32_t idx = metadata->FindKey(key);
         EXPECT_GE(idx, 0);
