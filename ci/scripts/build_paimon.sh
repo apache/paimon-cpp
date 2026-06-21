@@ -47,8 +47,10 @@ mkdir -p "${build_dir}"
 pushd "${build_dir}"
 
 ENABLE_LUMINA="ON"
+ENABLE_TANTIVY="ON"
 if [[ "${CC:-}" == *"gcc-8"* ]] || [[ "${CXX:-}" == *"g++-8"* ]]; then
     ENABLE_LUMINA="OFF"
+    ENABLE_TANTIVY="OFF" # tantivy-fts (Rust FFI) is not built on the gcc-8 image.
 fi
 
 CMAKE_ARGS=(
@@ -58,6 +60,7 @@ CMAKE_ARGS=(
     "-DPAIMON_ENABLE_JINDO=ON"
     "-DPAIMON_ENABLE_LUMINA=${ENABLE_LUMINA}"
     "-DPAIMON_ENABLE_LUCENE=ON"
+    "-DPAIMON_ENABLE_TANTIVY=${ENABLE_TANTIVY}"
 )
 
 if [[ "${enable_sanitizer}" == "true" ]]; then
