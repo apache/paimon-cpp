@@ -73,6 +73,9 @@ class MergeTreeCompactRewriter : public CompactRewriter {
     static std::vector<std::shared_ptr<DataFileMeta>> ExtractFilesFromSections(
         const std::vector<std::vector<SortedRun>>& sections);
 
+    Status RestoreShreddingContextFromFiles(
+        const std::vector<std::shared_ptr<DataFileMeta>>& files);
+
     MergeTreeCompactRewriter(const BinaryRow& partition, int32_t bucket, int64_t schema_id,
                              const std::vector<std::string>& trimmed_primary_keys,
                              const CoreOptions& options,
@@ -92,7 +95,7 @@ class MergeTreeCompactRewriter : public CompactRewriter {
     using KeyValueConsumerCreator =
         AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>::ConsumerCreator;
 
-    std::unique_ptr<KeyValueRollingFileWriter> CreateRollingRowWriter(int32_t level);
+    Result<std::unique_ptr<KeyValueRollingFileWriter>> CreateRollingRowWriter(int32_t level);
 
     Result<KeyValueConsumerCreator> GenerateKeyValueConsumer() const;
 

@@ -135,7 +135,8 @@ const std::vector<SystemTableRegistryEntry>& SystemTableRegistry() {
             const std::map<std::string, std::string>& dynamic_options)
              -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
-             return std::make_shared<ManifestsSystemTable>(fs, table_path, LoadBranch(options),
+             auto branch = LoadBranch(options);
+             return std::make_shared<ManifestsSystemTable>(fs, table_path, std::move(branch),
                                                            table_schema, std::move(options));
          }},
         {FilesSystemTable::kName,
@@ -144,7 +145,8 @@ const std::vector<SystemTableRegistryEntry>& SystemTableRegistry() {
             const std::map<std::string, std::string>& dynamic_options)
              -> Result<std::shared_ptr<SystemTable>> {
              auto options = MergeOptions(table_schema, dynamic_options);
-             return std::make_shared<FilesSystemTable>(fs, table_path, LoadBranch(options),
+             auto branch = LoadBranch(options);
+             return std::make_shared<FilesSystemTable>(fs, table_path, std::move(branch),
                                                        table_schema, std::move(options));
          }},
     };
