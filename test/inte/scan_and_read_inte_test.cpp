@@ -1028,7 +1028,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithNestedType) {
     AddReadOptionsForPrefetch(&read_context_builder);
     ASSERT_OK_AND_ASSIGN(
         auto read_context,
-        read_context_builder.SetReadSchema({"shopId", "dt", "hr", "col0", "col1", "col2"})
+        read_context_builder.SetReadFieldNames({"shopId", "dt", "hr", "col0", "col1", "col2"})
             .Finish());
 
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
@@ -2180,7 +2180,7 @@ TEST_P(ScanAndReadInteTest, TestScanWithPredicateAndReadWithUnorderedFieldForPar
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetReadSchema({"f10", "f8", "f4", "f13"});
+    read_context_builder.SetReadFieldNames({"f10", "f8", "f4", "f13"});
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -2236,7 +2236,7 @@ TEST_P(ScanAndReadInteTest, TestPkSchemaEvolutionScanWithRenamedPkPredicate) {
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetReadSchema({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
+    read_context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
