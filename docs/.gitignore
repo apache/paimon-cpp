@@ -15,40 +15,4 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Build directories
-build
-build-release
-build-debug
-output
-
-# IDE settings
-.idea
-.vscode
-.cache
-
-# Devcontainer configuration
-.devcontainer/*
-!.devcontainer/*.template
-
-# Temporary and backup files
-*~
-*.folded
-*.pyc
-__pycache__
-
-# Performance analysis and profiling files
-*.perf*
-perf.*
-*lcov.info
-profile.json
-FlameGraph
-
-# Shared objects and binary files
-*.so
-
-# Images
-*.svg
-!docs/source/_static/prefetch.svg
-
-# Third party dependencies archives
-third_party/*.tar.gz
+_build
