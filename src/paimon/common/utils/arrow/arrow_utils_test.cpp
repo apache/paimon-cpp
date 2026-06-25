@@ -24,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/testing/utils/testharness.h"
+
 namespace paimon::test {
 
 TEST(ArrowUtilsTest, TestCreateProjection) {
