@@ -292,6 +292,7 @@ This product includes code from Apache Arrow.
     - include/paimon/status.h
     - include/paimon/string_builder.h
     - src/paimon/common/utils/status.cpp
+  * Arrow C Data Interface in include/paimon/arrow/abi.h
 * Build support utilities:
   * build_support/asan-suppressions.txt
   * build_support/get-upstream-commit.sh
@@ -314,6 +315,8 @@ This product includes code from Apache Arrow.
   * third-party toolchain and patches:
     - cmake_modules/ThirdpartyToolchain.cmake
     - cmake_modules/arrow.diff
+    - third_party/download_dependencies.sh
+    - third_party/versions.txt
 
 Copyright: 2016-2024 The Apache Software Foundation.
 Home page: https://arrow.apache.org/
