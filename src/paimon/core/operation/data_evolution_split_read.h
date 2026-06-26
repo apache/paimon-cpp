@@ -58,7 +58,7 @@ struct DeletionFile;
 /// splits)->(BlobViewResolvingBatchReader)->(CompleteIndexScoreBatchReader)->
 /// CompleteRowKindBatchReader->(PredicateBatchReader)
 /// ->ConcatBatchReader across files->DataEvolutionFileReader->(ConcatBatchReader across blob files)
-/// ->FieldMappingReader->(CompleteRowTrackingFieldsBatchReader)
+/// ->FieldMappingReader->(CompleteRowTrackingFieldsBatchReader)->(MapSharedShreddingFileReader)
 /// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
 ///
 ///
