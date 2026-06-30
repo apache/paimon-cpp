@@ -289,6 +289,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingMapRestoreInitializesNex
         {"file.format", "parquet"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "10"},
+        {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
         {"write-only", "true"},
         {"bucket", "1"},
         {"bucket-key", "id"},
@@ -323,9 +324,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingMapRestoreInitializesNex
         ReadDataFileSchema(table_path, OnlyNewFile(second_commit_msgs), options);
     auto second_meta = ShreddingMeta(second_file_schema, /*field_index=*/1);
 
-    ASSERT_OK_AND_ASSIGN(
-        auto expected_second_schema,
-        MapSharedShreddingUtils::LogicalToPhysicalSchema(logical_schema, {{"tags", 2}}));
+    auto expected_second_schema =
+        MapSharedShreddingUtils::LogicalToPhysicalSchema(logical_schema, {{"tags", 2}});
     ASSERT_TRUE(second_file_schema->Equals(*expected_second_schema, /*check_metadata=*/false));
     ASSERT_EQ(2, second_meta.num_columns);
     ASSERT_EQ(3, second_meta.max_row_width);
@@ -347,6 +347,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingRestoreIgnoresAvroFileWi
     shredding_options["file.format"] = "parquet";
     shredding_options["fields.tags.map.storage-layout"] = "shared-shredding";
     shredding_options["fields.tags.map.shared-shredding.max-columns"] = "10";
+    shredding_options["fields.tags.map.shared-shredding.column-placement-policy"] = "plain";
 
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -367,8 +368,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingRestoreIgnoresAvroFileWi
         ReadDataFileSchema(table_path, OnlyNewFile(second_commit_msgs), shredding_options);
     auto second_meta = ShreddingMeta(second_file_schema, /*field_index=*/1);
 
-    ASSERT_OK_AND_ASSIGN(auto expected_schema, MapSharedShreddingUtils::LogicalToPhysicalSchema(
-                                                   logical_schema, {{"tags", 10}}));
+    auto expected_schema =
+        MapSharedShreddingUtils::LogicalToPhysicalSchema(logical_schema, {{"tags", 10}});
     ASSERT_TRUE(second_file_schema->Equals(*expected_schema, /*check_metadata=*/false));
     ASSERT_EQ(10, second_meta.num_columns);
     ASSERT_EQ(3, second_meta.max_row_width);
@@ -379,8 +380,10 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingRestoreMultipleMapColumn
         {"file.format", "parquet"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "10"},
+        {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
         {"fields.attrs.map.storage-layout", "shared-shredding"},
         {"fields.attrs.map.shared-shredding.max-columns", "10"},
+        {"fields.attrs.map.shared-shredding.column-placement-policy", "plain"},
         {"write-only", "true"},
         {"bucket", "1"},
         {"bucket-key", "id"},
@@ -426,8 +429,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingRestoreMultipleMapColumn
     auto tags_meta = ShreddingMeta(full_file_schema, /*field_index=*/1);
     auto attrs_meta = ShreddingMeta(full_file_schema, /*field_index=*/2);
 
-    ASSERT_OK_AND_ASSIGN(auto expected_schema, MapSharedShreddingUtils::LogicalToPhysicalSchema(
-                                                   logical_schema, {{"tags", 2}, {"attrs", 4}}));
+    auto expected_schema = MapSharedShreddingUtils::LogicalToPhysicalSchema(
+        logical_schema, {{"tags", 2}, {"attrs", 4}});
     ASSERT_TRUE(full_file_schema->Equals(*expected_schema, /*check_metadata=*/false));
     ASSERT_EQ(2, tags_meta.num_columns);
     ASSERT_EQ(3, tags_meta.max_row_width);
@@ -440,8 +443,10 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingRestoreUsesDefaultForMis
         {"file.format", "parquet"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "10"},
+        {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
         {"fields.attrs.map.storage-layout", "shared-shredding"},
         {"fields.attrs.map.shared-shredding.max-columns", "10"},
+        {"fields.attrs.map.shared-shredding.column-placement-policy", "plain"},
         {"write-only", "true"},
         {"bucket", "1"},
         {"bucket-key", "id"},
@@ -476,8 +481,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingRestoreUsesDefaultForMis
     auto tags_meta = ShreddingMeta(full_file_schema, /*field_index=*/1);
     auto attrs_meta = ShreddingMeta(full_file_schema, /*field_index=*/2);
 
-    ASSERT_OK_AND_ASSIGN(auto expected_schema, MapSharedShreddingUtils::LogicalToPhysicalSchema(
-                                                   logical_schema, {{"tags", 2}, {"attrs", 10}}));
+    auto expected_schema = MapSharedShreddingUtils::LogicalToPhysicalSchema(
+        logical_schema, {{"tags", 2}, {"attrs", 10}});
     ASSERT_TRUE(full_file_schema->Equals(*expected_schema, /*check_metadata=*/false));
     ASSERT_EQ(2, tags_meta.num_columns);
     ASSERT_EQ(3, tags_meta.max_row_width);
@@ -490,6 +495,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingPartialWriteSkipsMissing
         {"file.format", "parquet"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "10"},
+        {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
         {"write-only", "true"},
         {"bucket", "1"},
         {"bucket-key", "id"},
