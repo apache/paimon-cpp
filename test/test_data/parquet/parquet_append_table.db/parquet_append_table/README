@@ -1,0 +1,19 @@
+f1:bool f2:int8 f3:int16 f4:int32 f5:int64 f6:float f7:double f8:string f9:binary f10:map<array<float>, struct<f0:bool, f1:int64>> f11:timestamp(9) f12:date f13:decimal(2,2)  (all can be null)
+primary key: null
+partition key: null
+bucket key: f5
+bucket count: 1
+
+Msgs:
+snapshot-1
+Add: true, (byte)31, null, 300001, 3000000001L, 3.1F, 300.000000001, "s31", "a31", { {5.11F, 5.21F}: {true, 61L} }, 71000, 81, "0.91"
+Add: false, (byte)32, (short)302, 300002, 3000000002L, 3.2F, 300.000000002, "s32", "a32", { {5.12F, 5.22F}: {false, 62L} }, 72000, 82, "0.92"
+Add: true, (byte)33, (short)303, 300003, 3000000003L, 3.3F, 300.000000003, "s33", "a33", null, 73000, 83, "0.93"
+Add: false, (byte)34, (short)304, 300004, 3000000004L, 3.4F, 300.000000004, "s34", "a34", { {5.141F, 5.241F}: {false, 641L}, {5.14F, 5.24F}: {false, 64L} }, 74000, 84, "0.94"
+Add: true, (byte)35, (short)305, 300005, 3000000005L, 3.5F, 300.000000005, "s35", "a35", { {5.15F, 5.25F}: {true, 65L} }, 75000, 85, "0.95"
+Add: false, (byte)36, (short)306, 300006, 3000000006L, 3.6F, 300.000000006, "s36", "a36", { {5.16F, 5.26F}: null }, 76000, 86, "0.96"
+
+snapshot-2
+Add: true, (byte)37, (short)307, 300007, 3000000007L, 3.7F, 300.000000007, "s37", "a37", { {5.17F, 5.27F, 5.37F}: {true, 67L} }, 77000, 87, "0.97"
+Add: false, (byte)38, (short)308, 300008, 3000000008L, 3.8F, 300.000000008, "s38", "a38", { {5.18F, 5.28F}: {false, 68L} }, 78000, 88, "0.98"
+Add: true, (byte)39, (short)309, 300009, 3000000009L, 3.9F, 300.000000009, "s39", "a39", { {5.19F, 5.29F}: {true, 69L} }, 79000, 89, "0.99"

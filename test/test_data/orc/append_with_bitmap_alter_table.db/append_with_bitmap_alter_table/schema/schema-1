@@ -1,0 +1,33 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 1,
+    "name" : "f1",
+    "type" : "BIGINT"
+  }, {
+    "id" : 0,
+    "name" : "f4",
+    "type" : "STRING"
+  }, {
+    "id" : 3,
+    "name" : "f3",
+    "type" : "DOUBLE"
+  }, {
+    "id" : 4,
+    "name" : "f5",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 4,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "file-index.bitmap.columns" : "f1,f4,f5",
+    "manifest.format" : "orc",
+    "file-index.read.enabled" : "true",
+    "file.format" : "orc",
+    "file-index.bitmap.version" : "1"
+  },
+  "timeMillis" : 1745224359524
+}

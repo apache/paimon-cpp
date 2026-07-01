@@ -1,0 +1,26 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "dt",
+    "type" : "STRING NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "name",
+    "type" : "STRING NOT NULL"
+  }, {
+    "id" : 2,
+    "name" : "amount",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 2,
+  "partitionKeys" : [ "dt" ],
+  "primaryKeys" : [ "dt", "name" ],
+  "options" : {
+    "bucket" : "2",
+    "manifest.format" : "avro",
+    "file.format" : "parquet"
+  },
+  "timeMillis" : 1755857118622
+}

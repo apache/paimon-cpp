@@ -1,0 +1,19 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "schemaId" : 0,
+  "baseManifestList" : "manifest-list-0ef45e5c-7b8b-42f6-b3a1-6d16bc9f522a-0",
+  "baseManifestListSize" : 370,
+  "deltaManifestList" : "manifest-list-0ef45e5c-7b8b-42f6-b3a1-6d16bc9f522a-1",
+  "deltaManifestListSize" : 1449,
+  "changelogManifestList" : null,
+  "commitUser" : "09fd1f68-f1e7-4142-966d-0f62c198be51",
+  "commitIdentifier" : 1,
+  "commitKind" : "APPEND",
+  "timeMillis" : 1757324943061,
+  "logOffsets" : { },
+  "totalRecordCount" : 9,
+  "deltaRecordCount" : 9,
+  "changelogRecordCount" : 0,
+  "nextRowId" : 0
+}

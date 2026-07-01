@@ -1,0 +1,16 @@
+{
+  "version" : 3,
+  "id" : 2,
+  "schemaId" : 0,
+  "baseManifestList" : "manifest-list-4c2cfcea-d186-4a21-8afd-2bd17c1dfb01-2",
+  "deltaManifestList" : "manifest-list-4c2cfcea-d186-4a21-8afd-2bd17c1dfb01-3",
+  "changelogManifestList" : null,
+  "commitUser" : "afeed664-2c58-41e5-bf19-4198177928a8",
+  "commitIdentifier" : 1,
+  "commitKind" : "COMPACT",
+  "timeMillis" : 1725534147412,
+  "logOffsets" : { },
+  "totalRecordCount" : 9,
+  "deltaRecordCount" : 0,
+  "changelogRecordCount" : 0
+}

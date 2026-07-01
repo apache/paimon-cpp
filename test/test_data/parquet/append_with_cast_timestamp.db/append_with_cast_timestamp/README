@@ -1,0 +1,40 @@
+schema
+"ts_sec"      TIMESTAMP(0)
+"ts_milli"    TIMESTAMP(3)
+"ts_micro"    TIMESTAMP(6)
+"ts_nano"     TIMESTAMP(9)
+"ts_tz_sec"   TIMESTAMP_WITH_LOCAL_TIME_ZONE(0)
+"ts_tz_milli" TIMESTAMP_WITH_LOCAL_TIME_ZONE(3)
+"ts_tz_micro" TIMESTAMP_WITH_LOCAL_TIME_ZONE(6)
+"ts_tz_nano"  TIMESTAMP_WITH_LOCAL_TIME_ZONE(9)
+"int_ts_sec"  INT
+"int_ts_tz_micro" INT
+
+options
+"manifest.format": "avro"
+"file.format": "parquet"
+"bucket": "-1"
+
+Msgs:
+snapshot-1
+Add Timestamp(1000l,0), Timestamp(1l,0), Timestamp(0l,1000), Timestamp(0l,1), Timestamp(2000l,0), Timestamp(2l,0), Timestamp(0l,2000), Timestamp(0l,2)
+
+Add Timestamp(3000l,0), Timestamp(3l,0), null, Timestamp(0l,3), Timestamp(4000l,0), Timestamp(4l,0), Timestamp(0l,4000), Timestamp(0l,4)
+
+Add Timestamp(5000l,0), Timestamp(5l,0), null, null, Timestamp(6000l,0), null, Timestamp(0l,6000), null
+
+1970-01-01T00:00:01,1970-01-01T00:00:00.001,1970-01-01T00:00:00.000001,1970-01-01T00:00:00.000000001,1970-01-01T00:00:02,1970-01-01T00:00:00.002,1970-01-01T00:00:00.000002,1970-01-01T00:00:00.000000002
+1970-01-01T00:00:03,1970-01-01T00:00:00.003,null,1970-01-01T00:00:00.000000003,1970-01-01T00:00:04,1970-01-01T00:00:00.004,1970-01-01T00:00:00.000004,1970-01-01T00:00:00.000000004
+1970-01-01T00:00:05,1970-01-01T00:00:00.005,null,null,1970-01-01T00:00:06,null,1970-01-01T00:00:00.000006,null
+
+Alter Table
+"ts_sec"      INT
+"ts_milli"    DATE
+"ts_micro"    STRING
+"ts_nano"     TIMESTAMP_WITH_LOCAL_TIME_ZONE(9)
+"ts_tz_sec"   INT
+"ts_tz_milli" DATE
+"ts_tz_micro" STRING
+"ts_tz_nano"  TIMESTAMP(9)
+"int_ts_sec"  TIMESTAMP(0)
+"int_ts_tz_micro" TIMESTAMP_WITH_LOCAL_TIME_ZONE(6)

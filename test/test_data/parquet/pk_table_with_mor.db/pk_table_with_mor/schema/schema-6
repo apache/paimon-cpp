@@ -1,0 +1,51 @@
+{
+  "version" : 3,
+  "id" : 6,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "k1",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "k0",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 2,
+    "name" : "p0",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 3,
+    "name" : "p1",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 4,
+    "name" : "s1",
+    "type" : "STRING"
+  }, {
+    "id" : 5,
+    "name" : "s0",
+    "type" : "BYTES"
+  }, {
+    "id" : 6,
+    "name" : "v0",
+    "type" : "INT"
+  }, {
+    "id" : 7,
+    "name" : "v1",
+    "type" : "STRING"
+  }, {
+    "id" : 8,
+    "name" : "v2",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 8,
+  "partitionKeys" : [ "p0", "p1" ],
+  "primaryKeys" : [ "k1", "k0", "p0", "p1" ],
+  "options" : {
+    "bucket" : "1",
+    "manifest.format" : "avro",
+    "file.format" : "parquet",
+    "sequence.field" : "s1,s0"
+  },
+  "timeMillis" : 1762829518410
+}

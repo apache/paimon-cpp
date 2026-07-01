@@ -1,0 +1,14 @@
+f0:string f1:int f2:int f3:double (all can be null)
+f0 is partition key
+bucket count: -1
+partition.default-name: __HIVE_DEFAULT_PARTITION__
+
+Msgs:
+snapshot-1
+Add: "2025", 500, -1, 15.1
+Add: "2024", 100, -2, 11.1
+Add: "2024", 300, 1, 13.1
+Add: null, 200, -3, 12.1
+Add: null, 50, 1, 14.1
+Add: null, 100, 2, 16.1
+NoCompact

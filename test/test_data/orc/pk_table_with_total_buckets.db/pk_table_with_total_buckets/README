@@ -1,0 +1,21 @@
+f0:string f1:int f2:int f3:double
+partition key: f1
+primary key: f0 f1 f2
+bucket key: f2
+bucket count: 2
+
+Msgs:
+snapshot-1
+Add: "Alice", 10, 1, 11.1
+Add: "Bob", 10, 0, 12.1
+Add: "Emily", 10, 0, 13.1
+Add: "Tony", 10, 0, 14.1
+Add: "Alex", 10, 0, 16.1
+NoCompact
+
+data_split-01
+with snapshot-1, partition-10, bucket-0
+
+commit_message-01
+with partition-10, bucket-0
+with partition-10, bucket-1

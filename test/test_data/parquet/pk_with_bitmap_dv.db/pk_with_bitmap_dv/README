@@ -1,0 +1,24 @@
+key:int f0:string f1:int f2:int f3:double (all can be null)
+no partition key
+no bucket key
+bucket count: 1
+primary key: key
+bitmap index: f0, f1, f2
+file-index.in-manifest-threshold : 1B
+
+Msgs:
+snapshot-1, snapshot-2
+Add: 0, Alice, 10, 1, 11.1
+Add: 1, Bob, 10, 1, 12.1
+Add: 2, Emily, 10, 0, 13.1
+Add: 3, Tony, 10, 0, 14.1
+Add: 4, Lucy, 20, 1, 15.1
+Add: 5, Bob, 10, 1, 16.1
+Add: 6, Tony, 20, 0, 17.1
+Add: 7, Alice, 20, null, 18.1
+
+
+Msgs:
+snapshot-3, snapshot-4
+Delete: 0, Alice, 10, 1, 11.1
+Delete: 4, Lucy, 20, 1, 15.1

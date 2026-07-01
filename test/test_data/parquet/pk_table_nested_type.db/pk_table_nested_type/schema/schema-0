@@ -1,0 +1,61 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "shopId",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "dt",
+    "type" : "STRING NOT NULL"
+  }, {
+    "id" : 2,
+    "name" : "hr",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 3,
+    "name" : "col0",
+    "type" : "INT"
+  }, {
+    "id" : 4,
+    "name" : "col1",
+    "type" : {
+      "type" : "ROW",
+      "fields" : [ {
+        "id" : 5,
+        "name" : "f0",
+        "type" : "STRING"
+      }, {
+        "id" : 6,
+        "name" : "f1",
+        "type" : "INT"
+      }, {
+        "id" : 7,
+        "name" : "f2",
+        "type" : {
+          "type" : "ARRAY",
+          "element" : "INT"
+        }
+      } ]
+    }
+  }, {
+    "id" : 8,
+    "name" : "col2",
+    "type" : {
+      "type" : "MAP",
+      "key" : "INT NOT NULL",
+      "value" : "INT"
+    }
+  } ],
+  "highestFieldId" : 8,
+  "partitionKeys" : [ "dt", "hr" ],
+  "primaryKeys" : [ "shopId", "dt", "hr" ],
+  "options" : {
+    "bucket" : "2",
+    "bucket-key" : "shopId",
+    "manifest.format" : "orc",
+    "file.format" : "parquet"
+  },
+  "timeMillis" : 1755848431346
+}

@@ -1,0 +1,26 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "pt",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "value",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "value2",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 2,
+  "partitionKeys" : [ "pt" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "manifest.format" : "avro",
+    "file.format" : "orc"
+  },
+  "timeMillis" : 1763018637364
+}

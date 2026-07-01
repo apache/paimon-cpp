@@ -1,0 +1,35 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f0",
+    "type" : "STRING"
+  }, {
+    "id" : 1,
+    "name" : "f1",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "f2",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "f3",
+    "type" : "DOUBLE"
+  } ],
+  "highestFieldId" : 3,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "file-index.bitmap.f0.version" : "1",
+    "file-index.bitmap.columns" : "f0,f1,f2",
+    "file-index.bitmap.f2.version" : "1",
+    "manifest.format" : "avro",
+    "file-index.read.enabled" : "true",
+    "file.format" : "parquet",
+    "file-index.bitmap.f1.version" : "1"
+  },
+  "timeMillis" : 1755857034259
+}

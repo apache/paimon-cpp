@@ -1,0 +1,36 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "k0",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "k1",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 2,
+    "name" : "v0",
+    "type" : "DOUBLE"
+  }, {
+    "id" : 3,
+    "name" : "v1",
+    "type" : "BOOLEAN"
+  }, {
+    "id" : 4,
+    "name" : "v2",
+    "type" : "STRING"
+  } ],
+  "highestFieldId" : 4,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ "k0", "k1" ],
+  "options" : {
+    "bucket" : "1",
+    "manifest.format" : "orc",
+    "file.format" : "orc",
+    "merge-engine" : "partial-update",
+    "ignore-delete" : "true"
+  },
+  "timeMillis" : 1736764258069
+}

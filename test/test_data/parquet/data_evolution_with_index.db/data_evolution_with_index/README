@@ -1,0 +1,30 @@
+f0:string f1:int f2:int f3:double (all can be null)
+bucket count: -1
+row-tracking.enabled: true
+data-evolution.enabled: true
+file-index.bitmap.columns: f2
+file-index.read.enabled: true
+
+Msgs:
+snapshot-1
+write field: "f2", "f0", "f1"
+Add: 12, "Lily", 2
+Add: 14, "Alice", 4
+Add: 16, "Bob", 6
+Add: 18, "David", 8
+NoCompact
+
+snapshot-2
+set first row id = 0
+write field: "f2", "f3"
+Add: 102, 2.1
+Add: 104, 3.1
+Add: 106, 4.1
+Add: 108, 5.1
+NoCompact
+
+snapshot-3
+write field: "f2", "f3"
+Add: 202, 6.1
+Add: 204, 7.1
+NoCompact

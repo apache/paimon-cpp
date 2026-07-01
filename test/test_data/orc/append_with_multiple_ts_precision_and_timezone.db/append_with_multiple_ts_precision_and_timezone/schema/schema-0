@@ -1,0 +1,47 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "ts_sec",
+    "type" : "TIMESTAMP(0)"
+  }, {
+    "id" : 1,
+    "name" : "ts_milli",
+    "type" : "TIMESTAMP(3)"
+  }, {
+    "id" : 2,
+    "name" : "ts_micro",
+    "type" : "TIMESTAMP(6)"
+  }, {
+    "id" : 3,
+    "name" : "ts_nano",
+    "type" : "TIMESTAMP(9)"
+  }, {
+    "id" : 4,
+    "name" : "ts_tz_sec",
+    "type" : "TIMESTAMP(0) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 5,
+    "name" : "ts_tz_milli",
+    "type" : "TIMESTAMP(3) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 6,
+    "name" : "ts_tz_micro",
+    "type" : "TIMESTAMP(6) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 7,
+    "name" : "ts_tz_nano",
+    "type" : "TIMESTAMP(9) WITH LOCAL TIME ZONE"
+  } ],
+  "highestFieldId" : 7,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "manifest.format" : "orc",
+    "file.format" : "orc",
+    "orc.timestamp-ltz.legacy.type" : "false"
+  },
+  "timeMillis" : 1757927622210
+}

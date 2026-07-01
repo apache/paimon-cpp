@@ -1,0 +1,18 @@
+f0:string f1:int f2:int f3:double (all can be null)
+bucket count: -1
+row-tracking.enabled: true
+data-evolution.enabled: false
+
+Msgs:
+snapshot-1
+Add: "Lily", 2, 12, 2.1
+Add: "Alice", 3, 13, 3.1
+NoCompact
+
+snapshot-2
+Add: "Bob", 4, 14, 4.1
+Add: "David", 5, 15, 5.1
+NoCompact
+
+snapshot-3-4
+Compact

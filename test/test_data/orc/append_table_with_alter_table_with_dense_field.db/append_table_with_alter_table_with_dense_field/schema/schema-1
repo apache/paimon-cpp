@@ -1,0 +1,35 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "key0",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "f2",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "f1",
+    "type" : "INT"
+  }, {
+    "id" : 4,
+    "name" : "f3",
+    "type" : "DOUBLE"
+  }, {
+    "id" : 5,
+    "name" : "f4",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 5,
+  "partitionKeys" : [ "key0" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "manifest.format" : "orc",
+    "file.format" : "orc",
+    "metadata.stats-dense-store" : "true",
+    "fields.f3.stats-mode" : "none"
+  },
+  "timeMillis" : 1751619696767
+}

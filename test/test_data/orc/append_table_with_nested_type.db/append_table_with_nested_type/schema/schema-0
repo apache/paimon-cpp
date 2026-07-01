@@ -1,0 +1,124 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f0",
+    "type" : {
+      "type" : "ROW",
+      "fields" : [ {
+        "id" : 1,
+        "name" : "sub1",
+        "type" : "DATE"
+      }, {
+        "id" : 2,
+        "name" : "sub2",
+        "type" : "TIMESTAMP(9)"
+      }, {
+        "id" : 3,
+        "name" : "sub3",
+        "type" : "DECIMAL(23, 5)"
+      }, {
+        "id" : 4,
+        "name" : "sub4",
+        "type" : "BYTES"
+      }, {
+        "id" : 5,
+        "name" : "sub5",
+        "type" : "BYTES"
+      } ]
+    }
+  }, {
+    "id" : 6,
+    "name" : "f1",
+    "type" : {
+      "type" : "ARRAY",
+      "element" : {
+        "type" : "ROW",
+        "fields" : [ {
+          "id" : 7,
+          "name" : "sub1",
+          "type" : "DATE"
+        }, {
+          "id" : 8,
+          "name" : "sub2",
+          "type" : "TIMESTAMP(9)"
+        }, {
+          "id" : 9,
+          "name" : "sub3",
+          "type" : "DECIMAL(23, 5)"
+        }, {
+          "id" : 10,
+          "name" : "sub4",
+          "type" : "BYTES"
+        }, {
+          "id" : 11,
+          "name" : "sub5",
+          "type" : "BYTES"
+        } ]
+      }
+    }
+  }, {
+    "id" : 12,
+    "name" : "f2",
+    "type" : {
+      "type" : "MAP",
+      "key" : {
+        "type" : "ROW NOT NULL",
+        "fields" : [ {
+          "id" : 13,
+          "name" : "sub1",
+          "type" : "DATE"
+        }, {
+          "id" : 14,
+          "name" : "sub2",
+          "type" : "TIMESTAMP(9)"
+        }, {
+          "id" : 15,
+          "name" : "sub3",
+          "type" : "DECIMAL(23, 5)"
+        }, {
+          "id" : 16,
+          "name" : "sub4",
+          "type" : "BYTES"
+        }, {
+          "id" : 17,
+          "name" : "sub5",
+          "type" : "BYTES"
+        } ]
+      },
+      "value" : {
+        "type" : "ROW",
+        "fields" : [ {
+          "id" : 18,
+          "name" : "sub1",
+          "type" : "DATE"
+        }, {
+          "id" : 19,
+          "name" : "sub2",
+          "type" : "TIMESTAMP(9)"
+        }, {
+          "id" : 20,
+          "name" : "sub3",
+          "type" : "DECIMAL(23, 5)"
+        }, {
+          "id" : 21,
+          "name" : "sub4",
+          "type" : "BYTES"
+        }, {
+          "id" : 22,
+          "name" : "sub5",
+          "type" : "BYTES"
+        } ]
+      }
+    }
+  } ],
+  "highestFieldId" : 22,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "manifest.format" : "orc",
+    "file.format" : "orc"
+  },
+  "timeMillis" : 1729759141146
+}

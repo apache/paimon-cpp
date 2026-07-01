@@ -1,0 +1,38 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "ts_sec",
+    "type" : "TIMESTAMP(0)"
+  }, {
+    "id" : 1,
+    "name" : "ts_milli",
+    "type" : "TIMESTAMP(3)"
+  }, {
+    "id" : 2,
+    "name" : "ts_micro",
+    "type" : "TIMESTAMP(6)"
+  }, {
+    "id" : 3,
+    "name" : "ts_tz_sec",
+    "type" : "TIMESTAMP(0) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 4,
+    "name" : "ts_tz_milli",
+    "type" : "TIMESTAMP(3) WITH LOCAL TIME ZONE"
+  }, {
+    "id" : 5,
+    "name" : "ts_tz_micro",
+    "type" : "TIMESTAMP(6) WITH LOCAL TIME ZONE"
+  } ],
+  "highestFieldId" : 5,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "manifest.format" : "avro",
+    "file.format" : "avro"
+  },
+  "timeMillis" : 1758092512821
+}

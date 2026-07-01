@@ -1,0 +1,38 @@
+f0:string f1:int f2:int f3:double
+partition key: f1
+bucket key: f2
+bucket count: 2
+
+Msgs:
+snapshot-1
+Add: "Alice", 10, 1, 11.1
+Add: "Bob", 10, 0, 12.1
+Add: "Emily", 10, 0, 13.1
+Add: "Tony", 10, 0, 14.1
+Add: "Alex", 10, 0, 16.1
+NoCompact
+
+data_split-01
+with snapshot-1, partition-10, bucket-0
+
+commit_message-01
+with partition-10, bucket-0
+with partition-10, bucket-1
+
+
+/////////////////////////////////
+f0:string f1:int f2:int f3:double
+bucket count: -1
+row-tracking.enabled: true
+
+Msgs:
+snapshot-1
+Add: "Alice", 110, 1, 11.1
+Add: "Bob", 110, 0, 12.1
+Add: "Emily", 110, 0, 13.1
+Add: "Tony", 110, 0, 14.1
+Add: "Alex", 110, 0, 16.1
+NoCompact
+
+data_split-02
+with snapshot-1

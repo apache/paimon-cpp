@@ -1,0 +1,33 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f0",
+    "type" : "BLOB"
+  }, {
+    "id" : 1,
+    "name" : "f1",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "f2",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "f3",
+    "type" : "DOUBLE"
+  } ],
+  "highestFieldId" : 3,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "row-tracking.enabled" : "true",
+    "fields.f3.stats-mode" : "none",
+    "data-evolution.enabled" : "true",
+    "manifest.format" : "orc",
+    "file.format" : "parquet",
+    "metadata.stats-dense-store" : "true"
+  },
+  "timeMillis" : 1762164929198
+}

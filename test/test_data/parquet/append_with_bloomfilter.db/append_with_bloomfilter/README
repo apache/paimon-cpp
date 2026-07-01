@@ -1,0 +1,18 @@
+f0:string f1:int f2:int f3:double f4:timestamp(9) (all can be null)
+no partition key
+no bucket key
+bucket count: -1
+bloomfilter index: f0, f1, f2, f3, f4
+file-index.in-manifest-threshold : 1B
+
+Msgs:
+snapshot-1
+Add: Alice, 100, -2, 11.1, 1745542802000123000
+Add: Bob, 200, -3, 12.1, 1745542902000123000
+Add: Emily, 300, 1, 13.1, 1745542602000123000
+Add: Tony, 50, 1, 14.1, -1744877000
+Add: Lucy, 500, -1, 15.1, -1764877000
+Add: Bob, 100, 2, 16.1, null
+Add: Tony, null, -2, 17.1, 1745542802000123001
+Add: Alice, 20, null, 18.1, -1724877000
+NoCompact

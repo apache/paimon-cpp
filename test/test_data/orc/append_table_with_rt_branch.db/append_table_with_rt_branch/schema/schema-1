@@ -1,0 +1,26 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "dt",
+    "type" : "STRING"
+  }, {
+    "id" : 1,
+    "name" : "name",
+    "type" : "STRING"
+  }, {
+    "id" : 2,
+    "name" : "amount",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 2,
+  "partitionKeys" : [ "dt" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "manifest.format" : "orc",
+    "file.format" : "orc",
+    "scan.fallback-branch" : "rt"
+  },
+  "timeMillis" : 1744885904624
+}

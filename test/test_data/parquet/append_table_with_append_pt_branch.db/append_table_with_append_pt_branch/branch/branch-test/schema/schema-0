@@ -1,0 +1,22 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "pt",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "value",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 1,
+  "partitionKeys" : [ "pt" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "manifest.format" : "avro",
+    "file.format" : "parquet"
+  },
+  "timeMillis" : 1755851960893
+}

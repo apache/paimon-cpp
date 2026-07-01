@@ -1,0 +1,41 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "key0",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "key1",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "a",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "b",
+    "type" : "INT"
+  }, {
+    "id" : 4,
+    "name" : "c",
+    "type" : "INT"
+  }, {
+    "id" : 5,
+    "name" : "d",
+    "type" : "INT"
+  }, {
+    "id" : 6,
+    "name" : "k",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 6,
+  "partitionKeys" : [ "key0", "key1" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "manifest.format" : "orc",
+    "file.format" : "orc"
+  },
+  "timeMillis" : 1730430023755
+}

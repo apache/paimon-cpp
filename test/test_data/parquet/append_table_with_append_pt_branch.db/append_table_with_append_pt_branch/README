@@ -1,0 +1,26 @@
+1.create append main table
+pt:int | value:int
+partition key: pt
+
+2. main table write
+Add: 1, 110
+
+3. main table create branch test
+
+4. main table alter table: "scan.fallback-branch", "test"
+
+5. test branch write
+Add: 2, 210
+
+6. main table alter table: add value2 field : int
+
+7. test branch alter table: add value2 field : int
+
+8. main table write
+Add: 1, 120, 1200
+
+9. test branch write
+Add: 2, 220, 2200
+
+data-split-0-1: main branch fallback batch scan
+data-split-pt-0: pt branch batch scan

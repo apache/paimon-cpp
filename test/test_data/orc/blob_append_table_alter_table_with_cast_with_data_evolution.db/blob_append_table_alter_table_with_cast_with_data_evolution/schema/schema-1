@@ -1,0 +1,52 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 6,
+    "name" : "f4",
+    "type" : "TIMESTAMP(9)"
+  }, {
+    "id" : 0,
+    "name" : "key0",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "key1",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "f3",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "f1",
+    "type" : "STRING"
+  }, {
+    "id" : 4,
+    "name" : "f2",
+    "type" : "DECIMAL(6, 3)"
+  }, {
+    "id" : 8,
+    "name" : "f5",
+    "type" : "BLOB NOT NULL"
+  }, {
+    "id" : 5,
+    "name" : "f0",
+    "type" : "BOOLEAN"
+  }, {
+    "id" : 9,
+    "name" : "f6",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 9,
+  "partitionKeys" : [ "key0", "key1" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "data-evolution.enabled" : "true",
+    "manifest.format" : "avro",
+    "blob.target-file-size" : "50",
+    "file.format" : "orc",
+    "row-tracking.enabled" : "true"
+  },
+  "timeMillis" : 1762240063751
+}

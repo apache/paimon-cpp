@@ -1,0 +1,47 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "k0",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "tmp",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 2,
+    "name" : "p0",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 3,
+    "name" : "p1",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 4,
+    "name" : "s0",
+    "type" : "STRING"
+  }, {
+    "id" : 5,
+    "name" : "s1",
+    "type" : "STRING"
+  }, {
+    "id" : 6,
+    "name" : "v0",
+    "type" : "DOUBLE"
+  }, {
+    "id" : 7,
+    "name" : "v1",
+    "type" : "BOOLEAN"
+  } ],
+  "highestFieldId" : 7,
+  "partitionKeys" : [ "p0", "p1" ],
+  "primaryKeys" : [ "k0", "tmp", "p0", "p1" ],
+  "options" : {
+    "bucket" : "1",
+    "manifest.format" : "orc",
+    "file.format" : "orc",
+    "sequence.field" : "s0,s1"
+  },
+  "timeMillis" : 1735207491195
+}

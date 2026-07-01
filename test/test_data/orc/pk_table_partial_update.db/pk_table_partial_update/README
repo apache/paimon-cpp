@@ -1,0 +1,33 @@
+no partition keys
+primaryKey("k0", "k1")
+column(0, "k0", INT())
+column(1, "k1", INT())
+column(2, "v0", DOUBLE())
+column(3, "v1", BOOLEAN())
+column(4, "v2", STRING())
+
+bucket count: 1
+bucket key: default
+
+merge-engine: partial-update
+write with ignore-delete: false
+read with ignore-delete: true
+
+Msgs:
+snapshot-1
+Add(0, 1, null, false, BinaryString.fromString("apple"))
+Add(1, 0, 2.0, false, null)
+Add(1, 1, null, true, BinaryString.fromString("banana"))
+
+snapshot-2
+Add(0, 1, 100.0, true, BinaryString.fromString("new_apple"));
+Delete(1, 0, 122.0, false, null);
+Add(1, 1, 133.3, false, null);
+Add(2, 1, 144.4, true, BinaryString.fromString("orange"));
+Delete(2, 2, 122.0, false, null);
+
+Recall with snapshot2, result:
+0, 1, 100.0, true, new_apple
+1, 0, 2.0, false, null
+1, 1, 133.3, false, banana
+2, 1, 144.4, true, orange

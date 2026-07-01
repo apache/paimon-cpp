@@ -1,0 +1,20 @@
+f0:string f1:int f2:int f3:double (all can be null)
+no partition key
+no bucket key
+bucket count: -1
+
+Msgs:
+snapshot-1
+Add: Alice, 10, 1, 11.1
+Add: Bob, 10, 0, 12.1
+Add: Emily, 10, 0, 13.1
+Add: Tony, 10, 0, 14.1
+Add: Lucy, 20, 1, 14.1
+NoCompact
+
+
+data_split-01
+with snapshot-1
+
+data_split-02
+with fake external path

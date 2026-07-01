@@ -1,0 +1,20 @@
+f0:blob f1:int f2:int f3:double (all can be null)
+bucket count: -1
+row-tracking.enabled: true
+data-evolution.enabled: true
+metadata.stats-dense-store: true
+fields.f3.stats-mode: none
+
+Msgs:
+snapshot-1
+write field: "f0", "f1", "f2"
+Add: "Lily", 2, 12
+Add: "Alice", 4, 14
+NoCompact
+
+snapshot-2
+set first row id = 0
+write field: "f2", "f3"
+Add: 102, 2.1
+Add: 104, 3.1
+NoCompact

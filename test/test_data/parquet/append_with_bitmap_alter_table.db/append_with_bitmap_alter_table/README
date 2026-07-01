@@ -1,0 +1,41 @@
+f0:string:0
+f1:int:1
+f2:int:2
+f3:double:3
+(all can be null)
+no partition key
+no bucket key
+bucket count: -1
+bitmap index: f0, f1, f2
+
+Msgs:
+snapshot-1
+Add: Alice, 10, 1, 11.1
+Add: Bob, 10, 1, 12.1
+Add: Emily, 10, 0, 13.1
+Add: Tony, 10, 0, 14.1
+Add: Lucy, 20, 1, 15.1
+Add: Bob, 10, 1, 16.1
+Add: Tony, 20, 0, 17.1
+Add: Alice, 20, null, 18.1
+NoCompact
+
+Alter table
+SchemaChange.updateColumnType("f1", DataTypes.BIGINT()),
+SchemaChange.dropColumn("f2"),
+SchemaChange.renameColumn("f0", "f4"),
+SchemaChange.updateColumnPosition(SchemaChange.Move.first("f1")),
+SchemaChange.addColumn("f5", DataTypes.INT()),
+SchemaChange.setOption("file-index.bitmap.columns", "f1,f4,f5")
+After alter table:
+f1:long:1
+f4:string:0
+f3:double:3
+f5:int:4
+
+snapshot-2
+Add: 30, Alice, 21.1, 100
+Add: 20, Emily, 22.1, 101
+Add: 10, Bob, 23.1, 100
+Add: 30, David, 24.1, null
+NoCompact

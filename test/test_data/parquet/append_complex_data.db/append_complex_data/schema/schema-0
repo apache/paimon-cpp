@@ -1,0 +1,40 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f1",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "f2",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "f3",
+    "type" : "DATE"
+  }, {
+    "id" : 3,
+    "name" : "f4",
+    "type" : "TIMESTAMP(9)"
+  }, {
+    "id" : 4,
+    "name" : "f5",
+    "type" : "DECIMAL(23, 5)"
+  }, {
+    "id" : 5,
+    "name" : "f6",
+    "type" : "BYTES"
+  } ],
+  "highestFieldId" : 5,
+  "partitionKeys" : [ "f1" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "2",
+    "bucket-key" : "f2",
+    "manifest.format" : "avro",
+    "parquet.use-native" : "false",
+    "file.format" : "parquet"
+  },
+  "timeMillis" : 1756113206914
+}

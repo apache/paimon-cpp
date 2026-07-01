@@ -1,0 +1,39 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "key",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "f0",
+    "type" : "STRING"
+  }, {
+    "id" : 2,
+    "name" : "f1",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "f2",
+    "type" : "INT"
+  }, {
+    "id" : 4,
+    "name" : "f3",
+    "type" : "DOUBLE"
+  } ],
+  "highestFieldId" : 4,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ "key" ],
+  "options" : {
+    "bucket" : "1",
+    "file-index.in-manifest-threshold" : "1B",
+    "file-index.bitmap.columns" : "f0,f1,f2",
+    "manifest.format" : "orc",
+    "file-index.read.enabled" : "true",
+    "file.format" : "orc",
+    "deletion-vectors.enabled" : "true",
+    "commit.force-compact" : "true"
+  },
+  "timeMillis" : 1745306548053
+}

@@ -1,0 +1,23 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "pt",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "value",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 1,
+  "partitionKeys" : [ "pt" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "manifest.format" : "avro",
+    "file.format" : "orc",
+    "scan.fallback-branch" : "test"
+  },
+  "timeMillis" : 1763018637299
+}

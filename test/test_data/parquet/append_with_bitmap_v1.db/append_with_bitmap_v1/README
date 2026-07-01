@@ -1,0 +1,18 @@
+f0:string f1:int f2:int f3:double (all can be null)
+no partition key
+no bucket key
+bucket count: -1
+bitmap index: f0, f1, f2
+use v1 version for bitmap index
+
+Msgs:
+snapshot-1
+Add: Alice, 10, 1, 11.1
+Add: Bob, 10, 1, 12.1
+Add: Emily, 10, 0, 13.1
+Add: Tony, 10, 0, 14.1
+Add: Lucy, 20, 1, 15.1
+Add: Bob, 10, 1, 16.1
+Add: Tony, 20, 0, 17.1
+Add: Alice, 20, null, 18.1
+NoCompact

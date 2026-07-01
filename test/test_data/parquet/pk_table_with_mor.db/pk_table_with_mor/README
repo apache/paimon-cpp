@@ -1,0 +1,56 @@
+partitionKeys("p0", "p1")
+primaryKey("k0", "k1", "p0", "p1")
+column(0, "k0", INT())
+column(1, "k1", INT())
+column(2, "p0", INT())
+column(3, "p1", INT())
+column(4, "s0", STRING())
+column(5, "s1", STRING())
+column(6, "v0", DOUBLE())
+column(7, "v1", BOOLEAN())
+
+bucket count: 1
+bucket key: default
+
+Msgs:
+snapshot-1
+Add(0, 0, 0, 0, BinaryString.fromString("apple"),BinaryString.fromString("see"), 10.0, true)
+Add(0, 1, 0, 0, BinaryString.fromString("banana"), BinaryString.fromString("you"), 11.1, false)
+Add(1, 0, 0, 0, BinaryString.fromString("car"), BinaryString.fromString("later"), 12.2, true)
+Add(1, 1, 0, 0, BinaryString.fromString("driver"), BinaryString.fromString("!"), 13.3, false)
+
+Add(0, 0, 1, 0, BinaryString.fromString("elephant"),BinaryString.fromString("hi"), 20.0, true)
+
+Add(0, 1, 0, 1, BinaryString.fromString("mouse"), BinaryString.fromString("you"), 30.0, false)
+
+snapshot-2
+Add(0, 0, 0, 0, BinaryString.fromString("apple"),BinaryString.fromString("see"), 110.0, false)
+Add(0, 1, 0, 0, BinaryString.fromString("abandon"), BinaryString.fromString("new_you"), 111.1, true)
+Add(1, 0, 0, 0, BinaryString.fromString("car"), BinaryString.fromString("again"), 112.2, true)
+Add(1, 2, 0, 0, BinaryString.fromString("driver"), BinaryString.fromString("!"), 13.3, false)
+
+Add(0, 0, 1, 0, BinaryString.fromString("elephant"),BinaryString.fromString("hi"), 120.0, false)
+
+Add(0, 1, 0, 1, BinaryString.fromString("zoo"), BinaryString.fromString("you"), 130.0, false)
+
+snapshot-3
+Add(100, 200, 0, 0, BinaryString.fromString("max"), BinaryString.fromString("number"), 140.4, false)
+
+
+schema evolution
+rename k0<->k1
+add new column v2
+s1 (field_5): string to binary
+rename s1<->s0
+v0: double->int
+v1: bool->string
+
+Recall with schema-4, result:
+0, 0, 0, 0, apple, see, 110, false, null
+0, 1, 0, 0, banana, you, 11, false, null
+1, 0, 0, 0, car, later, 12, true, null
+1, 1, 0, 0, driver, !, 13, false, null
+1, 2, 0, 0, driver, !, 13, false, null
+100, 200, 0, 0, max, number, 140, false, null
+0, 1, 0, 1, zoo, you, 130, false, null
+0, 0, 1, 0, elephant, hi, 120, false, null

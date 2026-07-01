@@ -1,0 +1,58 @@
+schema
+"ts_sec"      TIMESTAMP(0));
+"ts_milli"    TIMESTAMP(3));
+"ts_micro"    TIMESTAMP(6));
+"ts_nano"     TIMESTAMP(9));
+"ts_tz_sec"   TIMESTAMP_WITH_LOCAL_TIME_ZONE(0));
+"ts_tz_milli" TIMESTAMP_WITH_LOCAL_TIME_ZONE(3));
+"ts_tz_micro" TIMESTAMP_WITH_LOCAL_TIME_ZONE(6));
+"ts_tz_nano"  TIMESTAMP_WITH_LOCAL_TIME_ZONE(9));
+
+options
+"manifest.format": "orc"
+"file.format": "parquet"
+"bucket": "-1"
+"file-index.bsi.columns": "ts_sec,ts_milli,ts_micro,ts_nano,ts_tz_sec,ts_tz_milli,ts_tz_micro,ts_tz_nano"
+"file-index.bitmap.columns": "ts_sec,ts_milli,ts_micro,ts_nano,ts_tz_sec,ts_tz_milli,ts_tz_micro,ts_tz_nano"
+"file-index.bloom-filter.columns": "ts_sec,ts_milli,ts_micro,ts_nano,ts_tz_sec,ts_tz_milli,ts_tz_micro,ts_tz_nano"
+"file-index.read.enabled": "true"
+
+
+Msgs:
+snapshot-1
+Timestamp(1745542802000l, 0), Timestamp(1745542802001l, 0),
+Timestamp(1745542802001l, 1000), Timestamp(1745542802001l, 1001),
+Timestamp(1745542802000l, 0), Timestamp(1745542802001l, 0),
+Timestamp(1745542802001l, 1000), Timestamp(1745542802001l, 1001)
+
+Timestamp(1745542902000l, 0), Timestamp(1745542902001l, 0),
+Timestamp(1745542902001l, 1000), Timestamp(1745542902001l, 1001),
+Timestamp(1745542902000l, 0), Timestamp(1745542902001l, 0),
+Timestamp(1745542902001l, 1000), Timestamp(1745542902001l, 1001)
+
+Timestamp(1745542602000l, 0), Timestamp(1745542602001l, 0),
+Timestamp(1745542602001l, 1000), Timestamp(1745542602001l, 1001),
+Timestamp(1745542602000l, 0), Timestamp(1745542602001l, 0),
+Timestamp(1745542602001l, 1000), Timestamp(1745542602001l, 1001)
+
+Timestamp(-1745000l, 0), Timestamp(-1745001l, 0),
+Timestamp(-1745001l, 1000), Timestamp(-1745001l, 1001),
+Timestamp(-1745000l, 0), Timestamp(-1745001l, 0),
+Timestamp(-1745001l, 1000), Timestamp(-1745001l, 1001)
+
+Timestamp(-1765000l, 0), Timestamp(-1765001l, 0),
+Timestamp(-1765001l, 1000), Timestamp(-1765001l, 1001),
+Timestamp(-1765000l, 0), Timestamp(-1765001l, 0),
+Timestamp(-1765001l, 1000), Timestamp(-1765001l, 1001)
+
+null, null, null, null, null, null, null, null
+
+Timestamp(1745542802000l, 0), Timestamp(1745542802001l, 0),
+Timestamp(1745542802001l, 1000), Timestamp(1745542802001l, 1001),
+Timestamp(1745542802000l, 0), Timestamp(1745542802001l, 0),
+Timestamp(1745542802001l, 1000), Timestamp(1745542802001l, 1001)
+
+Timestamp(-1725000l, 0), Timestamp(-1725001l, 0),
+Timestamp(-1725001l, 1000), Timestamp(-1725001l, 1001),
+Timestamp(-1725000l, 0), Timestamp(-1725001l, 0),
+Timestamp(-1725001l, 1000), Timestamp(-1725001l, 1001)

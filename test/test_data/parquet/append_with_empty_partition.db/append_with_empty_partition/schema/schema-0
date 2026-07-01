@@ -1,0 +1,29 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f0",
+    "type" : "STRING"
+  }, {
+    "id" : 1,
+    "name" : "f1",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "f2",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "f3",
+    "type" : "DOUBLE"
+  } ],
+  "highestFieldId" : 3,
+  "partitionKeys" : [ "f0" ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "manifest.format" : "orc",
+    "file.format" : "parquet"
+  },
+  "timeMillis" : 1755833697262
+}

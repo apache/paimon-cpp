@@ -1,0 +1,9 @@
+f1:map<int8, int16> f2:array<float> f3:struct<bool, int64> f4:timestamp(nano) f5:date f6:decimal(2,2)
+bucket count: -1
+
+Msgs:
+snapshot-1
+Add: [[[0, 0]], [0.1, 0.2], [true, 2], "1970-01-01 00:02:03.123123", 2456, "0.22"],
+Add: [[[127, 32767], [-128, -32768]], [1.1, 1.2], [false, 2222], "1970-01-01 00:02:03.123123", 245, "0.12"],
+Add: [[[1, 64], [2, 32]], [2.2, 3.2], [true, 2], "1970-01-01 00:00:00.0", 24, null]
+NoCompact

@@ -1,0 +1,92 @@
+Schema
+key0:INT:0
+key1:INT:1
+f0:STRING:2
+f1:TIMESTAMP(9):3
+f2:DECIMAL(5, 2):4
+f3:STRING:5
+f4:DATE:6
+f5:BIGINT:7
+blob:BLOB NOT NULL:8
+partition key: key0, key1
+bucket count: -1
+
+Msgs:
+write "key0", "key1", "f0", "f1", "f2"
+Add(0, 1, "100", Timestamp(1732603136001l, 1), "0.02")
+Add(0, 1, "110", Timestamp(1732603136011l, 11), "11.12")
+Add(0, 1, "120", Timestamp(1732603136021l, 21), "22.22")
+Add(0, 1, "130", Timestamp(1732603136031l, 31), "333.32")
+Add(0, 1, "140", Timestamp(1732603136041l, 41), "444.42")
+
+write "key0", "key1", "f3", "f4", "f5", "blob"
+Add(0, 1, "True", 4, 5l, "Lily")
+Add(0, 1, "1", -44, 25l, "Alice")
+Add(0, 1, "nO", 444, 35l, "Bob")
+Add(0, 1, "0", -4444, 45l, "Cindy")
+Add(0, 1, "Yes", 44444, 55l, "Dave")
+
+set first row id to 0 (when blob rolling, blob file's first row id need to auto increase)
+commit snapshot-1
+NoCompact
+
+schema evolution
+updateColumnType("f0", INT())
+updateColumnType("f1", STRING())
+updateColumnType("f2", DECIMAL(6, 3))
+updateColumnType("f3", BOOLEAN())
+updateColumnType("f4", TIMESTAMP(9))
+dropColumn("f5")
+renameColumn("f0", "f5")
+renameColumn("f3", "f0")
+renameColumn("f5", "f3")
+updateColumnPosition(SchemaChange.Move.first("f4"))
+addColumn("f6", INT())
+renameColumn("blob", "f5")
+updateColumnPosition(SchemaChange.Move.after("f5", "f2"))
+
+f4:TIMESTAMP(9):6
+key0:INT:0
+key1:INT:1
+f3:INT:2
+f1:STRING:3
+f2:DECIMAL(6, 3):4
+f5:BLOB NOT NULL:8
+f0:BOOLEAN:5
+f6:INT:9
+
+write "f4", "key0", "key1", "f3", "f1"
+Add(Timestamp(1732603136054l, 54), 0, 1, 150, "2024-11-26 15:28:31")
+Add(Timestamp(1732603136064l, 64), 0, 1, 160, "2024-11-26 15:28:41")
+Add(Timestamp(1732603136074l, 74), 0, 1, 170, "2024-11-26 15:28:51")
+Add(Timestamp(1732603136084l, 84), 0, 1, 180, "2024-11-26 15:29:01")
+Add(Timestamp(1732603136094l, 94), 0, 1, 190, "I'm strange")
+
+set first row id to 5
+commit snapshot-2
+NoCompact
+
+write "f4", "key0", "key1", "f2", "f0", "f6", "f5"
+Add(Timestamp(1732603136054l, 154), 0, 1, "55.002", true, 56, "Apple")
+Add(Timestamp(1732603136064l, 164), 0, 1, "666.012", false, 66, "Banana")
+Add(Timestamp(1732603136074l, 174), 0, 1, "-77.022", true, 76, "Cherry")
+Add(Timestamp(1732603136084l, 184), 0, 1, "8.032", true, -86, "Durian")
+Add(Timestamp(1732603136094l, 194), 0, 1, "-999.420", false, 96, "Elderberry")
+
+set first row id to 5 (when blob rolling, blob files first row id need to auto increase)
+commit snapshot-3
+NoCompact
+
+Recall with schema-1, with _ROW_ID and _SEQUENCE_NUMBER, result:
+[f4, key0, key1, f3, f1, f2, f5, f0, f6, _ROW_ID, _SEQUENCE_NUMBER]
+[TIMESTAMP(9), INT, INT, INT, STRING, DECIMAL(6, 3), BLOB NOT NULL, BOOLEAN, INT, BIGINT, BIGINT NOT NULL]
+INSERT: 1970-01-05T00:00, 0, 1, 100, 2024-11-26 06:38:56.001000001, 0.020, Lily, true, NULL, 0, 1
+INSERT: 1969-11-18T00:00, 0, 1, 110, 2024-11-26 06:38:56.011000011, 11.120, Alice, true, NULL, 1, 1
+INSERT: 1971-03-21T00:00, 0, 1, 120, 2024-11-26 06:38:56.021000021, 22.220, Bob, false, NULL, 2, 1
+INSERT: 1957-11-01T00:00, 0, 1, 130, 2024-11-26 06:38:56.031000031, 333.320, Cindy, false, NULL, 3, 1
+INSERT: 2091-09-07T00:00, 0, 1, 140, 2024-11-26 06:38:56.041000041, 444.420, Dave, true, NULL, 4, 1
+INSERT: 2024-11-26T06:38:56.054000154, 0, 1, 150, 2024-11-26 15:28:31, 55.002, Apple, true, 56, 5, 3
+INSERT: 2024-11-26T06:38:56.064000164, 0, 1, 160, 2024-11-26 15:28:41, 666.012, Banana, false, 66, 6, 3
+INSERT: 2024-11-26T06:38:56.074000174, 0, 1, 170, 2024-11-26 15:28:51, -77.022, Cherry, true, 76, 7, 3
+INSERT: 2024-11-26T06:38:56.084000184, 0, 1, 180, 2024-11-26 15:29:01, 8.032, Durian, true, -86, 8, 3
+INSERT: 2024-11-26T06:38:56.094000194, 0, 1, 190, I'm strange, -999.420, Elderberry, false, 96, 9, 3

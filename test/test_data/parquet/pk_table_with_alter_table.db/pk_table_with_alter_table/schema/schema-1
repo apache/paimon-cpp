@@ -1,0 +1,49 @@
+{
+  "version" : 3,
+  "id" : 1,
+  "fields" : [ {
+    "id" : 1,
+    "name" : "key1",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 7,
+    "name" : "k",
+    "type" : "STRING"
+  }, {
+    "id" : 2,
+    "name" : "key_2",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 4,
+    "name" : "c",
+    "type" : "INT"
+  }, {
+    "id" : 8,
+    "name" : "d",
+    "type" : "INT",
+    "description" : ""
+  }, {
+    "id" : 6,
+    "name" : "a",
+    "type" : "INT"
+  }, {
+    "id" : 0,
+    "name" : "key0",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 9,
+    "name" : "e",
+    "type" : "INT"
+  } ],
+  "highestFieldId" : 9,
+  "partitionKeys" : [ "key0", "key1" ],
+  "primaryKeys" : [ "key0", "key1", "key_2" ],
+  "options" : {
+    "bucket" : "1",
+    "manifest.format" : "avro",
+    "file.format" : "parquet",
+    "deletion-vectors.enabled" : "true",
+    "commit.force-compact" : "true"
+  },
+  "timeMillis" : 1756112129414
+}

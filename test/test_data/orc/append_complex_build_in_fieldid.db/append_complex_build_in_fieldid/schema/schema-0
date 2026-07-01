@@ -1,0 +1,55 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f1",
+    "type" : {
+      "type" : "MAP",
+      "key" : "TINYINT NOT NULL",
+      "value" : "SMALLINT"
+    }
+  }, {
+    "id" : 1,
+    "name" : "f2",
+    "type" : {
+      "type" : "ARRAY",
+      "element" : "FLOAT"
+    }
+  }, {
+    "id" : 2,
+    "name" : "f3",
+    "type" : {
+      "type" : "ROW",
+      "fields" : [ {
+        "id" : 3,
+        "name" : "f0",
+        "type" : "BOOLEAN"
+      }, {
+        "id" : 4,
+        "name" : "f1",
+        "type" : "BIGINT"
+      } ]
+    }
+  }, {
+    "id" : 5,
+    "name" : "f4",
+    "type" : "TIMESTAMP(9)"
+  }, {
+    "id" : 6,
+    "name" : "f5",
+    "type" : "DATE"
+  }, {
+    "id" : 7,
+    "name" : "f6",
+    "type" : "DECIMAL(2, 2)"
+  } ],
+  "highestFieldId" : 7,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "manifest.format" : "orc",
+    "file.format" : "orc"
+  },
+  "timeMillis" : 1732079677062
+}
