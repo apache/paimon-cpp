@@ -48,7 +48,7 @@ class IndexManifestFileHandler {
             const std::vector<IndexManifestEntry>& new_index_files) const = 0;
     };
 
-    /// Combine previous and new global index files by file `BucketIdentifier`.
+    /// Combine previous and new index files by partition, bucket and index type.
     class BucketedCombiner : public IndexManifestFileCombiner {
      public:
         std::vector<IndexManifestEntry> Combine(
@@ -56,7 +56,7 @@ class IndexManifestFileHandler {
             const std::vector<IndexManifestEntry>& new_index_files) const override;
     };
 
-    /// Combine previous and new global index files by file name.
+    /// Combine previous and new index files by file name.
     class GlobalFileNameCombiner : public IndexManifestFileCombiner {
      public:
         std::vector<IndexManifestEntry> Combine(
