@@ -69,7 +69,6 @@ TEST_F(BlobFileContextTest, AllInlineNoExternalStorage) {
     ASSERT_EQ(context->GetInlineFields(), std::set<std::string>({"image", "video"}));
     ASSERT_TRUE(context->GetBlobFileFields().empty());
     ASSERT_FALSE(context->RequireBlobFileWriter());
-    ASSERT_FALSE(context->RequireExternalStorageWriter());
 }
 
 TEST_F(BlobFileContextTest, MixedInlineAndBlobFile) {
@@ -96,29 +95,6 @@ TEST_F(BlobFileContextTest, MixedInlineAndBlobFile) {
 
     // Requires blob file writer for video and audio
     ASSERT_TRUE(context->RequireBlobFileWriter());
-    ASSERT_FALSE(context->RequireExternalStorageWriter());
-}
-
-TEST_F(BlobFileContextTest, ExternalStorageFields) {
-    auto schema = MakeSchema({"id"}, {"image", "video"});
-    std::map<std::string, std::string> opts_map = {
-        {Options::BLOB_DESCRIPTOR_FIELD, "image,video"},
-        {Options::BLOB_EXTERNAL_STORAGE_FIELD, "image"},
-        {Options::BLOB_EXTERNAL_STORAGE_PATH, "oss://bucket/blob/"},
-    };
-    ASSERT_OK_AND_ASSIGN(auto options, CoreOptions::FromMap(opts_map));
-    auto context = BlobFileContext::Create(schema, options);
-    ASSERT_TRUE(context);
-
-    ASSERT_EQ(context->GetDescriptorFields(), std::set<std::string>({"image", "video"}));
-    ASSERT_EQ(context->GetInlineFields(), std::set<std::string>({"image", "video"}));
-    ASSERT_EQ(context->GetExternalStorageFields(), std::set<std::string>({"image"}));
-    ASSERT_TRUE(context->GetExternalStoragePath());
-    ASSERT_EQ(context->GetExternalStoragePath(), "oss://bucket/blob/");
-    ASSERT_TRUE(context->GetBlobFileFields().empty());
-
-    ASSERT_FALSE(context->RequireBlobFileWriter());
-    ASSERT_TRUE(context->RequireExternalStorageWriter());
 }
 
 TEST_F(BlobFileContextTest, ViewFields) {
@@ -137,7 +113,6 @@ TEST_F(BlobFileContextTest, ViewFields) {
     ASSERT_EQ(context->GetBlobFileFields(), std::set<std::string>({"raw_blob"}));
 
     ASSERT_TRUE(context->RequireBlobFileWriter());
-    ASSERT_FALSE(context->RequireExternalStorageWriter());
 }
 
 TEST_F(BlobFileContextTest, DescriptorAndViewTogether) {
@@ -145,8 +120,6 @@ TEST_F(BlobFileContextTest, DescriptorAndViewTogether) {
     std::map<std::string, std::string> opts_map = {
         {Options::BLOB_DESCRIPTOR_FIELD, "desc_blob"},
         {Options::BLOB_VIEW_FIELD, "view_blob"},
-        {Options::BLOB_EXTERNAL_STORAGE_FIELD, "desc_blob"},
-        {Options::BLOB_EXTERNAL_STORAGE_PATH, "/tmp/ext/"},
     };
     ASSERT_OK_AND_ASSIGN(auto options, CoreOptions::FromMap(opts_map));
     auto context = BlobFileContext::Create(schema, options);
@@ -155,13 +128,9 @@ TEST_F(BlobFileContextTest, DescriptorAndViewTogether) {
     ASSERT_EQ(context->GetDescriptorFields(), std::set<std::string>({"desc_blob"}));
     ASSERT_EQ(context->GetViewFields(), std::set<std::string>({"view_blob"}));
     ASSERT_EQ(context->GetInlineFields(), std::set<std::string>({"desc_blob", "view_blob"}));
-    ASSERT_EQ(context->GetExternalStorageFields(), std::set<std::string>({"desc_blob"}));
-    ASSERT_TRUE(context->GetExternalStoragePath());
-    ASSERT_EQ(context->GetExternalStoragePath(), "/tmp/ext/");
     ASSERT_EQ(context->GetBlobFileFields(), std::set<std::string>({"normal_blob"}));
 
     ASSERT_TRUE(context->RequireBlobFileWriter());
-    ASSERT_TRUE(context->RequireExternalStorageWriter());
 }
 
 TEST_F(BlobFileContextTest, PartialSchemaIgnoresAbsentFields) {
@@ -170,8 +139,6 @@ TEST_F(BlobFileContextTest, PartialSchemaIgnoresAbsentFields) {
     std::map<std::string, std::string> opts_map = {
         {Options::BLOB_DESCRIPTOR_FIELD, "image,audio"},
         {Options::BLOB_VIEW_FIELD, "video"},
-        {Options::BLOB_EXTERNAL_STORAGE_FIELD, "image,video"},
-        {Options::BLOB_EXTERNAL_STORAGE_PATH, "oss://bucket/blob/"},
     };
     ASSERT_OK_AND_ASSIGN(auto options, CoreOptions::FromMap(opts_map));
     auto context = BlobFileContext::Create(schema, options);
@@ -181,13 +148,11 @@ TEST_F(BlobFileContextTest, PartialSchemaIgnoresAbsentFields) {
     ASSERT_EQ(context->GetDescriptorFields(), std::set<std::string>({"image"}));
     ASSERT_TRUE(context->GetViewFields().empty());
     ASSERT_EQ(context->GetInlineFields(), std::set<std::string>({"image"}));
-    ASSERT_EQ(context->GetExternalStorageFields(), std::set<std::string>({"image"}));
 
     // No non-inline blob field remains in the schema.
     ASSERT_TRUE(context->GetBlobFileFields().empty());
 
     ASSERT_FALSE(context->RequireBlobFileWriter());
-    ASSERT_TRUE(context->RequireExternalStorageWriter());
 }
 
 TEST_F(BlobFileContextTest, PartialSchemaWithOnlyBlobFileField) {
@@ -206,7 +171,6 @@ TEST_F(BlobFileContextTest, PartialSchemaWithOnlyBlobFileField) {
     ASSERT_EQ(context->GetBlobFileFields(), std::set<std::string>({"audio"}));
 
     ASSERT_TRUE(context->RequireBlobFileWriter());
-    ASSERT_FALSE(context->RequireExternalStorageWriter());
 }
 
 }  // namespace paimon
