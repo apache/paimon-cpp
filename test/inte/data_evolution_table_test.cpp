@@ -7,17 +7,21 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
+#include <tuple>
+
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
+#include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/date_time_utils.h"
@@ -37,9 +41,11 @@
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::test {
+using DataEvolutionTableParam = std::tuple<std::string, bool>;
+
 // This is a sdk end-to-end test for data evolution
 class DataEvolutionTableTest : public ::testing::Test,
-                               public ::testing::WithParamInterface<std::string> {
+                               public ::testing::WithParamInterface<DataEvolutionTableParam> {
     void SetUp() override {
         dir_ = UniqueTestDirectory::Create("local");
         int64_t seed = DateTimeUtils::GetCurrentUTCTimeUs();
@@ -70,7 +76,7 @@ class DataEvolutionTableTest : public ::testing::Test,
 
     void CreateTable(const std::vector<std::string>& partition_keys) const {
         std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                      {Options::FILE_FORMAT, GetParam()},
+                                                      {Options::FILE_FORMAT, FileFormat()},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
                                                       {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -144,7 +150,7 @@ class DataEvolutionTableTest : public ::testing::Test,
             auto global_index_result = BitmapGlobalIndexResult::FromRanges(row_ranges);
             scan_context_builder.SetGlobalIndexResult(global_index_result);
         }
-        PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(auto scan_context, FinishScanContext(scan_context_builder));
         PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
         if (!expected_array && check_scan_plan_when_empty_result) {
@@ -210,7 +216,7 @@ class DataEvolutionTableTest : public ::testing::Test,
             auto global_index_result = BitmapGlobalIndexResult::FromRanges(row_ranges);
             scan_context_builder.SetGlobalIndexResult(global_index_result);
         }
-        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
         ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         const auto& result_splits = result_plan->Splits();
@@ -236,6 +242,26 @@ class DataEvolutionTableTest : public ::testing::Test,
         ASSERT_EQ(result_row_counts, expected_row_counts);
     }
 
+    Result<std::unique_ptr<ScanContext>> FinishScanContext(ScanContextBuilder& builder) const {
+        if (EnableSnapshotLiveManifestCache()) {
+            if (!snapshot_live_manifest_cache_) {
+                snapshot_live_manifest_cache_ =
+                    std::make_shared<LruCache>(/*max_weight=*/64 * 1024 * 1024);
+            }
+            builder.AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3")
+                .WithCache(snapshot_live_manifest_cache_);
+        }
+        return builder.Finish();
+    }
+
+    std::string FileFormat() const {
+        return std::get<0>(GetParam());
+    }
+
+    bool EnableSnapshotLiveManifestCache() const {
+        return std::get<1>(GetParam());
+    }
+
     std::shared_ptr<arrow::StructArray> PrepareBulkData(
         int32_t write_batch_size, std::function<std::string(int32_t)> data_generator,
         const arrow::FieldVector& fields) const {
@@ -255,6 +281,7 @@ class DataEvolutionTableTest : public ::testing::Test,
 
  private:
     std::unique_ptr<UniqueTestDirectory> dir_;
+    mutable std::shared_ptr<Cache> snapshot_live_manifest_cache_;
     arrow::FieldVector fields_ = {
         arrow::field("f0", arrow::int32()),
         arrow::field("f1", arrow::utf8()),
@@ -520,7 +547,7 @@ TEST_P(DataEvolutionTableTest, TestOnlySomeColumns) {
 }
 
 TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) {
-    if (GetParam() != "parquet" && GetParam() != "orc") {
+    if (FileFormat() != "parquet" && FileFormat() != "orc") {
         return;
     }
 
@@ -532,7 +559,7 @@ TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) 
     };
     std::map<std::string, std::string> options = {
         {Options::MANIFEST_FORMAT, "orc"},
-        {Options::FILE_FORMAT, GetParam()},
+        {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "true"},
@@ -610,7 +637,7 @@ TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) 
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
 
         ScanContextBuilder scan_context_builder(table_path);
-        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
         ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
 
@@ -864,7 +891,7 @@ TEST_P(DataEvolutionTableTest, TestMoreData) {
 TEST_P(DataEvolutionTableTest, TestOnlyRowTrackingEnabled) {
     std::map<std::string, std::string> options = {
         {Options::MANIFEST_FORMAT, "orc"},
-        {Options::FILE_FORMAT, GetParam()},
+        {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "false"},
@@ -910,7 +937,7 @@ TEST_P(DataEvolutionTableTest, TestExternalPath) {
 
     std::map<std::string, std::string> options = {
         {Options::MANIFEST_FORMAT, "orc"},
-        {Options::FILE_FORMAT, GetParam()},
+        {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "true"},
@@ -1161,13 +1188,13 @@ TEST_P(DataEvolutionTableTest, TestWithPartitionWithoutPartitionFieldsInFile) {
 }
 
 TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
-    auto file_format = GetParam();
+    auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
     }
     std::vector<std::string> partition_keys = {"f1"};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
+        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "true"}, {"parquet.write.max-row-group-length", "1"}};
 
@@ -1334,7 +1361,7 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
 }
 
 TEST_P(DataEvolutionTableTest, TestAlterTable) {
-    auto file_format = GetParam();
+    auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
     }
@@ -1431,7 +1458,7 @@ TEST_P(DataEvolutionTableTest, TestAlterTable) {
 }
 
 TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
-    auto file_format = GetParam();
+    auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
     }
@@ -1461,7 +1488,7 @@ TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
 }
 
 TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
-    auto file_format = GetParam();
+    auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
     }
@@ -1542,7 +1569,7 @@ TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
 }
 
 TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
-    auto file_format = GetParam();
+    auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
     }
@@ -1683,7 +1710,7 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
 }
 
 TEST_P(DataEvolutionTableTest, TestPredicate) {
-    if (GetParam() == "avro") {
+    if (FileFormat() == "avro") {
         // Avro does not have stats.
         return;
     }
@@ -1824,7 +1851,7 @@ TEST_P(DataEvolutionTableTest, TestIOException) {
 
 TEST_P(DataEvolutionTableTest, TestWithRowIds) {
     std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+                                                  {Options::FILE_FORMAT, FileFormat()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1986,7 +2013,7 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
                               /*predicate=*/nullptr,
                               /*row_ranges=*/row_ranges));
     }
-    if (GetParam() == "avro") {
+    if (FileFormat() == "avro") {
         // Avro does not support stats.
         return;
     }
@@ -2046,15 +2073,17 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
     }
 }
 
-std::vector<std::string> GetTestValuesForDataEvolutionTableTest() {
-    std::vector<std::string> values;
-    values.emplace_back("parquet");
+std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionTableTest() {
+    std::vector<DataEvolutionTableParam> values;
+    for (bool enable_snapshot_live_manifest_cache : {false, true}) {
+        values.emplace_back("parquet", enable_snapshot_live_manifest_cache);
 #ifdef PAIMON_ENABLE_ORC
-    values.emplace_back("orc");
+        values.emplace_back("orc", enable_snapshot_live_manifest_cache);
 #endif
 #ifdef PAIMON_ENABLE_AVRO
-    values.emplace_back("avro");
+        values.emplace_back("avro", enable_snapshot_live_manifest_cache);
 #endif
+    }
     return values;
 }
 
