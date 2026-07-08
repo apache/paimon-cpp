@@ -46,41 +46,68 @@ struct PAIMON_EXPORT HistogramStats {
 };
 
 /// Abstract interface for collecting and managing performance metrics in Paimon operations.
+///
+/// This class provides a unified interface for tracking various performance metrics
+/// such as counters for read/write operations, I/O statistics, and other operational
+/// measurements. It serves as the base class for concrete implementations like `MetricsImpl`.
 class PAIMON_EXPORT Metrics {
  public:
     virtual ~Metrics() = default;
 
     /// Set the value of a specific counter metric.
+    /// @param metric_name The name/key of the metric to set.
+    /// @param metric_value The value to set for this metric.
     virtual void SetCounter(const std::string& metric_name, uint64_t metric_value) = 0;
 
     /// Get the current value of a specific counter metric.
+    /// @param metric_name The name/key of the metric to retrieve.
+    /// @return The current value of the metric, or `Status::KeyError` if the metric doesn't exist.
     virtual Result<uint64_t> GetCounter(const std::string& metric_name) const = 0;
 
     /// Get all counter metrics as a map.
+    /// @return A map containing all metric names and their current values.
     virtual std::map<std::string, uint64_t> GetAllCounters() const = 0;
 
     /// Add a sample to a histogram metric.
+    /// @param metric_name The name/key of the histogram metric.
+    /// @param value The observed value.
     virtual void ObserveHistogram(const std::string& metric_name, double value) = 0;
 
     /// Get histogram statistics snapshot.
+    /// @return `Status::KeyError` if the histogram doesn't exist.
     virtual Result<HistogramStats> GetHistogramStats(const std::string& metric_name) const = 0;
 
     /// Get all histogram statistics snapshots.
     virtual std::map<std::string, HistogramStats> GetAllHistogramStats() const = 0;
 
-    /// Set the value of a specific gauge metric.
+    /// Set the value of a specific gauge metric (current state metric).
+    /// @param metric_name The name/key of the gauge metric to set.
+    /// @param metric_value The value to set for this gauge metric (double, not just integer).
     virtual void SetGauge(const std::string& metric_name, double metric_value) = 0;
 
-    /// Get the current value of a specific gauge metric.
+    /// Get the current value of a specific gauge metric (current state metric).
+    /// @param metric_name The name/key of the gauge metric to retrieve.
+    /// @return The current value of the gauge metric, or `Status::KeyError` if the metric doesn't
+    /// exist.
     virtual Result<double> GetGauge(const std::string& metric_name) const = 0;
 
     /// Get all gauge metrics as a map.
+    /// @return A map containing all gauge metric names and their current values.
     virtual std::map<std::string, double> GetAllGauges() const = 0;
 
     /// Merge metrics from another Metrics instance into this one.
+    ///
+    /// For metrics that exist in both instances, the values are added together.
+    /// For metrics that only exist in the other instance, they are copied over.
+    /// This operation is useful for aggregating metrics from multiple sources.
+    ///
+    /// @param other The other Metrics instance to merge from. If `other` is nullptr or same as
+    /// this, no operation is performed.
     virtual void Merge(const std::shared_ptr<Metrics>& other) = 0;
 
     /// Convert all metrics to a JSON string representation.
+    /// @return A JSON string containing all metric names and values, e.g.,
+    /// `{"metric1":100,"metric2":200}`.
     virtual std::string ToString() const = 0;
 };
 
