@@ -82,17 +82,14 @@ Paimon provides a set of built-in optional plugins that you can link to as neede
   - ``paimon_orc_file_format_shared`` / ``paimon_orc_file_format_static``
   - ``paimon_avro_file_format_shared`` / ``paimon_avro_file_format_static``
   - ``paimon_blob_file_format_shared`` / ``paimon_blob_file_format_static``
-  - ``paimon_lance_file_format_shared`` / ``paimon_lance_file_format_static``
 
 - File system plugins:
 
   - ``paimon_local_file_system_shared`` / ``paimon_local_file_system_static``
-  - ``paimon_jindo_file_system_shared`` / ``paimon_jindo_file_system_static``
 
 - Index plugins:
 
   - ``paimon_file_index_shared`` / ``paimon_file_index_static``
-  - ``paimon_lumina_index_shared`` / ``paimon_lumina_index_static``
 
 .. note::
 

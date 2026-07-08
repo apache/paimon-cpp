@@ -21,8 +21,10 @@
 # https://cwiki.apache.org/confluence/display/INFRA/Git+-+.asf.yaml+features
 
 github:
-  description: "Apache Paimon C++"
+  description: "Paimon-cpp is a high-performance C++ implementation of Apache Paimon."
   homepage: https://paimon.apache.org/
+  ghp_branch: gh-pages
+  ghp_path: /
   labels:
     - paimon
     - apache
@@ -33,15 +35,31 @@ github:
     rebase: false
   protected_branches:
     main:
+      required_status_checks:
+        strict: true
+        contexts:
+          - pre-commit
+          - gcc-test
+          - rat-license-check
+          - test-with-sanitizer
+          - clang-release
+          - gcc-release
+          - clang-test
+          - gcc8-test
       required_pull_request_reviews:
+        dismiss_stale_reviews: true
+        require_last_push_approval: true
         required_approving_review_count: 1
+      required_conversation_resolution: true
       required_linear_history: true
   pull_requests:
-    del_branch_on_merge: true
+    allow_auto_merge: false
+    allow_update_branch: true
+    del_branch_on_merge: false
   features:
     wiki: true
     issues: true
-    projects: true
+    projects: false
 
 notifications:
   commits:      commits@paimon.apache.org

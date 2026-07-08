@@ -281,56 +281,6 @@ else()
     endif()
 endif()
 
-if(APPLE)
-    set(JINDOSDK_C_DYNAMIC_LIB_NAME "jindosdk_c.${PAIMON_JINDOSDK_C_BUILD_VERSION}")
-    set(JINDOSDK_C_DYNAMIC_LIB_FILE "lib${JINDOSDK_C_DYNAMIC_LIB_NAME}.dylib")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-        set(JINDOSDK_C_BUILD_SHA256_CHECKSUM
-            "${PAIMON_JINDOSDK_C_MACOS_X86_64_BUILD_SHA256_CHECKSUM}")
-        if(DEFINED ENV{PAIMON_JINDOSDK_C_MACOS_X86_64_URL})
-            set(JINDOSDK_C_SOURCE_URL "$ENV{PAIMON_JINDOSDK_C_MACOS_X86_64_URL}")
-        else()
-            set_urls(JINDOSDK_C_SOURCE_URL
-                     "https://jindodata-binary.oss-cn-shanghai.aliyuncs.com/release/${PAIMON_JINDOSDK_C_BUILD_VERSION}/jindosdk-${PAIMON_JINDOSDK_C_BUILD_VERSION}-macos-11_0-x86_64.tar.gz"
-            )
-        endif()
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
-        set(JINDOSDK_C_BUILD_SHA256_CHECKSUM
-            "${PAIMON_JINDOSDK_C_MACOS_AARCH64_BUILD_SHA256_CHECKSUM}")
-        if(DEFINED ENV{PAIMON_JINDOSDK_C_MACOS_AARCH64_URL})
-            set(JINDOSDK_C_SOURCE_URL "$ENV{PAIMON_JINDOSDK_C_MACOS_AARCH64_URL}")
-        else()
-            set_urls(JINDOSDK_C_SOURCE_URL
-                     "https://jindodata-binary.oss-cn-shanghai.aliyuncs.com/release/${PAIMON_JINDOSDK_C_BUILD_VERSION}/jindosdk-${PAIMON_JINDOSDK_C_BUILD_VERSION}-macos-11_0-aarch64.tar.gz"
-            )
-        endif()
-    endif()
-else()
-    set(JINDOSDK_C_DYNAMIC_LIB_NAME "jindosdk_c")
-    set(JINDOSDK_C_DYNAMIC_LIB_FILE "lib${JINDOSDK_C_DYNAMIC_LIB_NAME}.so")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-        set(JINDOSDK_C_BUILD_SHA256_CHECKSUM
-            "${PAIMON_JINDOSDK_C_LINUX_X86_64_BUILD_SHA256_CHECKSUM}")
-        if(DEFINED ENV{PAIMON_JINDOSDK_C_LINUX_X86_64_URL})
-            set(JINDOSDK_C_SOURCE_URL "$ENV{PAIMON_JINDOSDK_C_LINUX_X86_64_URL}")
-        else()
-            set_urls(JINDOSDK_C_SOURCE_URL
-                     "https://jindodata-binary.oss-cn-shanghai.aliyuncs.com/release/${PAIMON_JINDOSDK_C_BUILD_VERSION}/jindosdk-${PAIMON_JINDOSDK_C_BUILD_VERSION}-linux.tar.gz"
-            )
-        endif()
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
-        set(JINDOSDK_C_BUILD_SHA256_CHECKSUM
-            "${PAIMON_JINDOSDK_C_LINUX_AARCH64_BUILD_SHA256_CHECKSUM}")
-        if(DEFINED ENV{PAIMON_JINDOSDK_C_LINUX_AARCH64_URL})
-            set(JINDOSDK_C_SOURCE_URL "$ENV{PAIMON_JINDOSDK_C_LINUX_AARCH64_URL}")
-        else()
-            set_urls(JINDOSDK_C_SOURCE_URL
-                     "https://jindodata-binary.oss-cn-shanghai.aliyuncs.com/release/${PAIMON_JINDOSDK_C_BUILD_VERSION}/jindosdk-${PAIMON_JINDOSDK_C_BUILD_VERSION}-linux-el7-aarch64.tar.gz"
-            )
-        endif()
-    endif()
-endif()
-
 set(EP_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 set(EP_C_FLAGS "${CMAKE_C_FLAGS}")
 string(REPLACE "-Wglobal-constructors" "" EP_CXX_FLAGS ${EP_CXX_FLAGS})
@@ -1155,97 +1105,6 @@ macro(build_lz4)
     add_dependencies(lz4 lz4_ep)
 endmacro()
 
-macro(build_jindosdk_c)
-    message(STATUS "Building jindosdk-c from precompiled package")
-
-    set(JINDOSDK_C_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/jindosdk_ep-install")
-    set(JINDOSDK_C_HOME "${JINDOSDK_C_PREFIX}")
-    set(JINDOSDK_C_INCLUDE_DIR "${JINDOSDK_C_PREFIX}/include")
-    set(JINDOSDK_C_LIB_DIR "${JINDOSDK_C_PREFIX}/lib/native")
-    set(JINDOSDK_C_DYNAMIC_LIB "${JINDOSDK_C_LIB_DIR}/${JINDOSDK_C_DYNAMIC_LIB_FILE}")
-
-    # Extract and install jindosdk from precompiled package
-    externalproject_add(jindosdk_ep
-                        URL ${JINDOSDK_C_SOURCE_URL}
-                        URL_HASH "SHA256=${JINDOSDK_C_BUILD_SHA256_CHECKSUM}"
-                        ${THIRDPARTY_LOG_OPTIONS}
-                        CONFIGURE_COMMAND ""
-                        BUILD_COMMAND ""
-                        INSTALL_COMMAND bash -c
-                                        "cp -r <SOURCE_DIR>/include/* ${JINDOSDK_C_INCLUDE_DIR}"
-                        COMMAND bash -c
-                                "cp -r <SOURCE_DIR>/lib/native/${JINDOSDK_C_DYNAMIC_LIB_FILE}* ${JINDOSDK_C_LIB_DIR}"
-                        BUILD_BYPRODUCTS "${JINDOSDK_C_DYNAMIC_LIB}")
-
-    # The include directory must exist before it is referenced by a target.
-    file(MAKE_DIRECTORY "${JINDOSDK_C_INCLUDE_DIR}")
-    file(MAKE_DIRECTORY "${JINDOSDK_C_LIB_DIR}")
-
-    add_library(jindosdk::c_sdk SHARED IMPORTED)
-    set_target_properties(jindosdk::c_sdk
-                          PROPERTIES IMPORTED_LOCATION "${JINDOSDK_C_DYNAMIC_LIB}"
-                                     INTERFACE_INCLUDE_DIRECTORIES
-                                     "${JINDOSDK_C_INCLUDE_DIR}")
-    list(APPEND JINDOSDK_INCLUDE_DIR ${JINDOSDK_C_INCLUDE_DIR})
-
-    add_dependencies(jindosdk::c_sdk jindosdk_ep)
-    install(DIRECTORY "${JINDOSDK_C_LIB_DIR}/"
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            FILES_MATCHING
-            PATTERN "${JINDOSDK_C_DYNAMIC_LIB_FILE}*")
-
-endmacro()
-
-macro(build_jindosdk_nextarch)
-    message(STATUS "Building jindosdk-nextarch from local source")
-
-    set(JINDOSDK_NEXTARCH_PREFIX
-        "${CMAKE_CURRENT_BINARY_DIR}/jindosdk-nextarch_ep-install")
-    set(JINDOSDK_NEXTARCH_HOME "${JINDOSDK_NEXTARCH_PREFIX}")
-    set(JINDOSDK_NEXTARCH_INCLUDE_DIR "${JINDOSDK_NEXTARCH_PREFIX}/include")
-    set(JINDOSDK_NEXTARCH_LIB_DIR "${JINDOSDK_NEXTARCH_PREFIX}/lib")
-    set(JINDOSDK_NEXTARCH_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/jindosdk-nextarch")
-    set(JINDOSDK_NEXTARCH_STATIC_LIB
-        "${JINDOSDK_NEXTARCH_LIB_DIR}/libjindosdk-nextarch.a")
-
-    # Get jindosdk dependencies (headers and dynamic library)
-    get_target_property(JINDOSDK_C_INCLUDE_DIR jindosdk::c_sdk
-                        INTERFACE_INCLUDE_DIRECTORIES)
-    get_target_property(JINDOSDK_C_LIBRARY_LOCATION jindosdk::c_sdk IMPORTED_LOCATION)
-    get_filename_component(JINDOSDK_C_DIR_ROOT "${JINDOSDK_C_INCLUDE_DIR}" DIRECTORY)
-
-    # Compile flags for jindosdk-nextarch
-    set(JINDOSDK_NEXTARCH_CMAKE_CXX_FLAGS "${EP_CXX_FLAGS}")
-    set(JINDOSDK_NEXTARCH_CMAKE_C_FLAGS "${EP_C_FLAGS}")
-    set(JINDOSDK_NEXTARCH_CMAKE_ARGS
-        ${EP_COMMON_CMAKE_ARGS}
-        "-DCMAKE_INSTALL_PREFIX=${JINDOSDK_NEXTARCH_PREFIX}"
-        "-DCMAKE_CXX_FLAGS=${JINDOSDK_NEXTARCH_CMAKE_CXX_FLAGS}"
-        "-DCMAKE_C_FLAGS=${JINDOSDK_NEXTARCH_CMAKE_C_FLAGS}"
-        -DJINDOSDK_ROOT=${JINDOSDK_C_DIR_ROOT}
-        -DJINDOSDK_LIBRARY_NAME=${JINDOSDK_C_DYNAMIC_LIB_NAME})
-
-    externalproject_add(jindosdk-nextarch_ep
-                        SOURCE_DIR ${JINDOSDK_NEXTARCH_SOURCE_DIR}
-                        CMAKE_ARGS ${JINDOSDK_NEXTARCH_CMAKE_ARGS}
-                        BUILD_BYPRODUCTS "${JINDOSDK_NEXTARCH_STATIC_LIB}"
-                        DEPENDS jindosdk::c_sdk ${THIRDPARTY_LOG_OPTIONS})
-
-    # The include directory must exist before it is referenced by a target.
-    file(MAKE_DIRECTORY "${JINDOSDK_NEXTARCH_INCLUDE_DIR}")
-    file(MAKE_DIRECTORY "${JINDOSDK_NEXTARCH_LIB_DIR}")
-
-    add_library(jindosdk::nextarch STATIC IMPORTED)
-    set_target_properties(jindosdk::nextarch
-                          PROPERTIES IMPORTED_LOCATION "${JINDOSDK_NEXTARCH_STATIC_LIB}"
-                                     INTERFACE_INCLUDE_DIRECTORIES
-                                     "${JINDOSDK_NEXTARCH_INCLUDE_DIR}")
-    target_link_libraries(jindosdk::nextarch INTERFACE jindosdk::c_sdk pthread dl)
-    list(APPEND JINDOSDK_INCLUDE_DIR ${JINDOSDK_NEXTARCH_INCLUDE_DIR})
-
-    add_dependencies(jindosdk::nextarch jindosdk-nextarch_ep)
-endmacro()
-
 macro(build_protobuf)
     message(STATUS "Building protobuf from source")
     set(PROTOBUF_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/protobuf_ep-install")
@@ -1812,10 +1671,6 @@ endif()
 if(PAIMON_ENABLE_ORC)
     resolve_dependency(Protobuf)
     resolve_dependency(ORC)
-endif()
-if(PAIMON_ENABLE_JINDO)
-    build_jindosdk_c()
-    build_jindosdk_nextarch()
 endif()
 if(PAIMON_ENABLE_LUCENE)
     build_boost()

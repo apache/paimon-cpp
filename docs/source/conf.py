@@ -30,10 +30,11 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 import os
+import datetime
 
-project = "C++ Paimon"
-copyright = "2024-present The Apache Software Foundation"
-author = "The Apache Software Foundation"
+project = u'C++ Paimon'
+copyright = f'2024-{datetime.datetime.now().year} Apache Software Foundation'
+author = u'Apache Software Foundation'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
