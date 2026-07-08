@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/operation/abstract_file_store_write.h"
 
 #include <algorithm>

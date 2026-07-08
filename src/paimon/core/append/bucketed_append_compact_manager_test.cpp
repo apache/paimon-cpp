@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/append/bucketed_append_compact_manager.h"
 
 #include <chrono>

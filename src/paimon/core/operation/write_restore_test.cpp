@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/operation/write_restore.h"
 
 #include <memory>

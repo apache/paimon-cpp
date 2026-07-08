@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/mergetree/compact/off_peak_hours.h"
 
 #include "paimon/testing/utils/testharness.h"

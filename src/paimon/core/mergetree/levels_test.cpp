@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/mergetree/levels.h"
 
 #include "arrow/api.h"

@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/append/append_compact_coordinator.h"
 
 #include <map>

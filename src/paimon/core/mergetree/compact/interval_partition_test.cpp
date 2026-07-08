@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/mergetree/compact/interval_partition.h"
 
 #include <cstddef>

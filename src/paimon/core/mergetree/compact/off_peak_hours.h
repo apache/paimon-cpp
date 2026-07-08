@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #pragma once
 #include "paimon/core/core_options.h"
 namespace paimon {

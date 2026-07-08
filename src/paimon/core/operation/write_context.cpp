@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/write_context.h"
 
 #include <utility>

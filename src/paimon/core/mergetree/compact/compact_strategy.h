@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #pragma once
 
 #include "paimon/core/compact/compact_unit.h"

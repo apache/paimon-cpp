@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/mergetree/sorted_run.h"
 
 #include <optional>

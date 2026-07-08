@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/file_store_write.h"
 
 #include <map>

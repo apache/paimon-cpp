@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #include "paimon/core/mergetree/compact/compact_strategy.h"
 
 #include "paimon/testing/utils/testharness.h"

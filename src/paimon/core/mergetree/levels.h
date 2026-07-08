@@ -16,7 +16,6 @@
  * limitations under the License.
  */
 
-
 #pragma once
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/io/data_file_meta.h"
