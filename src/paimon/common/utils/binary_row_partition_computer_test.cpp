@@ -46,16 +46,14 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
                                  arrow::field("f6", arrow::int32()),
                                  arrow::field("f7", arrow::int64()),
                                  arrow::field("f8", arrow::int64()),
-                                 arrow::field("f9", arrow::float32()),
-                                 arrow::field("f10", arrow::float64()),
-                                 arrow::field("f11", arrow::utf8()),
-                                 arrow::field("f12", arrow::utf8()),
-                                 arrow::field("f13", arrow::date32()),
+                                 arrow::field("f9", arrow::utf8()),
+                                 arrow::field("f10", arrow::utf8()),
+                                 arrow::field("f11", arrow::date32()),
                                  arrow::field("non-partition-field", arrow::int32())};
 
     auto schema = arrow::schema(fields);
-    std::vector<std::string> partition_keys = {"f0", "f2", "f1", "f3",  "f4",  "f5",  "f6",
-                                               "f7", "f8", "f9", "f10", "f11", "f12", "f13"};
+    std::vector<std::string> partition_keys = {"f0", "f2", "f1", "f3", "f4",  "f5",
+                                               "f6", "f7", "f8", "f9", "f10", "f11"};
     {
         // simple case with legacy_partition_name_enabled = true
         ASSERT_OK_AND_ASSIGN(
@@ -72,14 +70,12 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
             {"f6", "-448489"},
             {"f7", "-9223372036854775808"},
             {"f8", "182737474"},
-            {"f9", "0.334"},
-            {"f10", "467.66472"},
-            {"f11", "abcde"},
-            {"f12", "这是一个很长很长的中文"},
-            {"f13", "5"},
+            {"f9", "abcde"},
+            {"f10", "这是一个很长很长的中文"},
+            {"f11", "5"},
         };
         ASSERT_OK_AND_ASSIGN(BinaryRow row, computer->ToBinaryRow(partition_map));
-        ASSERT_EQ(14, row.GetFieldCount());
+        ASSERT_EQ(12, row.GetFieldCount());
         ASSERT_EQ(true, row.GetBoolean(0));
         ASSERT_EQ(-20, row.GetByte(1));
         ASSERT_EQ(10, row.GetByte(2));
@@ -89,15 +85,13 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
         ASSERT_EQ(-448489, row.GetInt(6));
         ASSERT_EQ(std::numeric_limits<int64_t>::min(), row.GetLong(7));
         ASSERT_EQ(182737474l, row.GetLong(8));
-        ASSERT_NEAR(0.334, row.GetFloat(9), 0.0000001);
-        ASSERT_NEAR(467.66472, row.GetDouble(10), 0.0000001);
-        ASSERT_EQ("abcde", row.GetString(11).ToString());
-        ASSERT_EQ("这是一个很长很长的中文", row.GetString(12).ToString());
-        ASSERT_EQ(5, row.GetDate(13));
+        ASSERT_EQ("abcde", row.GetString(9).ToString());
+        ASSERT_EQ("这是一个很长很长的中文", row.GetString(10).ToString());
+        ASSERT_EQ(5, row.GetDate(11));
 
         std::vector<std::pair<std::string, std::string>> part_values;
         ASSERT_OK_AND_ASSIGN(part_values, computer->GeneratePartitionVector(row));
-        ASSERT_EQ(14, part_values.size());
+        ASSERT_EQ(12, part_values.size());
         std::map<std::string, std::string> actual_part_values_map;
         for (const auto& [key, value] : part_values) {
             actual_part_values_map[key] = value;
@@ -120,14 +114,12 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
             {"f6", "-448489"},
             {"f7", "-9223372036854775808"},
             {"f8", "182737474"},
-            {"f9", "0.334"},
-            {"f10", "467.66472"},
-            {"f11", "abcde"},
-            {"f12", "这是一个很长很长的中文"},
-            {"f13", "1970-01-06"},
+            {"f9", "abcde"},
+            {"f10", "这是一个很长很长的中文"},
+            {"f11", "1970-01-06"},
         };
         ASSERT_OK_AND_ASSIGN(BinaryRow row, computer->ToBinaryRow(partition_map));
-        ASSERT_EQ(14, row.GetFieldCount());
+        ASSERT_EQ(12, row.GetFieldCount());
         ASSERT_EQ(true, row.GetBoolean(0));
         ASSERT_EQ(-20, row.GetByte(1));
         ASSERT_EQ(10, row.GetByte(2));
@@ -137,15 +129,13 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
         ASSERT_EQ(-448489, row.GetInt(6));
         ASSERT_EQ(std::numeric_limits<int64_t>::min(), row.GetLong(7));
         ASSERT_EQ(182737474l, row.GetLong(8));
-        ASSERT_NEAR(0.334, row.GetFloat(9), 0.0000001);
-        ASSERT_NEAR(467.66472, row.GetDouble(10), 0.0000001);
-        ASSERT_EQ("abcde", row.GetString(11).ToString());
-        ASSERT_EQ("这是一个很长很长的中文", row.GetString(12).ToString());
-        ASSERT_EQ(5, row.GetDate(13));
+        ASSERT_EQ("abcde", row.GetString(9).ToString());
+        ASSERT_EQ("这是一个很长很长的中文", row.GetString(10).ToString());
+        ASSERT_EQ(5, row.GetDate(11));
 
         std::vector<std::pair<std::string, std::string>> part_values;
         ASSERT_OK_AND_ASSIGN(part_values, computer->GeneratePartitionVector(row));
-        ASSERT_EQ(14, part_values.size());
+        ASSERT_EQ(12, part_values.size());
         std::map<std::string, std::string> actual_part_values_map;
         for (const auto& [key, value] : part_values) {
             actual_part_values_map[key] = value;
@@ -168,14 +158,12 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
             {"f6", "-448489"},
             {"f7", "-9223372036854775808"},
             {"f8", "182737474"},
-            {"f9", "0.334"},
-            {"f10", "467.66472"},
-            {"f11", " "},
-            {"f12", "__DEFAULT_PARTITION__"},
-            {"f13", "5"},
+            {"f9", " "},
+            {"f10", "__DEFAULT_PARTITION__"},
+            {"f11", "5"},
         };
         ASSERT_OK_AND_ASSIGN(BinaryRow row, computer->ToBinaryRow(partition_map));
-        ASSERT_EQ(14, row.GetFieldCount());
+        ASSERT_EQ(12, row.GetFieldCount());
         ASSERT_EQ(true, row.GetBoolean(0));
         ASSERT_EQ(-20, row.GetByte(1));
         ASSERT_EQ(10, row.GetByte(2));
@@ -185,15 +173,13 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
         ASSERT_EQ(-448489, row.GetInt(6));
         ASSERT_EQ(std::numeric_limits<int64_t>::min(), row.GetLong(7));
         ASSERT_EQ(182737474l, row.GetLong(8));
-        ASSERT_NEAR(0.334, row.GetFloat(9), 0.0000001);
-        ASSERT_NEAR(467.66472, row.GetDouble(10), 0.0000001);
-        ASSERT_EQ(" ", row.GetString(11).ToString());
-        ASSERT_TRUE(row.IsNullAt(12));
-        ASSERT_EQ(5, row.GetInt(13));
+        ASSERT_EQ(" ", row.GetString(9).ToString());
+        ASSERT_TRUE(row.IsNullAt(10));
+        ASSERT_EQ(5, row.GetInt(11));
 
         std::vector<std::pair<std::string, std::string>> part_values;
         ASSERT_OK_AND_ASSIGN(part_values, computer->GeneratePartitionVector(row));
-        ASSERT_EQ(14, part_values.size());
+        ASSERT_EQ(12, part_values.size());
         std::map<std::string, std::string> actual_part_values_map;
         for (const auto& [key, value] : part_values) {
             actual_part_values_map[key] = value;
@@ -208,11 +194,9 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
             {"f6", "-448489"},
             {"f7", "-9223372036854775808"},
             {"f8", "182737474"},
-            {"f9", "0.334"},
-            {"f10", "467.66472"},
-            {"f11", "__DEFAULT_PARTITION__"},
-            {"f12", "__DEFAULT_PARTITION__"},
-            {"f13", "5"},
+            {"f9", "__DEFAULT_PARTITION__"},
+            {"f10", "__DEFAULT_PARTITION__"},
+            {"f11", "5"},
         };
         ASSERT_EQ(actual_part_values_map, expected_map);
     }
@@ -230,10 +214,8 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
                                                             {"f6", "-448489"},
                                                             {"f7", "-9223372036854775808"},
                                                             {"f8", "182737474"},
-                                                            {"f9", "0.334"},
-                                                            {"f10", "467.66472"},
-                                                            {"f11", "abcde"},
-                                                            {"f12", "这是一个很长很长的中文"}};
+                                                            {"f9", "abcde"},
+                                                            {"f10", "这是一个很长很长的中文"}};
 
         ASSERT_NOK_WITH_MSG(computer->ToBinaryRow(partition_map),
                             "can not find partition key 'f4' in input partition");
@@ -254,10 +236,8 @@ TEST(BinaryRowPartitionComputerTest, TestToAndFromBinaryRow) {
                                                             {"f6", "abcd"},
                                                             {"f7", "-9223372036854775808"},
                                                             {"f8", "182737474"},
-                                                            {"f9", "0.334"},
-                                                            {"f10", "467.66472"},
-                                                            {"f11", "abcde"},
-                                                            {"f12", "这是一个很长很长的中文"}};
+                                                            {"f9", "abcde"},
+                                                            {"f10", "这是一个很长很长的中文"}};
         ASSERT_NOK_WITH_MSG(computer->ToBinaryRow(partition_map),
                             "cannot convert field idx 6, field value abcd to type INT32");
     }

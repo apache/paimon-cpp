@@ -1,0 +1,21 @@
+f0:string f1:int f2:int f3:double f4:string f5:blob  (all can be null)
+
+total 10 records, 4 blob files to 10 bin files.
+
+data-d7816e8e-6c6d-4e28-9137-837cdf706350-1.blob
+  blob_0_811d5dab.bin
+  blob_1_b81cf9f4.bin
+  blob_2_470e1dfe.bin
+
+data-d7816e8e-6c6d-4e28-9137-837cdf706350-2.blob
+  blob_3_07b08c4d.bin
+  blob_4_67007c96.bin
+
+data-d7816e8e-6c6d-4e28-9137-837cdf706350-3.blob
+  blob_5_f7099dea.bin
+  blob_6_6b6706ef.bin
+  blob_7_6bcae65e.bin
+  blob_8_5fba0737.bin
+
+data-d7816e8e-6c6d-4e28-9137-837cdf706350-4.blob
+  blob_9_f54d253c.bin

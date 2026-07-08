@@ -1,0 +1,43 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "f0",
+    "type" : "STRING"
+  }, {
+    "id" : 1,
+    "name" : "f1",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "f2",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "f3",
+    "type" : "DOUBLE"
+  }, {
+    "id" : 4,
+    "name" : "f4",
+    "type" : "STRING"
+  }, {
+    "id" : 5,
+    "name" : "f5",
+    "type" : "BLOB"
+  } ],
+  "highestFieldId" : 5,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "read.batch-size" : "512",
+    "parquet.use-native" : "false",
+    "row-tracking.enabled" : "true",
+    "target-file-size" : "2MB",
+    "data-evolution.enabled" : "true",
+    "manifest.format" : "avro",
+    "file.format" : "parquet",
+    "parquet.write.max-row-group-length" : "1000"
+  },
+  "timeMillis" : 1760945751709
+}
