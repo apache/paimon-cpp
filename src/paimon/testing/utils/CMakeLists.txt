@@ -24,6 +24,7 @@ if(PAIMON_BUILD_TESTS)
                    DEPENDENCIES
                    paimon_static
                    arrow
+                   GTest::gtest
                    STATIC_LINK_LIBS
                    paimon_static
                    ${GTEST_LINK_TOOLCHAIN})
