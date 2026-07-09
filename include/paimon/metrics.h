@@ -45,7 +45,8 @@ struct PAIMON_EXPORT HistogramStats {
     double stddev = 0;
 };
 
-/// Abstract interface for collecting and managing performance metrics in Paimon operations.
+/// Abstract interface for collecting and managing performance metrics in Paimon operations.(test
+/// trigger ci)
 ///
 /// This class provides a unified interface for tracking various performance metrics
 /// such as counters for read/write operations, I/O statistics, and other operational
