@@ -22,7 +22,7 @@
 
 github:
   description: "Paimon-cpp is a high-performance C++ implementation of Apache Paimon."
-  homepage: https://paimon.apache.org/
+  homepage: https://paimon.apache.org/docs/cpp/
   ghp_branch: gh-pages
   ghp_path: /
   labels:
