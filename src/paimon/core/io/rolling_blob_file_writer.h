@@ -71,6 +71,7 @@ class RollingBlobFileWriter
     void Abort() override;
     Status Close() override;
     Result<std::vector<std::shared_ptr<DataFileMeta>>> GetResult() override;
+    void Test() {}
 
  private:
     static Status ValidateFileConsistency(
