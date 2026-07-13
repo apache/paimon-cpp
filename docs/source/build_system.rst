@@ -86,6 +86,7 @@ Paimon provides a set of built-in optional plugins that you can link to as neede
 - File system plugins:
 
   - ``paimon_local_file_system_shared`` / ``paimon_local_file_system_static``
+  - ``paimon_jindo_file_system_shared`` / ``paimon_jindo_file_system_static``
 
 - Index plugins:
 
