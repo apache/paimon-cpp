@@ -35,7 +35,7 @@ class JindoFileSystemTest : public ::testing::Test {
         fs_.reset();
     }
 
- private:
+ protected:
     std::unique_ptr<paimon::test::UniqueTestDirectory> dir_;
     std::string test_dir_;
     std::shared_ptr<FileSystem> fs_;
