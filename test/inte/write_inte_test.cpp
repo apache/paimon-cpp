@@ -345,11 +345,9 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
 
     Status CommitMessages(const std::string& table_path,
                           const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
-                          const std::map<std::string, std::string>& commit_options,
                           bool ignore_empty_commit = true,
                           int64_t commit_identifier = BATCH_WRITE_COMMIT_IDENTIFIER) const {
         CommitContextBuilder commit_builder(table_path, "commit_user_1");
-        commit_builder.SetOptions(commit_options);
         commit_builder.IgnoreEmptyCommit(ignore_empty_commit);
         PAIMON_ASSIGN_OR_RAISE(auto commit_context, commit_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_commit,
@@ -2535,10 +2533,7 @@ TEST_P(WriteInteTest, TestWriteWithFieldId) {
     ASSERT_OK(file_store_write->Close());
 
     // commit
-    std::map<std::string, std::string> commit_options = {
-        {Options::MANIFEST_TARGET_FILE_SIZE, "8mb"}, {Options::FILE_SYSTEM, "local"}};
-    ASSERT_OK(CommitMessages(table_path, commit_messages, commit_options,
-                             /*ignore_empty_commit=*/false));
+    ASSERT_OK(CommitMessages(table_path, commit_messages, /*ignore_empty_commit=*/false));
 
     // check data file has field id meta
     std::vector<std::unique_ptr<BasicFileStatus>> status_list;
@@ -2620,10 +2615,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteAndReadWithExternalPath) {
     ASSERT_EQ(results.size(), 1);
     auto commit_msg_impl = std::dynamic_pointer_cast<CommitMessageImpl>(results[0]);
     auto meta = commit_msg_impl->data_increment_.new_files_[0];
-    std::map<std::string, std::string> commit_options = {
-        {Options::MANIFEST_TARGET_FILE_SIZE, "8mb"}, {Options::FILE_SYSTEM, "local"}};
-    ASSERT_OK(CommitMessages(root_path, results, commit_options,
-                             /*ignore_empty_commit=*/false, /*commit_identifier=*/1));
+    ASSERT_OK(CommitMessages(root_path, results, /*ignore_empty_commit=*/false,
+                             /*commit_identifier=*/1));
 
     // check external path
     ASSERT_OK_AND_ASSIGN(bool file_exist, file_system_->Exists(meta->external_path.value()));
@@ -2941,10 +2934,8 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
     ASSERT_EQ(results.size(), 3);
     auto commit_msg_impl = std::dynamic_pointer_cast<CommitMessageImpl>(results[0]);
     auto meta = commit_msg_impl->data_increment_.new_files_[0];
-    std::map<std::string, std::string> commit_options = {
-        {Options::MANIFEST_TARGET_FILE_SIZE, "8mb"}, {Options::FILE_SYSTEM, "local"}};
-    ASSERT_OK(CommitMessages(root_path, results, commit_options,
-                             /*ignore_empty_commit=*/false, /*commit_identifier=*/1));
+    ASSERT_OK(CommitMessages(root_path, results, /*ignore_empty_commit=*/false,
+                             /*commit_identifier=*/1));
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -3126,10 +3117,8 @@ TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> results,
                          file_store_write->PrepareCommit());
     ASSERT_EQ(results.size(), 1);
-    std::map<std::string, std::string> commit_options = {
-        {Options::MANIFEST_TARGET_FILE_SIZE, "8mb"}, {Options::FILE_SYSTEM, "local"}};
-    ASSERT_OK(CommitMessages(root_path, results, commit_options,
-                             /*ignore_empty_commit=*/false, /*commit_identifier=*/1));
+    ASSERT_OK(CommitMessages(root_path, results, /*ignore_empty_commit=*/false,
+                             /*commit_identifier=*/1));
 
     // check read result
     ScanContextBuilder scan_context_builder(table_path);
@@ -4065,9 +4054,7 @@ TEST_P(WriteInteTest, TestPkSpillableDiskQuotaExhaustedFallsBackToFlush) {
                          file_store_write->PrepareCommit(/*wait_compaction=*/false,
                                                          /*commit_identifier=*/0));
 
-    std::map<std::string, std::string> pk_commit_options = {
-        {"enable-pk-commit-in-inte-test", ""}, {"enable-object-store-commit-in-inte-test", ""}};
-    ASSERT_OK(CommitMessages(table_path, commit_messages, pk_commit_options));
+    ASSERT_OK(CommitMessages(table_path, commit_messages));
     ASSERT_OK(file_store_write->Close());
 
     std::string expected = R"([
@@ -4137,9 +4124,7 @@ TEST_P(WriteInteTest, TestPkSpillableGlobalMemoryPreemptionDataCorrectness) {
 
     ASSERT_EQ(0, TestHelper::CountChannelFiles(file_system_, tmp_dir));
 
-    std::map<std::string, std::string> pk_commit_options = {
-        {"enable-pk-commit-in-inte-test", ""}, {"enable-object-store-commit-in-inte-test", ""}};
-    ASSERT_OK(CommitMessages(table_path, commit_messages, pk_commit_options));
+    ASSERT_OK(CommitMessages(table_path, commit_messages));
     ASSERT_OK(file_store_write->Close());
 
     // Scan and verify both partitions
@@ -4303,9 +4288,7 @@ TEST_P(WriteInteTest, TestPkSpillableIntermediateMergeWithTempFileTracking) {
                                                          /*commit_identifier=*/0));
     ASSERT_EQ(0, TestHelper::CountChannelFiles(file_system_, tmp_dir));
 
-    std::map<std::string, std::string> pk_commit_options = {
-        {"enable-pk-commit-in-inte-test", ""}, {"enable-object-store-commit-in-inte-test", ""}};
-    ASSERT_OK(CommitMessages(table_path, commit_messages, pk_commit_options));
+    ASSERT_OK(CommitMessages(table_path, commit_messages));
     ASSERT_OK(file_store_write->Close());
 
     // Scan: Alice deduped to f1=3, Bob f1=2
@@ -4402,9 +4385,7 @@ TEST_P(WriteInteTest, TestPkSpillableMultiBucketMultiRoundDataCorrectness) {
                                                          /*commit_identifier=*/0));
     // Spill files should be cleaned after PrepareCommit
     ASSERT_EQ(0, TestHelper::CountChannelFiles(file_system_, tmp_dir));
-    std::map<std::string, std::string> pk_commit_options = {
-        {"enable-pk-commit-in-inte-test", ""}, {"enable-object-store-commit-in-inte-test", ""}};
-    ASSERT_OK(CommitMessages(table_path, commit_messages_1, pk_commit_options));
+    ASSERT_OK(CommitMessages(table_path, commit_messages_1));
 
     // Round 2: Bucket 0 writes Charlie + Bob(overwrite), Bucket 1 writes Frank + Eve(overwrite)
     auto r2_b0_batch1 =
@@ -4435,7 +4416,7 @@ TEST_P(WriteInteTest, TestPkSpillableMultiBucketMultiRoundDataCorrectness) {
                                                          /*commit_identifier=*/1));
     // Spill files should be cleaned after PrepareCommit
     ASSERT_EQ(0, TestHelper::CountChannelFiles(file_system_, tmp_dir));
-    ASSERT_OK(CommitMessages(table_path, commit_messages_2, pk_commit_options));
+    ASSERT_OK(CommitMessages(table_path, commit_messages_2));
     ASSERT_OK(file_store_write->Close());
 
     // Scan and verify per (partition, bucket)
@@ -4579,10 +4560,8 @@ TEST_P(WriteInteTest, TestPkSpillableWithIOException) {
         io_hook->Clear();
 
         // Commit both rounds
-        std::map<std::string, std::string> pk_commit_options = {
-            {"enable-pk-commit-in-inte-test", ""}, {"enable-object-store-commit-in-inte-test", ""}};
-        ASSERT_OK(CommitMessages(root_path, results_1.value(), pk_commit_options));
-        ASSERT_OK(CommitMessages(root_path, results_2.value(), pk_commit_options));
+        ASSERT_OK(CommitMessages(root_path, results_1.value()));
+        ASSERT_OK(CommitMessages(root_path, results_2.value()));
         ASSERT_OK(file_store_write->Close());
 
         // Scan and verify final state after spill:
