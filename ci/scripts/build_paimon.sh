@@ -40,7 +40,7 @@ CMAKE_ARGS=(
     "-DCMAKE_BUILD_TYPE=${build_type}"
     "-DPAIMON_BUILD_TESTS=ON"
     "-DPAIMON_ENABLE_JINDO=ON"
-    "-DPAIMON_ENABLE_LUCENE=OFF"
+    "-DPAIMON_ENABLE_LUCENE=ON"
 )
 
 if [[ "${enable_sanitizer}" == "true" ]]; then
