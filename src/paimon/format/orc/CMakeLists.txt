@@ -40,7 +40,6 @@ if(PAIMON_ENABLE_ORC)
                    fmt
                    orc::orc
                    tbb
-                   ${CMAKE_DL_LIBS}
                    Threads::Threads
                    SHARED_LINK_LIBS
                    paimon_shared
