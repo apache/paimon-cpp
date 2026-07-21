@@ -92,6 +92,7 @@ Paimon provides a set of built-in optional plugins that you can link to as neede
 
   - ``paimon_file_index_shared`` / ``paimon_file_index_static``
   - ``paimon_lumina_index_shared`` / ``paimon_lumina_index_static``
+  - ``paimon_lucene_index_shared`` / ``paimon_lucene_index_static``
 
 .. note::
 

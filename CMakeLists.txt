@@ -54,10 +54,6 @@ option(PAIMON_ENABLE_AVRO "Whether to enable avro file format" ON)
 option(PAIMON_ENABLE_ORC "Whether to enable orc file format" ON)
 option(PAIMON_ENABLE_JINDO "Whether to enable jindo file system" OFF)
 option(PAIMON_ENABLE_LUCENE "Whether to enable lucene index" OFF)
-if(PAIMON_ENABLE_LUCENE)
-    message(FATAL_ERROR "PAIMON_ENABLE_LUCENE is temporarily disabled. Please configure with -DPAIMON_ENABLE_LUCENE=OFF."
-    )
-endif()
 
 if(PAIMON_ENABLE_ORC)
     add_definitions(-DPAIMON_ENABLE_ORC)
