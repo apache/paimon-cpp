@@ -302,12 +302,6 @@ endif()
 
 list(APPEND PAIMON_LINK_LIBS ${CMAKE_DL_LIBS})
 list(APPEND PAIMON_SHARED_INSTALL_INTERFACE_LIBS ${CMAKE_DL_LIBS})
-if(PAIMON_ENABLE_LUMINA)
-    add_subdirectory(third_party/lumina EXCLUDE_FROM_ALL)
-    link_directories(third_party/lumina/lib)
-    install(FILES ${PROJECT_SOURCE_DIR}/third_party/lumina/lib/liblumina.so
-            DESTINATION ${CMAKE_INSTALL_LIBDIR})
-endif()
 
 if(PAIMON_ENABLE_LUCENE)
     set(PAIMON_DICT_DEST "share/paimon/dict")
@@ -339,10 +333,6 @@ include_directories("${CMAKE_SOURCE_DIR}/third_party/xxhash")
 
 if(PAIMON_ENABLE_LANCE)
     include_directories("${CMAKE_SOURCE_DIR}/third_party/lance")
-endif()
-
-if(PAIMON_ENABLE_LUMINA)
-    include_directories("${CMAKE_SOURCE_DIR}/third_party/lumina/include")
 endif()
 
 include_directories(SYSTEM ${ARROW_INCLUDE_DIR})

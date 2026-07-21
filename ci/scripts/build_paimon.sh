@@ -35,11 +35,17 @@ fi
 mkdir ${build_dir}
 pushd ${build_dir}
 
+ENABLE_LUMINA="ON"
+if [[ "${CC:-}" == *"gcc-8"* ]] || [[ "${CXX:-}" == *"g++-8"* ]]; then
+    ENABLE_LUMINA="OFF"
+fi
+
 CMAKE_ARGS=(
     "-G Ninja"
     "-DCMAKE_BUILD_TYPE=${build_type}"
     "-DPAIMON_BUILD_TESTS=ON"
     "-DPAIMON_ENABLE_JINDO=ON"
+    "-DPAIMON_ENABLE_LUMINA=${ENABLE_LUMINA}"
     "-DPAIMON_ENABLE_LUCENE=OFF"
 )
 

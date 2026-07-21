@@ -26,6 +26,7 @@ Paimon supports multiple global index types:
 - **BTree Index**: An efficient index based on multi-level SST files for scalar column lookups.
 - **Range Bitmap Index**: A range bitmap index optimized for range predicates on ordered scalar columns. Extends the bitmap approach by encoding value ordering, enabling efficient less-than, greater-than, and range conditions.
 - **Lucene Index**: A full-text search index powered by Lucene++. Supports tokenized text search with multiple modes including match-all, match-any, phrase, prefix, and wildcard queries.
+- **Vector Index (Lumina)**: An approximate nearest neighbor (ANN) index powered by Lumina for vector similarity search with configurable distance metrics.
 
 Global indexes work on top of Data Evolution tables. To use global indexes, your table must have:
 
@@ -85,3 +86,10 @@ search modes including match-all, match-any, phrase, prefix, and wildcard querie
 - **Environment Variable**: ``PAIMON_JIEBA_DICT_DIR``
 
   - **Description**: Specifies the directory containing Jieba dictionary files for Chinese text tokenization. At runtime, the system first checks this environment variable; if not set, it falls back to the compile-time ``JIEBA_TEST_DICT_DIR`` macro (only available in test builds). If neither is available, will fail with an error.
+
+Vector Index (Lumina)
+---------------------
+
+An approximate nearest neighbor (ANN) index powered by Lumina for vector similarity search.
+It supports high-dimensional vector search with configurable distance metrics and encoding strategies.
+For more configurations, refer to the ``docs/reference`` directory in the Lumina release package.
