@@ -14,6 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Adapted from Apache Arrow:
+# https://github.com/apache/arrow/blob/apache-arrow-17.0.0/cpp/CMakeLists.txt
+
 cmake_minimum_required(VERSION 3.16)
 message(STATUS "Building using CMake version: ${CMAKE_VERSION}")
 

@@ -18,7 +18,7 @@
  */
 
 // Adapted from Apache Iceberg C++
-// https://github.com/apache/iceberg-cpp/blob/main/.devcontainer/devcontainer.json.template
+// https://github.com/apache/iceberg-cpp/blob/v0.2.0/.devcontainer/devcontainer.json.template
 
 {
 	"name": "Paimon CPP Dev Container",

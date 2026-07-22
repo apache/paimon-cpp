@@ -16,7 +16,7 @@
 # under the License.
 
 # Borrowed the file from Apache Arrow:
-# https://github.com/apache/arrow/blob/main/cpp/cmake_modules/BuildUtils.cmake
+# https://github.com/apache/arrow/blob/apache-arrow-17.0.0/cpp/cmake_modules/BuildUtils.cmake
 
 function(add_paimon_lib LIB_NAME)
     set(options BUILD_SHARED BUILD_STATIC)
