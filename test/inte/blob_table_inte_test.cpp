@@ -250,9 +250,6 @@ std::vector<std::string> GetTestValuesForBlobTableInteTest() {
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
 #endif
-#ifdef PAIMON_ENABLE_LANCE
-    values.emplace_back("lance");
-#endif
 #ifdef PAIMON_ENABLE_AVRO
     values.emplace_back("avro");
 #endif
@@ -434,7 +431,7 @@ TEST_P(BlobTableInteTest, TestBasic) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(
@@ -539,7 +536,7 @@ TEST_P(BlobTableInteTest, TestMultipleAppends) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
@@ -659,7 +656,7 @@ TEST_P(BlobTableInteTest, TestMultipleAppendsDifferentFirstRowIds) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
@@ -814,7 +811,7 @@ TEST_P(BlobTableInteTest, TestExternalPath) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(
@@ -833,9 +830,6 @@ TEST_P(BlobTableInteTest, TestExternalPath) {
 
 TEST_P(BlobTableInteTest, TestPartitionWithPredicate) {
     auto file_format = GetParam();
-    if (file_format == "lance") {
-        return;
-    }
     std::vector<std::string> partition_keys = {"f0"};
     std::map<std::string, std::string> options = {
         {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
@@ -953,8 +947,8 @@ TEST_P(BlobTableInteTest, TestPartitionWithPredicate) {
 }
 
 TEST_P(BlobTableInteTest, TestPredicate) {
-    if (GetParam() == "lance" || GetParam() == "avro") {
-        // lance and avro do not have stats
+    if (GetParam() == "avro") {
+        // Avro does not have stats.
         return;
     }
     CreateTable();
@@ -1023,9 +1017,6 @@ TEST_P(BlobTableInteTest, TestPredicate) {
 }
 
 TEST_P(BlobTableInteTest, TestIOException) {
-    if (GetParam() == "lance") {
-        return;
-    }
     std::string table_path;
     // write and commit with I/O exception
     bool write_run_complete = false;
@@ -1098,7 +1089,7 @@ TEST_P(BlobTableInteTest, TestIOException) {
 
 TEST_P(BlobTableInteTest, TestReadTableWithDenseStats) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     std::string table_path =
@@ -1162,7 +1153,7 @@ TEST_P(BlobTableInteTest, TestReadTableWithDenseStats) {
 
 TEST_P(BlobTableInteTest, TestDataEvolutionAndAlterTable) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     std::string table_path = paimon::test::GetDataDir() + file_format +
@@ -1505,7 +1496,7 @@ TEST_P(BlobTableInteTest, TestAppendWriteWithNullBlob) {
 
 TEST_P(BlobTableInteTest, TestReadTableWithMultiBlobFields) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     std::string table_path = paimon::test::GetDataDir() + file_format +

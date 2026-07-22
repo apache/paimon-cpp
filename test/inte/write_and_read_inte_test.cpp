@@ -181,7 +181,7 @@ TEST_P(WriteAndReadInteTest, TestPKSimple) {
 }
 
 TEST_P(WriteAndReadInteTest, TestNestedType) {
-    // map use list(struct(key, value)) as lance does not support map
+    // Represent a map as list(struct(key, value)) for cross-format compatibility.
     arrow::FieldVector fields = {
         arrow::field("f1", arrow::list(arrow::struct_({arrow::field("key", arrow::int8()),
                                                        arrow::field("value", arrow::int16())}))),
@@ -857,9 +857,6 @@ std::vector<std::pair<std::string, std::string>> GetTestValuesForWriteAndReadInt
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc", "local");
     // values.emplace_back("parquet", "jindo");
-#endif
-#ifdef PAIMON_ENABLE_LANCE
-    values.emplace_back("lance", "local");
 #endif
 #ifdef PAIMON_ENABLE_AVRO
     values.emplace_back("avro", "local");

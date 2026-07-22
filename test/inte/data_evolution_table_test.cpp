@@ -288,7 +288,7 @@ TEST_P(DataEvolutionTableTest, TestBasic) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(
@@ -417,7 +417,7 @@ TEST_P(DataEvolutionTableTest, TestMultipleAppends) {
                               /*predicate=*/nullptr,
                               /*row_ranges=*/row_ranges));
     }
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
@@ -492,7 +492,7 @@ TEST_P(DataEvolutionTableTest, TestOnlySomeColumns) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
@@ -561,7 +561,7 @@ TEST_P(DataEvolutionTableTest, TestNullValues) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
@@ -644,7 +644,7 @@ TEST_P(DataEvolutionTableTest, TestMultipleAppendsDifferentFirstRowIds) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
@@ -735,7 +735,7 @@ TEST_P(DataEvolutionTableTest, TestOnlyRowTrackingEnabled) {
     ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols0, src_array0));
     ASSERT_OK(Commit(table_path, commit_msgs));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(
@@ -803,7 +803,7 @@ TEST_P(DataEvolutionTableTest, TestExternalPath) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(
@@ -881,7 +881,7 @@ TEST_P(DataEvolutionTableTest, TestWithPartitionSimple) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    if (GetParam() != "lance") {
+    {
         // test only read partition fields
         auto expected_array_only_partition = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields_[1]}), R"([
@@ -992,7 +992,7 @@ TEST_P(DataEvolutionTableTest, TestWithPartitionWithoutPartitionFieldsInFile) {
                               /*row_ranges=*/row_ranges));
     }
 
-    if (GetParam() != "lance") {
+    {
         // read with row tracking
         auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(
@@ -1012,7 +1012,7 @@ TEST_P(DataEvolutionTableTest, TestWithPartitionWithoutPartitionFieldsInFile) {
 
 TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     std::vector<std::string> partition_keys = {"f1"};
@@ -1185,7 +1185,7 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
 
 TEST_P(DataEvolutionTableTest, TestAlterTable) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     std::string table_path = paimon::test::GetDataDir() + file_format +
@@ -1282,7 +1282,7 @@ TEST_P(DataEvolutionTableTest, TestAlterTable) {
 
 TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     std::string table_path =
@@ -1312,7 +1312,7 @@ TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
 
 TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     std::string table_path = paimon::test::GetDataDir() + file_format +
@@ -1393,7 +1393,7 @@ TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
 
 TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
     auto file_format = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro") {
         return;
     }
     // only f2 has index
@@ -1533,8 +1533,8 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
 }
 
 TEST_P(DataEvolutionTableTest, TestPredicate) {
-    if (GetParam() == "lance" || GetParam() == "avro") {
-        // lance and avro do not have stats
+    if (GetParam() == "avro") {
+        // Avro does not have stats.
         return;
     }
     CreateTable();
@@ -1602,9 +1602,6 @@ TEST_P(DataEvolutionTableTest, TestPredicate) {
 }
 
 TEST_P(DataEvolutionTableTest, TestIOException) {
-    if (GetParam() == "lance") {
-        return;
-    }
     std::string table_path;
     // write and commit with I/O exception
     bool write_run_complete = false;
@@ -1839,8 +1836,8 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
                               /*predicate=*/nullptr,
                               /*row_ranges=*/row_ranges));
     }
-    if (GetParam() == "lance" || GetParam() == "avro") {
-        // as lance and avro do not support stats
+    if (GetParam() == "avro") {
+        // Avro does not support stats.
         return;
     }
     {
@@ -1904,9 +1901,6 @@ std::vector<std::string> GetTestValuesForDataEvolutionTableTest() {
     values.emplace_back("parquet");
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
-#endif
-#ifdef PAIMON_ENABLE_LANCE
-    values.emplace_back("lance");
 #endif
 #ifdef PAIMON_ENABLE_AVRO
     values.emplace_back("avro");

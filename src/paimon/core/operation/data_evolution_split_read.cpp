@@ -199,7 +199,7 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
 
     std::unique_ptr<FileBatchReader> reader;
     if (!file_reader->SupportPreciseBitmapSelection() && selection_row_ids) {
-        // several format(e.g. lance, blob) will return accurate batch result, where
+        // Some formats (for example blob) return an accurate batch result, where
         // ApplyBitmapIndexBatchReader is not necessary
         reader = std::make_unique<ApplyBitmapIndexBatchReader>(
             std::move(file_reader), std::move(selection_row_ids).value());

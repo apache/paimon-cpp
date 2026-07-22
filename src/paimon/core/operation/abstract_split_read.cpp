@@ -148,10 +148,6 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReade
     const std::shared_ptr<DataFileMeta>& file_meta, const std::string& data_file_path,
     const ReaderBuilder* reader_builder) const {
     PAIMON_ASSIGN_OR_RAISE(std::string file_format_identifier, file_meta->FileFormat());
-    if (file_format_identifier == "lance") {
-        // lance do not support stream build with input stream
-        return reader_builder->Build(data_file_path);
-    }
     if (context_->EnablePrefetch() && file_format_identifier != "blob" &&
         file_format_identifier != "avro") {
         PAIMON_ASSIGN_OR_RAISE(
