@@ -73,7 +73,8 @@ class MergeFunctionWrapper;
 /// ->ConcatBatchReader across no overlapped
 /// files->KeyValueProjectionReader/AsyncKeyValueProjectionReader
 /// ->DropDeleteReader->SortMergeReader->ConcatKeyValueRecordReader->KeyValueDataFileRecordReader
-/// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(MapSharedShreddingFileReader)
+/// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ShreddingFileReader)
+/// ->(MapSharedShreddingFileReader)
 /// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
 class MergeFileSplitRead : public AbstractSplitRead {
  public:
