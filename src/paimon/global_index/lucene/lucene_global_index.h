@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,8 @@ namespace paimon::lucene {
 class LuceneGlobalIndex : public GlobalIndexer {
  public:
     explicit LuceneGlobalIndex(const std::map<std::string, std::string>& options);
+
+    Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override;
 
     Result<std::shared_ptr<GlobalIndexWriter>> CreateWriter(
         const std::string& field_name, ::ArrowSchema* arrow_schema,

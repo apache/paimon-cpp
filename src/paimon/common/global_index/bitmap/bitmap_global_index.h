@@ -20,6 +20,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,8 @@ namespace paimon {
 class BitmapGlobalIndex : public GlobalIndexer {
  public:
     explicit BitmapGlobalIndex(const std::shared_ptr<BitmapFileIndex>& index) : index_(index) {}
+
+    Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const override;
 
     Result<std::shared_ptr<GlobalIndexWriter>> CreateWriter(
         const std::string& field_name, ::ArrowSchema* arrow_schema,

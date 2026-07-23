@@ -20,6 +20,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,9 @@ namespace paimon {
 class PAIMON_EXPORT GlobalIndexer {
  public:
     virtual ~GlobalIndexer() = default;
+
+    /// Returns additional table fields required during index construction.
+    virtual Result<std::optional<std::vector<std::string>>> GetExtraFieldNames() const = 0;
 
     /// Creates a writer for building a global index on a specific field.
     ///
