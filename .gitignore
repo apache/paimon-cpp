@@ -20,6 +20,7 @@ build
 build-release
 build-debug
 output
+release
 
 # IDE settings
 .idea

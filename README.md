@@ -75,7 +75,7 @@ cp devcontainer.json.template devcontainer.json
 ## Collaboration
 
 Paimon-cpp is an active open-source project and we welcome people who want to contribute or share good ideas!
-Before contributing, please read the [Contributing Guide](CONTRIBUTING.md) and the [Code Style Guide](docs/code-style.md). You are encouraged to check out our [documentation](https://alibaba.github.io/paimon-cpp/).
+Before contributing, please read the [Contributing Guide](CONTRIBUTING.md) and the [Code Style Guide](docs/code-style.md). You are encouraged to check out our [documentation](https://paimon.apache.org/docs/cpp/).
 
 ## License
 

@@ -37,7 +37,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 project(paimon
-        VERSION 0.2.0
+        VERSION 0.2.3
         DESCRIPTION "Paimon C++ Project")
 
 string(TOUPPER "${CMAKE_BUILD_TYPE}" UPPERCASE_BUILD_TYPE)
