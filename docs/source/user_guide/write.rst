@@ -23,8 +23,8 @@ specify the target ``partition``. Data should be accumulated into ``RecordBatch`
 and written to Paimon.
 
 Paimon C++ uses Apache Arrow as the :ref:`in-memory columnar format<memory-format>`
-to more efficiently support writing to disk columnar formats such as ORC and
-Parquet, thereby improving write throughput.
+to more efficiently support writing to disk columnar formats such as ORC,
+Parquet, and Avro, thereby improving write throughput.
 
 .. note::
   Currently supported table types:
@@ -40,7 +40,7 @@ Bucketing Modes
 
 - Append tables:
 
-  * Support ``bucket = -1`` (dynamic bucket mode)
+  * Support ``bucket = -1`` (unaware-bucket mode)
   * Support ``bucket > 0`` (fixed bucket mode)
 
 - PK tables:
@@ -70,7 +70,7 @@ Prepare Commit
 ----------------
 
 The compute engine is responsible for triggering the writer nodes' ``PrepareCommit``.
-Triggering conditions depend on the engine’s business needs and can follow either:
+Triggering conditions depend on the engine's business needs and can follow either:
 
 - Streaming mode: time-based or periodic triggers (e.g., every N seconds).
 - Batch mode: trigger after all data in the batch has been written.
@@ -98,7 +98,7 @@ public interfaces. To preserve compatibility without leaking internal row
 representations, Paimon C++ provides ``CommitMessage`` only through:
 
 - Serialization: convert the internal commit state into a well-defined binary
-  representation that matches Java Paimon’s expectations.
+  representation that matches Java Paimon's expectations.
 - Deserialization: parse the Java-compatible binary representation back into
   C++ commit structures for validation, replay, or tooling needs.
 

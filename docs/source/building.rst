@@ -60,7 +60,6 @@ repository:
 
    $ git clone https://github.com/apache/paimon-cpp.git
    $ cd paimon-cpp
-   $ git lfs pull
 
 Manual configuration
 --------------------

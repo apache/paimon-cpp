@@ -29,7 +29,7 @@ as in-memory data format interface. Please ensure that Arrow C++ is installed
 and available to your build system
 
 The recommended way to integrate the Paimon C++ libraries into your C++ project
-is to use CMake’s `find_package <https://cmake.org/cmake/help/latest/command/find_package.html>`_
+is to use CMake's `find_package <https://cmake.org/cmake/help/latest/command/find_package.html>`_
 function to locate and integrate dependencies.
 
 CMake
