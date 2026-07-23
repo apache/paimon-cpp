@@ -47,10 +47,6 @@ class AvroReaderBuilder : public ReaderBuilder {
         return AvroFileBatchReader::Create(path, batch_size_, pool_);
     }
 
-    Result<std::unique_ptr<FileBatchReader>> Build(const std::string& path) const override {
-        return Status::Invalid("do not support build reader with path in avro format");
-    }
-
  private:
     const int32_t batch_size_;
     std::shared_ptr<MemoryPool> pool_;

@@ -54,10 +54,6 @@ class MockFormatReaderBuilder : public ReaderBuilder {
         return std::make_unique<MockFileBatchReader>(data_, schema_, read_batch_size_);
     }
 
-    Result<std::unique_ptr<FileBatchReader>> Build(const std::string& path) const override {
-        return Status::Invalid("do not support build reader with path in mock format");
-    }
-
  private:
     std::shared_ptr<arrow::Array> data_;
     std::shared_ptr<arrow::DataType> schema_;

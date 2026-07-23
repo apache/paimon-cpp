@@ -53,10 +53,6 @@ class ParquetReaderBuilder : public ReaderBuilder {
                                               batch_size_);
     }
 
-    Result<std::unique_ptr<FileBatchReader>> Build(const std::string& path) const override {
-        return Status::Invalid("do not support build reader with path in parquet format");
-    }
-
  private:
     int32_t batch_size_ = -1;
     std::shared_ptr<MemoryPool> pool_;
