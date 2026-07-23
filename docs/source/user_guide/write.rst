@@ -17,10 +17,10 @@
 
 Write
 =====
-Batch writing requires the compute engine to pre-bucket data (bucket), using the
-same bucketing strategy as Paimon to ensure correct ``Scan`` behavior, and to
-specify the target ``partition``. Data should be accumulated into ``RecordBatch``
-and written to Paimon.
+Batch writing requires the compute engine to specify the target ``partition``.
+For fixed-bucket tables, the engine must also assign a valid bucket to every
+``RecordBatch``. In unaware-bucket and postpone-bucket modes, the writer can
+resolve the bucket automatically when it is omitted.
 
 Paimon C++ uses Apache Arrow as the :ref:`in-memory columnar format<memory-format>`
 to more efficiently support writing to disk columnar formats such as ORC,
@@ -33,7 +33,6 @@ Parquet, and Avro, thereby improving write throughput.
 
   Not supported in the current scope:
     - Changelog
-    - Indexes
 
 Bucketing Modes
 ---------------
@@ -56,9 +55,15 @@ RecordBatch Construction
 
 - The compute engine must:
 
-  - Apply the Paimon-consistent bucketing function to each row prior to batching.
   - Assign the correct ``partition`` for each row.
-  - Group rows into Arrow ``RecordBatch`` per partition-bucket combination to minimize writer state changes and I/O overhead.
+  - In fixed-bucket mode, apply the Paimon-consistent bucketing function, set a
+    bucket in ``[0, bucket)``, and group rows into Arrow ``RecordBatch`` objects
+    per partition-bucket combination.
+
+- In unaware-bucket mode (append table with ``bucket = -1``), an omitted bucket
+  is resolved to ``0``.
+- In postpone-bucket mode (primary-key table with ``bucket = -2``), an omitted
+  bucket is resolved to ``-2``.
 
 - Recommended practices:
 
@@ -122,26 +127,27 @@ produce a correct ``Snapshot``, which commonly includes (but is not limited to):
 
 .. note::
 
-   Current C++ scope supports Append and PK tables. Changelog is out of
-   scope and should not be emitted in ``CommitMessage`` until
-   explicitly supported.
+   The C++ writer supports Append and PK tables and can produce
+   ``CommitMessage`` objects for both. ``FileStoreCommit`` currently executes
+   local commits only for append-only tables on non-object-store file systems.
+   PK and object-store commit messages must be sent to an external control
+   plane. Changelog is out of scope and should not be emitted in
+   ``CommitMessage`` until explicitly supported.
 
 Serialization and Deserialization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- Binary Format:
-  - The binary payload must strictly conform to Java Paimon’s ``CommitMessage`` encoding.
-  - Version tags or schema identifiers should be included to enable forwards/backwards compatibility and safe upgrades.
-
-- Serialization API:
-  - Provide a function to serialize the writer’s commit state into a byte buffer (or stream) consumable by Java Paimon.
-
-- Deserialization API:
-  - Provide a function to parse a Java-produced ``CommitMessage`` binary payload back into C++ commit structures for verification, replay, and testing.
-
-- Validation:
-  - Include conformance tests to assert that C++ serialized payloads are accepted by Java Paimon.
-  - Include round-trip tests to ensure C++ can parse Java-produced payloads and vice versa for supported message versions.
+- **Binary format:** The binary payload must strictly conform to Java Paimon's
+  ``CommitMessage`` encoding. It does not contain a version tag, so callers
+  must transport ``CommitMessage::CurrentVersion()`` separately and supply it
+  when deserializing.
+- **Serialization API:** Use ``CommitMessage::Serialize`` for one message or
+  ``CommitMessage::SerializeList`` for a list.
+- **Deserialization API:** Use ``CommitMessage::Deserialize`` or
+  ``CommitMessage::DeserializeList`` with the separately supplied
+  serialization version.
+- **Validation:** Conformance and round-trip tests must verify compatibility
+  with Java Paimon for supported message versions.
 
 Operational Flow
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -155,12 +161,15 @@ Operational Flow
 
 3. Each writer invokes ``PrepareCommit``, which:
    - Aggregates per-writer state into a ``CommitMessage``.
-   - Serializes the message into a Java-compatible binary payload.
+   - Returns ``CommitMessage`` objects; it does not serialize them.
 
-4. The compute engine gathers ``CommitMessages`` from all writers.
+4. The compute engine gathers ``CommitMessage`` objects from all writers. For
+   cross-process transport, it explicitly calls ``Serialize`` or
+   ``SerializeList`` and carries ``CurrentVersion()`` alongside the payload.
 
-5. The compute engine issues a ``Commit`` request to the control plane with the
-   collected messages, resulting in a new ``Snapshot``.
+5. For a supported local append-table commit, the engine passes the objects to
+   ``FileStoreCommit``. For PK tables or object-store paths, it sends the
+   serialized payload and version to an external control plane.
 
-6. The coordinator validates the messages, updates manifests/metadata, and
-   finalizes the snapshot atomically.
+6. The local committer or external coordinator validates the messages, updates
+   manifests/metadata, and finalizes the snapshot atomically.

@@ -32,8 +32,12 @@ namespace paimon {
 class CommitMessageSerializer;
 class MemoryPool;
 
-/// Commit message for partition and bucket. Support Serialize and Deserialize, compatible with java
-/// version.
+/// Commit message for partition and bucket. Supports serialization and deserialization compatible
+/// with the Java version.
+///
+/// @note Serialized payloads do not embed their serialization version. Transport
+/// `CurrentVersion()` alongside the payload and pass it explicitly to `Deserialize()` or
+/// `DeserializeList()`.
 // TODO(yonghao.fyh): to add some statistics of write (e.g., write bytes)
 class PAIMON_EXPORT CommitMessage {
  public:
@@ -44,6 +48,7 @@ class PAIMON_EXPORT CommitMessage {
 
     /// Serializes a single commit message to a binary string format.
     /// The serialized format is compatible with the Java version of Paimon.
+    /// The serialization version is not included in the returned payload.
     /// @param commit_message The commit message to serialize.
     /// @param pool Memory pool for memory allocation during serialization.
     /// @return Result containing the serialized string data, or an error if serialization fails.
@@ -51,6 +56,7 @@ class PAIMON_EXPORT CommitMessage {
                                          const std::shared_ptr<MemoryPool>& pool);
 
     /// Serializes a list of commit messages to a binary string format.
+    /// The serialization version is not included in the returned payload.
     /// @param commit_messages Vector of commit messages to serialize.
     /// @param pool Memory pool for memory allocation during serialization.
     /// @return Result containing the serialized string data, or an error if serialization fails.

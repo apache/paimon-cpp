@@ -43,6 +43,11 @@ class CommitMessage;
 ///
 /// The `FileStoreCommit` class provides interfaces for committing changes, expiring old snapshots,
 /// dropping partitions, and retrieving commit metrics.
+///
+/// @note Local commit execution currently supports append-only tables on non-object-store file
+/// systems. `Create()` returns `NotImplemented` for primary-key tables and object-store paths.
+/// Primary-key writers can still produce `CommitMessage` objects; those messages must be committed
+/// by an external control plane.
 class PAIMON_EXPORT FileStoreCommit {
  public:
     /// Create an instance of `FileStoreCommit`.
