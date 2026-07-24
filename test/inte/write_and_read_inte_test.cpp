@@ -365,10 +365,8 @@ TEST_P(WriteAndReadInteTest, TestPKSimple) {
 }
 
 TEST_P(WriteAndReadInteTest, TestNestedType) {
-    // Represent a map as list(struct(key, value)) for cross-format compatibility.
     arrow::FieldVector fields = {
-        arrow::field("f1", arrow::list(arrow::struct_({arrow::field("key", arrow::int8()),
-                                                       arrow::field("value", arrow::int16())}))),
+        arrow::field("f1", arrow::map(arrow::int8(), arrow::int16())),
         arrow::field("f2", arrow::list(arrow::float32())),
         arrow::field("f3", arrow::struct_({arrow::field("f0", arrow::boolean()),
                                            arrow::field("f1", arrow::int64())})),

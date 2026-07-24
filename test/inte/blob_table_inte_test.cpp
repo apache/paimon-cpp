@@ -1948,9 +1948,6 @@ TEST_P(BlobTableInteTest, TestReadTableWithMultiBlobFields) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorField) {
-    if (GetParam() == "lance") {
-        return;
-    }
     // Two blob fields configured via BLOB_DESCRIPTOR_FIELD and stored inline as descriptors.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("b0", true),
@@ -2004,9 +2001,6 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorField) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorFieldPartialInline) {
-    if (GetParam() == "lance") {
-        return;
-    }
     // 4 blob fields: b0,b1 are inline descriptors; b2,b3 are regular blob fields written to
     // .blob files.
     arrow::FieldVector fields = {
@@ -2068,9 +2062,6 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorFieldPartialInline) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorMultiCommitAndShuffledReadSchema) {
-    if (GetParam() == "lance") {
-        return;
-    }
     // Multiple write+commit rounds with a shuffled read schema: b3, b2, b1, b0, f0.
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::int32()), BlobUtils::ToArrowField("b0", true),
@@ -2441,9 +2432,6 @@ TEST_P(BlobTableInteTest, TestOrcMapStorageLayoutEvolutionWithBlobDataEvolution)
 }
 
 TEST_P(BlobTableInteTest, TestDataEvolutionWithBlobDescriptorField) {
-    if (GetParam() == "lance") {
-        return;
-    }
     // Test DataEvolution (split-column write) combined with blob descriptor fields.
     // Schema: f0(int32), b0/b1(blob descriptor inline), b2/b3(blob).
     // Commit 1: file A writes (f0, b2, b3)
@@ -2565,9 +2553,6 @@ TEST_P(BlobTableInteTest, TestDataEvolutionWithBlobDescriptorField) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorFieldWriteRawBytesDirectly) {
-    if (GetParam() == "lance") {
-        return;
-    }
     // Similar to TestBlobDescriptorField but writes raw bytes directly without converting to
     // descriptor first. Descriptor fields reject values without the descriptor magic header.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
@@ -2922,9 +2907,6 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
 
 TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
     auto file_format = GetParam();
-    if (GetParam() == "lance") {
-        return;
-    }
     // Upstream table has two blob descriptor fields. The downstream view references cells from
     // both b0 (field_id=1) and b1 (field_id=2).
     const std::string upstream_db_name = "upstream_two_blob";
@@ -3211,9 +3193,6 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
 
 TEST_P(BlobTableInteTest, TestBlobViewFailsWhenBothPathsAbsent) {
     auto file_format = GetParam();
-    if (GetParam() == "lance") {
-        return;
-    }
     auto upstream_dir = UniqueTestDirectory::Create("local");
     const std::string upstream_db_name = "nonexistent_db";
     const std::string upstream_table_name = "nonexistent_table";
@@ -3264,9 +3243,6 @@ TEST_P(BlobTableInteTest, TestBlobViewFailsWhenBothPathsAbsent) {
 
 TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
     auto file_format = GetParam();
-    if (GetParam() == "lance") {
-        return;
-    }
     const std::string upstream_db_name = "fallback_db";
     const std::string upstream_table_name = "fallback_table";
     arrow::FieldVector upstream_fields = {arrow::field("f0", arrow::int32()),

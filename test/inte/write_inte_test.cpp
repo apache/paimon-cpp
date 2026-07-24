@@ -1942,7 +1942,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
 
     // Loop bound must exceed the workflow's total IO operations so the loop can
     // naturally terminate at the iteration where injection position falls past
-    // the last IO. Measured IO counts: orc=310, parquet=506, avro=195, lance=69.
+    // the last IO. Measured IO counts: orc=310, parquet=506, avro=195.
     // 1000 leaves headroom for future format/workflow changes.
     for (size_t i = 0; i < 1000; i++) {
         auto dir = UniqueTestDirectory::Create();

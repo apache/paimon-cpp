@@ -27,7 +27,7 @@
 namespace paimon {
 class Cache;
 
-/// Create a file batch reader based on the file path. Allows you to specify memory pool.
+/// Create a file batch reader based on an input stream. Allows you to specify memory pool.
 class PAIMON_EXPORT ReaderBuilder {
  public:
     virtual ~ReaderBuilder() = default;
