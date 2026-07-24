@@ -167,9 +167,8 @@ for required_file in LICENSE NOTICE CMakeLists.txt docs/source/conf.py; do
 done
 
 CMAKE_VERSION=$(
-    sed -n 's/^[[:space:]]*VERSION[[:space:]]\+\([0-9][0-9.]*\).*$/\1/p' \
-        "${SOURCE_DIR}/CMakeLists.txt" |
-        head -n 1
+    awk '$1 == "VERSION" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ { print $2; exit }' \
+        "${SOURCE_DIR}/CMakeLists.txt"
 )
 [[ "${CMAKE_VERSION}" == "${RELEASE_VERSION}" ]] ||
     fail "CMake version ${CMAKE_VERSION:-<missing>} does not match ${RELEASE_VERSION}"
