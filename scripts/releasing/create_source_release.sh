@@ -115,8 +115,7 @@ done
 
 CMAKE_VERSION=$(
     git -C "${SOURCE_ROOT}" show "${GIT_REF}:CMakeLists.txt" |
-        sed -n 's/^[[:space:]]*VERSION[[:space:]]\+\([0-9][0-9.]*\).*$/\1/p' |
-        head -n 1
+        awk '$1 == "VERSION" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ { print $2; exit }'
 )
 [[ "${CMAKE_VERSION}" == "${RELEASE_VERSION}" ]] ||
     fail "CMake version ${CMAKE_VERSION:-<missing>} does not match ${RELEASE_VERSION}"
