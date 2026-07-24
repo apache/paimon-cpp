@@ -37,7 +37,8 @@ if(TARGET Arrow::arrow_shared)
 elseif(TARGET Arrow::arrow_static)
     set(PAIMON_EXAMPLE_ARROW_TARGET Arrow::arrow_static)
 else()
-    message(FATAL_ERROR "Neither Arrow::arrow_shared nor Arrow::arrow_static is available")
+    message(FATAL_ERROR "Neither Arrow::arrow_shared nor Arrow::arrow_static is available"
+    )
 endif()
 
 add_executable(read_write_demo read_write_demo.cpp)
