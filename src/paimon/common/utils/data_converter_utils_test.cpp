@@ -20,6 +20,7 @@
 #include "paimon/common/utils/data_converter_utils.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -71,7 +72,7 @@ TEST(DataConverterUtilsTest, TestDataToBinaryRowConverterWithLegacyPartitionName
     ASSERT_EQ(data.size(), row.GetFieldCount());
     ASSERT_EQ(true, row.GetBoolean(0));
     ASSERT_EQ(10, row.GetByte(1));
-    ASSERT_EQ(-20, row.GetByte(2));
+    ASSERT_EQ(-20, static_cast<std::int8_t>(row.GetByte(2)));
     ASSERT_EQ(1556, row.GetShort(3));
     ASSERT_EQ(-2556, row.GetShort(4));
     ASSERT_EQ(348489, row.GetInt(5));
@@ -125,7 +126,7 @@ TEST(DataConverterUtilsTest, TestDataToBinaryRowConverterWithNoLegacyPartitionNa
     ASSERT_EQ(data.size(), row.GetFieldCount());
     ASSERT_EQ(true, row.GetBoolean(0));
     ASSERT_EQ(10, row.GetByte(1));
-    ASSERT_EQ(-20, row.GetByte(2));
+    ASSERT_EQ(-20, static_cast<std::int8_t>(row.GetByte(2)));
     ASSERT_EQ(1556, row.GetShort(3));
     ASSERT_EQ(-2556, row.GetShort(4));
     ASSERT_EQ(348489, row.GetInt(5));

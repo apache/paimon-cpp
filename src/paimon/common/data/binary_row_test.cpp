@@ -341,10 +341,10 @@ TEST_F(BinaryRowTest, TestBinary) {
     auto pool = GetDefaultPool();
     BinaryRow row(2);
     BinaryRowWriter writer(&row, 0, pool.get());
-    char chars1[3] = {1, -1, 5};
-    char chars2[8] = {1, -1, 5, 5, 1, 5, 1, 5};
-    std::string str1(chars1, 3);
-    std::string str2(chars2, 8);
+    std::uint8_t chars1[3] = {1, 0xff, 5};
+    std::uint8_t chars2[8] = {1, 0xff, 5, 5, 1, 5, 1, 5};
+    std::string str1(reinterpret_cast<const char*>(chars1), 3);
+    std::string str2(reinterpret_cast<const char*>(chars2), 8);
     Bytes bytes1(str1, pool.get());
     Bytes bytes2(str2, pool.get());
 

@@ -18,7 +18,10 @@
 
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
@@ -35,6 +38,17 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::test {
+namespace {
+
+const char* AsCharData(const std::vector<std::uint8_t>& bytes) {
+    return reinterpret_cast<const char*>(bytes.data());
+}
+
+std::vector<std::uint8_t> ToBytes(const char* data, std::size_t size) {
+    return std::vector<std::uint8_t>(data, data + size);
+}
+
+}  // namespace
 class BitmapIndexTest : public ::testing::Test {
  public:
     void SetUp() override {
@@ -135,22 +149,24 @@ TEST_F(BitmapIndexTest, TestStringType) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {
-            1, 0, 0, 0,  5,  0,  0,  0,  2,  1,  0, 0, 0, 0, 0, 0, 0,  1, 97, 0, 0,  0, 20, 0,
-            0, 0, 1, 98, -1, -1, -1, -3, 58, 48, 0, 0, 1, 0, 0, 0, 0,  0, 1,  0, 16, 0, 0,  0,
-            1, 0, 3, 0,  58, 48, 0,  0,  1,  0,  0, 0, 0, 0, 1, 0, 16, 0, 0,  0, 0,  0, 4,  0};
+        std::vector<std::uint8_t> index_bytes = {
+            1,  0, 0, 0, 5,  0, 0, 0, 2,  1,  0,    0,    0,    0,    0,  0,  0,  1,
+            97, 0, 0, 0, 20, 0, 0, 0, 1,  98, 0xff, 0xff, 0xff, 0xfd, 58, 48, 0,  0,
+            1,  0, 0, 0, 0,  0, 1, 0, 16, 0,  0,    0,    1,    0,    3,  0,  58, 48,
+            0,  0, 1, 0, 0,  0, 0, 0, 1,  0,  16,   0,    0,    0,    0,  0,  4,  0};
 
-        check_result(index_bytes.data(), index_bytes.size());
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {
-            2,  0,  0,  0,  5, 0,  0, 0, 2, 1,  0, 0, 0, 0,  0,  0,  0,  20, 0,  0,  0,
-            1,  0,  0,  0,  1, 97, 0, 0, 0, 0,  0, 0, 0, 30, 0,  0,  0,  2,  0,  0,  0,
-            1,  97, 0,  0,  0, 20, 0, 0, 0, 20, 0, 0, 0, 1,  98, -1, -1, -1, -3, -1, -1,
-            -1, -1, 58, 48, 0, 0,  1, 0, 0, 0,  0, 0, 1, 0,  16, 0,  0,  0,  1,  0,  3,
-            0,  58, 48, 0,  0, 1,  0, 0, 0, 0,  0, 1, 0, 16, 0,  0,  0,  0,  0,  4,  0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            2, 0, 0,  0,    5,    0,    0,    0,    2,    1,    0,    0,  0,  0,  0,  0,  0,  20,
+            0, 0, 0,  1,    0,    0,    0,    1,    97,   0,    0,    0,  0,  0,  0,  0,  30, 0,
+            0, 0, 2,  0,    0,    0,    1,    97,   0,    0,    0,    20, 0,  0,  0,  20, 0,  0,
+            0, 1, 98, 0xff, 0xff, 0xff, 0xfd, 0xff, 0xff, 0xff, 0xff, 58, 48, 0,  0,  1,  0,  0,
+            0, 0, 0,  1,    0,    16,   0,    0,    0,    1,    0,    3,  0,  58, 48, 0,  0,  1,
+            0, 0, 0,  0,    0,    1,    0,    16,   0,    0,    0,    0,  0,  4,  0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
 }
 
@@ -198,20 +214,21 @@ TEST_F(BitmapIndexTest, TestBooleanType) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {1, 0, 0, 0, 5,  0, 0, 0,  2,  1,  -1, -1, -1, -5, 0, 0,
-                                         0, 0, 0, 1, 0,  0, 0, 20, 58, 48, 0,  0,  1,  0,  0, 0,
-                                         0, 0, 1, 0, 16, 0, 0, 0,  1,  0,  3,  0,  58, 48, 0, 0,
-                                         1, 0, 0, 0, 0,  0, 1, 0,  16, 0,  0,  0,  0,  0,  2, 0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            1,  0,  0,  0,  5, 0, 0, 0, 2, 1, 0xff, 0xff, 0xff, 0xfb, 0,  0, 0, 0, 0, 1, 0, 0,
+            0,  20, 58, 48, 0, 0, 1, 0, 0, 0, 0,    0,    1,    0,    16, 0, 0, 0, 1, 0, 3, 0,
+            58, 48, 0,  0,  1, 0, 0, 0, 0, 0, 1,    0,    16,   0,    0,  0, 0, 0, 2, 0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {
-            2,  0,  0,  0, 5,  0,  0,  0, 2, 1, -1, -1, -1, -5, 0, 0, 0, 18, 0, 0,  0, 1, 0, 0,
-            0,  0,  0,  0, 0,  0,  22, 0, 0, 0, 2,  0,  0,  0,  0, 0, 0, 0,  0, 20, 1, 0, 0, 0,
-            20, 0,  0,  0, 20, 58, 48, 0, 0, 1, 0,  0,  0,  0,  0, 1, 0, 16, 0, 0,  0, 1, 0, 3,
-            0,  58, 48, 0, 0,  1,  0,  0, 0, 0, 0,  1,  0,  16, 0, 0, 0, 0,  0, 2,  0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            2, 0, 0, 0, 5, 0,  0, 0, 2,  1,  0xff, 0xff, 0xff, 0xfb, 0,  0,  0,  18, 0,
+            0, 0, 1, 0, 0, 0,  0, 0, 0,  0,  0,    22,   0,    0,    0,  2,  0,  0,  0,
+            0, 0, 0, 0, 0, 20, 1, 0, 0,  0,  20,   0,    0,    0,    20, 58, 48, 0,  0,
+            1, 0, 0, 0, 0, 0,  1, 0, 16, 0,  0,    0,    1,    0,    3,  0,  58, 48, 0,
+            0, 1, 0, 0, 0, 0,  0, 1, 0,  16, 0,    0,    0,    0,    0,  2,  0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
 }
 
@@ -257,20 +274,20 @@ TEST_F(BitmapIndexTest, TestTinyIntType) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {1, 0, 0,  0,  5,  0,  0, 0, 1, 1,  0,  0, 0, 0, 1, 0,
-                                         0, 0, 22, 58, 48, 0,  0, 1, 0, 0,  0,  0, 0, 2, 0, 16,
-                                         0, 0, 0,  0,  0,  1,  0, 2, 0, 58, 48, 0, 0, 1, 0, 0,
-                                         0, 0, 0,  1,  0,  16, 0, 0, 0, 3,  0,  4, 0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            1,  0, 0, 0, 5, 0, 0, 0, 1, 1, 0,  0,  0, 0, 1, 0, 0, 0, 22, 58, 48,
+            0,  0, 1, 0, 0, 0, 0, 0, 2, 0, 16, 0,  0, 0, 0, 0, 1, 0, 2,  0,  58,
+            48, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0,  16, 0, 0, 0, 3, 0, 4, 0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {
+        std::vector<std::uint8_t> index_bytes = {
             2,  0,  0, 0, 5, 0, 0, 0, 1,  1, 0, 0, 0,  0, 0, 0, 0, 22, 0, 0, 0, 1,
             1,  0,  0, 0, 0, 0, 0, 0, 13, 0, 0, 0, 1,  1, 0, 0, 0, 22, 0, 0, 0, 20,
             58, 48, 0, 0, 1, 0, 0, 0, 0,  0, 2, 0, 16, 0, 0, 0, 0, 0,  1, 0, 2, 0,
             58, 48, 0, 0, 1, 0, 0, 0, 0,  0, 1, 0, 16, 0, 0, 0, 3, 0,  4, 0};
-        check_result(index_bytes.data(), index_bytes.size());
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
 }
 
@@ -317,27 +334,26 @@ TEST_F(BitmapIndexTest, TestSmallIntType) {
     // as unique non-null value cardinality = 1, can test compatible with java
     {
         // test v1 version
-        std::vector<char> index_bytes = {1, 0, 0,  0,  5, 0, 0, 0, 1, 1, -1, -1, -1, -1, 0, 1, 0, 0,
-                                         0, 0, 59, 48, 0, 0, 1, 0, 0, 3, 0,  1,  0,  1,  0, 3, 0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {1,    0,    0, 0, 5, 0, 0, 0, 1,  1,  0xff, 0xff,
+                                                 0xff, 0xff, 0, 1, 0, 0, 0, 0, 59, 48, 0,    0,
+                                                 1,    0,    0, 3, 0, 1, 0, 1, 0,  3,  0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
 
         // test compatible with java
         ASSERT_OK_AND_ASSIGN(auto index_bytes2, write_data(/*version=*/1));
-        ASSERT_EQ(index_bytes, std::vector<char>(index_bytes2->data(),
-                                                 index_bytes2->data() + index_bytes2->size()));
+        ASSERT_EQ(index_bytes, ToBytes(index_bytes2->data(), index_bytes2->size()));
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {2, 0,  0, 0, 5, 0, 0, 0, 1, 1, -1, -1, -1, -1, 0,  0,
-                                         0, 18, 0, 0, 0, 1, 0, 1, 0, 0, 0,  0,  0,  0,  0,  14,
-                                         0, 0,  0, 1, 0, 1, 0, 0, 0, 0, 0,  0,  0,  15, 59, 48,
-                                         0, 0,  1, 0, 0, 3, 0, 1, 0, 1, 0,  3,  0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            2, 0, 0, 0,  5,  0,  0, 0, 1, 1, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 18, 0, 0, 0,
+            1, 0, 1, 0,  0,  0,  0, 0, 0, 0, 14,   0,    0,    0,    1, 0, 1, 0,  0, 0, 0,
+            0, 0, 0, 15, 59, 48, 0, 0, 1, 0, 0,    3,    0,    1,    0, 1, 0, 3,  0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
 
         // test compatible with java
         ASSERT_OK_AND_ASSIGN(auto index_bytes2, write_data(/*version=*/2));
-        ASSERT_EQ(index_bytes, std::vector<char>(index_bytes2->data(),
-                                                 index_bytes2->data() + index_bytes2->size()));
+        ASSERT_EQ(index_bytes, ToBytes(index_bytes2->data(), index_bytes2->size()));
     }
 }
 
@@ -382,24 +398,25 @@ TEST_F(BitmapIndexTest, TestBigIntType) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {1,  0,  0,  0,  3,  0,  0, 0, 3, 0, 0,  0,  0,  0, 0,  0,
-                                         0,  1,  -1, -1, -1, -1, 0, 0, 0, 0, 0,  0,  0,  2, -1, -1,
-                                         -1, -2, 0,  0,  0,  0,  0, 0, 0, 3, -1, -1, -1, -3};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {1, 0, 0, 0, 3, 0, 0,    0,    3,    0,    0, 0,
+                                                 0, 0, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0, 0,
+                                                 0, 0, 0, 0, 0, 2, 0xff, 0xff, 0xff, 0xfe, 0, 0,
+                                                 0, 0, 0, 0, 0, 3, 0xff, 0xff, 0xff, 0xfd};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {
-            2,  0,  0,  0,  3,  0,  0,  0,  3,  0, 0, 0,  0,  1,  0,  0,  0,  0,  0,  0,  0,
-            1,  0,  0,  0,  0,  0,  0,  0,  52, 0, 0, 0,  3,  0,  0,  0,  0,  0,  0,  0,  1,
-            -1, -1, -1, -1, -1, -1, -1, -1, 0,  0, 0, 0,  0,  0,  0,  2,  -1, -1, -1, -2, -1,
-            -1, -1, -1, 0,  0,  0,  0,  0,  0,  0, 3, -1, -1, -1, -3, -1, -1, -1, -1};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            2, 0, 0, 0, 3, 0, 0,    0,    3,    0,    0,    0,    0,    1,    0,    0,    0,
+            0, 0, 0, 0, 1, 0, 0,    0,    0,    0,    0,    0,    52,   0,    0,    0,    3,
+            0, 0, 0, 0, 0, 0, 0,    1,    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0,
+            0, 0, 0, 0, 0, 0, 2,    0xff, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 0,    0,
+            0, 0, 0, 0, 0, 3, 0xff, 0xff, 0xff, 0xfd, 0xff, 0xff, 0xff, 0xff};
+        check_result(AsCharData(index_bytes), index_bytes.size());
 
         // test compatible with java
         ASSERT_OK_AND_ASSIGN(auto index_bytes2, write_data(/*version=*/2));
-        ASSERT_EQ(index_bytes, std::vector<char>(index_bytes2->data(),
-                                                 index_bytes2->data() + index_bytes2->size()));
+        ASSERT_EQ(index_bytes, ToBytes(index_bytes2->data(), index_bytes2->size()));
     }
 }
 
@@ -448,23 +465,23 @@ TEST_F(BitmapIndexTest, TestDateType) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {
+        std::vector<std::uint8_t> index_bytes = {
             1,  0,    0,  0, 6,  0,  0,  0,  2,  1, 0, 0, 0, 0,  1, 52, 59, 28, 0, 0,  0, 20, 1,
-            52, -119, 62, 0, 0,  0,  40, 58, 48, 0, 0, 1, 0, 0,  0, 0,  0,  1,  0, 16, 0, 0,  0,
+            52, 0x89, 62, 0, 0,  0,  40, 58, 48, 0, 0, 1, 0, 0,  0, 0,  0,  1,  0, 16, 0, 0,  0,
             2,  0,    3,  0, 58, 48, 0,  0,  1,  0, 0, 0, 0, 0,  1, 0,  16, 0,  0, 0,  0, 0,  1,
             0,  58,   48, 0, 0,  1,  0,  0,  0,  0, 0, 1, 0, 16, 0, 0,  0,  4,  0, 5,  0};
-        check_result(index_bytes.data(), index_bytes.size());
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {
+        std::vector<std::uint8_t> index_bytes = {
             2,  0, 0,  0,  6,  0, 0, 0,  2, 1,  0,    0,  0,  0, 0, 0,  0, 20, 0,  0,  0,
             1,  1, 52, 59, 28, 0, 0, 0,  0, 0,  0,    0,  28, 0, 0, 0,  2, 1,  52, 59, 28,
-            0,  0, 0,  20, 0,  0, 0, 20, 1, 52, -119, 62, 0,  0, 0, 40, 0, 0,  0,  20, 58,
+            0,  0, 0,  20, 0,  0, 0, 20, 1, 52, 0x89, 62, 0,  0, 0, 40, 0, 0,  0,  20, 58,
             48, 0, 0,  1,  0,  0, 0, 0,  0, 1,  0,    16, 0,  0, 0, 2,  0, 3,  0,  58, 48,
             0,  0, 1,  0,  0,  0, 0, 0,  1, 0,  16,   0,  0,  0, 0, 0,  1, 0,  58, 48, 0,
             0,  1, 0,  0,  0,  0, 0, 1,  0, 16, 0,    0,  0,  4, 0, 5,  0};
-        check_result(index_bytes.data(), index_bytes.size());
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
 }
 
@@ -511,17 +528,19 @@ TEST_F(BitmapIndexTest, TestIntType) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {1, 0, 0, 0,  3,  0,  0,  0, 2, 1, -1, -1, -1, -3, 0,
-                                         0, 0, 0, -1, -1, -1, -1, 0, 0, 0, 1,  -1, -1, -1, -2};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            1, 0, 0, 0,    3,    0,    0,    0, 2, 1, 0xff, 0xff, 0xff, 0xfd, 0,
+            0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 1,    0xff, 0xff, 0xff, 0xfe};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {2,  0,  0, 0, 3, 0, 0,  0,  2,  1,  -1, -1, -1, -3, 0,  0,
-                                         0,  18, 0, 0, 0, 1, 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-                                         0,  28, 0, 0, 0, 2, 0,  0,  0,  0,  -1, -1, -1, -1, -1, -1,
-                                         -1, -1, 0, 0, 0, 1, -1, -1, -1, -2, -1, -1, -1, -1};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            2,    0,    0, 0, 3, 0, 0,    0,    2,    1,    0xff, 0xff, 0xff, 0xfd, 0,    0,
+            0,    18,   0, 0, 0, 1, 0,    0,    0,    0,    0,    0,    0,    0,    0,    0,
+            0,    28,   0, 0, 0, 2, 0,    0,    0,    0,    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xff, 0xff};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
 }
 
@@ -594,28 +613,33 @@ TEST_F(BitmapIndexTest, TestTimestampType) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {
-            1,   0,   0,  0,  8,  0,    0,   0,   6,  1,   -1, -1,   -1,  -6,  0,    6,  51, -113,
-            -38, -89, 72, -5, 0,  0,    0,   0,   -1, -1,  -1, -1,   -1,  -27, -82,  51, -1, -1,
-            -1,  -8,  -1, -1, -1, -1,   -1,  -27, 17, -13, -1, -1,   -1,  -5,  -1,   -1, -1, -1,
-            -1,  -27, 96, 19, -1, -1,   -1,  -4,  0,  6,   51, -113, -50, -69, -122, -5, -1, -1,
-            -1,  -3,  0,  6,  51, -113, -32, -99, 41, -5,  -1, -1,   -1,  -2,  58,   48, 0,  0,
-            1,   0,   0,  0,  0,  0,    1,   0,   16, 0,   0,  0,    0,   0,   6,    0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            1,    0,    0,    0,    8,    0,    0,    0,    6,    1,    0xff, 0xff, 0xff, 0xfa,
+            0,    6,    51,   0x8f, 0xda, 0xa7, 72,   0xfb, 0,    0,    0,    0,    0xff, 0xff,
+            0xff, 0xff, 0xff, 0xe5, 0xae, 51,   0xff, 0xff, 0xff, 0xf8, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xe5, 17,   0xf3, 0xff, 0xff, 0xff, 0xfb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe5,
+            96,   19,   0xff, 0xff, 0xff, 0xfc, 0,    6,    51,   0x8f, 0xce, 0xbb, 0x86, 0xfb,
+            0xff, 0xff, 0xff, 0xfd, 0,    6,    51,   0x8f, 0xe0, 0x9d, 41,   0xfb, 0xff, 0xff,
+            0xff, 0xfe, 58,   48,   0,    0,    1,    0,    0,    0,    0,    0,    1,    0,
+            16,   0,    0,    0,    0,    0,    6,    0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {
-            2,   0,    0,   0,    8,   0,   0,    0,   6,   1,   -1, -1,  -1, -6,  0,  0,  0,  18,
-            0,   0,    0,   1,    -1,  -1,  -1,   -1,  -1,  -27, 17, -13, 0,  0,   0,  0,  0,  0,
-            0,   100,  0,   0,    0,   6,   -1,   -1,  -1,  -1,  -1, -27, 17, -13, -1, -1, -1, -5,
-            -1,  -1,   -1,  -1,   -1,  -1,  -1,   -1,  -1,  -27, 96, 19,  -1, -1,  -1, -4, -1, -1,
-            -1,  -1,   -1,  -1,   -1,  -1,  -1,   -27, -82, 51,  -1, -1,  -1, -8,  -1, -1, -1, -1,
-            0,   6,    51,  -113, -50, -69, -122, -5,  -1,  -1,  -1, -3,  -1, -1,  -1, -1, 0,  6,
-            51,  -113, -38, -89,  72,  -5,  0,    0,   0,   0,   0,  0,   0,  20,  0,  6,  51, -113,
-            -32, -99,  41,  -5,   -1,  -1,  -1,   -2,  -1,  -1,  -1, -1,  58, 48,  0,  0,  1,  0,
-            0,   0,    0,   0,    1,   0,   16,   0,   0,   0,   0,  0,   6,  0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {
+            2,    0,    0,    0,    8,    0,    0,    0,    6,    1,    0xff, 0xff, 0xff, 0xfa,
+            0,    0,    0,    18,   0,    0,    0,    1,    0xff, 0xff, 0xff, 0xff, 0xff, 0xe5,
+            17,   0xf3, 0,    0,    0,    0,    0,    0,    0,    100,  0,    0,    0,    6,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xe5, 17,   0xf3, 0xff, 0xff, 0xff, 0xfb, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe5, 96,   19,   0xff, 0xff, 0xff, 0xfc,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe5, 0xae, 51,   0xff, 0xff,
+            0xff, 0xf8, 0xff, 0xff, 0xff, 0xff, 0,    6,    51,   0x8f, 0xce, 0xbb, 0x86, 0xfb,
+            0xff, 0xff, 0xff, 0xfd, 0xff, 0xff, 0xff, 0xff, 0,    6,    51,   0x8f, 0xda, 0xa7,
+            72,   0xfb, 0,    0,    0,    0,    0,    0,    0,    20,   0,    6,    51,   0x8f,
+            0xe0, 0x9d, 41,   0xfb, 0xff, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 58,   48,
+            0,    0,    1,    0,    0,    0,    0,    0,    1,    0,    16,   0,    0,    0,
+            0,    0,    6,    0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
     }
 }
 
@@ -731,25 +755,23 @@ TEST_F(BitmapIndexTest, TestCompatibleWithJava) {
     };
     {
         // test v1 version
-        std::vector<char> java_index_bytes = {
+        std::vector<std::uint8_t> java_index_bytes = {
             1, 0,  0,  0,  5,  0,  0, 0, 1, 1, 0, 0, 0, 0,  0, 0, 0,  5, 97, 112, 112, 108, 101,
             0, 0,  0,  20, 58, 48, 0, 0, 1, 0, 0, 0, 0, 0,  1, 0, 16, 0, 0,  0,   1,   0,   3,
             0, 58, 48, 0,  0,  1,  0, 0, 0, 0, 0, 2, 0, 16, 0, 0, 0,  0, 0,  2,   0,   4,   0};
         ASSERT_OK_AND_ASSIGN(auto index_bytes, write_data(/*version=*/1));
-        ASSERT_EQ(java_index_bytes, std::vector<char>(index_bytes->data(),
-                                                      index_bytes->data() + index_bytes->size()));
+        ASSERT_EQ(java_index_bytes, ToBytes(index_bytes->data(), index_bytes->size()));
     }
     {
         // test v2 version
-        std::vector<char> java_index_bytes = {
+        std::vector<std::uint8_t> java_index_bytes = {
             2, 0, 0, 0, 5, 0,  0,   0,   1,   1,   0, 0, 0, 0,  0, 0, 0, 20, 0,  0,  0,
             1, 0, 0, 0, 5, 97, 112, 112, 108, 101, 0, 0, 0, 0,  0, 0, 0, 21, 0,  0,  0,
             1, 0, 0, 0, 5, 97, 112, 112, 108, 101, 0, 0, 0, 20, 0, 0, 0, 22, 58, 48, 0,
             0, 1, 0, 0, 0, 0,  0,   1,   0,   16,  0, 0, 0, 1,  0, 3, 0, 58, 48, 0,  0,
             1, 0, 0, 0, 0, 0,  2,   0,   16,  0,   0, 0, 0, 0,  2, 0, 4, 0};
         ASSERT_OK_AND_ASSIGN(auto index_bytes, write_data(/*version=*/2));
-        ASSERT_EQ(java_index_bytes, std::vector<char>(index_bytes->data(),
-                                                      index_bytes->data() + index_bytes->size()));
+        ASSERT_EQ(java_index_bytes, ToBytes(index_bytes->data(), index_bytes->size()));
     }
 }
 
@@ -793,26 +815,24 @@ TEST_F(BitmapIndexTest, TestAllNull) {
     }
     {
         // test v1 version
-        std::vector<char> index_bytes = {1,  0, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0, 0, 59,
-                                         48, 0, 0, 1, 0, 0, 3, 0, 1, 0, 0, 0, 3, 0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {1,  0, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0, 0, 59,
+                                                 48, 0, 0, 1, 0, 0, 3, 0, 1, 0, 0, 0, 3, 0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
 
         // test compatible
         ASSERT_OK_AND_ASSIGN(auto index_bytes2, write_data(/*version=*/1));
-        ASSERT_EQ(index_bytes, std::vector<char>(index_bytes2->data(),
-                                                 index_bytes2->data() + index_bytes2->size()));
+        ASSERT_EQ(index_bytes, ToBytes(index_bytes2->data(), index_bytes2->size()));
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {2, 0, 0, 0,  4, 0, 0, 0, 0, 1, 0, 0, 0,  0,
-                                         0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 59, 48,
-                                         0, 0, 1, 0,  0, 3, 0, 1, 0, 0, 0, 3, 0};
-        check_result(index_bytes.data(), index_bytes.size());
+        std::vector<std::uint8_t> index_bytes = {2, 0, 0, 0,  4, 0, 0, 0, 0, 1, 0, 0, 0,  0,
+                                                 0, 0, 0, 15, 0, 0, 0, 0, 0, 0, 0, 0, 59, 48,
+                                                 0, 0, 1, 0,  0, 3, 0, 1, 0, 0, 0, 3, 0};
+        check_result(AsCharData(index_bytes), index_bytes.size());
 
         // test compatible
         ASSERT_OK_AND_ASSIGN(auto index_bytes2, write_data(/*version=*/2));
-        ASSERT_EQ(index_bytes, std::vector<char>(index_bytes2->data(),
-                                                 index_bytes2->data() + index_bytes2->size()));
+        ASSERT_EQ(index_bytes, ToBytes(index_bytes2->data(), index_bytes2->size()));
     }
 }
 

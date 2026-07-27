@@ -74,17 +74,17 @@ std::string BinaryString::ToString() const {
     return ret;
 }
 
-int32_t BinaryString::NumBytesForFirstByte(char b) {
-    if (b >= 0) {
+int32_t BinaryString::NumBytesForFirstByte(std::uint8_t b) {
+    if ((b & 0x80) == 0) {
         // 1 byte, 7 bits: 0xxxxxxx
         return 1;
-    } else if ((b >> 5) == -2 && (b & 0x1e) != 0) {
+    } else if ((b & 0xe0) == 0xc0 && (b & 0x1e) != 0) {
         // 2 bytes, 11 bits: 110xxxxx 10xxxxxx
         return 2;
-    } else if ((b >> 4) == -2) {
+    } else if ((b & 0xf0) == 0xe0) {
         // 3 bytes, 16 bits: 1110xxxx 10xxxxxx 10xxxxxx
         return 3;
-    } else if ((b >> 3) == -2) {
+    } else if ((b & 0xf8) == 0xf0) {
         // 4 bytes, 21 bits: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
         return 4;
     } else {

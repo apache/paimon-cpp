@@ -18,6 +18,7 @@
 
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta.h"
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -67,13 +68,14 @@ TEST(BitmapFileIndexMetaTest, TestStringType) {
     };
     {
         // test v1 version
-        std::vector<char> index_bytes = {
-            1, 0, 0, 0,  5,  0,  0,  0,  2,  1,  0, 0, 0, 0, 0, 0, 0,  1, 97, 0, 0,  0, 20, 0,
-            0, 0, 1, 98, -1, -1, -1, -3, 58, 48, 0, 0, 1, 0, 0, 0, 0,  0, 1,  0, 16, 0, 0,  0,
-            1, 0, 3, 0,  58, 48, 0,  0,  1,  0,  0, 0, 0, 0, 1, 0, 16, 0, 0,  0, 0,  0, 4,  0};
+        std::vector<std::uint8_t> index_bytes = {
+            1,  0, 0, 0, 5,  0, 0, 0, 2,  1,  0,    0,    0,    0,    0,  0,  0,  1,
+            97, 0, 0, 0, 20, 0, 0, 0, 1,  98, 0xff, 0xff, 0xff, 0xfd, 58, 48, 0,  0,
+            1,  0, 0, 0, 0,  0, 1, 0, 16, 0,  0,    0,    1,    0,    3,  0,  58, 48,
+            0,  0, 1, 0, 0,  0, 0, 0, 1,  0,  16,   0,    0,    0,    0,  0,  4,  0};
 
-        auto input_stream =
-            std::make_shared<ByteArrayInputStream>(index_bytes.data(), index_bytes.size());
+        auto input_stream = std::make_shared<ByteArrayInputStream>(
+            reinterpret_cast<const char*>(index_bytes.data()), index_bytes.size());
         // skip version
         ASSERT_OK(input_stream->Seek(1, SeekOrigin::FS_SEEK_SET));
         BitmapFileIndexMetaV1 index_meta(FieldType::STRING, 0, index_bytes.size(),
@@ -83,15 +85,16 @@ TEST(BitmapFileIndexMetaTest, TestStringType) {
     }
     {
         // test v2 version
-        std::vector<char> index_bytes = {
-            2,  0,  0,  0,  5, 0,  0, 0, 2, 1,  0, 0, 0, 0,  0,  0,  0,  20, 0,  0,  0,
-            1,  0,  0,  0,  1, 97, 0, 0, 0, 0,  0, 0, 0, 30, 0,  0,  0,  2,  0,  0,  0,
-            1,  97, 0,  0,  0, 20, 0, 0, 0, 20, 0, 0, 0, 1,  98, -1, -1, -1, -3, -1, -1,
-            -1, -1, 58, 48, 0, 0,  1, 0, 0, 0,  0, 0, 1, 0,  16, 0,  0,  0,  1,  0,  3,
-            0,  58, 48, 0,  0, 1,  0, 0, 0, 0,  0, 1, 0, 16, 0,  0,  0,  0,  0,  4,  0};
+        std::vector<std::uint8_t> index_bytes = {
+            2, 0, 0,  0,    5,    0,    0,    0,    2,    1,    0,    0,  0,  0,  0,  0,  0,  20,
+            0, 0, 0,  1,    0,    0,    0,    1,    97,   0,    0,    0,  0,  0,  0,  0,  30, 0,
+            0, 0, 2,  0,    0,    0,    1,    97,   0,    0,    0,    20, 0,  0,  0,  20, 0,  0,
+            0, 1, 98, 0xff, 0xff, 0xff, 0xfd, 0xff, 0xff, 0xff, 0xff, 58, 48, 0,  0,  1,  0,  0,
+            0, 0, 0,  1,    0,    16,   0,    0,    0,    1,    0,    3,  0,  58, 48, 0,  0,  1,
+            0, 0, 0,  0,    0,    1,    0,    16,   0,    0,    0,    0,  0,  4,  0};
 
-        auto input_stream =
-            std::make_shared<ByteArrayInputStream>(index_bytes.data(), index_bytes.size());
+        auto input_stream = std::make_shared<ByteArrayInputStream>(
+            reinterpret_cast<const char*>(index_bytes.data()), index_bytes.size());
         // skip version
         ASSERT_OK(input_stream->Seek(1, SeekOrigin::FS_SEEK_SET));
         BitmapFileIndexMetaV2 index_meta(FieldType::STRING, index_bytes.size(), GetDefaultPool());
@@ -101,15 +104,15 @@ TEST(BitmapFileIndexMetaTest, TestStringType) {
 }
 
 TEST(BitmapFileIndexMetaTest, TestInvalidType) {
-    std::vector<char> index_bytes = {
-        2,  0,  0,  0,  5, 0,  0, 0, 2, 1,  0, 0, 0, 0,  0,  0,  0,  20, 0,  0,  0,
-        1,  0,  0,  0,  1, 97, 0, 0, 0, 0,  0, 0, 0, 30, 0,  0,  0,  2,  0,  0,  0,
-        1,  97, 0,  0,  0, 20, 0, 0, 0, 20, 0, 0, 0, 1,  98, -1, -1, -1, -3, -1, -1,
-        -1, -1, 58, 48, 0, 0,  1, 0, 0, 0,  0, 0, 1, 0,  16, 0,  0,  0,  1,  0,  3,
-        0,  58, 48, 0,  0, 1,  0, 0, 0, 0,  0, 1, 0, 16, 0,  0,  0,  0,  0,  4,  0};
+    std::vector<std::uint8_t> index_bytes = {
+        2,    0,    0,  0,  5, 0,  0, 0, 2, 1,  0, 0, 0, 0,  0,  0,    0,    20,   0,    0,    0,
+        1,    0,    0,  0,  1, 97, 0, 0, 0, 0,  0, 0, 0, 30, 0,  0,    0,    2,    0,    0,    0,
+        1,    97,   0,  0,  0, 20, 0, 0, 0, 20, 0, 0, 0, 1,  98, 0xff, 0xff, 0xff, 0xfd, 0xff, 0xff,
+        0xff, 0xff, 58, 48, 0, 0,  1, 0, 0, 0,  0, 0, 1, 0,  16, 0,    0,    0,    1,    0,    3,
+        0,    58,   48, 0,  0, 1,  0, 0, 0, 0,  0, 1, 0, 16, 0,  0,    0,    0,    0,    4,    0};
 
-    auto input_stream =
-        std::make_shared<ByteArrayInputStream>(index_bytes.data(), index_bytes.size());
+    auto input_stream = std::make_shared<ByteArrayInputStream>(
+        reinterpret_cast<const char*>(index_bytes.data()), index_bytes.size());
     // skip version
     ASSERT_OK(input_stream->Seek(1, SeekOrigin::FS_SEEK_SET));
     BitmapFileIndexMetaV2 index_meta(FieldType::DECIMAL, index_bytes.size(), GetDefaultPool());

@@ -138,7 +138,7 @@ class PAIMON_EXPORT BinaryString : public BinarySection {
 
     /// @return the number of bytes for a code point with the first byte as b.
     /// @param b The first byte of a code point
-    static int32_t NumBytesForFirstByte(char b);
+    static int32_t NumBytesForFirstByte(std::uint8_t b);
 
  private:
     char GetByteOneSegment(int32_t i) const;

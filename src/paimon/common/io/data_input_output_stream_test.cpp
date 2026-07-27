@@ -46,25 +46,25 @@ class DataInputOutputStreamTest : public ::testing::Test,
  protected:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        std::vector<char> bytes_big_endian = {
-            127, 125,  67,   127,  -2,  -57,  127,  127, -1,  -1,   -1,  -1,  -1,  -1,
-            -3,  1,    0,    39,   84,  104,  105,  115, 32,  105,  115, 32,  97,  32,
-            118, 101,  114,  121,  32,  118,  101,  114, 121, 32,   118, 101, 114, 121,
-            32,  108,  111,  110,  103, 32,   115,  101, 110, 116,  101, 110, 99,  101,
-            46,  -26,  -120, -111, -26, -104, -81,  -28, -72, -128, -28, -72, -86, -25,
-            -78, -119, -27,  -120, -73, -27,  -116, -96, -17, -67,  -98};
+        std::vector<std::uint8_t> bytes_big_endian = {
+            127,  125,  67,   127,  0xfe, 0xc7, 127,  127,  0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xfd, 1,    0,    39,   84,   104,  105,  115,  32,   105,  115,  32,   97,   32,
+            118,  101,  114,  121,  32,   118,  101,  114,  121,  32,   118,  101,  114,  121,
+            32,   108,  111,  110,  103,  32,   115,  101,  110,  116,  101,  110,  99,   101,
+            46,   0xe6, 0x88, 0x91, 0xe6, 0x98, 0xaf, 0xe4, 0xb8, 0x80, 0xe4, 0xb8, 0xaa, 0xe7,
+            0xb2, 0x89, 0xe5, 0x88, 0xb7, 0xe5, 0x8c, 0xa0, 0xef, 0xbd, 0x9e};
         serialized_bytes_big_endian_ =
             std::make_shared<Bytes>(bytes_big_endian.size(), pool_.get());
         memcpy(serialized_bytes_big_endian_->data(), bytes_big_endian.data(),
                bytes_big_endian.size());
 
-        std::vector<char> bytes_little_endian = {
-            127, 67,   125,  127,  -57, -2,   127,  -3,  -1,  -1,   -1,  -1,  -1,  -1,
-            127, 1,    39,   0,    84,  104,  105,  115, 32,  105,  115, 32,  97,  32,
-            118, 101,  114,  121,  32,  118,  101,  114, 121, 32,   118, 101, 114, 121,
-            32,  108,  111,  110,  103, 32,   115,  101, 110, 116,  101, 110, 99,  101,
-            46,  -26,  -120, -111, -26, -104, -81,  -28, -72, -128, -28, -72, -86, -25,
-            -78, -119, -27,  -120, -73, -27,  -116, -96, -17, -67,  -98};
+        std::vector<std::uint8_t> bytes_little_endian = {
+            127,  67,   125,  127,  0xc7, 0xfe, 127,  0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            127,  1,    39,   0,    84,   104,  105,  115,  32,   105,  115,  32,   97,   32,
+            118,  101,  114,  121,  32,   118,  101,  114,  121,  32,   118,  101,  114,  121,
+            32,   108,  111,  110,  103,  32,   115,  101,  110,  116,  101,  110,  99,   101,
+            46,   0xe6, 0x88, 0x91, 0xe6, 0x98, 0xaf, 0xe4, 0xb8, 0x80, 0xe4, 0xb8, 0xaa, 0xe7,
+            0xb2, 0x89, 0xe5, 0x88, 0xb7, 0xe5, 0x8c, 0xa0, 0xef, 0xbd, 0x9e};
         serialized_bytes_little_endian_ =
             std::make_shared<Bytes>(bytes_little_endian.size(), pool_.get());
         memcpy(serialized_bytes_little_endian_->data(), bytes_little_endian.data(),

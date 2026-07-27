@@ -17,6 +17,7 @@
  */
 #include "paimon/file_index/file_index_format.h"
 
+#include <cstdint>
 #include <utility>
 
 #include "gtest/gtest.h"
@@ -57,12 +58,12 @@ class FileIndexFormatTest : public ::testing::Test {
 
 TEST_F(FileIndexFormatTest, TestCreateEmptyFileIndexReader) {
     auto schema = arrow::schema({arrow::field("c1", arrow::utf8())});
-    std::vector<char> index_file_bytes = {0,  5,  78, 78, -48, 26, 53,  -82, 0,   0,   0,   1,
-                                          0,  0,  0,  47, 0,   0,  0,   1,   0,   2,   99,  49,
-                                          0,  0,  0,  1,  0,   5,  101, 109, 112, 116, 121, -1,
-                                          -1, -1, -1, 0,  0,   0,  0,   0,   0,   0,   0};
-    auto input_stream =
-        std::make_shared<ByteArrayInputStream>(index_file_bytes.data(), index_file_bytes.size());
+    std::vector<std::uint8_t> index_file_bytes = {
+        0,   5,   78,  78,   0xd0, 26,   53,   0xae, 0, 0, 0, 1, 0, 0, 0,   47,
+        0,   0,   0,   1,    0,    2,    99,   49,   0, 0, 0, 1, 0, 5, 101, 109,
+        112, 116, 121, 0xff, 0xff, 0xff, 0xff, 0,    0, 0, 0, 0, 0, 0, 0};
+    auto input_stream = std::make_shared<ByteArrayInputStream>(
+        reinterpret_cast<const char*>(index_file_bytes.data()), index_file_bytes.size());
     ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input_stream, pool_));
     ASSERT_OK_AND_ASSIGN(auto index_file_readers,
                          reader->ReadColumnIndex("c1", CreateArrowSchema(schema).get()));
