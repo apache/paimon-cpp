@@ -302,12 +302,11 @@ Apache Paimon C++ ${VERSION} has been published.
 
 Next steps:
   1. Verify the release appears under https://downloads.apache.org/paimon/.
-  2. Add it to https://reporter.apache.org/addrelease.html?paimon.
-  3. Wait at least 24 hours after publication before updating public download
+  2. Wait at least 24 hours after publication before updating public download
      or documentation pages and announcing the release.
-  4. Remove superseded Paimon C++ releases from dist/release after confirming
+  3. Remove superseded Paimon C++ releases from dist/release after confirming
      they remain available from archive.apache.org.
-  5. Update the project download and documentation pages.
+  4. Update the project download and documentation pages.
 
 After completing the 24-hour wait, send the following announcement in plain
 text from an apache.org email address.
