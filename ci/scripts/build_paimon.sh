@@ -21,7 +21,18 @@ source_dir=${1}
 enable_sanitizer=${2:-false}
 check_clang_tidy=${3:-false}
 build_type=${4:-Debug}
+install_smoke=${5:-false}
 build_dir="${source_dir}/build"
+
+if [[ -n "${PAIMON_BUILD_JOBS:-}" ]]; then
+    build_jobs="${PAIMON_BUILD_JOBS}"
+elif command -v nproc >/dev/null 2>&1; then
+    build_jobs=$(nproc)
+elif command -v sysctl >/dev/null 2>&1; then
+    build_jobs=$(sysctl -n hw.ncpu)
+else
+    build_jobs=4
+fi
 
 # Display ccache status if available
 if command -v ccache &> /dev/null; then
@@ -57,11 +68,38 @@ if [[ "${enable_sanitizer}" == "true" ]]; then
 fi
 
 cmake "${CMAKE_ARGS[@]}" "${source_dir}"
-cmake --build . -- -j "$(nproc)"
-ctest --output-on-failure -j "$(nproc)"
+cmake --build . -- -j "${build_jobs}"
+ctest --output-on-failure -j "${build_jobs}"
 
 if [[ "${check_clang_tidy}" == "true" ]]; then
     cmake --build . --target check-clang-tidy
+fi
+
+if [[ "${install_smoke}" == "true" ]]; then
+    install_dir="${source_dir}/install-test"
+    smoke_build_dir="${source_dir}/build-install-smoke"
+    rm -rf "${install_dir}" "${smoke_build_dir}"
+
+    cmake --install . --prefix "${install_dir}"
+    cmake -G Ninja \
+        -S "${source_dir}/scripts/releasing/install_smoke" \
+        -B "${smoke_build_dir}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH="${install_dir};${build_dir}/arrow_ep-install"
+    cmake --build "${smoke_build_dir}" -- -j "${build_jobs}"
+
+    runtime_library_path="${install_dir}/lib:${install_dir}/lib64"
+    runtime_library_path+=":${build_dir}/arrow_ep-install/lib"
+    runtime_library_path+=":${build_dir}/arrow_ep-install/lib64"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        cmake -E env \
+            "DYLD_LIBRARY_PATH=${runtime_library_path}" \
+            "${smoke_build_dir}/paimon_install_smoke"
+    else
+        cmake -E env \
+            "LD_LIBRARY_PATH=${runtime_library_path}" \
+            "${smoke_build_dir}/paimon_install_smoke"
+    fi
 fi
 
 # Print ccache statistics after build
@@ -73,3 +111,6 @@ fi
 popd
 
 rm -rf "${build_dir}"
+if [[ "${install_smoke}" == "true" ]]; then
+    rm -rf "${install_dir}" "${smoke_build_dir}"
+fi

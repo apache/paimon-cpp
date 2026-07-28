@@ -20,29 +20,91 @@
 # Apache Paimon C++ release scripts
 
 These scripts create and verify the source artifact voted on by the Apache Paimon
-PMC. They do not publish artifacts, create tags, or move files between Apache
-distribution repositories.
+PMC, stage a release candidate in the ASF distribution repository, and publish
+an approved candidate. Run release operations from a clean checkout of
+`apache/paimon-cpp`, not from a fork.
+
+The source archive is the official Apache release. Git tags, GitHub Releases,
+and binary packages are supplementary.
+
+## Prerequisites
+
+Before starting a release:
+
+- obtain an ASF code-signing key, publish it through the ASF account system,
+  and make sure it is present in
+  [Paimon KEYS](https://downloads.apache.org/paimon/KEYS);
+- install `git`, `gpg`, `svn`, `gh`, `python3`, `curl` or `wget`, Java, CMake,
+  Ninja, and the toolchain needed by `ci/scripts/build_paimon.sh` (Java is
+  required by Apache RAT);
+- authenticate `gh` with access to read GitHub Actions runs in
+  `apache/paimon-cpp`;
+- make sure the Apache Git remote points directly to
+  `apache/paimon-cpp`;
+- prepare and merge a release-preparation PR that updates the release notes and
+  all version metadata, and passes the normal and release-candidate workflows.
+
+For example, update all version locations and review the diff:
+
+```bash
+scripts/releasing/bump_version.py 0.2.2 0.2.3
+scripts/releasing/bump_version.py --check 0.2.3
+```
+
+### Signing key setup and security
+
+Complete signing-key setup well before creating the first release candidate:
+
+- new signing keys must use RSA with at least 2048 bits; ASF recommends 4096
+  bits for new keys;
+- publish the public key to the global public keyserver network;
+- append the public key to `dist/release/paimon/KEYS`. Never remove historical
+  keys because they are required to verify archived releases;
+- wait until the updated key is visible from
+  `https://downloads.apache.org/paimon/KEYS` before creating an RC; and
+- never store the private key or create release signatures on ASF machines.
+  Sign only on a secure machine controlled by the release manager.
+
+By default, updating `dist/release/paimon/KEYS` requires PMC membership. A
+non-PMC release manager should ask a PMC member to add the key.
+
+See the ASF
+[release-signing](https://infra.apache.org/release-signing.html) and
+[release-distribution](https://infra.apache.org/release-distribution.html)
+policies for the complete requirements.
+
+The release scripts use `vVERSION-rcRC` for release-candidate tags and
+`vVERSION` for the final release tag. For example, the first 0.2.3 candidate is
+`v0.2.3-rc1`.
 
 ## Create a release candidate
 
-Create and push a signed RC tag before creating the source artifact:
+Start from the exact clean commit approved for the candidate. Before publishing,
+the wrapper fetches the release branch and requires `HEAD` to be contained in
+its current history. It then creates and verifies a signed RC tag, creates the
+source archive and its checksum/signature, performs the full source-release
+verification, pushes the tag, waits for the tag-triggered release-candidate
+workflow to succeed, and imports the artifacts into ASF `dist/dev`:
 
 ```bash
-git tag -s release-0.2.3-rc1 -m "Apache Paimon C++ 0.2.3 RC1"
-git push upstream release-0.2.3-rc1
-```
-
-Create the source artifact, SHA-512 checksum, and detached OpenPGP signature:
-
-```bash
-scripts/releasing/create_source_release.sh \
+scripts/releasing/release_rc.sh \
   --version 0.2.3 \
-  --git-ref release-0.2.3-rc1 \
-  --output-dir release/0.2.3-rc1 \
-  --signing-key ASF_GPG_KEY_ID
+  --rc 1 \
+  --signing-key ASF_GPG_KEY_ID \
+  --remote upstream
 ```
 
-The output files are:
+The release branch defaults to `main`; use `--release-branch NAME` for a
+maintenance release from another Apache branch.
+
+Use `--prepare-only` to create and verify artifacts without pushing the tag or
+uploading to ASF infrastructure. This local-only mode does not require `HEAD`
+to match the remote release branch. Use `--dry-run` to print identifiers
+without making changes. A resumed run reuses an existing local tag or complete
+artifact set only after validating it. A prepare-only run does not print a vote
+email and must not be used to start a vote.
+
+The candidate directory contains:
 
 ```text
 apache-paimon-cpp-0.2.3-src.tgz
@@ -50,32 +112,114 @@ apache-paimon-cpp-0.2.3-src.tgz.asc
 apache-paimon-cpp-0.2.3-src.tgz.sha512
 ```
 
-Existing files are never overwritten. A changed candidate must use a new RC
-directory and a new vote.
+The wrapper prints a vote-email template. Send it to `dev@paimon.apache.org`.
+Keep the vote open for at least 72 hours. An Apache release vote requires at
+least three binding `+1` votes and more binding `+1` than binding `-1` votes.
+If the vote has not met these requirements after 72 hours, do not publish the
+release; either extend the vote or close it as unsuccessful.
+
+Before casting a binding `+1`, a PMC member must download the signed source
+artifact onto hardware they control, verify its signature and ASF policy
+compliance, compile it as provided, and test it on their platform. CI results
+do not replace this voter responsibility.
+
+After closing the vote, send a result email as a reply to the vote thread. Use
+the subject
+`[RESULT][VOTE][C++] Release Apache Paimon C++ VERSION RCNUMBER`, state whether
+the vote passed, list binding and non-binding votes and voters separately, and
+include the archived vote-thread link.
+
+If a candidate changes for any reason, cancel or close its vote, fix the
+release-preparation branch, increment the RC number, create a new signed tag
+and artifacts, and start a new vote. Never overwrite an existing candidate.
+After its vote is closed, a failed or superseded candidate may be removed from
+`dist/dev`.
 
 ## Verify a release candidate
 
-Download the source artifact, its `.asc` and `.sha512` files, and the Paimon
-`KEYS` file. Import `KEYS` into a temporary or dedicated GPG keyring, then run:
+Voters can download and verify an ASF-staged candidate in one command:
 
 ```bash
-RAT_JAR=/path/to/apache-rat-0.16.1.jar \
-  scripts/releasing/verify_release_candidate.sh \
+scripts/releasing/verify_release_candidate.sh --version 0.2.3 --rc 1
+```
+
+To verify files that were downloaded separately, use an explicitly downloaded
+KEYS file so signature verification runs in an isolated GPG home:
+
+```bash
+scripts/releasing/verify_release_candidate.sh \
+  --keys-file /path/to/paimon-KEYS \
   apache-paimon-cpp-0.2.3-src.tgz
 ```
 
 The verifier checks:
 
 - the SHA-512 checksum and detached OpenPGP signature;
-- archive paths and the single `paimon-cpp-0.2.3/` root directory;
+- archive path safety, portable filename collisions, file types, permissions,
+  and the single `paimon-cpp-0.2.3/` root directory;
 - required `LICENSE`, `NOTICE`, build, and documentation files;
 - the CMake and documentation versions;
-- absence of common compiled artifact types;
+- absence of compiled artifacts by filename and file magic;
 - Apache RAT results;
-- a release build and the test suite from the extracted source archive.
+- a release build and the test suite from the extracted source archive; and
+- installation plus compilation and execution of an external CMake consumer.
 
-The `--allow-unsigned` and `--skip-rat` options are only for local development
-of the release process. A voter may use `--skip-build` when the repository's
-Linux CI build command is not suitable for their platform, but must then build
-and test the extracted source distribution separately before casting a binding
-vote.
+Pass `--git-ref v0.2.3-rc1` when the Git repository is available to regenerate
+the archive from the signed tag and compare it byte-for-byte.
+
+`--allow-unsigned`, `--skip-rat`, `--skip-build`, and `--skip-install` exist for
+CI or local development of the release process. They are not a substitute for
+the corresponding checks when voting. The release-candidate workflow creates
+an unsigned archive for deterministic CI validation; official artifacts must
+always be signed by the release manager.
+
+## Publish an approved release
+
+After closing the vote and confirming that it passed, publish the exact
+approved candidate:
+
+```bash
+scripts/releasing/publish_release.sh \
+  --version 0.2.3 \
+  --rc 1 \
+  --signing-key ASF_GPG_KEY_ID \
+  --remote upstream \
+  --confirm-vote-passed
+```
+
+By default, only PMC members can publish to `dist/release`. A non-PMC release
+manager must ask a PMC member to perform this step unless Infra has configured
+the project, following project consensus, to allow all committers to publish.
+
+The script verifies the signed RC tag, creates a signed final tag pointing to
+the same commit, moves the candidate from ASF `dist/dev` to `dist/release`, and
+creates a GitHub Release containing byte-identical copies of the ASF source
+artifacts. It then prints the remaining ASF reporting, old-release cleanup,
+documentation, mirror-propagation, and announcement steps.
+
+Download-page and release-note PRs may be prepared before publication, but do
+not merge them while they point users at an unapproved RC. After publication,
+verify the artifacts on `downloads.apache.org`, then wait at least 24 hours
+before merging public download/documentation changes and sending the release
+announcement. This follows the Paimon project convention, which is stricter
+than ASF's general one-hour minimum.
+
+## Individual tools
+
+- `bump_version.py`: consistently check or update CMake and documentation
+  version metadata.
+- `create_source_release.sh`: deterministically create an archive, SHA-512
+  checksum, and optional detached signature from an immutable Git ref.
+- `validate_source_archive.py`: reject unsafe or non-portable tar members and
+  compiled files.
+- `verify_release_candidate.sh`: perform voter-facing integrity, license,
+  build, test, and install checks.
+- `release_rc.sh`: orchestrate release-candidate tagging, verification, and ASF
+  staging.
+- `publish_release.sh`: publish an approved candidate.
+
+Run the release-tool regression tests with:
+
+```bash
+python3 -m unittest discover -s scripts/releasing/tests -v
+```

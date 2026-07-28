@@ -1,0 +1,136 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Release Candidate
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release_candidate.yaml"
+      - ".github/.rat-excludes"
+      - "CMakeLists.txt"
+      - "LICENSE"
+      - "NOTICE"
+      - "ci/scripts/build_paimon.sh"
+      - "docs/source/conf.py"
+      - "docs/source/_static/versions.json"
+      - "scripts/releasing/**"
+  push:
+    tags:
+      - "v*-rc*"
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    name: Create and audit source archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run release tool tests
+        run: python3 -m unittest discover -s scripts/releasing/tests -v
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          version=$(
+            awk '$1 == "VERSION" && $2 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/ {
+              print $2
+              exit
+            }' CMakeLists.txt
+          )
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            tag_version=${tag_version%-rc*}
+            [[ "${tag_version}" == "${version}" ]]
+          fi
+          scripts/releasing/bump_version.py --check "${version}"
+          echo "RELEASE_VERSION=${version}" >> "${GITHUB_ENV}"
+
+      - name: Create source archive
+        run: |
+          scripts/releasing/create_source_release.sh \
+            --version "${RELEASE_VERSION}" \
+            --git-ref HEAD \
+            --output-dir release/ci
+
+      - name: Audit source archive
+        run: |
+          scripts/releasing/verify_release_candidate.sh \
+            --allow-unsigned \
+            --skip-build \
+            "release/ci/apache-paimon-cpp-${RELEASE_VERSION}-src.tgz"
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-archive
+          path: release/ci/
+          if-no-files-found: error
+
+  verify:
+    name: Verify source archive (${{ matrix.compiler }})
+    if: github.ref_type == 'tag'
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - gcc-14
+          - clang
+        include:
+          - compiler: gcc-14
+            cc: gcc-14
+            cxx: g++-14
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download source archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: source-archive
+          path: release/ci
+
+      - name: Verify, build, test, and install
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          artifact=$(find release/ci -name 'apache-paimon-cpp-*-src.tgz' -print -quit)
+          scripts/releasing/verify_release_candidate.sh \
+            --allow-unsigned \
+            --skip-rat \
+            "${artifact}"
