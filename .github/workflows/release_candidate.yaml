@@ -24,7 +24,6 @@ on:
       - "CMakeLists.txt"
       - "LICENSE"
       - "NOTICE"
-      - "ci/scripts/build_paimon.sh"
       - "docs/source/conf.py"
       - "docs/source/_static/versions.json"
       - "scripts/releasing/**"
