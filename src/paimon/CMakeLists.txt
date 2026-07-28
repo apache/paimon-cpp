@@ -123,6 +123,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/not_equal.cpp
     common/predicate/not_in.cpp
     common/predicate/or.cpp
+    common/predicate/predicate.cpp
     common/predicate/predicate_builder.cpp
     common/predicate/predicate_utils.cpp
     common/predicate/starts_with.cpp
