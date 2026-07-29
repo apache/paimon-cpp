@@ -128,11 +128,11 @@ produce a correct ``Snapshot``, which commonly includes (but is not limited to):
 .. note::
 
    The C++ writer supports Append and PK tables and can produce
-   ``CommitMessage`` objects for both. ``FileStoreCommit`` currently executes
-   local commits only for append-only tables on non-object-store file systems.
-   PK and object-store commit messages must be sent to an external control
-   plane. Changelog is out of scope and should not be emitted in
-   ``CommitMessage`` until explicitly supported.
+   ``CommitMessage`` objects for both. ``FileStoreCommit`` supports direct
+   file-system commits for both table types on non-object-store paths.
+   Object-store paths require REST catalog commit mode. Changelog is out of
+   scope and should not be emitted in ``CommitMessage`` until explicitly
+   supported.
 
 Serialization and Deserialization
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -155,21 +155,23 @@ Operational Flow
 1. Writer nodes perform data ingestion and produce Arrow ``RecordBatch``
    organized by partition and bucket.
 
-2. Writers flush batches into ORC/Parquet files via registered ``file.format``
-   and ``file-system`` backends, producing file-level metadata and per-batch
-   commit state.
+2. Writers flush batches into ORC, Parquet, or Avro files via registered
+   ``file.format`` and ``file-system`` backends, producing file-level metadata
+   and per-batch commit state.
 
 3. Each writer invokes ``PrepareCommit``, which:
-   - Aggregates per-writer state into a ``CommitMessage``.
+   - Aggregates per-writer state into ``CommitMessage`` objects.
    - Returns ``CommitMessage`` objects; it does not serialize them.
 
 4. The compute engine gathers ``CommitMessage`` objects from all writers. For
    cross-process transport, it explicitly calls ``Serialize`` or
    ``SerializeList`` and carries ``CurrentVersion()`` alongside the payload.
 
-5. For a supported local append-table commit, the engine passes the objects to
-   ``FileStoreCommit``. For PK tables or object-store paths, it sends the
-   serialized payload and version to an external control plane.
+5. For a direct file-system commit on a non-object-store path, the engine
+   passes the objects to ``FileStoreCommit`` for either an Append or PK table.
+   For an object-store path, it enables REST catalog commit mode, calls
+   ``Commit``, obtains the JSON request from ``GetLastCommitTableRequest``, and
+   sends that request to the REST catalog.
 
-6. The local committer or external coordinator validates the messages, updates
+6. The local committer or REST catalog validates the messages, updates
    manifests/metadata, and finalizes the snapshot atomically.

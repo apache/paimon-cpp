@@ -23,13 +23,13 @@ Prefetch
    :align: center
    :width: 100%
 
-In C++ Paimon, we use a multi-producer, single-consumer model to optimize file
-reading. The core idea is to split a file into line-based ReadRanges and assign
+In Paimon C++, we use a multi-producer, single-consumer model to optimize file
+reading. The core idea is to split a file into row-based read ranges and assign
 them to multiple reader threads (producers). Each reader thread owns an
 independent result queue that holds its processed RecordBatches. In the main
-reader thread (the consumer), we sort the heads of all queues by the ReadRange
-start offset in ascending order and select the RecordBatch with the smallest
-start offset to ensure globally ordered results.
+reader thread (the consumer), we sort the heads of all queues by the read
+range's starting row and select the RecordBatch with the smallest starting row
+to ensure globally ordered results.
 
 Read Range Splitting Strategy
 =============================

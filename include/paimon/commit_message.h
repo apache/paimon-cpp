@@ -33,7 +33,7 @@ class CommitMessageSerializer;
 class MemoryPool;
 
 /// Commit message for partition and bucket. Supports serialization and deserialization compatible
-/// with the Java version.
+/// with Java Paimon.
 ///
 /// @note Serialized payloads do not embed their serialization version. Transport
 /// `CurrentVersion()` alongside the payload and pass it explicitly to `Deserialize()` or
@@ -47,7 +47,7 @@ class PAIMON_EXPORT CommitMessage {
     virtual ~CommitMessage();
 
     /// Serializes a single commit message to a binary string format.
-    /// The serialized format is compatible with the Java version of Paimon.
+    /// The serialized format is compatible with Java Paimon.
     /// The serialization version is not included in the returned payload.
     /// @param commit_message The commit message to serialize.
     /// @param pool Memory pool for memory allocation during serialization.
