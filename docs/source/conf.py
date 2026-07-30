@@ -114,7 +114,7 @@ html_sidebars = {
 # The master toctree document.
 master_doc = "index"
 
-version = "0.2.3"
+version = "0.3.0"
 
 html_theme_options = {
     "show_toc_level": 2,
