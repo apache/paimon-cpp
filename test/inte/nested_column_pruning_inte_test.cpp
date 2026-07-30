@@ -1135,7 +1135,7 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysPreserveOrder) {
 }
 
 TEST_P(NestedColumnPruningInteTest, NestedStructMapSelectedKeysWithPredicate) {
-    if (file_format_ != "parquet" && file_format_ != "orc") {
+    if (file_format_ == "avro") {
         return;
     }
 

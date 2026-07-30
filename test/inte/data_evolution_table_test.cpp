@@ -600,7 +600,7 @@ TEST_P(DataEvolutionTableTest, TestOnlySomeColumns) {
 }
 
 TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) {
-    if (FileFormat() != "parquet" && FileFormat() != "orc") {
+    if (FileFormat() == "avro") {
         return;
     }
 
