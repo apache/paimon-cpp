@@ -32,7 +32,7 @@ github:
   enabled_merge_buttons:
     merge: false
     squash: true
-    rebase: false
+    rebase: true
   rulesets:
     - name: "Branch Protection"
       type: branch
