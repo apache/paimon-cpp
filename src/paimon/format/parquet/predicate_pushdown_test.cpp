@@ -81,7 +81,8 @@ class PredicatePushdownTest : public ::testing::Test {
 
     void TearDown() override {}
 
-    void PrepareTestData(const std::shared_ptr<arrow::StructArray>& struct_array) {
+    void PrepareTestData(const std::shared_ptr<arrow::StructArray>& struct_array,
+                         bool enable_page_index = false) {
         auto data_type = struct_array->struct_type();
         auto data_schema = arrow::schema(data_type->fields());
         auto data_arrow_array = std::make_unique<ArrowArray>();
@@ -90,6 +91,10 @@ class PredicatePushdownTest : public ::testing::Test {
                              fs_->Create(file_name_, /*overwrite=*/false));
         ::parquet::WriterProperties::Builder builder;
         builder.write_batch_size(batch_size_);
+        if (enable_page_index) {
+            builder.enable_write_page_index();
+            builder.data_pagesize(1);
+        }
         auto writer_properties = builder.build();
         ASSERT_OK_AND_ASSIGN(
             auto format_writer,
@@ -425,6 +430,48 @@ TEST_F(PredicatePushdownTest, TestPredicatePushdownWithAllDataNull) {
                                                        FieldType::BIGINT, Literal(3l));
         CheckResult(read_schema, predicate, /*expected_array=*/nullptr);
     }
+}
+
+TEST_F(PredicatePushdownTest, TestSignedZeroRowGroupPruning) {
+    auto value_field = arrow::field("value", arrow::float64());
+    std::shared_ptr<arrow::StructArray> data = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({value_field}),
+                                                  R"([[-0.0], [0.0]])")
+            .ValueOrDie());
+    PrepareTestData(data);
+
+    auto predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, /*field_name=*/"value", FieldType::DOUBLE, Literal(-0.0));
+    CheckResult(arrow::schema({value_field}), predicate, data);
+}
+
+TEST_F(PredicatePushdownTest, TestFiniteGreaterThanStillPrunesRowGroup) {
+    auto value_field = arrow::field("value", arrow::float64());
+    std::shared_ptr<arrow::StructArray> data = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({value_field}), R"([[0.5]])")
+            .ValueOrDie());
+    PrepareTestData(data);
+
+    auto predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, /*field_name=*/"value", FieldType::DOUBLE, Literal(1.0));
+    CheckResult(arrow::schema({value_field}), predicate, /*expected_array=*/nullptr);
+}
+
+TEST_F(PredicatePushdownTest, TestSignedZeroPageIndexPruning) {
+    auto value_field = arrow::field("value", arrow::float64());
+    std::shared_ptr<arrow::StructArray> data = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({value_field}), R"([
+            [-0.0], [-0.0], [-0.0], [-0.0], [-0.0],
+            [-0.0], [-0.0], [-0.0], [-0.0], [-0.0],
+            [1.0], [1.0], [1.0], [1.0], [1.0],
+            [1.0], [1.0], [1.0], [1.0], [1.0]
+        ])")
+            .ValueOrDie());
+    PrepareTestData(data, /*enable_page_index=*/true);
+
+    auto predicate = PredicateBuilder::LessThan(
+        /*field_index=*/0, /*field_name=*/"value", FieldType::DOUBLE, Literal(0.0));
+    CheckResult(arrow::schema({value_field}), predicate, data->Slice(0, batch_size_));
 }
 
 TEST_F(PredicatePushdownTest, TestCompoundPredicate) {

@@ -68,6 +68,9 @@ class PredicateConverter {
     static Result<arrow::compute::Expression> ConvertLeaf(
         const std::shared_ptr<LeafPredicate>& leaf_predicate);
 
+    static Result<arrow::compute::Expression> ConvertFloatingPointLeaf(
+        const std::shared_ptr<LeafPredicate>& leaf_predicate);
+
     static Result<arrow::compute::Expression> ConvertToArrowLiteral(const Literal& literal);
 };
 

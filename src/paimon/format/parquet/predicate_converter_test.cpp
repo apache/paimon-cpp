@@ -191,6 +191,128 @@ TEST(PredicateConverterTest, TestSimple) {
     }
 }
 
+TEST(PredicateConverterTest, TestJavaCompatibleSignedZeroExpressions) {
+    struct TestType {
+        FieldType field_type;
+        Literal negative_zero;
+        Literal positive_zero;
+        Literal one;
+    };
+    const std::vector<TestType> test_types = {
+        {FieldType::FLOAT, Literal(-0.0f), Literal(0.0f), Literal(1.0f)},
+        {FieldType::DOUBLE, Literal(-0.0), Literal(0.0), Literal(1.0)}};
+
+    for (const auto& test_type : test_types) {
+        auto equal_negative_zero = PredicateBuilder::Equal(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.negative_zero);
+        ASSERT_OK_AND_ASSIGN(auto equal_negative_zero_expr,
+                             PredicateConverter::Convert(equal_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 == -0)", equal_negative_zero_expr.ToString());
+
+        auto equal_positive_zero = PredicateBuilder::Equal(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.positive_zero);
+        ASSERT_OK_AND_ASSIGN(auto equal_positive_zero_expr,
+                             PredicateConverter::Convert(equal_positive_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 == 0)", equal_positive_zero_expr.ToString());
+
+        auto greater_negative_zero = PredicateBuilder::GreaterThan(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.negative_zero);
+        ASSERT_OK_AND_ASSIGN(auto greater_negative_zero_expr,
+                             PredicateConverter::Convert(greater_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 >= -0)", greater_negative_zero_expr.ToString());
+
+        auto less_positive_zero = PredicateBuilder::LessThan(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.positive_zero);
+        ASSERT_OK_AND_ASSIGN(auto less_positive_zero_expr,
+                             PredicateConverter::Convert(less_positive_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 <= 0)", less_positive_zero_expr.ToString());
+
+        auto not_equal_negative_zero = PredicateBuilder::NotEqual(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.negative_zero);
+        ASSERT_OK_AND_ASSIGN(auto not_equal_negative_zero_expr,
+                             PredicateConverter::Convert(not_equal_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("is_valid(f0)", not_equal_negative_zero_expr.ToString());
+
+        auto not_equal_positive_zero = PredicateBuilder::NotEqual(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.positive_zero);
+        ASSERT_OK_AND_ASSIGN(auto not_equal_positive_zero_expr,
+                             PredicateConverter::Convert(not_equal_positive_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("is_valid(f0)", not_equal_positive_zero_expr.ToString());
+
+        auto greater_positive_zero = PredicateBuilder::GreaterThan(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.positive_zero);
+        ASSERT_OK_AND_ASSIGN(auto greater_positive_zero_expr,
+                             PredicateConverter::Convert(greater_positive_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 > 0)", greater_positive_zero_expr.ToString());
+
+        auto greater_or_equal_positive_zero = PredicateBuilder::GreaterOrEqual(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.positive_zero);
+        ASSERT_OK_AND_ASSIGN(auto greater_or_equal_positive_zero_expr,
+                             PredicateConverter::Convert(greater_or_equal_positive_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 >= 0)", greater_or_equal_positive_zero_expr.ToString());
+
+        auto greater_or_equal_negative_zero = PredicateBuilder::GreaterOrEqual(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.negative_zero);
+        ASSERT_OK_AND_ASSIGN(auto greater_or_equal_negative_zero_expr,
+                             PredicateConverter::Convert(greater_or_equal_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 >= -0)", greater_or_equal_negative_zero_expr.ToString());
+
+        auto less_negative_zero = PredicateBuilder::LessThan(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.negative_zero);
+        ASSERT_OK_AND_ASSIGN(auto less_negative_zero_expr,
+                             PredicateConverter::Convert(less_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 < -0)", less_negative_zero_expr.ToString());
+
+        auto less_or_equal_negative_zero = PredicateBuilder::LessOrEqual(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.negative_zero);
+        ASSERT_OK_AND_ASSIGN(auto less_or_equal_negative_zero_expr,
+                             PredicateConverter::Convert(less_or_equal_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 <= -0)", less_or_equal_negative_zero_expr.ToString());
+
+        auto less_or_equal_positive_zero = PredicateBuilder::LessOrEqual(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type, test_type.positive_zero);
+        ASSERT_OK_AND_ASSIGN(auto less_or_equal_positive_zero_expr,
+                             PredicateConverter::Convert(less_or_equal_positive_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(f0 <= 0)", less_or_equal_positive_zero_expr.ToString());
+
+        auto in_negative_zero = PredicateBuilder::In(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type,
+            {test_type.negative_zero, test_type.one});
+        ASSERT_OK_AND_ASSIGN(auto in_negative_zero_expr,
+                             PredicateConverter::Convert(in_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("((f0 == -0) or (f0 == 1))", in_negative_zero_expr.ToString());
+
+        auto in_positive_zero = PredicateBuilder::In(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type,
+            {test_type.positive_zero, test_type.one});
+        ASSERT_OK_AND_ASSIGN(auto in_positive_zero_expr,
+                             PredicateConverter::Convert(in_positive_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("((f0 == 0) or (f0 == 1))", in_positive_zero_expr.ToString());
+
+        auto not_in_negative_zero = PredicateBuilder::NotIn(
+            /*field_index=*/0, /*field_name=*/"f0", test_type.field_type,
+            {test_type.negative_zero, test_type.one});
+        ASSERT_OK_AND_ASSIGN(auto not_in_negative_zero_expr,
+                             PredicateConverter::Convert(not_in_negative_zero,
+                                                         /*predicate_node_count_limit=*/100));
+        ASSERT_EQ("(is_valid(f0) and (f0 != 1))", not_in_negative_zero_expr.ToString());
+    }
+}
+
 TEST(PredicateConverterTest, TestCompound) {
     // "struct<f0:bigint,f1:float,f2:string,f3:boolean,f4:date,f5:timestamp,f6:decimal(6,2),f7:binary>";
     {
@@ -387,9 +509,9 @@ TEST(PredicateConverterTest, TestWithoutPredicate) {
 }
 
 TEST(PredicateConverterTest, TestInvalidCase) {
-    auto predicate =
+    auto empty_in =
         PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT, {});
-    ASSERT_NOK_WITH_MSG(PredicateConverter::Convert(predicate, /*predicate_node_count_limit=*/100),
+    ASSERT_NOK_WITH_MSG(PredicateConverter::Convert(empty_in, /*predicate_node_count_limit=*/100),
                         "predicate [In] need literal on field f0");
 }
 

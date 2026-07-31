@@ -29,6 +29,7 @@
 #include "fmt/format.h"
 #include "paimon/data/decimal.h"
 #include "paimon/defs.h"
+#include "paimon/format/parquet/floating_point_predicate_utils.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
@@ -36,6 +37,49 @@
 #include "paimon/predicate/predicate.h"
 
 namespace paimon::parquet {
+namespace {
+
+Result<arrow::compute::Expression> ConvertFloatingPointComparison(
+    const std::string& field_name, Function::Type function_type, const Literal& literal,
+    const arrow::compute::Expression& arrow_literal) {
+    arrow::compute::Expression field = arrow::compute::field_ref(field_name);
+    switch (function_type) {
+        case Function::Type::EQUAL:
+            return arrow::compute::equal(std::move(field), arrow_literal);
+        case Function::Type::NOT_EQUAL:
+            if (FloatingPointPredicateUtils::IsZero(literal)) {
+                // Arrow treats both zero signs as equal. Keep every non-null row group so the
+                // exact predicate can distinguish the opposite zero sign.
+                return arrow::compute::is_valid(std::move(field));
+            }
+            return arrow::compute::not_equal(std::move(field), arrow_literal);
+        case Function::Type::GREATER_THAN:
+            if (FloatingPointPredicateUtils::IsNegativeZero(literal)) {
+                // parquet-mr normalizes a zero upper bound to +0.0. Arrow treats both zero signs
+                // as equal, so >= is the safe pruning equivalent of Java's > -0.0.
+                return arrow::compute::greater_equal(std::move(field), arrow_literal);
+            }
+            return arrow::compute::greater(std::move(field), arrow_literal);
+        case Function::Type::GREATER_OR_EQUAL:
+            return arrow::compute::greater_equal(std::move(field), arrow_literal);
+        case Function::Type::LESS_THAN:
+            if (FloatingPointPredicateUtils::IsZero(literal) &&
+                !FloatingPointPredicateUtils::IsNegativeZero(literal)) {
+                // parquet-mr normalizes a zero lower bound to -0.0. Arrow's <= 0.0 retains the
+                // page for Java's -0.0 < +0.0.
+                return arrow::compute::less_equal(std::move(field), arrow_literal);
+            }
+            return arrow::compute::less(std::move(field), arrow_literal);
+        case Function::Type::LESS_OR_EQUAL:
+            return arrow::compute::less_equal(std::move(field), arrow_literal);
+        default:
+            return Status::Invalid(fmt::format("invalid floating-point comparison type {}",
+                                               static_cast<int32_t>(function_type)));
+    }
+}
+
+}  // namespace
+
 arrow::compute::Expression PredicateConverter::AlwaysTrue() {
     static const arrow::compute::Expression expr = arrow::compute::literal(true);
     return expr;
@@ -143,6 +187,10 @@ Result<arrow::compute::Expression> PredicateConverter::ConvertLeaf(
     const auto& literals = leaf_predicate->Literals();
     const auto& function = leaf_predicate->GetFunction();
     auto function_type = function.GetType();
+    if (FloatingPointPredicateUtils::IsType(leaf_predicate->GetFieldType()) &&
+        FloatingPointPredicateUtils::IsComparison(function_type)) {
+        return ConvertFloatingPointLeaf(leaf_predicate);
+    }
     switch (function_type) {
         case Function::Type::IS_NULL: {
             return arrow::compute::is_null(arrow::compute::field_ref(field_name),
@@ -242,6 +290,34 @@ Result<arrow::compute::Expression> PredicateConverter::ConvertLeaf(
                 fmt::format("invalid predicate type {}", static_cast<int32_t>(function_type)));
     }
     return Status::OK();
+}
+
+Result<arrow::compute::Expression> PredicateConverter::ConvertFloatingPointLeaf(
+    const std::shared_ptr<LeafPredicate>& leaf_predicate) {
+    const auto& field_name = leaf_predicate->FieldName();
+    const auto& literals = leaf_predicate->Literals();
+    const auto& function = leaf_predicate->GetFunction();
+    Function::Type function_type = function.GetType();
+    PAIMON_RETURN_NOT_OK(CheckLiteralNotEmpty(literals, function, field_name));
+
+    if (function_type == Function::Type::IN || function_type == Function::Type::NOT_IN) {
+        Function::Type comparison_type =
+            function_type == Function::Type::IN ? Function::Type::EQUAL : Function::Type::NOT_EQUAL;
+        std::vector<arrow::compute::Expression> sub_exprs;
+        sub_exprs.reserve(literals.size());
+        for (const auto& literal : literals) {
+            CONVERT_TO_ARROW_LITERAL(literal);
+            PAIMON_ASSIGN_OR_RAISE(arrow::compute::Expression sub_expr,
+                                   ConvertFloatingPointComparison(field_name, comparison_type,
+                                                                  literal, arrow_literal));
+            sub_exprs.push_back(std::move(sub_expr));
+        }
+        return function_type == Function::Type::IN ? arrow::compute::or_(sub_exprs)
+                                                   : arrow::compute::and_(sub_exprs);
+    }
+
+    CONVERT_TO_ARROW_LITERAL(literals[0]);
+    return ConvertFloatingPointComparison(field_name, function_type, literals[0], arrow_literal);
 }
 
 Result<arrow::compute::Expression> PredicateConverter::ConvertToArrowLiteral(

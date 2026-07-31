@@ -19,7 +19,9 @@
 
 #include "paimon/format/parquet/column_index_filter.h"
 
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <string>
@@ -469,6 +471,154 @@ TEST_F(ColumnIndexFilterTest, OrCompound) {
     EXPECT_EQ(9, ranges.GetRanges()[0].to);
     EXPECT_EQ(90, ranges.GetRanges()[1].from);
     EXPECT_EQ(99, ranges.GetRanges()[1].to);
+}
+
+TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
+    for (FieldType field_type : {FieldType::FLOAT, FieldType::DOUBLE}) {
+        std::shared_ptr<arrow::Array> values;
+        if (field_type == FieldType::FLOAT) {
+            arrow::FloatBuilder builder;
+            ASSERT_TRUE(builder.Reserve(30).ok());
+            for (int32_t i = 0; i < 10; ++i) {
+                builder.UnsafeAppend(-0.0f);
+            }
+            for (int32_t i = 0; i < 10; ++i) {
+                builder.UnsafeAppend(0.0f);
+            }
+            for (int32_t i = 0; i < 10; ++i) {
+                builder.UnsafeAppend(1.0f);
+            }
+            values = builder.Finish().ValueOrDie();
+        } else {
+            arrow::DoubleBuilder builder;
+            ASSERT_TRUE(builder.Reserve(30).ok());
+            for (int32_t i = 0; i < 10; ++i) {
+                builder.UnsafeAppend(-0.0);
+            }
+            for (int32_t i = 0; i < 10; ++i) {
+                builder.UnsafeAppend(0.0);
+            }
+            for (int32_t i = 0; i < 10; ++i) {
+                builder.UnsafeAppend(1.0);
+            }
+            values = builder.Finish().ValueOrDie();
+        }
+
+        auto field = arrow::field(
+            "value", field_type == FieldType::FLOAT ? arrow::float32() : arrow::float64());
+        auto data = arrow::StructArray::Make({values}, {field}).ValueOrDie();
+        std::string file_name =
+            dir_->Str() + (field_type == FieldType::FLOAT ? "/float_signed_zero.parquet"
+                                                          : "/double_signed_zero.parquet");
+        WriteTestFile(file_name, data, /*write_batch_size=*/10,
+                      /*max_row_group_length=*/30);
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
+        ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
+        auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+        auto reader = ::parquet::ParquetFileReader::Open(in_stream);
+        ASSERT_TRUE(reader);
+        auto page_index_reader = reader->GetPageIndexReader();
+        ASSERT_TRUE(page_index_reader);
+        auto row_group_page_index = page_index_reader->RowGroup(0);
+        ASSERT_TRUE(row_group_page_index);
+        auto column_index = row_group_page_index->GetColumnIndex(0);
+        ASSERT_TRUE(column_index);
+        // Pages 0 and 1 contain only -0.0 and +0.0 respectively. Parquet normalizes both
+        // zero-only page bounds to [-0.0, +0.0], so page pruning must remain a safe superset.
+        ASSERT_EQ(3, column_index->encoded_min_values().size());
+        ASSERT_EQ(3, column_index->encoded_max_values().size());
+        for (int32_t page_index : {0, 1}) {
+            if (field_type == FieldType::FLOAT) {
+                float min_value;
+                float max_value;
+                std::memcpy(&min_value, column_index->encoded_min_values()[page_index].data(),
+                            sizeof(float));
+                std::memcpy(&max_value, column_index->encoded_max_values()[page_index].data(),
+                            sizeof(float));
+                ASSERT_TRUE(std::signbit(min_value));
+                ASSERT_FALSE(std::signbit(max_value));
+            } else {
+                double min_value;
+                double max_value;
+                std::memcpy(&min_value, column_index->encoded_min_values()[page_index].data(),
+                            sizeof(double));
+                std::memcpy(&max_value, column_index->encoded_max_values()[page_index].data(),
+                            sizeof(double));
+                ASSERT_TRUE(std::signbit(min_value));
+                ASSERT_FALSE(std::signbit(max_value));
+            }
+        }
+
+        auto less_negative_zero = PredicateBuilder::LessThan(
+            /*field_index=*/0, /*field_name=*/"value", field_type,
+            field_type == FieldType::FLOAT ? Literal(-0.0f) : Literal(-0.0));
+        ASSERT_OK_AND_ASSIGN(
+            auto ranges, ColumnIndexFilter::CalculateRowRanges(
+                             less_negative_zero, page_index_reader, {{"value", 0}},
+                             /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_TRUE(ranges.IsEmpty()) << "field type: " << static_cast<int32_t>(field_type);
+
+        auto less_positive_zero = PredicateBuilder::LessThan(
+            /*field_index=*/0, /*field_name=*/"value", field_type,
+            field_type == FieldType::FLOAT ? Literal(0.0f) : Literal(0.0));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        less_positive_zero, page_index_reader, {{"value", 0}},
+                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_EQ(20, ranges.RowCount());
+        ASSERT_EQ(1, ranges.GetRanges().size());
+        ASSERT_EQ(0, ranges.GetRanges()[0].from);
+        ASSERT_EQ(19, ranges.GetRanges()[0].to);
+
+        auto greater_negative_zero = PredicateBuilder::GreaterThan(
+            /*field_index=*/0, /*field_name=*/"value", field_type,
+            field_type == FieldType::FLOAT ? Literal(-0.0f) : Literal(-0.0));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        greater_negative_zero, page_index_reader, {{"value", 0}},
+                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_EQ(30, ranges.RowCount());
+
+        auto not_equal_negative_zero = PredicateBuilder::NotEqual(
+            /*field_index=*/0, /*field_name=*/"value", field_type,
+            field_type == FieldType::FLOAT ? Literal(-0.0f) : Literal(-0.0));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        not_equal_negative_zero, page_index_reader, {{"value", 0}},
+                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_EQ(30, ranges.RowCount());
+
+        auto greater_finite = PredicateBuilder::GreaterThan(
+            /*field_index=*/0, /*field_name=*/"value", field_type,
+            field_type == FieldType::FLOAT ? Literal(2.0f) : Literal(2.0));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        greater_finite, page_index_reader, {{"value", 0}},
+                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_TRUE(ranges.IsEmpty());
+
+        auto greater_between_pages = PredicateBuilder::GreaterThan(
+            /*field_index=*/0, /*field_name=*/"value", field_type,
+            field_type == FieldType::FLOAT ? Literal(0.5f) : Literal(0.5));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        greater_between_pages, page_index_reader, {{"value", 0}},
+                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_EQ(10, ranges.RowCount());
+        ASSERT_EQ(1, ranges.GetRanges().size());
+        ASSERT_EQ(20, ranges.GetRanges()[0].from);
+        ASSERT_EQ(29, ranges.GetRanges()[0].to);
+
+        auto equal_finite = PredicateBuilder::Equal(
+            /*field_index=*/0, /*field_name=*/"value", field_type,
+            field_type == FieldType::FLOAT ? Literal(2.0f) : Literal(2.0));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        equal_finite, page_index_reader, {{"value", 0}},
+                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_TRUE(ranges.IsEmpty());
+    }
 }
 
 /// Predicates referencing fields absent from the data file are stripped upstream
