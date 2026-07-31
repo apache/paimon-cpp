@@ -861,20 +861,18 @@ TEST_P(BlobTableInteTest, TestBasic) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    {
-        // read with row tracking
-        auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
-            arrow::ipc::internal::json::ArrayFromJSON(
-                arrow::struct_({fields_[1], fields_[0], SpecialFields::SequenceNumber().field_,
-                                SpecialFields::RowId().field_, fields_[2]}),
-                R"([
+    // read with row tracking
+    auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[1], fields_[0], SpecialFields::SequenceNumber().field_,
+                            SpecialFields::RowId().field_, fields_[2]}),
+            R"([
         ["new_blob", 1, 2, 0, "c"]
     ])")
-                .ValueOrDie());
+            .ValueOrDie());
 
-        ASSERT_OK(ScanAndRead(table_path, {"f1", "f0", "_SEQUENCE_NUMBER", "_ROW_ID", "f2"},
-                              expected_row_tracking_array));
-    }
+    ASSERT_OK(ScanAndRead(table_path, {"f1", "f0", "_SEQUENCE_NUMBER", "_ROW_ID", "f2"},
+                          expected_row_tracking_array));
 }
 
 TEST_P(BlobTableInteTest, TestBlobFilesAcrossSchemaIds) {
@@ -1022,17 +1020,16 @@ TEST_P(BlobTableInteTest, TestMultipleAppends) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    {
-        // read with row tracking
-        auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
-            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
-                                                          fields_[0],
-                                                          fields_[1],
-                                                          fields_[2],
-                                                          SpecialFields::RowId().field_,
-                                                          SpecialFields::SequenceNumber().field_,
-                                                      }),
-                                                      R"([
+    // read with row tracking
+    auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
+                                                      fields_[0],
+                                                      fields_[1],
+                                                      fields_[2],
+                                                      SpecialFields::RowId().field_,
+                                                      SpecialFields::SequenceNumber().field_,
+                                                  }),
+                                                  R"([
         [1, "a", "b", 0, 1],
         [1, "a", "b", 1, 1],
         [1, "a", "b", 2, 1],
@@ -1046,11 +1043,10 @@ TEST_P(BlobTableInteTest, TestMultipleAppends) {
         [1, "a", "b", 10, 2],
         [2, "c", "d", 11, 4]
     ])")
-                .ValueOrDie());
+            .ValueOrDie());
 
-        ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID", "_SEQUENCE_NUMBER"},
-                              expected_row_tracking_array));
-    }
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID", "_SEQUENCE_NUMBER"},
+                          expected_row_tracking_array));
 }
 
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobOnlyWriteWithFirstRowId) {
@@ -1791,25 +1787,23 @@ TEST_P(BlobTableInteTest, TestMultipleAppendsDifferentFirstRowIds) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    {
-        // read with row tracking
-        auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
-            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
-                                                          fields_[0],
-                                                          fields_[1],
-                                                          fields_[2],
-                                                          SpecialFields::RowId().field_,
-                                                          SpecialFields::SequenceNumber().field_,
-                                                      }),
-                                                      R"([
+    // read with row tracking
+    auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({
+                                                      fields_[0],
+                                                      fields_[1],
+                                                      fields_[2],
+                                                      SpecialFields::RowId().field_,
+                                                      SpecialFields::SequenceNumber().field_,
+                                                  }),
+                                                  R"([
         [1, "a", "b", 0, 1],
         [2, "c", "d", 1, 3]
     ])")
-                .ValueOrDie());
+            .ValueOrDie());
 
-        ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID", "_SEQUENCE_NUMBER"},
-                              expected_row_tracking_array));
-    }
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID", "_SEQUENCE_NUMBER"},
+                          expected_row_tracking_array));
 }
 
 TEST_P(BlobTableInteTest, TestMoreDataWithDataEvolution) {
@@ -1946,21 +1940,19 @@ TEST_P(BlobTableInteTest, TestExternalPath) {
             .ValueOrDie());
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 
-    {
-        // read with row tracking
-        auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
-            arrow::ipc::internal::json::ArrayFromJSON(
-                arrow::struct_({fields_[1], fields_[0], fields_[2], SpecialFields::RowId().field_,
-                                SpecialFields::SequenceNumber().field_}),
-                R"([
+    // read with row tracking
+    auto expected_row_tracking_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[1], fields_[0], fields_[2], SpecialFields::RowId().field_,
+                            SpecialFields::SequenceNumber().field_}),
+            R"([
         ["a", 10, "b", 0, 2],
         ["c", 20, "d", 1, 2]
     ])")
-                .ValueOrDie());
+            .ValueOrDie());
 
-        ASSERT_OK(ScanAndRead(table_path, {"f1", "f0", "f2", "_ROW_ID", "_SEQUENCE_NUMBER"},
-                              expected_row_tracking_array));
-    }
+    ASSERT_OK(ScanAndRead(table_path, {"f1", "f0", "f2", "_ROW_ID", "_SEQUENCE_NUMBER"},
+                          expected_row_tracking_array));
 }
 
 TEST_P(BlobTableInteTest, TestPartitionWithPredicate) {
