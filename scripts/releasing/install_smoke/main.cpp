@@ -16,12 +16,18 @@
  * limitations under the License.
  */
 
+#include <cstdint>
+#include <limits>
 #include <string>
 
 #include "paimon/status.h"
+#include "paimon/utils/special_field_ids.h"
 
 int main() {
     const paimon::Status status = paimon::Status::Invalid("install smoke test");
-    return !status.ok() && status.ToString().find("install smoke test") != std::string::npos ? 0
-                                                                                             : 1;
+    const int32_t* row_id = &paimon::SpecialFieldIds::ROW_ID;
+    const bool valid_status =
+        !status.ok() && status.ToString().find("install smoke test") != std::string::npos;
+    const bool valid_row_id = *row_id == std::numeric_limits<int32_t>::max() - 5;
+    return valid_status && valid_row_id ? 0 : 1;
 }

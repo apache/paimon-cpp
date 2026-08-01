@@ -55,8 +55,7 @@ scripts/releasing/bump_version.py --check 0.3.0
 
 Complete signing-key setup well before creating the first release candidate:
 
-- new signing keys must use RSA with at least 2048 bits; ASF recommends 4096
-  bits for new keys;
+- new signing keys must use RSA with at least 4096 bits;
 - publish the public key to the global public keyserver network;
 - append the public key to `dist/release/paimon/KEYS`. Never remove historical
   keys because they are required to verify archived releases;

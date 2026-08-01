@@ -17,8 +17,8 @@
 
 .. _implementations:
 
-C++ Paimon Documentation
-========================
+Apache Paimon C++
+=================
 
 Paimon C++ is a high-performance C++ implementation of Apache Paimon. We aim to
 provide a native, high-performance and extensible implementation that allows

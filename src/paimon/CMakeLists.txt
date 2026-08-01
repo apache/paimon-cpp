@@ -403,7 +403,6 @@ set(PAIMON_CORE_SRCS
     core/utils/partition_path_utils.cpp
     core/utils/primary_key_table_utils.cpp
     core/utils/snapshot_manager.cpp
-    core/utils/special_field_ids.cpp
     core/utils/tag_manager.cpp)
 
 add_paimon_lib(paimon

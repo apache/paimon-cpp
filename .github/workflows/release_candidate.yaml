@@ -122,6 +122,15 @@ jobs:
           name: source-archive
           path: release/ci
 
+      - name: Install Rust toolchain (tantivy-fts)
+        shell: bash
+        run: ci/scripts/setup_rust.sh
+
+      - name: Install HTTP and TLS development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+
       - name: Verify, build, test, and install
         shell: bash
         env:

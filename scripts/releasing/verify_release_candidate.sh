@@ -339,9 +339,18 @@ if [[ "${SKIP_RAT}" == false ]]; then
         -E "${SOURCE_DIR}/.github/.rat-excludes" \
         -d "${SOURCE_DIR}" >"${RAT_REPORT}"
 
-    if grep -Eq 'Files with unapproved licenses:[[:space:]]*[1-9]' "${RAT_REPORT}"; then
+    UNKNOWN_LICENSE_COUNT=$(
+        awk '/^[[:space:]]*[0-9]+[[:space:]]+Unknown Licenses[[:space:]]*$/ {
+            print $1
+        }' "${RAT_REPORT}"
+    )
+    if [[ ! "${UNKNOWN_LICENSE_COUNT}" =~ ^[0-9]+$ ]]; then
         cat "${RAT_REPORT}"
-        fail "Apache RAT found files with unapproved licenses"
+        fail "could not determine the Apache RAT unknown license count"
+    fi
+    if [[ "${UNKNOWN_LICENSE_COUNT}" != "0" ]]; then
+        cat "${RAT_REPORT}"
+        fail "Apache RAT found ${UNKNOWN_LICENSE_COUNT} files with unknown licenses"
     fi
     echo "Apache RAT: valid"
 else
@@ -353,9 +362,15 @@ if [[ "${SKIP_BUILD}" == false ]]; then
     if [[ "${SKIP_INSTALL}" == true ]]; then
         INSTALL_SMOKE=false
     fi
+    BUILD_ARGS=(
+        --source_dir "${SOURCE_DIR}"
+        --build_type Release
+    )
+    if [[ "${INSTALL_SMOKE}" == true ]]; then
+        BUILD_ARGS+=(--install_smoke)
+    fi
     PAIMON_BUILD_JOBS="${JOBS}" \
-        "${SOURCE_DIR}/ci/scripts/build_paimon.sh" \
-        "${SOURCE_DIR}" false false Release "${INSTALL_SMOKE}"
+        "${SOURCE_DIR}/ci/scripts/build_paimon.sh" "${BUILD_ARGS[@]}"
     echo "Release build and tests: valid"
     if [[ "${INSTALL_SMOKE}" == true ]]; then
         echo "Install and consumer smoke test: valid"

@@ -19,13 +19,14 @@
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 RELEASING_DIR = Path(__file__).resolve().parents[1]
@@ -90,6 +91,17 @@ class ReleaseToolTest(unittest.TestCase):
             ),
             ".github/.rat-excludes": b"",
             "scripts/releasing/create_source_release.sh": b"#!/usr/bin/env bash\n",
+            "ci/scripts/build_paimon.sh": b"""#!/usr/bin/env bash
+set -euo pipefail
+source_root=$(cd "$(dirname "$0")/../.." && pwd)
+[[ $# == 5 ]]
+[[ $1 == --source_dir ]]
+[[ $2 == "${source_root}" ]]
+[[ $3 == --build_type ]]
+[[ $4 == Release ]]
+[[ $5 == --install_smoke ]]
+[[ ${PAIMON_BUILD_JOBS} == 7 ]]
+""",
         }
         with tarfile.open(artifact, mode="w:gz") as archive:
             root = tarfile.TarInfo("paimon-cpp-1.2.3/")
@@ -109,20 +121,27 @@ class ReleaseToolTest(unittest.TestCase):
         return artifact
 
     def run_verifier(
-        self, artifact: Path, *, expected_returncode: int = 0
+        self,
+        artifact: Path,
+        *,
+        options: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
+        expected_returncode: int = 0,
     ) -> subprocess.CompletedProcess:
+        if options is None:
+            options = ["--skip-rat", "--skip-build"]
         result = subprocess.run(
             [
                 "bash",
                 str(RELEASE_VERIFIER),
                 "--allow-unsigned",
-                "--skip-rat",
-                "--skip-build",
+                *options,
                 str(artifact),
             ],
             universal_newlines=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
             check=False,
         )
         self.assertEqual(
@@ -131,6 +150,24 @@ class ReleaseToolTest(unittest.TestCase):
             msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
         return result
+
+    def create_fake_rat(self, directory: Path) -> Tuple[Path, Dict[str, str]]:
+        rat_jar = directory / "apache-rat.jar"
+        rat_jar.touch()
+        bin_dir = directory / "bin"
+        bin_dir.mkdir()
+        java = bin_dir / "java"
+        java.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "printf '%s Unknown Licenses\\n' \"${FAKE_RAT_UNKNOWN_COUNT:?}\"\n"
+            "printf '%s\\n' 'Files with unapproved licenses:'\n",
+            encoding="utf-8",
+        )
+        java.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        return rat_jar, env
 
     def test_archive_validator_accepts_regular_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -234,6 +271,46 @@ class ReleaseToolTest(unittest.TestCase):
             result = self.run_verifier(artifact, expected_returncode=1)
             self.assertIn(
                 "checksum file must contain exactly one non-empty line",
+                result.stderr,
+            )
+
+    def test_verifier_invokes_build_script_with_named_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            artifact = self.create_verifier_archive(Path(temp))
+            result = self.run_verifier(
+                artifact,
+                options=["--skip-rat", "--jobs", "7"],
+            )
+            self.assertIn("Release build and tests: valid", result.stdout)
+            self.assertIn("Install and consumer smoke test: valid", result.stdout)
+
+    def test_verifier_accepts_zero_unknown_licenses(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            artifact = self.create_verifier_archive(directory)
+            rat_jar, env = self.create_fake_rat(directory)
+            env["FAKE_RAT_UNKNOWN_COUNT"] = "0"
+            result = self.run_verifier(
+                artifact,
+                options=["--rat-jar", str(rat_jar), "--skip-build"],
+                env=env,
+            )
+            self.assertIn("Apache RAT: valid", result.stdout)
+
+    def test_verifier_rejects_unknown_licenses(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            artifact = self.create_verifier_archive(directory)
+            rat_jar, env = self.create_fake_rat(directory)
+            env["FAKE_RAT_UNKNOWN_COUNT"] = "1"
+            result = self.run_verifier(
+                artifact,
+                options=["--rat-jar", str(rat_jar), "--skip-build"],
+                env=env,
+                expected_returncode=1,
+            )
+            self.assertIn(
+                "Apache RAT found 1 files with unknown licenses",
                 result.stderr,
             )
 
