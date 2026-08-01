@@ -20,12 +20,12 @@ Global Index
 
 Global Index is a powerful indexing mechanism for append-only tables.
 It enables efficient row-level lookups and filtering without full-table scans.
-Paimon supports multiple global index types:
+Paimon C++ supports the following global index types:
 
-- **Bitmap Index**: A bitmap-based index. Each distinct value is mapped to a compressed bitmap (RoaringBitmap) that records which rows contain that value, enabling extremely fast set membership tests.
 - **BTree Index**: An efficient index based on multi-level SST files for scalar column lookups.
 - **Range Bitmap Index**: A range bitmap index optimized for range predicates on ordered scalar columns. Extends the bitmap approach by encoding value ordering, enabling efficient less-than, greater-than, and range conditions.
 - **Lucene Index**: A full-text search index powered by Lucene++. Supports tokenized text search with multiple modes including match-all, match-any, phrase, prefix, and wildcard queries.
+- **Tantivy Full-Text Index (experimental)**: A Rust FFI-based full-text search index.
 - **Vector Index (Lumina)**: An approximate nearest neighbor (ANN) index powered by Lumina for vector similarity search with configurable distance metrics.
 
 Global indexes work on top of Data Evolution tables. To use global indexes, your table must have:
@@ -34,12 +34,10 @@ Global indexes work on top of Data Evolution tables. To use global indexes, your
 - ``'row-tracking.enabled' = 'true'``
 - ``'data-evolution.enabled' = 'true'``
 
-Bitmap Index
-------------
+Bitmap Index Compatibility
+--------------------------
 
-A bitmap-based index for Equal and In predicates. Each distinct value in the indexed column
-is mapped to a compressed bitmap (RoaringBitmap) that records which rows contain that value.
-This allows extremely fast set membership tests.
+The current Paimon C++ version does not support bitmap global indexes.
 
 BTree Index
 -----------
@@ -93,6 +91,14 @@ search modes including match-all, match-any, phrase, prefix, and wildcard querie
 - **Environment Variable**: ``PAIMON_JIEBA_DICT_DIR``
 
   - **Description**: Specifies the directory containing Jieba dictionary files for Chinese text tokenization. At runtime, the system first checks this environment variable; if not set, it falls back to the compile-time ``JIEBA_TEST_DICT_DIR`` macro (only available in test builds). If neither is available, will fail with an error.
+
+Tantivy Full-Text Index (Experimental)
+---------------------------------------
+
+The Tantivy full-text index is an experimental Rust FFI-based backend. Enable it at build time
+with ``-DPAIMON_ENABLE_TANTIVY=ON``. Its global index identifier is ``tantivy-fulltext``.
+Because this backend is experimental, validate its behavior and compatibility for your workload
+before production use.
 
 Vector Index (Lumina)
 ---------------------

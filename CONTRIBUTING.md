@@ -80,7 +80,7 @@ Before submitting, please verify:
 ### Prerequisites
 
 - **C++17** compatible compiler (GCC recommended)
-- **CMake** ≥ 3.16
+- **CMake** ≥ 3.22
 - **Python 3** (for linting scripts and pre-commit)
 
 ---

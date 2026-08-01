@@ -32,7 +32,7 @@ github:
   enabled_merge_buttons:
     merge: false
     squash: true
-    rebase: true
+    rebase: false
   rulesets:
     - name: "Branch Protection"
       type: branch
@@ -52,17 +52,19 @@ github:
       required_status_checks:
         - name: "pre-commit"
           app_slug: -1
-        - name: "gcc-test"
-          app_slug: -1
         - name: "rat-license-check"
           app_slug: -1
-        - name: "test-with-sanitizer"
+        - name: "asan-ubsan"
+          app_slug: -1
+        - name: "tsan"
+          app_slug: -1
+        - name: "clang-debug"
           app_slug: -1
         - name: "clang-release"
           app_slug: -1
-        - name: "gcc-release"
+        - name: "gcc-debug"
           app_slug: -1
-        - name: "clang-test"
+        - name: "gcc-release"
           app_slug: -1
         - name: "gcc8-test"
           app_slug: -1

@@ -64,6 +64,7 @@ option(PAIMON_ENABLE_JINDO "Whether to enable jindo file system" OFF)
 option(PAIMON_ENABLE_S3 "Whether to enable S3 file system" OFF)
 option(PAIMON_ENABLE_NETWORK_TESTS
        "Whether to enable tests that access real remote services over the network" OFF)
+option(PAIMON_ENABLE_LUMINA "Whether to enable lumina vector index" OFF)
 option(PAIMON_ENABLE_LUCENE "Whether to enable lucene index" OFF)
 option(PAIMON_ENABLE_TANTIVY
        "Whether to enable tantivy-fulltext global index (Rust FFI, experimental)" OFF)
@@ -485,7 +486,7 @@ include(CMakePackageConfigHelpers)
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/PaimonConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY AnyNewerVersion)
+    COMPATIBILITY SameMinorVersion)
 
 configure_package_config_file("${CMAKE_CURRENT_SOURCE_DIR}/PaimonConfig.cmake.in"
                               "${CMAKE_CURRENT_BINARY_DIR}/PaimonConfig.cmake"

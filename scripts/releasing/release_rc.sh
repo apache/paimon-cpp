@@ -40,7 +40,7 @@ Usage:
   release_rc.sh --version VERSION --rc RC --signing-key KEY_ID [options]
 
 Required:
-  --version VERSION       Release version, for example 0.2.3
+  --version VERSION       Release version, for example 0.3.0
   --rc RC                 Release candidate number, for example 1
   --signing-key KEY_ID    OpenPGP key used for the tag and source artifact
 

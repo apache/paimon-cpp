@@ -26,10 +26,6 @@ It provides native, high-performance, and extensible access to the Paimon lake f
 
 Background and documentation are available at [paimon.apache.org](https://paimon.apache.org).
 
-## Status
-
-Paimon-cpp is currently undergoing repository migration. The original repository is hosted at [github.com/alibaba/paimon-cpp](https://github.com/alibaba/paimon-cpp/), and the codebase is being migrated incrementally to the Apache Paimon community repository.
-
 ## Features
 
 Paimon-cpp currently provides:
@@ -53,7 +49,7 @@ Paimon-cpp currently provides:
 > Paimon C++ therefore currently treats the `bitmap` global index type as unsupported. The legacy
 > implementation remains in the codebase pending migration to the Java-compatible format.
 
-Note: Linux x86_64 and macOS arm64 builds are currently verified.
+Note: Only Linux x86_64 builds are currently supported and verified.
 
 ## Building
 

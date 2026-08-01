@@ -32,8 +32,8 @@
 import os
 import datetime
 
-project = u'C++ Paimon'
-copyright = f'2024-{datetime.datetime.now().year} Apache Software Foundation'
+project = u'Paimon C++'
+copyright = f'2026-{datetime.datetime.now().year} Apache Software Foundation'
 author = u'Apache Software Foundation'
 
 # -- General configuration ---------------------------------------------------

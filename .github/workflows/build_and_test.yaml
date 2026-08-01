@@ -51,10 +51,10 @@ jobs:
             cc: gcc-14
             cxx: g++-14
           - name: clang-debug
-            # fetch_depth: '0' # fetch the PR target branch history for clang-tidy
-            # build_args: >-
-            #   --check_clang_tidy
-            #   --lint_git_target_commit "origin/${{ github.base_ref || github.event.repository.default_branch }}"
+            fetch_depth: '0' # fetch the PR target branch history for clang-tidy
+            build_args: >-
+              --check_clang_tidy
+              --lint_git_target_commit "origin/${{ github.base_ref || github.event.repository.default_branch }}"
           - name: asan-ubsan
             build_args: --enable_asan --enable_ubsan
           - name: tsan

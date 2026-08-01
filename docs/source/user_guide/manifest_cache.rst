@@ -22,10 +22,9 @@ Overview
 --------
 
 paimon-cpp caches raw manifest file bytes at the ``ObjectsFile<T>::Read()``
-layer. The cache uses the public ``Cache`` abstraction and is injected through
-``ScanContextBuilder`` or ``ReadContextBuilder``. The cache covers data
-manifests, manifest lists, and index manifests because they all read through
-``ObjectsFile<T>``.
+layer. The cache uses the public ``Cache`` abstraction and is enabled through
+``ScanContextBuilder::WithCache()``. The cache covers data manifests, manifest
+lists, and index manifests because they all read through ``ObjectsFile<T>``.
 
 For repeated ``get``, ``scan``, or batch ``get/scan -f`` requests in the same
 process, the same snapshot often reads the same manifest files repeatedly. On a
@@ -84,10 +83,8 @@ Example:
    paimon::ScanContextBuilder scan_builder(table_path);
    scan_builder.WithCache(cache);
 
-   paimon::ReadContextBuilder read_builder(table_path);
-   read_builder.WithCache(cache);
-
-Passing ``nullptr`` or omitting ``WithCache()`` leaves manifest caching disabled.
+Passing ``nullptr`` or omitting ``ScanContextBuilder::WithCache()`` leaves
+manifest caching disabled.
 
 Future Optimizations
 --------------------

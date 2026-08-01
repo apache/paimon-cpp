@@ -35,7 +35,7 @@ Usage:
   create_source_release.sh --version VERSION --git-ref REF [options]
 
 Required:
-  --version VERSION      Release version, for example 0.2.3
+  --version VERSION      Release version, for example 0.3.0
   --git-ref REF          Commit or signed RC tag to archive
 
 Options:

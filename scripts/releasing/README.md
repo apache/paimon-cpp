@@ -47,8 +47,8 @@ Before starting a release:
 For example, update all version locations and review the diff:
 
 ```bash
-scripts/releasing/bump_version.py 0.2.2 0.2.3
-scripts/releasing/bump_version.py --check 0.2.3
+scripts/releasing/bump_version.py 0.2.0 0.3.0
+scripts/releasing/bump_version.py --check 0.3.0
 ```
 
 ### Signing key setup and security
@@ -74,8 +74,8 @@ See the ASF
 policies for the complete requirements.
 
 The release scripts use `vVERSION-rcRC` for release-candidate tags and
-`vVERSION` for the final release tag. For example, the first 0.2.3 candidate is
-`v0.2.3-rc1`.
+`vVERSION` for the final release tag. For example, the first 0.3.0 candidate is
+`v0.3.0-rc1`.
 
 ## Create a release candidate
 
@@ -88,7 +88,7 @@ workflow to succeed, and imports the artifacts into ASF `dist/dev`:
 
 ```bash
 scripts/releasing/release_rc.sh \
-  --version 0.2.3 \
+  --version 0.3.0 \
   --rc 1 \
   --signing-key ASF_GPG_KEY_ID \
   --remote upstream
@@ -107,9 +107,9 @@ email and must not be used to start a vote.
 The candidate directory contains:
 
 ```text
-apache-paimon-cpp-0.2.3-src.tgz
-apache-paimon-cpp-0.2.3-src.tgz.asc
-apache-paimon-cpp-0.2.3-src.tgz.sha512
+apache-paimon-cpp-0.3.0-src.tgz
+apache-paimon-cpp-0.3.0-src.tgz.asc
+apache-paimon-cpp-0.3.0-src.tgz.sha512
 ```
 
 The wrapper prints a vote-email template. Send it to `dev@paimon.apache.org`.
@@ -140,7 +140,7 @@ After its vote is closed, a failed or superseded candidate may be removed from
 Voters can download and verify an ASF-staged candidate in one command:
 
 ```bash
-scripts/releasing/verify_release_candidate.sh --version 0.2.3 --rc 1
+scripts/releasing/verify_release_candidate.sh --version 0.3.0 --rc 1
 ```
 
 To verify files that were downloaded separately, use an explicitly downloaded
@@ -149,14 +149,14 @@ KEYS file so signature verification runs in an isolated GPG home:
 ```bash
 scripts/releasing/verify_release_candidate.sh \
   --keys-file /path/to/paimon-KEYS \
-  apache-paimon-cpp-0.2.3-src.tgz
+  apache-paimon-cpp-0.3.0-src.tgz
 ```
 
 The verifier checks:
 
 - the SHA-512 checksum and detached OpenPGP signature;
 - archive path safety, portable filename collisions, file types, permissions,
-  and the single `paimon-cpp-0.2.3/` root directory;
+  and the single `paimon-cpp-0.3.0/` root directory;
 - required `LICENSE`, `NOTICE`, build, and documentation files;
 - the CMake and documentation versions;
 - absence of compiled artifacts by filename and file magic;
@@ -164,7 +164,7 @@ The verifier checks:
 - a release build and the test suite from the extracted source archive; and
 - installation plus compilation and execution of an external CMake consumer.
 
-Pass `--git-ref v0.2.3-rc1` when the Git repository is available to regenerate
+Pass `--git-ref v0.3.0-rc1` when the Git repository is available to regenerate
 the archive from the signed tag and compare it byte-for-byte.
 
 `--allow-unsigned`, `--skip-rat`, `--skip-build`, and `--skip-install` exist for
@@ -180,7 +180,7 @@ approved candidate:
 
 ```bash
 scripts/releasing/publish_release.sh \
-  --version 0.2.3 \
+  --version 0.3.0 \
   --rc 1 \
   --signing-key ASF_GPG_KEY_ID \
   --remote upstream \

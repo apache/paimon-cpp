@@ -54,9 +54,11 @@ specific options below:
 
 ``--paimon_option=<key1>:<value1>;<key2>:<value2>``
    Repeatable table options passed through to Paimon. The default table file
-   format is ``parquet``; use ``--paimon_option file.format:<format>`` to
-   override it. For ``BM_PK_Write`` and ``BM_MOR_Read``, ``bucket`` is forced to
-   ``1``.
+   format is ``parquet``. Benchmark output supports ``parquet`` and, when
+   built with ``PAIMON_ENABLE_ORC=ON``, ``orc``; use
+   ``--paimon_option file.format:parquet`` or
+   ``--paimon_option file.format:orc`` to select one. For ``BM_PK_Write`` and
+   ``BM_MOR_Read``, ``bucket`` is forced to ``1``.
 
 Examples
 ========

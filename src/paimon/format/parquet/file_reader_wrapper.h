@@ -69,7 +69,8 @@ class FileReaderWrapper {
     /// @return The next RecordBatch, or nullptr if end of data.
     Result<std::shared_ptr<arrow::RecordBatch>> Next();
 
-    /// Get the first row number of the previously returned batch.
+    /// Get the first row number of the previously returned batch. After Next() reaches EOF,
+    /// returns the next unread row number (the end of the readable range).
     Result<uint64_t> GetPreviousBatchFirstRowNumber() const {
         return previous_first_row_;
     }
