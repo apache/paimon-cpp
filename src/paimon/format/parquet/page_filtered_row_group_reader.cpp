@@ -373,9 +373,8 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
     const TargetRowGroup& target_row_group, const std::vector<int32_t>& column_indices,
     const ::arrow::io::CacheOptions& cache_options, bool pre_buffered,
     const std::vector<::arrow::io::ReadRange>& page_ranges, int64_t max_chunksize,
-    std::shared_ptr<::arrow::MemoryPool> pool,
     const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
-    ::parquet::arrow::FileReader* arrow_file_reader) {
+    std::shared_ptr<::arrow::MemoryPool> pool, ::parquet::arrow::FileReader* arrow_file_reader) {
     auto parquet_reader = arrow_file_reader->parquet_reader();
     const auto& row_ranges = target_row_group.GetRowRanges();
     int32_t row_group_index = target_row_group.GetRowGroupIndex();
