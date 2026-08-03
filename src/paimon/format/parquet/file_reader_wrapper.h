@@ -143,6 +143,10 @@ class FileReaderWrapper {
         int32_t row_group_index, const std::shared_ptr<Predicate>& predicate,
         const std::map<std::string, int32_t>& column_name_to_index);
 
+    /// Get or create the page index reader for a row group.
+    std::shared_ptr<::parquet::RowGroupPageIndexReader> GetRowGroupPageIndexReader(
+        int32_t row_group_index);
+
  private:
     FileReaderWrapper(std::unique_ptr<::parquet::arrow::FileReader>&& file_reader,
                       const std::vector<std::pair<uint64_t, uint64_t>>& all_row_group_ranges,
@@ -160,10 +164,6 @@ class FileReaderWrapper {
 
     /// Read next batch from the fully-matched batch_reader_. Returns nullptr when exhausted.
     Result<std::shared_ptr<arrow::RecordBatch>> NextFullyMatched();
-
-    /// Get or create the page index reader for a row group.
-    std::shared_ptr<::parquet::RowGroupPageIndexReader> GetRowGroupPageIndexReader(
-        int32_t row_group_index);
 
     /// Collect all byte ranges that need pre-buffering (page-filtered + fully-matched).
     std::vector<::arrow::io::ReadRange> CollectPreBufferRanges(

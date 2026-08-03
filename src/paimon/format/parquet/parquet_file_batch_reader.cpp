@@ -408,8 +408,7 @@ Result<TargetRowGroups> ParquetFileBatchReader::RefineRowRangesByTrimming(
     TargetRowGroups target_row_groups;
     target_row_groups.reserve(src_row_groups.size());
     for (const auto& row_group : src_row_groups) {
-        auto filtered =
-            TrimRowGroupPageRanges(bitmap, row_group, column_indices, page_index_reader);
+        auto filtered = TrimRowGroupPageRanges(bitmap, row_group, column_indices);
         if (!filtered.GetRowRanges().IsEmpty()) {
             target_row_groups.emplace_back(std::move(filtered));
         }
@@ -419,10 +418,9 @@ Result<TargetRowGroups> ParquetFileBatchReader::RefineRowRangesByTrimming(
 
 TargetRowGroup ParquetFileBatchReader::TrimRowGroupPageRanges(
     const RoaringBitmap32& bitmap, const TargetRowGroup& row_group,
-    const std::vector<int32_t>& column_indices,
-    const std::shared_ptr<::parquet::PageIndexReader>& page_index_reader) const {
+    const std::vector<int32_t>& column_indices) const {
     int32_t row_group_idx = row_group.GetRowGroupIndex();
-    auto rg_page_index_reader = page_index_reader->RowGroup(row_group_idx);
+    auto rg_page_index_reader = reader_->GetRowGroupPageIndexReader(row_group_idx);
     if (!rg_page_index_reader) {
         return row_group;
     }
