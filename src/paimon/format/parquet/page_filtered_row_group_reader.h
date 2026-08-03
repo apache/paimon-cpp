@@ -64,7 +64,7 @@ class PageFilteredRowGroupReader {
         const ::arrow::io::CacheOptions& cache_options, bool pre_buffered,
         const std::vector<::arrow::io::ReadRange>& page_ranges, int64_t max_chunksize,
         std::shared_ptr<::arrow::MemoryPool> pool,
-        std::shared_ptr<::parquet::RowGroupPageIndexReader> row_group_page_index_reader,
+        const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
         ::parquet::arrow::FileReader* arrow_file_reader);
 
     /// Compute the byte ranges of pages that overlap with the given RowRanges.
@@ -73,7 +73,7 @@ class PageFilteredRowGroupReader {
     /// Falls back to entire column chunk range if OffsetIndex is unavailable.
     static std::vector<::arrow::io::ReadRange> ComputePageRanges(
         const TargetRowGroup& target_row_group, const std::vector<int32_t>& column_indices,
-        std::shared_ptr<::parquet::RowGroupPageIndexReader> row_group_page_index_reader,
+        const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
         ::parquet::ParquetFileReader* parquet_reader);
 
  private:

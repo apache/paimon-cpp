@@ -282,7 +282,7 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
     const ::arrow::io::CacheOptions& cache_options, bool pre_buffered,
     const std::vector<::arrow::io::ReadRange>& page_ranges, int64_t max_chunksize,
     std::shared_ptr<::arrow::MemoryPool> pool,
-    std::shared_ptr<::parquet::RowGroupPageIndexReader> row_group_page_index_reader,
+    const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
     ::parquet::arrow::FileReader* arrow_file_reader) {
     auto parquet_reader = arrow_file_reader->parquet_reader();
     const auto& row_ranges = target_row_group.GetRowRanges();
@@ -336,7 +336,7 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
 
 std::vector<::arrow::io::ReadRange> PageFilteredRowGroupReader::ComputePageRanges(
     const TargetRowGroup& target_row_group, const std::vector<int32_t>& column_indices,
-    std::shared_ptr<::parquet::RowGroupPageIndexReader> row_group_page_index_reader,
+    const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
     ::parquet::ParquetFileReader* parquet_reader) {
     int32_t row_group_index = target_row_group.GetRowGroupIndex();
     const auto& row_ranges = target_row_group.GetRowRanges();
