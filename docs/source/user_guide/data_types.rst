@@ -21,7 +21,7 @@ Data Types
 A data type describes the logical type of a value in the table ecosystem. It can
 be used to declare input and/or output types of operations.
 
-All data types by Java Paimon are as follows, C++ Paimon uses Apache Arrow as
+All data types by Java Paimon are as follows, Paimon C++ uses Apache Arrow as
 its schema representation. The following table shows the mapping between `Java
 Paimon DataTypes <https://paimon.apache.org/docs/master/concepts/data-types/>`_
 and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-types>`_:
@@ -194,7 +194,7 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
 
        The type can be declared using ``MAP<kt, vt>`` where kt is the data type of the key elements and vt is the data type of the value elements.
 
-       **Note:** In C++ Paimon, map keys must be explicitly marked as ``NOT NULL``.
+       **Note:** In Paimon C++, map keys must be explicitly marked as ``NOT NULL``.
        Apache Arrow does not support nullable map keys. If the key type is not
        marked as ``NOT NULL`` in the schema, parsing will fail with an error.
 
@@ -234,7 +234,7 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        Variant values are encoded with two binaries following the parquet-format
        `Variant Binary Encoding <https://github.com/apache/parquet-format/blob/master/VariantEncoding.md>`_
        specification (compatible with the Java Paimon / Spark implementation). In
-       C++ Paimon, a variant field is represented in an Arrow schema as
+       Paimon C++, a variant field is represented in an Arrow schema as
        ``Struct{value: Binary NOT NULL, metadata: Binary NOT NULL}`` marked with
        Paimon-specific field metadata; use ``paimon::Variant::ArrowField`` to
        construct such a field, and ``paimon::Variant`` (``FromJson``/``ToJson``/

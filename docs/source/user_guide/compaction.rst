@@ -26,7 +26,7 @@ compaction is therefore a trade-off between write throughput and read efficiency
 .. note::
    - There can only be one job working on the same partition's compaction,
      otherwise it will cause conflicts.
-   - C++ Paimon does not support producing changelog for now.
+   - Paimon C++ does not support producing changelog for now.
    - Compaction is disabled when ``write-only`` is set to ``true``, or when the
      table uses dynamic bucketing (``bucket = -1``) for append-only tables.
    - For a complete list of compaction-related configurations, see the

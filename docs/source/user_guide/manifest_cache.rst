@@ -21,7 +21,7 @@ Manifest Cache
 Overview
 --------
 
-paimon-cpp caches raw manifest file bytes at the ``ObjectsFile<T>::Read()``
+Paimon C++ caches raw manifest file bytes at the ``ObjectsFile<T>::Read()``
 layer. The cache uses the public ``Cache`` abstraction and is enabled through
 ``ScanContextBuilder::WithCache()``. The cache covers data manifests, manifest
 lists, and index manifests because they all read through ``ObjectsFile<T>``.

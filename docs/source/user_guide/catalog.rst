@@ -19,18 +19,18 @@
 
 Catalog
 ==========================
-C++ Paimon provides a :ref:`Catalog abstraction <cpp-api-catalog>` to manage the table of contents and metadata. The Catalog
+Paimon C++ provides a :ref:`Catalog abstraction <cpp-api-catalog>` to manage the table of contents and metadata. The Catalog
 abstraction provides a series of ways to help you better integrate with computing engines. We always
 recommend that you use Catalog to access the Paimon table.
 
 Filesystem Catalog
 ~~~~~~~~~~~~~~~~~~
-C++ Paimon catalog currently support one types of metastores filesystem metastore (default),
+Paimon C++ catalog currently support one types of metastores filesystem metastore (default),
 which stores both metadata and table files in filesystems.
 
 .. note::
 
-  Current C++ Paimon only supports filesystem catalog. In the future, we will
+  Current Paimon C++ only supports filesystem catalog. In the future, we will
   support REST catalog.
   By using the Paimon REST catalog, changes to the catalog will be directly stored
   in a remote catalog server which exposed through REST API. See `Java Paimon REST

@@ -17,9 +17,9 @@
   ~ under the License.
 -->
 
-# Paimon C++ Code Style Guide
+# Apache Paimon C++ Code Style Guide
 
-This document defines the coding conventions for the paimon-cpp project. All pull requests are expected to follow these rules. Automated tooling (clang-format, clang-tidy, cpplint, pre-commit) enforces many of them.
+This document defines the coding conventions for the Paimon C++ project. All pull requests are expected to follow these rules. Automated tooling (clang-format, clang-tidy, cpplint, pre-commit) enforces many of them.
 
 ---
 
