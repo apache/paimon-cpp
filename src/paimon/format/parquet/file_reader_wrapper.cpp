@@ -523,9 +523,9 @@ Result<RowRanges> FileReaderWrapper::CalculateFilteredRowRanges(
             return RowRanges::CreateSingle(row_count);
         }
 
-        return ColumnIndexFilter::CalculateRowRanges(
-            predicate, GetRowGroupPageIndexReader(row_group_index), column_name_to_index,
-            row_group_index, row_count);
+        return ColumnIndexFilter::CalculateRowRanges(predicate,
+                                                     GetRowGroupPageIndexReader(row_group_index),
+                                                     column_name_to_index, row_count);
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::CalculateFilteredRowRanges")
 }
