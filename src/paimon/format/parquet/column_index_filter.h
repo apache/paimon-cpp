@@ -57,9 +57,8 @@ class ColumnIndexFilter {
 
     /// Calculate row ranges based on predicate and column indices.
     /// @param predicate The predicate to evaluate.
-    /// @param page_index_reader The page index reader for the file.
+    /// @param rg_page_index_reader The page index reader of target row group for the file.
     /// @param column_name_to_index Map from column name to column index.
-    /// @param row_group_index The row group index to filter.
     /// @param row_group_row_count The number of rows in the row group.
     /// @return RowRanges that may contain matching rows.
     static Result<RowRanges> CalculateRowRanges(
