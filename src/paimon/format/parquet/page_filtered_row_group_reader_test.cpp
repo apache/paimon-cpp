@@ -555,10 +555,13 @@ TEST_F(PageFilteredRowGroupReaderTest, ComputePageRangesPartialMatch) {
     // Single page match: rows [50, 59] = page 5
     RowRanges row_ranges;
     row_ranges.Add(RowRanges::Range(50, 59));
-
+    auto page_index_reader = parquet_reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    auto rg_page_index_reader = page_index_reader->RowGroup(0);
     auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
         TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges),
-        /*column_indices=*/{0}, parquet_reader.get());
+        /*column_indices=*/{0}, /*row_group_page_index_reader=*/rg_page_index_reader,
+        parquet_reader.get());
 
     // Should have exactly 1 range (page 5 of column 0, no dictionary since disabled)
     ASSERT_EQ(1, ranges.size());
@@ -580,10 +583,13 @@ TEST_F(PageFilteredRowGroupReaderTest, ComputePageRangesAllMatch) {
     // All rows match
     RowRanges row_ranges;
     row_ranges.Add(RowRanges::Range(0, 99));
-
+    auto page_index_reader = parquet_reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    auto rg_page_index_reader = page_index_reader->RowGroup(0);
     auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
-        TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges), {0},
-        parquet_reader.get());
+        TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges),
+        /*column_indices=*/{0},
+        /*row_group_page_index_reader=*/rg_page_index_reader, parquet_reader.get());
 
     // 10 pages, all matching
     ASSERT_EQ(10, ranges.size());
@@ -605,10 +611,13 @@ TEST_F(PageFilteredRowGroupReaderTest, ComputePageRangesNoMatch) {
     auto parquet_reader = ::parquet::ParquetFileReader::Open(in_stream);
 
     RowRanges row_ranges;  // empty
-
+    auto page_index_reader = parquet_reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    auto rg_page_index_reader = page_index_reader->RowGroup(0);
     auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
-        TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges), {0},
-        parquet_reader.get());
+        TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges),
+        /*column_indices=*/{0},
+        /*row_group_page_index_reader=*/rg_page_index_reader, parquet_reader.get());
 
     ASSERT_EQ(0, ranges.size());
 }
@@ -628,9 +637,13 @@ TEST_F(PageFilteredRowGroupReaderTest, ComputePageRangesMultiColumn) {
     RowRanges row_ranges;
     row_ranges.Add(RowRanges::Range(50, 59));
 
+    auto page_index_reader = parquet_reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    auto rg_page_index_reader = page_index_reader->RowGroup(0);
     auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
         TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges),
-        {0, 1}, parquet_reader.get());
+        /*column_indices=*/{0, 1}, /*row_group_page_index_reader=*/rg_page_index_reader,
+        parquet_reader.get());
 
     // 1 matching page per column = 2 ranges total
     ASSERT_EQ(2, ranges.size());
@@ -655,9 +668,13 @@ TEST_F(PageFilteredRowGroupReaderTest, ComputePageRangesMultiplePages) {
     row_ranges.Add(RowRanges::Range(20, 29));
     row_ranges.Add(RowRanges::Range(70, 79));
 
+    auto page_index_reader = parquet_reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    auto rg_page_index_reader = page_index_reader->RowGroup(0);
     auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
-        TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges), {0},
-        parquet_reader.get());
+        TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/row_ranges),
+        /*column_indices=*/{0},
+        /*row_group_page_index_reader=*/rg_page_index_reader, parquet_reader.get());
 
     // 2 matching pages for 1 column
     ASSERT_EQ(2, ranges.size());
@@ -840,9 +857,13 @@ TEST_F(PageFilteredRowGroupReaderTest, ComputePageRangesWithDictionaryEncoding) 
     RowRanges row_ranges;
     row_ranges.Add(RowRanges::Range(0, 99));
 
+    auto page_index_reader = parquet_reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    auto rg_page_index_reader = page_index_reader->RowGroup(0);
     auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
         TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/false, /*ranges=*/row_ranges),
-        /*column_indices=*/{0}, parquet_reader.get());
+        /*column_indices=*/{0}, /*row_group_page_index_reader=*/rg_page_index_reader,
+        parquet_reader.get());
 
     ASSERT_FALSE(ranges.empty());
 

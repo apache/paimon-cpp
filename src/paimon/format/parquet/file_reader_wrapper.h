@@ -161,6 +161,10 @@ class FileReaderWrapper {
     /// Read next batch from the fully-matched batch_reader_. Returns nullptr when exhausted.
     Result<std::shared_ptr<arrow::RecordBatch>> NextFullyMatched();
 
+    /// Get or create the page index reader for a row group.
+    std::shared_ptr<::parquet::RowGroupPageIndexReader> GetRowGroupPageIndexReader(
+        int32_t row_group_index);
+
     /// Collect all byte ranges that need pre-buffering (page-filtered + fully-matched).
     std::vector<::arrow::io::ReadRange> CollectPreBufferRanges(
         const std::vector<int32_t>& column_indices);
@@ -196,6 +200,11 @@ class FileReaderWrapper {
 
     // Track pre-buffered ranges so we can wait on destruction
     std::vector<::arrow::io::ReadRange> prebuffered_ranges_;
+
+    // Arrow caches the file-level PageIndexReader, but RowGroup() creates a new reader each time.
+    // Keep one reader per row group so its page-index buffers are shared by all read stages.
+    std::map<int32_t, std::shared_ptr<::parquet::RowGroupPageIndexReader>>
+        row_group_page_index_readers_;
 };
 
 }  // namespace paimon::parquet
