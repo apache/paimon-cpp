@@ -313,6 +313,8 @@ std::shared_ptr<::parquet::RowGroupPageIndexReader> FileReaderWrapper::GetRowGro
     if (page_index_reader) {
         row_group_page_index_reader = page_index_reader->RowGroup(row_group_index);
     }
+    
+    // To avoid OOM, limit the number of row group page index readers cached in memory.
     constexpr int32_t kMaxRowGroupPageIndexReaders = 1024;
     if (row_group_page_index_readers_.size() < kMaxRowGroupPageIndexReaders) {
         row_group_page_index_readers_.emplace(row_group_index, row_group_page_index_reader);
