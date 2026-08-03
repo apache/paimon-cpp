@@ -64,6 +64,65 @@ class Predicate;
 
 namespace paimon::parquet {
 
+// LIST/MAP do not support pruning fields from their nested value types, but physical and
+// logical leaf types may still differ (for example, Parquet reports LTZ timestamps as UTC
+// while Paimon exposes them in the local timezone). Compare only the nested projection shape
+// here so those representation differences are handled by the normal cast path.
+bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_type,
+                                  const std::shared_ptr<arrow::DataType>& file_type) {
+    const bool read_is_nested = ArrowSchemaValidator::IsNestedType(read_type);
+    const bool file_is_nested = ArrowSchemaValidator::IsNestedType(file_type);
+    if (!read_is_nested || !file_is_nested) {
+        if (read_is_nested || file_is_nested) {
+            return false;
+        }
+        // ParquetTimestampConverter explicitly supports timestamp unit and timezone
+        // conversion after reading. Other atomic type differences remain unsupported here.
+        if (read_type->id() == arrow::Type::TIMESTAMP &&
+            file_type->id() == arrow::Type::TIMESTAMP) {
+            const auto& read_timestamp = static_cast<const arrow::TimestampType&>(*read_type);
+            const auto& file_timestamp = static_cast<const arrow::TimestampType&>(*file_type);
+            return read_timestamp.unit() == file_timestamp.unit() ||
+                   (file_timestamp.unit() == arrow::TimeUnit::MILLI &&
+                    read_timestamp.unit() == arrow::TimeUnit::SECOND);
+        }
+        return read_type->Equals(file_type);
+    }
+    if (read_type->id() != file_type->id()) {
+        return false;
+    }
+
+    switch (file_type->id()) {
+        case arrow::Type::STRUCT: {
+            if (read_type->num_fields() != file_type->num_fields()) {
+                return false;
+            }
+            for (int32_t i = 0; i < file_type->num_fields(); ++i) {
+                const auto& read_child = read_type->field(i);
+                const auto& file_child = file_type->field(i);
+                if (read_child->name() != file_child->name() ||
+                    !HasSameNestedProjectionShape(read_child->type(), file_child->type())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        case arrow::Type::LIST: {
+            const auto& read_list = static_cast<const arrow::ListType&>(*read_type);
+            const auto& file_list = static_cast<const arrow::ListType&>(*file_type);
+            return HasSameNestedProjectionShape(read_list.value_type(), file_list.value_type());
+        }
+        case arrow::Type::MAP: {
+            const auto& read_map = static_cast<const arrow::MapType&>(*read_type);
+            const auto& file_map = static_cast<const arrow::MapType&>(*file_type);
+            return HasSameNestedProjectionShape(read_map.key_type(), file_map.key_type()) &&
+                   HasSameNestedProjectionShape(read_map.item_type(), file_map.item_type());
+        }
+        default:
+            return false;
+    }
+}
+
 ParquetFileBatchReader::ParquetFileBatchReader(
     std::shared_ptr<arrow::io::RandomAccessFile>&& input_stream,
     std::unique_ptr<FileReaderWrapper>&& reader, const std::map<std::string, std::string>& options,
@@ -668,18 +727,30 @@ Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::D
                 SkipLeafIndices(file_child->type(), leaf_index);
             }
         }
-    } else if (file_type->id() == arrow::Type::LIST || file_type->id() == arrow::Type::MAP) {
+    } else if (file_type->id() == arrow::Type::LIST) {
         // Keep behavior aligned with ORC path: list/map inner partial projection
         // is currently unsupported and should fail-fast.
-        if (!read_type->Equals(file_type)) {
+        if (!HasSameNestedProjectionShape(read_type, file_type)) {
             return Status::Invalid(fmt::format(
                 "Parquet does not support partial projection inside list/map: src {} vs target {}",
                 file_type->ToString(), read_type->ToString()));
         }
-        for (int32_t i = 0; i < file_type->num_fields(); i++) {
-            PAIMON_RETURN_NOT_OK(CollectLeafIndices(
-                read_type->field(i)->type(), file_type->field(i)->type(), leaf_index, indices));
+        const auto& read_list = static_cast<const arrow::ListType&>(*read_type);
+        const auto& file_list = static_cast<const arrow::ListType&>(*file_type);
+        PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_list.value_type(), file_list.value_type(),
+                                                leaf_index, indices));
+    } else if (file_type->id() == arrow::Type::MAP) {
+        if (!HasSameNestedProjectionShape(read_type, file_type)) {
+            return Status::Invalid(fmt::format(
+                "Parquet does not support partial projection inside list/map: src {} vs target {}",
+                file_type->ToString(), read_type->ToString()));
         }
+        const auto& read_map = static_cast<const arrow::MapType&>(*read_type);
+        const auto& file_map = static_cast<const arrow::MapType&>(*file_type);
+        PAIMON_RETURN_NOT_OK(
+            CollectLeafIndices(read_map.key_type(), file_map.key_type(), leaf_index, indices));
+        PAIMON_RETURN_NOT_OK(
+            CollectLeafIndices(read_map.item_type(), file_map.item_type(), leaf_index, indices));
     } else {
         // Leaf column — collect its index.
         indices->push_back((*leaf_index)++);
