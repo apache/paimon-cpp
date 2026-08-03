@@ -242,7 +242,7 @@ Result<std::shared_ptr<arrow::RecordBatch>> FileReaderWrapper::NextPageFiltered(
             current_page_filtered_reader_,
             PageFilteredRowGroupReader::ReadFilteredRowGroup(
                 target_rg, target_column_indices_, file_reader_->properties().cache_options(),
-                pre_buffered, page_ranges, max_chunksize, pool_, row_group_page_index_reader,
+                pre_buffered, page_ranges, max_chunksize, row_group_page_index_reader, pool_,
                 file_reader_.get()));
         current_filtered_row_ranges_ = target_rg.GetRowRanges();
         current_filtered_rg_start_ = all_row_group_ranges_[rg_id].first;
@@ -313,7 +313,7 @@ std::shared_ptr<::parquet::RowGroupPageIndexReader> FileReaderWrapper::GetRowGro
     if (page_index_reader) {
         row_group_page_index_reader = page_index_reader->RowGroup(row_group_index);
     }
-    
+
     // To avoid OOM, limit the number of row group page index readers cached in memory.
     constexpr int32_t kMaxRowGroupPageIndexReaders = 1024;
     if (row_group_page_index_readers_.size() < kMaxRowGroupPageIndexReaders) {

@@ -50,22 +50,21 @@ class PageFilteredRowGroupReader {
     /// Read a row group with page-level filtering.
     /// @param target_row_group Target row group with index and row ranges
     /// @param column_indices Leaf column indices to read
-    /// @param pool Memory pool
     /// @param cache_options Cache options for PreBuffer
     /// @param pre_buffered If true, assumes PreBuffer was already called externally
     ///        and only waits via WhenBuffered (no redundant PreBuffer).
     /// @param page_ranges If non-empty, wait via WhenBufferedRanges instead of WhenBuffered
     /// @param max_chunksize Per-batch row cap for the returned reader.
     /// @param row_group_page_index_reader Reusable page-index reader for the target row group
+    /// @param pool Memory pool
     /// @param arrow_file_reader The Arrow FileReader for ColumnReader tree creation
     /// @return A RecordBatchReader streaming the filtered rows.
     static Result<std::unique_ptr<arrow::RecordBatchReader>> ReadFilteredRowGroup(
         const TargetRowGroup& target_row_group, const std::vector<int32_t>& column_indices,
         const ::arrow::io::CacheOptions& cache_options, bool pre_buffered,
         const std::vector<::arrow::io::ReadRange>& page_ranges, int64_t max_chunksize,
-        std::shared_ptr<::arrow::MemoryPool> pool,
         const std::shared_ptr<::parquet::RowGroupPageIndexReader>& row_group_page_index_reader,
-        ::parquet::arrow::FileReader* arrow_file_reader);
+        std::shared_ptr<::arrow::MemoryPool> pool, ::parquet::arrow::FileReader* arrow_file_reader);
 
     /// Compute the byte ranges of pages that overlap with the given RowRanges.
     /// Uses OffsetIndex to determine per-page file offsets and sizes.
