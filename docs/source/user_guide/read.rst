@@ -28,7 +28,7 @@ Paimon by functionality can be divided into two layers:
   - Readers for various file formats
   - Coordinated reading of file collections
 
-The control plane and data plane interact primarily via DataSplit (the query plan). C++ Paimon currently supports a standard
+The control plane and data plane interact primarily via DataSplit (the query plan). Paimon C++ currently supports a standard
 DataSplit protocol which includes the necessary meta information to access data files. With DataSplit, a high-performance
 data access path can be integrated.
 
@@ -46,7 +46,7 @@ Schema Evolution
 Scope and Compatibility
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-C++ Paimon supports all evolution kinds available in Java Paimon for non-nested types:
+Paimon C++ supports all evolution kinds available in Java Paimon for non-nested types:
 
 - Add column
 - Drop column
@@ -77,7 +77,7 @@ Overflow behavior is undefined for C++ and Java Paimon. Results in overflow scen
 - Return an error status,
 - Or be null.
 
-C++ Paimon does not guarantee identical results to Java Paimon in overflow scenarios. Users should not rely on identical
+Paimon C++ does not guarantee identical results to Java Paimon in overflow scenarios. Users should not rely on identical
 return values between implementations.
 
 Type Change Support Matrix
@@ -275,17 +275,17 @@ for caveats.
     - C++:  inf, -inf, nan
 
   4️⃣ Printing difference:
-    - C++ Paimon prints 1.0 as ``1``
-    - Java Paimon prints 1.0 as ``1.0``
+    - C++ prints 1.0 as ``1``
+    - Java prints 1.0 as ``1.0``
 
   5️⃣ Timestamp precision and range differences:
-    - Java Paimon: 0000-01-01 00:00:00.000000000 to 9999-12-31 23:59:59.999999999
-    - C++ Paimon:  1677-09-21 00:12:43.145224192 to 2262-04-11 23:47:16.854775807
+    - Java: 0000-01-01 00:00:00.000000000 to 9999-12-31 23:59:59.999999999
+    - C++:  1677-09-21 00:12:43.145224192 to 2262-04-11 23:47:16.854775807
     - C++ only supports nanosecond precision; range is smaller.
 
   6️⃣ bigint -> timestamp range differences:
-    - Java Paimon (ms):   ``[MIN_INT64/1000, MAX_INT64/1000]`` seconds
-    - C++ Paimon (ns):    ``[MIN_INT64/1e9,  MAX_INT64/1e9]`` seconds
+    - Java (ms):   ``[MIN_INT64/1000, MAX_INT64/1000]`` seconds
+    - C++ (ns):    ``[MIN_INT64/1e9,  MAX_INT64/1e9]`` seconds
 
   7️⃣ string -> decimal with precision > 38:
     - C++ returns ``null`` if parsing would overflow 128-bit arithmetic.

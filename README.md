@@ -17,18 +17,18 @@
   ~ under the License.
 -->
 
-# Apache Paimon-cpp
+# Apache Paimon C++
 
 [![License](https://img.shields.io/badge/license-Apache%202-4EB1BA.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
 
-Paimon-cpp is the C++ implementation of [Apache Paimon](https://paimon.apache.org).
+Paimon C++ is the C++ implementation of [Apache Paimon](https://paimon.apache.org).
 It provides native, high-performance, and extensible access to the Paimon lake format for C++ engines and services without JVM dependencies.
 
 Background and documentation are available at [paimon.apache.org](https://paimon.apache.org).
 
 ## Features
 
-Paimon-cpp currently provides:
+Paimon C++ currently provides:
 
 - **Write**: append table and primary key table write support with compaction.
 - **Commit**: append table commit support for simple append-only tables.
@@ -78,7 +78,7 @@ cp devcontainer.json.template devcontainer.json
 
 ## Collaboration
 
-Paimon-cpp is an active open-source project and we welcome people who want to contribute or share good ideas!
+Paimon C++ is an active open-source project and we welcome people who want to contribute or share good ideas!
 Before contributing, please read the [Contributing Guide](CONTRIBUTING.md) and the [Code Style Guide](docs/code-style.md). You are encouraged to check out our [documentation](https://paimon.apache.org/docs/cpp/).
 
 ## License

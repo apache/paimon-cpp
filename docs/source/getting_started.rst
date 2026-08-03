@@ -22,8 +22,8 @@ Getting Started
 ===============
 
 The following articles demonstrate installation, usage, and a basic
-understanding of C++ Paimon. These articles will get you set up quickly with C++
-Paimon and give you a taste of what the library is capable of.
+understanding of Paimon C++. These articles will get you set up quickly with
+Paimon C++ and give you a taste of what the library is capable of.
 
 Start here to gain a basic understanding of Paimon, and move on to the
 :doc:`/user_guide` to explore more specific topics and

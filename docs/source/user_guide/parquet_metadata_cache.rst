@@ -21,11 +21,11 @@ Parquet Metadata Cache
 Overview
 --------
 
-paimon-cpp can cache serialized Parquet metadata footer bytes for Parquet data files.
+Paimon C++ can cache serialized Parquet metadata footer bytes for Parquet data files.
 The cache is used by ``ParquetReaderBuilder`` before opening the Arrow Parquet
-reader. On a cache miss, paimon-cpp loads the Parquet file metadata, serializes
+reader. On a cache miss, Paimon C++ loads the Parquet file metadata, serializes
 it as a complete metadata footer, and stores those bytes in the public
-``Cache`` abstraction. On a cache hit, paimon-cpp parses the cached footer bytes into
+``Cache`` abstraction. On a cache hit, Paimon C++ parses the cached footer bytes into
 ``parquet::FileMetaData`` and passes the metadata to the Parquet reader.
 
 The cache stores serialized metadata footer bytes instead of caching a
@@ -36,7 +36,7 @@ bytes, while the Parquet library still owns metadata parsing and validation.
 This optimization is useful when the same Parquet files are opened repeatedly
 in the same process, for example repeated ``get`` or ``scan`` requests over the
 same snapshot. On a cache hit, the read path avoids reading the Parquet footer
-bytes from the filesystem again. paimon-cpp still parses the cached footer bytes
+bytes from the filesystem again. Paimon C++ still parses the cached footer bytes
 into ``parquet::FileMetaData`` for each reader open. Data pages, page indexes,
 and column chunks are still read from the file as usual.
 
@@ -97,7 +97,7 @@ Example:
    read_builder.WithCache(cache);
 
 Passing ``nullptr`` or omitting ``WithCache()`` leaves Parquet metadata caching
-disabled. If a file URI cannot be obtained, paimon-cpp also bypasses the cache
+disabled. If a file URI cannot be obtained, Paimon C++ also bypasses the cache
 and opens the Parquet file normally.
 
 Future Optimizations

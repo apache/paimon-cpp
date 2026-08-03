@@ -19,9 +19,9 @@
 
 .. _building-paimon-cpp:
 
-===================
-Building Paimon C++
-===================
+==========================
+Building Apache Paimon C++
+==========================
 
 System setup
 ============

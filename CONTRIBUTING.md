@@ -17,9 +17,9 @@
   ~ under the License.
 -->
 
-# Contributing to Apache Paimon-cpp
+# Contributing to Apache Paimon C++
 
-Thank you for your interest in contributing to paimon-cpp! This document explains how to get started.
+Thank you for your interest in contributing to Paimon C++! This document explains how to get started.
 
 ---
 
@@ -116,4 +116,4 @@ If you make improvements that could benefit all developers, please update the te
 
 ## License
 
-By contributing to paimon-cpp, you agree that your contributions will be licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+By contributing to Paimon C++, you agree that your contributions will be licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).

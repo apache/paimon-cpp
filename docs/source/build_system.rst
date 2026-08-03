@@ -18,9 +18,9 @@
 .. default-domain:: cpp
 .. highlight:: cpp
 
-======================
-Integrating Paimon C++
-======================
+=============================
+Integrating Apache Paimon C++
+=============================
 
 This section assumes that you have already built and installed the Paimon C++
 libraries on your system after :ref:`building them yourself <building-paimon-cpp>`.
