@@ -670,8 +670,8 @@ TEST_F(ParquetFileBatchReaderTest, TestNestedListTimestampTimezoneAndMapFieldNam
     auto write_array = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(write_schema->fields()), data_json)
             .ValueOrDie());
-    WriteArray(file_path_, write_array, write_schema, +/*write_batch_size=*/write_array->length(),
-               +/*enable_dictionary=*/false, /*max_row_group_length=*/write_array->length());
+    WriteArray(file_path_, write_array, write_schema, /*write_batch_size=*/write_array->length(),
+               /*enable_dictionary=*/false, /*max_row_group_length=*/write_array->length());
 
     auto read_element_type = arrow::struct_({
         arrow::field("key", arrow::utf8()),
