@@ -33,11 +33,20 @@ GlobalIndexMeta::GlobalIndexMeta(int64_t _row_range_start, int64_t _row_range_en
                                  int32_t _index_field_id,
                                  const std::optional<std::vector<int32_t>>& _extra_field_ids,
                                  const std::shared_ptr<Bytes>& _index_meta)
+    : GlobalIndexMeta(_row_range_start, _row_range_end, _index_field_id, _extra_field_ids,
+                      _index_meta, nullptr) {}
+
+GlobalIndexMeta::GlobalIndexMeta(int64_t _row_range_start, int64_t _row_range_end,
+                                 int32_t _index_field_id,
+                                 const std::optional<std::vector<int32_t>>& _extra_field_ids,
+                                 const std::shared_ptr<Bytes>& _index_meta,
+                                 const std::shared_ptr<Bytes>& _source_meta)
     : row_range_start(_row_range_start),
       row_range_end(_row_range_end),
       index_field_id(_index_field_id),
       extra_field_ids(_extra_field_ids),
-      index_meta(_index_meta) {}
+      index_meta(_index_meta),
+      source_meta(_source_meta) {}
 
 bool GlobalIndexMeta::operator==(const GlobalIndexMeta& other) const {
     if (this == &other) {
@@ -47,6 +56,12 @@ bool GlobalIndexMeta::operator==(const GlobalIndexMeta& other) const {
         return false;
     }
     if (index_meta && other.index_meta && !(*index_meta == *other.index_meta)) {
+        return false;
+    }
+    if ((source_meta && !other.source_meta) || (!source_meta && other.source_meta)) {
+        return false;
+    }
+    if (source_meta && other.source_meta && !(*source_meta == *other.source_meta)) {
         return false;
     }
     return row_range_start == other.row_range_start && row_range_end == other.row_range_end &&
@@ -61,14 +76,17 @@ std::string GlobalIndexMeta::ToString() const {
 
     std::string index_meta_str =
         index_meta == nullptr ? "null" : std::string(index_meta->data(), index_meta->size());
+    std::string source_meta_str =
+        source_meta == nullptr ? "null" : std::string(source_meta->data(), source_meta->size());
     return fmt::format(
         "{{row_range_start={}, row_range_end={}, index_field_id={}, extra_field_ids={}, "
-        "index_meta={}}}",
-        row_range_start, row_range_end, index_field_id, extra_field_ids_str, index_meta_str);
+        "index_meta={}, source_meta={}}}",
+        row_range_start, row_range_end, index_field_id, extra_field_ids_str, index_meta_str,
+        source_meta_str);
 }
 
 BinaryRow GlobalIndexMeta::ToRow(MemoryPool* pool) const {
-    BinaryRow row(5);
+    BinaryRow row(6);
     BinaryRowWriter writer(&row, 32 * 1024, pool);
     writer.WriteLong(0, row_range_start);
     writer.WriteLong(1, row_range_end);
@@ -82,6 +100,11 @@ BinaryRow GlobalIndexMeta::ToRow(MemoryPool* pool) const {
         writer.SetNullAt(4);
     } else {
         writer.WriteBinary(4, *index_meta);
+    }
+    if (source_meta == nullptr) {
+        writer.SetNullAt(5);
+    } else {
+        writer.WriteBinary(5, *source_meta);
     }
     writer.Complete();
     return row;
@@ -104,8 +127,13 @@ Result<GlobalIndexMeta> GlobalIndexMeta::FromRow(const InternalRow& row) {
         index_meta = row.GetBinary(4);
         assert(index_meta);
     }
+    std::shared_ptr<Bytes> source_meta;
+    if (!row.IsNullAt(5)) {
+        source_meta = row.GetBinary(5);
+        assert(source_meta);
+    }
     return GlobalIndexMeta(row_range_start, row_range_end, index_field_id, extra_field_ids,
-                           index_meta);
+                           index_meta, source_meta);
 }
 
 const std::shared_ptr<arrow::DataType>& GlobalIndexMeta::DataType() {
@@ -117,6 +145,7 @@ const std::shared_ptr<arrow::DataType>& GlobalIndexMeta::DataType() {
                      arrow::list(arrow::field("item", arrow::int32(), /*nullable=*/false)),
                      /*nullable=*/true),
         arrow::field("_INDEX_META", arrow::binary(), /*nullable=*/true),
+        arrow::field("_SOURCE_META", arrow::binary(), /*nullable=*/true),
     });
     return schema;
 }

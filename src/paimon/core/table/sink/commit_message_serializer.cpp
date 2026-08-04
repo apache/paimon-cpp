@@ -31,6 +31,7 @@
 #include "paimon/core/index/index_file_meta_v1_deserializer.h"
 #include "paimon/core/index/index_file_meta_v2_deserializer.h"
 #include "paimon/core/index/index_file_meta_v3_deserializer.h"
+#include "paimon/core/index/index_file_meta_v4_deserializer.h"
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_meta_09_serializer.h"
 #include "paimon/core/io/data_file_meta_10_serializer.h"
@@ -45,7 +46,7 @@
 namespace paimon {
 class MemoryPool;
 
-const int32_t CommitMessageSerializer::CURRENT_VERSION = 11;
+const int32_t CommitMessageSerializer::CURRENT_VERSION = 12;
 
 CommitMessageSerializer::CommitMessageSerializer(const std::shared_ptr<MemoryPool>& pool)
     : memory_pool_(pool),
@@ -203,6 +204,11 @@ Result<std::shared_ptr<CommitMessage>> CommitMessageSerializer::Deserialize(int3
                                                                             DataInputStream* in) {
     if (version == CURRENT_VERSION) {
         return Deserialize(version, data_file_serializer_.get(), index_entry_serializer_.get(), in);
+    } else if (version == 11) {
+        auto index_entry_v4_deserializer =
+            std::make_unique<IndexFileMetaV4Deserializer>(memory_pool_);
+        return Deserialize(version, data_file_serializer_.get(), index_entry_v4_deserializer.get(),
+                           in);
     } else if (version == 9 || version == 10) {
         auto index_entry_v3_deserializer =
             std::make_unique<IndexFileMetaV3Deserializer>(memory_pool_);

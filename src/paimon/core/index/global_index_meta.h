@@ -31,11 +31,16 @@
 namespace paimon {
 /// Schema for global index.
 struct GlobalIndexMeta {
-    static constexpr int32_t NUM_FIELDS = 5;
+    static constexpr int32_t NUM_FIELDS = 6;
 
     GlobalIndexMeta(int64_t _row_range_start, int64_t _row_range_end, int32_t _index_field_id,
                     const std::optional<std::vector<int32_t>>& _extra_field_ids,
                     const std::shared_ptr<Bytes>& _index_meta);
+
+    GlobalIndexMeta(int64_t _row_range_start, int64_t _row_range_end, int32_t _index_field_id,
+                    const std::optional<std::vector<int32_t>>& _extra_field_ids,
+                    const std::shared_ptr<Bytes>& _index_meta,
+                    const std::shared_ptr<Bytes>& _source_meta);
 
     bool operator==(const GlobalIndexMeta& other) const;
 
@@ -52,6 +57,7 @@ struct GlobalIndexMeta {
     int32_t index_field_id;
     std::optional<std::vector<int32_t>> extra_field_ids;
     std::shared_ptr<Bytes> index_meta;
+    std::shared_ptr<Bytes> source_meta;
 };
 
 }  // namespace paimon

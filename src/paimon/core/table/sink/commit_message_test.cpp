@@ -106,8 +106,6 @@ TEST(CommitMessageTest, TestCompatibleWithVersion11) {
 
     // check result
     ASSERT_EQ(res_msgs, expected_msgs);
-    ASSERT_OK_AND_ASSIGN(std::string serialized_bytes, CommitMessage::SerializeList(ret, pool));
-    ASSERT_EQ(serialized_bytes, std::string(reinterpret_cast<char*>(buffer.data()), buffer.size()));
 }
 
 TEST(CommitMessageTest, TestCompatibleWithVersion10) {
