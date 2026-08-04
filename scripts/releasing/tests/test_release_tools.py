@@ -20,6 +20,8 @@ import hashlib
 import io
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -33,9 +35,26 @@ RELEASING_DIR = Path(__file__).resolve().parents[1]
 ARCHIVE_VALIDATOR = RELEASING_DIR / "validate_source_archive.py"
 VERSION_TOOL = RELEASING_DIR / "bump_version.py"
 RELEASE_VERIFIER = RELEASING_DIR / "verify_release_candidate.sh"
+SOURCE_RELEASE_CREATOR = RELEASING_DIR / "create_source_release.sh"
+SOURCE_ROOT = RELEASING_DIR.parents[1]
 
 
 class ReleaseToolTest(unittest.TestCase):
+    def head_release_version(self) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(SOURCE_ROOT), "show", "HEAD:CMakeLists.txt"],
+            universal_newlines=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        match = re.search(
+            r"^\s*VERSION\s+(\d+\.\d+\.\d+)\s*$", result.stdout, re.MULTILINE
+        )
+        self.assertIsNotNone(match)
+        return match.group(1)
+
     def run_tool(
         self, tool: Path, *args: str, expected_returncode: int = 0
     ) -> subprocess.CompletedProcess:
@@ -313,6 +332,269 @@ source_root=$(cd "$(dirname "$0")/../.." && pwd)
                 "Apache RAT found 1 files with unknown licenses",
                 result.stderr,
             )
+
+    @unittest.skipUnless(
+        shutil.which("gpg") and shutil.which("gzip"), "gpg and gzip are required"
+    )
+    def test_verifier_uses_keys_file_for_unsigned_artifact_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            source_root = directory / "source"
+            releasing_dir = source_root / "scripts/releasing"
+            releasing_dir.mkdir(parents=True)
+            for script in (
+                "bump_version.py",
+                "create_source_release.sh",
+                "validate_source_archive.py",
+                "verify_release_candidate.sh",
+            ):
+                shutil.copy2(RELEASING_DIR / script, releasing_dir / script)
+
+            files = {
+                "CMakeLists.txt": "project(paimon\n        VERSION 1.2.3\n)\n",
+                "LICENSE": "Apache License\n",
+                "NOTICE": "Apache Paimon\n",
+                "docs/source/conf.py": 'version = "1.2.3"\n',
+                "docs/source/_static/versions.json": (
+                    '[{"name": "1.2.3", "version": "1.2.3", '
+                    '"url": "https://paimon.apache.org/docs/cpp/"}]\n'
+                ),
+                ".github/.rat-excludes": "",
+            }
+            for name, content in files.items():
+                path = source_root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            empty_git_config = directory / "empty-gitconfig"
+            empty_git_config.touch()
+            git_env = os.environ.copy()
+            for name in list(git_env):
+                if name in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS") or re.fullmatch(
+                    r"GIT_CONFIG_(KEY|VALUE)_\d+", name
+                ):
+                    del git_env[name]
+            git_env["GIT_CONFIG_GLOBAL"] = str(empty_git_config)
+            git_env["GIT_CONFIG_SYSTEM"] = str(empty_git_config)
+
+            subprocess.run(
+                ["git", "init", "-q", str(source_root)], env=git_env, check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(source_root), "config", "user.name", "Release Test"],
+                env=git_env,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(source_root),
+                    "config",
+                    "user.email",
+                    "release-test@example.com",
+                ],
+                env=git_env,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(source_root), "add", "."],
+                env=git_env,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(source_root), "commit", "-q", "-m", "test"],
+                env=git_env,
+                check=True,
+            )
+
+            signing_home = directory / "signing-home"
+            signing_home.mkdir(mode=0o700)
+            signing_env = git_env.copy()
+            signing_env["GNUPGHOME"] = str(signing_home)
+            subprocess.run(
+                [
+                    "gpg",
+                    "--batch",
+                    "--passphrase",
+                    "",
+                    "--quick-generate-key",
+                    "Release Test <release-test@example.com>",
+                    "ed25519",
+                    "sign",
+                    "0",
+                ],
+                env=signing_env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            key_listing = subprocess.run(
+                ["gpg", "--batch", "--with-colons", "--list-secret-keys"],
+                env=signing_env,
+                universal_newlines=True,
+                stdout=subprocess.PIPE,
+                check=True,
+            )
+            fingerprint = next(
+                line.split(":")[9]
+                for line in key_listing.stdout.splitlines()
+                if line.startswith("fpr:")  # codespell:ignore fpr
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(source_root),
+                    "tag",
+                    "-s",
+                    "-u",
+                    fingerprint,
+                    "-m",
+                    "test tag",
+                    "v1.2.3-rc1",
+                ],
+                env=signing_env,
+                check=True,
+            )
+
+            keys_file = directory / "KEYS"
+            with keys_file.open("w", encoding="utf-8") as output:
+                subprocess.run(
+                    ["gpg", "--batch", "--armor", "--export", fingerprint],
+                    env=signing_env,
+                    universal_newlines=True,
+                    stdout=output,
+                    check=True,
+                )
+
+            real_gzip = shutil.which("gzip")
+            self.assertIsNotNone(real_gzip)
+            fake_gzip = directory / "gzip"
+            fake_gzip.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "if [[ ${1:-} == --version ]]; then\n"
+                "    echo 'gzip 1.99'\n"
+                "    exit 0\n"
+                "fi\n"
+                f'exec "{real_gzip}" -n -c -6\n',
+                encoding="utf-8",
+            )
+            fake_gzip.chmod(0o755)
+            release_env = git_env.copy()
+            release_env["PAIMON_GZIP"] = str(fake_gzip)
+
+            artifact_dir = directory / "release"
+            subprocess.run(
+                [
+                    "bash",
+                    str(releasing_dir / "create_source_release.sh"),
+                    "--version",
+                    "1.2.3",
+                    "--git-ref",
+                    "v1.2.3-rc1",
+                    "--output-dir",
+                    str(artifact_dir),
+                ],
+                env=release_env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            artifact = artifact_dir / "apache-paimon-cpp-1.2.3-src.tgz"
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(releasing_dir / "verify_release_candidate.sh"),
+                    "--allow-unsigned",
+                    "--keys-file",
+                    str(keys_file),
+                    "--git-ref",
+                    "v1.2.3-rc1",
+                    "--skip-rat",
+                    "--skip-build",
+                    str(artifact),
+                ],
+                universal_newlines=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=release_env,
+                check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0, msg=result.stdout + result.stderr
+            )
+            self.assertIn("Git ref reproducibility: valid", result.stdout)
+
+    def test_source_creator_rejects_non_gnu_gzip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            fake_gzip = directory / "gzip"
+            fake_gzip.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'Apple gzip 999.0'\n",
+                encoding="utf-8",
+            )
+            fake_gzip.chmod(0o755)
+            env = os.environ.copy()
+            env["PAIMON_GZIP"] = str(fake_gzip)
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(SOURCE_RELEASE_CREATOR),
+                    "--version",
+                    self.head_release_version(),
+                    "--git-ref",
+                    "HEAD",
+                    "--output-dir",
+                    str(directory / "release"),
+                ],
+                universal_newlines=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+            self.assertIn("GNU gzip is required", result.stderr)
+
+    def test_source_creator_clears_gzip_environment_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            fake_gzip = directory / "gzip"
+            fake_gzip.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "if [[ ${1:-} == --version ]]; then\n"
+                "    echo 'gzip 1.99'\n"
+                "    exit 0\n"
+                "fi\n"
+                "[[ -z ${GZIP+x} ]] || { echo 'GZIP was not cleared' >&2; exit 1; }\n"
+                "dd of=/dev/null 2>/dev/null\n",
+                encoding="utf-8",
+            )
+            fake_gzip.chmod(0o755)
+            env = os.environ.copy()
+            env["GZIP"] = "-9"
+            env["PAIMON_GZIP"] = str(fake_gzip)
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(SOURCE_RELEASE_CREATOR),
+                    "--version",
+                    self.head_release_version(),
+                    "--git-ref",
+                    "HEAD",
+                    "--output-dir",
+                    str(directory / "release"),
+                ],
+                universal_newlines=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
 
     def create_version_tree(self, root: Path) -> None:
         (root / "docs/source/_static").mkdir(parents=True)

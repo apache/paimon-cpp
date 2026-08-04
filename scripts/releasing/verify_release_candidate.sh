@@ -28,6 +28,8 @@ DIST_DEV_BASE_URL="https://dist.apache.org/repos/dist/dev/paimon"
 KEYS_URL=""
 KEYS_FILE=""
 GIT_REF=""
+VERIFY_GNUPG_HOME=""
+VERIFY_KEYS_FILE=""
 RAT_JAR=${RAT_JAR:-}
 RAT_VERSION="0.16.1"
 ALLOW_UNSIGNED=false
@@ -52,7 +54,7 @@ Download options:
 Trust and reproducibility:
   --keys-url URL         Download KEYS and verify in an isolated GPG home
   --keys-file FILE       Import this KEYS file into an isolated GPG home
-  --git-ref REF          Regenerate the archive from REF and compare bytes
+  --git-ref REF          Regenerate with GNU gzip and compare archive bytes
 
 Verification options:
   --rat-jar FILE         Apache RAT executable jar (or set RAT_JAR)
@@ -97,6 +99,24 @@ download_file() {
     else
         fail "curl or wget is required to download release files"
     fi
+}
+
+prepare_verification_keyring() {
+    [[ -z "${VERIFY_GNUPG_HOME}" ]] || return 0
+
+    command -v gpg >/dev/null 2>&1 || fail "gpg is required for signature verification"
+    VERIFY_GNUPG_HOME="${TEMP_DIR}/gnupg"
+    mkdir -m 700 "${VERIFY_GNUPG_HOME}"
+    if [[ -n "${KEYS_URL}" ]]; then
+        VERIFY_KEYS_FILE="${TEMP_DIR}/KEYS"
+        download_file "${KEYS_URL}" "${VERIFY_KEYS_FILE}"
+    else
+        VERIFY_KEYS_FILE=$(cd "$(dirname "${KEYS_FILE}")" && pwd)/$(basename "${KEYS_FILE}")
+    fi
+    [[ -f "${VERIFY_KEYS_FILE}" ]] ||
+        fail "KEYS file does not exist: ${VERIFY_KEYS_FILE}"
+    gpg --batch --homedir "${VERIFY_GNUPG_HOME}" \
+        --import "${VERIFY_KEYS_FILE}" >/dev/null
 }
 
 while [[ $# -gt 0 ]]; do
@@ -249,19 +269,10 @@ echo "SHA-512 checksum: valid"
 if [[ -f "${SIGNATURE_FILE}" ]]; then
     command -v gpg >/dev/null 2>&1 || fail "gpg is required to verify the signature"
     if [[ -n "${KEYS_URL}" || -n "${KEYS_FILE}" ]]; then
-        GNUPG_HOME="${TEMP_DIR}/gnupg"
-        mkdir -m 700 "${GNUPG_HOME}"
-        if [[ -n "${KEYS_URL}" ]]; then
-            KEYS_FILE="${TEMP_DIR}/KEYS"
-            download_file "${KEYS_URL}" "${KEYS_FILE}"
-        else
-            KEYS_FILE=$(cd "$(dirname "${KEYS_FILE}")" && pwd)/$(basename "${KEYS_FILE}")
-        fi
-        [[ -f "${KEYS_FILE}" ]] || fail "KEYS file does not exist: ${KEYS_FILE}"
-        gpg --batch --homedir "${GNUPG_HOME}" --import "${KEYS_FILE}" >/dev/null
-        gpg --batch --homedir "${GNUPG_HOME}" \
+        prepare_verification_keyring
+        gpg --batch --homedir "${VERIFY_GNUPG_HOME}" \
             --verify "${SIGNATURE_FILE}" "${ARTIFACT}"
-        echo "OpenPGP signature: valid against ${KEYS_FILE}"
+        echo "OpenPGP signature: valid against ${VERIFY_KEYS_FILE}"
     else
         gpg --verify "${SIGNATURE_FILE}" "${ARTIFACT}"
         echo "OpenPGP signature: valid against the default GPG keyring"
@@ -313,7 +324,13 @@ if [[ -n "${GIT_REF}" ]]; then
         fail "Git ref does not resolve to a commit: ${GIT_REF}"
     if git -C "${SOURCE_ROOT}" rev-parse --verify "${GIT_REF}^{tag}" \
         >/dev/null 2>&1; then
-        git -C "${SOURCE_ROOT}" verify-tag "${GIT_REF}"
+        if [[ -n "${KEYS_URL}" || -n "${KEYS_FILE}" ]]; then
+            prepare_verification_keyring
+            GNUPGHOME=${VERIFY_GNUPG_HOME} \
+                git -C "${SOURCE_ROOT}" verify-tag "${GIT_REF}"
+        else
+            git -C "${SOURCE_ROOT}" verify-tag "${GIT_REF}"
+        fi
     fi
     REPRO_DIR="${TEMP_DIR}/reproduced"
     "${SCRIPT_DIR}/create_source_release.sh" \
