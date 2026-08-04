@@ -31,6 +31,8 @@ DIST_DEV_BASE_URL="https://dist.apache.org/repos/dist/dev/paimon"
 PREPARE_ONLY=false
 DRY_RUN=false
 WORKFLOW_DISCOVERY_TIMEOUT_SECONDS=600
+WORKFLOW_RUN_ID=""
+TEMP_DIR=""
 
 usage() {
     cat <<'EOF'
@@ -53,8 +55,9 @@ Options:
   --dry-run               Print the planned release identifiers and exit
   -h, --help              Show this help
 
-The script is resumable when the local signed tag or artifacts already exist,
-provided that they match HEAD and pass all verification checks.
+For a published RC, GitHub Actions creates and tests the canonical source
+archive. This script downloads those exact bytes, signs them locally, and
+uploads them to ASF dist/dev. Prepare-only mode creates a local preview.
 EOF
 }
 
@@ -117,6 +120,74 @@ wait_for_release_candidate_workflow() {
         --exit-status \
         --interval 30 ||
         fail "Release Candidate workflow run ${run_id} failed"
+    WORKFLOW_RUN_ID=${run_id}
+}
+
+validate_workflow_artifact_directory() {
+    local directory=$1
+    local -a entries
+    local entry
+    local name
+
+    shopt -s dotglob nullglob
+    entries=("${directory}"/*)
+    shopt -u dotglob nullglob
+    [[ ${#entries[@]} -eq 2 ]] ||
+        fail "workflow artifact must contain exactly the archive and checksum"
+    for entry in "${entries[@]}"; do
+        [[ -f "${entry}" ]] ||
+            fail "workflow artifact contains a non-file entry: ${entry}"
+        name=$(basename "${entry}")
+        case "${name}" in
+            "${ARTIFACT_NAME}" | "${ARTIFACT_NAME}.sha512")
+                ;;
+            *)
+                fail "workflow artifact contains an unexpected file: ${name}"
+                ;;
+        esac
+    done
+}
+
+download_and_sign_workflow_artifact() {
+    local workflow_dir="${TEMP_DIR}/source-archive"
+    local source
+    local target
+    local suffix
+
+    [[ -n "${WORKFLOW_RUN_ID}" ]] || fail "release workflow run ID is missing"
+    mkdir -p "${workflow_dir}"
+    gh run download "${WORKFLOW_RUN_ID}" \
+        --repo apache/paimon-cpp \
+        --name source-archive \
+        --dir "${workflow_dir}"
+    validate_workflow_artifact_directory "${workflow_dir}"
+
+    mkdir -p "${OUTPUT_DIR}"
+    for suffix in "" ".sha512"; do
+        source="${workflow_dir}/${ARTIFACT_NAME}${suffix}"
+        target="${OUTPUT_DIR}/${ARTIFACT_NAME}${suffix}"
+        if [[ -e "${target}" ]]; then
+            [[ -f "${target}" ]] || fail "artifact path is not a file: ${target}"
+            cmp "${source}" "${target}" >/dev/null ||
+                fail "existing ${target} differs from workflow run ${WORKFLOW_RUN_ID}"
+        else
+            cp -p "${source}" "${target}"
+        fi
+    done
+
+    ARTIFACT="${OUTPUT_DIR}/${ARTIFACT_NAME}"
+    if [[ -e "${ARTIFACT}.asc" ]]; then
+        [[ -f "${ARTIFACT}.asc" ]] ||
+            fail "artifact signature path is not a file: ${ARTIFACT}.asc"
+        echo "Reusing existing source artifact signature."
+    else
+        echo "Signing workflow source artifact with ${SIGNING_KEY}."
+        gpg --armor \
+            --local-user "${SIGNING_KEY}" \
+            --detach-sign \
+            --output "${ARTIFACT}.asc" \
+            "${ARTIFACT}"
+    fi
 }
 
 validate_artifact_directory() {
@@ -224,6 +295,9 @@ EOF
     exit 0
 fi
 
+TEMP_DIR=$(mktemp -d)
+trap 'rm -rf "${TEMP_DIR}"' EXIT
+
 for command in git gpg python3; do
     require_command "${command}"
 done
@@ -269,33 +343,33 @@ else
 fi
 
 ARTIFACT="${OUTPUT_DIR}/${ARTIFACT_NAME}"
-if [[ -e "${ARTIFACT}" || -e "${ARTIFACT}.asc" || -e "${ARTIFACT}.sha512" ]]; then
-    [[ -f "${ARTIFACT}" && -f "${ARTIFACT}.asc" && -f "${ARTIFACT}.sha512" ]] ||
-        fail "artifact directory contains an incomplete release candidate"
-    echo "Reusing existing artifacts in ${OUTPUT_DIR}."
-else
-    "${SCRIPT_DIR}/create_source_release.sh" \
-        --version "${VERSION}" \
-        --git-ref "${RC_TAG}" \
-        --output-dir "${OUTPUT_DIR}" \
-        --signing-key "${SIGNING_KEY}"
-fi
-
-"${SCRIPT_DIR}/verify_release_candidate.sh" \
-    --git-ref "${RC_TAG}" \
-    --keys-url "https://downloads.apache.org/paimon/KEYS" \
-    "${ARTIFACT}"
-
-validate_artifact_directory
-
 if [[ "${PREPARE_ONLY}" == true ]]; then
+    if [[ -e "${ARTIFACT}" || -e "${ARTIFACT}.asc" || -e "${ARTIFACT}.sha512" ]]; then
+        [[ -f "${ARTIFACT}" && -f "${ARTIFACT}.asc" && -f "${ARTIFACT}.sha512" ]] ||
+            fail "artifact directory contains an incomplete release candidate"
+        echo "Reusing existing preview artifacts in ${OUTPUT_DIR}."
+    else
+        "${SCRIPT_DIR}/create_source_release.sh" \
+            --version "${VERSION}" \
+            --git-ref "${RC_TAG}" \
+            --output-dir "${OUTPUT_DIR}" \
+            --signing-key "${SIGNING_KEY}"
+    fi
+
+    "${SCRIPT_DIR}/verify_release_candidate.sh" \
+        --git-ref "${RC_TAG}" \
+        --keys-url "https://downloads.apache.org/paimon/KEYS" \
+        "${ARTIFACT}"
+    validate_artifact_directory
+
     cat <<EOF
 
 Local release preparation completed successfully.
 
-The signed tag and source artifacts were created and verified locally.
+The signed tag and preview source artifacts were created and verified locally.
 No tag was pushed and no artifacts were uploaded to ASF dist/dev.
-Do not start a release vote from this prepare-only run.
+The published workflow artifact is authoritative; do not start a release vote
+from this prepare-only run.
 EOF
     exit 0
 fi
@@ -305,6 +379,14 @@ if svn info "${RC_URL}" >/dev/null 2>&1; then
 fi
 git push "${REMOTE}" "${RC_TAG}"
 wait_for_release_candidate_workflow
+download_and_sign_workflow_artifact
+
+"${SCRIPT_DIR}/verify_release_candidate.sh" \
+    --git-ref "${RC_TAG}" \
+    --keys-url "https://downloads.apache.org/paimon/KEYS" \
+    "${ARTIFACT}"
+validate_artifact_directory
+
 svn import "${OUTPUT_DIR}" "${RC_URL}" \
     -m "Add Apache Paimon C++ ${VERSION} RC${RC}"
 
