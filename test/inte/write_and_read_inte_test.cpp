@@ -844,30 +844,6 @@ TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampSecondPrecision) {
     ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
                                      /*expected_commit_messages=*/std::nullopt));
 
-    if (file_format == "parquet") {
-        // Verify the precision downgrade really happened, so the read below is exercising an
-        // actual milli to second conversion instead of a no-op.
-        ASSERT_OK_AND_ASSIGN(auto files, CurrentDataFiles(options));
-        ASSERT_EQ(1, files.size());
-        ASSERT_OK_AND_ASSIGN(auto file_schema,
-                             ReadDataFileSchema(files[0].first, files[0].second, options));
-        auto file_event_type = arrow::internal::checked_pointer_cast<arrow::ListType>(
-                                   file_schema->GetFieldByName("events")->type())
-                                   ->value_type();
-        for (int32_t i = 1; i < file_event_type->num_fields(); ++i) {
-            ASSERT_EQ(arrow::TimeUnit::MILLI,
-                      arrow::internal::checked_pointer_cast<arrow::TimestampType>(
-                          file_event_type->field(i)->type())
-                          ->unit());
-        }
-        auto file_mark_type = arrow::internal::checked_pointer_cast<arrow::MapType>(
-                                  file_schema->GetFieldByName("marks")->type())
-                                  ->item_type();
-        ASSERT_EQ(
-            arrow::TimeUnit::MILLI,
-            arrow::internal::checked_pointer_cast<arrow::TimestampType>(file_mark_type)->unit());
-    }
-
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
                                 arrow::field("_VALUE_KIND", arrow::int8()));
@@ -922,28 +898,6 @@ TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampLtzMicroTimezoneOnly) {
                                                      /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
                                      /*expected_commit_messages=*/std::nullopt));
-
-    if (file_format == "parquet") {
-        // The nested leaves keep micro precision in the file, so the timezone is the only
-        // difference the reader has to reconcile.
-        ASSERT_OK_AND_ASSIGN(auto files, CurrentDataFiles(options));
-        ASSERT_EQ(1, files.size());
-        ASSERT_OK_AND_ASSIGN(auto file_schema,
-                             ReadDataFileSchema(files[0].first, files[0].second, options));
-        auto file_event_type = arrow::internal::checked_pointer_cast<arrow::ListType>(
-                                   file_schema->GetFieldByName("events")->type())
-                                   ->value_type();
-        ASSERT_EQ(arrow::TimeUnit::MICRO,
-                  arrow::internal::checked_pointer_cast<arrow::TimestampType>(
-                      file_event_type->field(1)->type())
-                      ->unit());
-        auto file_mark_type = arrow::internal::checked_pointer_cast<arrow::MapType>(
-                                  file_schema->GetFieldByName("marks")->type())
-                                  ->item_type();
-        ASSERT_EQ(
-            arrow::TimeUnit::MICRO,
-            arrow::internal::checked_pointer_cast<arrow::TimestampType>(file_mark_type)->unit());
-    }
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),

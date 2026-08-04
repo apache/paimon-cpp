@@ -69,7 +69,7 @@ namespace {
 // logical leaf types may still differ (for example, Parquet reports LTZ timestamps as UTC
 // while Paimon exposes them in the local timezone). Compare only the nested projection shape
 // here so those representation differences are handled by the normal cast path.
-static bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_type,
+bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_type,
                                          const std::shared_ptr<arrow::DataType>& file_type) {
     const bool read_is_nested = ArrowSchemaValidator::IsNestedType(read_type);
     const bool file_is_nested = ArrowSchemaValidator::IsNestedType(file_type);
