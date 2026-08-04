@@ -738,6 +738,64 @@ TEST_F(ParquetFileBatchReaderTest, TestNestedListTimestampTimezoneAndMapFieldNam
                         "Parquet does not support partial projection inside list/map");
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestNestedTimestampSecondReadFromMilliFile) {
+    const std::string timezone = "Asia/Shanghai";
+    paimon::test::TimezoneGuard timezone_guard(timezone);
+
+    // Parquet has no second-precision timestamp, so the writer stores second timestamps as
+    // milliseconds. Reading them back with a second-precision schema must cast milli to second,
+    // including for timestamp leaves nested inside list/struct/map.
+    auto event_type = arrow::struct_({
+        arrow::field("name", arrow::utf8()),
+        arrow::field("ts_sec", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("ts_tz_sec", arrow::timestamp(arrow::TimeUnit::SECOND, timezone)),
+    });
+    auto schema = arrow::schema({
+        arrow::field("events", arrow::list(arrow::field("element", event_type))),
+        arrow::field("marks", arrow::map(arrow::utf8(), arrow::timestamp(arrow::TimeUnit::SECOND))),
+    });
+
+    const std::string data_json = R"([
+        [[ ["e-1", "2026-07-16 12:00:01", "2026-07-16 12:00:02"] ],
+         [["begin", "2026-07-16 12:00:03"]]],
+        [[ ["e-2", "2026-07-16 12:00:04", null],
+           ["e-3", null, "2026-07-16 12:00:05"] ], []],
+        [[null], null]
+    ])";
+    auto write_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()), data_json)
+            .ValueOrDie());
+    WriteArray(file_path_, write_array, schema, /*write_batch_size=*/write_array->length(),
+               /*enable_dictionary=*/false, /*max_row_group_length=*/write_array->length());
+
+    auto parquet_batch_reader =
+        PrepareParquetFileBatchReader(file_path_, schema, /*predicate=*/nullptr,
+                                      /*selection_bitmap=*/std::nullopt, /*batch_size=*/2);
+
+    // The nested second timestamps are physically stored as milliseconds in the file.
+    ASSERT_OK_AND_ASSIGN(auto c_file_schema, parquet_batch_reader->GetFileSchema());
+    auto file_schema = arrow::ImportSchema(c_file_schema.get()).ValueOr(nullptr);
+    ASSERT_TRUE(file_schema);
+    auto file_event_type =
+        static_cast<const arrow::ListType&>(*file_schema->field(0)->type()).value_type();
+    ASSERT_EQ(arrow::Type::STRUCT, file_event_type->id());
+    ASSERT_EQ(arrow::TimeUnit::MILLI,
+              static_cast<const arrow::TimestampType&>(*file_event_type->field(1)->type()).unit());
+    ASSERT_EQ(arrow::TimeUnit::MILLI,
+              static_cast<const arrow::TimestampType&>(*file_event_type->field(2)->type()).unit());
+    auto file_mark_type =
+        static_cast<const arrow::MapType&>(*file_schema->field(1)->type()).item_type();
+    ASSERT_EQ(arrow::TimeUnit::MILLI,
+              static_cast<const arrow::TimestampType&>(*file_mark_type).unit());
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::ChunkedArray> result_array,
+        paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+    auto expected_array = arrow::ChunkedArray::Make({write_array}).ValueOrDie();
+    ASSERT_TRUE(result_array->Equals(expected_array))
+        << "expected: " << expected_array->ToString() << "\nactual: " << result_array->ToString();
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestGetFileSchemaWithFieldId) {
     std::string file_name = paimon::test::GetDataDir() +
                             "parquet/parquet_append_table.db/parquet_append_table/bucket-0/"

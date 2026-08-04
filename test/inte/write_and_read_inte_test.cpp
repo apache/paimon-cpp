@@ -806,6 +806,161 @@ TEST_P(WriteAndReadInteTest, TestPkTimestampType) {
     ASSERT_TRUE(success);
 }
 
+/// End-to-end coverage for second-precision timestamps nested inside list/struct/map.
+/// Parquet has no second-precision timestamp, so the writer stores those leaves as milli and
+/// the reader has to convert milli back to second for every nested leaf.
+TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampSecondPrecision) {
+    auto [file_format, file_system] = GetParam();
+    TimezoneGuard timezone_guard("Asia/Shanghai");
+    auto timezone = DateTimeUtils::GetLocalTimezoneName();
+    auto event_type = arrow::struct_({
+        arrow::field("name", arrow::utf8()),
+        arrow::field("ts_sec", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("ts_ltz_sec", arrow::timestamp(arrow::TimeUnit::SECOND, timezone)),
+    });
+    arrow::FieldVector fields = {
+        arrow::field("events", arrow::list(arrow::field("element", event_type))),
+        arrow::field("marks", arrow::map(arrow::utf8(), arrow::timestamp(arrow::TimeUnit::SECOND))),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system}, {"orc.timestamp-ltz.legacy.type", "false"}};
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(test_dir_, arrow::schema(fields),
+                                                         /*partition_keys=*/{}, /*primary_keys=*/{},
+                                                         options, /*is_streaming_mode=*/false));
+    std::string data = R"([
+        [[["e-1", "1970-01-01 00:00:01", "1970-01-01 00:00:02"]],
+         [["begin", "1970-01-01 00:00:03"]]],
+        [[["e-2", "1970-01-01 00:00:04", null], ["e-3", null, "1970-01-01 00:00:05"]], []],
+        [[null], null]
+    ])";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), data,
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    if (file_format == "parquet") {
+        // Verify the precision downgrade really happened, so the read below is exercising an
+        // actual milli to second conversion instead of a no-op.
+        ASSERT_OK_AND_ASSIGN(auto files, CurrentDataFiles(options));
+        ASSERT_EQ(1, files.size());
+        ASSERT_OK_AND_ASSIGN(auto file_schema,
+                             ReadDataFileSchema(files[0].first, files[0].second, options));
+        auto file_event_type = arrow::internal::checked_pointer_cast<arrow::ListType>(
+                                   file_schema->GetFieldByName("events")->type())
+                                   ->value_type();
+        for (int32_t i = 1; i < file_event_type->num_fields(); ++i) {
+            ASSERT_EQ(arrow::TimeUnit::MILLI,
+                      arrow::internal::checked_pointer_cast<arrow::TimestampType>(
+                          file_event_type->field(i)->type())
+                          ->unit());
+        }
+        auto file_mark_type = arrow::internal::checked_pointer_cast<arrow::MapType>(
+                                  file_schema->GetFieldByName("marks")->type())
+                                  ->item_type();
+        ASSERT_EQ(
+            arrow::TimeUnit::MILLI,
+            arrow::internal::checked_pointer_cast<arrow::TimestampType>(file_mark_type)->unit());
+    }
+
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    std::string expected_data = R"([
+        [0, [["e-1", "1970-01-01 00:00:01", "1970-01-01 00:00:02"]],
+         [["begin", "1970-01-01 00:00:03"]]],
+        [0, [["e-2", "1970-01-01 00:00:04", null], ["e-3", null, "1970-01-01 00:00:05"]], []],
+        [0, [null], null]
+    ])";
+    ASSERT_OK_AND_ASSIGN(
+        bool success, helper->ReadAndCheckResult(arrow::struct_(fields_with_row_kind), data_splits,
+                                                 expected_data));
+    ASSERT_TRUE(success);
+}
+
+/// End-to-end coverage for TIMESTAMP_LTZ(6) nested inside list/struct/map. The Parquet reader
+/// reports LTZ leaves as UTC while the read schema carries the local timezone, so read schema and
+/// file schema differ only in the timezone of those leaves; the micro precision stays unchanged.
+TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampLtzMicroTimezoneOnly) {
+    auto [file_format, file_system] = GetParam();
+    // Pin a non-UTC timezone so the read schema really differs from what the file reports.
+    TimezoneGuard timezone_guard("Asia/Shanghai");
+    auto timezone = DateTimeUtils::GetLocalTimezoneName();
+    auto event_type = arrow::struct_({
+        arrow::field("name", arrow::utf8()),
+        arrow::field("ts_ltz_micro", arrow::timestamp(arrow::TimeUnit::MICRO, timezone)),
+    });
+    arrow::FieldVector fields = {
+        arrow::field("events", arrow::list(arrow::field("element", event_type))),
+        arrow::field("marks",
+                     arrow::map(arrow::utf8(), arrow::timestamp(arrow::TimeUnit::MICRO, timezone))),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system}, {"orc.timestamp-ltz.legacy.type", "false"}};
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(test_dir_, arrow::schema(fields),
+                                                         /*partition_keys=*/{}, /*primary_keys=*/{},
+                                                         options, /*is_streaming_mode=*/false));
+    std::string data = R"([
+        [[["e-1", "2026-07-16 12:00:00.000001"]], [["begin", "2026-07-16 12:00:00.000002"]]],
+        [[["e-2", null], ["e-3", "2026-07-16 12:00:00.000003"]], []],
+        [[null], null]
+    ])";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), data,
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    if (file_format == "parquet") {
+        // The nested leaves keep micro precision in the file, so the timezone is the only
+        // difference the reader has to reconcile.
+        ASSERT_OK_AND_ASSIGN(auto files, CurrentDataFiles(options));
+        ASSERT_EQ(1, files.size());
+        ASSERT_OK_AND_ASSIGN(auto file_schema,
+                             ReadDataFileSchema(files[0].first, files[0].second, options));
+        auto file_event_type = arrow::internal::checked_pointer_cast<arrow::ListType>(
+                                   file_schema->GetFieldByName("events")->type())
+                                   ->value_type();
+        ASSERT_EQ(arrow::TimeUnit::MICRO,
+                  arrow::internal::checked_pointer_cast<arrow::TimestampType>(
+                      file_event_type->field(1)->type())
+                      ->unit());
+        auto file_mark_type = arrow::internal::checked_pointer_cast<arrow::MapType>(
+                                  file_schema->GetFieldByName("marks")->type())
+                                  ->item_type();
+        ASSERT_EQ(
+            arrow::TimeUnit::MICRO,
+            arrow::internal::checked_pointer_cast<arrow::TimestampType>(file_mark_type)->unit());
+    }
+
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    std::string expected_data = R"([
+        [0, [["e-1", "2026-07-16 12:00:00.000001"]], [["begin", "2026-07-16 12:00:00.000002"]]],
+        [0, [["e-2", null], ["e-3", "2026-07-16 12:00:00.000003"]], []],
+        [0, [null], null]
+    ])";
+    ASSERT_OK_AND_ASSIGN(
+        bool success, helper->ReadAndCheckResult(arrow::struct_(fields_with_row_kind), data_splits,
+                                                 expected_data));
+    ASSERT_TRUE(success);
+}
+
 TEST_P(WriteAndReadInteTest, TestPKWithSequenceFieldInPKField) {
     arrow::FieldVector fields = {
         arrow::field("p1", arrow::utf8()),
