@@ -64,6 +64,7 @@ class Predicate;
 
 namespace paimon::parquet {
 
+namespace {
 // LIST/MAP do not support pruning fields from their nested value types, but physical and
 // logical leaf types may still differ (for example, Parquet reports LTZ timestamps as UTC
 // while Paimon exposes them in the local timezone). Compare only the nested projection shape
@@ -122,6 +123,7 @@ static bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>&
             return false;
     }
 }
+}  // namespace
 
 ParquetFileBatchReader::ParquetFileBatchReader(
     std::shared_ptr<arrow::io::RandomAccessFile>&& input_stream,
