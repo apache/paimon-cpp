@@ -1440,7 +1440,8 @@ TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpReadsEachLeafDiction
         auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
             TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true,
                            /*ranges=*/selected_rows),
-            /*column_indices=*/{0, 1}, parquet_reader.get());
+            /*column_indices=*/{0, 1}, /*row_group_page_index_reader=*/row_group_page_index,
+            parquet_reader.get());
 
         for (int32_t col_idx = 0; col_idx < 2; ++col_idx) {
             auto column_chunk = row_group->ColumnChunk(col_idx);
@@ -1642,11 +1643,16 @@ TEST_F(PageFilteredRowGroupReaderTest, DictionaryEmptySelectionDoesNotReadPages)
     ASSERT_GE(column_chunk_offset, 0);
     ASSERT_GT(column_chunk_end, column_chunk_offset);
 
+    auto page_index_reader = arrow_file_reader->parquet_reader()->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    auto row_group_page_index = page_index_reader->RowGroup(0);
+    ASSERT_TRUE(row_group_page_index);
     RowRanges empty_ranges;
     TargetRowGroup empty_target(/*rg_index=*/0, /*is_partially_matched=*/true,
                                 /*ranges=*/empty_ranges);
     auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
-        empty_target, /*column_indices=*/{0}, arrow_file_reader->parquet_reader());
+        empty_target, /*column_indices=*/{0}, /*row_group_page_index_reader=*/row_group_page_index,
+        arrow_file_reader->parquet_reader());
     ASSERT_TRUE(page_ranges.empty());
 
     tracking_input->ClearReadAtRanges();
@@ -1654,7 +1660,8 @@ TEST_F(PageFilteredRowGroupReaderTest, DictionaryEmptySelectionDoesNotReadPages)
         std::unique_ptr<arrow::RecordBatchReader> result_reader,
         PageFilteredRowGroupReader::ReadFilteredRowGroup(
             empty_target, /*column_indices=*/{0}, arrow::io::CacheOptions::Defaults(),
-            /*pre_buffered=*/false, /*page_ranges=*/{}, /*max_chunksize=*/1024, arrow_pool_,
+            /*pre_buffered=*/false, /*page_ranges=*/{}, /*max_chunksize=*/1024,
+            /*row_group_page_index_reader=*/row_group_page_index, arrow_pool_,
             arrow_file_reader.get()));
     std::shared_ptr<arrow::RecordBatch> batch;
     ASSERT_TRUE(result_reader->ReadNext(&batch).ok());
