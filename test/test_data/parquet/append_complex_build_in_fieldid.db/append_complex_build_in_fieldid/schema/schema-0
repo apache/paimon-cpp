@@ -6,7 +6,7 @@
     "name" : "f1",
     "type" : {
       "type" : "MAP",
-      "key" : "TINYINT NOT NULL",
+      "key" : "TINYINT",
       "value" : "SMALLINT"
     }
   }, {

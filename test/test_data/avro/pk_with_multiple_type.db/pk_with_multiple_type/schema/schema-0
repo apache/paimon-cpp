@@ -55,7 +55,7 @@
         "name" : "f0",
         "type" : {
           "type" : "MAP",
-          "key" : "STRING NOT NULL",
+          "key" : "STRING",
           "value" : "INT"
         }
       }, {

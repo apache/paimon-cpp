@@ -51,7 +51,7 @@ TEST(DataTypeJsonParserTest, ParseTypeMapTypeSuccess) {
     const std::string name = "map_field";
     const char* json = R"({
         "type": "MAP",
-        "key": "STRING NOT NULL",
+        "key": "STRING",
         "value": "INT"
     })";
     rapidjson::Document doc;
@@ -60,6 +60,8 @@ TEST(DataTypeJsonParserTest, ParseTypeMapTypeSuccess) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> field,
                          DataTypeJsonParser::ParseType(name, doc));
     ASSERT_NE(field, nullptr);
+    auto map_type = std::static_pointer_cast<arrow::MapType>(field->type());
+    ASSERT_FALSE(map_type->key_field()->nullable());
 }
 
 TEST(DataTypeJsonParserTest, ParseTypeRowTypeSuccess) {

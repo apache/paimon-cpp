@@ -1,0 +1,13 @@
+id:int attrs:map(string, int) (all can be null)
+no partition key
+no primary key
+bucket count: -1
+file format: orc
+
+Rows (snapshot-1):
+Add: [1, {"one": 10}]
+Add: [2, {"two": 20}]
+Add: [3, {null: 30}]
+NoCompact
+
+The third row contains a null MAP key and is expected to fail during reading.

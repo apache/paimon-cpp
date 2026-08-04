@@ -2819,6 +2819,50 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
+TEST_P(ScanAndReadInteTest, TestReadNullableMapKey) {
+    auto file_format = FileFormat();
+    if (file_format != "orc") {
+        return;
+    }
+    // Java Parquet does not support writing null MAP keys; see
+    // ParquetRowDataWriter.MapWriter#writeMapData in Apache Paimon. Therefore, this test uses an
+    // ORC table. The table contains three rows: the first two rows have non-null MAP keys, while
+    // the third row has a null MAP key and is expected to fail during reading.
+    const std::string table_path =
+        paimon::test::GetDataDir() + "orc/nullable_map_key.db/nullable_map_key";
+
+    ScanContextBuilder scan_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    ASSERT_TRUE(result_plan->SnapshotId());
+    ASSERT_EQ(result_plan->SnapshotId().value(), 1);
+    ASSERT_EQ(result_plan->Splits().size(), 1);
+
+    ReadContextBuilder read_context_builder(table_path);
+    read_context_builder.AddOption(Options::READ_BATCH_SIZE, "1");
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
+
+    const std::vector<std::string> expected_rows = {R"([[0, 1, [["one", 10]]]])",
+                                                    R"([[0, 2, [["two", 20]]]])"};
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, batch_reader->NextBatch());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                             ReadResultCollector::GetArray(std::move(batch)));
+        ASSERT_EQ(array->length(), 1);
+
+        std::shared_ptr<arrow::Array> expected_array =
+            arrow::ipc::internal::json::ArrayFromJSON(array->type(), expected_rows[i]).ValueOrDie();
+        ASSERT_TRUE(array->Equals(expected_array))
+            << "actual: " << array->ToString() << ", expected: " << expected_array->ToString();
+    }
+    ASSERT_NOK_WITH_MSG(batch_reader->NextBatch(), "Map array keys array should have no nulls");
+    batch_reader->Close();
+}
+
 TEST_P(ScanAndReadInteTest, TestCountRowsEmptySplits) {
     auto file_format = FileFormat();
     std::string table_path = paimon::test::GetDataDir() + file_format +

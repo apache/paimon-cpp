@@ -537,6 +537,7 @@ Result<BatchReader::ReadBatch> ParquetFileBatchReader::NextBatch() {
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           batch->ToStructArray());
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
         PAIMON_ASSIGN_OR_RAISE(bool need_cast, ParquetTimestampConverter::NeedCastArrayForTimestamp(
                                                    array->type(), read_data_type_));
         if (need_cast) {
