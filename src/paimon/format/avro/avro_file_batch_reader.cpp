@@ -123,6 +123,7 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           array_builder_->Finish());
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
