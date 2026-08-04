@@ -26,7 +26,7 @@ on:
 
 concurrency:
   group: ${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}-${{ github.workflow }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release-')) }}
 
 jobs:
   rat-license-check:
