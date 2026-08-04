@@ -34,15 +34,24 @@ Before starting a release:
 - obtain an ASF code-signing key, publish it through the ASF account system,
   and make sure it is present in
   [Paimon KEYS](https://downloads.apache.org/paimon/KEYS);
-- install `git`, `gpg`, `svn`, `gh`, `python3`, `curl` or `wget`, Java, CMake,
-  Ninja, and the toolchain needed by `ci/scripts/build_paimon.sh` (Java is
-  required by Apache RAT);
+- install `git`, GNU `gzip`, `gpg`, `svn`, `gh`, `python3`, `curl` or `wget`,
+  Java, CMake, Ninja, and the toolchain needed by
+  `ci/scripts/build_paimon.sh` (Java is required by Apache RAT);
 - authenticate `gh` with access to read GitHub Actions runs in
   `apache/paimon-cpp`;
 - make sure the Apache Git remote points directly to
   `apache/paimon-cpp`;
 - prepare and merge a release-preparation PR that updates the release notes and
   all version metadata, and passes the normal and release-candidate workflows.
+
+The source archive uses GNU gzip with fixed options so that macOS and Linux
+produce the same bytes. On macOS, install Homebrew gzip and either put it first
+on `PATH` or select it explicitly:
+
+```bash
+brew install gzip
+export PAIMON_GZIP="$(brew --prefix gzip)/bin/gzip"
+```
 
 For example, update all version locations and review the diff:
 
@@ -80,10 +89,13 @@ The release scripts use `vVERSION-rcRC` for release-candidate tags and
 
 Start from the exact clean commit approved for the candidate. Before publishing,
 the wrapper fetches the release branch and requires `HEAD` to be contained in
-its current history. It then creates and verifies a signed RC tag, creates the
-source archive and its checksum/signature, performs the full source-release
-verification, pushes the tag, waits for the tag-triggered release-candidate
-workflow to succeed, and imports the artifacts into ASF `dist/dev`:
+its current history. It then creates and verifies a signed RC tag, pushes the
+tag, and waits for the tag-triggered release-candidate workflow. That workflow
+creates the canonical source archive and checksum, builds and tests the same
+archive with GCC and Clang, and uploads it as a workflow artifact. The wrapper
+downloads those exact bytes, confirms that they are reproducible from the tag,
+signs the archive locally, performs the full source-release verification, and
+imports the three files into ASF `dist/dev`:
 
 ```bash
 scripts/releasing/release_rc.sh \
@@ -96,12 +108,13 @@ scripts/releasing/release_rc.sh \
 The release branch defaults to `main`; use `--release-branch NAME` for a
 maintenance release from another Apache branch.
 
-Use `--prepare-only` to create and verify artifacts without pushing the tag or
-uploading to ASF infrastructure. This local-only mode does not require `HEAD`
-to match the remote release branch. Use `--dry-run` to print identifiers
-without making changes. A resumed run reuses an existing local tag or complete
-artifact set only after validating it. A prepare-only run does not print a vote
-email and must not be used to start a vote.
+Use `--prepare-only` to create and verify preview artifacts without pushing the
+tag or uploading to ASF infrastructure. This local-only mode does not require
+`HEAD` to match the remote release branch. A preview is not authoritative: a
+published run downloads the workflow artifact and rejects an existing local
+archive if its bytes differ. Use `--dry-run` to print identifiers without
+making changes. A prepare-only run does not print a vote email and must not be
+used to start a vote.
 
 The candidate directory contains:
 
@@ -164,13 +177,16 @@ The verifier checks:
 - installation plus compilation and execution of an external CMake consumer.
 
 Pass `--git-ref v0.3.0-rc1` when the Git repository is available to regenerate
-the archive from the signed tag and compare it byte-for-byte.
+the archive from the signed tag with GNU gzip and compare it byte-for-byte.
+This check requires GNU gzip on every platform; it intentionally rejects the
+macOS system gzip instead of treating different compressed bytes as equivalent.
 
 `--allow-unsigned`, `--skip-rat`, `--skip-build`, and `--skip-install` exist for
 CI or local development of the release process. They are not a substitute for
 the corresponding checks when voting. The release-candidate workflow creates
-an unsigned archive for deterministic CI validation; official artifacts must
-always be signed by the release manager.
+the unsigned canonical archive for deterministic CI validation. The release
+manager downloads and signs that exact archive; the private signing key remains
+only on the release manager's machine.
 
 ## Publish an approved release
 
@@ -207,8 +223,9 @@ than ASF's general one-hour minimum.
 
 - `bump_version.py`: consistently check or update CMake and documentation
   version metadata.
-- `create_source_release.sh`: deterministically create an archive, SHA-512
-  checksum, and optional detached signature from an immutable Git ref.
+- `create_source_release.sh`: deterministically create an archive with GNU
+  gzip, a SHA-512 checksum, and an optional detached signature from an immutable
+  Git ref.
 - `validate_source_archive.py`: reject unsafe or non-portable tar members and
   compiled files.
 - `verify_release_candidate.sh`: perform voter-facing integrity, license,

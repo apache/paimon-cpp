@@ -49,6 +49,9 @@ The script creates:
   apache-paimon-cpp-VERSION-src.tgz.asc  (when --signing-key is provided)
 
 Existing artifacts are never overwritten.
+
+GNU gzip is required so macOS and Linux produce the same compressed bytes.
+Set PAIMON_GZIP to an explicit GNU gzip executable when it is not on PATH.
 EOF
 }
 
@@ -66,6 +69,36 @@ calculate_sha512() {
     else
         fail "sha512sum or shasum is required"
     fi
+}
+
+find_gnu_gzip() {
+    local candidate
+    local resolved
+    local version_line
+    local -a candidates
+
+    if [[ -n "${PAIMON_GZIP:-}" ]]; then
+        candidates=("${PAIMON_GZIP}")
+    else
+        candidates=(gzip ggzip)
+    fi
+
+    for candidate in "${candidates[@]}"; do
+        if [[ -x "${candidate}" ]]; then
+            resolved=${candidate}
+        elif resolved=$(command -v "${candidate}" 2>/dev/null); then
+            :
+        else
+            continue
+        fi
+        version_line=$("${resolved}" --version 2>/dev/null | sed -n '1p' || true)
+        if [[ "${version_line}" =~ ^gzip[[:space:]][0-9] ]]; then
+            printf '%s\n' "${resolved}"
+            return 0
+        fi
+    done
+
+    fail "GNU gzip is required for reproducible source archives; on macOS run 'brew install gzip' and set PAIMON_GZIP to the Homebrew gzip executable"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -128,6 +161,8 @@ DOCS_VERSION=$(
 [[ "${DOCS_VERSION}" == "${RELEASE_VERSION}" ]] ||
     fail "documentation version ${DOCS_VERSION:-<missing>} does not match ${RELEASE_VERSION}"
 
+GZIP_BIN=$(find_gnu_gzip)
+
 ARTIFACT_NAME="apache-paimon-cpp-${RELEASE_VERSION}-src.tgz"
 ARCHIVE_ROOT="paimon-cpp-${RELEASE_VERSION}"
 
@@ -147,7 +182,10 @@ git -C "${SOURCE_ROOT}" -c tar.umask=0022 archive \
     --format=tar \
     --prefix="${ARCHIVE_ROOT}/" \
     "${GIT_REF}" |
-    gzip -n >"${TEMP_DIR}/${ARTIFACT_NAME}"
+    (
+        unset GZIP
+        "${GZIP_BIN}" --no-name --stdout -6
+    ) >"${TEMP_DIR}/${ARTIFACT_NAME}"
 
 SHA512=$(calculate_sha512 "${TEMP_DIR}/${ARTIFACT_NAME}")
 printf '%s  %s\n' "${SHA512}" "${ARTIFACT_NAME}" \
