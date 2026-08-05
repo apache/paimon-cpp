@@ -143,6 +143,10 @@ class FileReaderWrapper {
         int32_t row_group_index, const std::shared_ptr<Predicate>& predicate,
         const std::map<std::string, int32_t>& column_name_to_index);
 
+    /// Get or create the page index reader for a row group.
+    std::shared_ptr<::parquet::RowGroupPageIndexReader> GetRowGroupPageIndexReader(
+        int32_t row_group_index);
+
  private:
     FileReaderWrapper(std::unique_ptr<::parquet::arrow::FileReader>&& file_reader,
                       const std::vector<std::pair<uint64_t, uint64_t>>& all_row_group_ranges,
@@ -196,6 +200,11 @@ class FileReaderWrapper {
 
     // Track pre-buffered ranges so we can wait on destruction
     std::vector<::arrow::io::ReadRange> prebuffered_ranges_;
+
+    // Arrow caches the file-level PageIndexReader, but RowGroup() creates a new reader each time.
+    // Keep one reader per row group so its page-index buffers are shared by all read stages.
+    std::map<int32_t, std::shared_ptr<::parquet::RowGroupPageIndexReader>>
+        row_group_page_index_readers_;
 };
 
 }  // namespace paimon::parquet

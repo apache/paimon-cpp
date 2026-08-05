@@ -78,9 +78,13 @@ jobs:
             --output-dir release/ci
 
       - name: Audit source archive
+        env:
+          # The creator must ignore caller-provided gzip defaults.
+          GZIP: "-9"
         run: |
           scripts/releasing/verify_release_candidate.sh \
             --allow-unsigned \
+            --git-ref HEAD \
             --skip-build \
             "release/ci/apache-paimon-cpp-${RELEASE_VERSION}-src.tgz"
 

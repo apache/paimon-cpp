@@ -305,9 +305,8 @@ class ColumnIndexFilterTest : public ::testing::Test {
     }
 
     Result<RowRanges> Filter(const std::shared_ptr<Predicate>& predicate) {
-        return ColumnIndexFilter::CalculateRowRanges(predicate, page_index_reader_,
-                                                     column_name_to_index_, /*row_group_index=*/0,
-                                                     row_group_row_count_);
+        return ColumnIndexFilter::CalculateRowRanges(predicate, page_index_reader_->RowGroup(0),
+                                                     column_name_to_index_, row_group_row_count_);
     }
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -553,19 +552,19 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
         auto less_negative_zero = PredicateBuilder::LessThan(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(-0.0f) : Literal(-0.0));
-        ASSERT_OK_AND_ASSIGN(
-            auto ranges, ColumnIndexFilter::CalculateRowRanges(
-                             less_negative_zero, page_index_reader, {{"value", 0}},
-                             /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(auto ranges,
+                             ColumnIndexFilter::CalculateRowRanges(
+                                 less_negative_zero, page_index_reader->RowGroup(0), {{"value", 0}},
+                                 reader->metadata()->RowGroup(0)->num_rows()));
         ASSERT_TRUE(ranges.IsEmpty()) << "field type: " << static_cast<int32_t>(field_type);
 
         auto less_positive_zero = PredicateBuilder::LessThan(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(0.0f) : Literal(0.0));
-        ASSERT_OK_AND_ASSIGN(
-            ranges, ColumnIndexFilter::CalculateRowRanges(
-                        less_positive_zero, page_index_reader, {{"value", 0}},
-                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(ranges,
+                             ColumnIndexFilter::CalculateRowRanges(
+                                 less_positive_zero, page_index_reader->RowGroup(0), {{"value", 0}},
+                                 reader->metadata()->RowGroup(0)->num_rows()));
         ASSERT_EQ(20, ranges.RowCount());
         ASSERT_EQ(1, ranges.GetRanges().size());
         ASSERT_EQ(0, ranges.GetRanges()[0].from);
@@ -576,8 +575,8 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
             field_type == FieldType::FLOAT ? Literal(-0.0f) : Literal(-0.0));
         ASSERT_OK_AND_ASSIGN(
             ranges, ColumnIndexFilter::CalculateRowRanges(
-                        greater_negative_zero, page_index_reader, {{"value", 0}},
-                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+                        greater_negative_zero, page_index_reader->RowGroup(0), {{"value", 0}},
+                        reader->metadata()->RowGroup(0)->num_rows()));
         ASSERT_EQ(30, ranges.RowCount());
 
         auto not_equal_negative_zero = PredicateBuilder::NotEqual(
@@ -585,17 +584,17 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
             field_type == FieldType::FLOAT ? Literal(-0.0f) : Literal(-0.0));
         ASSERT_OK_AND_ASSIGN(
             ranges, ColumnIndexFilter::CalculateRowRanges(
-                        not_equal_negative_zero, page_index_reader, {{"value", 0}},
-                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+                        not_equal_negative_zero, page_index_reader->RowGroup(0), {{"value", 0}},
+                        reader->metadata()->RowGroup(0)->num_rows()));
         ASSERT_EQ(30, ranges.RowCount());
 
         auto greater_finite = PredicateBuilder::GreaterThan(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(2.0f) : Literal(2.0));
-        ASSERT_OK_AND_ASSIGN(
-            ranges, ColumnIndexFilter::CalculateRowRanges(
-                        greater_finite, page_index_reader, {{"value", 0}},
-                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(ranges,
+                             ColumnIndexFilter::CalculateRowRanges(
+                                 greater_finite, page_index_reader->RowGroup(0), {{"value", 0}},
+                                 reader->metadata()->RowGroup(0)->num_rows()));
         ASSERT_TRUE(ranges.IsEmpty());
 
         auto greater_between_pages = PredicateBuilder::GreaterThan(
@@ -603,8 +602,8 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
             field_type == FieldType::FLOAT ? Literal(0.5f) : Literal(0.5));
         ASSERT_OK_AND_ASSIGN(
             ranges, ColumnIndexFilter::CalculateRowRanges(
-                        greater_between_pages, page_index_reader, {{"value", 0}},
-                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+                        greater_between_pages, page_index_reader->RowGroup(0), {{"value", 0}},
+                        reader->metadata()->RowGroup(0)->num_rows()));
         ASSERT_EQ(10, ranges.RowCount());
         ASSERT_EQ(1, ranges.GetRanges().size());
         ASSERT_EQ(20, ranges.GetRanges()[0].from);
@@ -613,10 +612,10 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
         auto equal_finite = PredicateBuilder::Equal(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(2.0f) : Literal(2.0));
-        ASSERT_OK_AND_ASSIGN(
-            ranges, ColumnIndexFilter::CalculateRowRanges(
-                        equal_finite, page_index_reader, {{"value", 0}},
-                        /*row_group_index=*/0, reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(ranges,
+                             ColumnIndexFilter::CalculateRowRanges(
+                                 equal_finite, page_index_reader->RowGroup(0), {{"value", 0}},
+                                 reader->metadata()->RowGroup(0)->num_rows()));
         ASSERT_TRUE(ranges.IsEmpty());
     }
 }
