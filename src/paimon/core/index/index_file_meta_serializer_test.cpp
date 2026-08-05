@@ -136,10 +136,10 @@ TEST_F(IndexFileMetaSerializerTest, TestToFromRowWithGlobalIndexWithSourceMeta) 
         /*index_field_id=*/5, /*extra_field_ids=*/std::optional<std::vector<int32_t>>({0, 1}),
         index_meta_bytes, source_meta_bytes);
     {
-        auto expected = std::make_shared<IndexFileMeta>(
-            "bitmap", "bitmap_index_file_0", /*file_size=*/10,
-            /*row_count=*/41, /*dv_ranges=*/std::nullopt,
-            /*external_path=*/std::nullopt, global_index_meta);
+        auto expected =
+            std::make_shared<IndexFileMeta>("bitmap", "bitmap_index_file_0", /*file_size=*/10,
+                                            /*row_count=*/41, /*dv_ranges=*/std::nullopt,
+                                            /*external_path=*/std::nullopt, global_index_meta);
         ASSERT_OK_AND_ASSIGN(BinaryRow row, serializer.ToRow(expected));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> actual, serializer.FromRow(row));
         ASSERT_EQ(expected->ToString(), actual->ToString());
