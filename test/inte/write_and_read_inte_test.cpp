@@ -1591,10 +1591,10 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     ASSERT_FALSE(result_plan->Splits().empty());
 
     // The row group aligned read ranges still cover RG0 although the predicate pruned that row
-    // group, and 2 sub readers take the ranges round robin. The reader0 owning RG0's range therefore
-    // finds no data for it and skips ahead into the next row group it owns, whose first selected row
-    // sits in the middle of that row group. Row level filtering stays off: the expected rows below
-    // are exactly what page-index filtering selects.
+    // group, and 2 sub readers take the ranges round robin. The reader0 owning RG0's range
+    // therefore finds no data for it and skips ahead into the next row group it owns, whose first
+    // selected row sits in the middle of that row group. Row level filtering stays off: the
+    // expected rows below are exactly what page-index filtering selects.
     ReadContextBuilder read_context_builder(table_path);
     read_context_builder.SetOptions(options)
         .SetPredicate(predicate)
