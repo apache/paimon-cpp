@@ -1529,6 +1529,94 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilter) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
+/// Reproduces the prefetch + parquet page-index filter failure: the predicate keeps only the last
+/// page of every row group, so the prefetch reader ends up seeking to a row in the middle of a row
+/// group, which FileReaderWrapper::SeekToRow rejects.
+TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet" || file_system != "local") {
+        return;
+    }
+
+    auto test_dir = UniqueTestDirectory::Create("local");
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 arrow::field("f1", arrow::utf8())};
+    auto schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::TARGET_FILE_SIZE, "1048576"},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, "local"},
+        // One row per page (see TestAppendWithParquetPageIndexFilter for why these three
+        // options are needed together) and 4 rows per row group, so the 16 rows below end up
+        // in 4 row groups of 4 single-row pages.
+        {Options::WRITE_BATCH_SIZE, "1"},
+        {"parquet.page.size", "1"},
+        {"parquet.enable-dictionary", "false"},
+        {"parquet.write.enable-page-index", "true"},
+        {"parquet.write.max-row-group-length", "4"},
+        {"parquet.read.enable-page-index-filter", "true"},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        auto helper, TestHelper::Create(test_dir->Str(), schema, /*partition_keys=*/{},
+                                        /*primary_keys=*/{}, options, /*is_streaming_mode=*/true));
+    std::string table_path = test_dir->Str() + "/foo.db/bar";
+
+    std::string data = R"([
+        [0, "v0"],   [1, "v1"],   [2, "v2"],   [3, "v3"],
+        [4, "v4"],   [5, "v5"],   [6, "v6"],   [7, "v7"],
+        [8, "v8"],   [9, "v9"],   [10, "v10"], [11, "v11"],
+        [12, "v12"], [13, "v13"], [14, "v14"], [15, "v15"]
+    ])";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), data,
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    // Keep only the last row of every row group, so each row group is partially matched and its
+    // first selected row is 3 rows behind the row group start.
+    auto predicate = PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT,
+                                          {Literal(3), Literal(7), Literal(11), Literal(15)});
+    ASSERT_TRUE(predicate);
+
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.SetOptions(options)
+        .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString())
+        .SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    ASSERT_FALSE(result_plan->Splits().empty());
+
+    // A single prefetch sub reader owns every read range, so it is the one that has to cross
+    // row group boundaries. Row level filtering stays off: the expected rows below are exactly
+    // what page-index filtering selects.
+    ReadContextBuilder read_context_builder(table_path);
+    read_context_builder.SetOptions(options)
+        .SetPredicate(predicate)
+        .EnablePrefetch(true)
+        .SetPrefetchMaxParallelNum(1)
+        .SetPrefetchBatchCount(3)
+        .AddOption("test.enable-adaptive-prefetch-strategy", "false");
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    auto expected_data_type = arrow::struct_(fields_with_row_kind);
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(expected_data_type, R"([
+[0, 3, "v3"], [0, 7, "v7"], [0, 11, "v11"], [0, 15, "v15"]
+])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
 TEST_P(WriteAndReadInteTest, TestAppendWithParquetMetadataCache) {
     auto [file_format, file_system] = GetParam();
     if (file_format != "parquet" || file_system != "local") {
