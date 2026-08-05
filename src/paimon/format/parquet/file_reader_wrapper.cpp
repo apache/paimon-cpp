@@ -259,6 +259,14 @@ Result<std::shared_ptr<arrow::RecordBatch>> FileReaderWrapper::NextPageFiltered(
                                                              static_cast<uint64_t>(*original_row)
                                                        : current_filtered_rg_start_;
         filtered_global_offset_ += record_batch->num_rows();
+        // Advance to the next row that survives filtering, or to the row group end when the
+        // filtered ranges are exhausted, so that next_row_to_read_ tracks the streaming position.
+        auto next_original_row =
+            current_filtered_row_ranges_.MapFilteredIndexToOriginalRow(filtered_global_offset_);
+        next_row_to_read_ =
+            next_original_row.has_value()
+                ? current_filtered_rg_start_ + static_cast<uint64_t>(*next_original_row)
+                : all_row_group_ranges_[rg_id].second;
         return record_batch;
     }
 

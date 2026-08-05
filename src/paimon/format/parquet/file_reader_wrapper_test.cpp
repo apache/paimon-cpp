@@ -374,6 +374,59 @@ TEST_F(FileReaderWrapperTest, PageFilteredRespectsBatchSize) {
     }
 }
 
+/// While streaming a page-filtered row group, GetNextRowToRead() must report the next row that
+/// survives filtering, and the row group end once the filtered ranges are exhausted. Reporting the
+/// row group start for the whole row group makes callers believe the reader has not moved.
+TEST_F(FileReaderWrapperTest, PageFilteredAdvancesNextRowToRead) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "page_next_row.parquet");
+    // 2000 rows produces 2 row groups (max_row_group_length=1000) with page index enabled.
+    PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/true);
+    ASSERT_OK_AND_ASSIGN(auto reader_wrapper,
+                         PrepareReaderWrapper(file_path, /*wrapper_batch_size=*/7));
+    ASSERT_EQ(2, reader_wrapper->GetNumberOfRowGroups());
+
+    // RowRanges are RG-local. RG0 keeps two non-contiguous stretches so that a batch can span the
+    // gap between them; RG1 keeps its first 20 rows.
+    RowRanges rg0_ranges({RowRanges::Range(10, 49), RowRanges::Range(100, 149)});
+    RowRanges rg1_ranges(RowRanges::Range(0, 19));
+    ASSERT_OK(reader_wrapper->PrepareForReading(
+        {TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/rg0_ranges),
+         TargetRowGroup(/*rg_index=*/1, /*is_partially_matched=*/true, /*ranges=*/rg1_ranges)},
+        /*column_indices=*/{0, 1, 2}));
+
+    // Absolute row numbers the reader is expected to produce, in order.
+    std::vector<uint64_t> expected_rows;
+    for (uint64_t row = 10; row <= 49; ++row) {
+        expected_rows.push_back(row);
+    }
+    for (uint64_t row = 100; row <= 149; ++row) {
+        expected_rows.push_back(row);
+    }
+    for (uint64_t row = 1000; row <= 1019; ++row) {
+        expected_rows.push_back(row);
+    }
+
+    size_t consumed = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> record_batch,
+                             reader_wrapper->Next());
+        if (!record_batch) {
+            break;
+        }
+        ASSERT_LT(consumed, expected_rows.size());
+        ASSERT_EQ(expected_rows[consumed],
+                  reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+        consumed += record_batch->num_rows();
+        ASSERT_LE(consumed, expected_rows.size());
+        // RG0 ends exactly where RG1 starts, so the row group boundary is also covered by
+        // expected_rows; only the very last batch leaves the cursor at the file end.
+        uint64_t expected_next_row =
+            consumed < expected_rows.size() ? expected_rows[consumed] : 2000;
+        ASSERT_EQ(expected_next_row, reader_wrapper->GetNextRowToRead());
+    }
+    ASSERT_EQ(expected_rows.size(), consumed);
+}
+
 TEST_F(FileReaderWrapperTest, GetRowGroupRanges) {
     std::string file_path = PathUtil::JoinPath(dir_->Str(), "test.parquet");
     PrepareParquetFile(file_path, /*row_count=*/5500);
