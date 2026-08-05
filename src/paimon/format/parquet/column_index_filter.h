@@ -57,16 +57,14 @@ class ColumnIndexFilter {
 
     /// Calculate row ranges based on predicate and column indices.
     /// @param predicate The predicate to evaluate.
-    /// @param page_index_reader The page index reader for the file.
+    /// @param rg_page_index_reader The page index reader of target row group for the file.
     /// @param column_name_to_index Map from column name to column index.
-    /// @param row_group_index The row group index to filter.
     /// @param row_group_row_count The number of rows in the row group.
     /// @return RowRanges that may contain matching rows.
     static Result<RowRanges> CalculateRowRanges(
         const std::shared_ptr<Predicate>& predicate,
-        const std::shared_ptr<::parquet::PageIndexReader>& page_index_reader,
-        const std::map<std::string, int32_t>& column_name_to_index, int32_t row_group_index,
-        int64_t row_group_row_count);
+        const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
+        const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count);
 
  private:
     /// Visit a predicate and calculate row ranges.

@@ -232,15 +232,18 @@ Result<std::shared_ptr<arrow::RecordBatch>> FileReaderWrapper::NextPageFiltered(
     // Construct the per-RG streaming reader on demand.
     if (!current_page_filtered_reader_) {
         const auto& target_rg = target_row_groups_[current_row_group_idx_];
+        auto row_group_page_index_reader = GetRowGroupPageIndexReader(rg_id);
         auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
-            target_rg, target_column_indices_, file_reader_->parquet_reader());
+            target_rg, target_column_indices_, row_group_page_index_reader,
+            file_reader_->parquet_reader());
         bool pre_buffered = !prebuffered_ranges_.empty();
         int64_t max_chunksize = batch_size_ > 0 ? batch_size_ : std::numeric_limits<int64_t>::max();
         PAIMON_ASSIGN_OR_RAISE(
             current_page_filtered_reader_,
             PageFilteredRowGroupReader::ReadFilteredRowGroup(
                 target_rg, target_column_indices_, file_reader_->properties().cache_options(),
-                pre_buffered, page_ranges, max_chunksize, pool_, file_reader_.get()));
+                pre_buffered, page_ranges, max_chunksize, row_group_page_index_reader, pool_,
+                file_reader_.get()));
         current_filtered_row_ranges_ = target_rg.GetRowRanges();
         current_filtered_rg_start_ = all_row_group_ranges_[rg_id].first;
         filtered_global_offset_ = 0;
@@ -296,6 +299,27 @@ Result<std::shared_ptr<arrow::RecordBatch>> FileReaderWrapper::NextFullyMatched(
                         next_row_to_read_, num_rows, rg_end));
     }
     return record_batch;
+}
+
+std::shared_ptr<::parquet::RowGroupPageIndexReader> FileReaderWrapper::GetRowGroupPageIndexReader(
+    int32_t row_group_index) {
+    auto cached = row_group_page_index_readers_.find(row_group_index);
+    if (cached != row_group_page_index_readers_.end()) {
+        return cached->second;
+    }
+
+    std::shared_ptr<::parquet::RowGroupPageIndexReader> row_group_page_index_reader;
+    auto page_index_reader = GetPageIndexReader();
+    if (page_index_reader) {
+        row_group_page_index_reader = page_index_reader->RowGroup(row_group_index);
+    }
+
+    // To avoid OOM, limit the number of row group page index readers cached in memory.
+    constexpr int32_t kMaxRowGroupPageIndexReaders = 1024;
+    if (row_group_page_index_readers_.size() < kMaxRowGroupPageIndexReaders) {
+        row_group_page_index_readers_.emplace(row_group_index, row_group_page_index_reader);
+    }
+    return row_group_page_index_reader;
 }
 
 Result<std::shared_ptr<arrow::RecordBatch>> FileReaderWrapper::Next() {
@@ -357,8 +381,9 @@ std::vector<::arrow::io::ReadRange> FileReaderWrapper::CollectPreBufferRanges(
 
         if (trg.IsPartiallyMatched()) {
             // Page-filtered RGs: only matching page byte ranges.
+            auto row_group_page_index_reader = GetRowGroupPageIndexReader(trg.GetRowGroupIndex());
             auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
-                trg, column_indices, file_reader_->parquet_reader());
+                trg, column_indices, row_group_page_index_reader, file_reader_->parquet_reader());
             ranges.insert(ranges.end(), std::make_move_iterator(page_ranges.begin()),
                           std::make_move_iterator(page_ranges.end()));
         } else {
@@ -500,13 +525,9 @@ Result<RowRanges> FileReaderWrapper::CalculateFilteredRowRanges(
             return RowRanges::CreateSingle(row_count);
         }
 
-        auto page_index_reader = GetPageIndexReader();
-        if (!page_index_reader) {
-            return RowRanges::CreateSingle(row_count);
-        }
-
-        return ColumnIndexFilter::CalculateRowRanges(
-            predicate, page_index_reader, column_name_to_index, row_group_index, row_count);
+        return ColumnIndexFilter::CalculateRowRanges(predicate,
+                                                     GetRowGroupPageIndexReader(row_group_index),
+                                                     column_name_to_index, row_count);
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::CalculateFilteredRowRanges")
 }

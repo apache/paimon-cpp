@@ -33,10 +33,12 @@ namespace paimon {
 /// last non-null value aggregate a field of a row.
 class FieldLastNonNullValueAgg : public FieldAggregator {
  public:
-    explicit FieldLastNonNullValueAgg(const std::shared_ptr<arrow::DataType>& field_type)
-        : FieldAggregator(std::string(NAME), field_type) {}
+    FieldLastNonNullValueAgg(const std::shared_ptr<arrow::DataType>& field_type,
+                             const std::shared_ptr<MemoryPool>& pool)
+        : FieldAggregator(std::string(NAME), field_type, pool) {}
 
-    VariantType Agg(const VariantType& accumulator, const VariantType& input_field) override {
+    Result<VariantType> Agg(const VariantType& accumulator,
+                            const VariantType& input_field) override {
         return DataDefine::IsVariantNull(input_field) ? accumulator : input_field;
     }
 

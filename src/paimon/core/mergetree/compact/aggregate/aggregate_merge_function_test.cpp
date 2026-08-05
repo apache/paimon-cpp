@@ -86,9 +86,9 @@ TEST(AggregateMergeFunctionTest, TestSimple) {
     auto value_schema = arrow::schema(fields);
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
                          CoreOptions::FromMap({{Options::FIELDS_DEFAULT_AGG_FUNC, "sum"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<AggregateMergeFunction> merge_func,
-        AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"}, core_options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AggregateMergeFunction> merge_func,
+                         AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"},
+                                                        core_options, GetDefaultPool()));
 
     auto pool = GetDefaultPool();
     KeyValue kv1(RowKind::Insert(), /*sequence_number=*/0, /*level=*/0, /*key=*/
@@ -126,9 +126,9 @@ TEST(AggregateMergeFunctionTest, TestIgnoreRetract) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
                          CoreOptions::FromMap({{Options::FIELDS_DEFAULT_AGG_FUNC, "sum"},
                                                {"fields.v0.ignore-retract", "true"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<AggregateMergeFunction> merge_func,
-        AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"}, core_options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AggregateMergeFunction> merge_func,
+                         AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"},
+                                                        core_options, GetDefaultPool()));
 
     auto pool = GetDefaultPool();
     KeyValue kv1(RowKind::Insert(), /*sequence_number=*/0, /*level=*/0, /*key=*/
@@ -167,9 +167,9 @@ TEST(AggregateMergeFunctionTest, TestSequenceFields) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
                          CoreOptions::FromMap({{Options::SEQUENCE_FIELD, "s0,s1"},
                                                {Options::FIELDS_DEFAULT_AGG_FUNC, "sum"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<AggregateMergeFunction> merge_func,
-        AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"}, core_options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AggregateMergeFunction> merge_func,
+                         AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"},
+                                                        core_options, GetDefaultPool()));
     auto pool = GetDefaultPool();
     // sequence: null, 2
     KeyValue kv1(
@@ -201,9 +201,9 @@ TEST(AggregateMergeFunctionTest, TestRemoveRecordOnDelete) {
         CoreOptions core_options,
         CoreOptions::FromMap({{Options::FIELDS_DEFAULT_AGG_FUNC, "sum"},
                               {Options::AGGREGATION_REMOVE_RECORD_ON_DELETE, "true"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<AggregateMergeFunction> merge_func,
-        AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"}, core_options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AggregateMergeFunction> merge_func,
+                         AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"},
+                                                        core_options, GetDefaultPool()));
 
     auto pool = GetDefaultPool();
 
@@ -300,9 +300,9 @@ TEST(AggregateMergeFunctionTest, TestDeleteWithoutRemoveRecordOnDelete) {
     auto value_schema = arrow::schema(fields);
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
                          CoreOptions::FromMap({{Options::FIELDS_DEFAULT_AGG_FUNC, "sum"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<AggregateMergeFunction> merge_func,
-        AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"}, core_options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AggregateMergeFunction> merge_func,
+                         AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"},
+                                                        core_options, GetDefaultPool()));
 
     auto pool = GetDefaultPool();
     merge_func->Reset();

@@ -1,0 +1,32 @@
+id:int score:int tag:string
+primary key: id
+no partition key
+no bucket key
+bucket count: 1
+
+file format: orc
+manifest format: orc
+deletion-vectors.enabled: true
+primary-key btree index: score
+compaction.force-rewrite-all-files: true
+
+Msgs:
+snapshot-1: APPEND
+Add: 1, 10, first
+Add: 2, 20, second
+
+snapshot-2: COMPACT
+Build the primary-key btree index for score.
+
+snapshot-3: APPEND
+Add: 3, 30, third
+Add: 4, 40, fourth
+
+snapshot-4: COMPACT
+Rebuild the primary-key btree index for score.
+
+snapshot-5: COMPACT
+Force a full compaction and rebuild the primary-key btree index for score.
+
+commit_messages-01:
+Single CommitMessage serialized by Java CommitMessageSerializer version 12 for snapshot-5.

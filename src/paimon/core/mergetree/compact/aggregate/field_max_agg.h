@@ -29,12 +29,14 @@ namespace paimon {
 class FieldMaxAgg : public FieldAggregator {
  public:
     static Result<std::unique_ptr<FieldMaxAgg>> Create(
-        const std::shared_ptr<arrow::DataType>& field_type) {
+        const std::shared_ptr<arrow::DataType>& field_type,
+        const std::shared_ptr<MemoryPool>& pool) {
         PAIMON_ASSIGN_OR_RAISE(FieldMaxFunc max_func, CreateMaxFunc(field_type));
-        return std::unique_ptr<FieldMaxAgg>(new FieldMaxAgg(field_type, max_func));
+        return std::unique_ptr<FieldMaxAgg>(new FieldMaxAgg(field_type, max_func, pool));
     }
 
-    VariantType Agg(const VariantType& accumulator, const VariantType& input_field) override {
+    Result<VariantType> Agg(const VariantType& accumulator,
+                            const VariantType& input_field) override {
         bool accumulator_null = DataDefine::IsVariantNull(accumulator);
         bool input_null = DataDefine::IsVariantNull(input_field);
         if (accumulator_null || input_null) {
@@ -50,8 +52,9 @@ class FieldMaxAgg : public FieldAggregator {
     using FieldMaxFunc =
         std::function<VariantType(const VariantType& accumulator, const VariantType& input_field)>;
 
-    FieldMaxAgg(const std::shared_ptr<arrow::DataType>& field_type, const FieldMaxFunc& max_func)
-        : FieldAggregator(std::string(NAME), field_type), max_func_(max_func) {}
+    FieldMaxAgg(const std::shared_ptr<arrow::DataType>& field_type, const FieldMaxFunc& max_func,
+                const std::shared_ptr<MemoryPool>& pool)
+        : FieldAggregator(std::string(NAME), field_type, pool), max_func_(max_func) {}
 
     static Result<FieldMaxFunc> CreateMaxFunc(const std::shared_ptr<arrow::DataType>& field_type) {
         arrow::Type::type type = field_type->id();

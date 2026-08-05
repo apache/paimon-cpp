@@ -38,15 +38,9 @@ namespace paimon::parquet {
 
 Result<RowRanges> ColumnIndexFilter::CalculateRowRanges(
     const std::shared_ptr<Predicate>& predicate,
-    const std::shared_ptr<::parquet::PageIndexReader>& page_index_reader,
-    const std::map<std::string, int32_t>& column_name_to_index, int32_t row_group_index,
-    int64_t row_group_row_count) {
-    if (!predicate || !page_index_reader) {
-        return RowRanges::CreateSingle(row_group_row_count);
-    }
-
-    auto rg_page_index_reader = page_index_reader->RowGroup(row_group_index);
-    if (!rg_page_index_reader) {
+    const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
+    const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count) {
+    if (!predicate || !rg_page_index_reader) {
         return RowRanges::CreateSingle(row_group_row_count);
     }
 

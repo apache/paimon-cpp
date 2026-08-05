@@ -34,6 +34,7 @@
 #include "paimon/core/mergetree/compact/aggregate/field_min_agg.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -64,15 +65,15 @@ void CheckJavaCompatibleFloatingPointMinMax(const std::shared_ptr<arrow::DataTyp
     const std::array<T, 5> values = {-infinity, -static_cast<T>(0.0), static_cast<T>(0.0), infinity,
                                      nan};
 
-    ASSERT_OK_AND_ASSIGN(auto field_min_agg, FieldMinAgg::Create(type));
-    ASSERT_OK_AND_ASSIGN(auto field_max_agg, FieldMaxAgg::Create(type));
+    ASSERT_OK_AND_ASSIGN(auto field_min_agg, FieldMinAgg::Create(type, GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(auto field_max_agg, FieldMaxAgg::Create(type, GetDefaultPool()));
     for (size_t i = 0; i < values.size(); ++i) {
         for (size_t j = 0; j < values.size(); ++j) {
-            VariantType min_result = field_min_agg->Agg(values[i], values[j]);
+            ASSERT_OK_AND_ASSIGN(VariantType min_result, field_min_agg->Agg(values[i], values[j]));
             AssertSameFloatingPoint(DataDefine::GetVariantValue<T>(min_result),
                                     values[std::min(i, j)]);
 
-            VariantType max_result = field_max_agg->Agg(values[i], values[j]);
+            ASSERT_OK_AND_ASSIGN(VariantType max_result, field_max_agg->Agg(values[i], values[j]));
             AssertSameFloatingPoint(DataDefine::GetVariantValue<T>(max_result),
                                     values[std::max(i, j)]);
         }
@@ -81,13 +82,15 @@ void CheckJavaCompatibleFloatingPointMinMax(const std::shared_ptr<arrow::DataTyp
 
 TEST(FieldMinMaxAggTest, TestSimple) {
     {
-        ASSERT_OK_AND_ASSIGN(auto field_min_agg, FieldMinAgg::Create(arrow::int32()));
-        auto agg_ret = field_min_agg->Agg(5, 10);
+        ASSERT_OK_AND_ASSIGN(auto field_min_agg,
+                             FieldMinAgg::Create(arrow::int32(), GetDefaultPool()));
+        auto agg_ret = field_min_agg->Agg(5, 10).value();
         ASSERT_EQ(DataDefine::GetVariantValue<int32_t>(agg_ret), 5);
     }
     {
-        ASSERT_OK_AND_ASSIGN(auto field_max_agg, FieldMaxAgg::Create(arrow::int32()));
-        auto agg_ret = field_max_agg->Agg(5, 10);
+        ASSERT_OK_AND_ASSIGN(auto field_max_agg,
+                             FieldMaxAgg::Create(arrow::int32(), GetDefaultPool()));
+        auto agg_ret = field_max_agg->Agg(5, 10).value();
         ASSERT_EQ(DataDefine::GetVariantValue<int32_t>(agg_ret), 10);
     }
 }
@@ -98,31 +101,31 @@ TEST(FieldMinMaxAggTest, TestJavaCompatibleFloatingPointOrder) {
 }
 
 TEST(FieldMinMaxAggTest, TestInvalidType) {
-    auto field_min_agg = FieldMinAgg::Create(arrow::boolean());
+    auto field_min_agg = FieldMinAgg::Create(arrow::boolean(), GetDefaultPool());
     ASSERT_FALSE(field_min_agg.ok());
-    auto field_max_agg = FieldMaxAgg::Create(arrow::boolean());
+    auto field_max_agg = FieldMaxAgg::Create(arrow::boolean(), GetDefaultPool());
     ASSERT_FALSE(field_max_agg.ok());
 }
 
 TEST(FieldMinMaxAggTest, TestNull) {
-    ASSERT_OK_AND_ASSIGN(auto field_min_agg, FieldMinAgg::Create(arrow::int32()));
-    ASSERT_OK_AND_ASSIGN(auto field_max_agg, FieldMaxAgg::Create(arrow::int32()));
+    ASSERT_OK_AND_ASSIGN(auto field_min_agg, FieldMinAgg::Create(arrow::int32(), GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(auto field_max_agg, FieldMaxAgg::Create(arrow::int32(), GetDefaultPool()));
     {
-        auto agg_ret = field_min_agg->Agg(5, NullType());
+        auto agg_ret = field_min_agg->Agg(5, NullType()).value();
         ASSERT_EQ(DataDefine::GetVariantValue<int32_t>(agg_ret), 5);
-        agg_ret = field_max_agg->Agg(5, NullType());
+        agg_ret = field_max_agg->Agg(5, NullType()).value();
         ASSERT_EQ(DataDefine::GetVariantValue<int32_t>(agg_ret), 5);
     }
     {
-        auto agg_ret = field_min_agg->Agg(NullType(), 10);
+        auto agg_ret = field_min_agg->Agg(NullType(), 10).value();
         ASSERT_EQ(DataDefine::GetVariantValue<int32_t>(agg_ret), 10);
-        agg_ret = field_max_agg->Agg(NullType(), 10);
+        agg_ret = field_max_agg->Agg(NullType(), 10).value();
         ASSERT_EQ(DataDefine::GetVariantValue<int32_t>(agg_ret), 10);
     }
     {
-        auto agg_ret = field_min_agg->Agg(NullType(), NullType());
+        auto agg_ret = field_min_agg->Agg(NullType(), NullType()).value();
         ASSERT_TRUE(DataDefine::IsVariantNull(agg_ret));
-        agg_ret = field_max_agg->Agg(NullType(), NullType());
+        agg_ret = field_max_agg->Agg(NullType(), NullType()).value();
         ASSERT_TRUE(DataDefine::IsVariantNull(agg_ret));
     }
 }
@@ -130,16 +133,16 @@ TEST(FieldMinMaxAggTest, TestNull) {
 TEST(FieldMinMaxAggTest, TestVariantType) {
     auto CheckResult = [](const std::shared_ptr<arrow::DataType>& type, const VariantType& large,
                           const VariantType& small) {
-        ASSERT_OK_AND_ASSIGN(auto field_min_agg, FieldMinAgg::Create(type));
-        ASSERT_OK_AND_ASSIGN(auto field_max_agg, FieldMaxAgg::Create(type));
-        auto agg_ret = field_min_agg->Agg(small, large);
+        ASSERT_OK_AND_ASSIGN(auto field_min_agg, FieldMinAgg::Create(type, GetDefaultPool()));
+        ASSERT_OK_AND_ASSIGN(auto field_max_agg, FieldMaxAgg::Create(type, GetDefaultPool()));
+        auto agg_ret = field_min_agg->Agg(small, large).value();
         ASSERT_EQ(agg_ret, small);
-        agg_ret = field_min_agg->Agg(large, small);
+        agg_ret = field_min_agg->Agg(large, small).value();
         ASSERT_EQ(agg_ret, small);
 
-        agg_ret = field_max_agg->Agg(small, large);
+        agg_ret = field_max_agg->Agg(small, large).value();
         ASSERT_EQ(agg_ret, large);
-        agg_ret = field_max_agg->Agg(large, small);
+        agg_ret = field_max_agg->Agg(large, small).value();
         ASSERT_EQ(agg_ret, large);
     };
 
