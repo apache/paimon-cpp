@@ -938,7 +938,7 @@ TEST(SchemaValidationTest, TestMapStorageLayout) {
     }
 }
 
-TEST(SchemaValidationTest, TestMapRequiresNonNullableKey) {
+TEST(SchemaValidationTest, TestMapSharedShreddingRequiresNonNullableKey) {
     auto nullable_key_map =
         std::make_shared<arrow::MapType>(arrow::field("key", arrow::utf8(), /*nullable=*/true),
                                          arrow::field("value", arrow::int64()));
@@ -951,9 +951,11 @@ TEST(SchemaValidationTest, TestMapRequiresNonNullableKey) {
         {Options::BUCKET_KEY, "f0"},
         {"fields.f1.map.storage-layout", "shared-shredding"},
     };
-    ASSERT_NOK_WITH_MSG(TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
-                                            /*primary_keys=*/{}, options),
-                        "Map field 'f1' has a nullable key.");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "map key type is nullable");
 }
 
 TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {

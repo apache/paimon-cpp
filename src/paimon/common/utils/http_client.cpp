@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/common/fs/http_client.h"
+#include "paimon/common/utils/http_client.h"
 
 #include <curl/curl.h>
 
@@ -46,11 +46,6 @@ class CurlGlobalGuard {
         curl_global_cleanup();
     }
 };
-
-std::shared_ptr<CurlGlobalGuard> GetCurlGlobalGuard() {
-    static auto guard = std::make_shared<CurlGlobalGuard>();
-    return guard;
-}
 
 void TrimHttpWhitespace(std::string* value) {
     constexpr char kHttpWhitespace[] = " \t\r\n";
@@ -95,16 +90,7 @@ size_t WriteCallback(char* data, size_t size, size_t count, void* user_data) {
 size_t HeaderCallback(char* data, size_t size, size_t count, void* user_data) {
     auto* context = static_cast<TransferContext*>(user_data);
     size_t bytes = size * count;
-    std::string line(data, bytes);
-    size_t colon = line.find(':');
-    if (colon != std::string::npos) {
-        std::string name = line.substr(0, colon);
-        TrimHttpWhitespace(&name);
-        name = StringUtils::ToLowerCase(name);
-        std::string value = line.substr(colon + 1);
-        TrimHttpWhitespace(&value);
-        context->response.headers[name] = std::move(value);
-    }
+    ParseHttpHeaderLine(data, bytes, &context->response.headers);
     return bytes;
 }
 
@@ -119,9 +105,31 @@ bool IsRetryable(CURLcode code, int64_t status_code) {
 
 }  // namespace
 
+std::shared_ptr<void> EnsureCurlGlobalInit() {
+    static auto guard = std::make_shared<CurlGlobalGuard>();
+    return guard;
+}
+
+void ParseHttpHeaderLine(const char* data, size_t size, HttpHeaders* headers) {
+    std::string line(data, size);
+    size_t colon = line.find(':');
+    if (colon == std::string::npos) {
+        return;
+    }
+    std::string name = line.substr(0, colon);
+    TrimHttpWhitespace(&name);
+    if (name.empty()) {
+        return;
+    }
+    name = StringUtils::ToLowerCase(name);
+    std::string value = line.substr(colon + 1);
+    TrimHttpWhitespace(&value);
+    (*headers)[name] = std::move(value);
+}
+
 class CurlHttpClient::Impl {
  public:
-    Impl() : guard_(GetCurlGlobalGuard()) {}
+    Impl() : guard_(EnsureCurlGlobalInit()) {}
 
     ~Impl() {
         for (CURL* handle : handles_) {
@@ -146,7 +154,7 @@ class CurlHttpClient::Impl {
     }
 
  private:
-    std::shared_ptr<CurlGlobalGuard> guard_;
+    std::shared_ptr<void> guard_;
     mutable std::mutex mutex_;
     mutable std::vector<CURL*> handles_;
 };

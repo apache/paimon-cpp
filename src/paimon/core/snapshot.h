@@ -27,6 +27,7 @@
 
 #include "paimon/common/utils/jsonizable.h"
 #include "paimon/result.h"
+#include "paimon/snapshot/snapshot_info.h"
 #include "paimon/type_fwd.h"
 #include "rapidjson/allocators.h"
 #include "rapidjson/document.h"
@@ -130,6 +131,8 @@ class Snapshot : public Jsonizable<Snapshot> {
 
     bool operator==(const Snapshot& other) const;
     bool TEST_Equal(const Snapshot& other) const;
+
+    SnapshotInfo ToSnapshotInfo() const;
 
  public:
     static constexpr int64_t FIRST_SNAPSHOT_ID = 1;

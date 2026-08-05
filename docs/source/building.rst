@@ -126,6 +126,7 @@ boolean flags to ``cmake``.
 * ``-DPAIMON_ENABLE_LUMINA=ON``: Support for the Lumina vector index.
 * ``-DPAIMON_ENABLE_LUCENE=ON``: Support for Lucene full-text search indexes
 * ``-DPAIMON_ENABLE_TANTIVY=ON``: Enable the experimental Tantivy full-text index Rust FFI.
+* ``-DPAIMON_ENABLE_REST=ON``: Support for the REST catalog (``metastore=rest``), requires the libcurl development package.
 
 Third-party dependency source
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

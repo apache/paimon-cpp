@@ -23,8 +23,8 @@
 #include <memory>
 #include <string>
 
-#include "paimon/common/fs/http_client.h"
 #include "paimon/common/fs/object_store_file_system.h"
+#include "paimon/common/utils/http_client.h"
 
 namespace paimon::s3 {
 
