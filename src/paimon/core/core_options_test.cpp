@@ -19,6 +19,9 @@
 #include "paimon/core/core_options.h"
 
 #include <limits>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/bucket/bucket_function_type.h"
@@ -102,6 +105,12 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_FALSE(core_options.FieldAggIgnoreRetract("f1").value());
     ASSERT_EQ(",", core_options.FieldListAggDelimiter("f1").value());
     ASSERT_FALSE(core_options.FieldCollectAggDistinct("f1").value());
+    ASSERT_TRUE(core_options.FieldNestedUpdateAggNestedKey("f1").value().empty());
+    ASSERT_EQ(CoreOptions::NestedKeyNullStrategy::MERGE,
+              core_options.FieldNestedUpdateAggNestedKeyNullStrategy("f1").value());
+    ASSERT_TRUE(core_options.FieldNestedUpdateAggNestedSequenceField("f1").value().empty());
+    ASSERT_EQ(std::numeric_limits<int32_t>::max(),
+              core_options.FieldNestedUpdateAggCountLimit("f1").value());
     ASSERT_EQ(MapStorageLayout::DEFAULT, core_options.GetMapStorageLayout("any_col").value());
     ASSERT_EQ(256, core_options.GetMapSharedShreddingMaxColumns("any_col").value());
     ASSERT_EQ(MapSharedShreddingColumnPlacementPolicy::LRU,
@@ -220,6 +229,10 @@ TEST(CoreOptionsTest, TestFromMap) {
         {"fields.f1.ignore-retract", "true"},
         {"fields.f2.list-agg-delimiter", " | "},
         {"fields.f2.distinct", "true"},
+        {"fields.f3.nested-key", "pk0,pk1"},
+        {"fields.f3.nested-key-null-strategy", "ignore"},
+        {"fields.f3.nested-sequence-field", "seq0,seq1"},
+        {"fields.f3.count-limit", "10"},
         {Options::DELETION_VECTORS_ENABLED, "true"},
         {Options::DELETION_VECTOR_BITMAP64, "true"},
         {Options::DELETION_VECTOR_INDEX_FILE_TARGET_SIZE, "4MB"},
@@ -353,6 +366,13 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.FieldAggIgnoreRetract("f1").value());
     ASSERT_EQ(" | ", core_options.FieldListAggDelimiter("f2").value());
     ASSERT_TRUE(core_options.FieldCollectAggDistinct("f2").value());
+    ASSERT_EQ((std::vector<std::string>{"pk0", "pk1"}),
+              core_options.FieldNestedUpdateAggNestedKey("f3").value());
+    ASSERT_EQ(CoreOptions::NestedKeyNullStrategy::IGNORE,
+              core_options.FieldNestedUpdateAggNestedKeyNullStrategy("f3").value());
+    ASSERT_EQ((std::vector<std::string>{"seq0", "seq1"}),
+              core_options.FieldNestedUpdateAggNestedSequenceField("f3").value());
+    ASSERT_EQ(10, core_options.FieldNestedUpdateAggCountLimit("f3").value());
     ASSERT_TRUE(core_options.DeletionVectorsEnabled());
     ASSERT_TRUE(core_options.DeletionVectorsBitmap64());
     ASSERT_EQ(4 * 1024 * 1024, core_options.DeletionVectorTargetFileSize());
@@ -479,6 +499,48 @@ TEST(CoreOptionsTest, TestInvalidCase) {
     ASSERT_NOK_WITH_MSG(
         CoreOptions::FromMap({{Options::WRITE_SEQUENCE_NUMBER_INIT_MODE, "invalid"}}),
         "invalid write sequence number init mode: invalid");
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions invalid_strategy,
+                         CoreOptions::FromMap({{"fields.f0.nested-key-null-strategy", "invalid"}}));
+    ASSERT_NOK_WITH_MSG(invalid_strategy.FieldNestedUpdateAggNestedKeyNullStrategy("f0"),
+                        "supported values are merge, ignore and error");
+    ASSERT_OK_AND_ASSIGN(CoreOptions negative_limit,
+                         CoreOptions::FromMap({{"fields.f0.count-limit", "-1"}}));
+    ASSERT_NOK_WITH_MSG(negative_limit.FieldNestedUpdateAggCountLimit("f0"),
+                        "must not be negative");
+}
+
+TEST(CoreOptionsTest, TestNestedKeyNullStrategyIsCaseInsensitive) {
+    const std::vector<std::pair<std::string, CoreOptions::NestedKeyNullStrategy>> cases = {
+        {"MERGE", CoreOptions::NestedKeyNullStrategy::MERGE},
+        {"Merge", CoreOptions::NestedKeyNullStrategy::MERGE},
+        {"IGNORE", CoreOptions::NestedKeyNullStrategy::IGNORE},
+        {"Ignore", CoreOptions::NestedKeyNullStrategy::IGNORE},
+        {"ERROR", CoreOptions::NestedKeyNullStrategy::ERROR},
+        {"eRrOr", CoreOptions::NestedKeyNullStrategy::ERROR},
+    };
+    for (const auto& [value, expected] : cases) {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{"fields.f0.nested-key-null-strategy", value}}));
+        ASSERT_EQ(expected, core_options.FieldNestedUpdateAggNestedKeyNullStrategy("f0").value())
+            << "value: " << value;
+    }
+
+    // The rejection message keeps the value exactly as the user wrote it.
+    ASSERT_OK_AND_ASSIGN(CoreOptions invalid,
+                         CoreOptions::FromMap({{"fields.f0.nested-key-null-strategy", "InVaLid"}}));
+    ASSERT_NOK_WITH_MSG(invalid.FieldNestedUpdateAggNestedKeyNullStrategy("f0"),
+                        "nested-key-null-strategy: InVaLid");
+
+    // An absent option keeps the default, but an explicitly empty one is a config error: the
+    // std::string overload of StringToValue passes "" through, so it reaches the strategy match.
+    ASSERT_OK_AND_ASSIGN(CoreOptions absent, CoreOptions::FromMap({}));
+    ASSERT_EQ(CoreOptions::NestedKeyNullStrategy::MERGE,
+              absent.FieldNestedUpdateAggNestedKeyNullStrategy("f0").value());
+    ASSERT_OK_AND_ASSIGN(CoreOptions empty,
+                         CoreOptions::FromMap({{"fields.f0.nested-key-null-strategy", ""}}));
+    ASSERT_NOK_WITH_MSG(empty.FieldNestedUpdateAggNestedKeyNullStrategy("f0"),
+                        "supported values are merge, ignore and error");
 }
 
 TEST(CoreOptionsTest, TestLookupCompactMaxIntervalComputedValue) {

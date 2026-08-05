@@ -19,9 +19,12 @@
 #include "paimon/core/mergetree/compact/partial_update_merge_function.h"
 
 #include <algorithm>
+#include <cstring>
 #include <ostream>
 #include <variant>
 
+#include "DataSketches/hll.hpp"
+#include "arrow/api.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/data_define.h"
@@ -33,6 +36,7 @@
 #include "paimon/core/mergetree/compact/aggregate/field_sum_agg.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
@@ -85,8 +89,8 @@ class PartialUpdateMergeFunctionTest : public testing::Test {
         PAIMON_RETURN_NOT_OK(PartialUpdateMergeFunction::ParseSequenceGroupFields(
             options, &value_field_to_seq_group_field, &seq_group_key_set));
         return PartialUpdateMergeFunction::Create(value_schema, /*primary_keys=*/{"f0"}, options,
-                                                  value_field_to_seq_group_field,
-                                                  seq_group_key_set);
+                                                  value_field_to_seq_group_field, seq_group_key_set,
+                                                  GetDefaultPool());
     }
 
     std::string CreateMergeFunctionWithInvalidOptions(
@@ -120,10 +124,10 @@ class PartialUpdateMergeFunctionTest : public testing::Test {
             table_schema, value_field_to_seq_group_field, &copy_value_fields));
         EXPECT_EQ(copy_value_fields, expected_completed_value_fields);
         auto value_schema = DataField::ConvertDataFieldsToArrowSchema(copy_value_fields);
-        EXPECT_OK_AND_ASSIGN(
-            std::unique_ptr<PartialUpdateMergeFunction> mfunc,
-            PartialUpdateMergeFunction::Create(value_schema, {"f0"}, options,
-                                               value_field_to_seq_group_field, seq_group_key_set));
+        EXPECT_OK_AND_ASSIGN(std::unique_ptr<PartialUpdateMergeFunction> mfunc,
+                             PartialUpdateMergeFunction::Create(
+                                 value_schema, {"f0"}, options, value_field_to_seq_group_field,
+                                 seq_group_key_set, GetDefaultPool()));
         return mfunc;
     }
 
@@ -438,10 +442,10 @@ TEST_F(PartialUpdateMergeFunctionTest, TestAdjustProjectionCreateDirectly) {
 
     ASSERT_OK(PartialUpdateMergeFunction::ParseSequenceGroupFields(
         options, &value_field_to_seq_group_field, &seq_group_key_set));
-    ASSERT_NOK_WITH_MSG(
-        PartialUpdateMergeFunction::Create(value_schema, {"f0"}, options,
-                                           value_field_to_seq_group_field, seq_group_key_set),
-        "cannot find sequence group field f4 in value schema, unexpected.");
+    ASSERT_NOK_WITH_MSG(PartialUpdateMergeFunction::Create(value_schema, {"f0"}, options,
+                                                           value_field_to_seq_group_field,
+                                                           seq_group_key_set, GetDefaultPool()),
+                        "cannot find sequence group field f4 in value schema, unexpected.");
 }
 
 TEST_F(PartialUpdateMergeFunctionTest, TestFirstValue) {
@@ -752,7 +756,7 @@ TEST_F(PartialUpdateMergeFunctionTest, TestCreateFieldAggregatorsWithDefaultAgg)
     ASSERT_OK_AND_ASSIGN(aggs, PartialUpdateMergeFunction::CreateFieldAggregators(
                                    value_schema,
                                    /*primary_keys=*/{"p0"}, options, value_field_to_seq_group_field,
-                                   seq_group_key_set));
+                                   seq_group_key_set, GetDefaultPool()));
     ASSERT_EQ(4, aggs.size());
     // test primary key: p0
     ASSERT_TRUE(dynamic_cast<FieldPrimaryKeyAgg*>(aggs[0].get()));
@@ -783,7 +787,7 @@ TEST_F(PartialUpdateMergeFunctionTest, TestCreateFieldAggregatorsWithoutDefaultA
     ASSERT_OK_AND_ASSIGN(aggs, PartialUpdateMergeFunction::CreateFieldAggregators(
                                    value_schema,
                                    /*primary_keys=*/{"p0"}, options, value_field_to_seq_group_field,
-                                   seq_group_key_set));
+                                   seq_group_key_set, GetDefaultPool()));
     ASSERT_EQ(2, aggs.size());
     // test primary key: p0
     ASSERT_TRUE(dynamic_cast<FieldPrimaryKeyAgg*>(aggs[0].get()));
@@ -862,9 +866,10 @@ TEST_F(PartialUpdateMergeFunctionTest, TestInitRowWithNullableFieldOnDelete) {
     std::set<std::string> seq_group_key_set;
     ASSERT_OK(PartialUpdateMergeFunction::ParseSequenceGroupFields(
         options, &value_field_to_seq_group_field, &seq_group_key_set));
-    ASSERT_OK_AND_ASSIGN(auto mfunc, PartialUpdateMergeFunction::Create(
-                                         value_schema, /*primary_keys=*/{"f0"}, options,
-                                         value_field_to_seq_group_field, seq_group_key_set));
+    ASSERT_OK_AND_ASSIGN(auto mfunc,
+                         PartialUpdateMergeFunction::Create(value_schema, /*primary_keys=*/{"f0"},
+                                                            options, value_field_to_seq_group_field,
+                                                            seq_group_key_set, GetDefaultPool()));
     mfunc->Reset();
 
     // insert some data first
@@ -873,5 +878,61 @@ TEST_F(PartialUpdateMergeFunctionTest, TestInitRowWithNullableFieldOnDelete) {
     Add(mfunc, RowKind::Delete(), {1, 2, 2, NullType()});
     // after delete with removeRecordOnDelete, row is re-initialized via initRow
     CheckResult(mfunc, {1, 2, 2, NullType()});
+}
+
+namespace {
+
+std::shared_ptr<Bytes> HllBytes(std::initializer_list<int32_t> values) {
+    datasketches::hll_sketch sketch(12, datasketches::HLL_4);
+    for (int32_t value : values) {
+        sketch.update(value);
+    }
+    std::vector<uint8_t> serialized = sketch.serialize_compact();
+    std::shared_ptr<Bytes> bytes = Bytes::AllocateBytes(serialized.size(), GetDefaultPool().get());
+    std::memcpy(bytes->data(), serialized.data(), bytes->size());
+    return bytes;
+}
+
+// reuse freed heap blocks so a row still pointing into released memory yields corrupted bytes
+std::vector<pooled_unique_ptr<Bytes>> ScribbleFreedMemory() {
+    std::vector<pooled_unique_ptr<Bytes>> blocks;
+    for (int32_t i = 0; i < 64; ++i) {
+        pooled_unique_ptr<Bytes> block = Bytes::AllocateBytes(4096, GetDefaultPool().get());
+        std::memset(block->data(), 0xAB, block->size());
+        blocks.push_back(std::move(block));
+    }
+    return blocks;
+}
+
+}  // namespace
+
+// An out-of-order record routes through AggReversed, which swaps the arguments
+TEST_F(PartialUpdateMergeFunctionTest, SequenceGroupKeepsBinaryAccumulatorOnOlderNullField) {
+    std::vector<DataField> data_fields = {DataField(0, arrow::field("f0", arrow::int32())),
+                                          DataField(1, arrow::field("f1", arrow::binary())),
+                                          DataField(2, arrow::field("f2", arrow::int32()))};
+    auto value_schema = DataField::ConvertDataFieldsToArrowSchema(data_fields);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{"fields.f2.sequence-group", "f1"},
+                                               {"fields.f1.aggregate-function", "hll_sketch"}}));
+    std::map<std::string, std::vector<std::string>> value_field_to_seq_group_field;
+    std::set<std::string> seq_group_key_set;
+    ASSERT_OK(PartialUpdateMergeFunction::ParseSequenceGroupFields(
+        options, &value_field_to_seq_group_field, &seq_group_key_set));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<PartialUpdateMergeFunction> mfunc,
+                         PartialUpdateMergeFunction::Create(value_schema, /*primary_keys=*/{"f0"},
+                                                            options, value_field_to_seq_group_field,
+                                                            seq_group_key_set, GetDefaultPool()));
+    mfunc->Reset();
+    Add(mfunc, {1, HllBytes({1, 2, 3}), 10});
+    // newer record, so the forward path unions and stores an owned buffer in the row
+    Add(mfunc, {1, HllBytes({3, 4, 5}), 20});
+    // older record with a null sketch, which takes the reversed null path
+    Add(mfunc, {1, NullType(), 15});
+
+    std::vector<pooled_unique_ptr<Bytes>> scribbled = ScribbleFreedMemory();
+    std::string_view bytes = mfunc->row_->GetStringView(1);
+    ASSERT_NEAR(
+        5.0, datasketches::hll_sketch::deserialize(bytes.data(), bytes.size()).get_estimate(), 0.1);
 }
 }  // namespace paimon::test

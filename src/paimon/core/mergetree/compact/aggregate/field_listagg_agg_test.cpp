@@ -25,6 +25,7 @@
 #include "arrow/type_fwd.h"
 #include "gtest/gtest.h"
 #include "paimon/core/core_options.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -38,19 +39,19 @@ class FieldListaggAggTest : public testing::Test {
         opts["fields.f.list-agg-delimiter"] = delimiter;
         opts["fields.f.distinct"] = distinct ? "true" : "false";
         PAIMON_ASSIGN_OR_RAISE(auto options, CoreOptions::FromMap(opts));
-        return FieldListaggAgg::Create(arrow::utf8(), std::move(options), "f");
+        return FieldListaggAgg::Create(arrow::utf8(), std::move(options), "f", GetDefaultPool());
     }
 };
 
 TEST_F(FieldListaggAggTest, TestSimple) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg());
-    auto ret = agg->Agg(std::string_view("hello"), std::string_view(" world"));
+    auto ret = agg->Agg(std::string_view("hello"), std::string_view(" world")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "hello, world");
 }
 
 TEST_F(FieldListaggAggTest, TestDelimiter) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg("-"));
-    auto ret = agg->Agg(std::string_view("user1"), std::string_view("user2"));
+    auto ret = agg->Agg(std::string_view("user1"), std::string_view("user2")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "user1-user2");
 }
 
@@ -59,17 +60,17 @@ TEST_F(FieldListaggAggTest, TestNull) {
 
     // input null -> return accumulator
     {
-        auto ret = agg->Agg(std::string_view("hello"), NullType());
+        auto ret = agg->Agg(std::string_view("hello"), NullType()).value();
         ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "hello");
     }
     // accumulator null -> return input
     {
-        auto ret = agg->Agg(NullType(), std::string_view("world"));
+        auto ret = agg->Agg(NullType(), std::string_view("world")).value();
         ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "world");
     }
     // both null -> return null
     {
-        auto ret = agg->Agg(NullType(), NullType());
+        auto ret = agg->Agg(NullType(), NullType()).value();
         ASSERT_TRUE(DataDefine::IsVariantNull(ret));
     }
 }
@@ -79,17 +80,17 @@ TEST_F(FieldListaggAggTest, TestEmptyString) {
 
     // empty input -> return accumulator
     {
-        auto ret = agg->Agg(std::string_view("hello"), std::string_view(""));
+        auto ret = agg->Agg(std::string_view("hello"), std::string_view("")).value();
         ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "hello");
     }
     // empty accumulator -> return input
     {
-        auto ret = agg->Agg(std::string_view(""), std::string_view("world"));
+        auto ret = agg->Agg(std::string_view(""), std::string_view("world")).value();
         ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "world");
     }
     // both empty -> return input (which is empty)
     {
-        auto ret = agg->Agg(std::string_view(""), std::string_view(""));
+        auto ret = agg->Agg(std::string_view(""), std::string_view("")).value();
         ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "");
     }
 }
@@ -98,9 +99,9 @@ TEST_F(FieldListaggAggTest, TestMultipleAccumulation) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg());
 
     // "a" + "," + "b" = "a,b", then "a,b" + "," + "c" = "a,b,c"
-    auto ret = agg->Agg(std::string_view("a"), std::string_view("b"));
+    auto ret = agg->Agg(std::string_view("a"), std::string_view("b")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a,b");
-    ret = agg->Agg(std::move(ret), std::string_view("c"));
+    ret = agg->Agg(std::move(ret), std::string_view("c")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a,b,c");
 }
 
@@ -108,7 +109,7 @@ TEST_F(FieldListaggAggTest, TestDistinct) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg(";", true));
 
     // "a;b" + "b;c" -> "a;b;c" (deduplicate "b")
-    auto ret = agg->Agg(std::string_view("a;b"), std::string_view("b;c"));
+    auto ret = agg->Agg(std::string_view("a;b"), std::string_view("b;c")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a;b;c");
 }
 
@@ -116,7 +117,7 @@ TEST_F(FieldListaggAggTest, TestDistinctNoDuplicates) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg(" ", true));
 
     // "a b" + "c d" -> "a b c d" (no dups to remove)
-    auto ret = agg->Agg(std::string_view("a b"), std::string_view("c d"));
+    auto ret = agg->Agg(std::string_view("a b"), std::string_view("c d")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a b c d");
 }
 
@@ -124,7 +125,7 @@ TEST_F(FieldListaggAggTest, TestDistinctWithEmptyDelimiterFallsBackToWhitespace)
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg("", true));
 
     // Empty delimiter falls back to whitespace, so the repeated "b" is removed.
-    auto ret = agg->Agg(std::string_view("a b"), std::string_view("b c"));
+    auto ret = agg->Agg(std::string_view("a b"), std::string_view("b c")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a b c");
 }
 
@@ -132,7 +133,7 @@ TEST_F(FieldListaggAggTest, TestDistinctEmptyInput) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg(";", true));
 
     // empty input -> return accumulator
-    auto ret = agg->Agg(std::string_view("a;b"), std::string_view(""));
+    auto ret = agg->Agg(std::string_view("a;b"), std::string_view("")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a;b");
 }
 
@@ -140,13 +141,13 @@ TEST_F(FieldListaggAggTest, TestDistinctFalse) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg(";", false));
 
     // "a;b" + "b;c" -> "a;b;b;c" (no dedup)
-    auto ret = agg->Agg(std::string_view("a;b"), std::string_view("b;c"));
+    auto ret = agg->Agg(std::string_view("a;b"), std::string_view("b;c")).value();
     ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a;b;b;c");
 }
 
 TEST_F(FieldListaggAggTest, TestInvalidType) {
     EXPECT_OK_AND_ASSIGN(auto options, CoreOptions::FromMap({}));
-    auto result = FieldListaggAgg::Create(arrow::int32(), options, "f");
+    auto result = FieldListaggAgg::Create(arrow::int32(), options, "f", GetDefaultPool());
     ASSERT_FALSE(result.ok());
     ASSERT_TRUE(result.status().ToString().find("supposed to be string") != std::string::npos)
         << result.status().ToString();

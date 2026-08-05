@@ -28,16 +28,18 @@ namespace paimon {
 class FieldBoolOrAgg : public FieldAggregator {
  public:
     static Result<std::unique_ptr<FieldBoolOrAgg>> Create(
-        const std::shared_ptr<arrow::DataType>& field_type) {
+        const std::shared_ptr<arrow::DataType>& field_type,
+        const std::shared_ptr<MemoryPool>& pool) {
         if (field_type->id() != arrow::Type::type::BOOL) {
             return Status::Invalid(
                 fmt::format("invalid field type {} for {}, supposed to be boolean",
                             field_type->ToString(), NAME));
         }
-        return std::unique_ptr<FieldBoolOrAgg>(new FieldBoolOrAgg(field_type));
+        return std::unique_ptr<FieldBoolOrAgg>(new FieldBoolOrAgg(field_type, pool));
     }
 
-    VariantType Agg(const VariantType& accumulator, const VariantType& input_field) override {
+    Result<VariantType> Agg(const VariantType& accumulator,
+                            const VariantType& input_field) override {
         bool accumulator_null = DataDefine::IsVariantNull(accumulator);
         bool input_null = DataDefine::IsVariantNull(input_field);
         if (accumulator_null || input_null) {
@@ -45,14 +47,15 @@ class FieldBoolOrAgg : public FieldAggregator {
         }
         bool accumulator_value = DataDefine::GetVariantValue<bool>(accumulator);
         bool input_value = DataDefine::GetVariantValue<bool>(input_field);
-        return accumulator_value || input_value;
+        return VariantType(accumulator_value || input_value);
     }
 
  public:
     static constexpr char NAME[] = "bool_or";
 
  private:
-    explicit FieldBoolOrAgg(const std::shared_ptr<arrow::DataType>& field_type)
-        : FieldAggregator(std::string(NAME), field_type) {}
+    FieldBoolOrAgg(const std::shared_ptr<arrow::DataType>& field_type,
+                   const std::shared_ptr<MemoryPool>& pool)
+        : FieldAggregator(std::string(NAME), field_type, pool) {}
 };
 }  // namespace paimon
