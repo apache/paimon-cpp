@@ -1530,7 +1530,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilter) {
 }
 
 /// Reproduces the prefetch + parquet page-index filter failure: the predicate keeps only the last
-/// page of every row group, so the prefetch reader ends up seeking to a row in the middle of a row
+/// page of RG1, RG2 and RG3, so the prefetch reader ends up seeking to a row in the middle of a row
 /// group, which FileReaderWrapper::SeekToRow rejects.
 TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     auto [file_format, file_system] = GetParam();
@@ -1575,7 +1575,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
                                      /*expected_commit_messages=*/std::nullopt));
 
-    // Keep only the last row of every row group, so each row group is partially matched and its
+    // Keep only the last row of RG1, RG2 and RG3, so each row group is partially matched and its
     // first selected row is 3 rows behind the row group start.
     auto predicate = PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT,
                                           {Literal(7), Literal(11), Literal(15)});
@@ -1597,7 +1597,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     read_context_builder.SetOptions(options)
         .SetPredicate(predicate)
         .EnablePrefetch(true)
-        .SetPrefetchMaxParallelNum(1)
+        .SetPrefetchMaxParallelNum(2)
         .SetPrefetchBatchCount(3)
         .AddOption("test.enable-adaptive-prefetch-strategy", "false");
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
