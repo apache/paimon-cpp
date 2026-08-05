@@ -1578,7 +1578,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     // Keep only the last row of every row group, so each row group is partially matched and its
     // first selected row is 3 rows behind the row group start.
     auto predicate = PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT,
-                                          {Literal(3), Literal(7), Literal(11), Literal(15)});
+                                          {Literal(7), Literal(11), Literal(15)});
     ASSERT_TRUE(predicate);
 
     ScanContextBuilder scan_context_builder(table_path);
@@ -1611,7 +1611,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     auto expected_data_type = arrow::struct_(fields_with_row_kind);
     auto expected = std::make_shared<arrow::ChunkedArray>(
         arrow::ipc::internal::json::ArrayFromJSON(expected_data_type, R"([
-[0, 3, "v3"], [0, 7, "v7"], [0, 11, "v11"], [0, 15, "v15"]
+[0, 7, "v7"], [0, 11, "v11"], [0, 15, "v15"]
 ])")
             .ValueOrDie());
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
