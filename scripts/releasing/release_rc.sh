@@ -85,16 +85,16 @@ validate_release_branch() {
         fail "HEAD ${HEAD_COMMIT} is not contained in ${REMOTE}/${RELEASE_BRANCH} (${release_branch_commit})"
 }
 
-wait_for_release_candidate_workflow() {
+wait_for_release_artifact_workflow() {
     local deadline=$((SECONDS + WORKFLOW_DISCOVERY_TIMEOUT_SECONDS))
     local run_id=""
 
-    echo "Waiting for the ${RC_TAG} Release Candidate workflow to start."
+    echo "Waiting for the ${RC_TAG} Release Artifact workflow to start."
     while [[ -z "${run_id}" ]]; do
         if ! run_id=$(
             gh run list \
                 --repo apache/paimon-cpp \
-                --workflow release_candidate.yaml \
+                --workflow release_artifact.yaml \
                 --branch "${RC_TAG}" \
                 --commit "${HEAD_COMMIT}" \
                 --event push \
@@ -102,24 +102,24 @@ wait_for_release_candidate_workflow() {
                 --json databaseId \
                 --jq '.[0].databaseId // empty'
         ); then
-            fail "unable to query the Release Candidate workflow for ${RC_TAG}"
+            fail "unable to query the Release Artifact workflow for ${RC_TAG}"
         fi
         if [[ -n "${run_id}" ]]; then
             break
         fi
         if ((SECONDS >= deadline)); then
-            fail "timed out waiting for the Release Candidate workflow for ${RC_TAG}"
+            fail "timed out waiting for the Release Artifact workflow for ${RC_TAG}"
         fi
         sleep 10
     done
 
-    echo "Waiting for Release Candidate workflow run ${run_id} to succeed."
+    echo "Waiting for Release Artifact workflow run ${run_id} to succeed."
     gh run watch "${run_id}" \
         --repo apache/paimon-cpp \
         --compact \
         --exit-status \
         --interval 30 ||
-        fail "Release Candidate workflow run ${run_id} failed"
+        fail "Release Artifact workflow run ${run_id} failed"
     WORKFLOW_RUN_ID=${run_id}
 }
 
@@ -378,7 +378,7 @@ if svn info "${RC_URL}" >/dev/null 2>&1; then
     fail "release candidate already exists in ASF dist/dev: ${RC_URL}"
 fi
 git push "${REMOTE}" "${RC_TAG}"
-wait_for_release_candidate_workflow
+wait_for_release_artifact_workflow
 download_and_sign_workflow_artifact
 
 "${SCRIPT_DIR}/verify_release_candidate.sh" \
