@@ -134,6 +134,11 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     Status RefreshReadRangesAfterCleanUp();
     Result<std::pair<uint64_t, uint64_t>> EofRange() const;
     std::optional<std::pair<uint64_t, uint64_t>> GetCurrentReadRange(size_t reader_idx) const;
+
+    /// Find the read range assigned to the given reader that contains the given file row id.
+    /// Returns nullopt when no assigned range contains it.
+    std::optional<std::pair<uint64_t, uint64_t>> FindReadRangeContaining(size_t reader_idx,
+                                                                         uint64_t row_id) const;
     Status EnsureReaderPosition(size_t reader_idx,
                                 const std::pair<uint64_t, uint64_t>& read_range) const;
     Status HandleReadResult(size_t reader_idx, const std::pair<uint64_t, uint64_t>& read_range,

@@ -427,6 +427,16 @@ Status PrefetchFileBatchReaderImpl::EnsureReaderPosition(
     return Status::OK();
 }
 
+std::optional<std::pair<uint64_t, uint64_t>> PrefetchFileBatchReaderImpl::FindReadRangeContaining(
+    size_t reader_idx, uint64_t row_id) const {
+    for (const auto& range : read_ranges_in_group_[reader_idx]) {
+        if (row_id >= range.first && row_id < range.second) {
+            return range;
+        }
+    }
+    return std::nullopt;
+}
+
 Status PrefetchFileBatchReaderImpl::HandleReadResult(
     size_t reader_idx, const std::pair<uint64_t, uint64_t>& read_range,
     ReadBatchWithBitmap&& read_batch_with_bitmap) {
@@ -454,9 +464,18 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
 
         if (0 == slice_end) {
             // fully out of range, data before global_row_ids has been filtered out
-            readers_pos_[reader_idx]->store(global_row_ids[0]);
-            ReaderUtils::ReleaseReadBatch(std::move(read_batch));
-            return Status::OK();
+            // find the read range that contains the first row id and put it into queue in advance.
+            std::optional<std::pair<uint64_t, uint64_t>> owner_range =
+                FindReadRangeContaining(reader_idx, global_row_ids[0]);
+            if (owner_range == std::nullopt) {
+                readers_pos_[reader_idx]->store(global_row_ids[0]);
+                ReaderUtils::ReleaseReadBatch(std::move(read_batch));
+                return Status::OK();
+            }
+            // Recurses at most once: global_row_ids[0] is within owner_range, so the recursive
+            // call cannot compute a zero slice end again.
+            return HandleReadResult(reader_idx, owner_range.value(),
+                                    std::move(read_batch_with_bitmap));
         } else if (slice_end < c_array->length) {
             // partially out of range, data before read_range.second has been effectively consumed
             readers_pos_[reader_idx]->store(read_range.second);
