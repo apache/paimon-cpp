@@ -2550,6 +2550,12 @@ TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsRejectsUnsupportedOptions) 
     ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(ok_options));
 }
 
+TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsAllowsDisabledManifestDeleteFileDropStats) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{"manifest.delete-file-drop-stats", "false"}}));
+    ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));
+}
+
 TEST_F(FileStoreCommitImplTest, DropPartitionWithEmptyPartitionsFails) {
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,

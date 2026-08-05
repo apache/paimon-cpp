@@ -42,6 +42,7 @@
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
@@ -116,7 +117,12 @@ Status FileStoreCommitImpl::ValidateCommitOptions(const CoreOptions& options) {
         unsupported_options.emplace_back(kCommitStrictModeLastSafeSnapshot);
     }
     if (raw_options.find(kManifestDeleteFileDropStats) != raw_options.end()) {
-        unsupported_options.emplace_back(kManifestDeleteFileDropStats);
+        PAIMON_ASSIGN_OR_RAISE(
+            bool manifest_delete_file_drop_stats,
+            OptionsUtils::GetValueFromMap<bool>(raw_options, kManifestDeleteFileDropStats));
+        if (manifest_delete_file_drop_stats) {
+            unsupported_options.emplace_back(kManifestDeleteFileDropStats);
+        }
     }
     if (raw_options.find(kSequenceSnapshotOrdering) != raw_options.end()) {
         unsupported_options.emplace_back(kSequenceSnapshotOrdering);
