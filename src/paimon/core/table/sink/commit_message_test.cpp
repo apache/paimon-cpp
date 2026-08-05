@@ -65,6 +65,39 @@ TEST(CommitMessageTest, TestCurrentVersion) {
     ASSERT_EQ(CommitMessageSerializer::CURRENT_VERSION, CommitMessage::CurrentVersion());
 }
 
+TEST(CommitMessageTest, TestCompatibleWithVersion12) {
+    // index file meta: add global index meta source meta
+    int32_t version = 12;
+    std::string data_path = paimon::test::GetDataDir() +
+                            "orc/pk_btree_source_meta.db/pk_btree_source_meta/"
+                            "commit_messages/commit_messages-01";
+    auto file_system = std::make_shared<LocalFileSystem>();
+    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+
+    std::vector<char> buffer(buffer_length, 0);
+    ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
+    ASSERT_OK(in_stream->Read(reinterpret_cast<char*>(buffer.data()), buffer.size()));
+    ASSERT_OK(in_stream->Close());
+
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CommitMessage> ret,
+                         CommitMessage::Deserialize(version, reinterpret_cast<char*>(buffer.data()),
+                                                    buffer.size(), pool));
+    auto res_msg = std::dynamic_pointer_cast<CommitMessageImpl>(ret);
+    ASSERT_NE(res_msg, nullptr);
+
+    // check source_meta exists
+    const auto& new_indexes = res_msg->GetCompactIncrement().NewIndexFiles();
+    ASSERT_EQ(new_indexes.size(), 1);
+    const auto& global_index_meta = new_indexes[0]->GetGlobalIndexMeta();
+    ASSERT_TRUE(global_index_meta.has_value());
+    ASSERT_NE(global_index_meta->source_meta, nullptr);
+
+    // check result
+    ASSERT_OK_AND_ASSIGN(std::string serialized_bytes, CommitMessage::Serialize(ret, pool));
+    ASSERT_EQ(serialized_bytes, std::string(reinterpret_cast<char*>(buffer.data()), buffer.size()));
+}
+
 TEST(CommitMessageTest, TestCompatibleWithVersion11) {
     // index file meta: add global index meta
     int32_t version = 11;

@@ -1,0 +1,30 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "score",
+    "type" : "INT"
+  }, {
+    "id" : 2,
+    "name" : "tag",
+    "type" : "STRING"
+  } ],
+  "highestFieldId" : 2,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ "id" ],
+  "options" : {
+    "bucket" : "1",
+    "compaction.force-rewrite-all-files" : "true",
+    "num-sorted-run.compaction-trigger" : "100",
+    "manifest.format" : "orc",
+    "pk-btree.index.columns" : "score",
+    "file.format" : "orc",
+    "deletion-vectors.enabled" : "true"
+  },
+  "timeMillis" : 1785840706107
+}
