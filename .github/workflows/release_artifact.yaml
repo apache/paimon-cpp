@@ -14,12 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Release Candidate
+name: Release Artifact
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
-      - ".github/workflows/release_candidate.yaml"
+      - ".github/workflows/release_artifact.yaml"
       - ".github/.rat-excludes"
       - "CMakeLists.txt"
       - "LICENSE"
@@ -29,7 +30,7 @@ on:
       - "scripts/releasing/**"
   push:
     tags:
-      - "v*-rc*"
+      - "v*"
 
 concurrency:
   group: ${{ github.repository }}-${{ github.ref }}-${{ github.workflow }}
