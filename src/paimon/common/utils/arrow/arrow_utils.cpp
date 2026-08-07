@@ -102,6 +102,22 @@ Result<RebasedOffsets> RebaseOffsets(const arrow::ArrayData& data, arrow::Memory
 Result<std::shared_ptr<arrow::ArrayData>> RebaseToZeroOffset(
     const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool);
 
+/// Rebases a boolean array, whose values are a bitmap rather than byte addressable.
+Result<std::shared_ptr<arrow::ArrayData>> RebaseBoolean(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    if (data->buffers.size() != 2 || data->buffers[1] == nullptr) {
+        return CopyToZeroOffset(data, pool);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
+                           RebaseValidityBitmap(*data, pool));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> values,
+                           RebaseBitmap(*data, data->buffers[1], pool));
+    std::shared_ptr<arrow::ArrayData> rebased =
+        arrow::ArrayData::Make(data->type, data->length, data->null_count.load(), /*offset=*/0);
+    rebased->buffers = {std::move(validity), std::move(values)};
+    return rebased;
+}
+
 /// Rebases the {validity, offsets, values} layout of binary-like arrays.
 template <typename OffsetType>
 Result<std::shared_ptr<arrow::ArrayData>> RebaseBinaryLike(
@@ -202,19 +218,8 @@ Result<std::shared_ptr<arrow::ArrayData>> RebaseToZeroOffset(
     }
 
     switch (data->type->id()) {
-        case arrow::Type::BOOL: {
-            if (data->buffers.size() != 2 || data->buffers[1] == nullptr) {
-                break;
-            }
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
-                                   RebaseValidityBitmap(*data, pool));
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> values,
-                                   RebaseBitmap(*data, data->buffers[1], pool));
-            std::shared_ptr<arrow::ArrayData> rebased = arrow::ArrayData::Make(
-                data->type, data->length, data->null_count.load(), /*offset=*/0);
-            rebased->buffers = {std::move(validity), std::move(values)};
-            return rebased;
-        }
+        case arrow::Type::BOOL:
+            return RebaseBoolean(data, pool);
         case arrow::Type::STRING:
         case arrow::Type::BINARY:
             return RebaseBinaryLike<int32_t>(data, pool);
