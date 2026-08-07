@@ -163,6 +163,9 @@ Result<std::shared_ptr<arrow::ArrayData>> RebaseListLike(
 /// Rebases a struct array, whose slices keep full length children.
 Result<std::shared_ptr<arrow::ArrayData>> RebaseStruct(
     const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    if (data->buffers.empty()) {
+        return CopyToZeroOffset(data, pool);
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
                            RebaseValidityBitmap(*data, pool));
     std::shared_ptr<arrow::ArrayData> rebased =
