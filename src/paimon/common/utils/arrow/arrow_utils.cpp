@@ -86,7 +86,7 @@ struct RebasedOffsets {
 
 template <typename OffsetType>
 Result<RebasedOffsets> RebaseOffsets(const arrow::ArrayData& data, arrow::MemoryPool* pool) {
-    const OffsetType* offsets = data.GetValues<OffsetType>(1);
+    const auto* offsets = data.GetValues<OffsetType>(1);
     const OffsetType base = offsets[0];
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::unique_ptr<arrow::Buffer> buffer,
