@@ -20,9 +20,44 @@
 
 #include "gtest/gtest.h"
 #include "paimon/status.h"
+#include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+TEST(DataFileMetaTest, TestCopyWithoutStats) {
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    SimpleStats value_stats = BinaryRowGenerator::GenerateStats(
+        {1, std::string("a")}, {5, std::string("z")}, {0, 1}, pool.get());
+    auto file_meta = std::make_shared<DataFileMeta>(
+        "data-0.orc", /*file_size=*/645, /*row_count=*/5, BinaryRow::EmptyRow(),
+        BinaryRow::EmptyRow(), SimpleStats::EmptyStats(), value_stats,
+        /*min_sequence_number=*/0, /*max_sequence_number=*/4, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/Timestamp(1737111915429ll, 0),
+        /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::vector<std::string>({"f0", "f1"}),
+        /*external_path=*/"file:/tmp/bucket-0/data-0.orc", /*first_row_id=*/100,
+        /*write_cols=*/std::vector<std::string>({"f0"}));
+
+    std::shared_ptr<DataFileMeta> result = file_meta->CopyWithoutStats();
+
+    ASSERT_NE(file_meta.get(), result.get());
+    DataFileMeta expected = *file_meta;
+    expected.value_stats = SimpleStats::EmptyStats();
+    expected.value_stats_cols = std::vector<std::string>();
+    ASSERT_EQ(expected, *result);
+    ASSERT_EQ(value_stats, file_meta->value_stats);
+    ASSERT_EQ(std::vector<std::string>({"f0", "f1"}), file_meta->value_stats_cols.value());
+
+    // Upgrade cannot restore stats once they have been dropped. Writer restore must therefore
+    // retain full stats for metadata-only ADD entries; see the Paimon Java bug at
+    // https://github.com/apache/paimon/issues/7026.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> upgraded, result->Upgrade(/*new_level=*/1));
+    ASSERT_EQ(SimpleStats::EmptyStats(), upgraded->value_stats);
+    ASSERT_TRUE(upgraded->value_stats_cols.has_value());
+    ASSERT_TRUE(upgraded->value_stats_cols->empty());
+}
+
 TEST(DataFileMetaTest, TestAddRowCount) {
     DataFileMeta file_meta("data-80110e15-97b5-4bcf-ac09-6ca2659a4950-0.orc", /*file_size=*/645,
                            /*row_count=*/5, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),

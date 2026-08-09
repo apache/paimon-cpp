@@ -59,6 +59,7 @@
 #include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_committable.h"
 #include "paimon/core/manifest/manifest_entry.h"
+#include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/metrics/commit_metrics.h"
@@ -2535,9 +2536,9 @@ TEST_F(FileStoreCommitImplTest, TestFixedBucketPKTableCommitAllowed) {
 }
 
 TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsRejectsUnsupportedOptions) {
-    const std::vector<std::string> unsupported_keys = {
-        "commit.strict-mode.last-safe-snapshot", "manifest.delete-file-drop-stats",
-        "sequence.snapshot-ordering", "pk-clustering-override"};
+    const std::vector<std::string> unsupported_keys = {"commit.strict-mode.last-safe-snapshot",
+                                                       "sequence.snapshot-ordering",
+                                                       "pk-clustering-override"};
     for (const auto& key : unsupported_keys) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({{key, "true"}}));
         ASSERT_NOK_WITH_MSG(FileStoreCommitImpl::ValidateCommitOptions(options),
@@ -2550,10 +2551,119 @@ TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsRejectsUnsupportedOptions) 
     ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(ok_options));
 }
 
-TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsAllowsDisabledManifestDeleteFileDropStats) {
-    ASSERT_OK_AND_ASSIGN(CoreOptions options,
-                         CoreOptions::FromMap({{"manifest.delete-file-drop-stats", "false"}}));
-    ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));
+TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsAllowsManifestDeleteFileDropStats) {
+    for (const std::string value : {"false", "true"}) {
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions options,
+            CoreOptions::FromMap({{Options::MANIFEST_DELETE_FILE_DROP_STATS, value}}));
+        ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));
+    }
+}
+
+TEST_F(FileStoreCommitImplTest, TestGetAllFilesKeepsValueStats) {
+    CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         context_builder.AddOption(Options::MANIFEST_FORMAT, "orc")
+                             .AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
+                             .AddOption(Options::MANIFEST_DELETE_FILE_DROP_STATS, "true")
+                             .AddOption(Options::FILE_SYSTEM, "local")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(commit_context)));
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+
+    std::vector<std::shared_ptr<CommitMessage>> messages =
+        GetCommitMessages(paimon::test::GetDataDir() +
+                              "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
+                          /*version=*/3);
+    ASSERT_OK(commit_impl->Commit(messages, /*commit_identifier=*/1));
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> latest,
+                         commit_impl->snapshot_manager_->LatestSnapshot());
+    ASSERT_TRUE(latest.has_value());
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> entries,
+                         commit_impl->GetAllFiles(latest.value(), /*partitions=*/{}));
+    ASSERT_FALSE(entries.empty());
+    for (const ManifestEntry& entry : entries) {
+        ASSERT_FALSE(entry.File()->value_stats == SimpleStats::EmptyStats());
+    }
+}
+
+TEST_F(FileStoreCommitImplTest, TestOverwriteDropsDeleteFileStats) {
+    CommitContextBuilder context_builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         context_builder.AddOption(Options::MANIFEST_FORMAT, "orc")
+                             .AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
+                             .AddOption(Options::MANIFEST_DELETE_FILE_DROP_STATS, "true")
+                             .AddOption(Options::FILE_SYSTEM, "local")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(commit_context)));
+    auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+
+    std::vector<std::shared_ptr<CommitMessage>> first_commit =
+        GetCommitMessages(paimon::test::GetDataDir() +
+                              "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
+                          /*version=*/3);
+    ASSERT_OK(commit_impl->Commit(first_commit, /*commit_identifier=*/1));
+
+    std::vector<std::shared_ptr<CommitMessage>> overwrite_commit =
+        GetCommitMessages(paimon::test::GetDataDir() +
+                              "/orc/append_09.db/append_09/commit_messages/commit_messages-02",
+                          /*version=*/3);
+    ASSERT_OK(commit_impl->Overwrite({}, overwrite_commit, /*commit_identifier=*/2));
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> latest,
+                         commit_impl->snapshot_manager_->LatestSnapshot());
+    ASSERT_TRUE(latest.has_value());
+    std::vector<ManifestFileMeta> delta_manifests;
+    ASSERT_OK(commit_impl->manifest_list_->ReadDeltaManifests(latest.value(), &delta_manifests));
+    std::vector<ManifestEntry> delta_entries;
+    for (const ManifestFileMeta& manifest : delta_manifests) {
+        ASSERT_OK(commit_impl->manifest_file_->Read(manifest.FileName(), /*filter=*/nullptr,
+                                                    &delta_entries));
+    }
+
+    int32_t add_count = 0;
+    int32_t delete_count = 0;
+    for (const ManifestEntry& entry : delta_entries) {
+        if (entry.Kind() == FileKind::Delete()) {
+            ++delete_count;
+            ASSERT_EQ(SimpleStats::EmptyStats(), entry.File()->value_stats);
+            ASSERT_TRUE(entry.File()->value_stats_cols.has_value());
+            ASSERT_TRUE(entry.File()->value_stats_cols->empty());
+        } else if (entry.Kind() == FileKind::Add()) {
+            ++add_count;
+            ASSERT_FALSE(entry.File()->value_stats == SimpleStats::EmptyStats());
+        }
+    }
+    ASSERT_GT(delete_count, 0);
+    ASSERT_GT(add_count, 0);
+
+    std::vector<BinaryRow> changed_partitions;
+    changed_partitions.reserve(delta_entries.size());
+    for (const ManifestEntry& entry : delta_entries) {
+        changed_partitions.push_back(entry.Partition());
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<ManifestEntry> incremental_entries,
+        commit_impl->commit_scanner_->ReadIncrementalEntries(latest.value(), changed_partitions));
+
+    add_count = 0;
+    delete_count = 0;
+    for (const ManifestEntry& entry : incremental_entries) {
+        if (entry.Kind() == FileKind::Delete()) {
+            ++delete_count;
+            ASSERT_EQ(SimpleStats::EmptyStats(), entry.File()->value_stats);
+        } else if (entry.Kind() == FileKind::Add()) {
+            ++add_count;
+            ASSERT_FALSE(entry.File()->value_stats == SimpleStats::EmptyStats());
+        }
+    }
+    ASSERT_GT(delete_count, 0);
+    ASSERT_GT(add_count, 0);
 }
 
 TEST_F(FileStoreCommitImplTest, DropPartitionWithEmptyPartitionsFails) {

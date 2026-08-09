@@ -132,6 +132,14 @@ class FileStoreScan {
         return this;
     }
 
+    /// Drop value statistics from entries after all scan filters have been applied.
+    ///
+    /// @return This scan for chained configuration.
+    FileStoreScan* EnableDropStats() {
+        drop_stats_ = true;
+        return this;
+    }
+
     const std::shared_ptr<SnapshotManager>& GetSnapshotManager() const {
         return snapshot_manager_;
     }
@@ -310,5 +318,6 @@ class FileStoreScan {
     std::optional<Snapshot> specified_snapshot_;
     std::shared_ptr<Metrics> metrics_;
     std::string table_path_;
+    bool drop_stats_ = false;
 };
 }  // namespace paimon

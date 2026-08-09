@@ -42,6 +42,8 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/operation/restore_files.h"
+#include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
@@ -421,6 +423,58 @@ TEST_F(KeyValueFileStoreWriteTest, TestSpillSimple) {
     ASSERT_EQ(TestHelper::CountChannelFiles(dir->GetFileSystem(), dir->Str()), 0);
     ASSERT_EQ(get_writer(0)->GetMemoryUsage(), 0);
     ASSERT_EQ(get_writer(1)->GetMemoryUsage(), 0);
+}
+
+TEST_F(KeyValueFileStoreWriteTest, TestWriterRestoreKeepsValueStats) {
+    auto fields = {arrow::field("f0", arrow::utf8(), /*nullable=*/false)};
+    arrow::Schema typed_schema(fields);
+    ::ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(typed_schema, &schema).ok());
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::map<std::string, std::string> options = {
+        {Options::BUCKET, "1"},
+        {Options::FILE_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_DELETE_FILE_DROP_STATS, "true"}};
+    ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(dir->Str(), options));
+    ASSERT_OK(catalog->CreateDatabase("foo", {}, /*ignore_if_exists=*/false));
+    ASSERT_OK(catalog->CreateTable(Identifier("foo", "bar"), &schema,
+                                   /*partition_keys=*/{}, /*primary_keys=*/{"f0"}, options,
+                                   /*ignore_if_exists=*/false));
+
+    std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    WriteContextBuilder first_context_builder(table_path, "first-writer");
+    first_context_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> first_context,
+                         first_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto first_write, FileStoreWrite::Create(std::move(first_context)));
+    ASSERT_OK(WriteSingleStringRow(first_write.get(), /*bucket=*/0, "alice"));
+    ASSERT_OK_AND_ASSIGN(auto commit_messages,
+                         first_write->PrepareCommit(/*wait_compaction=*/false, 1));
+    ASSERT_OK(first_write->Close());
+    ASSERT_EQ(1, commit_messages.size());
+    auto commit_message = std::dynamic_pointer_cast<CommitMessageImpl>(commit_messages[0]);
+    ASSERT_NE(nullptr, commit_message);
+    ASSERT_EQ(1, commit_message->GetNewFilesIncrement().NewFiles().size());
+    ASSERT_FALSE(commit_message->GetNewFilesIncrement().NewFiles()[0]->value_stats ==
+                 SimpleStats::EmptyStats());
+    Commit(table_path, options, commit_messages);
+
+    WriteContextBuilder restored_context_builder(table_path, "restored-writer");
+    restored_context_builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> restored_context,
+                         restored_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto restored_write, FileStoreWrite::Create(std::move(restored_context)));
+    auto key_value_write = dynamic_cast<KeyValueFileStoreWrite*>(restored_write.get());
+    ASSERT_NE(nullptr, key_value_write);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RestoreFiles> restore_files,
+                         key_value_write->ScanExistingFileMetas(BinaryRow::EmptyRow(),
+                                                                /*bucket=*/0));
+    ASSERT_EQ(1, restore_files->DataFiles().size());
+    ASSERT_FALSE(restore_files->DataFiles()[0]->value_stats == SimpleStats::EmptyStats());
+    ASSERT_OK(restored_write->Close());
 }
 
 TEST_F(KeyValueFileStoreWriteTest, TestSpillDiskQuotaExhaustedFallsBackToFlushDataFile) {

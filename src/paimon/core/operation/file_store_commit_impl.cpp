@@ -42,7 +42,6 @@
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
-#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
@@ -92,7 +91,6 @@ class MemoryPool;
 namespace {
 
 constexpr const char* kCommitStrictModeLastSafeSnapshot = "commit.strict-mode.last-safe-snapshot";
-constexpr const char* kManifestDeleteFileDropStats = "manifest.delete-file-drop-stats";
 constexpr const char* kSequenceSnapshotOrdering = "sequence.snapshot-ordering";
 constexpr const char* kPkClusteringOverride = "pk-clustering-override";
 
@@ -115,14 +113,6 @@ Status FileStoreCommitImpl::ValidateCommitOptions(const CoreOptions& options) {
 
     if (raw_options.find(kCommitStrictModeLastSafeSnapshot) != raw_options.end()) {
         unsupported_options.emplace_back(kCommitStrictModeLastSafeSnapshot);
-    }
-    if (raw_options.find(kManifestDeleteFileDropStats) != raw_options.end()) {
-        PAIMON_ASSIGN_OR_RAISE(
-            bool manifest_delete_file_drop_stats,
-            OptionsUtils::GetValueFromMap<bool>(raw_options, kManifestDeleteFileDropStats));
-        if (manifest_delete_file_drop_stats) {
-            unsupported_options.emplace_back(kManifestDeleteFileDropStats);
-        }
     }
     if (raw_options.find(kSequenceSnapshotOrdering) != raw_options.end()) {
         unsupported_options.emplace_back(kSequenceSnapshotOrdering);
@@ -318,8 +308,10 @@ Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id)
     std::vector<ManifestEntry> delta_files;
     for (const auto& entry : latest_entries) {
         if (target_identifiers.find(entry.CreateIdentifier()) == target_identifiers.end()) {
-            delta_files.emplace_back(FileKind::Delete(), entry.Partition(), entry.Bucket(),
-                                     entry.TotalBuckets(), entry.File());
+            delta_files.emplace_back(
+                FileKind::Delete(), entry.Partition(), entry.Bucket(), entry.TotalBuckets(),
+                options_.ManifestDeleteFileDropStats() ? entry.File()->CopyWithoutStats()
+                                                       : entry.File());
         }
     }
     for (const auto& entry : target_entries) {
@@ -1332,7 +1324,7 @@ std::shared_ptr<ManifestCommittable> FileStoreCommitImpl::CreateManifestCommitta
 
 Result<ManifestEntryChanges> FileStoreCommitImpl::CollectChanges(
     const std::vector<std::shared_ptr<CommitMessage>>& commit_messages) {
-    ManifestEntryChanges changes(num_bucket_);
+    ManifestEntryChanges changes(num_bucket_, options_.ManifestDeleteFileDropStats());
     for (const auto& message : commit_messages) {
         PAIMON_RETURN_NOT_OK(changes.Collect(message));
     }

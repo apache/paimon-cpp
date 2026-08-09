@@ -40,6 +40,7 @@
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/memory/bytes.h"
+#include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -124,6 +125,51 @@ TEST_F(ManifestEntryChangesTest, TestCollectAndSummary) {
     ASSERT_NE(std::string::npos, summary.find("2 append table files"));
     ASSERT_NE(std::string::npos, summary.find("1 append Changelogs"));
     ASSERT_NE(std::string::npos, summary.find("2 compact index files"));
+}
+
+TEST_F(ManifestEntryChangesTest, TestDropStatsOnlyForDeleteEntries) {
+    SimpleStats value_stats =
+        BinaryRowGenerator::GenerateStats({1}, {8}, {0}, GetDefaultPool().get());
+    std::shared_ptr<DataFileMeta> before = std::make_shared<DataFileMeta>(
+        "compact-file", /*file_size=*/1024, /*row_count=*/8, DataFileMeta::EmptyMinKey(),
+        DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), value_stats,
+        /*min_sequence_number=*/16, /*max_sequence_number=*/32, /*schema_id=*/1,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/std::nullopt,
+        /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
+        /*value_stats_cols=*/std::vector<std::string>({"f0"}),
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
+        /*write_cols=*/std::nullopt);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> after, before->Upgrade(/*new_level=*/1));
+
+    CompactIncrement compact_increment(/*compact_before=*/{before}, /*compact_after=*/{after},
+                                       /*changelog_files=*/{});
+    std::shared_ptr<CommitMessage> message = std::make_shared<CommitMessageImpl>(
+        CreateIntRow(10), /*bucket=*/0, /*total_buckets=*/4,
+        DataIncrement(/*new_files=*/{}, /*deleted_files=*/{}, /*changelog_files=*/{}),
+        compact_increment);
+
+    ManifestEntryChanges changes(/*default_num_bucket=*/8,
+                                 /*drop_delete_file_stats=*/true);
+    ASSERT_OK(changes.Collect(message));
+
+    ASSERT_EQ(2u, changes.compact_table_files.size());
+    const ManifestEntry& delete_entry = changes.compact_table_files[0];
+    ASSERT_EQ(FileKind::Delete(), delete_entry.Kind());
+    ASSERT_EQ(SimpleStats::EmptyStats(), delete_entry.File()->value_stats);
+    ASSERT_TRUE(delete_entry.File()->value_stats_cols.has_value());
+    ASSERT_TRUE(delete_entry.File()->value_stats_cols->empty());
+
+    const ManifestEntry& add_entry = changes.compact_table_files[1];
+    ASSERT_EQ(FileKind::Add(), add_entry.Kind());
+    ASSERT_EQ(value_stats, add_entry.File()->value_stats);
+    ASSERT_TRUE(add_entry.File()->value_stats_cols.has_value());
+    ASSERT_EQ(std::vector<std::string>({"f0"}), add_entry.File()->value_stats_cols.value());
+    ASSERT_EQ(value_stats, before->value_stats);
+
+    ManifestEntryChanges keep_stats(/*default_num_bucket=*/8);
+    ASSERT_OK(keep_stats.Collect(message));
+    ASSERT_EQ(value_stats, keep_stats.compact_table_files[0].File()->value_stats);
 }
 
 TEST_F(ManifestEntryChangesTest, TestHasGlobalIndexFileAdditions) {

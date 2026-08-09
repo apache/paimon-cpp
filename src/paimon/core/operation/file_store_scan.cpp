@@ -187,6 +187,11 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
             }
         }
     }
+    if (drop_stats_) {
+        for (ManifestEntry& entry : manifest_entries) {
+            entry = entry.CopyWithoutStats();
+        }
+    }
     const int64_t all_data_files = std::accumulate(
         all_manifest_file_metas.begin(), all_manifest_file_metas.end(), int64_t{0},
         [](const int64_t sum, const ManifestFileMeta& manifest_file_meta) {

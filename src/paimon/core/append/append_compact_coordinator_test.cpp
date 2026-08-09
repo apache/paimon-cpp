@@ -141,7 +141,7 @@ class AppendCompactCoordinatorTest : public ::testing::Test {
     }
 
     void CheckCommitMessage(const std::shared_ptr<CommitMessage>& msg, size_t expected_before_files,
-                            int64_t expected_total_rows) {
+                            int64_t expected_total_rows, bool expect_dropped_stats = false) {
         auto impl = dynamic_cast<CommitMessageImpl*>(msg.get());
         ASSERT_TRUE(impl);
         ASSERT_EQ(impl->Bucket(), 0);
@@ -154,9 +154,17 @@ class AppendCompactCoordinatorTest : public ::testing::Test {
         int64_t total_before_rows = 0;
         for (const auto& file : compact_before) {
             total_before_rows += file->row_count;
+            if (expect_dropped_stats) {
+                ASSERT_EQ(SimpleStats::EmptyStats(), file->value_stats);
+                ASSERT_TRUE(file->value_stats_cols.has_value());
+                ASSERT_TRUE(file->value_stats_cols->empty());
+            }
         }
         ASSERT_EQ(total_before_rows, expected_total_rows);
         ASSERT_EQ(compact_after[0]->row_count, expected_total_rows);
+        if (expect_dropped_stats) {
+            ASSERT_FALSE(compact_after[0]->value_stats == SimpleStats::EmptyStats());
+        }
     }
 
  private:
@@ -179,6 +187,7 @@ TEST_F(AppendCompactCoordinatorTest, TestRunCompactsAllPartitions) {
         {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, "local"},
         {Options::COMPACTION_MIN_FILE_NUM, "2"},
+        {Options::MANIFEST_DELETE_FILE_DROP_STATS, "true"},
     };
 
     arrow::FieldVector fields = {
@@ -246,11 +255,13 @@ TEST_F(AppendCompactCoordinatorTest, TestRunCompactsAllPartitions) {
     // f1=10: 2 files compacted into 1, total 7 rows
     CheckCommitMessage(compact_messages[0],
                        /*expected_before_files=*/2,
-                       /*expected_total_rows=*/7);
+                       /*expected_total_rows=*/7,
+                       /*expect_dropped_stats=*/true);
     // f1=20: 2 files compacted into 1, total 3 rows
     CheckCommitMessage(compact_messages[1],
                        /*expected_before_files=*/2,
-                       /*expected_total_rows=*/3);
+                       /*expected_total_rows=*/3,
+                       /*expect_dropped_stats=*/true);
 
     // Commit compact results
     ASSERT_OK(Commit(table_path, compact_messages));

@@ -96,7 +96,8 @@ Result<std::vector<ManifestEntry>> CommitScanner::ReadAllEntriesFromChangedParti
     PAIMON_ASSIGN_OR_RAISE(partition_filters, ToPartitionFilters(changed_partitions));
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreScan> scan,
-                           NewScan(partition_filters, /*for_overwrite=*/false));
+                           NewScan(partition_filters, /*for_overwrite=*/false,
+                                   /*drop_stats=*/false));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan::RawPlan> plan,
                            scan->WithSnapshot(snapshot)->WithKind(ScanMode::ALL)->CreatePlan());
     return plan->Files();
@@ -120,7 +121,9 @@ Result<std::vector<ManifestEntry>> CommitScanner::ReadIncrementalEntries(
             manifest_file_->Read(manifest_meta.FileName(), /*filter=*/nullptr, &manifest_entries));
         for (const ManifestEntry& entry : manifest_entries) {
             if (changed_partition_set.find(entry.Partition()) != changed_partition_set.end()) {
-                incremental_entries.push_back(entry);
+                const bool drop_stats = core_options_.ManifestDeleteFileDropStats() &&
+                                        entry.Kind() == FileKind::Delete();
+                incremental_entries.push_back(drop_stats ? entry.CopyWithoutStats() : entry);
             }
         }
     }
@@ -132,14 +135,16 @@ Result<std::vector<ManifestEntry>> CommitScanner::ReadAllEntriesFromPartitions(
     const Snapshot& snapshot,
     const std::vector<std::map<std::string, std::string>>& partitions) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreScan> scan,
-                           NewScan(partitions, /*for_overwrite=*/false));
+                           NewScan(partitions, /*for_overwrite=*/false,
+                                   /*drop_stats=*/false));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan::RawPlan> plan,
                            scan->WithSnapshot(snapshot)->WithKind(ScanMode::ALL)->CreatePlan());
     return plan->Files();
 }
 
 Result<std::unique_ptr<FileStoreScan>> CommitScanner::NewScan(
-    const std::vector<std::map<std::string, std::string>>& partitions, bool for_overwrite) const {
+    const std::vector<std::map<std::string, std::string>>& partitions, bool for_overwrite,
+    bool drop_stats) const {
     auto scan_filter = std::make_shared<ScanFilter>(/*predicate=*/nullptr, partitions,
                                                     /*bucket_filter=*/std::nullopt);
     if (!scan_supplier_) {
@@ -147,6 +152,9 @@ Result<std::unique_ptr<FileStoreScan>> CommitScanner::NewScan(
     }
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreScan> scan, scan_supplier_(scan_filter));
+    if (drop_stats && core_options_.ManifestDeleteFileDropStats()) {
+        scan->EnableDropStats();
+    }
     if (for_overwrite && core_options_.GetBucket() != BucketModeDefine::POSTPONE_BUCKET) {
         scan->OnlyReadRealBuckets();
     }
@@ -203,7 +211,8 @@ std::shared_ptr<CommitChangesProvider> CommitScanner::OverwriteChangesProvider(
         changes, index_entries,
         [this, partitions](const Snapshot& snapshot) -> Result<std::vector<ManifestEntry>> {
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreScan> scan,
-                                   NewScan(partitions, /*for_overwrite=*/true));
+                                   NewScan(partitions, /*for_overwrite=*/true,
+                                           /*drop_stats=*/true));
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<FileStoreScan::RawPlan> plan,
                 scan->WithSnapshot(snapshot)->WithKind(ScanMode::ALL)->CreatePlan());

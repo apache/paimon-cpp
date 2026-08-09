@@ -96,6 +96,14 @@ std::shared_ptr<DataFileMeta> DataFileMeta::CopyWithExtraFiles(
         first_row_id, write_cols);
 }
 
+std::shared_ptr<DataFileMeta> DataFileMeta::CopyWithoutStats() const {
+    return std::make_shared<DataFileMeta>(
+        file_name, file_size, row_count, min_key, max_key, key_stats, SimpleStats::EmptyStats(),
+        min_sequence_number, max_sequence_number, schema_id, level, extra_files, creation_time,
+        delete_row_count, embedded_index, file_source, std::vector<std::string>(), external_path,
+        first_row_id, write_cols);
+}
+
 DataFileMeta::DataFileMeta(
     const std::string& _file_name, int64_t _file_size, int64_t _row_count,
     const BinaryRow& _min_key, const BinaryRow& _max_key, const SimpleStats& _key_stats,

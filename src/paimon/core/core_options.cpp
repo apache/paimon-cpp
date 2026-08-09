@@ -448,6 +448,7 @@ struct CoreOptions::Impl {
     int64_t write_buffer_spill_max_disk_size = std::numeric_limits<int64_t>::max();
 
     bool ignore_delete = false;
+    bool manifest_delete_file_drop_stats = false;
     bool write_buffer_spillable = true;
     bool write_only = false;
     bool bucket_append_ordered = false;
@@ -657,6 +658,9 @@ struct CoreOptions::Impl {
         // Parse manifest.full-compaction-threshold-size - size threshold for full compaction
         PAIMON_RETURN_NOT_OK(parser.ParseMemorySize(Options::MANIFEST_FULL_COMPACTION_FILE_SIZE,
                                                     &manifest_full_compaction_file_size));
+        // Parse manifest.delete-file-drop-stats - drop stats from DELETE entries, default false
+        PAIMON_RETURN_NOT_OK(parser.Parse(Options::MANIFEST_DELETE_FILE_DROP_STATS,
+                                          &manifest_delete_file_drop_stats));
         return Status::OK();
     }
 
@@ -1170,6 +1174,10 @@ int32_t CoreOptions::GetManifestMergeMinCount() const {
 
 int64_t CoreOptions::GetManifestFullCompactionThresholdSize() const {
     return impl_->manifest_full_compaction_file_size;
+}
+
+bool CoreOptions::ManifestDeleteFileDropStats() const {
+    return impl_->manifest_delete_file_drop_stats;
 }
 
 const std::string& CoreOptions::GetManifestCompression() const {

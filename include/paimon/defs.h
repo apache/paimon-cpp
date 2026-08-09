@@ -173,6 +173,10 @@ struct PAIMON_EXPORT Options {
     /// compaction of manifest, default value is 16MB.
     static const char MANIFEST_FULL_COMPACTION_FILE_SIZE[];
 
+    /// "manifest.delete-file-drop-stats" - Whether final DELETE manifest entries should omit
+    /// value statistics. Default is false.
+    static const char MANIFEST_DELETE_FILE_DROP_STATS[];
+
     /// "source.split.target-size" - Target size of a source split when scanning a bucket. Default
     /// value is 128MB.
     static const char SOURCE_SPLIT_TARGET_SIZE[];

@@ -52,6 +52,7 @@ const char Options::MANIFEST_COMPRESSION[] = "manifest.compression";
 const char Options::MANIFEST_MERGE_MIN_COUNT[] = "manifest.merge-min-count";
 const char Options::MANIFEST_FULL_COMPACTION_FILE_SIZE[] =
     "manifest.full-compaction-threshold-size";
+const char Options::MANIFEST_DELETE_FILE_DROP_STATS[] = "manifest.delete-file-drop-stats";
 const char Options::SOURCE_SPLIT_TARGET_SIZE[] = "source.split.target-size";
 const char Options::SOURCE_SPLIT_OPEN_FILE_COST[] = "source.split.open-file-cost";
 const char Options::SCAN_SNAPSHOT_ID[] = "scan.snapshot-id";
