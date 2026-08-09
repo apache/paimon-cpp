@@ -43,7 +43,7 @@ class ManifestEntryChanges {
     ///
     /// @param default_num_bucket Bucket count used when a commit message omits it.
     /// @param drop_delete_file_stats Whether DELETE data-file entries should omit value stats.
-    explicit ManifestEntryChanges(int32_t default_num_bucket, bool drop_delete_file_stats = false);
+    explicit ManifestEntryChanges(int32_t default_num_bucket, bool drop_delete_file_stats);
 
     Status Collect(const std::shared_ptr<CommitMessage>& message);
 

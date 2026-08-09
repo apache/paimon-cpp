@@ -103,7 +103,8 @@ TEST_F(ManifestEntryChangesTest, TestCollectAndSummary) {
     std::shared_ptr<CommitMessage> message = std::make_shared<CommitMessageImpl>(
         partition, /*bucket=*/0, /*total_buckets=*/4, data_increment, compact_increment);
 
-    ManifestEntryChanges changes(/*default_num_bucket=*/8);
+    ManifestEntryChanges changes(/*default_num_bucket=*/8,
+                                 /*drop_delete_file_stats=*/false);
     ASSERT_OK(changes.Collect(message));
 
     ASSERT_EQ(2u, changes.append_table_files.size());
@@ -167,7 +168,8 @@ TEST_F(ManifestEntryChangesTest, TestDropStatsOnlyForDeleteEntries) {
     ASSERT_EQ(std::vector<std::string>({"f0"}), add_entry.File()->value_stats_cols.value());
     ASSERT_EQ(value_stats, before->value_stats);
 
-    ManifestEntryChanges keep_stats(/*default_num_bucket=*/8);
+    ManifestEntryChanges keep_stats(/*default_num_bucket=*/8,
+                                    /*drop_delete_file_stats=*/false);
     ASSERT_OK(keep_stats.Collect(message));
     ASSERT_EQ(value_stats, keep_stats.compact_table_files[0].File()->value_stats);
 }
@@ -187,14 +189,16 @@ TEST_F(ManifestEntryChangesTest, TestHasGlobalIndexFileAdditions) {
     std::shared_ptr<CommitMessage> message = std::make_shared<CommitMessageImpl>(
         partition, /*bucket=*/0, /*total_buckets=*/4, data_increment, compact_increment);
 
-    ManifestEntryChanges changes(/*default_num_bucket=*/8);
+    ManifestEntryChanges changes(/*default_num_bucket=*/8,
+                                 /*drop_delete_file_stats=*/false);
     ASSERT_OK(changes.Collect(message));
 
     ASSERT_TRUE(changes.HasGlobalIndexFileAdditions());
 }
 
 TEST_F(ManifestEntryChangesTest, TestCollectInvalidCommitMessageType) {
-    ManifestEntryChanges changes(/*default_num_bucket=*/8);
+    ManifestEntryChanges changes(/*default_num_bucket=*/8,
+                                 /*drop_delete_file_stats=*/false);
     std::shared_ptr<CommitMessage> invalid_message = std::make_shared<CommitMessage>();
     ASSERT_NOK_WITH_MSG(changes.Collect(invalid_message),
                         "fail to cast commit message to commit message impl");

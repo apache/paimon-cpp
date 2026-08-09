@@ -174,7 +174,7 @@ struct PAIMON_EXPORT Options {
     static const char MANIFEST_FULL_COMPACTION_FILE_SIZE[];
 
     /// "manifest.delete-file-drop-stats" - Whether final DELETE manifest entries should omit
-    /// value statistics. Default is false.
+    /// value statistics. Default is false only for compatibility with old readers.
     static const char MANIFEST_DELETE_FILE_DROP_STATS[];
 
     /// "source.split.target-size" - Target size of a source split when scanning a bucket. Default
