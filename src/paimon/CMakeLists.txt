@@ -175,6 +175,7 @@ set(PAIMON_COMMON_SRCS
     common/data/shredding/shredding_file_reader.cpp
     common/utils/delta_varint_compressor.cpp
     common/utils/fields_comparator.cpp
+    common/utils/java_modified_utf8.cpp
     common/utils/path_util.cpp
     common/utils/range.cpp
     common/utils/read_ahead_cache.cpp
@@ -254,6 +255,10 @@ set(PAIMON_CORE_SRCS
     core/index/index_file_handler.cpp
     core/index/global_index_meta.cpp
     core/index/index_file_meta_serializer.cpp
+    core/index/pk/primary_key_index_source_meta.cpp
+    core/index/pk/primary_key_index_definitions.cpp
+    core/index/pksorted/pk_sorted_index_group.cpp
+    core/index/pksorted/pk_sorted_bucket_index_state.cpp
     core/io/generic_row_to_arrow_array_converter.cpp
     core/io/meta_to_arrow_array_converter.cpp
     core/io/async_key_value_producer_and_consumer.cpp
@@ -477,6 +482,7 @@ if(PAIMON_BUILD_TESTS)
                     SOURCES
                     common/memory/memory_pool_test.cpp
                     common/memory/bytes_test.cpp
+                    common/utils/java_modified_utf8_test.cpp
                     common/memory/memory_segment_test.cpp
                     common/memory/memory_segment_utils_test.cpp
                     common/memory/memory_slice_test.cpp
@@ -715,6 +721,9 @@ if(PAIMON_BUILD_TESTS)
                     core/index/index_in_data_file_dir_path_factory_test.cpp
                     core/index/deletion_vector_meta_test.cpp
                     core/index/index_file_meta_serializer_test.cpp
+                    core/index/pk/primary_key_index_source_meta_test.cpp
+                    core/index/pk/primary_key_index_definitions_test.cpp
+                    core/index/pksorted/pk_sorted_bucket_index_state_test.cpp
                     core/index/index_file_handler_test.cpp
                     core/io/compact_increment_test.cpp
                     core/io/infer_shredding_file_writer_test.cpp
