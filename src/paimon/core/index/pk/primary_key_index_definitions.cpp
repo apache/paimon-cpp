@@ -20,6 +20,8 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/utils/object_utils.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/defs.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
@@ -37,32 +39,15 @@ constexpr char kBitmapAlgorithmPrefix[] = "bitmap-index.";
 constexpr char kFieldScopedPrefix[] = "fields.";
 constexpr char kRecordsPerRangeKey[] = "sorted-index.records-per-range";
 
-std::string Trim(const std::string& value) {
-    size_t begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) {
-        return "";
-    }
-    size_t end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
-
 std::vector<std::string> IndexColumns(const std::map<std::string, std::string>& options,
                                       const char* option_key) {
     auto iter = options.find(option_key);
     if (iter == options.end()) {
         return {};
     }
-    std::vector<std::string> columns;
-    const std::string& value = iter->second;
-    size_t start = 0;
-    while (true) {
-        size_t comma = value.find(',', start);
-        if (comma == std::string::npos) {
-            columns.push_back(Trim(value.substr(start)));
-            break;
-        }
-        columns.push_back(Trim(value.substr(start, comma - start)));
-        start = comma + 1;
+    std::vector<std::string> columns = StringUtils::Split(iter->second, ",", false);
+    for (std::string& column : columns) {
+        StringUtils::Trim(&column);
     }
     return columns;
 }
@@ -89,10 +74,6 @@ Status ValidateUniqueColumns(std::set<std::string>* indexed_columns,
     return Status::OK();
 }
 
-bool StartsWith(const std::string& value, const char* prefix) {
-    return value.rfind(prefix, 0) == 0;
-}
-
 /// Resolves the effective option map of one sorted-index definition: table options first,
 /// then the field-scoped JSON options with unqualified keys prefixed by the algorithm
 /// prefix, mirroring Java `CoreOptions#primaryKeySortedIndexOptions`.
@@ -104,7 +85,7 @@ Result<std::map<std::string, std::string>> SortedIndexOptions(
     std::string option_key =
         fmt::format("{}{}.{}.index.options", kFieldScopedPrefix, column, option_family);
     auto iter = table_options.find(option_key);
-    if (iter == table_options.end() || Trim(iter->second).empty()) {
+    if (iter == table_options.end() || StringUtils::IsNullOrWhitespaceOnly(iter->second)) {
         return resolved;
     }
 
@@ -115,7 +96,8 @@ Result<std::map<std::string, std::string>> SortedIndexOptions(
             fmt::format("{} must be a JSON object of option key-value pairs.", option_key));
     }
     for (auto member = document.MemberBegin(); member != document.MemberEnd(); ++member) {
-        if (!member->name.IsString() || Trim(member->name.GetString()).empty()) {
+        if (!member->name.IsString() ||
+            StringUtils::IsNullOrWhitespaceOnly(member->name.GetString())) {
             return Status::Invalid(fmt::format("{} contains an empty option key.", option_key));
         }
         std::string key = member->name.GetString();
@@ -138,10 +120,10 @@ Result<std::map<std::string, std::string>> SortedIndexOptions(
             member->value.Accept(writer);
             value = buffer.GetString();
         }
-        std::string qualified_key =
-            StartsWith(key, algorithm_prefix) || StartsWith(key, kFieldScopedPrefix)
-                ? key
-                : algorithm_prefix + key;
+        std::string qualified_key = StringUtils::StartsWith(key, algorithm_prefix) ||
+                                            StringUtils::StartsWith(key, kFieldScopedPrefix)
+                                        ? key
+                                        : algorithm_prefix + key;
         auto previous = resolved.find(qualified_key);
         if (previous != resolved.end() && previous->second != value) {
             return Status::Invalid(
@@ -152,14 +134,6 @@ Result<std::map<std::string, std::string>> SortedIndexOptions(
     return resolved;
 }
 
-bool Contains(const std::vector<std::string>& columns, const std::string& column) {
-    for (const std::string& candidate : columns) {
-        if (candidate == column) {
-            return true;
-        }
-    }
-    return false;
-}
 }  // namespace
 
 Result<PrimaryKeyIndexDefinitions> PrimaryKeyIndexDefinitions::Create(const TableSchema& schema) {
@@ -185,21 +159,21 @@ Result<PrimaryKeyIndexDefinitions> PrimaryKeyIndexDefinitions::Create(const Tabl
     std::vector<PrimaryKeyIndexDefinition> definitions;
     for (const DataField& field : schema.Fields()) {
         const std::string& column = field.Name();
-        if (Contains(btree_columns, column)) {
+        if (ObjectUtils::Contains(btree_columns, column)) {
             Result<std::map<std::string, std::string>> definition_options =
                 SortedIndexOptions(options, column, kBTreeOptionFamily, kBTreeAlgorithmPrefix);
             PAIMON_RETURN_NOT_OK(definition_options.status());
             definitions.emplace_back(column, field.Id(), kBTreeIndexType,
                                      std::move(definition_options).value(),
                                      PrimaryKeyIndexDefinition::Family::BTREE);
-        } else if (Contains(bitmap_columns, column)) {
+        } else if (ObjectUtils::Contains(bitmap_columns, column)) {
             Result<std::map<std::string, std::string>> definition_options =
                 SortedIndexOptions(options, column, kBitmapOptionFamily, kBitmapAlgorithmPrefix);
             PAIMON_RETURN_NOT_OK(definition_options.status());
             definitions.emplace_back(column, field.Id(), kBitmapIndexType,
                                      std::move(definition_options).value(),
                                      PrimaryKeyIndexDefinition::Family::BITMAP);
-        } else if (Contains(vector_columns, column)) {
+        } else if (ObjectUtils::Contains(vector_columns, column)) {
             std::string index_type;
             auto type_iter =
                 options.find(fmt::format("{}{}.pk-vector.index.type", kFieldScopedPrefix, column));
@@ -209,7 +183,7 @@ Result<PrimaryKeyIndexDefinitions> PrimaryKeyIndexDefinitions::Create(const Tabl
             definitions.emplace_back(column, field.Id(), index_type,
                                      std::map<std::string, std::string>(),
                                      PrimaryKeyIndexDefinition::Family::VECTOR);
-        } else if (Contains(full_text_columns, column)) {
+        } else if (ObjectUtils::Contains(full_text_columns, column)) {
             definitions.emplace_back(column, field.Id(), kFullTextIndexType,
                                      std::map<std::string, std::string>(),
                                      PrimaryKeyIndexDefinition::Family::FULL_TEXT);

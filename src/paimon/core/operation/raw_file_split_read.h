@@ -19,8 +19,7 @@
 #pragma once
 
 #include <memory>
-#include <string>
-#include <unordered_map>
+#include <optional>
 #include <vector>
 
 #include "paimon/core/core_options.h"

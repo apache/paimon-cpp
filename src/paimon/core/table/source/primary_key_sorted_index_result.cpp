@@ -17,6 +17,7 @@
 #include "paimon/core/table/source/primary_key_sorted_index_result.h"
 
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <utility>
@@ -81,14 +82,27 @@ Result<std::optional<std::vector<Range>>> ToRanges(const GlobalIndexResult& resu
 
 Result<std::vector<std::shared_ptr<Split>>> PrimaryKeySortedIndexResult::ToSplits(
     const PrimaryKeySortedIndexScan::EvaluatedPlan& evaluated_plan) {
+    std::map<const DataSplitImpl*, bool> preserve_raw_splits;
+    for (const PrimaryKeySortedIndexScan::EvaluatedFile& evaluated_file : evaluated_plan.Files()) {
+        const std::shared_ptr<DataSplitImpl>& source_split = evaluated_file.File().SourceSplit();
+        if (!source_split->RawConvertible()) {
+            continue;
+        }
+        auto iter = preserve_raw_splits.emplace(source_split.get(), true).first;
+        if (evaluated_file.IndexResult() != nullptr) {
+            iter->second = false;
+        }
+    }
+
     std::vector<std::shared_ptr<Split>> splits;
-    std::set<const DataSplitImpl*> preserved_non_raw_splits;
+    std::set<const DataSplitImpl*> preserved_splits;
     for (const PrimaryKeySortedIndexScan::EvaluatedFile& evaluated_file : evaluated_plan.Files()) {
         const PrimaryKeySortedIndexScan::FilePlan& file = evaluated_file.File();
         const std::shared_ptr<DataSplitImpl>& source_split = file.SourceSplit();
-        if (!source_split->RawConvertible()) {
-            // Splits that cannot be read file by file keep their original shape.
-            if (preserved_non_raw_splits.insert(source_split.get()).second) {
+        if (!source_split->RawConvertible() || preserve_raw_splits[source_split.get()]) {
+            // Preserve the planner's bin packing when the split cannot be read file by file
+            // or no file in the split has a usable index result.
+            if (preserved_splits.insert(source_split.get()).second) {
                 splits.push_back(source_split);
             }
             continue;

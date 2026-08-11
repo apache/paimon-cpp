@@ -142,6 +142,11 @@ TEST_F(PrimaryKeyIndexSourceMetaTest, DeserializeRejectsBadPayloads) {
     // Buffer cut in the middle of the row count: only 4 of the 8 bytes remain.
     std::string cut_row_count = valid.substr(0, 27);
     ASSERT_NOK(PrimaryKeyIndexSourceMeta::Deserialize(cut_row_count.data(), cut_row_count.size()));
+
+    std::string negative_row_count = valid;
+    negative_row_count[23] = '\xFF';
+    ASSERT_NOK(PrimaryKeyIndexSourceMeta::Deserialize(negative_row_count.data(),
+                                                      negative_row_count.size()));
 }
 
 TEST_F(PrimaryKeyIndexSourceMetaTest, CreateRejectsInvalidArguments) {
@@ -150,6 +155,7 @@ TEST_F(PrimaryKeyIndexSourceMetaTest, CreateRejectsInvalidArguments) {
     ASSERT_NOK(PrimaryKeyIndexSourceMeta::Create(0, files));
     ASSERT_NOK(PrimaryKeyIndexSourceMeta::Create(-1, files));
     ASSERT_NOK(PrimaryKeyIndexSourceMeta::Create(3, {}));
+    ASSERT_NOK(PrimaryKeyIndexSourceMeta::Create(3, {{"a.parquet", -1}}));
 }
 
 TEST_F(PrimaryKeyIndexSourceMetaTest, FromIndexFileDecodesSourceMeta) {

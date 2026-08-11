@@ -17,8 +17,8 @@
 #pragma once
 
 #include <map>
-#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "paimon/core/index/pk/primary_key_index_definition.h"

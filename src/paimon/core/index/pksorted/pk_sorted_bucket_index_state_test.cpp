@@ -209,6 +209,21 @@ TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadWithWrongIndexType) {
     ASSERT_EQ(1, state.UncoveredSourceFiles().size());
 }
 
+TEST_F(PkSortedBucketIndexStateTest, WrongCandidateDoesNotMaskValidPayload) {
+    std::vector<std::shared_ptr<DataFileMeta>> data_files = {
+        MakeDataFile("a", 100, 5, FileSource::Compact())};
+    std::shared_ptr<IndexFileMeta> valid_payload = MakePayload(7, "btree", 5, {{"a", 100}}, 100);
+    std::shared_ptr<IndexFileMeta> wrong_payload =
+        MakePayload(/*field_id=*/8, "btree", 5, {{"a", 100}}, 100);
+    PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
+        7, "btree", data_files, {valid_payload, wrong_payload});
+    ASSERT_EQ(1, state.Groups().size());
+    ASSERT_EQ(valid_payload, state.Groups()[0].Payload());
+    ASSERT_EQ(1, state.RejectedPayloads().size());
+    ASSERT_EQ(wrong_payload, state.RejectedPayloads()[0]);
+    ASSERT_TRUE(state.UncoveredSourceFiles().empty());
+}
+
 TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadWithWrongRowRange) {
     std::vector<std::shared_ptr<DataFileMeta>> data_files = {
         MakeDataFile("a", 100, 5, FileSource::Compact()),

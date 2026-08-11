@@ -16,6 +16,7 @@
 
 #include "paimon/core/index/pk/primary_key_index_source_meta.h"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -30,6 +31,7 @@ namespace {
 // Each serialized entry needs at least the two-byte writeUTF length and one int64 row count,
 // mirroring the defensive source file count cap of the Java deserializer.
 constexpr size_t kMinBytesPerSourceFile = sizeof(uint16_t) + sizeof(int64_t);
+constexpr size_t kMaxInitialSourceFileCapacity = 1024;
 
 void AppendBigEndian32(int32_t value, std::string* out) {
     uint32_t bits = static_cast<uint32_t>(value);
@@ -114,6 +116,12 @@ Result<PrimaryKeyIndexSourceMeta> PrimaryKeyIndexSourceMeta::Create(
     if (source_files.empty()) {
         return Status::Invalid("An index must reference source files.");
     }
+    for (const PrimaryKeyIndexSourceFile& source_file : source_files) {
+        if (source_file.row_count < 0) {
+            return Status::Invalid(fmt::format("Source file {} has a negative row count {}.",
+                                               source_file.file_name, source_file.row_count));
+        }
+    }
     return PrimaryKeyIndexSourceMeta(data_level, std::move(source_files));
 }
 
@@ -148,7 +156,8 @@ Result<PrimaryKeyIndexSourceMeta> PrimaryKeyIndexSourceMeta::Deserialize(const c
             source_file_count, maximum_source_file_count));
     }
     std::vector<PrimaryKeyIndexSourceFile> source_files;
-    source_files.reserve(source_file_count);
+    source_files.reserve(
+        std::min(static_cast<size_t>(source_file_count), kMaxInitialSourceFileCapacity));
     for (int32_t i = 0; i < source_file_count; i++) {
         PAIMON_ASSIGN_OR_RAISE(uint16_t name_length, cursor.ReadUint16());
         PAIMON_ASSIGN_OR_RAISE(std::string_view name_bytes, cursor.ReadBytes(name_length));

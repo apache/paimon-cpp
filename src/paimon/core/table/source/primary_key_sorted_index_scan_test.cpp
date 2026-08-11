@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
@@ -52,7 +53,7 @@ class TestGlobalIndexFileWriter : public GlobalIndexFileWriter {
         : fs_(fs), base_path_(base_path) {}
 
     Result<std::string> NewFileName(const std::string& prefix) const override {
-        return prefix + "-index-" + std::to_string(file_counter_++);
+        return fmt::format("{}-index-{}", prefix, file_counter_++);
     }
 
     Result<std::unique_ptr<OutputStream>> NewOutputStream(
@@ -207,25 +208,32 @@ class PrimaryKeySortedIndexScanTest : public ::testing::Test {
             /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
     }
 
-    /// Builds the standard payload of this fixture: sources a.parquet(100) + b.parquet(200)
-    /// on level 5, indexed value at group ordinal `i` is `2 * i`.
-    Result<std::shared_ptr<IndexFileMeta>> BuildPayload() {
+    Result<std::shared_ptr<IndexFileMeta>> BuildPayload(std::vector<int64_t> ordinals) {
         std::vector<PrimaryKeyIndexSourceFile> source_files = {{"a.parquet", kFileARows},
                                                                {"b.parquet", kFileBRows}};
         arrow::Int64Builder values_builder;
-        std::vector<int64_t> ordinals;
-        ordinals.reserve(kTotalRows);
         for (int64_t i = 0; i < kTotalRows; i++) {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(values_builder.Append(2 * i));
-            ordinals.push_back(i);
         }
         std::shared_ptr<arrow::Array> sorted_values;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(values_builder.Finish(&sorted_values));
         PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema_->GetField(kPriceFieldId));
         auto file_writer = std::make_shared<TestGlobalIndexFileWriter>(fs_, base_path_);
         return PkSortedIndexFile::Build(field, "btree", definitions_[0].Options(),
-                                        /*data_level=*/5, source_files, sorted_values, ordinals,
-                                        file_writer, /*is_external_path=*/false, pool_);
+                                        /*data_level=*/5, source_files, sorted_values,
+                                        std::move(ordinals), file_writer,
+                                        /*is_external_path=*/false, pool_);
+    }
+
+    /// Builds the standard payload of this fixture: sources a.parquet(100) + b.parquet(200)
+    /// on level 5, indexed value at group ordinal `i` is `2 * i`.
+    Result<std::shared_ptr<IndexFileMeta>> BuildPayload() {
+        std::vector<int64_t> ordinals;
+        ordinals.reserve(kTotalRows);
+        for (int64_t i = 0; i < kTotalRows; i++) {
+            ordinals.push_back(i);
+        }
+        return BuildPayload(std::move(ordinals));
     }
 
     std::shared_ptr<DataSplitImpl> MakeSplit(
@@ -325,6 +333,17 @@ TEST_F(PrimaryKeySortedIndexScanTest, EqualNarrowsToSingleFileRange) {
     ASSERT_EQ(indexed_split->RowRanges()[0].to, 5);
 }
 
+TEST_F(PrimaryKeySortedIndexScanTest, BuildRejectsDuplicateOrdinals) {
+    std::vector<int64_t> ordinals;
+    ordinals.reserve(kTotalRows);
+    for (int64_t i = 0; i < kTotalRows; i++) {
+        ordinals.push_back(i);
+    }
+    ordinals[1] = 0;
+    ASSERT_NOK_WITH_MSG(BuildPayload(std::move(ordinals)).status(),
+                        "Row id 0 appears more than once");
+}
+
 TEST_F(PrimaryKeySortedIndexScanTest, RangeSpansFileBoundary) {
     Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
     ASSERT_OK(payload.status());
@@ -382,13 +401,8 @@ TEST_F(PrimaryKeySortedIndexScanTest, UnindexedFieldPredicateFallsBack) {
     Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
         {split}, MakeEntries(payload.value()), predicate, PayloadReaderFactory());
     ASSERT_OK(splits.status());
-    ASSERT_EQ(splits.value().size(), 2);
-    for (const std::shared_ptr<Split>& result_split : splits.value()) {
-        ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(result_split) == nullptr);
-        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(result_split);
-        ASSERT_TRUE(data_split != nullptr);
-        ASSERT_EQ(data_split->DataFiles().size(), 1);
-    }
+    ASSERT_EQ(1, splits.value().size());
+    ASSERT_EQ(split, splits.value()[0]);
 }
 
 TEST_F(PrimaryKeySortedIndexScanTest, UncoveredFileFallsBackOthersNarrow) {
@@ -446,10 +460,8 @@ TEST_F(PrimaryKeySortedIndexScanTest, InvalidRowRangePayloadFallsBack) {
     Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
         {split}, MakeEntries(broken_payload), PriceEqual(10), PayloadReaderFactory());
     ASSERT_OK(splits.status());
-    ASSERT_EQ(splits.value().size(), 2);
-    for (const std::shared_ptr<Split>& result_split : splits.value()) {
-        ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(result_split) == nullptr);
-    }
+    ASSERT_EQ(1, splits.value().size());
+    ASSERT_EQ(split, splits.value()[0]);
 }
 
 TEST_F(PrimaryKeySortedIndexScanTest, OutOfRangePositionsFailAllCoveredFiles) {
@@ -471,11 +483,9 @@ TEST_F(PrimaryKeySortedIndexScanTest, OutOfRangePositionsFailAllCoveredFiles) {
     Result<std::vector<std::shared_ptr<Split>>> splits =
         PlanEvaluateConvert({split}, MakeEntries(payload.value()), PriceEqual(10), stub_factory);
     ASSERT_OK(splits.status());
-    // Both covered files must fall back to normal single-file scans.
-    ASSERT_EQ(splits.value().size(), 2);
-    for (const std::shared_ptr<Split>& result_split : splits.value()) {
-        ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(result_split) == nullptr);
-    }
+    // Both covered files fall back together, preserving the planner's original bin packing.
+    ASSERT_EQ(1, splits.value().size());
+    ASSERT_EQ(split, splits.value()[0]);
 }
 
 TEST_F(PrimaryKeySortedIndexScanTest, OverFragmentedResultFallsBack) {

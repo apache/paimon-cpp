@@ -56,12 +56,13 @@ class PkSortedIndexFile {
     ///        exactly once.
     /// @param file_writer The index-directory file writer of the payload's bucket.
     /// @param is_external_path Whether `file_writer` resolves to an external index path.
+    /// @param pool The memory pool used for metadata and index construction.
+    /// @return Metadata for the single payload file written by the index builder.
     static Result<std::shared_ptr<IndexFileMeta>> Build(
         const DataField& field, const std::string& index_type,
         const std::map<std::string, std::string>& options, int32_t data_level,
         const std::vector<PrimaryKeyIndexSourceFile>& source_files,
-        const std::shared_ptr<arrow::Array>& sorted_values,
-        const std::vector<int64_t>& sorted_ordinals,
+        const std::shared_ptr<arrow::Array>& sorted_values, std::vector<int64_t> sorted_ordinals,
         const std::shared_ptr<GlobalIndexFileWriter>& file_writer, bool is_external_path,
         const std::shared_ptr<MemoryPool>& pool);
 };

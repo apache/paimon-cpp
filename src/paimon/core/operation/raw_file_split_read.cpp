@@ -25,6 +25,7 @@
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"

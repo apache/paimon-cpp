@@ -18,9 +18,11 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 
+#include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/index/pk/primary_key_index_source_meta.h"
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
 
@@ -51,6 +53,12 @@ PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
     std::vector<std::shared_ptr<IndexFileMeta>> rejected;
     for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads) {
         if (payload == nullptr) {
+            continue;
+        }
+        const std::optional<GlobalIndexMeta>& global_index_meta = payload->GetGlobalIndexMeta();
+        if (payload->IndexType() != index_type || global_index_meta == std::nullopt ||
+            global_index_meta->index_field_id != field_id) {
+            rejected.push_back(payload);
             continue;
         }
         Result<PrimaryKeyIndexSourceMeta> source_meta_result =

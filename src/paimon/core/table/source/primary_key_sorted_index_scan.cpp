@@ -521,10 +521,9 @@ class FsGlobalIndexFileReader : public GlobalIndexFileReader {
 PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFactory(
     const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<IndexFilePathFactories>& path_factories,
-    const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool) {
     auto file_reader = std::make_shared<FsGlobalIndexFileReader>(file_system);
-    return [path_factories, table_schema, options, pool, file_reader](
+    return [path_factories, table_schema, pool, file_reader](
                const FilePlan& file, const PrimaryKeyIndexDefinition& definition,
                const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
         if (definition.GetFamily() != PrimaryKeyIndexDefinition::Family::BTREE) {
@@ -532,8 +531,9 @@ PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFa
             // semantics until their dedicated readers are supported.
             return std::shared_ptr<GlobalIndexReader>(nullptr);
         }
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexer> indexer,
-                               GlobalIndexerFactory::Get(definition.IndexType(), options));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<GlobalIndexer> indexer,
+            GlobalIndexerFactory::Get(definition.IndexType(), definition.Options()));
         if (indexer == nullptr) {
             return std::shared_ptr<GlobalIndexReader>(nullptr);
         }

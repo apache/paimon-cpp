@@ -252,7 +252,7 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
     PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
         PrimaryKeySortedIndexScan::MakeReaderFactory(
             core_options_.GetFileSystem(), std::make_shared<IndexFilePathFactories>(path_factory_),
-            table_schema_, core_options_.ToMap(), pool_);
+            table_schema_, pool_);
     PAIMON_ASSIGN_OR_RAISE(
         PrimaryKeySortedIndexScan::EvaluatedPlan evaluated_plan,
         PrimaryKeySortedIndexScan::Evaluate(index_plan, table_schema_, index_predicate,

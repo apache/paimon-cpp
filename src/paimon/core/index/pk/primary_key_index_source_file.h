@@ -26,8 +26,8 @@ namespace paimon {
 /// Two source files are interchangeable only when both the file name and the row count
 /// match; coverage validation relies on this strict identity.
 struct PrimaryKeyIndexSourceFile {
-    PrimaryKeyIndexSourceFile(std::string _file_name, int64_t _row_count)
-        : file_name(std::move(_file_name)), row_count(_row_count) {}
+    PrimaryKeyIndexSourceFile(std::string file_name, int64_t row_count)
+        : file_name(std::move(file_name)), row_count(row_count) {}
 
     bool operator==(const PrimaryKeyIndexSourceFile& other) const {
         return file_name == other.file_name && row_count == other.row_count;

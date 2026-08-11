@@ -176,8 +176,7 @@ class PrimaryKeySortedIndexScan {
     static ReaderFactory MakeReaderFactory(
         const std::shared_ptr<FileSystem>& file_system,
         const std::shared_ptr<IndexFilePathFactories>& path_factories,
-        const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool);
 };
 
 }  // namespace paimon

@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"

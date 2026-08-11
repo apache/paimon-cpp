@@ -21,6 +21,7 @@
 
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/fallback_data_split.h"
+#include "paimon/global_index/indexed_split.h"
 #include "paimon/status.h"
 #include "paimon/table/source/data_split.h"
 
@@ -34,6 +35,9 @@ Result<std::unique_ptr<BatchReader>> FallbackTableRead::CreateReader(
         } else {
             return main_table_->CreateReader(fallback_data_split->GetSplit());
         }
+    }
+    if (std::dynamic_pointer_cast<IndexedSplit>(split) != nullptr) {
+        return main_table_->CreateReader(split);
     }
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
     if (!data_split) {
