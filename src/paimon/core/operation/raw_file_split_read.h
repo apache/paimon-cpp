@@ -65,16 +65,26 @@ class RawFileSplitRead : public AbstractSplitRead {
                      const std::shared_ptr<MemoryPool>& memory_pool,
                      const std::shared_ptr<Executor>& executor);
 
+    /// Also accepts an `IndexedSplit` over a single-file data split, in which case its row
+    /// ranges narrow the read to the given file-local physical positions.
     Result<std::unique_ptr<BatchReader>> CreateReader(const std::shared_ptr<Split>& split) override;
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const BinaryRow& partition, int32_t bucket,
         const std::vector<std::shared_ptr<DataFileMeta>>& files,
         const std::vector<std::optional<DeletionFile>>& deletion_files);
 
+    /// Reads with an optional selection of file-local row positions. The ranges apply to
+    /// every file of the split, so callers pass them only for single-file splits.
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const BinaryRow& partition, int32_t bucket,
         const std::vector<std::shared_ptr<DataFileMeta>>& files,
-        DeletionVector::Factory dv_factory);
+        const std::vector<std::optional<DeletionFile>>& deletion_files,
+        const std::optional<std::vector<Range>>& local_row_ranges);
+
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const BinaryRow& partition, int32_t bucket,
+        const std::vector<std::shared_ptr<DataFileMeta>>& files, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& local_row_ranges = std::nullopt);
 
     Result<bool> Match(const std::shared_ptr<Split>& split, bool force_keep_delete) const override;
 

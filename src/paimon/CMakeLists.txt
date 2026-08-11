@@ -403,6 +403,9 @@ set(PAIMON_CORE_SRCS
     core/table/source/table_read.cpp
     core/table/source/table_scan.cpp
     core/table/source/data_evolution_batch_scan.cpp
+    core/table/source/primary_key_sorted_index_scan.cpp
+    core/table/source/primary_key_sorted_index_result.cpp
+    core/table/source/primary_key_index_batch_scan.cpp
     core/table/system/audit_log_system_table.cpp
     core/table/system/binlog_system_table.cpp
     core/table/system/global_system_tables.cpp

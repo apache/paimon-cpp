@@ -21,6 +21,7 @@
 
 #include <utility>
 
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/operation/merge_file_split_read.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -74,7 +75,25 @@ void KeyValueTableRead::ForceKeepDelete(bool force_keep_delete) {
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
     const std::shared_ptr<Split>& split) {
-    auto data_split = std::dynamic_pointer_cast<DataSplit>(split);
+    std::shared_ptr<Split> dispatch_split = split;
+    if (auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
+        // A primary-key sorted-index split narrows one raw-readable file to file-local row
+        // positions. If the raw read cannot serve the inner split, fall back to reading the
+        // whole file: the index only narrows the scan, so the unnarrowed read stays correct.
+        const std::shared_ptr<DataSplit>& inner_split = indexed_split->GetDataSplit();
+        for (const auto& read : split_reads_) {
+            auto* raw_read = dynamic_cast<RawFileSplitRead*>(read.get());
+            if (raw_read == nullptr) {
+                continue;
+            }
+            PAIMON_ASSIGN_OR_RAISE(bool matched, read->Match(inner_split, force_keep_delete_));
+            if (matched) {
+                return read->CreateReader(indexed_split);
+            }
+        }
+        dispatch_split = inner_split;
+    }
+    auto data_split = std::dynamic_pointer_cast<DataSplit>(dispatch_split);
     if (!data_split) {
         return Status::Invalid("split cannot be casted to DataSplit");
     }

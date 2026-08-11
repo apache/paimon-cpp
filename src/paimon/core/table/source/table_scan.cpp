@@ -33,6 +33,7 @@
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/index/index_file_handler.h"
+#include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
@@ -51,6 +52,7 @@
 #include "paimon/core/table/source/data_table_batch_scan.h"
 #include "paimon/core/table/source/data_table_stream_scan.h"
 #include "paimon/core/table/source/merge_tree_split_generator.h"
+#include "paimon/core/table/source/primary_key_index_batch_scan.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
 #include "paimon/core/table/source/split_generator.h"
@@ -299,12 +301,22 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
     }
     auto batch_scan = std::make_unique<DataTableBatchScan>(
         /*pk_table=*/pk_table, core_options, snapshot_reader, read_optimized, context->GetLimit());
-    if (!core_options.DataEvolutionEnabled()) {
-        return batch_scan;
+    if (core_options.DataEvolutionEnabled()) {
+        return std::make_unique<DataEvolutionBatchScan>(
+            context->GetPath(), snapshot_reader, std::move(batch_scan),
+            context->GetGlobalIndexResult(), core_options, context->GetMemoryPool(),
+            context->GetExecutor());
     }
-    return std::make_unique<DataEvolutionBatchScan>(
-        context->GetPath(), snapshot_reader, std::move(batch_scan), context->GetGlobalIndexResult(),
-        core_options, context->GetMemoryPool(), context->GetExecutor());
+    if (pk_table && !read_optimized && core_options.GlobalIndexEnabled()) {
+        PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexDefinitions definitions,
+                               PrimaryKeyIndexDefinitions::Create(*table_schema));
+        if (!definitions.ScalarDefinitions().empty()) {
+            return PrimaryKeyIndexBatchScan::Create(snapshot_reader, std::move(batch_scan),
+                                                    table_schema, path_factory, core_options,
+                                                    context->GetMemoryPool());
+        }
+    }
+    return batch_scan;
 }
 
 }  // namespace
