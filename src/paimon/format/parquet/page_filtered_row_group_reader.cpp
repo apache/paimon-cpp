@@ -424,7 +424,7 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
     // TODO(zhouhongfeng.zhf): This decodes the whole filtered row group up front, while the
     // fully-matched path decodes one batch at a time. As a result peak memory holds every
     // projected column of the row group instead of a single batch.
-    // Decoding batch by batch would make every returned colum  single-chunk so that offset
+    // Decoding batch by batch would make every returned column single-chunk so that offset
     // normalization becomes a no-op.
     auto table = arrow::Table::Make(result_schema, std::move(result_arrays), expected_rows);
     return std::make_unique<TableRecordBatchReader>(std::move(table), max_chunksize, pool);
