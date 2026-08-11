@@ -83,6 +83,11 @@ struct DataFileMeta {
     std::shared_ptr<DataFileMeta> CopyWithExtraFiles(
         const std::vector<std::optional<std::string>>& new_extra_files) const;
 
+    /// Create a copy without value statistics. All other metadata is preserved.
+    ///
+    /// @return A new metadata object with empty value statistics and value-stat columns.
+    std::shared_ptr<DataFileMeta> CopyWithoutStats() const;
+
     std::optional<int64_t> AddRowCount() const {
         return delete_row_count == std::nullopt ? std::optional<int64_t>()
                                                 : row_count - delete_row_count.value();

@@ -384,6 +384,63 @@ class PkCompactionInteTest : public ::testing::Test,
     arrow::FieldVector fields_;
 };
 
+TEST_F(PkCompactionInteTest, TestMetadataOnlyLevelUpgradeKeepsValueStats) {
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("value", arrow::utf8())};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::MANIFEST_DELETE_FILE_DROP_STATS, "true"}};
+    CreateTable(fields, /*partition_keys=*/{}, /*primary_keys=*/{"id"}, options);
+    const std::string table_path = TablePath();
+
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        [1, "Alice"],
+        [2, "Bob"]
+    ])")
+                     .ValueOrDie();
+    ASSERT_OK(WriteAndCommit(table_path, /*partition=*/{}, /*bucket=*/0, array,
+                             /*commit_identifier=*/0));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> compact_messages,
+                         CompactAndCommit(table_path, /*partition=*/{}, /*bucket=*/0,
+                                          /*full_compaction=*/true, /*commit_identifier=*/1));
+    ASSERT_EQ(1u, compact_messages.size());
+    auto compact_message = std::dynamic_pointer_cast<CommitMessageImpl>(compact_messages[0]);
+    ASSERT_NE(nullptr, compact_message);
+    const CompactIncrement& compact_increment = compact_message->GetCompactIncrement();
+    ASSERT_EQ(1u, compact_increment.CompactBefore().size());
+    ASSERT_EQ(1u, compact_increment.CompactAfter().size());
+
+    const std::shared_ptr<DataFileMeta>& before = compact_increment.CompactBefore()[0];
+    const std::shared_ptr<DataFileMeta>& after = compact_increment.CompactAfter()[0];
+    ASSERT_EQ(before->file_name, after->file_name)
+        << "Full compaction must use a metadata-only level upgrade";
+    ASSERT_LT(before->level, after->level);
+    ASSERT_FALSE(before->value_stats == SimpleStats::EmptyStats());
+    ASSERT_EQ(before->value_stats, after->value_stats);
+
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.WithStreamingMode(false)
+        .AddOption(Options::FILE_SYSTEM, "local")
+        .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+    ASSERT_EQ(1u, plan->Splits().size());
+    auto split = std::dynamic_pointer_cast<DataSplitImpl>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, split);
+    ASSERT_EQ(1u, split->DataFiles().size());
+
+    const std::shared_ptr<DataFileMeta>& active_file = split->DataFiles()[0];
+    ASSERT_EQ(after->file_name, active_file->file_name);
+    ASSERT_EQ(after->level, active_file->level);
+    ASSERT_EQ(after->value_stats, active_file->value_stats);
+    ASSERT_FALSE(active_file->value_stats == SimpleStats::EmptyStats());
+}
+
 // Verify shared-shredding MAP can be read correctly after PK full compaction.
 TEST_P(PkCompactionInteTest, TestKeyValueTableFullCompactionWithMapSharedShredding) {
     auto file_format = GetParam();

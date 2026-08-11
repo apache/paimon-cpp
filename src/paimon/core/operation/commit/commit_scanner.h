@@ -97,8 +97,8 @@ class CommitScanner {
         const std::vector<BinaryRow>& changed_partitions) const;
 
     Result<std::unique_ptr<FileStoreScan>> NewScan(
-        const std::vector<std::map<std::string, std::string>>& partitions,
-        bool for_overwrite) const;
+        const std::vector<std::map<std::string, std::string>>& partitions, bool for_overwrite,
+        bool drop_stats) const;
 
  private:
     std::shared_ptr<SnapshotManager> snapshot_manager_;

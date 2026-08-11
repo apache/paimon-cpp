@@ -24,7 +24,6 @@
 #include <string>
 #include <vector>
 
-#include "paimon/core/core_options.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/operation/restore_files.h"
@@ -36,6 +35,11 @@ namespace paimon {
 /// `WriteRestore` to restore files directly from file system.
 class FileSystemWriteRestore : public WriteRestore {
  public:
+    /// Create a write restore backed by a file store scan.
+    ///
+    /// @param snapshot_manager Snapshot manager used to locate restore state.
+    /// @param scan Scan used to load existing files.
+    /// @param index_file_handler Handler used to restore deletion-vector indexes.
     FileSystemWriteRestore(const std::shared_ptr<SnapshotManager>& snapshot_manager,
                            std::unique_ptr<FileStoreScan>&& scan,
                            const std::shared_ptr<IndexFileHandler>& index_file_handler)

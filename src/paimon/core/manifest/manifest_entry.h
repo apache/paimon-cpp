@@ -130,6 +130,11 @@ class ManifestEntry : public FileEntry {
         return file_;
     }
 
+    /// Create a copy whose data file has empty value statistics.
+    ///
+    /// @return A new manifest entry preserving all metadata except value statistics.
+    ManifestEntry CopyWithoutStats() const;
+
     bool operator==(const ManifestEntry& other) const {
         if (this == &other) {
             return true;

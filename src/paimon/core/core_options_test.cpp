@@ -62,6 +62,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(8 * 1024 * 1024L, core_options.GetManifestTargetFileSize());
     ASSERT_EQ(16 * 1024 * 1024L, core_options.GetManifestFullCompactionThresholdSize());
     ASSERT_EQ(30, core_options.GetManifestMergeMinCount());
+    ASSERT_FALSE(core_options.ManifestDeleteFileDropStats());
     ASSERT_EQ(0, core_options.GetScanManifestEntryCacheMaxSnapshots());
     ASSERT_EQ(nullptr, core_options.GetCache());
     ASSERT_EQ(128 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
@@ -194,6 +195,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::MANIFEST_TARGET_FILE_SIZE, "16MB"},
         {Options::MANIFEST_FULL_COMPACTION_FILE_SIZE, "32MB"},
         {Options::MANIFEST_MERGE_MIN_COUNT, "2"},
+        {Options::MANIFEST_DELETE_FILE_DROP_STATS, "true"},
         {Options::SOURCE_SPLIT_TARGET_SIZE, "24MB"},
         {Options::SOURCE_SPLIT_OPEN_FILE_COST, "32MB"},
         {Options::READ_BATCH_SIZE, "2048"},
@@ -328,6 +330,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(16 * 1024 * 1024L, core_options.GetManifestTargetFileSize());
     ASSERT_EQ(32 * 1024 * 1024L, core_options.GetManifestFullCompactionThresholdSize());
     ASSERT_EQ(2, core_options.GetManifestMergeMinCount());
+    ASSERT_TRUE(core_options.ManifestDeleteFileDropStats());
     ASSERT_EQ(nullptr, core_options.GetCache());
     ASSERT_EQ(24 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
     ASSERT_EQ(32 * 1024 * 1024L, core_options.GetSourceSplitOpenFileCost());

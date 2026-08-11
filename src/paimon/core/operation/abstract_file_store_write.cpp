@@ -302,6 +302,10 @@ Result<std::shared_ptr<RestoreFiles>> AbstractFileStoreWrite::ScanExistingFileMe
     if (dv_maintainer_factory_) {
         index_file_handler = dv_maintainer_factory_->GetIndexFileHandler();
     }
+    // Paimon Java currently drops value stats during writer restore. This is a known bug: a
+    // restored file can become a compact-after ADD via metadata-only level upgrade and lose its
+    // stats (https://github.com/apache/paimon/issues/7026). C++ intentionally does not align with
+    // that behavior; stats are dropped later only when the final entry kind is DELETE.
     FileSystemWriteRestore restore(snapshot_manager_, std::move(scan), index_file_handler);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<RestoreFiles> restore_files,

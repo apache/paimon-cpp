@@ -24,6 +24,10 @@ class DataType;
 }  // namespace arrow
 
 namespace paimon {
+ManifestEntry ManifestEntry::CopyWithoutStats() const {
+    return ManifestEntry(kind_, partition_, bucket_, total_buckets_, file_->CopyWithoutStats());
+}
+
 const std::shared_ptr<arrow::DataType>& ManifestEntry::DataType() {
     static std::shared_ptr<arrow::DataType> data_type =
         arrow::struct_({arrow::field("_KIND", arrow::int8(), /*nullable=*/false),

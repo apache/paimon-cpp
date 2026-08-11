@@ -40,6 +40,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
@@ -184,7 +185,8 @@ namespace {
 
 std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
                                          const std::shared_ptr<Cache>& cache,
-                                         const std::optional<int32_t>& bucket = std::nullopt) {
+                                         const std::optional<int32_t>& bucket = std::nullopt,
+                                         const std::shared_ptr<Predicate>& predicate = nullptr) {
     ScanContextBuilder context_builder(table_path);
     context_builder.AddOption(Options::FILE_FORMAT, "orc")
         .AddOption(Options::MANIFEST_FORMAT, "orc")
@@ -192,6 +194,9 @@ std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
         .WithCache(cache);
     if (bucket) {
         context_builder.SetBucketFilter(bucket.value());
+    }
+    if (predicate) {
+        context_builder.SetPredicate(predicate);
     }
     EXPECT_OK_AND_ASSIGN(auto scan_context, context_builder.Finish());
     EXPECT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
@@ -201,6 +206,41 @@ std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
 }
 
 }  // namespace
+
+TEST(AppendOnlyFileStoreScanTest, TestDropStatsAfterFiltering) {
+    TimezoneGuard guard("Asia/Shanghai");
+    std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+        Literal(FieldType::STRING, "David", 5));
+
+    std::shared_ptr<FileStoreScan> scan_with_stats =
+        BuildScan(table_path, /*cache=*/nullptr, /*bucket=*/std::nullopt, predicate);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot,
+                         scan_with_stats->GetSnapshotManager()->LoadSnapshot(/*snapshot_id=*/3));
+    scan_with_stats->WithSnapshot(snapshot);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreScan::RawPlan> plan_with_stats,
+                         scan_with_stats->CreatePlan());
+    std::vector<ManifestEntry> entries_with_stats = plan_with_stats->Files();
+    ASSERT_FALSE(entries_with_stats.empty());
+
+    std::shared_ptr<FileStoreScan> scan_without_stats =
+        BuildScan(table_path, /*cache=*/nullptr, /*bucket=*/std::nullopt, predicate);
+    scan_without_stats->WithSnapshot(snapshot)->EnableDropStats();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreScan::RawPlan> plan_without_stats,
+                         scan_without_stats->CreatePlan());
+    std::vector<ManifestEntry> entries_without_stats = plan_without_stats->Files();
+
+    ASSERT_EQ(entries_with_stats.size(), entries_without_stats.size());
+    for (size_t i = 0; i < entries_with_stats.size(); ++i) {
+        ASSERT_EQ(entries_with_stats[i].CreateIdentifier(),
+                  entries_without_stats[i].CreateIdentifier());
+        ASSERT_FALSE(entries_with_stats[i].File()->value_stats == SimpleStats::EmptyStats());
+        ASSERT_EQ(SimpleStats::EmptyStats(), entries_without_stats[i].File()->value_stats);
+        ASSERT_TRUE(entries_without_stats[i].File()->value_stats_cols.has_value());
+        ASSERT_TRUE(entries_without_stats[i].File()->value_stats_cols->empty());
+    }
+}
 
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     TimezoneGuard guard("Asia/Shanghai");

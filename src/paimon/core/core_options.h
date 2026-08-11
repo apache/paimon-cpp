@@ -96,6 +96,12 @@ class PAIMON_EXPORT CoreOptions {
     const std::string& GetManifestCompression() const;
     int32_t GetManifestMergeMinCount() const;
     int64_t GetManifestFullCompactionThresholdSize() const;
+
+    /// Return whether final DELETE manifest entries should omit value statistics.
+    ///
+    /// @return True when DELETE entries should omit value statistics.
+    bool ManifestDeleteFileDropStats() const;
+
     int64_t GetSourceSplitTargetSize() const;
     int64_t GetSourceSplitOpenFileCost() const;
     std::optional<int64_t> GetScanSnapshotId() const;

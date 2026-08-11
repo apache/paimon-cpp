@@ -44,11 +44,6 @@ Paimon C++ currently provides:
 - **Compatibility**: compatibility with Apache Paimon Java format and communication protocols,
   including commit messages, data splits, and manifests.
 
-> **Bitmap global index compatibility:** Java Paimon now uses a dedicated bitmap global index
-> format instead of the previously shared wrapped bitmap file index format.
-> Paimon C++ therefore currently treats the `bitmap` global index type as unsupported. The legacy
-> implementation remains in the codebase pending migration to the Java-compatible format.
-
 Note: Linux `x86_64` and `aarch64` builds are supported and verified in CI. See the supported
 platform matrix in [docs/source/building.rst](docs/source/building.rst) for other platforms.
 

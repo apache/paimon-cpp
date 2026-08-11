@@ -29,8 +29,8 @@
 
 namespace paimon {
 
-ManifestEntryChanges::ManifestEntryChanges(int32_t default_num_bucket)
-    : default_num_bucket_(default_num_bucket) {}
+ManifestEntryChanges::ManifestEntryChanges(int32_t default_num_bucket, bool drop_delete_file_stats)
+    : default_num_bucket_(default_num_bucket), drop_delete_file_stats_(drop_delete_file_stats) {}
 
 Status ManifestEntryChanges::Collect(const std::shared_ptr<CommitMessage>& message) {
     auto commit_message = std::dynamic_pointer_cast<CommitMessageImpl>(message);
@@ -142,8 +142,10 @@ ManifestEntry ManifestEntryChanges::MakeEntry(
     int32_t total_buckets = commit_message->TotalBuckets() == std::nullopt
                                 ? default_num_bucket_
                                 : commit_message->TotalBuckets().value();
+    std::shared_ptr<DataFileMeta> entry_file =
+        drop_delete_file_stats_ && kind == FileKind::Delete() ? file->CopyWithoutStats() : file;
     return ManifestEntry(kind, commit_message->Partition(), commit_message->Bucket(), total_buckets,
-                         file);
+                         entry_file);
 }
 
 }  // namespace paimon

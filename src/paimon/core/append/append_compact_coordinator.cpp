@@ -244,6 +244,9 @@ Result<LinkedHashMap<BinaryRow, std::vector<std::shared_ptr<DataFileMeta>>>> Sca
                            CreateFileStoreScan(snapshot_manager, schema_manager, table_schema,
                                                arrow_schema, partition_schema, core_options,
                                                path_factory, scan_filter, executor, pool));
+    if (core_options.ManifestDeleteFileDropStats()) {
+        scan->EnableDropStats();
+    }
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan::RawPlan> plan, scan->CreatePlan());
     std::vector<ManifestEntry> add_entries = plan->Files(FileKind::Add());

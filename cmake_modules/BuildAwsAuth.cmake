@@ -34,7 +34,6 @@ function(paimon_add_s2n_project)
     externalproject_add(s2n_ep
                         URL ${S2N_URL}
                         URL_HASH SHA256=${PAIMON_AWS_S2N_BUILD_SHA256_CHECKSUM}
-                        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
                         CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS}
                                    -DCMAKE_C_FLAGS=${S2N_C_FLAGS}
                                    -DCMAKE_CXX_FLAGS=${S2N_CXX_FLAGS}
@@ -89,7 +88,6 @@ function(paimon_add_aws_c_project
     externalproject_add(${NAME}_ep
                         URL ${URL}
                         URL_HASH SHA256=${CHECKSUM}
-                        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
                         CMAKE_ARGS ${EP_COMMON_CMAKE_ARGS}
                                    -DCMAKE_INSTALL_PREFIX=${AWS_AUTH_PREFIX}
                                    -DCMAKE_INSTALL_LIBDIR=${AWS_AUTH_INSTALL_LIBDIR}
