@@ -120,8 +120,8 @@ Result<std::map<std::string, std::string>> SortedIndexOptions(
         }
         std::string key = member->name.GetString();
         if (member->value.IsNull()) {
-            return Status::Invalid(fmt::format("{} value for key {} must not be null.",
-                                               option_key, key));
+            return Status::Invalid(
+                fmt::format("{} value for key {} must not be null.", option_key, key));
         }
         if (member->value.IsObject() || member->value.IsArray()) {
             return Status::Invalid(
