@@ -29,6 +29,7 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
@@ -167,6 +168,26 @@ TEST_F(ConcatBatchReaderTest, TestSimpleWithBitmap) {
         std::vector<std::pair<std::string, std::vector<int32_t>>> src_data = {};
         CheckResult(src_data, "");
     }
+}
+
+TEST_F(ConcatBatchReaderTest, TestMergeCompletedReaderMetrics) {
+    std::shared_ptr<arrow::StructArray> data =
+        arrow::StructArray::Make(
+            {arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[1, 2, 3]").ValueOrDie()},
+            {arrow::field("f1", arrow::int32())})
+            .ValueOrDie();
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    readers.push_back(
+        std::make_unique<MockFileBatchReader>(data, data->type(), /*read_batch_size=*/2));
+
+    std::shared_ptr<Metrics> completed_metrics = std::make_shared<MetricsImpl>();
+    completed_metrics->SetCounter("mock.number.of.rows", 4);
+    std::unique_ptr<ConcatBatchReader> concat_reader = std::make_unique<ConcatBatchReader>(
+        std::move(readers), GetDefaultPool(), completed_metrics);
+
+    ASSERT_OK_AND_ASSIGN(uint64_t row_count,
+                         concat_reader->GetReaderMetrics()->GetCounter("mock.number.of.rows"));
+    ASSERT_EQ(7, row_count);
 }
 
 }  // namespace paimon::test

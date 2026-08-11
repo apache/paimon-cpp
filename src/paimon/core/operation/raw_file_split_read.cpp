@@ -18,15 +18,27 @@
 
 #include "paimon/core/operation/raw_file_split_read.h"
 
+#include <cstdint>
+#include <map>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
+#include "arrow/api.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "arrow/util/checked_cast.h"
+#include "fmt/format.h"
 #include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
+#include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
+#include "paimon/common/reader/late_materialization_batch_reader.h"
+#include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/core/core_options.h"
@@ -42,6 +54,7 @@
 #include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/status.h"
 #include "paimon/table/source/data_split.h"
@@ -51,6 +64,17 @@ namespace paimon {
 class DataFilePathFactory;
 class Executor;
 class Predicate;
+
+struct RawFileSplitRead::LateMaterializationPlan {
+    std::shared_ptr<arrow::Schema> probe_schema;
+    std::shared_ptr<arrow::Schema> payload_schema;
+};
+
+struct RawFileSplitRead::LateMaterializationReadResult {
+    bool applied = false;
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    std::shared_ptr<Metrics> completed_metrics;
+};
 
 RawFileSplitRead::RawFileSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
                                    const std::shared_ptr<InternalReadContext>& context,
@@ -80,6 +104,19 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            path_factory_->CreateDataFilePathFactory(partition, bucket));
 
+    std::shared_ptr<Metrics> completed_late_materialization_metrics;
+    if (options_.ReadLateMaterializationEnabled()) {
+        PAIMON_ASSIGN_OR_RAISE(LateMaterializationReadResult late_result,
+                               TryCreateLateMaterializedReader(partition, data_files, predicate,
+                                                               dv_factory, data_file_path_factory));
+        completed_late_materialization_metrics = std::move(late_result.completed_metrics);
+        if (late_result.applied) {
+            std::unique_ptr<ConcatBatchReader> late_reader = std::make_unique<ConcatBatchReader>(
+                std::move(late_result.readers), pool_, completed_late_materialization_metrics);
+            return std::make_unique<CompleteRowKindBatchReader>(std::move(late_reader), pool_);
+        }
+    }
+
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
         CreateRawFileReaders(partition, data_files, raw_read_schema_, predicate, dv_factory,
@@ -88,7 +125,8 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
 
     auto raw_readers =
         ObjectUtils::MoveVector<std::unique_ptr<BatchReader>>(std::move(raw_file_readers));
-    auto concat_batch_reader = std::make_unique<ConcatBatchReader>(std::move(raw_readers), pool_);
+    auto concat_batch_reader = std::make_unique<ConcatBatchReader>(
+        std::move(raw_readers), pool_, completed_late_materialization_metrics);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader), predicate));
     return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), pool_);
@@ -127,6 +165,201 @@ Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
         }
     }
     return matched;
+}
+
+Result<std::optional<RawFileSplitRead::LateMaterializationPlan>>
+RawFileSplitRead::BuildLateMaterializationPlan(const std::shared_ptr<Predicate>& predicate) const {
+    if (!context_->EnablePredicateFilter() || predicate == nullptr) {
+        return std::optional<LateMaterializationPlan>();
+    }
+
+    std::set<std::string> predicate_field_names;
+    PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &predicate_field_names));
+    if (predicate_field_names.empty()) {
+        return std::optional<LateMaterializationPlan>();
+    }
+
+    std::vector<std::shared_ptr<arrow::Field>> probe_fields;
+    std::set<std::string> probe_names;
+    for (const auto& field : raw_read_schema_->fields()) {
+        if (predicate_field_names.count(field->name()) > 0) {
+            probe_fields.push_back(field);
+            probe_names.insert(field->name());
+        }
+    }
+    for (const auto& field_name : predicate_field_names) {
+        if (probe_names.count(field_name) > 0) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(DataField data_field,
+                               context_->GetTableSchema()->GetField(field_name));
+        probe_fields.push_back(data_field.ArrowField());
+        probe_names.insert(field_name);
+    }
+
+    if (probe_fields.empty()) {
+        return std::optional<LateMaterializationPlan>();
+    }
+
+    std::vector<std::shared_ptr<arrow::Field>> payload_fields;
+    for (const auto& field : raw_read_schema_->fields()) {
+        if (probe_names.count(field->name()) == 0) {
+            payload_fields.push_back(field);
+        }
+    }
+    if (payload_fields.empty()) {
+        return std::optional<LateMaterializationPlan>();
+    }
+
+    return std::optional<LateMaterializationPlan>(LateMaterializationPlan{
+        arrow::schema(std::move(probe_fields)), arrow::schema(std::move(payload_fields))});
+}
+
+auto RawFileSplitRead::TryCreateLateMaterializedReader(
+    const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+    const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const
+    -> Result<LateMaterializationReadResult> {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<LateMaterializationPlan> plan,
+                           BuildLateMaterializationPlan(predicate));
+    if (!plan) {
+        return LateMaterializationReadResult();
+    }
+    for (const auto& file : data_files) {
+        if (!file->first_row_id) {
+            return LateMaterializationReadResult();
+        }
+    }
+
+    std::map<std::string, int32_t> probe_field_name_to_idx;
+    for (int32_t i = 0; i < plan->probe_schema->num_fields(); ++i) {
+        probe_field_name_to_idx[plan->probe_schema->field(i)->name()] = i;
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<Predicate> probe_predicate,
+        PredicateUtils::CreatePickedFieldFilter(predicate, probe_field_name_to_idx));
+    std::shared_ptr<PredicateFilter> predicate_filter =
+        std::dynamic_pointer_cast<PredicateFilter>(probe_predicate);
+    if (!predicate_filter) {
+        return LateMaterializationReadResult();
+    }
+
+    int64_t total_match_rows = 0;
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    std::shared_ptr<Metrics> completed_metrics = std::make_shared<MetricsImpl>();
+    for (const auto& file : data_files) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::unique_ptr<FileBatchReader>> probe_readers,
+            CreateRawFileReaders(partition, {file}, plan->probe_schema, predicate, dv_factory,
+                                 /*row_ranges=*/{}, data_file_path_factory,
+                                 /*extra_format_options=*/{}));
+        if (probe_readers.empty()) {
+            continue;
+        }
+        if (probe_readers.size() != 1) {
+            return Status::Invalid("late materialization expects one probe reader per data file");
+        }
+
+        std::vector<std::shared_ptr<arrow::Array>> probe_chunks;
+        std::vector<Range> selected_global_ranges;
+        while (true) {
+            PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
+                                   probe_readers[0]->NextBatchWithBitmap());
+            if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+                break;
+            }
+            BatchReader::ReadBatchWithBitmap moved_batch = std::move(batch_with_bitmap);
+            BatchReader::ReadBatch& batch = moved_batch.first;
+            RoaringBitmap32& valid_bitmap = moved_batch.second;
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                std::shared_ptr<arrow::Array> probe_array,
+                arrow::ImportArray(batch.first.get(), batch.second.get()));
+            std::shared_ptr<arrow::StructArray> probe_struct =
+                arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_array);
+            PAIMON_ASSIGN_OR_RAISE(std::vector<char> predicate_result,
+                                   predicate_filter->Test(*probe_struct));
+            if (static_cast<int64_t>(predicate_result.size()) != probe_struct->length()) {
+                return Status::Invalid(fmt::format(
+                    "late materialization predicate returned {} results for {} probe rows",
+                    predicate_result.size(), probe_struct->length()));
+            }
+
+            RoaringBitmap32 selected_bitmap;
+            for (auto iter = valid_bitmap.Begin(); iter != valid_bitmap.End(); ++iter) {
+                uint32_t batch_row_id = *iter;
+                if (batch_row_id >= predicate_result.size()) {
+                    return Status::Invalid(fmt::format(
+                        "late materialization bitmap row {} exceeds probe batch length {}",
+                        batch_row_id, predicate_result.size()));
+                }
+                if (!predicate_result[batch_row_id]) {
+                    continue;
+                }
+                PAIMON_ASSIGN_OR_RAISE(uint64_t file_row_id,
+                                       probe_readers[0]->GetPreviousBatchFileRowId(batch_row_id));
+                int64_t global_row_id =
+                    file->first_row_id.value() + static_cast<int64_t>(file_row_id);
+                selected_global_ranges.emplace_back(global_row_id, global_row_id);
+                selected_bitmap.Add(batch_row_id);
+            }
+
+            if (!selected_bitmap.IsEmpty()) {
+                total_match_rows += static_cast<int64_t>(selected_bitmap.Cardinality());
+                if (total_match_rows >
+                    static_cast<int64_t>(options_.GetReadLateMaterializationMaxMatchRows())) {
+                    completed_metrics->Merge(probe_readers[0]->GetReaderMetrics());
+                    probe_readers[0]->Close();
+                    for (const auto& reader : readers) {
+                        completed_metrics->Merge(reader->GetReaderMetrics());
+                        reader->Close();
+                    }
+                    return LateMaterializationReadResult{/*applied=*/false, /*readers=*/{},
+                                                         std::move(completed_metrics)};
+                }
+                PAIMON_ASSIGN_OR_RAISE(
+                    arrow::ArrayVector selected_arrays,
+                    ReaderUtils::GenerateFilteredArrayVector(probe_struct, selected_bitmap));
+                probe_chunks.insert(probe_chunks.end(), selected_arrays.begin(),
+                                    selected_arrays.end());
+            }
+        }
+        completed_metrics->Merge(probe_readers[0]->GetReaderMetrics());
+        probe_readers[0]->Close();
+
+        if (selected_global_ranges.empty()) {
+            continue;
+        }
+
+        std::unique_ptr<arrow::MemoryPool> probe_arrow_pool = GetArrowPool(pool_);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> probe_data,
+                                          arrow::Concatenate(probe_chunks, probe_arrow_pool.get()));
+        std::shared_ptr<arrow::StructArray> probe_struct =
+            arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_data);
+        std::vector<Range> row_ranges =
+            Range::SortAndMergeOverlap(selected_global_ranges, /*adjacent=*/true);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::unique_ptr<FileBatchReader>> payload_readers,
+            CreateRawFileReaders(partition, {file}, plan->payload_schema,
+                                 /*predicate=*/nullptr, dv_factory, row_ranges,
+                                 data_file_path_factory, /*extra_format_options=*/{}));
+        if (payload_readers.empty()) {
+            return Status::Invalid("late materialization payload reader was filtered out");
+        }
+        if (payload_readers.size() != 1) {
+            return Status::Invalid("late materialization expects one payload reader per data file");
+        }
+        std::unique_ptr<BatchReader> payload_reader = std::move(payload_readers[0]);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<LateMaterializationBatchReader> late_reader,
+            LateMaterializationBatchReader::Create(
+                raw_read_schema_, plan->probe_schema, std::move(probe_struct), plan->payload_schema,
+                std::move(payload_reader), options_.GetReadBatchSize(), pool_,
+                std::move(probe_arrow_pool)));
+        readers.push_back(std::move(late_reader));
+    }
+
+    return LateMaterializationReadResult{/*applied=*/true, std::move(readers),
+                                         std::move(completed_metrics)};
 }
 
 Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReaderIfNeeded(
@@ -172,6 +405,19 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
         actual_selection = *deletion;
         PAIMON_ASSIGN_OR_RAISE(uint64_t num_rows, file_reader->GetNumberOfRows());
         actual_selection.value().Flip(0, num_rows);
+    }
+
+    // `ranges` uses global row ids. ToFileSelection intersects it with this file's global row id
+    // span and returns a file-local bitmap, which can be merged with index and deletion bitmaps.
+    PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap32> range_selection,
+                           file->ToFileSelection(ranges));
+    if (range_selection) {
+        if (actual_selection) {
+            actual_selection =
+                RoaringBitmap32::And(actual_selection.value(), range_selection.value());
+        } else {
+            actual_selection = std::move(range_selection);
+        }
     }
 
     if (actual_selection && actual_selection.value().IsEmpty()) {

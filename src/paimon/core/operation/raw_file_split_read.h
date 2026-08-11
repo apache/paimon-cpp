@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -85,6 +86,18 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const override;
+
+ private:
+    struct LateMaterializationPlan;
+    struct LateMaterializationReadResult;
+
+    Result<LateMaterializationReadResult> TryCreateLateMaterializedReader(
+        const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+        const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
+
+    Result<std::optional<LateMaterializationPlan>> BuildLateMaterializationPlan(
+        const std::shared_ptr<Predicate>& predicate) const;
 };
 
 }  // namespace paimon

@@ -68,6 +68,8 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(128 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
     ASSERT_EQ(4 * 1024 * 1024L, core_options.GetSourceSplitOpenFileCost());
     ASSERT_EQ(1024, core_options.GetReadBatchSize());
+    ASSERT_FALSE(core_options.ReadLateMaterializationEnabled());
+    ASSERT_EQ(1024, core_options.GetReadLateMaterializationMaxMatchRows());
     ASSERT_EQ(1024, core_options.GetWriteBatchSize());
     ASSERT_EQ(256 * 1024 * 1024, core_options.GetWriteBufferSize());
     ASSERT_TRUE(core_options.GetWriteBufferSpillable());
@@ -304,6 +306,8 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::BUCKET_FUNCTION_TYPE, "mod"},
+        {Options::READ_LATE_MATERIALIZATION_ENABLED, "true"},
+        {Options::READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS, "8"},
         {"fields.metrics.map.storage-layout", "shared-shredding"},
         {"fields.metrics.map.shared-shredding.max-columns", "128"},
         {"fields.metrics.map.shared-shredding.column-placement-policy", "lru"}};
@@ -465,6 +469,8 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.LookupRemoteFileEnabled());
     ASSERT_EQ(core_options.GetLookupRemoteLevelThreshold(), 2);
     ASSERT_EQ(BucketFunctionType::MOD, core_options.GetBucketFunctionType());
+    ASSERT_TRUE(core_options.ReadLateMaterializationEnabled());
+    ASSERT_EQ(8, core_options.GetReadLateMaterializationMaxMatchRows());
     ASSERT_EQ(MapStorageLayout::SHARED_SHREDDING,
               core_options.GetMapStorageLayout("metrics").value());
     ASSERT_EQ(128, core_options.GetMapSharedShreddingMaxColumns("metrics").value());
@@ -502,7 +508,6 @@ TEST(CoreOptionsTest, TestInvalidCase) {
     ASSERT_NOK_WITH_MSG(
         CoreOptions::FromMap({{Options::WRITE_SEQUENCE_NUMBER_INIT_MODE, "invalid"}}),
         "invalid write sequence number init mode: invalid");
-
     ASSERT_OK_AND_ASSIGN(CoreOptions invalid_strategy,
                          CoreOptions::FromMap({{"fields.f0.nested-key-null-strategy", "invalid"}}));
     ASSERT_NOK_WITH_MSG(invalid_strategy.FieldNestedUpdateAggNestedKeyNullStrategy("f0"),
@@ -511,6 +516,9 @@ TEST(CoreOptionsTest, TestInvalidCase) {
                          CoreOptions::FromMap({{"fields.f0.count-limit", "-1"}}));
     ASSERT_NOK_WITH_MSG(negative_limit.FieldNestedUpdateAggCountLimit("f0"),
                         "must not be negative");
+    ASSERT_NOK_WITH_MSG(
+        CoreOptions::FromMap({{Options::READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS, "0"}}),
+        "read.late-materialization.max-match-rows should be at least 1");
 }
 
 TEST(CoreOptionsTest, TestNestedKeyNullStrategyIsCaseInsensitive) {

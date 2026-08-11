@@ -40,6 +40,23 @@ the two layers can evolve their functionality and optimize code relatively indep
 cross-language task scheduling and interaction (e.g., Java and C++), substantially reducing engineering maintenance costs
 across the two language ecosystems.
 
+Late Materialization
+--------------------
+
+In the raw-file read path, late materialization can reduce payload-column decoding when a
+predicate selects only a small number of rows. The reader first loads the columns required by the
+predicate (the *probe* columns), evaluates the predicate, and then reads the remaining projected
+columns (the *payload* columns) only for matching row ranges.
+
+The optimization is disabled by default. Enable it with
+``read.late-materialization.enabled=true``. It is applied only when predicate filtering is enabled,
+the probe and payload projections are both non-empty, and every input file has a first row ID.
+Otherwise, the reader uses the normal single-pass path.
+
+``read.late-materialization.max-match-rows`` limits the number of matching rows accumulated for a
+split and defaults to ``1024``. If the limit is exceeded, the reader falls back to the normal path.
+The probe work already completed before the fallback is retained in the reader metrics.
+
 
 Schema Evolution
 -----------------------

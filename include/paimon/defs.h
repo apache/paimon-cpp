@@ -202,6 +202,15 @@ struct PAIMON_EXPORT Options {
     /// The default value is 1024.
     static const char READ_BATCH_SIZE[];
 
+    /// "read.late-materialization.enabled" - Whether to read predicate columns first and then
+    /// fetch payload columns only for matching rows. Default value is false.
+    static const char READ_LATE_MATERIALIZATION_ENABLED[];
+
+    /// "read.late-materialization.max-match-rows" - Maximum number of matching rows per split
+    /// allowed for late materialization. If the predicate matches more rows, the reader falls back
+    /// to the normal read path. Default value is 1024.
+    static const char READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS[];
+
     /// "write.batch-size" - Write batch size for any file format if it supports.
     /// The default value is 1024.
     static const char WRITE_BATCH_SIZE[];

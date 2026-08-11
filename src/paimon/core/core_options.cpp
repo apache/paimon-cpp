@@ -425,6 +425,7 @@ struct CoreOptions::Impl {
     int32_t manifest_merge_min_count = 30;
     int32_t scan_manifest_entry_cache_max_snapshots = 0;
     int32_t read_batch_size = 1024;
+    int32_t read_late_materialization_max_match_rows = 1024;
     int32_t write_batch_size = 1024;
     int32_t local_sort_max_num_file_handles = 128;
     int32_t commit_max_retries = 10;
@@ -463,6 +464,7 @@ struct CoreOptions::Impl {
     bool table_read_sequence_number_enabled = false;
     bool key_value_sequence_number_enabled = false;
     bool file_index_read_enabled = true;
+    bool read_late_materialization_enabled = false;
     bool enable_adaptive_prefetch_strategy = true;
     bool index_file_in_data_file_dir = false;
     bool row_tracking_enabled = false;
@@ -543,6 +545,16 @@ struct CoreOptions::Impl {
                                                     &source_split_open_file_cost));
         // Parse read.batch-size - read batch size for file formats
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::READ_BATCH_SIZE, &read_batch_size));
+        // Parse read.late-materialization.enabled - enable selective lookup read path
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::READ_LATE_MATERIALIZATION_ENABLED,
+                                                &read_late_materialization_enabled));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<int32_t>(Options::READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS,
+                                  &read_late_materialization_max_match_rows));
+        if (read_late_materialization_max_match_rows <= 0) {
+            return Status::Invalid(fmt::format("{} should be at least 1",
+                                               Options::READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS));
+        }
         // Parse write.batch-size - write batch size for file formats
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::WRITE_BATCH_SIZE, &write_batch_size));
         // Parse write-buffer-size - data to build up in memory before flushing to disk
@@ -1199,6 +1211,14 @@ StartupMode CoreOptions::GetStartupMode() const {
 
 int32_t CoreOptions::GetReadBatchSize() const {
     return impl_->read_batch_size;
+}
+
+bool CoreOptions::ReadLateMaterializationEnabled() const {
+    return impl_->read_late_materialization_enabled;
+}
+
+int32_t CoreOptions::GetReadLateMaterializationMaxMatchRows() const {
+    return impl_->read_late_materialization_max_match_rows;
 }
 
 int32_t CoreOptions::GetWriteBatchSize() const {

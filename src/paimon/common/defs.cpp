@@ -60,6 +60,9 @@ const char Options::SCAN_MODE[] = "scan.mode";
 const char Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[] =
     "scan.manifest-entry-cache.max-snapshots";
 const char Options::READ_BATCH_SIZE[] = "read.batch-size";
+const char Options::READ_LATE_MATERIALIZATION_ENABLED[] = "read.late-materialization.enabled";
+const char Options::READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS[] =
+    "read.late-materialization.max-match-rows";
 const char Options::WRITE_BATCH_SIZE[] = "write.batch-size";
 const char Options::WRITE_BUFFER_SIZE[] = "write-buffer-size";
 const char Options::WRITE_BUFFER_SPILLABLE[] = "write-buffer-spillable";
