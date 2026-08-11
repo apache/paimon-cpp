@@ -61,7 +61,8 @@ Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTab
         }
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
                                NestedProjectionUtils::GetMapSelectedKeys(read_field));
-        auto read_struct = arrow::internal::checked_pointer_cast<arrow::StructType>(read_field->type());
+        auto read_struct =
+            arrow::internal::checked_pointer_cast<arrow::StructType>(read_field->type());
         if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
             return Status::Invalid(fmt::format(
                 "Selected-key metadata size {} does not match STRUCT field count {} for '{}'",

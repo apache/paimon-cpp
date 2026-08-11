@@ -51,7 +51,8 @@ Result<std::string_view> GetStringMapKey(const std::shared_ptr<arrow::Array>& ke
             return Status::Invalid("selected-key MAP read found a null dictionary MAP key");
         }
         if (values->type_id() == arrow::Type::STRING) {
-            return arrow::internal::checked_pointer_cast<arrow::StringArray>(values)->GetView(dictionary_index);
+            return arrow::internal::checked_pointer_cast<arrow::StringArray>(values)->GetView(
+                dictionary_index);
         }
     }
     return Status::Invalid(
@@ -119,10 +120,8 @@ class SharedSelectedKeysReadPlan : public MapFieldReadPlan {
 
     SharedSelectedKeysReadPlan(const std::shared_ptr<arrow::Field>& logical_field,
                                const std::shared_ptr<arrow::Field>& physical_read_field,
-                               int32_t num_physical_columns,
                                std::vector<SelectedKey>&& selected_keys)
         : MapFieldReadPlan(logical_field, physical_read_field),
-          num_physical_columns_(num_physical_columns),
           selected_keys_(std::move(selected_keys)) {}
 
     Result<std::shared_ptr<arrow::Array>> Materialize(
@@ -130,7 +129,6 @@ class SharedSelectedKeysReadPlan : public MapFieldReadPlan {
         arrow::MemoryPool* arrow_pool) const override;
 
  private:
-    int32_t num_physical_columns_;
     std::vector<SelectedKey> selected_keys_;
 };
 
@@ -237,7 +235,7 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateSharedS
             include_overflow);
     auto physical_read_field = selected_keys_field->WithType(physical_type);
     std::unique_ptr<MapFieldReadPlan> read_plan = std::make_unique<SharedSelectedKeysReadPlan>(
-        selected_keys_field, physical_read_field, meta.num_columns, std::move(selected_key_plans));
+        selected_keys_field, physical_read_field, std::move(selected_key_plans));
     return read_plan;
 }
 
@@ -622,7 +620,6 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
                 LogicalField()->name()));
         }
         int32_t mapping_offset = field_mapping_array->value_offset(row);
-        int32_t mapping_length = field_mapping_array->value_length(row);
 
         PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->Append());
         for (int32_t key_index = 0; key_index < selected_keys_type->num_fields(); ++key_index) {
