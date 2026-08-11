@@ -259,6 +259,7 @@ set(PAIMON_CORE_SRCS
     core/index/pk/primary_key_index_definitions.cpp
     core/index/pksorted/pk_sorted_index_group.cpp
     core/index/pksorted/pk_sorted_bucket_index_state.cpp
+    core/index/pksorted/pk_sorted_index_file.cpp
     core/io/generic_row_to_arrow_array_converter.cpp
     core/io/meta_to_arrow_array_converter.cpp
     core/io/async_key_value_producer_and_consumer.cpp
@@ -859,6 +860,7 @@ if(PAIMON_BUILD_TESTS)
                     core/table/sink/commit_message_test.cpp
                     core/table/sink/commit_message_impl_test.cpp
                     core/table/source/fallback_data_split_test.cpp
+                    core/table/source/primary_key_sorted_index_scan_test.cpp
                     core/table/source/table_read_test.cpp
                     core/table/source/append_count_reader_test.cpp
                     core/table/source/pk_count_reader_test.cpp

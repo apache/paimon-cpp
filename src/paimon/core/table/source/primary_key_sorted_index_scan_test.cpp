@@ -1,0 +1,551 @@
+/*
+ * Copyright 2026-present Alibaba Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "paimon/core/table/source/primary_key_sorted_index_scan.h"
+
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "arrow/api.h"
+#include "gtest/gtest.h"
+#include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/index/pk/primary_key_index_definitions.h"
+#include "paimon/core/index/pksorted/pk_sorted_index_file.h"
+#include "paimon/core/manifest/file_kind.h"
+#include "paimon/core/manifest/file_source.h"
+#include "paimon/core/table/source/primary_key_sorted_index_result.h"
+#include "paimon/global_index/bitmap_global_index_result.h"
+#include "paimon/global_index/global_index_io_meta.h"
+#include "paimon/global_index/global_indexer.h"
+#include "paimon/global_index/global_indexer_factory.h"
+#include "paimon/global_index/io/global_index_file_reader.h"
+#include "paimon/global_index/io/global_index_file_writer.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/testing/utils/testharness.h"
+
+namespace paimon::test {
+namespace {
+constexpr int32_t kPriceFieldId = 1;
+constexpr int64_t kSnapshotId = 7;
+constexpr int64_t kFileARows = 100;
+constexpr int64_t kFileBRows = 200;
+constexpr int64_t kTotalRows = kFileARows + kFileBRows;
+
+class TestGlobalIndexFileWriter : public GlobalIndexFileWriter {
+ public:
+    TestGlobalIndexFileWriter(const std::shared_ptr<FileSystem>& fs, const std::string& base_path)
+        : fs_(fs), base_path_(base_path) {}
+
+    Result<std::string> NewFileName(const std::string& prefix) const override {
+        return prefix + "-index-" + std::to_string(file_counter_++);
+    }
+
+    Result<std::unique_ptr<OutputStream>> NewOutputStream(
+        const std::string& file_name) const override {
+        return fs_->Create(base_path_ + "/" + file_name, true);
+    }
+
+    Result<int64_t> GetFileSize(const std::string& file_name) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStatus> file_status,
+                               fs_->GetFileStatus(base_path_ + "/" + file_name));
+        return file_status->GetLen();
+    }
+
+    std::string ToPath(const std::string& file_name) const override {
+        return base_path_ + "/" + file_name;
+    }
+
+ private:
+    std::shared_ptr<FileSystem> fs_;
+    std::string base_path_;
+    mutable int64_t file_counter_ = 0;
+};
+
+class TestGlobalIndexFileReader : public GlobalIndexFileReader {
+ public:
+    explicit TestGlobalIndexFileReader(const std::shared_ptr<FileSystem>& fs) : fs_(fs) {}
+
+    Result<std::unique_ptr<InputStream>> GetInputStream(
+        const std::string& file_path) const override {
+        return fs_->Open(file_path);
+    }
+
+ private:
+    std::shared_ptr<FileSystem> fs_;
+};
+
+/// A reader stub whose equality result is fully controlled by the test, used to exercise
+/// the untrusted-position fallbacks.
+class StubGlobalIndexReader : public GlobalIndexReader {
+ public:
+    explicit StubGlobalIndexReader(RoaringBitmap64 equal_result)
+        : equal_result_(std::move(equal_result)) {}
+
+    Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitIsNull() override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitEqual(const Literal& literal) override {
+        RoaringBitmap64 copy = equal_result_;
+        return std::make_shared<BitmapGlobalIndexResult>(
+            [bitmap = std::move(copy)]() -> Result<RoaringBitmap64> { return bitmap; });
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitNotEqual(const Literal& literal) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitLessThan(const Literal& literal) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitLessOrEqual(const Literal& literal) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterThan(const Literal& literal) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterOrEqual(
+        const Literal& literal) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitIn(
+        const std::vector<Literal>& literals) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitNotIn(
+        const std::vector<Literal>& literals) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitStartsWith(const Literal& prefix) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitEndsWith(const Literal& suffix) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitContains(const Literal& literal) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitLike(const Literal& literal) override {
+        return NotEvaluable();
+    }
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& vector_search) override {
+        return Status::Invalid("not supported");
+    }
+    Result<std::shared_ptr<GlobalIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& full_text_search) override {
+        return Status::Invalid("not supported");
+    }
+    bool IsThreadSafe() const override {
+        return false;
+    }
+    std::string GetIndexType() const override {
+        return "btree";
+    }
+
+ private:
+    static Result<std::shared_ptr<GlobalIndexResult>> NotEvaluable() {
+        return std::shared_ptr<GlobalIndexResult>(nullptr);
+    }
+
+    RoaringBitmap64 equal_result_;
+};
+}  // namespace
+
+class PrimaryKeySortedIndexScanTest : public ::testing::Test {
+ protected:
+    void SetUp() override {
+        pool_ = GetDefaultPool();
+        test_dir_ = UniqueTestDirectory::Create("local");
+        fs_ = test_dir_->GetFileSystem();
+        base_path_ = test_dir_->Str();
+
+        std::vector<DataField> fields = {
+            DataField(0, arrow::field("id", arrow::int64())),
+            DataField(kPriceFieldId, arrow::field("price", arrow::int64())),
+            DataField(2, arrow::field("status", arrow::utf8())),
+        };
+        std::map<std::string, std::string> options = {{"pk-btree.index.columns", "price"}};
+        table_schema_ = std::make_shared<TableSchema>(
+            /*version=*/3, /*id=*/0, fields, /*highest_field_id=*/2,
+            /*partition_keys=*/std::vector<std::string>(),
+            /*primary_keys=*/std::vector<std::string>{"id"}, options,
+            /*comment=*/std::nullopt, /*time_millis=*/0);
+        Result<PrimaryKeyIndexDefinitions> definitions =
+            PrimaryKeyIndexDefinitions::Create(*table_schema_);
+        ASSERT_OK(definitions.status());
+        definitions_ = definitions.value().ScalarDefinitions();
+        ASSERT_EQ(definitions_.size(), 1);
+    }
+
+    std::shared_ptr<DataFileMeta> MakeDataFile(const std::string& name, int64_t row_count,
+                                               int32_t level, const FileSource& file_source) {
+        return std::make_shared<DataFileMeta>(
+            name, /*file_size=*/1024, row_count,
+            /*min_key=*/BinaryRow::EmptyRow(), /*max_key=*/BinaryRow::EmptyRow(),
+            /*key_stats=*/SimpleStats::EmptyStats(), /*value_stats=*/SimpleStats::EmptyStats(),
+            /*min_sequence_number=*/0, /*max_sequence_number=*/row_count, /*schema_id=*/0, level,
+            /*extra_files=*/std::vector<std::optional<std::string>>(),
+            /*creation_time=*/Timestamp(1721643142456LL, 0),
+            /*delete_row_count=*/0, /*embedded_index=*/nullptr, file_source,
+            /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+    }
+
+    /// Builds the standard payload of this fixture: sources a.parquet(100) + b.parquet(200)
+    /// on level 5, indexed value at group ordinal `i` is `2 * i`.
+    Result<std::shared_ptr<IndexFileMeta>> BuildPayload() {
+        std::vector<PrimaryKeyIndexSourceFile> source_files = {{"a.parquet", kFileARows},
+                                                               {"b.parquet", kFileBRows}};
+        arrow::Int64Builder values_builder;
+        std::vector<int64_t> ordinals;
+        ordinals.reserve(kTotalRows);
+        for (int64_t i = 0; i < kTotalRows; i++) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(values_builder.Append(2 * i));
+            ordinals.push_back(i);
+        }
+        std::shared_ptr<arrow::Array> sorted_values;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(values_builder.Finish(&sorted_values));
+        PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema_->GetField(kPriceFieldId));
+        auto file_writer = std::make_shared<TestGlobalIndexFileWriter>(fs_, base_path_);
+        return PkSortedIndexFile::Build(field, "btree", definitions_[0].Options(),
+                                        /*data_level=*/5, source_files, sorted_values, ordinals,
+                                        file_writer, /*is_external_path=*/false, pool_);
+    }
+
+    std::shared_ptr<DataSplitImpl> MakeSplit(
+        const std::vector<std::shared_ptr<DataFileMeta>>& files, bool raw_convertible,
+        const std::vector<std::optional<DeletionFile>>& deletion_files = {}) {
+        std::vector<std::shared_ptr<DataFileMeta>> data_files = files;
+        DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                       base_path_ + "/bucket-0", std::move(data_files));
+        builder.WithSnapshot(kSnapshotId).IsStreaming(false).RawConvertible(raw_convertible);
+        if (!deletion_files.empty()) {
+            builder.WithDataDeletionFiles(deletion_files);
+        }
+        Result<std::shared_ptr<DataSplitImpl>> split = builder.Build();
+        assert(split.ok());
+        return split.value();
+    }
+
+    std::vector<IndexManifestEntry> MakeEntries(const std::shared_ptr<IndexFileMeta>& payload) {
+        return {IndexManifestEntry(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0, payload)};
+    }
+
+    PrimaryKeySortedIndexScan::ReaderFactory PayloadReaderFactory() {
+        std::shared_ptr<FileSystem> fs = fs_;
+        std::string base_path = base_path_;
+        std::shared_ptr<TableSchema> table_schema = table_schema_;
+        std::shared_ptr<MemoryPool> pool = pool_;
+        return [fs, base_path, table_schema, pool](
+                   const PrimaryKeySortedIndexScan::FilePlan& file,
+                   const PrimaryKeyIndexDefinition& definition,
+                   const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<GlobalIndexer> indexer,
+                GlobalIndexerFactory::Get(definition.IndexType(), definition.Options()));
+            if (indexer == nullptr) {
+                return Status::Invalid("btree indexer is not registered");
+            }
+            const std::shared_ptr<IndexFileMeta>& payload = group.Payload();
+            std::vector<GlobalIndexIOMeta> io_metas;
+            io_metas.emplace_back(base_path + "/" + payload->FileName(), payload->FileSize(),
+                                  payload->GetGlobalIndexMeta().value().index_meta);
+            PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema->GetField(definition.FieldId()));
+            auto arrow_field = DataField::ConvertDataFieldToArrowField(field);
+            auto arrow_schema = arrow::schema({arrow_field});
+            ArrowSchema c_arrow_schema;
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
+            auto file_reader = std::make_shared<TestGlobalIndexFileReader>(fs);
+            return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool);
+        };
+    }
+
+    Result<std::vector<std::shared_ptr<Split>>> PlanEvaluateConvert(
+        const std::vector<std::shared_ptr<DataSplitImpl>>& splits,
+        const std::vector<IndexManifestEntry>& entries, const std::shared_ptr<Predicate>& predicate,
+        const PrimaryKeySortedIndexScan::ReaderFactory& reader_factory) {
+        PAIMON_ASSIGN_OR_RAISE(
+            PrimaryKeySortedIndexScan::Plan plan,
+            PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, splits, definitions_, entries));
+        PAIMON_ASSIGN_OR_RAISE(PrimaryKeySortedIndexScan::EvaluatedPlan evaluated,
+                               PrimaryKeySortedIndexScan::Evaluate(plan, table_schema_, predicate,
+                                                                   definitions_, reader_factory));
+        return PrimaryKeySortedIndexResult::ToSplits(evaluated);
+    }
+
+    std::shared_ptr<Predicate> PriceEqual(int64_t value) {
+        return PredicateBuilder::Equal(/*field_index=*/1, "price", FieldType::BIGINT,
+                                       Literal(value));
+    }
+
+    std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<UniqueTestDirectory> test_dir_;
+    std::shared_ptr<FileSystem> fs_;
+    std::string base_path_;
+    std::shared_ptr<TableSchema> table_schema_;
+    std::vector<PrimaryKeyIndexDefinition> definitions_;
+};
+
+TEST_F(PrimaryKeySortedIndexScanTest, EqualNarrowsToSingleFileRange) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    // Value 10 sits at group ordinal 5, i.e. row 5 of a.parquet.
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(payload.value()), PriceEqual(10), PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    ASSERT_EQ(splits.value().size(), 1);
+    auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(splits.value()[0]);
+    ASSERT_TRUE(indexed_split != nullptr);
+    auto inner_split = std::dynamic_pointer_cast<DataSplitImpl>(indexed_split->GetDataSplit());
+    ASSERT_TRUE(inner_split != nullptr);
+    ASSERT_EQ(inner_split->DataFiles().size(), 1);
+    ASSERT_EQ(inner_split->DataFiles()[0]->file_name, "a.parquet");
+    ASSERT_EQ(indexed_split->RowRanges().size(), 1);
+    ASSERT_EQ(indexed_split->RowRanges()[0].from, 5);
+    ASSERT_EQ(indexed_split->RowRanges()[0].to, 5);
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, RangeSpansFileBoundary) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    // Values in [190, 210] sit at group ordinals 95..105: rows 95..99 of a.parquet and
+    // rows 0..5 of b.parquet.
+    std::shared_ptr<Predicate> lower = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/1, "price", FieldType::BIGINT, Literal(static_cast<int64_t>(190)));
+    std::shared_ptr<Predicate> upper = PredicateBuilder::LessOrEqual(
+        /*field_index=*/1, "price", FieldType::BIGINT, Literal(static_cast<int64_t>(210)));
+    Result<std::shared_ptr<Predicate>> predicate = PredicateBuilder::And({lower, upper});
+    ASSERT_OK(predicate.status());
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(payload.value()), predicate.value(), PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    ASSERT_EQ(splits.value().size(), 2);
+    auto indexed_a = std::dynamic_pointer_cast<IndexedSplitImpl>(splits.value()[0]);
+    auto indexed_b = std::dynamic_pointer_cast<IndexedSplitImpl>(splits.value()[1]);
+    ASSERT_TRUE(indexed_a != nullptr);
+    ASSERT_TRUE(indexed_b != nullptr);
+    ASSERT_EQ(indexed_a->RowRanges().size(), 1);
+    ASSERT_EQ(indexed_a->RowRanges()[0].from, 95);
+    ASSERT_EQ(indexed_a->RowRanges()[0].to, 99);
+    ASSERT_EQ(indexed_b->RowRanges().size(), 1);
+    ASSERT_EQ(indexed_b->RowRanges()[0].from, 0);
+    ASSERT_EQ(indexed_b->RowRanges()[0].to, 5);
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, EmptyResultOmitsAllFiles) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    // All indexed values are even, so 11 matches nothing.
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(payload.value()), PriceEqual(11), PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    ASSERT_TRUE(splits.value().empty());
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, UnindexedFieldPredicateFallsBack) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/2, "status", FieldType::STRING, Literal(FieldType::STRING, "hit", 3));
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(payload.value()), predicate, PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    ASSERT_EQ(splits.value().size(), 2);
+    for (const std::shared_ptr<Split>& result_split : splits.value()) {
+        ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(result_split) == nullptr);
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(result_split);
+        ASSERT_TRUE(data_split != nullptr);
+        ASSERT_EQ(data_split->DataFiles().size(), 1);
+    }
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, UncoveredFileFallsBackOthersNarrow) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact()),
+                   MakeDataFile("c.parquet", 50, 0, FileSource::Append())},
+                  /*raw_convertible=*/true);
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(payload.value()), PriceEqual(10), PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    // a.parquet narrows to an indexed split, b.parquet is omitted, c.parquet has no
+    // coverage and keeps a normal single-file scan.
+    ASSERT_EQ(splits.value().size(), 2);
+    auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(splits.value()[0]);
+    ASSERT_TRUE(indexed_split != nullptr);
+    auto fallback_split = std::dynamic_pointer_cast<DataSplitImpl>(splits.value()[1]);
+    ASSERT_TRUE(fallback_split != nullptr);
+    ASSERT_EQ(fallback_split->DataFiles().size(), 1);
+    ASSERT_EQ(fallback_split->DataFiles()[0]->file_name, "c.parquet");
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, NonRawConvertibleSplitPreserved) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/false);
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(payload.value()), PriceEqual(10), PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    ASSERT_EQ(splits.value().size(), 1);
+    ASSERT_EQ(splits.value()[0].get(), split.get());
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, InvalidRowRangePayloadFallsBack) {
+    Result<std::shared_ptr<IndexFileMeta>> payload_result = BuildPayload();
+    ASSERT_OK(payload_result.status());
+    const std::shared_ptr<IndexFileMeta>& payload = payload_result.value();
+    // Rebuild the payload metadata with a row range end beyond the source rows: the group
+    // validation must reject it and every file keeps a normal scan.
+    const GlobalIndexMeta& meta = payload->GetGlobalIndexMeta().value();
+    auto broken_payload = std::make_shared<IndexFileMeta>(
+        payload->IndexType(), payload->FileName(), payload->FileSize(), payload->RowCount(),
+        std::nullopt, std::nullopt,
+        GlobalIndexMeta(meta.row_range_start, meta.row_range_end + 1, meta.index_field_id,
+                        meta.extra_field_ids, meta.index_meta, meta.source_meta));
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(broken_payload), PriceEqual(10), PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    ASSERT_EQ(splits.value().size(), 2);
+    for (const std::shared_ptr<Split>& result_split : splits.value()) {
+        ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(result_split) == nullptr);
+    }
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, OutOfRangePositionsFailAllCoveredFiles) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    RoaringBitmap64 poisoned;
+    poisoned.Add(5);
+    poisoned.Add(kTotalRows + 10);
+    PrimaryKeySortedIndexScan::ReaderFactory stub_factory =
+        [&poisoned](const PrimaryKeySortedIndexScan::FilePlan& file,
+                    const PrimaryKeyIndexDefinition& definition,
+                    const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
+        return std::make_shared<StubGlobalIndexReader>(poisoned);
+    };
+    Result<std::vector<std::shared_ptr<Split>>> splits =
+        PlanEvaluateConvert({split}, MakeEntries(payload.value()), PriceEqual(10), stub_factory);
+    ASSERT_OK(splits.status());
+    // Both covered files must fall back to normal single-file scans.
+    ASSERT_EQ(splits.value().size(), 2);
+    for (const std::shared_ptr<Split>& result_split : splits.value()) {
+        ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(result_split) == nullptr);
+    }
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, OverFragmentedResultFallsBack) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    // One data file, 20000 rows; every second row selected produces > 4096 ranges.
+    std::vector<PrimaryKeyIndexSourceFile> source_files = {{"big.parquet", 20000}};
+    std::shared_ptr<DataSplitImpl> split = MakeSplit(
+        {MakeDataFile("big.parquet", 20000, 5, FileSource::Compact())}, /*raw_convertible=*/true);
+    Result<std::shared_ptr<Bytes>> source_meta_bytes = [&]() -> Result<std::shared_ptr<Bytes>> {
+        PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexSourceMeta source_meta,
+                               PrimaryKeyIndexSourceMeta::Create(5, source_files));
+        return source_meta.Serialize(pool_.get());
+    }();
+    ASSERT_OK(source_meta_bytes.status());
+    auto big_payload = std::make_shared<IndexFileMeta>(
+        "btree", "big-index-file", /*file_size=*/1, /*row_count=*/20000, std::nullopt, std::nullopt,
+        GlobalIndexMeta(0, 19999, kPriceFieldId, std::nullopt, nullptr, source_meta_bytes.value()));
+    RoaringBitmap64 fragmented;
+    for (int64_t i = 0; i < 20000; i += 2) {
+        fragmented.Add(i);
+    }
+    PrimaryKeySortedIndexScan::ReaderFactory stub_factory =
+        [&fragmented](
+            const PrimaryKeySortedIndexScan::FilePlan& file,
+            const PrimaryKeyIndexDefinition& definition,
+            const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
+        return std::make_shared<StubGlobalIndexReader>(fragmented);
+    };
+    Result<std::vector<std::shared_ptr<Split>>> splits =
+        PlanEvaluateConvert({split}, MakeEntries(big_payload), PriceEqual(10), stub_factory);
+    ASSERT_OK(splits.status());
+    ASSERT_EQ(splits.value().size(), 1);
+    ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(splits.value()[0]) == nullptr);
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, DeletionFileStaysAlignedWithIndexedFile) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    DeletionFile deletion_file("dv-a", /*offset=*/0, /*length=*/16, /*cardinality=*/1);
+    std::shared_ptr<DataSplitImpl> split = MakeSplit(
+        {MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+         MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+        /*raw_convertible=*/true, {std::optional<DeletionFile>(deletion_file), std::nullopt});
+    Result<std::vector<std::shared_ptr<Split>>> splits = PlanEvaluateConvert(
+        {split}, MakeEntries(payload.value()), PriceEqual(10), PayloadReaderFactory());
+    ASSERT_OK(splits.status());
+    ASSERT_EQ(splits.value().size(), 1);
+    auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(splits.value()[0]);
+    ASSERT_TRUE(indexed_split != nullptr);
+    auto inner_split = std::dynamic_pointer_cast<DataSplitImpl>(indexed_split->GetDataSplit());
+    ASSERT_TRUE(inner_split != nullptr);
+    ASSERT_EQ(inner_split->DeletionFiles().size(), 1);
+    ASSERT_TRUE(inner_split->DeletionFiles()[0] != std::nullopt);
+    ASSERT_EQ(inner_split->DeletionFiles()[0].value().path, "dv-a");
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, SnapshotMismatchIsRejected) {
+    Result<std::shared_ptr<IndexFileMeta>> payload = BuildPayload();
+    ASSERT_OK(payload.status());
+    std::vector<std::shared_ptr<DataFileMeta>> files = {
+        MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact())};
+    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0, base_path_,
+                                   std::move(files));
+    builder.WithSnapshot(kSnapshotId + 1).IsStreaming(false).RawConvertible(true);
+    Result<std::shared_ptr<DataSplitImpl>> split = builder.Build();
+    ASSERT_OK(split.status());
+    Result<PrimaryKeySortedIndexScan::Plan> plan = PrimaryKeySortedIndexScan::CreatePlan(
+        kSnapshotId, {split.value()}, definitions_, MakeEntries(payload.value()));
+    ASSERT_NOK(plan.status());
+}
+
+}  // namespace paimon::test
