@@ -37,7 +37,7 @@ constexpr size_t kMinBytesPerSourceFile = sizeof(uint16_t) + sizeof(int64_t);
 constexpr size_t kMaxInitialSourceFileCapacity = 1024;
 
 void AppendBigEndian32(int32_t value, std::string* out) {
-    uint32_t bits = static_cast<uint32_t>(value);
+    auto bits = static_cast<uint32_t>(value);
     out->push_back(static_cast<char>((bits >> 24) & 0xFF));
     out->push_back(static_cast<char>((bits >> 16) & 0xFF));
     out->push_back(static_cast<char>((bits >> 8) & 0xFF));
@@ -45,7 +45,7 @@ void AppendBigEndian32(int32_t value, std::string* out) {
 }
 
 void AppendBigEndian64(int64_t value, std::string* out) {
-    uint64_t bits = static_cast<uint64_t>(value);
+    auto bits = static_cast<uint64_t>(value);
     for (int32_t shift = 56; shift >= 0; shift -= 8) {
         out->push_back(static_cast<char>((bits >> shift) & 0xFF));
     }
@@ -77,8 +77,8 @@ class BigEndianCursor {
 
     Result<uint16_t> ReadUint16() {
         PAIMON_RETURN_NOT_OK(CheckAvailable(sizeof(uint16_t)));
-        uint16_t bits = static_cast<uint16_t>((static_cast<uint8_t>(data_[position_]) << 8) |
-                                              static_cast<uint8_t>(data_[position_ + 1]));
+        auto bits = static_cast<uint16_t>((static_cast<uint8_t>(data_[position_]) << 8) |
+                                          static_cast<uint8_t>(data_[position_ + 1]));
         position_ += sizeof(uint16_t);
         return bits;
     }
@@ -186,7 +186,7 @@ Result<std::shared_ptr<Bytes>> PrimaryKeyIndexSourceMeta::Serialize(MemoryPool* 
             return Status::Invalid(fmt::format(
                 "Source file name is too long for writeUTF: {} bytes.", encoded_name.size()));
         }
-        uint16_t name_length = static_cast<uint16_t>(encoded_name.size());
+        auto name_length = static_cast<uint16_t>(encoded_name.size());
         buffer.push_back(static_cast<char>((name_length >> 8) & 0xFF));
         buffer.push_back(static_cast<char>(name_length & 0xFF));
         buffer.append(encoded_name);

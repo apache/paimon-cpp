@@ -21,7 +21,6 @@
 
 #include <limits>
 #include <map>
-#include <optional>
 #include <set>
 #include <utility>
 
@@ -30,6 +29,11 @@
 
 namespace paimon {
 namespace {
+struct RangeConversion {
+    bool use_index;
+    std::vector<Range> ranges;
+};
+
 Result<std::shared_ptr<DataSplitImpl>> ToSingleFileSplit(
     const PrimaryKeySortedIndexScan::FilePlan& file) {
     const std::shared_ptr<DataSplitImpl>& source = file.SourceSplit();
@@ -46,11 +50,10 @@ Result<std::shared_ptr<DataSplitImpl>> ToSingleFileSplit(
     return builder.Build();
 }
 
-/// Converts sorted file-local positions to merged ranges. Returns `std::nullopt` when a
-/// position is invalid or the result is over-fragmented, in which case the file must fall
-/// back to a normal scan.
-Result<std::optional<std::vector<Range>>> ToRanges(const GlobalIndexResult& result,
-                                                   int64_t row_count) {
+/// Converts sorted file-local positions to merged ranges. Sets `use_index` to false when a
+/// position is invalid or the result is over-fragmented, in which case the file must fall back
+/// to a normal scan.
+Result<RangeConversion> ToRanges(const GlobalIndexResult& result, int64_t row_count) {
     std::vector<Range> ranges;
     int64_t from = -1;
     int64_t to = -1;
@@ -60,14 +63,14 @@ Result<std::optional<std::vector<Range>>> ToRanges(const GlobalIndexResult& resu
         int64_t position = iterator->Next();
         if (position < 0 || position >= row_count ||
             position >= std::numeric_limits<int32_t>::max()) {
-            return std::optional<std::vector<Range>>();
+            return RangeConversion{/*use_index=*/false, {}};
         }
         if (from < 0) {
             from = position;
         } else if (position != to + 1) {
             if (ranges.size() >=
                 static_cast<size_t>(PrimaryKeySortedIndexResult::kMaxIndexedRangesPerFile)) {
-                return std::optional<std::vector<Range>>();
+                return RangeConversion{/*use_index=*/false, {}};
             }
             ranges.emplace_back(from, to);
             from = position;
@@ -76,10 +79,10 @@ Result<std::optional<std::vector<Range>>> ToRanges(const GlobalIndexResult& resu
     }
     if (ranges.size() >=
         static_cast<size_t>(PrimaryKeySortedIndexResult::kMaxIndexedRangesPerFile)) {
-        return std::optional<std::vector<Range>>();
+        return RangeConversion{/*use_index=*/false, {}};
     }
     ranges.emplace_back(from, to);
-    return std::optional<std::vector<Range>>(std::move(ranges));
+    return RangeConversion{/*use_index=*/true, std::move(ranges)};
 }
 }  // namespace
 
@@ -123,17 +126,18 @@ Result<std::vector<std::shared_ptr<Split>>> PrimaryKeySortedIndexResult::ToSplit
         if (is_empty) {
             continue;
         }
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::vector<Range>> ranges,
+        PAIMON_ASSIGN_OR_RAISE(RangeConversion range_conversion,
                                ToRanges(*result, file.DataFile()->row_count));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataSplitImpl> single_file_split,
                                ToSingleFileSplit(file));
-        if (ranges == std::nullopt) {
+        if (!range_conversion.use_index) {
             // The index returned an invalid or over-fragmented row position set; fall back
             // to a normal scan for this file.
             splits.push_back(std::move(single_file_split));
         } else {
-            splits.push_back(std::make_shared<IndexedSplitImpl>(
-                std::move(single_file_split), std::move(ranges).value(), std::vector<float>()));
+            splits.push_back(std::make_shared<IndexedSplitImpl>(std::move(single_file_split),
+                                                                std::move(range_conversion.ranges),
+                                                                std::vector<float>()));
         }
     }
     return splits;

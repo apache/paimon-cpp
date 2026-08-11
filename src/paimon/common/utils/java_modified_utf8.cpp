@@ -52,7 +52,7 @@ Result<std::string> JavaModifiedUtf8::Encode(std::string_view utf8) {
     out.reserve(utf8.size());
     size_t i = 0;
     while (i < utf8.size()) {
-        uint8_t byte0 = static_cast<uint8_t>(utf8[i]);
+        auto byte0 = static_cast<uint8_t>(utf8[i]);
         if (byte0 < 0x80) {
             if (byte0 == 0) {
                 // Java encodes U+0000 as the overlong two-byte form.
@@ -81,7 +81,7 @@ Result<std::string> JavaModifiedUtf8::Encode(std::string_view utf8) {
             return MalformedInput("truncated sequence", i);
         }
         for (int32_t k = 1; k <= continuation_count; k++) {
-            uint8_t continuation = static_cast<uint8_t>(utf8[i + k]);
+            auto continuation = static_cast<uint8_t>(utf8[i + k]);
             if ((continuation & 0xC0) != 0x80) {
                 return MalformedInput("invalid continuation byte", i + k);
             }
@@ -116,7 +116,7 @@ Result<std::string> JavaModifiedUtf8::Decode(std::string_view modified_utf8) {
     uint32_t pending_high_surrogate = 0;
     bool has_pending_high_surrogate = false;
     while (i < modified_utf8.size()) {
-        uint8_t byte0 = static_cast<uint8_t>(modified_utf8[i]);
+        auto byte0 = static_cast<uint8_t>(modified_utf8[i]);
         uint32_t unit = 0;
         if (byte0 < 0x80) {
             if (byte0 == 0) {
@@ -129,7 +129,7 @@ Result<std::string> JavaModifiedUtf8::Decode(std::string_view modified_utf8) {
             if (i + 1 >= modified_utf8.size()) {
                 return MalformedInput("truncated two-byte sequence", i);
             }
-            uint8_t byte1 = static_cast<uint8_t>(modified_utf8[i + 1]);
+            auto byte1 = static_cast<uint8_t>(modified_utf8[i + 1]);
             if ((byte1 & 0xC0) != 0x80) {
                 return MalformedInput("invalid continuation byte", i + 1);
             }
@@ -139,8 +139,8 @@ Result<std::string> JavaModifiedUtf8::Decode(std::string_view modified_utf8) {
             if (i + 2 >= modified_utf8.size()) {
                 return MalformedInput("truncated three-byte sequence", i);
             }
-            uint8_t byte1 = static_cast<uint8_t>(modified_utf8[i + 1]);
-            uint8_t byte2 = static_cast<uint8_t>(modified_utf8[i + 2]);
+            auto byte1 = static_cast<uint8_t>(modified_utf8[i + 1]);
+            auto byte2 = static_cast<uint8_t>(modified_utf8[i + 2]);
             if ((byte1 & 0xC0) != 0x80 || (byte2 & 0xC0) != 0x80) {
                 return MalformedInput("invalid continuation byte", i + 1);
             }
