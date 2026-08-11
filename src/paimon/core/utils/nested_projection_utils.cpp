@@ -446,6 +446,43 @@ Result<std::vector<std::string>> NestedProjectionUtils::GetMapSelectedKeys(
     return result;
 }
 
+bool NestedProjectionUtils::IsMapSharedShreddingAccessField(
+    const std::shared_ptr<arrow::Field>& field) {
+    if (field->type()->id() != arrow::Type::STRUCT || !field->HasMetadata() || !field->metadata()) {
+        return false;
+    }
+    return field->metadata()->Contains(DataField::MAP_SELECTED_KEYS);
+}
+
+Result<std::shared_ptr<arrow::DataType>>
+NestedProjectionUtils::BuildMapSharedShreddingAccessDataType(
+    const std::shared_ptr<arrow::Field>& read_field,
+    const std::shared_ptr<arrow::DataType>& data_type) {
+    if (!IsMapSharedShreddingAccessField(read_field)) {
+        return Status::Invalid(
+            fmt::format("field {} is not a selected-key MAP projection", read_field->name()));
+    }
+    if (data_type->id() != arrow::Type::MAP) {
+        return Status::Invalid(
+            fmt::format("selected-key MAP projection {} requires MAP data type, got {}",
+                        read_field->name(), data_type->ToString()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys, GetMapSelectedKeys(read_field));
+    auto read_struct = arrow::internal::checked_pointer_cast<arrow::StructType>(read_field->type());
+    if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
+        return Status::Invalid(
+            fmt::format("selected-key metadata size {} does not match STRUCT field count {} for {}",
+                        selected_keys.size(), read_struct->num_fields(), read_field->name()));
+    }
+    auto data_map = arrow::internal::checked_pointer_cast<arrow::MapType>(data_type);
+    arrow::FieldVector data_children;
+    data_children.reserve(read_struct->num_fields());
+    for (const auto& read_child : read_struct->fields()) {
+        data_children.push_back(read_child->WithType(data_map->item_type()));
+    }
+    return arrow::struct_(std::move(data_children));
+}
+
 namespace {
 
 struct MapKeyAccessor {

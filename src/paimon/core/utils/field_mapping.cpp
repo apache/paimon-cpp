@@ -108,9 +108,16 @@ Result<ExistFieldInfo> FieldMappingBuilder::CreateExistFieldInfo(
 
             // Recursively prune nested types in data_field to match read_field's
             // projection. For atomic types this is a no-op.
-            PAIMON_ASSIGN_OR_RAISE(
-                std::optional<std::shared_ptr<arrow::DataType>> pruned_type,
-                NestedProjectionUtils::PruneDataType(read_field.Type(), data_field.Type()));
+            std::optional<std::shared_ptr<arrow::DataType>> pruned_type;
+            if (NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field.ArrowField())) {
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> map_access_data_type,
+                                       NestedProjectionUtils::BuildMapSharedShreddingAccessDataType(
+                                           read_field.ArrowField(), data_field.Type()));
+                pruned_type = std::move(map_access_data_type);
+            } else {
+                PAIMON_ASSIGN_OR_RAISE(pruned_type, NestedProjectionUtils::PruneDataType(
+                                                        read_field.Type(), data_field.Type()));
+            }
             if (!pruned_type.has_value()) {
                 // All sub-fields pruned away — treat as non-existent.
                 continue;

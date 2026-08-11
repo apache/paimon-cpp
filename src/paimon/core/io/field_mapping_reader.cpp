@@ -51,6 +51,17 @@ Result<bool> FieldMappingReader::HasMapSelectedKeysRecursively(
         return false;
     }
     auto type_id = read_field->type()->id();
+    if (NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field)) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                               NestedProjectionUtils::GetMapSelectedKeys(read_field));
+        auto read_struct = arrow::internal::checked_pointer_cast<arrow::StructType>(read_field->type());
+        if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
+            return Status::Invalid(fmt::format(
+                "selected-key metadata size {} does not match STRUCT field count {} for {}",
+                selected_keys.size(), read_struct->num_fields(), read_field->name()));
+        }
+        return true;
+    }
     if (type_id == arrow::Type::MAP) {
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
                                NestedProjectionUtils::GetMapSelectedKeys(read_field));
@@ -75,6 +86,11 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::FilterMapSelectedKeysR
     }
 
     auto type_id = read_field->type()->id();
+    if (NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field)) {
+        // The shared-shredding wrapper (including its legacy MAP fallback) has already
+        // materialized this projection as a STRUCT.
+        return array;
+    }
     if (type_id == arrow::Type::MAP) {
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
                                NestedProjectionUtils::GetMapSelectedKeys(read_field));

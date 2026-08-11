@@ -256,8 +256,7 @@ AbstractSplitRead::ApplySharedShreddingReaderIfNeeded(
                            file_reader->GetFileSchema());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_arrow_schema,
                                       arrow::ImportSchema(file_schema.get()));
-    std::map<std::string, MapSharedShreddingFileReader::SharedShreddingContext>
-        shared_shredding_name_to_context;
+    std::map<std::string, std::unique_ptr<MapFieldReadPlan>> field_read_plans;
     for (const auto& read_field : read_schema->fields()) {
         const auto& field_name = read_field->name();
         auto file_field = file_arrow_schema->GetFieldByName(field_name);
@@ -267,35 +266,49 @@ AbstractSplitRead::ApplySharedShreddingReaderIfNeeded(
         }
         std::shared_ptr<arrow::KeyValueMetadata> metadata =
             std::const_pointer_cast<arrow::KeyValueMetadata>(file_field->metadata());
-        if (!MapSharedShreddingUtils::HasShreddingMetadata(metadata)) {
-            // not a map shared shredding field
+        bool is_shared_shredding_file = MapSharedShreddingUtils::HasShreddingMetadata(metadata);
+        bool is_shared_shredding_map_access =
+            NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field);
+        if (!is_shared_shredding_file && !is_shared_shredding_map_access) {
+            // Neither a shared-shredding file field nor a selected-key STRUCT projection.
             continue;
         }
-        // get meta
-        PAIMON_ASSIGN_OR_RAISE(MapSharedShreddingFieldMeta meta,
-                               MapSharedShreddingUtils::DeserializeMetadata(metadata));
-        // get selected_keys
+
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
                                NestedProjectionUtils::GetMapSelectedKeys(read_field));
-        if (selected_keys.empty()) {
-            // select all keys
-            selected_keys.reserve(meta.name_to_id.size());
-            for (const auto& [key_name, _] : meta.name_to_id) {
-                selected_keys.push_back(key_name);
+        std::unique_ptr<MapFieldReadPlan> field_read_plan;
+        if (is_shared_shredding_map_access) {
+            if (is_shared_shredding_file) {
+                PAIMON_ASSIGN_OR_RAISE(MapSharedShreddingFieldMeta meta,
+                                       MapSharedShreddingUtils::DeserializeMetadata(metadata));
+                PAIMON_ASSIGN_OR_RAISE(field_read_plan,
+                                       MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(
+                                           read_field, meta, selected_keys));
+            } else {
+                PAIMON_ASSIGN_OR_RAISE(field_read_plan,
+                                       MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
+                                           file_field, read_field, selected_keys));
             }
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(MapSharedShreddingFieldMeta meta,
+                                   MapSharedShreddingUtils::DeserializeMetadata(metadata));
+            if (selected_keys.empty()) {
+                selected_keys.reserve(meta.name_to_id.size());
+                for (const auto& [key_name, _] : meta.name_to_id) {
+                    selected_keys.push_back(key_name);
+                }
+            }
+            PAIMON_ASSIGN_OR_RAISE(field_read_plan, MapFieldReadPlanFactory::CreateFullMapReadPlan(
+                                                        read_field, meta, selected_keys));
         }
-        // get map type
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(read_field->type());
-        shared_shredding_name_to_context.emplace(
-            field_name,
-            MapSharedShreddingFileReader::SharedShreddingContext(meta, selected_keys, map_type));
+        field_read_plans.emplace(field_name, std::move(field_read_plan));
         PAIMON_ASSIGN_OR_RAISE(int32_t field_id,
                                NestedProjectionUtils::GetPaimonFieldId(read_field));
         handled_shared_shredding_field_ids.insert(field_id);
     }
-    if (!shared_shredding_name_to_context.empty()) {
+    if (!field_read_plans.empty()) {
         file_reader = std::make_unique<MapSharedShreddingFileReader>(
-            std::move(file_reader), std::move(shared_shredding_name_to_context), pool_);
+            std::move(file_reader), std::move(field_read_plans), pool_);
     }
     return std::make_pair(std::move(file_reader), std::move(handled_shared_shredding_field_ids));
 }

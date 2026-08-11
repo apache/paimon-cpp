@@ -19,14 +19,91 @@
 
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "arrow/util/key_value_metadata.h"
 #include "fmt/format.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 
 namespace paimon {
+
+class MapSharedShreddingAccessBuilder::Impl {
+ public:
+    Impl(const std::shared_ptr<arrow::Field>& _map_field,
+         const std::shared_ptr<arrow::MapType>& _map_type)
+        : map_field(_map_field), map_type(_map_type) {}
+
+    std::shared_ptr<arrow::Field> map_field;
+    std::shared_ptr<arrow::MapType> map_type;
+    std::vector<std::string> keys;
+    std::unordered_set<std::string> unique_keys;
+};
+
+MapSharedShreddingAccessBuilder::~MapSharedShreddingAccessBuilder() = default;
+
+MapSharedShreddingAccessBuilder::MapSharedShreddingAccessBuilder(std::unique_ptr<Impl>&& impl)
+    : impl_(std::move(impl)) {}
+
+Result<std::unique_ptr<MapSharedShreddingAccessBuilder>> MapSharedShreddingAccessBuilder::Create(
+    struct ArrowSchema* map_field) {
+    if (!map_field) {
+        return Status::Invalid("MAP field is null");
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Field> field,
+                                      arrow::ImportField(map_field));
+    if (field->type()->id() != arrow::Type::MAP) {
+        return Status::Invalid(
+            fmt::format("MapSharedShreddingAccessBuilder requires MAP field, got {}",
+                        field->type()->ToString()));
+    }
+    auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(field->type());
+    if (map_type->key_type()->id() != arrow::Type::STRING) {
+        return Status::Invalid(fmt::format(
+            "MapSharedShreddingAccessBuilder only supports MAP with STRING keys, got {}",
+            map_type->key_type()->ToString()));
+    }
+    auto impl = std::make_unique<Impl>(field, map_type);
+    return std::unique_ptr<MapSharedShreddingAccessBuilder>(
+        new MapSharedShreddingAccessBuilder(std::move(impl)));
+}
+
+Status MapSharedShreddingAccessBuilder::AddKey(const std::string& key) {
+    if (!impl_->unique_keys.insert(key).second) {
+        return Status::Invalid(fmt::format("selected MAP key must not be duplicated: {}", key));
+    }
+    impl_->keys.push_back(key);
+    return Status::OK();
+}
+
+Result<std::unique_ptr<struct ArrowSchema>> MapSharedShreddingAccessBuilder::Build() const {
+    if (impl_->keys.empty()) {
+        return Status::Invalid(
+            "shared shredding MAP selected-key projection needs at least one key");
+    }
+    arrow::FieldVector fields;
+    fields.reserve(impl_->keys.size());
+    std::string encoded_keys;
+    for (size_t i = 0; i < impl_->keys.size(); ++i) {
+        if (i != 0) {
+            encoded_keys.push_back(',');
+        }
+        encoded_keys.append(impl_->keys[i]);
+        fields.push_back(arrow::field(std::to_string(i), impl_->map_type->item_type(),
+                                      /*nullable=*/true));
+    }
+    auto metadata = arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {encoded_keys});
+    auto access_field = impl_->map_field->WithType(arrow::struct_(std::move(fields)))
+                            ->WithMetadata(std::move(metadata));
+    auto field = std::make_unique<struct ArrowSchema>();
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportField(*access_field, field.get()));
+    return field;
+}
 
 Result<std::unique_ptr<::ArrowSchema>> MapSharedShreddingSchemaUtils::LogicalToPhysicalSchema(
     std::unique_ptr<::ArrowSchema> logical_schema,

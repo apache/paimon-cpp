@@ -33,21 +33,52 @@
 
 namespace paimon {
 
+class MapFieldReadPlan {
+ public:
+    virtual ~MapFieldReadPlan() = default;
+
+    MapFieldReadPlan(const std::shared_ptr<arrow::Field>& logical_field,
+                     const std::shared_ptr<arrow::Field>& physical_read_field)
+        : logical_field_(logical_field), physical_read_field_(physical_read_field) {}
+
+    const std::shared_ptr<arrow::Field>& LogicalField() const {
+        return logical_field_;
+    }
+
+    const std::shared_ptr<arrow::Field>& PhysicalReadField() const {
+        return physical_read_field_;
+    }
+
+    virtual Result<std::shared_ptr<arrow::Array>> Materialize(
+        const std::shared_ptr<arrow::Array>& physical_array,
+        arrow::MemoryPool* arrow_pool) const = 0;
+
+ private:
+    std::shared_ptr<arrow::Field> logical_field_;
+    std::shared_ptr<arrow::Field> physical_read_field_;
+};
+
+class MapFieldReadPlanFactory {
+ public:
+    static Result<std::unique_ptr<MapFieldReadPlan>> CreateFullMapReadPlan(
+        const std::shared_ptr<arrow::Field>& logical_map_field,
+        const MapSharedShreddingFieldMeta& meta, const std::vector<std::string>& selected_keys);
+
+    static Result<std::unique_ptr<MapFieldReadPlan>> CreateSharedSelectedKeysReadPlan(
+        const std::shared_ptr<arrow::Field>& selected_keys_field,
+        const MapSharedShreddingFieldMeta& meta, const std::vector<std::string>& selected_keys);
+
+    static Result<std::unique_ptr<MapFieldReadPlan>> CreateDefaultSelectedKeysReadPlan(
+        const std::shared_ptr<arrow::Field>& file_map_field,
+        const std::shared_ptr<arrow::Field>& selected_keys_field,
+        const std::vector<std::string>& selected_keys);
+};
+
 class MapSharedShreddingFileReader : public FileBatchReader {
  public:
-    struct SharedShreddingContext {
-        SharedShreddingContext(const MapSharedShreddingFieldMeta& _meta,
-                               const std::vector<std::string>& _selected_keys,
-                               const std::shared_ptr<arrow::MapType>& _map_type)
-            : meta(_meta), selected_keys(_selected_keys), map_type(_map_type) {}
-        MapSharedShreddingFieldMeta meta;
-        std::vector<std::string> selected_keys;
-        std::shared_ptr<arrow::MapType> map_type;
-    };
-
     MapSharedShreddingFileReader(
         std::unique_ptr<FileBatchReader>&& reader,
-        std::map<std::string, SharedShreddingContext>&& shared_shredding_name_to_context,
+        std::map<std::string, std::unique_ptr<MapFieldReadPlan>>&& field_read_plans,
         const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override;
@@ -70,25 +101,13 @@ class MapSharedShreddingFileReader : public FileBatchReader {
     bool SupportPreciseBitmapSelection() const override;
 
  private:
-    Result<std::shared_ptr<arrow::Array>> RebuildLogicalMapArray(
-        const std::shared_ptr<arrow::Field>& physical_field,
-        const std::shared_ptr<arrow::StructArray>& physical_struct_array) const;
-
-    static std::vector<std::pair<std::string, int32_t>> ResolveSelectedKeyIds(
-        const MapSharedShreddingFieldMeta& meta, const std::vector<std::string>& selected_keys);
-
-    static void CollectPhysicalColumns(
-        const std::shared_ptr<arrow::StructArray>& physical_struct_array,
-        std::map<std::string, std::shared_ptr<arrow::Array>>* physical_column_name_to_array,
-        std::shared_ptr<arrow::MapArray>* overflow_array);
-
     static Result<std::shared_ptr<arrow::Field>> ToLogicalMapField(
         const std::shared_ptr<arrow::Field>& physical_field);
 
  private:
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<FileBatchReader> reader_;
-    std::map<std::string, SharedShreddingContext> shared_shredding_name_to_context_;
+    std::map<std::string, std::unique_ptr<MapFieldReadPlan>> field_read_plans_;
 };
 
 }  // namespace paimon

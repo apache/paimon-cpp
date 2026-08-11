@@ -27,9 +27,79 @@
 #include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+std::unique_ptr<ArrowSchema> ExportField(const std::shared_ptr<arrow::Field>& field) {
+    auto c_field = std::make_unique<ArrowSchema>();
+    EXPECT_TRUE(arrow::ExportField(*field, c_field.get()).ok());
+    return c_field;
+}
+
+}  // namespace
+
+TEST(MapSharedShreddingAccessBuilderTest, BuildSelectedKeysField) {
+    auto original_metadata =
+        arrow::KeyValueMetadata::Make({DataField::FIELD_ID, DataField::DESCRIPTION, "custom.key"},
+                                      {"7", "original description", "custom.value"});
+    auto map_type = arrow::map(arrow::utf8(), arrow::field("value", arrow::int64(), false));
+    auto map_field = arrow::field("attributes", map_type, /*nullable=*/false, original_metadata);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> builder,
+                         MapSharedShreddingAccessBuilder::Create(ExportField(map_field).get()));
+    ASSERT_OK(builder->AddKey("age"));
+    ASSERT_OK(builder->AddKey("score"));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_field, builder->Build());
+    auto imported_field = arrow::ImportField(c_field.get());
+    ASSERT_TRUE(imported_field.ok());
+    std::shared_ptr<arrow::Field> field = imported_field.ValueOrDie();
+    ASSERT_EQ(field->name(), "attributes");
+    ASSERT_EQ(field->type()->id(), arrow::Type::STRUCT);
+    ASSERT_FALSE(field->nullable());
+
+    auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(field->type());
+    ASSERT_EQ(struct_type->num_fields(), 2);
+    ASSERT_EQ(struct_type->field(0)->name(), "0");
+    ASSERT_EQ(struct_type->field(1)->name(), "1");
+    ASSERT_TRUE(struct_type->field(0)->type()->Equals(arrow::int64()));
+    ASSERT_TRUE(struct_type->field(1)->type()->Equals(arrow::int64()));
+    ASSERT_TRUE(struct_type->field(0)->nullable());
+    ASSERT_TRUE(struct_type->field(1)->nullable());
+    ASSERT_FALSE(field->metadata()->Contains(DataField::FIELD_ID));
+    ASSERT_FALSE(field->metadata()->Contains(DataField::DESCRIPTION));
+    ASSERT_FALSE(field->metadata()->Contains("custom.key"));
+    ASSERT_TRUE(field->metadata()->Contains(DataField::MAP_SELECTED_KEYS));
+    ASSERT_EQ(field->metadata()->Get(DataField::MAP_SELECTED_KEYS).ValueOrDie(), "age,score");
+}
+
+TEST(MapSharedShreddingAccessBuilderTest, RejectInvalidKeys) {
+    {
+        auto map_field = arrow::field("attributes", arrow::map(arrow::utf8(), arrow::int64()));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> builder,
+                             MapSharedShreddingAccessBuilder::Create(ExportField(map_field).get()));
+        ASSERT_NOK_WITH_MSG(builder->Build(), "at least one key");
+    }
+    {
+        auto map_field = arrow::field("attributes", arrow::map(arrow::utf8(), arrow::int64()));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> builder,
+                             MapSharedShreddingAccessBuilder::Create(ExportField(map_field).get()));
+        ASSERT_OK(builder->AddKey("a"));
+        ASSERT_NOK_WITH_MSG(builder->AddKey("a"), "must not be duplicated");
+    }
+}
+
+TEST(MapSharedShreddingAccessBuilderTest, RejectInvalidMapField) {
+    ASSERT_NOK_WITH_MSG(MapSharedShreddingAccessBuilder::Create(nullptr), "MAP field is null");
+    ASSERT_NOK_WITH_MSG(MapSharedShreddingAccessBuilder::Create(
+                            ExportField(arrow::field("v", arrow::int64())).get()),
+                        "requires MAP field");
+    auto non_string_map = arrow::field("attributes", arrow::map(arrow::int32(), arrow::int64()));
+    ASSERT_NOK_WITH_MSG(MapSharedShreddingAccessBuilder::Create(ExportField(non_string_map).get()),
+                        "only supports MAP with STRING keys");
+}
 
 TEST(MapSharedShreddingSchemaUtilsTest, AttachMetadataToSchemaBasic) {
     MapSharedShreddingFieldMeta tags_meta;
