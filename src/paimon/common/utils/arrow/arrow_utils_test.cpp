@@ -435,7 +435,7 @@ namespace {
 /// A buffer that rebasing must expose as a view into the source.
 // This struct tells where a ArrayData stores value.
 struct SharedBuffer {
-    std::vector<int> child_path;
+    std::vector<int32_t> child_path;
     int buffer_index;
 };
 
@@ -501,9 +501,9 @@ std::vector<NormalizeCase> NormalizeCases() {
 }
 
 const arrow::ArrayData& ResolvePath(const arrow::ArrayData& data,
-                                    const std::vector<int>& child_path) {
+                                    const std::vector<int32_t>& child_path) {
     const arrow::ArrayData* node = &data;
-    for (int child_index : child_path) {
+    for (int32_t child_index : child_path) {
         node = node->child_data[child_index].get();
     }
     return *node;
