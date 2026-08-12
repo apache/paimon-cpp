@@ -535,6 +535,26 @@ std::shared_ptr<arrow::RecordBatch> MakeSliceBatch(const std::shared_ptr<arrow::
                                     {array->Slice(offset, length)});
 }
 
+/// Checks that normalization keeps the same rows with every offset zeroed. `array` is used as a
+/// single column batch, so its own offset is whatever the caller built it with.
+void CheckNormalizedArray(const std::shared_ptr<arrow::Array>& array) {
+    SCOPED_TRACE("type=" + array->type()->ToString());
+    std::shared_ptr<arrow::RecordBatch> batch = arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("f", array->type())}), array->length(), {array});
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::RecordBatch> normalized,
+        ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow::default_memory_pool()));
+    // A batch that needs normalization must not be returned unchanged.
+    ASSERT_NE(normalized.get(), batch.get());
+
+    arrow::Status validated = normalized->ValidateFull();
+    ASSERT_TRUE(validated.ok()) << validated.ToString();
+    ASSERT_TRUE(normalized->Equals(*batch))
+        << "expected " << batch->ToString() << " but got " << normalized->ToString();
+    ExpectAllOffsetsZero(*normalized->column_data(0), "f");
+}
+
 /// Slices `array` and checks that normalization keeps the same rows with every offset zeroed.
 void CheckNormalizedSlice(const std::shared_ptr<arrow::Array>& array, int64_t offset,
                           int64_t length) {
@@ -596,6 +616,68 @@ TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsetsSharesValueBuffers) {
                                    *source.buffers[value_buffer.buffer_index]))
                 << "value buffer was copied instead of sliced";
         }
+    }
+}
+
+// Check the situation that child offsets are non-zero while parent offset is zero.
+TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsetsRebasesNestedOffsetsUnderZeroParent) {
+    std::shared_ptr<arrow::Array> ints =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2, 3, 4, 5, 6, 7]")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> texts =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::utf8(), R"(["a", "bb", null, "dddd", "e", "ff", "ggg", "h"])")
+            .ValueOrDie();
+
+    {
+        // struct whose children are sliced: parent offset 0, both children offset 2
+        std::shared_ptr<arrow::Array> array =
+            arrow::StructArray::Make({ints->Slice(2, 4), texts->Slice(2, 4)},
+                                     std::vector<std::string>{"a", "b"})
+                .ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        ASSERT_EQ(array->data()->child_data[0]->offset, 2);
+        ASSERT_EQ(array->data()->child_data[1]->offset, 2);
+        CheckNormalizedArray(array);
+    }
+    {
+        // only the innermost array is sliced, so detection has to walk two levels down
+        std::shared_ptr<arrow::Array> inner =
+            arrow::StructArray::Make({ints->Slice(3, 4)}, std::vector<std::string>{"a"})
+                .ValueOrDie();
+        std::shared_ptr<arrow::Array> array =
+            arrow::StructArray::Make({inner}, std::vector<std::string>{"inner"}).ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        ASSERT_EQ(array->data()->child_data[0]->offset, 0);
+        ASSERT_EQ(array->data()->child_data[0]->child_data[0]->offset, 3);
+        CheckNormalizedArray(array);
+    }
+    {
+        // list built over sliced values: parent offset 0, values offset 2, and the list offsets
+        // address the values relative to that slice
+        std::shared_ptr<arrow::Array> offsets =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 1, 3, 4]")
+                .ValueOrDie();
+        std::shared_ptr<arrow::Array> array =
+            arrow::ListArray::FromArrays(*offsets, *ints->Slice(2, 4)).ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        ASSERT_EQ(array->data()->child_data[0]->offset, 2);
+        CheckNormalizedArray(array);
+    }
+    {
+        // map built over sliced keys and items, which land under the entries struct. Map keys
+        // cannot be null, so this slice avoids the null in `texts`.
+        std::shared_ptr<arrow::Array> offsets =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 2, 2, 4]").ValueOrDie();
+        std::shared_ptr<arrow::Array> array =
+            arrow::MapArray::FromArrays(offsets, texts->Slice(3, 4), ints->Slice(4, 4))
+                .ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        const arrow::ArrayData& entries = *array->data()->child_data[0];
+        ASSERT_EQ(entries.offset, 0);
+        ASSERT_EQ(entries.child_data[0]->offset, 3);
+        ASSERT_EQ(entries.child_data[1]->offset, 4);
+        CheckNormalizedArray(array);
     }
 }
 
