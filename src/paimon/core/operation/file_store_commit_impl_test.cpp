@@ -1696,7 +1696,8 @@ TEST_F(FileStoreCommitImplTest, TestCreateManifestCommittable) {
     auto commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
         std::shared_ptr<FileStoreCommit>(std::move(commit)));
     std::vector<std::shared_ptr<CommitMessage>> msgs;
-    auto committable = commit_impl->CreateManifestCommittable(1, msgs, 30);
+    const std::map<std::string, std::string> properties;
+    auto committable = commit_impl->CreateManifestCommittable(1, msgs, 30, properties);
     ASSERT_TRUE(committable);
     EXPECT_EQ(1, committable->Identifier());
     EXPECT_EQ(30, committable->Watermark().value());
@@ -1764,7 +1765,8 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommitted) {
                               "/orc/append_09.db/append_09/commit_messages/"
                               "commit_messages-01",
                           /*version=*/3);
-    auto committable = commit_impl->CreateManifestCommittable(1, msgs, std::nullopt);
+    const std::map<std::string, std::string> properties;
+    auto committable = commit_impl->CreateManifestCommittable(1, msgs, std::nullopt, properties);
     std::vector<std::shared_ptr<ManifestCommittable>> committables = {committable};
 
     // Test with no previous snapshots
@@ -1772,7 +1774,8 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommitted) {
     ASSERT_EQ(filtered_committables.size(), committables.size());
 
     // Test with a previous snapshot
-    ASSERT_OK(commit_impl->Commit(committable, /*check_append_files=*/false));
+    ASSERT_OK(commit_impl->Commit(committable, /*check_append_files=*/false,
+                                  /*retry_on_conflict=*/true, /*realtime_ranges=*/{}));
     ASSERT_OK_AND_ASSIGN(filtered_committables, commit_impl->FilterCommitted(committables));
     ASSERT_EQ(filtered_committables.size(), 0);
 }
@@ -1794,14 +1797,15 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommittedWithMultipleCommittables) {
                               "/orc/append_09.db/append_09/commit_messages/"
                               "commit_messages-01",
                           /*version=*/3);
-    auto committable1 = commit_impl->CreateManifestCommittable(1, msgs1, std::nullopt);
+    const std::map<std::string, std::string> properties;
+    auto committable1 = commit_impl->CreateManifestCommittable(1, msgs1, std::nullopt, properties);
 
     std::vector<std::shared_ptr<CommitMessage>> msgs2 =
         GetCommitMessages(paimon::test::GetDataDir() +
                               "/orc/append_09.db/append_09/commit_messages/"
                               "commit_messages-02",
                           /*version=*/3);
-    auto committable2 = commit_impl->CreateManifestCommittable(2, msgs2, std::nullopt);
+    auto committable2 = commit_impl->CreateManifestCommittable(2, msgs2, std::nullopt, properties);
 
     std::vector<std::shared_ptr<ManifestCommittable>> committables = {committable1, committable2};
 
@@ -1810,7 +1814,8 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommittedWithMultipleCommittables) {
     ASSERT_EQ(filtered_committables.size(), committables.size());
 
     // Test with a previous snapshot
-    ASSERT_OK(commit_impl->Commit(committable1, /*check_append_files=*/false));
+    ASSERT_OK(commit_impl->Commit(committable1, /*check_append_files=*/false,
+                                  /*retry_on_conflict=*/true, /*realtime_ranges=*/{}));
     ASSERT_OK_AND_ASSIGN(filtered_committables, commit_impl->FilterCommitted(committables));
     ASSERT_EQ(filtered_committables.size(), 1);
     ASSERT_EQ(filtered_committables[0]->Identifier(), committable2->Identifier());
@@ -1839,8 +1844,9 @@ TEST_F(FileStoreCommitImplTest, TestFilterCommittedRejectsDuplicateIdentifiers) 
                               "commit_messages-02",
                           /*version=*/3);
 
-    auto committable1 = commit_impl->CreateManifestCommittable(1, msgs1, std::nullopt);
-    auto committable2 = commit_impl->CreateManifestCommittable(1, msgs2, std::nullopt);
+    const std::map<std::string, std::string> properties;
+    auto committable1 = commit_impl->CreateManifestCommittable(1, msgs1, std::nullopt, properties);
+    auto committable2 = commit_impl->CreateManifestCommittable(1, msgs2, std::nullopt, properties);
 
     std::vector<std::shared_ptr<ManifestCommittable>> committables = {committable1, committable2};
     ASSERT_NOK_WITH_MSG(commit_impl->FilterCommitted(committables),

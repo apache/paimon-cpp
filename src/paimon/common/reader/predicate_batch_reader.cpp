@@ -22,6 +22,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,23 +31,24 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/memory_pool.h"
+#include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/predicate/predicate.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
 class MemoryPool;
 
 PredicateBatchReader::PredicateBatchReader(std::unique_ptr<BatchReader>&& reader,
-                                           const std::shared_ptr<PredicateFilter>& predicate_filter,
+                                           const std::shared_ptr<Predicate>& predicate,
                                            const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)),
-      reader_(std::move(reader)),
-      predicate_filter_(predicate_filter) {}
+    : arrow_pool_(GetArrowPool(pool)), reader_(std::move(reader)), predicate_(predicate) {}
 
 Result<std::unique_ptr<PredicateBatchReader>> PredicateBatchReader::Create(
     std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<Predicate>& predicate,
@@ -54,13 +56,12 @@ Result<std::unique_ptr<PredicateBatchReader>> PredicateBatchReader::Create(
     if (!predicate) {
         return Status::Invalid("create predicate batch reader failed. predicate is nullptr");
     }
-    auto predicate_filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
-    if (!predicate_filter) {
+    if (!std::dynamic_pointer_cast<PredicateFilter>(predicate)) {
         return Status::Invalid(
             fmt::format("predicate {} does not support Test", predicate->ToString()));
     }
     return std::unique_ptr<PredicateBatchReader>(
-        new PredicateBatchReader(std::move(reader), predicate_filter, pool));
+        new PredicateBatchReader(std::move(reader), predicate, pool));
 }
 
 Result<BatchReader::ReadBatch> PredicateBatchReader::NextBatch() {
@@ -91,8 +92,35 @@ Result<BatchReader::ReadBatchWithBitmap> PredicateBatchReader::NextBatchWithBitm
     }
 }
 
-Result<RoaringBitmap32> PredicateBatchReader::Filter(
-    const std::shared_ptr<arrow::Array>& array) const {
+Status PredicateBatchReader::BindPredicateToArray(const arrow::Array& array) {
+    if (array.type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid("predicate batch reader requires a struct array");
+    }
+    const auto& struct_type =
+        arrow::internal::checked_cast<const arrow::StructType&>(*array.type());
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(struct_type.fields());
+    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+        *schema, predicate_, /*validate_field_idx=*/false));
+
+    std::map<std::string, int32_t> field_name_to_index;
+    for (int32_t i = 0; i < schema->num_fields(); ++i) {
+        field_name_to_index.emplace(schema->field(i)->name(), i);
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<Predicate> bound_predicate,
+        PredicateUtils::CreatePickedFieldFilter(predicate_, field_name_to_index));
+    predicate_filter_ = std::dynamic_pointer_cast<PredicateFilter>(bound_predicate);
+    if (!predicate_filter_) {
+        return Status::Invalid("failed to bind predicate to reader schema");
+    }
+    predicate_.reset();
+    return Status::OK();
+}
+
+Result<RoaringBitmap32> PredicateBatchReader::Filter(const std::shared_ptr<arrow::Array>& array) {
+    if (!predicate_filter_) {
+        PAIMON_RETURN_NOT_OK(BindPredicateToArray(*array));
+    }
     PAIMON_ASSIGN_OR_RAISE(std::vector<char> result, predicate_filter_->Test(*array));
     assert(result.size() == static_cast<size_t>(array->length()));
     RoaringBitmap32 is_valid;

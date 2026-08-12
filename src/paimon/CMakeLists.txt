@@ -346,6 +346,7 @@ set(PAIMON_CORE_SRCS
     core/operation/commit/commit_changes_provider.cpp
     core/operation/commit/compacted_changelog_path_resolver.cpp
     core/operation/commit/overwrite_changes_provider.cpp
+    core/operation/commit/realtime_commit_properties.cpp
     core/operation/commit/row_id_column_conflict_checker.cpp
     core/operation/commit/manifest_entry_changes.cpp
     core/operation/commit/row_tracking_commit_utils.cpp
@@ -371,6 +372,10 @@ set(PAIMON_CORE_SRCS
     core/manifest/snapshot_live_manifest_entries.cpp
     core/operation/write_context.cpp
     core/operation/write_restore.cpp
+    core/realtime/arrow_mem_indexer.cpp
+    core/realtime/arrow_mem_indexer_factory.cpp
+    core/realtime/realtime_append_only_writer.cpp
+    core/realtime/realtime_context.cpp
     core/postpone/postpone_bucket_writer.cpp
     core/schema/arrow_schema_validator.cpp
     core/schema/schema_manager.cpp
@@ -399,6 +404,7 @@ set(PAIMON_CORE_SRCS
     core/table/source/merge_tree_split_generator.cpp
     core/table/source/data_evolution_split_generator.cpp
     core/table/source/plan_impl.cpp
+    core/table/source/realtime_table_scan.cpp
     core/table/source/snapshot/snapshot_reader.cpp
     core/table/source/startup_mode.cpp
     core/table/source/table_read.cpp
@@ -759,6 +765,8 @@ if(PAIMON_BUILD_TESTS)
                     core/manifest/index_manifest_entry_serializer_test.cpp
                     core/manifest/index_manifest_file_handler_test.cpp
                     core/memory/writer_memory_manager_test.cpp
+                    core/realtime/arrow_mem_indexer_test.cpp
+                    core/realtime/realtime_context_test.cpp
                     core/mergetree/levels_test.cpp
                     core/mergetree/lookup_file_test.cpp
                     core/mergetree/lookup_levels_test.cpp
@@ -820,6 +828,7 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/overwrite_changes_provider_test.cpp
                     core/operation/commit/row_id_column_conflict_checker_test.cpp
                     core/operation/commit/row_tracking_commit_utils_test.cpp
+                    core/operation/commit/realtime_commit_properties_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp
                     core/operation/commit/retry_waiter_test.cpp
                     core/operation/key_value_file_store_write_test.cpp

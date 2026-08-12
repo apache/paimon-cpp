@@ -430,6 +430,280 @@ TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsets) {
     ASSERT_EQ(unchanged_batch.get(), normalized_batch.get());
 }
 
+namespace {
+
+/// A buffer that rebasing must expose as a view into the source.
+// This struct tells where a ArrayData stores value.
+struct SharedBuffer {
+    std::vector<int32_t> child_path;
+    int buffer_index;
+};
+
+struct NormalizeCase {
+    std::shared_ptr<arrow::DataType> type;
+    std::string json;
+    /// The buffers holding the values of this layout, which rebasing must never copy.
+    std::vector<SharedBuffer> value_buffers;
+};
+
+/// Ten values per case, so that the slices taken below stay in range.
+std::vector<NormalizeCase> NormalizeCases() {
+    auto int_field = arrow::field("a", arrow::int32());
+    auto text_field = arrow::field("b", arrow::utf8());
+    return {
+        {arrow::boolean(),
+         "[true, null, false, true, true, null, false, false, true, null]",
+         {{{}, 1}}},
+        {arrow::int8(), "[0, 1, null, 3, 4, 5, null, 7, 8, 9]", {{{}, 1}}},
+        {arrow::int32(), "[0, 1, null, 3, 4, 5, null, 7, 8, 9]", {{{}, 1}}},
+        {arrow::int64(), "[0, 1, null, 3, 4, 5, null, 7, 8, 9]", {{{}, 1}}},
+        {arrow::float64(), "[0.5, 1.5, null, 3.5, 4.5, 5.5, null, 7.5, 8.5, 9.5]", {{{}, 1}}},
+        {arrow::date32(), "[0, 1, null, 3, 4, 5, null, 7, 8, 9]", {{{}, 1}}},
+        {arrow::timestamp(arrow::TimeUnit::MICRO),
+         "[0, 1, null, 3, 4, 5, null, 7, 8, 9]",
+         {{{}, 1}}},
+        {arrow::timestamp(arrow::TimeUnit::MILLI, "UTC"),
+         "[0, 1, null, 3, 4, 5, null, 7, 8, 9]",
+         {{{}, 1}}},
+        {arrow::decimal128(10, 2),
+         R"(["1.23", null, "3.45", "6.78", "0.01", null, "9.99", "8.88", "7.77", "6.66"])",
+         {{{}, 1}}},
+        // no nulls at all, so the validity bitmap is dropped rather than rebased
+        {arrow::int32(), "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]", {{{}, 1}}},
+        {arrow::utf8(),
+         R"(["a", null, "ccc", "dddd", "", "ffffff", null, "h", "ii", "jjj"])",
+         {{{}, 2}}},
+        {arrow::binary(),
+         R"(["a", null, "ccc", "dddd", "", "ffffff", null, "h", "ii", "jjj"])",
+         {{{}, 2}}},
+        {arrow::large_binary(),
+         R"(["a", null, "ccc", "dddd", "", "ffffff", null, "h", "ii", "jjj"])",
+         {{{}, 2}}},
+        {arrow::list(arrow::int32()),
+         "[[1], null, [2, 3], [], [4, 5, 6], null, [7], [8, 9], [], [10]]",
+         {{{0}, 1}}},
+        {arrow::large_list(arrow::int32()),
+         "[[1], null, [2, 3], [], [4, 5, 6], null, [7], [8, 9], [], [10]]",
+         {{{0}, 1}}},
+        {arrow::list(arrow::utf8()),
+         R"([["a"], null, ["bb", "ccc"], [], ["d"], null, ["e", "f"], [], ["g"], ["h"]])",
+         {{{0}, 2}}},
+        {arrow::struct_({int_field, text_field}),
+         R"([{"a": 0, "b": "x"}, null, {"a": 2, "b": null}, {"a": null, "b": "yyy"},
+             {"a": 4, "b": "z"}, {"a": 5, "b": ""}, null, {"a": 7, "b": "w"},
+             {"a": 8, "b": "vv"}, {"a": 9, "b": "u"}])",
+         {{{0}, 1}, {{1}, 2}}},
+        // a list of structs exercises two levels of rebasing at once
+        {arrow::list(arrow::struct_({int_field, text_field})),
+         R"([[{"a": 0, "b": "x"}], null, [{"a": 2, "b": "y"}, {"a": 3, "b": null}], [],
+             [{"a": 4, "b": "z"}], null, [{"a": 6, "b": "w"}], [], [{"a": 8, "b": "v"}],
+             [{"a": 9, "b": "u"}]])",
+         {{{0, 0}, 1}, {{0, 1}, 2}}},
+        {arrow::map(arrow::utf8(), arrow::int32()),
+         R"([[["k0", 0]], null, [["k1", 1], ["k2", null]], [], [["k3", 3]], null,
+             [["k4", 4], ["k5", 5]], [], [["k6", 6]], [["k7", 7]]])",
+         {{{0, 0}, 2}, {{0, 1}, 1}}},
+    };
+}
+
+const arrow::ArrayData& ResolvePath(const arrow::ArrayData& data,
+                                    const std::vector<int32_t>& child_path) {
+    const arrow::ArrayData* node = &data;
+    for (int32_t child_index : child_path) {
+        node = node->child_data[child_index].get();
+    }
+    return *node;
+}
+
+void ExpectAllOffsetsZero(const arrow::ArrayData& data, const std::string& path) {
+    ASSERT_EQ(data.offset, 0) << "non-zero offset at " << path;
+    for (size_t i = 0; i < data.child_data.size(); i++) {
+        ExpectAllOffsetsZero(*data.child_data[i], path + "/child" + std::to_string(i));
+    }
+}
+
+/// A freshly allocated buffer cannot live inside a buffer that is still alive, so containment
+/// proves that `rebased` references the source bytes instead of copying them.
+bool IsViewInto(const arrow::Buffer& rebased, const arrow::Buffer& source) {
+    return rebased.data() >= source.data() &&
+           rebased.data() + rebased.size() <= source.data() + source.size();
+}
+
+std::shared_ptr<arrow::RecordBatch> MakeSliceBatch(const std::shared_ptr<arrow::Array>& array,
+                                                   int64_t offset, int64_t length) {
+    return arrow::RecordBatch::Make(arrow::schema({arrow::field("f", array->type())}), length,
+                                    {array->Slice(offset, length)});
+}
+
+/// Checks that normalization keeps the same rows with every offset zeroed. `array` is used as a
+/// single column batch, so its own offset is whatever the caller built it with.
+void CheckNormalizedArray(const std::shared_ptr<arrow::Array>& array) {
+    SCOPED_TRACE("type=" + array->type()->ToString());
+    std::shared_ptr<arrow::RecordBatch> batch = arrow::RecordBatch::Make(
+        arrow::schema({arrow::field("f", array->type())}), array->length(), {array});
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::RecordBatch> normalized,
+        ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow::default_memory_pool()));
+    // A batch that needs normalization must not be returned unchanged.
+    ASSERT_NE(normalized.get(), batch.get());
+
+    arrow::Status validated = normalized->ValidateFull();
+    ASSERT_TRUE(validated.ok()) << validated.ToString();
+    ASSERT_TRUE(normalized->Equals(*batch))
+        << "expected " << batch->ToString() << " but got " << normalized->ToString();
+    ExpectAllOffsetsZero(*normalized->column_data(0), "f");
+}
+
+/// Slices `array` and checks that normalization keeps the same rows with every offset zeroed.
+void CheckNormalizedSlice(const std::shared_ptr<arrow::Array>& array, int64_t offset,
+                          int64_t length) {
+    SCOPED_TRACE("type=" + array->type()->ToString() + " offset=" + std::to_string(offset) +
+                 " length=" + std::to_string(length));
+    std::shared_ptr<arrow::RecordBatch> batch = MakeSliceBatch(array, offset, length);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::RecordBatch> normalized,
+        ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow::default_memory_pool()));
+
+    arrow::Status validated = normalized->ValidateFull();
+    ASSERT_TRUE(validated.ok()) << validated.ToString();
+    ASSERT_TRUE(normalized->Equals(*batch))
+        << "expected " << batch->ToString() << " but got " << normalized->ToString();
+    ExpectAllOffsetsZero(*normalized->column_data(0), "f");
+}
+
+}  // namespace
+
+// Check the equality of normalized batches and original batches.
+TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsetsCoversSupportedTypes) {
+    for (const NormalizeCase& normalize_case : NormalizeCases()) {
+        SCOPED_TRACE("type=" + normalize_case.type->ToString());
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(normalize_case.type, normalize_case.json)
+                .ValueOrDie();
+        ASSERT_EQ(array->length(), 10);
+        // offset 0 takes the no-op path, offsets 1/3/5/9 are not byte aligned, offset 8 is
+        for (const auto& [offset, length] : std::vector<std::pair<int64_t, int64_t>>{
+                 {0, 10}, {1, 9}, {1, 3}, {3, 4}, {5, 5}, {8, 2}, {9, 1}, {2, 0}}) {
+            CheckNormalizedSlice(array, offset, length);
+        }
+    }
+}
+
+// Check the zero-copy property of value buffer rebasing.
+TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsetsSharesValueBuffers) {
+    for (const NormalizeCase& normalize_case : NormalizeCases()) {
+        SCOPED_TRACE("type=" + normalize_case.type->ToString());
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(normalize_case.type, normalize_case.json)
+                .ValueOrDie();
+        // A byte aligned offset lets bitmaps be sliced too, so nothing has to be copied here.
+        std::shared_ptr<arrow::RecordBatch> batch =
+            MakeSliceBatch(array, /*offset=*/8, /*length=*/2);
+
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::RecordBatch> normalized,
+            ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow::default_memory_pool()));
+        ASSERT_NE(normalized.get(), batch.get());
+
+        for (const SharedBuffer& value_buffer : normalize_case.value_buffers) {
+            SCOPED_TRACE("buffer_index=" + std::to_string(value_buffer.buffer_index));
+            const arrow::ArrayData& rebased =
+                ResolvePath(*normalized->column_data(0), value_buffer.child_path);
+            const arrow::ArrayData& source = ResolvePath(*array->data(), value_buffer.child_path);
+            ASSERT_TRUE(IsViewInto(*rebased.buffers[value_buffer.buffer_index],
+                                   *source.buffers[value_buffer.buffer_index]))
+                << "value buffer was copied instead of sliced";
+        }
+    }
+}
+
+// Check the situation that child offsets are non-zero while parent offset is zero.
+TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsetsRebasesNestedOffsetsUnderZeroParent) {
+    std::shared_ptr<arrow::Array> ints =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2, 3, 4, 5, 6, 7]")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> texts =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::utf8(), R"(["a", "bb", null, "dddd", "e", "ff", "ggg", "h"])")
+            .ValueOrDie();
+
+    {
+        // struct whose children are sliced: parent offset 0, both children offset 2
+        std::shared_ptr<arrow::Array> array =
+            arrow::StructArray::Make({ints->Slice(2, 4), texts->Slice(2, 4)},
+                                     std::vector<std::string>{"a", "b"})
+                .ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        ASSERT_EQ(array->data()->child_data[0]->offset, 2);
+        ASSERT_EQ(array->data()->child_data[1]->offset, 2);
+        CheckNormalizedArray(array);
+    }
+    {
+        // only the innermost array is sliced, so detection has to walk two levels down
+        std::shared_ptr<arrow::Array> inner =
+            arrow::StructArray::Make({ints->Slice(3, 4)}, std::vector<std::string>{"a"})
+                .ValueOrDie();
+        std::shared_ptr<arrow::Array> array =
+            arrow::StructArray::Make({inner}, std::vector<std::string>{"inner"}).ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        ASSERT_EQ(array->data()->child_data[0]->offset, 0);
+        ASSERT_EQ(array->data()->child_data[0]->child_data[0]->offset, 3);
+        CheckNormalizedArray(array);
+    }
+    {
+        // list built over sliced values: parent offset 0, values offset 2, and the list offsets
+        // address the values relative to that slice
+        std::shared_ptr<arrow::Array> offsets =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 1, 3, 4]")
+                .ValueOrDie();
+        std::shared_ptr<arrow::Array> array =
+            arrow::ListArray::FromArrays(*offsets, *ints->Slice(2, 4)).ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        ASSERT_EQ(array->data()->child_data[0]->offset, 2);
+        CheckNormalizedArray(array);
+    }
+    {
+        // map built over sliced keys and items, which land under the entries struct. Map keys
+        // cannot be null, so this slice avoids the null in `texts`.
+        std::shared_ptr<arrow::Array> offsets =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 2, 2, 4]").ValueOrDie();
+        std::shared_ptr<arrow::Array> array =
+            arrow::MapArray::FromArrays(offsets, texts->Slice(3, 4), ints->Slice(4, 4))
+                .ValueOrDie();
+        ASSERT_EQ(array->offset(), 0);
+        const arrow::ArrayData& entries = *array->data()->child_data[0];
+        ASSERT_EQ(entries.offset, 0);
+        ASSERT_EQ(entries.child_data[0]->offset, 3);
+        ASSERT_EQ(entries.child_data[1]->offset, 4);
+        CheckNormalizedArray(array);
+    }
+}
+
+TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsetsFallsBackForDictionary) {
+    // A dictionary is not part of child_data, so this layout takes the copying fallback.
+    std::shared_ptr<arrow::Array> indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, null, 2, 1, 0]")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["x", "yy", "zzz"])")
+            .ValueOrDie();
+    auto dictionary_type = arrow::dictionary(arrow::int32(), arrow::utf8());
+    std::shared_ptr<arrow::Array> array =
+        arrow::DictionaryArray::FromArrays(dictionary_type, indices, dictionary).ValueOrDie();
+
+    CheckNormalizedSlice(array, /*offset=*/1, /*length=*/4);
+    CheckNormalizedSlice(array, /*offset=*/3, /*length=*/3);
+
+    // The fallback copies, which is also what makes the sharing checks above meaningful.
+    std::shared_ptr<arrow::RecordBatch> batch = MakeSliceBatch(array, /*offset=*/1, /*length=*/4);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::RecordBatch> normalized,
+        ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow::default_memory_pool()));
+    ASSERT_FALSE(IsViewInto(*normalized->column_data(0)->buffers[1], *array->data()->buffers[1]));
+}
+
 TEST(ArrowUtilsTest, TestEqualsIgnoreNullable) {
     {
         // test simple

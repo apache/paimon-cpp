@@ -38,5 +38,10 @@
 #include "paimon/table/source/table_scan.h"  // IWYU pragma: export
 #include "paimon/write_context.h"            // IWYU pragma: export
 
+// IWYU pragma: begin_exports
+#include "paimon/realtime/mem_indexer.h"
+#include "paimon/realtime/realtime_context.h"
+// IWYU pragma: end_exports
+
 /// Top-level namespace for Paimon C++ API.
 namespace paimon {}

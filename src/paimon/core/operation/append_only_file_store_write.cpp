@@ -20,6 +20,7 @@
 
 #include <functional>
 #include <limits>
+#include <map>
 #include <vector>
 
 #include "arrow/c/bridge.h"
@@ -40,10 +41,12 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/append_only_file_store_scan.h"
+#include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/operation/restore_files.h"
+#include "paimon/core/realtime/realtime_append_only_writer.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
@@ -51,6 +54,7 @@
 #include "paimon/executor.h"
 #include "paimon/logging.h"
 #include "paimon/read_context.h"
+#include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
 namespace arrow {
 class Schema;
@@ -72,11 +76,13 @@ AppendOnlyFileStoreWrite::AppendOnlyFileStoreWrite(
     const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
     const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
     bool ignore_previous_files, bool is_streaming_mode, bool ignore_num_bucket_check,
+    const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
     : AbstractFileStoreWrite(file_store_path_factory, snapshot_manager, schema_manager, commit_user,
                              root_path, table_schema, schema, write_schema, partition_schema,
                              dv_maintainer_factory, io_manager, options, ignore_previous_files,
                              is_streaming_mode, ignore_num_bucket_check, executor, pool),
+      realtime_context_(realtime_context),
       logger_(Logger::GetLogger("AppendOnlyFileStoreWrite")) {
     write_cols_ = write_schema->field_names();
     // optimize write_cols to null in following cases:
@@ -86,9 +92,26 @@ AppendOnlyFileStoreWrite::AppendOnlyFileStoreWrite(
     if (schema->Equals(write_schema)) {
         write_cols_ = std::nullopt;
     }
+    if (realtime_context_) {
+        writer_memory_manager_ = std::make_unique<NoopWriterMemoryManager>();
+    }
 }
 
 AppendOnlyFileStoreWrite::~AppendOnlyFileStoreWrite() = default;
+
+Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
+    if (!realtime_context_) {
+        return Status::Invalid("refresh committed snapshot requires a real-time writer");
+    }
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(snapshot_id));
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeOffsetMap committed_offsets,
+        RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),
+                                              options_.GetFileSystem()));
+    PAIMON_RETURN_NOT_OK(
+        realtime_context_->AdvanceCommittedProgress(snapshot_id, committed_offsets));
+    return Status::OK();
+}
 
 Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreWrite::CreateFileStoreScan(
     const std::shared_ptr<ScanFilter>& scan_filter) const {
@@ -182,7 +205,8 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
                            file_store_path_factory_->CreateDataFilePathFactory(partition, bucket));
 
     std::shared_ptr<CompactManager> compact_manager;
-    if (options_.WriteOnly() || options_.DataEvolutionEnabled() || options_.GetBucket() == -1) {
+    if (realtime_context_ || options_.WriteOnly() || options_.DataEvolutionEnabled() ||
+        options_.GetBucket() == -1) {
         compact_manager = std::make_shared<NoopCompactManager>();
     } else {
         auto dv_factory =
@@ -212,10 +236,23 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
             compaction_metrics_->CreateReporter(partition, bucket), cancellation_controller);
     }
 
-    auto writer = std::make_unique<AppendOnlyWriter>(
+    auto writer = std::make_shared<AppendOnlyWriter>(
         options_, table_schema_->Id(), write_schema_, write_cols_, restore_max_seq_number,
         data_file_path_factory, compact_manager, pool_);
-    return std::shared_ptr<BatchWriter>(std::move(writer));
+    if (!realtime_context_) {
+        return std::shared_ptr<BatchWriter>(std::move(writer));
+    }
+
+    std::vector<std::pair<std::string, std::string>> partition_values;
+    PAIMON_ASSIGN_OR_RAISE(partition_values,
+                           file_store_path_factory_->GeneratePartitionVector(partition));
+    std::map<std::string, std::string> partition_map(partition_values.begin(),
+                                                     partition_values.end());
+    auto c_write_schema = std::make_unique<ArrowSchema>();
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*write_schema_, c_write_schema.get()));
+    return RealtimeAppendOnlyWriter::Create(partition_map, bucket, std::move(c_write_schema),
+                                            realtime_context_, writer, write_schema_,
+                                            options_.ToMap(), pool_);
 }
 
 Result<AppendOnlyFileStoreWrite::WriterFactory> AppendOnlyFileStoreWrite::GetDataFileWriterFactory(

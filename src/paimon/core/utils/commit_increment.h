@@ -20,10 +20,12 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include "paimon/core/compact/compact_deletion_file.h"
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_increment.h"
+#include "paimon/utils/range.h"
 
 namespace paimon {
 
@@ -56,10 +58,19 @@ class CommitIncrement {
         return compact_deletion_file_;
     }
 
+    const std::optional<Range>& GetRealtimeOffsetRange() const {
+        return realtime_offset_range_;
+    }
+
+    void SetRealtimeOffsetRange(const Range& offset_range) {
+        realtime_offset_range_ = offset_range;
+    }
+
  private:
     DataIncrement data_increment_;
     CompactIncrement compact_increment_;
     std::shared_ptr<CompactDeletionFile> compact_deletion_file_;
+    std::optional<Range> realtime_offset_range_;
 };
 
 }  // namespace paimon

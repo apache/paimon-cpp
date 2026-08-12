@@ -32,6 +32,7 @@
 #include "paimon/core/mergetree/compact/merge_function.h"
 #include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
 #include "paimon/core/operation/append_only_file_store_write.h"
+#include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/key_value_file_store_write.h"
 #include "paimon/core/options/merge_engine.h"
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
@@ -54,6 +55,14 @@ namespace paimon {
 struct KeyValue;
 template <typename T>
 class MergeFunctionWrapper;
+
+Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithProgress(int64_t) {
+    return Status::Invalid("prepare commit with progress requires a real-time writer");
+}
+
+Status FileStoreWrite::RefreshCommittedSnapshot(int64_t) {
+    return Status::Invalid("refresh committed snapshot requires a real-time writer");
+}
 
 Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<WriteContext> ctx) {
     if (ctx == nullptr) {
@@ -103,7 +112,6 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                                      options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
     auto snapshot_manager =
         std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath(), branch);
-
     std::shared_ptr<IOManager> io_manager;
     const auto& io_temp_dir = ctx->GetTempDirectory();
     if (!io_temp_dir.empty()) {
@@ -120,6 +128,26 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         } else if (options.GetBucket() <= 0) {
             return Status::Invalid(
                 fmt::format("not support bucket {} in append table", options.GetBucket()));
+        }
+        if (ctx->GetRealtimeContext()) {
+            if (options.GetBucket() <= 0) {
+                return Status::Invalid("real-time append write requires fixed bucket mode");
+            }
+            if (options.DataEvolutionEnabled() || !ctx->GetWriteSchema().empty()) {
+                return Status::Invalid("real-time append write does not support data evolution");
+            }
+            if (options.DeletionVectorsEnabled()) {
+                return Status::Invalid("real-time append write does not support deletion vectors");
+            }
+            PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
+                                   snapshot_manager->LatestSnapshot());
+            if (latest_snapshot) {
+                PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap realtime_committed_offsets,
+                                       RealtimeCommitProperties::ReadOffsets(
+                                           latest_snapshot, options.GetFileSystem()));
+                PAIMON_RETURN_NOT_OK(ctx->GetRealtimeContext()->AdvanceCommittedProgress(
+                    latest_snapshot->Id(), realtime_committed_offsets));
+            }
         }
         std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
         const auto& write_field_names = ctx->GetWriteSchema();
@@ -153,14 +181,18 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
         }
 
-        return std::make_unique<AppendOnlyFileStoreWrite>(
+        auto file_store_write = std::make_unique<AppendOnlyFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
             ctx->GetRootPath(), schema, arrow_schema, write_schema, partition_schema,
             dv_maintainer_factory, io_manager, options, ignore_previous_files,
-            ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->GetExecutor(),
-            ctx->GetMemoryPool());
+            ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->GetRealtimeContext(),
+            ctx->GetExecutor(), ctx->GetMemoryPool());
+        return std::unique_ptr<FileStoreWrite>(std::move(file_store_write));
     } else {
         // pk table
+        if (ctx->GetRealtimeContext()) {
+            return Status::Invalid("real-time write currently supports append tables only");
+        }
         if (options.GetBucket() == BucketModeDefine::POSTPONE_BUCKET) {
             return PostponeBucketFileStoreWrite::Create(
                 snapshot_manager, schema_manager, ctx->GetCommitUser(), ctx->GetRootPath(), schema,

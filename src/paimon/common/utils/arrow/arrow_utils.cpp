@@ -22,6 +22,12 @@
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_nested.h"
 #include "arrow/array/concatenate.h"
+#include "arrow/array/util.h"
+#include "arrow/buffer.h"
+#include "arrow/type_traits.h"
+#include "arrow/util/bit_util.h"
+#include "arrow/util/bitmap_ops.h"
+#include "arrow/util/checked_cast.h"
 #include "arrow/util/compression.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -41,6 +47,206 @@ bool HasNonZeroOffset(const std::shared_ptr<arrow::ArrayData>& data) {
         }
     }
     return false;
+}
+
+Result<std::shared_ptr<arrow::ArrayData>> CopyToZeroOffset(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> copied,
+                                      arrow::Concatenate({arrow::MakeArray(data)}, pool));
+    return copied->data();
+}
+
+Result<std::shared_ptr<arrow::Buffer>> RebaseBitmap(const arrow::ArrayData& data,
+                                                    const std::shared_ptr<arrow::Buffer>& bitmap,
+                                                    arrow::MemoryPool* pool) {
+    if (data.offset % 8 == 0) {
+        return arrow::SliceBuffer(bitmap, data.offset / 8,
+                                  arrow::bit_util::BytesForBits(data.length));
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::Buffer> copied,
+        arrow::internal::CopyBitmap(pool, bitmap->data(), data.offset, data.length));
+    return copied;
+}
+
+Result<std::shared_ptr<arrow::Buffer>> RebaseValidityBitmap(const arrow::ArrayData& data,
+                                                            arrow::MemoryPool* pool) {
+    const std::shared_ptr<arrow::Buffer>& bitmap = data.buffers[0];
+    if (bitmap == nullptr || data.null_count.load() == 0) {
+        return std::shared_ptr<arrow::Buffer>();
+    }
+    return RebaseBitmap(data, bitmap, pool);
+}
+
+struct RebasedOffsets {
+    std::shared_ptr<arrow::Buffer> buffer;
+    int64_t first_value = 0;
+    int64_t last_value = 0;
+};
+
+template <typename OffsetType>
+Result<RebasedOffsets> RebaseOffsets(const arrow::ArrayData& data, arrow::MemoryPool* pool) {
+    const auto* offsets = data.GetValues<OffsetType>(1);
+    const OffsetType base = offsets[0];
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::unique_ptr<arrow::Buffer> buffer,
+        arrow::AllocateBuffer((data.length + 1) * static_cast<int64_t>(sizeof(OffsetType)), pool));
+    auto* rebased = reinterpret_cast<OffsetType*>(buffer->mutable_data());
+    for (int64_t i = 0; i <= data.length; i++) {
+        rebased[i] = offsets[i] - base;
+    }
+    return RebasedOffsets{std::shared_ptr<arrow::Buffer>(std::move(buffer)), base,
+                          offsets[data.length]};
+}
+
+Result<std::shared_ptr<arrow::ArrayData>> RebaseToZeroOffset(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool);
+
+/// Rebases a boolean array, whose values are a bitmap rather than byte addressable.
+Result<std::shared_ptr<arrow::ArrayData>> RebaseBoolean(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    if (data->buffers.size() != 2 || data->buffers[1] == nullptr) {
+        return CopyToZeroOffset(data, pool);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
+                           RebaseValidityBitmap(*data, pool));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> values,
+                           RebaseBitmap(*data, data->buffers[1], pool));
+    std::shared_ptr<arrow::ArrayData> rebased =
+        arrow::ArrayData::Make(data->type, data->length, data->null_count.load(), /*offset=*/0);
+    rebased->buffers = {std::move(validity), std::move(values)};
+    return rebased;
+}
+
+/// Rebases the {validity, offsets, values} layout of binary-like arrays.
+template <typename OffsetType>
+Result<std::shared_ptr<arrow::ArrayData>> RebaseBinaryLike(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    if (data->buffers.size() != 3 || data->buffers[1] == nullptr || data->buffers[2] == nullptr) {
+        return CopyToZeroOffset(data, pool);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
+                           RebaseValidityBitmap(*data, pool));
+    PAIMON_ASSIGN_OR_RAISE(RebasedOffsets offsets, RebaseOffsets<OffsetType>(*data, pool));
+    std::shared_ptr<arrow::ArrayData> rebased =
+        arrow::ArrayData::Make(data->type, data->length, data->null_count.load(), /*offset=*/0);
+    rebased->buffers = {std::move(validity), std::move(offsets.buffer),
+                        arrow::SliceBuffer(data->buffers[2], offsets.first_value,
+                                           offsets.last_value - offsets.first_value)};
+    return rebased;
+}
+
+/// Rebases the {validity, offsets} plus single child layout of list, large list and map arrays.
+template <typename OffsetType>
+Result<std::shared_ptr<arrow::ArrayData>> RebaseListLike(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    if (data->buffers.size() != 2 || data->buffers[1] == nullptr || data->child_data.size() != 1) {
+        return CopyToZeroOffset(data, pool);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
+                           RebaseValidityBitmap(*data, pool));
+    PAIMON_ASSIGN_OR_RAISE(RebasedOffsets offsets, RebaseOffsets<OffsetType>(*data, pool));
+    // A contiguous slice of the parent always spans a contiguous range of the child.
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::ArrayData> child_slice,
+        data->child_data[0]->SliceSafe(offsets.first_value,
+                                       offsets.last_value - offsets.first_value));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> child,
+                           RebaseToZeroOffset(child_slice, pool));
+    std::shared_ptr<arrow::ArrayData> rebased =
+        arrow::ArrayData::Make(data->type, data->length, data->null_count.load(), /*offset=*/0);
+    rebased->buffers = {std::move(validity), std::move(offsets.buffer)};
+    rebased->child_data = {std::move(child)};
+    return rebased;
+}
+
+/// Rebases a struct array, whose slices keep full length children.
+Result<std::shared_ptr<arrow::ArrayData>> RebaseStruct(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    if (data->buffers.empty()) {
+        return CopyToZeroOffset(data, pool);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
+                           RebaseValidityBitmap(*data, pool));
+    std::shared_ptr<arrow::ArrayData> rebased =
+        arrow::ArrayData::Make(data->type, data->length, data->null_count.load(), /*offset=*/0);
+    rebased->buffers = {std::move(validity)};
+    rebased->child_data.reserve(data->child_data.size());
+    for (const auto& child : data->child_data) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::ArrayData> child_slice,
+                                          child->SliceSafe(data->offset, data->length));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> rebased_child,
+                               RebaseToZeroOffset(child_slice, pool));
+        rebased->child_data.push_back(std::move(rebased_child));
+    }
+    return rebased;
+}
+
+/// Slices the single value buffer of a fixed width array. Returns nullptr when the layout is not
+/// a plain byte addressable fixed width one.
+Result<std::shared_ptr<arrow::ArrayData>> RebaseFixedWidth(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    // arrow::is_fixed_width() also covers dictionary types, whose dictionary is not in child_data.
+    if (!arrow::is_fixed_width(data->type->id()) || data->buffers.size() != 2 ||
+        data->buffers[1] == nullptr || !data->child_data.empty() || data->dictionary != nullptr) {
+        return std::shared_ptr<arrow::ArrayData>();
+    }
+    const int32_t bit_width =
+        arrow::internal::checked_cast<const arrow::FixedWidthType&>(*data->type).bit_width();
+    if (bit_width <= 0 || bit_width % 8 != 0) {
+        return std::shared_ptr<arrow::ArrayData>();
+    }
+    const int64_t byte_width = bit_width / 8;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> validity,
+                           RebaseValidityBitmap(*data, pool));
+    std::shared_ptr<arrow::ArrayData> rebased =
+        arrow::ArrayData::Make(data->type, data->length, data->null_count.load(), /*offset=*/0);
+    rebased->buffers = {
+        std::move(validity),
+        arrow::SliceBuffer(data->buffers[1], data->offset * byte_width, data->length * byte_width)};
+    return rebased;
+}
+
+/// Returns an ArrayData describing the same rows as `data` with a zero offset at every level.
+/// Buffers are sliced rather than copied wherever the layout allows it, so the cost is
+/// proportional to the number of rows instead of the number of value bytes.
+Result<std::shared_ptr<arrow::ArrayData>> RebaseToZeroOffset(
+    const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
+    if (!HasNonZeroOffset(data)) {
+        return data;
+    }
+    // An empty array may not carry the buffers the layouts below slice.
+    if (data->length == 0 || data->buffers.empty()) {
+        return CopyToZeroOffset(data, pool);
+    }
+
+    switch (data->type->id()) {
+        case arrow::Type::BOOL:
+            return RebaseBoolean(data, pool);
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+            return RebaseBinaryLike<int32_t>(data, pool);
+        case arrow::Type::LARGE_STRING:
+        case arrow::Type::LARGE_BINARY:
+            return RebaseBinaryLike<int64_t>(data, pool);
+        case arrow::Type::LIST:
+        case arrow::Type::MAP:
+            return RebaseListLike<int32_t>(data, pool);
+        case arrow::Type::LARGE_LIST:
+            return RebaseListLike<int64_t>(data, pool);
+        case arrow::Type::STRUCT:
+            return RebaseStruct(data, pool);
+        case arrow::Type::DICTIONARY:
+            return CopyToZeroOffset(data, pool);
+        default:
+            break;
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> rebased, RebaseFixedWidth(data, pool));
+    if (rebased != nullptr) {
+        return rebased;
+    }
+    return CopyToZeroOffset(data, pool);
 }
 
 }  // namespace
@@ -198,9 +404,9 @@ Result<std::shared_ptr<arrow::RecordBatch>> ArrowUtils::NormalizeRecordBatchOffs
         if (normalized_columns.empty()) {
             normalized_columns = record_batch->columns();
         }
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> normalized_column,
-                                          arrow::Concatenate({column}, pool));
-        normalized_columns[i] = std::move(normalized_column);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> normalized_data,
+                               RebaseToZeroOffset(column->data(), pool));
+        normalized_columns[i] = arrow::MakeArray(normalized_data);
     }
     if (normalized_columns.empty()) {
         return record_batch;

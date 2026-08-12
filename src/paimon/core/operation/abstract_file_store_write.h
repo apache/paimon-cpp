@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -88,6 +89,8 @@ class AbstractFileStoreWrite : public FileStoreWrite {
 
     Result<std::vector<std::shared_ptr<CommitMessage>>> PrepareCommit(
         bool wait_compaction, int64_t commit_identifier) override;
+    Result<std::vector<RealtimeCommitProgress>> PrepareCommitWithProgress(
+        int64_t commit_identifier) override;
     Status Close() override;
     std::shared_ptr<Metrics> GetMetrics() const override;
 
@@ -116,6 +119,10 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     virtual Result<std::unique_ptr<FileStoreScan>> CreateFileStoreScan(
         const std::shared_ptr<ScanFilter>& filter) const = 0;
 
+    virtual bool IsRealtimeWrite() const {
+        return false;
+    }
+
     Result<std::shared_ptr<RestoreFiles>> ScanExistingFileMetas(const BinaryRow& partition,
                                                                 int32_t bucket) const;
     int32_t GetDefaultBucketNum() const;
@@ -142,10 +149,13 @@ class AbstractFileStoreWrite : public FileStoreWrite {
 
  private:
     Result<std::shared_ptr<BatchWriter>> GetWriter(const BinaryRow& partition, int32_t bucket);
+    Result<std::vector<RealtimeCommitProgress>> PrepareRealtimeCommit();
 
  private:
     std::unordered_map<BinaryRow, std::unordered_map<int32_t, WriterContainer<BatchWriter>>>
         writers_;
+    std::mutex writers_mutex_;
+    std::mutex realtime_metrics_mutex_;
     bool ignore_previous_files_ = false;
     bool is_streaming_mode_ = false;
     bool ignore_num_bucket_check_ = false;

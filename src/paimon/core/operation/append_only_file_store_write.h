@@ -36,6 +36,7 @@
 #include "paimon/file_store_write.h"
 #include "paimon/logging.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 
@@ -81,8 +82,11 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
         const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
         const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
         bool ignore_previous_files, bool is_streaming_mode, bool ignore_num_bucket_check,
+        const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
     ~AppendOnlyFileStoreWrite() override;
+
+    Status RefreshCommittedSnapshot(int64_t snapshot_id) override;
 
     /// Rewrites the given files into new compacted files.
     ///
@@ -110,6 +114,10 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
     Result<std::unique_ptr<FileStoreScan>> CreateFileStoreScan(
         const std::shared_ptr<ScanFilter>& filter) const override;
 
+    bool IsRealtimeWrite() const override {
+        return realtime_context_ != nullptr;
+    }
+
     Result<WriterFactory> GetDataFileWriterFactory(
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::shared_ptr<arrow::Schema>& schema,
@@ -121,6 +129,7 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
         const std::vector<std::shared_ptr<DataFileMeta>>& files) const;
 
     std::optional<std::vector<std::string>> write_cols_;
+    std::shared_ptr<RealtimeContext> realtime_context_;
     std::unique_ptr<Logger> logger_;
 };
 

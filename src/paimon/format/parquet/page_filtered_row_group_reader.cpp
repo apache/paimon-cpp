@@ -397,6 +397,7 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
     std::vector<std::shared_ptr<arrow::ChunkedArray>> result_arrays;
     result_arrays.reserve(field_indices.size());
 
+    // TODO(zhouhongfeng.zhf): This loop could be parallelized.
     for (int field_idx : field_indices) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<arrow::ChunkedArray> chunked_array,
@@ -420,7 +421,11 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
                                              field->nullable(), field->metadata()));
     }
     auto result_schema = arrow::schema(result_fields);
-
+    // TODO(zhouhongfeng.zhf): This decodes the whole filtered row group up front, while the
+    // fully-matched path decodes one batch at a time. As a result peak memory holds every
+    // projected column of the row group instead of a single batch.
+    // Decoding batch by batch would make every returned column single-chunk so that offset
+    // normalization becomes a no-op.
     auto table = arrow::Table::Make(result_schema, std::move(result_arrays), expected_rows);
     return std::make_unique<TableRecordBatchReader>(std::move(table), max_chunksize, pool);
 }

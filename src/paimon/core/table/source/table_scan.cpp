@@ -54,6 +54,7 @@
 #include "paimon/core/table/source/merge_tree_split_generator.h"
 #include "paimon/core/table/source/primary_key_index_batch_scan.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
+#include "paimon/core/table/source/realtime_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
 #include "paimon/core/table/source/split_generator.h"
 #include "paimon/core/table/system/system_table.h"
@@ -63,6 +64,7 @@
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/format/file_format.h"
+#include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
@@ -214,6 +216,36 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
 
 namespace {
 
+Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& core_options,
+                            const ScanContext& context) {
+    if (!context.GetRealtimeContext()) {
+        return Status::OK();
+    }
+    if (!table_schema.PrimaryKeys().empty()) {
+        return Status::Invalid("real-time union read currently supports append tables only");
+    }
+    if (core_options.GetBucket() <= 0) {
+        return Status::Invalid("real-time union read requires fixed bucket mode");
+    }
+    if (core_options.DataEvolutionEnabled()) {
+        return Status::Invalid("real-time union read does not support data evolution");
+    }
+    if (context.IsStreamingMode()) {
+        return Status::Invalid("real-time union read currently supports batch scans only");
+    }
+    if (context.GetLimit()) {
+        return Status::Invalid("real-time union read does not support scan limit pushdown");
+    }
+    if (context.GetGlobalIndexResult()) {
+        return Status::Invalid("real-time union read does not support global index splits");
+    }
+    StartupMode startup_mode = core_options.GetStartupMode();
+    if (!(startup_mode == StartupMode::LatestFull() || startup_mode == StartupMode::Latest())) {
+        return Status::Invalid("real-time union read requires the latest snapshot");
+    }
+    return Status::OK();
+}
+
 Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanContext>& context) {
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions tmp_options,
@@ -244,6 +276,8 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(), {}));
     core_options.WithCache(context->GetCache());
+
+    PAIMON_RETURN_NOT_OK(ValidateRealtimeScan(*table_schema, core_options, *context));
     // validate options
     if (core_options.GetBucket() == -1) {
         if (!table_schema->PrimaryKeys().empty()) {
@@ -301,6 +335,12 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
     }
     auto batch_scan = std::make_unique<DataTableBatchScan>(
         /*pk_table=*/pk_table, core_options, snapshot_reader, read_optimized, context->GetLimit());
+    if (context->GetRealtimeContext()) {
+        return std::make_unique<RealtimeTableScan>(
+            std::move(batch_scan), context->GetRealtimeContext(), path_factory,
+            snapshot_reader->GetSnapshotManager(), core_options.GetFileSystem(),
+            context->GetScanFilters());
+    }
     if (core_options.DataEvolutionEnabled()) {
         return std::make_unique<DataEvolutionBatchScan>(
             context->GetPath(), snapshot_reader, std::move(batch_scan),

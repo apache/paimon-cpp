@@ -51,6 +51,9 @@ class PAIMON_EXPORT ArrowUtils {
     static Result<std::shared_ptr<arrow::StructArray>> RemoveFieldFromStructArray(
         const std::shared_ptr<arrow::StructArray>& struct_array, const std::string& field_name);
 
+    /// Returns a RecordBatch whose columns, including their nested children, all have a zero
+    /// offset, as required by `BatchReader`. Offsets are rebased by slicing buffers (zero copy)
+    /// wherever the layout allows it; only layouts that cannot be rebased fall back to a full copy.
     static Result<std::shared_ptr<arrow::RecordBatch>> NormalizeRecordBatchOffsets(
         const std::shared_ptr<arrow::RecordBatch>& record_batch, arrow::MemoryPool* pool);
 

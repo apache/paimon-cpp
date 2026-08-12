@@ -22,6 +22,7 @@
 #include <cassert>
 #include <map>
 #include <optional>
+#include <utility>
 
 #include "fmt/format.h"
 #include "paimon/common/data/binary_row.h"
@@ -133,8 +134,7 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
                            GetWriter(partition, batch->GetBucket()));
     assert(writer);
     PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
-    PAIMON_RETURN_NOT_OK(writer_memory_manager_->OnWriteCompleted(writer.get()));
-    return Status::OK();
+    return writer_memory_manager_->OnWriteCompleted(writer.get());
 }
 
 Status AbstractFileStoreWrite::Compact(const std::map<std::string, std::string>& partition,
@@ -147,6 +147,10 @@ Status AbstractFileStoreWrite::Compact(const std::map<std::string, std::string>&
 
 Result<std::vector<std::shared_ptr<CommitMessage>>> AbstractFileStoreWrite::PrepareCommit(
     bool wait_compaction, int64_t commit_identifier) {
+    if (IsRealtimeWrite()) {
+        return Status::Invalid(
+            "real-time writer must use PrepareCommitWithProgress to preserve offset ranges");
+    }
     if (batch_committed_) {
         return Status::Invalid("batch write mode only support one-time committing.");
     }
@@ -261,7 +265,77 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AbstractFileStoreWrite::Prep
     return result;
 }
 
+Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareCommitWithProgress(
+    int64_t) {
+    if (!IsRealtimeWrite()) {
+        return Status::Invalid("PrepareCommitWithProgress is only supported by a real-time writer");
+    }
+    if (is_streaming_mode_ == false) {
+        return Status::Invalid("PrepareCommitWithProgress requires streaming mode");
+    }
+    // Real-time prepare snapshots writers under a short lock so writes can continue while sealed
+    // segments are flushed. The normal path iterates and may erase writers in place, which would
+    // either race with concurrent writer creation or hold writers_mutex_ for the whole prepare.
+    return PrepareRealtimeCommit();
+}
+
+Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealtimeCommit() {
+    struct WriterSnapshot {
+        BinaryRow partition;
+        int32_t bucket;
+        int32_t total_buckets;
+        std::shared_ptr<BatchWriter> writer;
+    };
+    std::vector<WriterSnapshot> writer_snapshots;
+    {
+        std::lock_guard<std::mutex> lock(writers_mutex_);
+        for (const auto& [partition, buckets] : writers_) {
+            for (const auto& [bucket, container] : buckets) {
+                writer_snapshots.push_back(
+                    WriterSnapshot{partition, bucket, container.total_buckets, container.writer});
+            }
+        }
+    }
+
+    std::vector<RealtimeCommitProgress> result;
+    for (const WriterSnapshot& snapshot : writer_snapshots) {
+        PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
+                               snapshot.writer->PrepareCommit(/*wait_compaction=*/false));
+        writer_memory_manager_->RefreshWriterMemory(snapshot.writer.get());
+        auto committable = std::make_shared<CommitMessageImpl>(
+            snapshot.partition, snapshot.bucket, snapshot.total_buckets,
+            increment.GetNewFilesIncrement(), increment.GetCompactIncrement());
+        if (!increment.GetRealtimeOffsetRange()) {
+            if (!committable->IsEmpty()) {
+                return Status::Invalid("real-time commit message does not have an offset range");
+            }
+            continue;
+        }
+        if (committable->IsEmpty()) {
+            return Status::Invalid("sealed real-time segment produced an empty commit message");
+        }
+        std::vector<std::pair<std::string, std::string>> partition_values;
+        PAIMON_ASSIGN_OR_RAISE(partition_values, file_store_path_factory_->GeneratePartitionVector(
+                                                     snapshot.partition));
+        std::map<std::string, std::string> partition(partition_values.begin(),
+                                                     partition_values.end());
+        result.push_back(RealtimeCommitProgress{
+            committable, RealtimePartitionBucket(std::move(partition), snapshot.bucket),
+            increment.GetRealtimeOffsetRange().value()});
+    }
+    {
+        std::lock_guard<std::mutex> lock(realtime_metrics_mutex_);
+        std::shared_ptr<Metrics> metrics = compaction_metrics_->GetMetrics();
+        for (const WriterSnapshot& snapshot : writer_snapshots) {
+            metrics->Merge(snapshot.writer->GetMetrics());
+        }
+        metrics_->Overwrite(metrics);
+    }
+    return result;
+}
+
 Status AbstractFileStoreWrite::Close() {
+    std::lock_guard<std::mutex> lock(writers_mutex_);
     for (auto& [_, bucket_writers] : writers_) {
         for (auto& [_, writer_container] : bucket_writers) {
             writer_memory_manager_->UnregisterWriter(writer_container.writer.get());
@@ -329,6 +403,7 @@ Result<std::shared_ptr<RestoreFiles>> AbstractFileStoreWrite::ScanExistingFileMe
 
 Result<std::shared_ptr<BatchWriter>> AbstractFileStoreWrite::GetWriter(const BinaryRow& partition,
                                                                        int32_t bucket) {
+    std::lock_guard<std::mutex> lock(writers_mutex_);
     auto partition_iter = writers_.find(partition);
     if (partition_iter != writers_.end()) {
         auto& buckets = partition_iter->second;

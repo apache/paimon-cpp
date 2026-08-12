@@ -172,6 +172,15 @@ TEST_F(PredicateBatchReaderTest, TestOneByOneCase) {
     CheckResult(std::move(reader), predicate, expected_array);
 }
 
+TEST_F(PredicateBatchReaderTest, TestBindFieldIndexByName) {
+    auto data_array = PrepareArray(8);
+    auto reader = std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
+    auto predicate = PredicateBuilder::LessThan(
+        /*field_index=*/0, /*field_name=*/"f1", FieldType::BIGINT, Literal(3l));
+    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array->Slice(0, 3));
+    CheckResult(std::move(reader), predicate, expected_array);
+}
+
 TEST_F(PredicateBatchReaderTest, TestFullAndEmptyCase) {
     auto data_array = PrepareArray(15);
     {

@@ -51,6 +51,8 @@ class AppendOnlyTableRead : public TableRead {
         const std::vector<std::shared_ptr<Split>>& splits) override;
 
  private:
+    Result<std::unique_ptr<BatchReader>> CreateDiskReader(const std::shared_ptr<Split>& split);
+
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<InternalReadContext> context_;
 };

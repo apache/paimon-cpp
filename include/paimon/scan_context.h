@@ -48,6 +48,7 @@ class PAIMON_EXPORT ScanContext {
     ScanContext(const std::string& path, bool is_streaming_mode, std::optional<int32_t> limit,
                 const std::shared_ptr<ScanFilter>& scan_filter,
                 const std::shared_ptr<GlobalIndexResult>& global_index_result,
+                const std::shared_ptr<RealtimeContext>& realtime_context,
                 const std::shared_ptr<MemoryPool>& memory_pool,
                 const std::shared_ptr<Executor>& executor,
                 const std::shared_ptr<FileSystem>& specific_file_system,
@@ -87,6 +88,11 @@ class PAIMON_EXPORT ScanContext {
         return global_index_result_;
     }
 
+    /// Returns the optional process-local context used to plan real-time memory reads.
+    std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
+        return realtime_context_;
+    }
+
     std::shared_ptr<FileSystem> GetSpecificFileSystem() const {
         return specific_file_system_;
     }
@@ -105,6 +111,7 @@ class PAIMON_EXPORT ScanContext {
     std::optional<int32_t> limit_;
     std::shared_ptr<ScanFilter> scan_filters_;
     std::shared_ptr<GlobalIndexResult> global_index_result_;
+    std::shared_ptr<RealtimeContext> realtime_context_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
@@ -162,6 +169,10 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// data retrieval.
     ScanContextBuilder& SetGlobalIndexResult(
         const std::shared_ptr<GlobalIndexResult>& global_index_result);
+
+    /// Enables process-local union reads with the memory indexers owned by `realtime_context`.
+    ScanContextBuilder& WithRealtimeContext(
+        const std::shared_ptr<RealtimeContext>& realtime_context);
 
     /// The options added or set in `ScanContextBuilder` have high priority and will be merged with
     /// the options in table schema.

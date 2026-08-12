@@ -33,16 +33,17 @@ class BatchWriter;
 class WriterMemoryManager {
  public:
     explicit WriterMemoryManager(uint64_t memory_limit) : memory_limit_(memory_limit) {}
+    virtual ~WriterMemoryManager() = default;
 
     /// Register a writer when create a new `BatchWriter` in `AbstractFileStoreWrite::GetWriter()`
-    void RegisterWriter(BatchWriter* writer);
+    virtual void RegisterWriter(BatchWriter* writer);
     /// Unregister a writer when the `BatchWriter` has been erased in `AbstractFileStoreWrite`
-    void UnregisterWriter(BatchWriter* writer);
+    virtual void UnregisterWriter(BatchWriter* writer);
     /// Refresh the memory usage of a writer when after `BatchWriter::PrepareCommit()`
-    void RefreshWriterMemory(BatchWriter* writer);
+    virtual void RefreshWriterMemory(BatchWriter* writer);
     /// Check if the total memory usage exceeds the limit after `BatchWriter::Write()`, and trigger
     /// flush if needed.
-    Status OnWriteCompleted(BatchWriter* writer);
+    virtual Status OnWriteCompleted(BatchWriter* writer);
 
  private:
     struct Candidate {
@@ -57,6 +58,29 @@ class WriterMemoryManager {
     const uint64_t memory_limit_;
     uint64_t total_memory_ = 0;
     std::unordered_map<BatchWriter*, uint64_t> writer_memory_;
+};
+
+/// Memory manager policy for writers whose memory is managed outside `AbstractFileStoreWrite`.
+class NoopWriterMemoryManager final : public WriterMemoryManager {
+ public:
+    NoopWriterMemoryManager() : WriterMemoryManager(/*memory_limit=*/0) {}
+
+    void RegisterWriter(BatchWriter* writer) override {
+        (void)writer;
+    }
+
+    void UnregisterWriter(BatchWriter* writer) override {
+        (void)writer;
+    }
+
+    void RefreshWriterMemory(BatchWriter* writer) override {
+        (void)writer;
+    }
+
+    Status OnWriteCompleted(BatchWriter* writer) override {
+        (void)writer;
+        return Status::OK();
+    }
 };
 
 }  // namespace paimon
