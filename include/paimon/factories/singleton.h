@@ -30,9 +30,9 @@ class PAIMON_EXPORT LazyInstantiation {
  protected:
     template <typename T>
     static void Create(T*& ptr) {
-        T* tmp = new T;
-        MEMORY_BARRIER();
-        ptr = tmp;
+        // Publication ordering is handled by the release store in
+        // Singleton<T, InstPolicy>::GetInstance(), so no barrier is needed here.
+        ptr = new T;
         static std::shared_ptr<T> destroyer(ptr);
     }
 };

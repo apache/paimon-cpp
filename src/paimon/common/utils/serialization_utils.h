@@ -78,7 +78,9 @@ class SerializationUtils {
         if (PAIMON_UNLIKELY(bytes->size() < 4)) {
             return Status::Invalid(fmt::format("bytes size {} is less than 4", bytes->size()));
         }
-        int32_t arity = *(reinterpret_cast<int32_t*>(bytes->data()));
+        // The buffer is byte-filled, so memcpy avoids the strict-aliasing UB of reinterpret_cast.
+        int32_t arity;
+        memcpy(&arity, bytes->data(), sizeof(int32_t));
         if (SystemByteOrder() == ByteOrder::PAIMON_LITTLE_ENDIAN) {
             arity = EndianSwapValue(arity);
         }

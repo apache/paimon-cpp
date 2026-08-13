@@ -19,9 +19,13 @@
 
 #include "paimon/common/factories/io_hook.h"
 
+#include <atomic>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -61,6 +65,51 @@ TEST(IOHookTest, TestThrowExceptionMode) {
     EXPECT_THROW(Try(), std::runtime_error);
     EXPECT_THROW(Try(), std::runtime_error);
     ASSERT_EQ(2, hook->IOCount());
+    hook->Clear();
+}
+
+// Regression test for the data race on IOHook's mode: Reset()/Clear() run on one
+// thread while other threads call Try() concurrently. Under a ThreadSanitizer build
+// this deterministically reports the unsynchronized mode access; functionally it must
+// never crash and every Try() must return either OK or the injected IOError.
+TEST(IOHookTest, TestConcurrentResetAndTry) {
+    auto hook = IOHook::GetInstance();
+
+    constexpr int32_t kResetIterations = 200000;
+    constexpr int32_t kTryIterations = 50000;
+    constexpr int32_t kNumWorkers = 4;
+
+    std::atomic<bool> unexpected_status{false};
+
+    std::thread reset_thread([hook]() {
+        for (int32_t i = 0; i < kResetIterations; i++) {
+            hook->Reset(i, IOHook::Mode::RETURN_ERROR);
+            hook->Clear();
+        }
+    });
+
+    std::vector<std::thread> workers;
+    workers.reserve(kNumWorkers);
+    for (int32_t t = 0; t < kNumWorkers; t++) {
+        workers.emplace_back([hook, &unexpected_status]() {
+            for (int32_t i = 0; i < kTryIterations; i++) {
+                Status status = hook->Try("concurrent_path");
+                // Only RETURN_ERROR mode is armed here, so Try() may only return OK or
+                // IOError; anything else means the mode was read as garbage.
+                if (!status.ok() && !status.IsIOError()) {
+                    unexpected_status.store(true, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
+    reset_thread.join();
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    ASSERT_FALSE(unexpected_status.load(std::memory_order_relaxed));
+    // Leave the process-wide singleton in its default SILENT state for later tests.
     hook->Clear();
 }
 

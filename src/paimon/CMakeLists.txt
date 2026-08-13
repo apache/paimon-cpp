@@ -651,7 +651,9 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/range_helper_test.cpp
                     common/utils/read_ahead_cache_test.cpp
                     common/io/cache/lru_cache_test.cpp
+                    common/io/cache/cache_manager_test.cpp
                     common/utils/byte_range_combiner_test.cpp
+                    common/utils/saturating_cast_test.cpp
                     common/utils/scope_guard_test.cpp
                     common/utils/sensitive_config_utils_test.cpp
                     common/utils/serialization_utils_test.cpp
@@ -682,6 +684,7 @@ if(PAIMON_BUILD_TESTS)
 
     add_paimon_test(common_factories_test
                     SOURCES
+                    common/factories/singleton_test.cpp
                     common/factories/factory_creator_test.cpp
                     common/factories/io_hook_test.cpp
                     STATIC_LINK_LIBS

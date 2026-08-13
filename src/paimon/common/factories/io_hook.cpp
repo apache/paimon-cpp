@@ -32,7 +32,7 @@ class IOHook::Impl {
         if (io_count_.fetch_add(1) < pos_.load()) {
             return Status::OK();
         } else {
-            switch (mode_) {
+            switch (mode_.load(std::memory_order_relaxed)) {
                 case IOHook::Mode::SILENT:
                     return Status::OK();
                 case IOHook::Mode::RETURN_ERROR:
@@ -49,9 +49,11 @@ class IOHook::Impl {
     }
 
     inline void Reset(int64_t pos, IOHook::Mode mode) {
+        // Store mode_ first: the seq_cst stores below then publish it, so a Try()
+        // that observes the reset pos_ also observes the new mode_.
+        mode_.store(mode, std::memory_order_relaxed);
         pos_ = pos;
         io_count_ = 0;
-        mode_ = mode;
     }
 
     int64_t IOCount() const {
@@ -65,7 +67,7 @@ class IOHook::Impl {
  private:
     std::atomic<int64_t> io_count_ = {0};
     std::atomic<int64_t> pos_ = {-1};
-    IOHook::Mode mode_ = IOHook::Mode::SILENT;
+    std::atomic<IOHook::Mode> mode_{IOHook::Mode::SILENT};
 };
 
 IOHook::IOHook() : impl_(std::make_unique<IOHook::Impl>()) {}
