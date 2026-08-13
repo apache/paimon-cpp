@@ -19,10 +19,12 @@
 
 #include "paimon/realtime/realtime_context.h"
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -63,9 +65,9 @@ class TestingMemIndexer : public MemIndexer {
         return std::make_shared<TestingReadView>();
     }
 
-    Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
+    Result<std::vector<std::unique_ptr<RealtimeReader>>> CreateQueryReaders(
         const std::shared_ptr<MemReadView>&, int64_t, const MemQueryContext&) override {
-        return std::vector<std::unique_ptr<BatchReader>>();
+        return std::vector<std::unique_ptr<RealtimeReader>>();
     }
 
     Status AdvanceCommittedOffset(int64_t committed_offset) override {
@@ -229,6 +231,52 @@ TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
     ASSERT_EQ(2, factory->indexers[1]->advance_count);
     ASSERT_EQ(1, factory->indexers[2]->advance_count);
     ASSERT_EQ(std::vector<int64_t>({8}), factory->indexers[1]->committed_offsets);
+}
+
+TEST(RealtimeContextTest, TestPinsResolvesAndReleasesReadViewTicket) {
+    auto factory = std::make_shared<TestingMemIndexerFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context,
+                         RealtimeContext::Create(factory));
+    ASSERT_OK(context->GetOrCreateMemIndexer(/*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
+                                             GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
+                         context->AcquireReadViews());
+    ASSERT_EQ(1, views.size());
+
+    ASSERT_NOK_WITH_MSG(context->PinReadView(views[0], /*ttl_millis=*/0),
+                        "TTL must be greater than zero");
+    ASSERT_OK_AND_ASSIGN(std::string ticket,
+                         context->PinReadView(views[0], /*ttl_millis=*/60 * 1000));
+    ASSERT_FALSE(ticket.empty());
+    ASSERT_OK_AND_ASSIGN(RealtimePartitionBucketView resolved, context->ResolveReadView(ticket));
+    ASSERT_EQ(views[0].partition_bucket, resolved.partition_bucket);
+    ASSERT_EQ(views[0].indexer, resolved.indexer);
+    ASSERT_EQ(views[0].read_view, resolved.read_view);
+
+    ASSERT_OK(context->ReleaseReadView(ticket));
+    ASSERT_OK(context->ReleaseReadView(ticket));
+    ASSERT_NOK_WITH_MSG(context->ResolveReadView(ticket), "ticket does not exist or has expired");
+}
+
+TEST(RealtimeContextTest, TestExpiresAbandonedReadViewTicket) {
+    auto factory = std::make_shared<TestingMemIndexerFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context,
+                         RealtimeContext::Create(factory));
+    ASSERT_OK(context->GetOrCreateMemIndexer(/*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
+                                             GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
+                         context->AcquireReadViews());
+    ASSERT_EQ(1, views.size());
+    std::weak_ptr<MemReadView> weak_view = views[0].read_view;
+    ASSERT_OK_AND_ASSIGN(std::string ticket, context->PinReadView(views[0], /*ttl_millis=*/10));
+    views.clear();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!weak_view.expired() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(weak_view.expired());
+    ASSERT_NOK_WITH_MSG(context->ResolveReadView(ticket), "ticket does not exist or has expired");
 }
 
 TEST(RealtimeContextTest, TestRejectsNullFactory) {

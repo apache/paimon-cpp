@@ -86,11 +86,15 @@ struct PAIMON_EXPORT RealtimePartitionBucketView {
 
 /// Shared context that owns the `MemIndexer` instances used by a real-time writer.
 ///
-/// Applications share one context between `WriteContext` and `ScanContext`. The context uses
-/// either the default Arrow implementation or an application-provided factory and keeps each
-/// created indexer available across writes, prepare-commit operations, and process-local reads.
+/// Applications share one context between `WriteContext`, `ScanContext`, and `ReadContext`. The
+/// context uses either the default Arrow implementation or an application-provided factory and
+/// keeps each created indexer available across writes, prepare-commit operations, and
+/// process-local reads.
 class PAIMON_EXPORT RealtimeContext {
  public:
+    /// Default lifetime of a pinned read view that has not been explicitly released.
+    static constexpr int64_t kDefaultReadViewTtlMillis = 5 * 60 * 1000;
+
     /// Creates a context backed by Paimon's default Arrow `MemIndexer`.
     static Result<std::shared_ptr<RealtimeContext>> Create();
 
@@ -115,6 +119,26 @@ class PAIMON_EXPORT RealtimeContext {
     /// The indexer registry is fixed during this call and each returned plugin view is stable. New
     /// partition-buckets registered after this call are not visible in that query.
     Result<std::vector<RealtimePartitionBucketView>> AcquireReadViews();
+
+    /// Registers a captured read view during scan planning and returns an opaque process-local
+    /// lookup ticket for the resulting split.
+    ///
+    /// The registry retains shared ownership of the view until the ticket is explicitly released
+    /// or its TTL expires.
+    Result<std::string> PinReadView(const RealtimePartitionBucketView& view, int64_t ttl_millis);
+
+    /// Looks up a ticket while creating a reader and returns another shared reference to the
+    /// immutable view captured during scan planning.
+    ///
+    /// This operation does not remove the ticket. After a `RealtimeReader` retains the returned
+    /// view, the caller releases the ticket separately.
+    Result<RealtimePartitionBucketView> ResolveReadView(const std::string& opaque_ticket);
+
+    /// Removes a pinned read-view ticket from the registry.
+    ///
+    /// The registry-held reference is handed to the background release queue. This operation is
+    /// idempotent, and each `RealtimeReader` retains its own shared reference until it is closed.
+    Status ReleaseReadView(const std::string& opaque_ticket);
 
     /// Advances the committed progress visible to the registered memory indexers.
     ///

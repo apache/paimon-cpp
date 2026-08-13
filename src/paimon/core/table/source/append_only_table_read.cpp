@@ -19,6 +19,7 @@
 
 #include "paimon/core/table/source/append_only_table_read.h"
 
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,7 @@
 #include "paimon/core/table/source/append_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/realtime/mem_indexer.h"
+#include "paimon/realtime/realtime_context.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -65,9 +67,30 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
     if (!realtime_split) {
         return CreateDiskReader(split);
     }
-
+    if (realtime_split->Version() != RealtimeSplit::CURRENT_VERSION) {
+        return Status::Invalid("unsupported real-time split version");
+    }
+    const std::shared_ptr<RealtimeContext> realtime_context = context_->GetRealtimeContext();
+    if (!realtime_context) {
+        return Status::Invalid("reading a real-time split requires a real-time context");
+    }
+    PAIMON_ASSIGN_OR_RAISE(RealtimePartitionBucketView memory,
+                           realtime_context->ResolveReadView(realtime_split->OpaqueTicket()));
     std::vector<std::unique_ptr<BatchReader>> readers;
     readers.reserve(realtime_split->DiskSplits().size() + 1);
+    ScopeGuard ticket_guard([&realtime_context, &realtime_split]() {
+        realtime_context->ReleaseReadView(realtime_split->OpaqueTicket());
+    });
+    const RealtimePartitionBucket expected_partition_bucket(realtime_split->Partition(),
+                                                            realtime_split->Bucket());
+    if (!(memory.partition_bucket == expected_partition_bucket)) {
+        return Status::Invalid("real-time read-view ticket belongs to another partition-bucket");
+    }
+    const std::optional<Range> memory_range = memory.read_view->GetOffsetRange();
+    if (!memory_range || memory_range->to != realtime_split->MemoryUpperOffset()) {
+        return Status::Invalid("real-time read-view ticket does not match the split offset range");
+    }
+
     for (const std::shared_ptr<Split>& disk_split : realtime_split->DiskSplits()) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> disk_reader,
                                CreateDiskReader(disk_split));
@@ -80,12 +103,12 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
     ScopeGuard schema_guard([schema = c_read_schema.get()]() { ArrowSchemaRelease(schema); });
     MemQueryContext query_context{c_read_schema.get(), context_->GetPredicate(),
                                   /*enable_predicate_pushdown=*/true};
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<std::unique_ptr<BatchReader>> memory_readers,
-        realtime_split->Indexer()->CreateQueryReaders(
-            realtime_split->ReadView(), realtime_split->CommittedOffset(), query_context));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<RealtimeReader>> realtime_readers,
+                           memory.indexer->CreateQueryReaders(
+                               memory.read_view, realtime_split->CommittedOffset(), query_context));
 
-    for (std::unique_ptr<BatchReader>& memory_reader : memory_readers) {
+    for (std::unique_ptr<RealtimeReader>& realtime_reader : realtime_readers) {
+        std::unique_ptr<BatchReader> memory_reader = std::move(realtime_reader);
         if (context_->EnablePredicateFilter() && context_->GetPredicate()) {
             PAIMON_ASSIGN_OR_RAISE(memory_reader, PredicateBatchReader::Create(
                                                       std::move(memory_reader),
@@ -93,6 +116,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
         }
         readers.push_back(std::move(memory_reader));
     }
+    PAIMON_RETURN_NOT_OK(realtime_context->ReleaseReadView(realtime_split->OpaqueTicket()));
+    ticket_guard.Release();
     return std::make_unique<ConcatBatchReader>(std::move(readers), GetMemoryPool());
 }
 

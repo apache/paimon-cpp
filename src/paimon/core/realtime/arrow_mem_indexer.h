@@ -52,7 +52,7 @@ class ArrowMemIndexer : public MemIndexer {
 
     Result<std::shared_ptr<MemReadView>> AcquireReadView() override;
 
-    Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
+    Result<std::vector<std::unique_ptr<RealtimeReader>>> CreateQueryReaders(
         const std::shared_ptr<MemReadView>& view, int64_t offset_lower_exclusive,
         const MemQueryContext& context) override;
 

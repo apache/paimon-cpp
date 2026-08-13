@@ -44,6 +44,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
+#include "paimon/core/table/source/realtime_split.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
@@ -256,6 +257,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
     }
 
     Result<CollectedReadResult> ReadPlan(const std::shared_ptr<Plan>& plan,
+                                         const std::shared_ptr<RealtimeContext>& realtime_context,
                                          const std::vector<std::string>& read_fields,
                                          const std::shared_ptr<Predicate>& predicate,
                                          bool enable_predicate_filter) const {
@@ -264,6 +266,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
             .SetReadFieldNames(read_fields)
             .SetPredicate(predicate)
             .EnablePredicateFilter(enable_predicate_filter)
+            .WithRealtimeContext(realtime_context)
             .WithMemoryPool(pool_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
@@ -279,12 +282,15 @@ class RealtimeWriteInteTest : public ::testing::Test {
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan,
                                CreatePlan(realtime_context, /*predicate=*/nullptr));
-        return ReadRows(plan);
+        return ReadRows(plan, realtime_context);
     }
 
-    Result<std::vector<Row>> ReadRows(const std::shared_ptr<Plan>& plan) const {
+    Result<std::vector<Row>> ReadRows(
+        const std::shared_ptr<Plan>& plan,
+        const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(CollectedReadResult read_result,
-                               ReadPlan(plan, {"id", "payload", "pt"}, /*predicate=*/nullptr,
+                               ReadPlan(plan, realtime_context, {"id", "payload", "pt"},
+                                        /*predicate=*/nullptr,
                                         /*enable_predicate_filter=*/false));
         const std::shared_ptr<arrow::ChunkedArray>& result = read_result.data;
 
@@ -322,7 +328,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
     }
 
     Result<std::vector<Row>> ReadRows() const {
-        return ReadRows(std::shared_ptr<RealtimeContext>());
+        return ReadRows(/*realtime_context=*/nullptr);
     }
 
     Result<uint64_t> GetRealtimeMemoryUsage(
@@ -480,8 +486,54 @@ TEST_F(RealtimeWriteInteTest, TestReadMemoryBeforePrepareCommit) {
                          MakeBatch(rows, /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(batch)));
 
-    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime_split);
+    ASSERT_EQ(RealtimeSplit::CURRENT_VERSION, realtime_split->Version());
+    ASSERT_FALSE(realtime_split->SnapshotId().has_value());
+    ASSERT_EQ(-1, realtime_split->CommittedOffset());
+    ASSERT_EQ(9, realtime_split->MemoryUpperOffset());
+    ASSERT_FALSE(realtime_split->OpaqueTicket().empty());
+    ASSERT_NOK_WITH_MSG(ReadRows(plan, /*realtime_context=*/nullptr),
+                        "requires a real-time context");
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(rows, actual_rows);
+    ASSERT_NOK_WITH_MSG(realtime_context->ResolveReadView(realtime_split->OpaqueTicket()),
+                        "ticket does not exist or has expired");
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestRealtimeSplitTicketIsSingleUse) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    std::vector<Row> rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+
+    ReadContextBuilder read_builder(table_path_);
+    read_builder.SetOptions(options_)
+        .SetReadFieldNames({"id", "payload", "pt"})
+        .WithRealtimeContext(realtime_context)
+        .WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> first_reader,
+                         table_read->CreateReader(plan->Splits()));
+    first_reader->Close();
+    first_reader.reset();
+
+    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
+                        "ticket does not exist or has expired");
     ASSERT_OK(writer->Close());
 }
 
@@ -515,7 +567,7 @@ TEST_F(RealtimeWriteInteTest, TestPinnedPlanRemainsReadableAfterWriterClose) {
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
     ASSERT_OK(writer->Close());
 
-    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(rows, actual_rows);
 }
 
@@ -608,9 +660,9 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> memory_plan,
                          CreatePlan(realtime_context, scan_predicate));
-    ASSERT_OK_AND_ASSIGN(
-        CollectedReadResult memory_result,
-        ReadPlan(memory_plan, read_fields, read_predicate, /*enable_predicate_filter=*/true));
+    ASSERT_OK_AND_ASSIGN(CollectedReadResult memory_result,
+                         ReadPlan(memory_plan, realtime_context, read_fields, read_predicate,
+                                  /*enable_predicate_filter=*/true));
     std::shared_ptr<arrow::Array> expected_memory =
         arrow::ipc::internal::json::ArrayFromJSON(result_type, R"([
             [0, "value-2", 2]
@@ -630,9 +682,9 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> union_plan,
                          CreatePlan(realtime_context, scan_predicate));
-    ASSERT_OK_AND_ASSIGN(
-        CollectedReadResult union_result,
-        ReadPlan(union_plan, read_fields, read_predicate, /*enable_predicate_filter=*/true));
+    ASSERT_OK_AND_ASSIGN(CollectedReadResult union_result,
+                         ReadPlan(union_plan, realtime_context, read_fields, read_predicate,
+                                  /*enable_predicate_filter=*/true));
     std::shared_ptr<arrow::Array> expected_union =
         arrow::ipc::internal::json::ArrayFromJSON(result_type, R"([
             [0, "value-2", 2],
@@ -677,7 +729,7 @@ TEST_F(RealtimeWriteInteTest, TestDiskPredicatePushdownWithoutMemoryFiltering) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
     ASSERT_OK_AND_ASSIGN(CollectedReadResult result,
-                         ReadPlan(plan, {"id", "payload", "pt"}, predicate,
+                         ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, predicate,
                                   /*enable_predicate_filter=*/false));
     std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
         {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int64()),
@@ -762,13 +814,76 @@ TEST_F(RealtimeWriteInteTest, TestPlanPinsMemoryAcrossRefresh) {
 
     std::vector<Row> expected_rows = disk_rows;
     expected_rows.insert(expected_rows.end(), memory_rows.begin(), memory_rows.end());
-    ASSERT_OK_AND_ASSIGN(std::vector<Row> pinned_rows, ReadRows(pinned_plan));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> pinned_rows, ReadRows(pinned_plan, realtime_context));
     ASSERT_EQ(expected_rows, pinned_rows);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> refreshed_plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(std::vector<Row> refreshed_rows, ReadRows(refreshed_plan));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> refreshed_rows,
+                         ReadRows(refreshed_plan, realtime_context));
     ASSERT_EQ(pinned_rows, refreshed_rows);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestReaderPinsMemoryAcrossRefresh) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    std::vector<Row> rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, commits.size());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime_split);
+
+    ReadContextBuilder read_builder(table_path_);
+    read_builder.SetOptions(options_)
+        .SetReadFieldNames({"id", "payload", "pt"})
+        .WithRealtimeContext(realtime_context)
+        .WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         table_read->CreateReader(plan->Splits()));
+    ASSERT_NOK_WITH_MSG(realtime_context->ResolveReadView(realtime_split->OpaqueTicket()),
+                        "ticket does not exist or has expired");
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_usage_before_refresh,
+                         GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_GT(memory_usage_before_refresh, 0);
+
+    ASSERT_OK_AND_ASSIGN(int64_t committed_snapshot_id, Commit(commits, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(committed_snapshot_id));
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_usage_after_refresh,
+                         GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_LT(memory_usage_after_refresh, memory_usage_before_refresh);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(reader.get()));
+    std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int64()),
+         arrow::field("payload", arrow::utf8()), arrow::field("pt", arrow::utf8())});
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(result_type, R"([
+            [0, 0, "value-0", "p0"],
+            [0, 1, "value-1", "p0"],
+            [0, 2, "value-2", "p0"]
+        ])")
+            .ValueOrDie();
+    ASSERT_NE(nullptr, result);
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
+        << result->ToString();
     ASSERT_OK(writer->Close());
 }
 

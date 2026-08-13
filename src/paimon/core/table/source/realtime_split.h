@@ -22,30 +22,45 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "paimon/realtime/mem_indexer.h"
 #include "paimon/table/source/split.h"
 
 namespace paimon {
 
-/// Process-local split combining committed disk splits and one immutable memory view.
+/// Split combining committed disk splits and a ticket for one immutable memory view.
 ///
-/// This split intentionally has no serialized representation because it carries plugin objects.
+/// The current fields are process-independent except that `opaque_ticket` can only be resolved by
+/// the `RealtimeContext` that created it. The ticket is single-use: creating a reader consumes it,
+/// so retrying a reader task requires planning a new `RealtimeSplit`.
 class RealtimeSplit : public Split {
  public:
-    RealtimeSplit(std::map<std::string, std::string> partition, int32_t bucket,
-                  std::vector<std::shared_ptr<Split>>&& disk_splits,
-                  const std::shared_ptr<MemIndexer>& indexer,
-                  const std::shared_ptr<MemReadView>& read_view, int64_t committed_offset)
-        : partition_(std::move(partition)),
+    /// Current metadata version of a real-time split.
+    static constexpr int32_t CURRENT_VERSION = 1;
+
+    RealtimeSplit(int32_t version, std::optional<int64_t> snapshot_id,
+                  std::map<std::string, std::string> partition, int32_t bucket,
+                  std::vector<std::shared_ptr<Split>>&& disk_splits, int64_t committed_offset,
+                  int64_t memory_upper_offset, std::string opaque_ticket)
+        : version_(version),
+          snapshot_id_(std::move(snapshot_id)),
+          partition_(std::move(partition)),
           bucket_(bucket),
           disk_splits_(std::move(disk_splits)),
-          indexer_(indexer),
-          read_view_(read_view),
-          committed_offset_(committed_offset) {}
+          committed_offset_(committed_offset),
+          memory_upper_offset_(memory_upper_offset),
+          opaque_ticket_(std::move(opaque_ticket)) {}
+
+    int32_t Version() const {
+        return version_;
+    }
+
+    const std::optional<int64_t>& SnapshotId() const {
+        return snapshot_id_;
+    }
 
     const std::map<std::string, std::string>& Partition() const {
         return partition_;
@@ -59,25 +74,27 @@ class RealtimeSplit : public Split {
         return disk_splits_;
     }
 
-    const std::shared_ptr<MemIndexer>& Indexer() const {
-        return indexer_;
-    }
-
-    const std::shared_ptr<MemReadView>& ReadView() const {
-        return read_view_;
-    }
-
     int64_t CommittedOffset() const {
         return committed_offset_;
     }
 
+    int64_t MemoryUpperOffset() const {
+        return memory_upper_offset_;
+    }
+
+    const std::string& OpaqueTicket() const {
+        return opaque_ticket_;
+    }
+
  private:
+    int32_t version_;
+    std::optional<int64_t> snapshot_id_;
     std::map<std::string, std::string> partition_;
     int32_t bucket_;
     std::vector<std::shared_ptr<Split>> disk_splits_;
-    std::shared_ptr<MemIndexer> indexer_;
-    std::shared_ptr<MemReadView> read_view_;
     int64_t committed_offset_;
+    int64_t memory_upper_offset_;
+    std::string opaque_ticket_;
 };
 
 }  // namespace paimon

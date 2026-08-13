@@ -24,6 +24,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "paimon/reader/batch_reader.h"
@@ -72,6 +73,44 @@ class PAIMON_EXPORT MemReadView {
 
     /// Returns the inclusive offset range visible in this view, or no range when it is empty.
     virtual std::optional<Range> GetOffsetRange() const = 0;
+};
+
+/// Outermost query reader that pins a `MemReadView`.
+///
+/// Plugins may freely compose regular `BatchReader` implementations, then wrap the resulting
+/// reader with this class before returning it from `MemIndexer::CreateQueryReaders`.
+class PAIMON_EXPORT RealtimeReader final : public BatchReader {
+ public:
+    /// Creates a reader that delegates reads to `reader` and pins `read_view` for its lifetime.
+    RealtimeReader(std::shared_ptr<MemReadView> read_view, std::unique_ptr<BatchReader> reader)
+        : read_view_(std::move(read_view)), reader_(std::move(reader)) {}
+
+    /// Delegates batch reads to the wrapped plugin reader.
+    Result<ReadBatch> NextBatch() override {
+        return reader_->NextBatch();
+    }
+
+    /// Delegates bitmap batch reads to the wrapped plugin reader.
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        return reader_->NextBatchWithBitmap();
+    }
+
+    /// Returns metrics from the wrapped plugin reader.
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return reader_->GetReaderMetrics();
+    }
+
+    /// Closes the delegated reader and releases the pinned read view.
+    void Close() override {
+        if (reader_) {
+            reader_->Close();
+        }
+        read_view_.reset();
+    }
+
+ private:
+    std::shared_ptr<MemReadView> read_view_;
+    std::unique_ptr<BatchReader> reader_;
 };
 
 /// Parameters used by a `MemIndexer` to create readers for a query.
@@ -128,8 +167,9 @@ class PAIMON_EXPORT MemIndexer {
     ///
     /// Each output batch contains `_VALUE_KIND` first, followed by the fields requested by
     /// `context.read_schema` except a duplicate `_VALUE_KIND`. Concatenating all returned readers
-    /// must produce every matching row once.
-    virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
+    /// must produce every matching row once. Each returned `RealtimeReader` pins `view` while
+    /// allowing the plugin to compose regular `BatchReader` implementations internally.
+    virtual Result<std::vector<std::unique_ptr<RealtimeReader>>> CreateQueryReaders(
         const std::shared_ptr<MemReadView>& view, int64_t offset_lower_exclusive,
         const MemQueryContext& context) = 0;
 

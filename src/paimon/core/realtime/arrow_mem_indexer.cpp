@@ -163,7 +163,7 @@ class ArrowMemIndexer::CommitBatchReader : public BatchReader {
 
 class ArrowMemIndexer::QueryBatchReader : public BatchReader {
  public:
-    QueryBatchReader(const std::shared_ptr<ReadView>& view, int64_t offset_lower_exclusive,
+    QueryBatchReader(const ReadView* view, int64_t offset_lower_exclusive,
                      const std::shared_ptr<arrow::Schema>& read_schema,
                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
         : view_(view),
@@ -210,7 +210,7 @@ class ArrowMemIndexer::QueryBatchReader : public BatchReader {
     }
 
     void Close() override {
-        view_.reset();
+        view_ = nullptr;
     }
 
  private:
@@ -228,7 +228,7 @@ class ArrowMemIndexer::QueryBatchReader : public BatchReader {
     }
 
  private:
-    std::shared_ptr<ReadView> view_;
+    const ReadView* view_;
     int64_t offset_lower_exclusive_;
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -315,7 +315,7 @@ Result<std::shared_ptr<MemReadView>> ArrowMemIndexer::AcquireReadView() {
     return std::shared_ptr<MemReadView>(new ReadView(std::move(batches)));
 }
 
-Result<std::vector<std::unique_ptr<BatchReader>>> ArrowMemIndexer::CreateQueryReaders(
+Result<std::vector<std::unique_ptr<RealtimeReader>>> ArrowMemIndexer::CreateQueryReaders(
     const std::shared_ptr<MemReadView>& view, int64_t offset_lower_exclusive,
     const MemQueryContext& context) {
     std::shared_ptr<ReadView> arrow_view = std::dynamic_pointer_cast<ReadView>(view);
@@ -330,12 +330,12 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowMemIndexer::CreateQueryRe
     // TODO(xinyu.lxy): Support predicate pushdown after adding batch statistics or index metadata.
     // The default Arrow indexer currently ignores context.predicate and
     // context.enable_predicate_pushdown, and returns all offset-matching rows as candidates.
-    std::vector<std::unique_ptr<BatchReader>> readers;
+    std::vector<std::unique_ptr<RealtimeReader>> readers;
     if (arrow_view->GetOffsetRange() && arrow_view->GetOffsetRange()->to > offset_lower_exclusive) {
         std::unique_ptr<BatchReader> reader = std::make_unique<QueryBatchReader>(
-            arrow_view, offset_lower_exclusive, read_schema, arrow_pool_);
-        readers.push_back(
-            std::make_unique<CompleteRowKindBatchReader>(std::move(reader), memory_pool_));
+            arrow_view.get(), offset_lower_exclusive, read_schema, arrow_pool_);
+        reader = std::make_unique<CompleteRowKindBatchReader>(std::move(reader), memory_pool_);
+        readers.push_back(std::make_unique<RealtimeReader>(arrow_view, std::move(reader)));
     }
     return readers;
 }

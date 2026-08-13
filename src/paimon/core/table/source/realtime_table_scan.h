@@ -63,7 +63,8 @@ class RealtimeTableScan : public TableScan {
 
     Result<std::vector<std::shared_ptr<Split>>> CreateRealtimeSplits(
         const std::vector<std::shared_ptr<Split>>& disk_splits, MemoryViewMap&& active_memory,
-        const RealtimeOffsetMap& committed_offsets) const;
+        const RealtimeOffsetMap& committed_offsets,
+        const std::optional<int64_t>& snapshot_id) const;
 
     std::unique_ptr<TableScan> disk_scan_;
     std::shared_ptr<RealtimeContext> realtime_context_;
