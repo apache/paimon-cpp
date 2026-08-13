@@ -283,6 +283,20 @@ TEST_P(FileSystemTest, TestSimpleWriteAndRead) {
     ASSERT_OK(in_stream->Close());
 }
 
+TEST_P(FileSystemTest, TestOpenWithKnownFileSize) {
+    const std::string content = "abcdefghijk";
+    const std::string file_path = test_root_ + "/file.data";
+    ASSERT_OK(fs_->WriteFile(file_path, content, /*overwrite=*/true));
+
+    FileStatus file_status(file_path, static_cast<int64_t>(content.size()));
+    ASSERT_OK_AND_ASSIGN(auto input_stream, fs_->Open(file_status));
+    ASSERT_OK_AND_ASSIGN(int64_t file_size, input_stream->Length());
+    ASSERT_EQ(file_size, content.size());
+    ASSERT_OK(input_stream->Close());
+
+    ASSERT_TRUE(fs_->Open(FileStatus(file_path, /*length=*/-1)).status().IsInvalid());
+}
+
 TEST_P(FileSystemTest, TestWriteMultipleTimes) {
     std::vector<std::string> content_vec = {"abc", "defg", "hi", "j", "k"};
     std::string content = "abcdefghijk";

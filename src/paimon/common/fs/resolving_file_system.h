@@ -41,6 +41,7 @@ class ResolvingFileSystem : public FileSystem {
     ~ResolvingFileSystem() override = default;
 
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override;
+    Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override;
     Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
                                                  bool overwrite) const override;
 

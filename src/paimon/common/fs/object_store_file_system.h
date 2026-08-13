@@ -85,6 +85,7 @@ class PAIMON_EXPORT ObjectStoreFileSystem : public FileSystem {
     ~ObjectStoreFileSystem() override = default;
 
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override;
+    Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override;
     Result<std::unique_ptr<FileStatus>> GetFileStatus(const std::string& path) const override;
     Status ListDir(const std::string& directory,
                    std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const override;
