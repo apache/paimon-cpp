@@ -19,6 +19,7 @@
 
 #include "paimon/core/table/source/primary_key_index_batch_scan.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -273,6 +274,12 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
     PAIMON_ASSIGN_OR_RAISE(PrimaryKeySortedIndexScan::Plan index_plan,
                            PrimaryKeySortedIndexScan::CreatePlan(
                                snapshot_id, data_splits, scalar_definitions_, index_entries));
+    bool has_index_group = std::any_of(
+        index_plan.Files().begin(), index_plan.Files().end(),
+        [](const PrimaryKeySortedIndexScan::FilePlan& file) { return !file.Groups().empty(); });
+    if (!has_index_group) {
+        return data_plan;
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor,
                            CreateGlobalIndexExecutor(core_options_));
     PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
