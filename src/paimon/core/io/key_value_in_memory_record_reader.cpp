@@ -26,13 +26,13 @@
 #include "arrow/array/array_primitive.h"
 #include "arrow/compute/api.h"
 #include "arrow/compute/ordering.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/columnar/columnar_row_ref.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/status.h"
 namespace paimon {
@@ -127,12 +127,11 @@ KeyValueInMemoryRecordReader::SortBatch() const {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> sorted_indices,
                                       arrow::compute::SortIndices(arrow::Datum(value_struct_array_),
                                                                   sort_options, &exec_context));
-    auto typed_indices =
-        arrow::internal::checked_pointer_cast<arrow::NumericArray<arrow::UInt64Type>>(
-            sorted_indices);
-    if (!typed_indices) {
+    if (!sorted_indices || sorted_indices->type_id() != arrow::Type::UINT64) {
         return Status::Invalid("cannot cast sorted indices to UInt64Array");
     }
+    auto typed_indices =
+        checked_pointer_cast<arrow::NumericArray<arrow::UInt64Type>>(sorted_indices);
     return typed_indices;
 }
 

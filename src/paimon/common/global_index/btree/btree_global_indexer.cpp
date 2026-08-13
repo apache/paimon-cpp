@@ -32,6 +32,7 @@
 #include "paimon/common/memory/memory_slice_input.h"
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/crc32c.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/preconditions.h"
@@ -68,9 +69,11 @@ Result<std::shared_ptr<GlobalIndexWriter>> BTreeGlobalIndexer::CreateWriter(
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::DataType> arrow_type,
                                       arrow::ImportType(arrow_schema));
     // check data type
-    auto struct_type = std::dynamic_pointer_cast<arrow::StructType>(arrow_type);
-    PAIMON_RETURN_NOT_OK(Preconditions::CheckNotNull(
-        struct_type, "arrow schema must be struct type when create BTreeGlobalIndexWriter"));
+    if (!arrow_type || arrow_type->id() != arrow::Type::STRUCT) {
+        return Status::Invalid(
+            "arrow schema must be struct type when create BTreeGlobalIndexWriter");
+    }
+    auto struct_type = checked_pointer_cast<arrow::StructType>(arrow_type);
 
     // parse options
     PAIMON_ASSIGN_OR_RAISE(

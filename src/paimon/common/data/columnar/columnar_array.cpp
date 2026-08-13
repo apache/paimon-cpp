@@ -24,12 +24,12 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/array/array_primitive.h"
 #include "arrow/type_traits.h"
-#include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
 #include "fmt/format.h"
 #include "paimon/common/data/columnar/columnar_batch_context.h"
 #include "paimon/common/data/columnar/columnar_map.h"
 #include "paimon/common/data/columnar/columnar_row_ref.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 
 namespace paimon {
@@ -44,7 +44,7 @@ Status ColumnarArray::CheckNoNull() const {
 
 Decimal ColumnarArray::GetDecimal(int32_t pos, int32_t precision, int32_t scale) const {
     using ArrayType = typename arrow::TypeTraits<arrow::Decimal128Type>::ArrayType;
-    auto array = arrow::internal::checked_cast<const ArrayType*>(array_);
+    auto array = checked_cast<const ArrayType*>(array_);
     assert(array);
     arrow::Decimal128 decimal(array->GetValue(offset_ + pos));
     return Decimal(
@@ -56,11 +56,10 @@ Decimal ColumnarArray::GetDecimal(int32_t pos, int32_t precision, int32_t scale)
 
 Timestamp ColumnarArray::GetTimestamp(int32_t pos, int32_t precision) const {
     using ArrayType = typename arrow::TypeTraits<arrow::TimestampType>::ArrayType;
-    auto array = arrow::internal::checked_cast<const ArrayType*>(array_);
+    auto array = checked_cast<const ArrayType*>(array_);
     assert(array);
     int64_t data = array->Value(offset_ + pos);
-    auto timestamp_type =
-        arrow::internal::checked_pointer_cast<arrow::TimestampType>(array->type());
+    auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(array->type());
     // for orc format, data is saved as nano, therefore, Timestamp convert should consider precision
     // in arrow array rather than input precision
     DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type);
@@ -70,7 +69,7 @@ Timestamp ColumnarArray::GetTimestamp(int32_t pos, int32_t precision) const {
 }
 
 std::shared_ptr<InternalArray> ColumnarArray::GetArray(int32_t pos) const {
-    auto list_array = arrow::internal::checked_cast<const arrow::ListArray*>(array_);
+    auto list_array = checked_cast<const arrow::ListArray*>(array_);
     assert(list_array);
     int32_t offset = list_array->value_offset(offset_ + pos);
     int32_t length = list_array->value_length(offset_ + pos);
@@ -78,7 +77,7 @@ std::shared_ptr<InternalArray> ColumnarArray::GetArray(int32_t pos) const {
 }
 
 std::shared_ptr<InternalMap> ColumnarArray::GetMap(int32_t pos) const {
-    auto map_array = arrow::internal::checked_cast<const arrow::MapArray*>(array_);
+    auto map_array = checked_cast<const arrow::MapArray*>(array_);
     assert(map_array);
     int32_t offset = map_array->value_offset(offset_ + pos);
     int32_t length = map_array->value_length(offset_ + pos);
@@ -87,7 +86,7 @@ std::shared_ptr<InternalMap> ColumnarArray::GetMap(int32_t pos) const {
 }
 
 std::shared_ptr<InternalRow> ColumnarArray::GetRow(int32_t pos, int32_t num_fields) const {
-    auto struct_array = arrow::internal::checked_cast<const arrow::StructArray*>(array_);
+    auto struct_array = checked_cast<const arrow::StructArray*>(array_);
     assert(struct_array);
     auto row_ctx = std::make_shared<ColumnarBatchContext>(struct_array->fields(), pool_);
     return std::make_shared<ColumnarRowRef>(std::move(row_ctx), offset_ + pos);

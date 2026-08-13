@@ -32,6 +32,7 @@
 #include "paimon/common/executor/future.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -224,11 +225,11 @@ Status BlobViewLookup::ExtractBlobDescriptors(const Identifier& identifier,
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-        if (struct_array == nullptr) {
+        if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(
                 "invalid array in ExtractBlobDescriptors, batch array is not a StructArray.");
         }
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
         // skip the _VALUE_KIND column
         if (static_cast<size_t>(struct_array->num_fields()) - 1 != field_ids.size()) {
             return Status::Invalid(
@@ -250,22 +251,22 @@ Status BlobViewLookup::ExtractBlobDescriptors(const Identifier& identifier,
                 "invalid array in ExtractBlobDescriptors, expected _ROW_ID as the last column");
         }
         auto row_id_array = struct_array->field(struct_array->num_fields() - 1);
-        auto typed_row_id_array = std::dynamic_pointer_cast<arrow::Int64Array>(row_id_array);
-        if (!typed_row_id_array) {
+        if (!row_id_array || row_id_array->type_id() != arrow::Type::INT64) {
             return Status::Invalid(
                 fmt::format("invalid array does not contain {} field, or it cannot be casted to "
                             "Int64Array in ExtractBlobDescriptors.",
                             SpecialFields::RowId().Name()));
         }
+        auto typed_row_id_array = checked_pointer_cast<arrow::Int64Array>(row_id_array);
 
         // skip _VALUE_KIND
         for (int32_t idx = 1; idx < struct_array->num_fields() - 1; ++idx) {
-            auto binary_array =
-                std::dynamic_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(idx));
-            if (binary_array == nullptr) {
+            auto field_array = struct_array->field(idx);
+            if (!field_array || field_array->type_id() != arrow::Type::LARGE_BINARY) {
                 return Status::Invalid(
                     "invalid array in ExtractBlobDescriptors, column is not a LargeBinaryArray.");
             }
+            auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(field_array);
             for (int64_t row = 0; row < binary_array->length(); ++row) {
                 BlobViewStruct blob_view_struct(identifier, field_ids[idx - 1],
                                                 typed_row_id_array->Value(row));

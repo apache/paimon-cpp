@@ -73,8 +73,7 @@ class CastingUtils {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             arrow::Datum casted_result,
             arrow::compute::Cast(arrow::Datum(src_scalar), type_holder, options));
-        auto* casted_scalar =
-            arrow::internal::checked_cast<TargetScalar*>(casted_result.scalar().get());
+        auto* casted_scalar = dynamic_cast<TargetScalar*>(casted_result.scalar().get());
         if (!casted_scalar) {
             return Status::Invalid(fmt::format("cast literal failed: cannot cast to {} scalar",
                                                target_type->ToString()));

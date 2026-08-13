@@ -26,8 +26,8 @@
 
 #include "arrow/array/builder_nested.h"
 #include "arrow/memory_pool.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -37,8 +37,7 @@ Result<std::unique_ptr<GenericRowToArrowArrayConverter>> GenericRowToArrowArrayC
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
         pool, std::make_shared<arrow::StructType>(schema->fields()), &array_builder));
 
-    auto struct_builder =
-        arrow::internal::checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
+    auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
     assert(struct_builder);
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;
     appenders.reserve(schema->num_fields());

@@ -27,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/data/blob.h"
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
@@ -69,7 +70,7 @@ TEST(BlobFileFormatFactoryTest, TestWriteNullOptionPropagation) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriterBuilder> writer_builder,
                                format->CreateWriterBuilder(&c_schema, /*batch_size=*/1024));
         // The blob writer builder is a SpecificFSWriterBuilder by construction.
-        static_cast<SpecificFSWriterBuilder*>(writer_builder.get())->WithFileSystem(fs);
+        checked_cast<SpecificFSWriterBuilder*>(writer_builder.get())->WithFileSystem(fs);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out,
                                fs->Create(dir->Str() + "/" + file_name, /*overwrite=*/true));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatWriter> writer,

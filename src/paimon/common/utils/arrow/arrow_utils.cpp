@@ -27,10 +27,10 @@
 #include "arrow/type_traits.h"
 #include "arrow/util/bit_util.h"
 #include "arrow/util/bitmap_ops.h"
-#include "arrow/util/checked_cast.h"
 #include "arrow/util/compression.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 
 namespace paimon {
@@ -191,8 +191,7 @@ Result<std::shared_ptr<arrow::ArrayData>> RebaseFixedWidth(
         data->buffers[1] == nullptr || !data->child_data.empty() || data->dictionary != nullptr) {
         return std::shared_ptr<arrow::ArrayData>();
     }
-    const int32_t bit_width =
-        arrow::internal::checked_cast<const arrow::FixedWidthType&>(*data->type).bit_width();
+    const int32_t bit_width = checked_cast<const arrow::FixedWidthType&>(*data->type).bit_width();
     if (bit_width <= 0 || bit_width % 8 != 0) {
         return std::shared_ptr<arrow::ArrayData>();
     }
@@ -255,11 +254,11 @@ const char* ArrowUtils::kArrowSchemaMetadataKey = "ARROW:schema";
 
 Result<std::shared_ptr<arrow::Schema>> ArrowUtils::DataTypeToSchema(
     const std::shared_ptr<arrow::DataType>& data_type) {
-    if (data_type->id() != arrow::Type::STRUCT) {
-        return Status::Invalid(
-            fmt::format("Expected struct data type, actual data type: {}", data_type->ToString()));
+    if (!data_type || data_type->id() != arrow::Type::STRUCT) {
+        return Status::Invalid(fmt::format("Expected struct data type, actual data type: {}",
+                                           data_type ? data_type->ToString() : "null"));
     }
-    const auto& struct_type = std::static_pointer_cast<arrow::StructType>(data_type);
+    const auto& struct_type = checked_pointer_cast<arrow::StructType>(data_type);
     return std::make_shared<arrow::Schema>(struct_type->fields());
 }
 
@@ -280,7 +279,10 @@ Result<std::vector<int32_t>> ArrowUtils::CreateProjection(
 
 Status ArrowUtils::CheckNullabilityMatch(const std::shared_ptr<arrow::Schema>& schema,
                                          const std::shared_ptr<arrow::Array>& data) {
-    auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(data);
+    if (!schema || !data || data->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid("CheckNullabilityMatch requires a schema and a struct array");
+    }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(data);
     if (struct_array->num_fields() != schema->num_fields()) {
         return Status::Invalid(fmt::format(
             "CheckNullabilityMatch failed, data field count {} mismatch schema field count {}",
@@ -296,25 +298,25 @@ void ArrowUtils::TraverseArray(const std::shared_ptr<arrow::Array>& array) {
     arrow::Type::type type = array->type()->id();
     switch (type) {
         case arrow::Type::type::DICTIONARY: {
-            auto* dict_array = arrow::internal::checked_cast<arrow::DictionaryArray*>(array.get());
+            auto* dict_array = checked_cast<arrow::DictionaryArray*>(array.get());
             [[maybe_unused]] auto dict = dict_array->dictionary();
             return;
         }
         case arrow::Type::type::STRUCT: {
-            auto* struct_array = arrow::internal::checked_cast<arrow::StructArray*>(array.get());
+            auto* struct_array = checked_cast<arrow::StructArray*>(array.get());
             for (const auto& field : struct_array->fields()) {
                 TraverseArray(field);
             }
             return;
         }
         case arrow::Type::type::MAP: {
-            auto* map_array = arrow::internal::checked_cast<arrow::MapArray*>(array.get());
+            auto* map_array = checked_cast<arrow::MapArray*>(array.get());
             TraverseArray(map_array->keys());
             TraverseArray(map_array->items());
             return;
         }
         case arrow::Type::type::LIST: {
-            auto* list_array = arrow::internal::checked_cast<arrow::ListArray*>(array.get());
+            auto* list_array = checked_cast<arrow::ListArray*>(array.get());
             TraverseArray(list_array->values());
             return;
         }
@@ -350,20 +352,20 @@ Status ArrowUtils::InnerCheckNullabilityMatch(const std::shared_ptr<arrow::Field
     }
     auto type = field->type();
     if (type->id() == arrow::Type::STRUCT) {
-        auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(field->type());
-        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(data);
+        auto struct_type = checked_pointer_cast<arrow::StructType>(field->type());
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(data);
         for (int32_t i = 0; i < struct_type->num_fields(); ++i) {
             PAIMON_RETURN_NOT_OK(
                 InnerCheckNullabilityMatch(struct_type->field(i), struct_array->field(i)));
         }
     } else if (type->id() == arrow::Type::LIST) {
-        auto list_type = arrow::internal::checked_pointer_cast<arrow::ListType>(field->type());
-        auto list_array = arrow::internal::checked_pointer_cast<arrow::ListArray>(data);
+        auto list_type = checked_pointer_cast<arrow::ListType>(field->type());
+        auto list_array = checked_pointer_cast<arrow::ListArray>(data);
         PAIMON_RETURN_NOT_OK(
             InnerCheckNullabilityMatch(list_type->value_field(), list_array->values()));
     } else if (type->id() == arrow::Type::MAP) {
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(field->type());
-        auto map_array = arrow::internal::checked_pointer_cast<arrow::MapArray>(data);
+        auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
+        auto map_array = checked_pointer_cast<arrow::MapArray>(data);
         PAIMON_RETURN_NOT_OK(InnerCheckNullabilityMatch(map_type->key_field(), map_array->keys()));
         PAIMON_RETURN_NOT_OK(
             InnerCheckNullabilityMatch(map_type->item_field(), map_array->items()));
@@ -373,7 +375,7 @@ Status ArrowUtils::InnerCheckNullabilityMatch(const std::shared_ptr<arrow::Field
 
 Result<std::shared_ptr<arrow::StructArray>> ArrowUtils::RemoveFieldFromStructArray(
     const std::shared_ptr<arrow::StructArray>& struct_array, const std::string& field_name) {
-    auto struct_type = std::static_pointer_cast<arrow::StructType>(struct_array->type());
+    auto struct_type = checked_pointer_cast<arrow::StructType>(struct_array->type());
     int32_t field_idx = struct_type->GetFieldIndex(field_name);
     if (field_idx == -1) {
         return struct_array;

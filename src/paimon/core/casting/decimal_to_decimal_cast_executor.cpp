@@ -28,9 +28,9 @@
 #include "arrow/array/array_decimal.h"
 #include "arrow/array/builder_decimal.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/decimal_utils.h"
 #include "paimon/data/decimal.h"
 #include "paimon/defs.h"
@@ -48,8 +48,7 @@ Result<Literal> DecimalToDecimalCastExecutor::Cast(
     if (literal.IsNull()) {
         return Literal(FieldType::DECIMAL);
     }
-    auto* target_decimal_type =
-        arrow::internal::checked_cast<arrow::Decimal128Type*>(target_type.get());
+    auto* target_decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
     assert(target_decimal_type);
     auto src_value = literal.GetValue<Decimal>();
     arrow::Decimal128 src_decimal(src_value.HighBits(), src_value.LowBits());
@@ -71,13 +70,11 @@ Result<std::shared_ptr<arrow::Array>> DecimalToDecimalCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*target_type));
-    auto* src_array = arrow::internal::checked_cast<arrow::Decimal128Array*>(array.get());
+    auto* src_array = checked_cast<arrow::Decimal128Array*>(array.get());
     assert(src_array);
-    auto* src_decimal_type =
-        arrow::internal::checked_cast<arrow::Decimal128Type*>(array->type().get());
+    auto* src_decimal_type = checked_cast<arrow::Decimal128Type*>(array->type().get());
     assert(src_decimal_type);
-    auto* target_decimal_type =
-        arrow::internal::checked_cast<arrow::Decimal128Type*>(target_type.get());
+    auto* target_decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
     assert(target_decimal_type);
     auto decimal_builder = std::make_shared<arrow::Decimal128Builder>(target_type, pool);
     for (int64_t i = 0; i < src_array->length(); ++i) {

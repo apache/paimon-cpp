@@ -27,6 +27,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/status.h"
 
 namespace arrow {
@@ -55,7 +56,7 @@ Result<std::shared_ptr<arrow::Array>> BinaryToBlobCastExecutor::Cast(
                         target_type->ToString()));
     }
 
-    auto binary_array = std::static_pointer_cast<arrow::BinaryArray>(array);
+    auto binary_array = checked_pointer_cast<arrow::BinaryArray>(array);
     if (binary_array->offset() != 0) {
         return Status::Invalid("BinaryToBlobCastExecutor only supports arrays with zero offset");
     }

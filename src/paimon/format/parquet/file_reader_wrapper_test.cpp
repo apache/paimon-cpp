@@ -33,6 +33,7 @@
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/format/parquet/parquet_field_id_converter.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
@@ -86,9 +87,9 @@ class FileReaderWrapperTest : public ::testing::Test {
             data_type, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int32Builder>(),
              std::make_shared<arrow::BooleanBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
-        auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
+        auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
         for (int32_t i = 0 + offset; i < record_batch_size + offset; ++i) {
             EXPECT_TRUE(struct_builder.Append().ok());
             EXPECT_TRUE(string_builder->Append("str_" + std::to_string(i)).ok());

@@ -29,12 +29,12 @@
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/helpers.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/data/internal_row.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/status.h"
 
@@ -66,19 +66,20 @@ Result<std::unique_ptr<KeyValueMetaProjectionConsumer>> KeyValueMetaProjectionCo
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
         arrow_pool.get(), arrow::struct_(target_schema->fields()), &array_builder));
 
-    auto struct_builder =
-        arrow::internal::checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
+    auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
     assert(struct_builder);
-    auto* sequence_appender =
-        arrow::internal::checked_cast<arrow::Int64Builder*>(struct_builder->field_builder(0));
-    if (sequence_appender == nullptr) {
+    auto* sequence_builder = struct_builder->field_builder(0);
+    if (!sequence_builder || !sequence_builder->type() ||
+        sequence_builder->type()->id() != arrow::Type::INT64) {
         return Status::Invalid("sequence_appender cannot cast to Int64Builder");
     }
-    auto* value_kind_appender =
-        arrow::internal::checked_cast<arrow::Int8Builder*>(struct_builder->field_builder(1));
-    if (value_kind_appender == nullptr) {
+    auto* sequence_appender = checked_cast<arrow::Int64Builder*>(sequence_builder);
+    auto* value_kind_builder = struct_builder->field_builder(1);
+    if (!value_kind_builder || !value_kind_builder->type() ||
+        value_kind_builder->type()->id() != arrow::Type::INT8) {
         return Status::Invalid("value_kind_appender cannot cast to Int8Builder");
     }
+    auto* value_kind_appender = checked_cast<arrow::Int8Builder*>(value_kind_builder);
     // appenders only contains array_builder of value schema, sequence_appender and
     // value_kind_appender are not in appenders
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;

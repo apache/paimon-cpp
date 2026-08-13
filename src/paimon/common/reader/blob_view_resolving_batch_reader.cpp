@@ -34,6 +34,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/status.h"
 
@@ -60,11 +61,11 @@ Result<BatchReader::ReadBatch> BlobViewResolvingBatchReader::NextBatch() {
     auto& [c_array, c_schema] = batch;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
-    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-    if (struct_array == nullptr) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid(
             "invalid batch, BlobViewResolvingBatchReader expects a StructArray batch.");
     }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
     const auto struct_type = struct_array->struct_type();
 
     arrow::ArrayVector new_fields = struct_array->fields();
@@ -78,13 +79,13 @@ Result<BatchReader::ReadBatch> BlobViewResolvingBatchReader::NextBatch() {
             continue;
         }
         const auto& column = struct_array->field(field_idx);
-        if (auto large_binary_array = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(column)) {
-            PAIMON_ASSIGN_OR_RAISE(new_fields[field_idx], ResolveBinaryColumn(large_binary_array));
-        } else {
+        if (!column || column->type_id() != arrow::Type::LARGE_BINARY) {
             return Status::Invalid(fmt::format(
                 "BlobViewResolvingBatchReader expects blob-view column {} to be LargeBinaryArray.",
                 field->name()));
         }
+        auto large_binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(column);
+        PAIMON_ASSIGN_OR_RAISE(new_fields[field_idx], ResolveBinaryColumn(large_binary_array));
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> resolved_struct_array,
                                       arrow::StructArray::Make(new_fields, field_names));

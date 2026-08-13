@@ -25,7 +25,7 @@
 
 #include "arrow/compute/cast.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/status.h"
 
@@ -44,7 +44,7 @@ Result<Literal> DateToTimestampCastExecutor::Cast(
 Result<std::shared_ptr<arrow::Array>> DateToTimestampCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
-    auto target_ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(target_type);
+    auto target_ts_type = checked_pointer_cast<arrow::TimestampType>(target_type);
     assert(target_ts_type);
     arrow::compute::CastOptions options = arrow::compute::CastOptions::Safe();
 

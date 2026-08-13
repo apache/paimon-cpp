@@ -41,6 +41,7 @@
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/restore_files.h"
@@ -194,7 +195,7 @@ class AppendOnlyFileStoreWriteTest : public testing::Test {
         }
         std::shared_ptr<arrow::Array> array =
             arrow::Concatenate(result->chunks(), arrow::default_memory_pool()).ValueOrDie();
-        return std::static_pointer_cast<arrow::StructArray>(array);
+        return checked_pointer_cast<arrow::StructArray>(array);
     }
 
     MapSharedShreddingFieldMeta ShreddingMeta(const std::shared_ptr<arrow::Schema>& file_schema,

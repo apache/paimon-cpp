@@ -25,6 +25,7 @@
 #include "paimon/common/data/shredding/map_shared_shredding_context.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -81,7 +82,7 @@ MapSharedShreddingWritePlanFactory::CreateMetadataFinalizer(
     const std::shared_ptr<ShreddingBatchConverter>& converter,
     const std::string& compression) const {
     // The converter is created by CreateConverter above; the concrete type is guaranteed.
-    auto map_converter = std::static_pointer_cast<MapSharedShreddingBatchConverter>(converter);
+    auto map_converter = checked_pointer_cast<MapSharedShreddingBatchConverter>(converter);
     return MapSharedShreddingUtils::BuildMetadataFinalizer(map_converter, compression,
                                                            map_converter->GetPhysicalSchema());
 }

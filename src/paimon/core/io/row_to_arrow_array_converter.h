@@ -28,6 +28,7 @@
 #include "paimon/common/data/internal_map.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/key_value.h"
 #include "paimon/memory/memory_pool.h"
@@ -206,34 +207,34 @@ Status RowToArrowArrayConverter<T, R>::Accumulate(const arrow::Array* array, int
         case arrow::Type::type::DECIMAL128:
             break;
         case arrow::Type::type::STRING: {
-            auto string_array = arrow::internal::checked_cast<const arrow::StringArray*>(array);
+            auto string_array = checked_cast<const arrow::StringArray*>(array);
             assert(string_array);
             // accumulate the bytes buffer size of binary
             UpdateAccumulatedVec(string_array->value_data()->size(), idx);
             break;
         }
         case arrow::Type::type::BINARY: {
-            auto binary_array = arrow::internal::checked_cast<const arrow::BinaryArray*>(array);
+            auto binary_array = checked_cast<const arrow::BinaryArray*>(array);
             assert(binary_array);
             // accumulate the bytes buffer size of binary
             UpdateAccumulatedVec(binary_array->value_data()->size(), idx);
             break;
         }
         case arrow::Type::type::LIST: {
-            auto list_array = arrow::internal::checked_cast<const arrow::ListArray*>(array);
+            auto list_array = checked_cast<const arrow::ListArray*>(array);
             assert(list_array);
             PAIMON_RETURN_NOT_OK(Accumulate(list_array->values().get(), idx));
             break;
         }
         case arrow::Type::type::MAP: {
-            auto map_array = arrow::internal::checked_cast<const arrow::MapArray*>(array);
+            auto map_array = checked_cast<const arrow::MapArray*>(array);
             assert(map_array);
             PAIMON_RETURN_NOT_OK(Accumulate(map_array->keys().get(), idx));
             PAIMON_RETURN_NOT_OK(Accumulate(map_array->items().get(), idx));
             break;
         }
         case arrow::Type::type::STRUCT: {
-            auto struct_array = arrow::internal::checked_cast<const arrow::StructArray*>(array);
+            auto struct_array = checked_cast<const arrow::StructArray*>(array);
             assert(struct_array);
             for (const auto& field : struct_array->fields()) {
                 PAIMON_RETURN_NOT_OK(Accumulate(field.get(), idx));
@@ -252,7 +253,7 @@ template <typename T, typename R>
 template <typename BuilderType>
 Result<BuilderType*> RowToArrowArrayConverter<T, R>::CastToTypedBuilder(
     arrow::ArrayBuilder* array_builder) {
-    auto field_builder = arrow::internal::checked_cast<BuilderType*>(array_builder);
+    auto field_builder = dynamic_cast<BuilderType*>(array_builder);
     if (field_builder == nullptr) {
         return Status::Invalid("field builder is nullptr");
     }
@@ -389,11 +390,7 @@ RowToArrowArrayConverter<T, R>::AppendField(bool use_view, arrow::ArrayBuilder* 
         case arrow::Type::type::TIMESTAMP: {
             PAIMON_ASSIGN_OR_RAISE(auto* field_builder,
                                    CastToTypedBuilder<arrow::TimestampBuilder>(array_builder));
-            auto ts_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(field_builder->type());
-            if (!ts_type) {
-                return Status::Invalid("cannot cast to timestamp type");
-            }
+            auto ts_type = checked_pointer_cast<arrow::TimestampType>(field_builder->type());
             DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(ts_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(ts_type);
             return RowToArrowArrayConverter<T, R>::AppendValueFunc(
@@ -408,11 +405,7 @@ RowToArrowArrayConverter<T, R>::AppendField(bool use_view, arrow::ArrayBuilder* 
         case arrow::Type::type::DECIMAL128: {
             PAIMON_ASSIGN_OR_RAISE(auto* field_builder,
                                    CastToTypedBuilder<arrow::Decimal128Builder>(array_builder));
-            auto decimal_type =
-                arrow::internal::checked_cast<arrow::Decimal128Type*>(field_builder->type().get());
-            if (!decimal_type) {
-                return Status::Invalid("cannot cast to decimal type");
-            }
+            auto decimal_type = checked_cast<arrow::Decimal128Type*>(field_builder->type().get());
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
             return RowToArrowArrayConverter<T, R>::AppendValueFunc(

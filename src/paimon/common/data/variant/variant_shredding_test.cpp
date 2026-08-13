@@ -31,6 +31,7 @@
 #include "paimon/common/data/variant/variant_schema.h"
 #include "paimon/common/data/variant/variant_shredding_utils.h"
 #include "paimon/common/data/variant/variant_shredding_writer.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -66,15 +67,15 @@ class VariantShreddingTest : public ::testing::Test {
             EXPECT_OK(writer->Append(*variant));
         }
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> shredded_array, writer->Finish());
-        auto shredded = std::static_pointer_cast<arrow::StructArray>(shredded_array);
+        auto shredded = checked_pointer_cast<arrow::StructArray>(shredded_array);
 
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled_array,
                              VariantReassembler::AssembleVariantArray(
                                  shredded, schema, pool_, arrow::default_memory_pool()));
-        auto assembled = std::static_pointer_cast<arrow::StructArray>(assembled_array);
+        auto assembled = checked_pointer_cast<arrow::StructArray>(assembled_array);
         EXPECT_EQ(assembled->length(), static_cast<int64_t>(jsons.size()));
-        auto value_column = std::static_pointer_cast<arrow::BinaryArray>(assembled->field(0));
-        auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(assembled->field(1));
+        auto value_column = checked_pointer_cast<arrow::BinaryArray>(assembled->field(0));
+        auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(assembled->field(1));
         for (size_t i = 0; i < jsons.size(); ++i) {
             SCOPED_TRACE("row " + std::to_string(i));
             if (jsons[i] == nullptr) {
@@ -140,14 +141,14 @@ class VariantShreddingTest : public ::testing::Test {
             EXPECT_OK(writer->Append(*variant));
         }
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> shredded_array, writer->Finish());
-        auto shredded = std::static_pointer_cast<arrow::StructArray>(shredded_array);
+        auto shredded = checked_pointer_cast<arrow::StructArray>(shredded_array);
 
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled_array,
                              VariantReassembler::AssembleVariantArray(
                                  shredded, schema, pool_, arrow::default_memory_pool()));
-        auto assembled = std::static_pointer_cast<arrow::StructArray>(assembled_array);
-        auto value_column = std::static_pointer_cast<arrow::BinaryArray>(assembled->field(0));
-        auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(assembled->field(1));
+        auto assembled = checked_pointer_cast<arrow::StructArray>(assembled_array);
+        auto value_column = checked_pointer_cast<arrow::BinaryArray>(assembled->field(0));
+        auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(assembled->field(1));
         for (size_t i = 0; i < variants.size(); ++i) {
             SCOPED_TRACE("row " + std::to_string(i));
             if (variants[i] == nullptr) {
@@ -233,8 +234,8 @@ TEST_F(VariantShreddingTest, ShredObject) {
             arrow::struct_({arrow::field("a", arrow::int32()), arrow::field("c", arrow::utf8()),
                             arrow::field("b", arrow::utf8())}),
             {variant_json});
-        auto typed = std::static_pointer_cast<arrow::StructArray>(shredded->field(2));
-        auto c_group = std::static_pointer_cast<arrow::StructArray>(typed->field(1));
+        auto typed = checked_pointer_cast<arrow::StructArray>(shredded->field(2));
+        auto c_group = checked_pointer_cast<arrow::StructArray>(typed->field(1));
         ASSERT_FALSE(c_group->IsNull(0));
         ASSERT_TRUE(c_group->field(0)->IsNull(0));
         ASSERT_TRUE(c_group->field(1)->IsNull(0));
@@ -244,7 +245,7 @@ TEST_F(VariantShreddingTest, ShredObject) {
         auto shredded = RoundTrip(
             arrow::struct_({arrow::field("b", arrow::utf8()), arrow::field("c", arrow::utf8())}),
             {variant_json});
-        auto value_column = std::static_pointer_cast<arrow::BinaryArray>(shredded->field(1));
+        auto value_column = checked_pointer_cast<arrow::BinaryArray>(shredded->field(1));
         ASSERT_FALSE(value_column->IsNull(0));
         // The residual must equal the standalone encoding of {"a": 1}.
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> residual_expected,
@@ -277,10 +278,10 @@ TEST_F(VariantShreddingTest, ShredAllTypes) {
     auto shredded = RoundTrip(shredding_type, {json, nullptr, json});
 
     // c6 is a variant null: it stays in the field's value column ("00"), typed_value is null.
-    auto typed = std::static_pointer_cast<arrow::StructArray>(shredded->field(2));
-    auto c6_group = std::static_pointer_cast<arrow::StructArray>(typed->field(5));
+    auto typed = checked_pointer_cast<arrow::StructArray>(shredded->field(2));
+    auto c6_group = checked_pointer_cast<arrow::StructArray>(typed->field(5));
     ASSERT_FALSE(c6_group->IsNull(0));
-    auto c6_value = std::static_pointer_cast<arrow::BinaryArray>(c6_group->field(0));
+    auto c6_value = checked_pointer_cast<arrow::BinaryArray>(c6_group->field(0));
     ASSERT_FALSE(c6_value->IsNull(0));
     ASSERT_EQ(c6_value->GetView(0), std::string_view("\x00", 1));
     ASSERT_TRUE(c6_group->field(1)->IsNull(0));
@@ -291,7 +292,7 @@ TEST_F(VariantShreddingTest, ShredAllTypes) {
     // No shredding at all: everything stays in the top-level value.
     auto no_match_type = arrow::struct_({arrow::field("other", arrow::utf8())});
     auto unshredded = RoundTrip(no_match_type, {json});
-    auto value_column = std::static_pointer_cast<arrow::BinaryArray>(unshredded->field(1));
+    auto value_column = checked_pointer_cast<arrow::BinaryArray>(unshredded->field(1));
     ASSERT_FALSE(value_column->IsNull(0));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> expected,
                          GenericVariant::FromJson(json, pool_));
@@ -409,9 +410,9 @@ TEST_F(VariantShreddingTest, TimestampReassembly) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled_array,
                              VariantReassembler::AssembleVariantArray(
                                  shredded, schema, pool_, arrow::default_memory_pool()));
-        auto assembled = std::static_pointer_cast<arrow::StructArray>(assembled_array);
-        auto value_column = std::static_pointer_cast<arrow::BinaryArray>(assembled->field(0));
-        auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(assembled->field(1));
+        auto assembled = checked_pointer_cast<arrow::StructArray>(assembled_array);
+        auto value_column = checked_pointer_cast<arrow::BinaryArray>(assembled->field(0));
+        auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(assembled->field(1));
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<GenericVariant> variant,
             GenericVariant::Create(value_column->GetView(0), metadata_column->GetView(0), pool_));

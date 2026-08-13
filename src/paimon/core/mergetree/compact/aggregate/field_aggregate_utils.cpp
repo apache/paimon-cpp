@@ -25,13 +25,13 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/data_getters.h"
 #include "paimon/common/data/internal_array.h"
 #include "paimon/common/data/internal_map.h"
 #include "paimon/common/data/internal_row.h"
 #include "paimon/common/types/row_kind.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/memory/bytes.h"
@@ -164,13 +164,12 @@ Result<VariantType> FieldAggregateUtils::GetValue(const DataGetters& getters, in
             return VariantType(getters.GetStringView(pos));
         case arrow::Type::TIMESTAMP: {
             std::shared_ptr<arrow::TimestampType> timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(type);
+                checked_pointer_cast<arrow::TimestampType>(type);
             return VariantType(
                 getters.GetTimestamp(pos, DateTimeUtils::GetPrecisionFromType(timestamp_type)));
         }
         case arrow::Type::DECIMAL128: {
-            const auto* decimal_type =
-                arrow::internal::checked_cast<const arrow::Decimal128Type*>(type.get());
+            const auto* decimal_type = checked_cast<const arrow::Decimal128Type*>(type.get());
             return VariantType(
                 getters.GetDecimal(pos, decimal_type->precision(), decimal_type->scale()));
         }
@@ -228,15 +227,15 @@ Result<bool> FieldAggregateUtils::Equals(const VariantType& lhs, const VariantTy
         case arrow::Type::STRUCT:
             return EqualRows(DataDefine::GetVariantValue<std::shared_ptr<InternalRow>>(lhs),
                              DataDefine::GetVariantValue<std::shared_ptr<InternalRow>>(rhs),
-                             arrow::internal::checked_pointer_cast<arrow::StructType>(type));
+                             checked_pointer_cast<arrow::StructType>(type));
         case arrow::Type::LIST:
             return EqualArrays(DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(lhs),
                                DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(rhs),
-                               arrow::internal::checked_pointer_cast<arrow::ListType>(type));
+                               checked_pointer_cast<arrow::ListType>(type));
         case arrow::Type::MAP:
             return EqualMaps(DataDefine::GetVariantValue<std::shared_ptr<InternalMap>>(lhs),
                              DataDefine::GetVariantValue<std::shared_ptr<InternalMap>>(rhs),
-                             arrow::internal::checked_pointer_cast<arrow::MapType>(type));
+                             checked_pointer_cast<arrow::MapType>(type));
         default:
             return Status::Invalid(
                 fmt::format("type {} is not supported by field aggregation", type->ToString()));

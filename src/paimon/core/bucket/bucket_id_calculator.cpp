@@ -38,12 +38,12 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
-#include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/bucket/bucket_function.h"
@@ -69,8 +69,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
     arrow::Type::type type = field->type()->id();
     switch (type) {
         case arrow::Type::type::BOOL: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::BooleanArray*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::BooleanArray*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -80,8 +79,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::INT8: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::Int8Array*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::Int8Array*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -91,8 +89,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::INT16: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::Int16Array*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::Int16Array*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -102,8 +99,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::INT32: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::Int32Array*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::Int32Array*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -113,8 +109,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::INT64: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::Int64Array*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::Int64Array*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -124,8 +119,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::FLOAT: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::FloatArray*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::FloatArray*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -135,8 +129,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::DOUBLE: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::DoubleArray*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::DoubleArray*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -146,8 +139,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::DATE32: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::Date32Array*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::Date32Array*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -157,8 +149,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::STRING: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::StringArray*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::StringArray*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -169,8 +160,7 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::BINARY: {
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::BinaryArray*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::BinaryArray*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
                                                               BinaryRowWriter* row_writer) {
@@ -181,14 +171,12 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             return writer_func;
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(field->type());
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field->type());
             assert(timestamp_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             DateTimeUtils::TimeType time_type =
                 DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type);
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::TimestampArray*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::TimestampArray*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [typed_array, col_id, precision, time_type](
                                             int32_t row_id, BinaryRowWriter* row_writer) {
@@ -210,12 +198,11 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
         }
         case arrow::Type::type::DECIMAL128: {
             const auto* decimal_type =
-                arrow::internal::checked_cast<const arrow::Decimal128Type*>(field->type().get());
+                checked_cast<const arrow::Decimal128Type*>(field->type().get());
             assert(decimal_type);
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
-            const auto* typed_array =
-                arrow::internal::checked_cast<const arrow::Decimal128Array*>(field.get());
+            const auto* typed_array = checked_cast<const arrow::Decimal128Array*>(field.get());
             assert(typed_array);
             WriteFunction writer_func = [col_id, typed_array, precision, scale](
                                             int32_t row_id, BinaryRowWriter* row_writer) {
@@ -308,11 +295,10 @@ Status BucketIdCalculator::CalculateBucketIds(ArrowArray* bucket_keys, ArrowSche
 
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> bucket_array,
                                       arrow::ImportArray(bucket_keys, bucket_schema));
-    const auto* struct_array =
-        arrow::internal::checked_cast<const arrow::StructArray*>(bucket_array.get());
-    if (!struct_array) {
+    if (!bucket_array || bucket_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("bucket keys is not a struct array");
     }
+    const auto* struct_array = checked_cast<const arrow::StructArray*>(bucket_array.get());
     std::vector<WriteFunction> write_functions;
     int32_t num_fields = struct_array->num_fields();
     write_functions.reserve(num_fields);

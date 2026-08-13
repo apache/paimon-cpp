@@ -34,6 +34,7 @@
 #include "arrow/vendored/datetime.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/result.h"
 namespace paimon {
@@ -114,8 +115,12 @@ class DateTimeUtils {
             utc_micro, arrow::TimeUnit::MICRO, GetLocalTimezoneName());
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             arrow::Datum local_micro, arrow::compute::LocalTimestamp(arrow::Datum(utc_ts_scalar)));
-        auto local_ts_scalar =
-            std::dynamic_pointer_cast<arrow::TimestampScalar>(local_micro.scalar());
+        auto local_scalar = local_micro.scalar();
+        if (!local_scalar || !local_scalar->type ||
+            local_scalar->type->id() != arrow::Type::TIMESTAMP) {
+            return Status::Invalid("LocalTimestamp did not return a TimestampScalar");
+        }
+        auto local_ts_scalar = checked_pointer_cast<arrow::TimestampScalar>(local_scalar);
         auto [millisecond, nano_of_millisecond] = DateTimeUtils::TimestampConverter(
             *(static_cast<const int64_t*>(local_ts_scalar->data())),
             DateTimeUtils::TimeType::MICROSECOND, DateTimeUtils::TimeType::MILLISECOND,
@@ -216,8 +221,11 @@ class DateTimeUtils {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             arrow::Datum target_scalar,
             arrow::compute::AssumeTimezone(arrow::Datum(local_ts_scalar), options));
-        auto utc_ts_scalar =
-            std::dynamic_pointer_cast<arrow::TimestampScalar>(target_scalar.scalar());
+        auto utc_scalar = target_scalar.scalar();
+        if (!utc_scalar || !utc_scalar->type || utc_scalar->type->id() != arrow::Type::TIMESTAMP) {
+            return Status::Invalid("AssumeTimezone did not return a TimestampScalar");
+        }
+        auto utc_ts_scalar = checked_pointer_cast<arrow::TimestampScalar>(utc_scalar);
         auto [milli, nano] = DateTimeUtils::TimestampConverter(
             *(static_cast<const int64_t*>(utc_ts_scalar->data())),
             DateTimeUtils::TimeType::MICROSECOND, DateTimeUtils::TimeType::MILLISECOND,

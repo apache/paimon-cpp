@@ -21,6 +21,7 @@
 #include <optional>
 
 #include "fmt/format.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/fs/file_system.h"
@@ -43,7 +44,7 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
             fmt::format("load table schema for {} failed", identifier.ToString()));
     }
 
-    auto schema = std::static_pointer_cast<Schema>(*latest_schema);
+    auto schema = checked_pointer_cast<Schema>(*latest_schema);
     return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName());
 }
 

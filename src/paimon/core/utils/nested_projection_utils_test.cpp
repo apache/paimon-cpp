@@ -32,6 +32,7 @@
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -301,12 +302,12 @@ TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeNullFillsAddedListStructFiel
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> aligned,
                          NestedProjectionUtils::AlignArrayToReadType(list_arr, read_type, pool));
     ASSERT_TRUE(aligned->type()->Equals(*read_type)) << aligned->type()->ToString();
-    auto out_struct = std::static_pointer_cast<arrow::StructArray>(
-        std::static_pointer_cast<arrow::ListArray>(aligned)->values());
+    auto out_struct = checked_pointer_cast<arrow::StructArray>(
+        checked_pointer_cast<arrow::ListArray>(aligned)->values());
     auto c_col = out_struct->GetFieldByName("c");
     ASSERT_NE(c_col, nullptr);
     ASSERT_EQ(c_col->null_count(), c_col->length());  // added field is all null
-    auto a_col = std::static_pointer_cast<arrow::Int32Array>(out_struct->GetFieldByName("a"));
+    auto a_col = checked_pointer_cast<arrow::Int32Array>(out_struct->GetFieldByName("a"));
     ASSERT_EQ(a_col->Value(0), 1);
     ASSERT_EQ(a_col->Value(2), 3);
 }
@@ -325,8 +326,8 @@ TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeDecodesDictionaryLeafAndNull
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> aligned,
                          NestedProjectionUtils::AlignArrayToReadType(struct_arr, read_type, pool));
     ASSERT_TRUE(aligned->type()->Equals(*read_type)) << aligned->type()->ToString();
-    auto out = std::static_pointer_cast<arrow::StructArray>(aligned);
-    ASSERT_EQ(std::static_pointer_cast<arrow::StringArray>(out->GetFieldByName("a"))->GetString(0),
+    auto out = checked_pointer_cast<arrow::StructArray>(aligned);
+    ASSERT_EQ(checked_pointer_cast<arrow::StringArray>(out->GetFieldByName("a"))->GetString(0),
               "x");
     auto b = out->GetFieldByName("b");
     ASSERT_EQ(b->null_count(), b->length());
@@ -361,7 +362,7 @@ TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeFieldIdChangeNullFillsNotLea
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> aligned,
                          NestedProjectionUtils::AlignArrayToReadType(struct_arr, read_type, pool));
-    auto a_out = std::static_pointer_cast<arrow::StructArray>(aligned)->GetFieldByName("a");
+    auto a_out = checked_pointer_cast<arrow::StructArray>(aligned)->GetFieldByName("a");
     ASSERT_NE(a_out, nullptr);
     ASSERT_EQ(a_out->null_count(), a_out->length());
 }
@@ -393,7 +394,7 @@ TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeKeepsNestedLargeBinaryBlob) 
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> aligned,
                          NestedProjectionUtils::AlignArrayToReadType(struct_arr, read_type, pool));
-    auto blob_out = std::static_pointer_cast<arrow::StructArray>(aligned)->GetFieldByName("blob");
+    auto blob_out = checked_pointer_cast<arrow::StructArray>(aligned)->GetFieldByName("blob");
     ASSERT_EQ(blob_out->type_id(), arrow::Type::LARGE_BINARY);
     ASSERT_TRUE(blob_out->Equals(*blob));
 }
@@ -575,7 +576,7 @@ TEST(NestedProjectionUtilsTest, BuildMapSharedShreddingAccessDataType) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::DataType> result,
         NestedProjectionUtils::BuildMapSharedShreddingAccessDataType(read_field, data_type));
-    auto result_struct = arrow::internal::checked_pointer_cast<arrow::StructType>(result);
+    auto result_struct = checked_pointer_cast<arrow::StructType>(result);
     ASSERT_EQ(result_struct->num_fields(), 2);
     ASSERT_EQ(result_struct->field(0)->name(), "a");
     ASSERT_EQ(result_struct->field(1)->name(), "b");
@@ -729,8 +730,8 @@ TEST_F(NestedProjectionUtilsMapArrayTest, FilterMapArrayBySelectedKeysDictionary
         {{"a", 1}, {"b", 2}, {"c", 3}},
         {{"c", 30}, {"a", 10}},
     });
-    auto map = std::static_pointer_cast<arrow::MapArray>(map_array);
-    auto string_keys = std::static_pointer_cast<arrow::StringArray>(map->keys());
+    auto map = checked_pointer_cast<arrow::MapArray>(map_array);
+    auto string_keys = checked_pointer_cast<arrow::StringArray>(map->keys());
 
     arrow::StringDictionaryBuilder dict_builder(arrow::default_memory_pool());
     for (int64_t i = 0; i < string_keys->length(); ++i) {
@@ -759,7 +760,7 @@ TEST_F(NestedProjectionUtilsMapArrayTest, FilterMapArrayBySelectedKeysDictionary
 
 TEST_F(NestedProjectionUtilsMapArrayTest, FilterMapArrayBySelectedKeysDictionaryLargeStringKey) {
     auto map_array = BuildStringInt32MapArray({{{"a", 1}, {"b", 2}}});
-    auto map = std::static_pointer_cast<arrow::MapArray>(map_array);
+    auto map = checked_pointer_cast<arrow::MapArray>(map_array);
 
     arrow::LargeStringBuilder dict_value_builder(arrow::default_memory_pool());
     ASSERT_TRUE(dict_value_builder.Append("a").ok());

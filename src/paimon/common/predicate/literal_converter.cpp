@@ -27,11 +27,11 @@
 #include "arrow/array/array_primitive.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
-#include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/data/internal_row.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/string_utils.h"
@@ -139,25 +139,25 @@ Result<Literal> LiteralConverter::ConvertLiteralsFromRow(
             return Literal(type, field->data(), field->size());
         }
         case FieldType::TIMESTAMP: {
-            auto timestamp_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(
-                schema->field(field_idx)->type());
-            if (!timestamp_type) {
+            const std::shared_ptr<arrow::DataType>& field_type = schema->field(field_idx)->type();
+            if (!field_type || field_type->id() != arrow::Type::TIMESTAMP) {
                 return Status::Invalid(
                     fmt::format("Convert literal from row not valid for schema {}, field_idx {}",
                                 schema->ToString(), field_idx));
             }
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             Timestamp field = row.GetTimestamp(field_idx, precision);
             return Literal(field);
         }
         case FieldType::DECIMAL: {
-            auto* decimal_type = arrow::internal::checked_cast<arrow::Decimal128Type*>(
-                schema->field(field_idx)->type().get());
-            if (!decimal_type) {
+            const std::shared_ptr<arrow::DataType>& field_type = schema->field(field_idx)->type();
+            if (!field_type || field_type->id() != arrow::Type::DECIMAL128) {
                 return Status::Invalid(
                     fmt::format("Convert literal from row not valid for schema {}, field_idx {}",
                                 schema->ToString(), field_idx));
             }
+            auto* decimal_type = checked_cast<arrow::Decimal128Type*>(field_type.get());
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
             Decimal field = row.GetDecimal(field_idx, precision, scale);
@@ -203,10 +203,8 @@ Result<std::vector<Literal>> LiteralConverter::ConvertLiteralsFromArray(const ar
         case arrow::Type::type::DATE32:
             return GetLiteralFromDateArray(array);
         case arrow::Type::type::DICTIONARY: {
-            const auto& dict_array =
-                arrow::internal::checked_cast<const arrow::DictionaryArray&>(array);
-            auto* dict_type =
-                arrow::internal::checked_cast<arrow::DictionaryType*>(dict_array.type().get());
+            const auto& dict_array = checked_cast<const arrow::DictionaryArray&>(array);
+            auto* dict_type = checked_cast<arrow::DictionaryType*>(dict_array.type().get());
             auto value_type_id = dict_type->value_type()->id();
             auto index_type_id = dict_type->index_type()->id();
             if (value_type_id == arrow::Type::type::STRING &&
@@ -230,8 +228,8 @@ Result<std::vector<Literal>> LiteralConverter::ConvertLiteralsFromArray(const ar
 
 std::vector<Literal> LiteralConverter::GetLiteralFromDecimalArray(const arrow::Array& array) {
     using ArrayType = typename arrow::TypeTraits<arrow::Decimal128Type>::ArrayType;
-    const auto& array_(arrow::internal::checked_cast<const ArrayType&>(array));
-    auto* arrow_type = arrow::internal::checked_cast<arrow::Decimal128Type*>(array.type().get());
+    const auto& array_(checked_cast<const ArrayType&>(array));
+    auto* arrow_type = checked_cast<arrow::Decimal128Type*>(array.type().get());
     int32_t precision = arrow_type->precision();
     int32_t scale = arrow_type->scale();
     std::vector<Literal> literals;
@@ -252,7 +250,7 @@ std::vector<Literal> LiteralConverter::GetLiteralFromDecimalArray(const arrow::A
 
 std::vector<Literal> LiteralConverter::GetLiteralFromDateArray(const arrow::Array& array) {
     using ArrayType = typename arrow::TypeTraits<arrow::Date32Type>::ArrayType;
-    const auto& array_(arrow::internal::checked_cast<const ArrayType&>(array));
+    const auto& array_(checked_cast<const ArrayType&>(array));
     std::vector<Literal> literals;
     literals.reserve(array_.length());
     for (int64_t i = 0; i < array_.length(); i++) {
@@ -267,9 +265,8 @@ std::vector<Literal> LiteralConverter::GetLiteralFromDateArray(const arrow::Arra
 
 std::vector<Literal> LiteralConverter::GetLiteralFromTimestampArray(const arrow::Array& array) {
     using ArrayType = typename arrow::TypeTraits<arrow::TimestampType>::ArrayType;
-    const auto& array_(arrow::internal::checked_cast<const ArrayType&>(array));
-    auto timestamp_type =
-        arrow::internal::checked_pointer_cast<arrow::TimestampType>(array_.type());
+    const auto& array_(checked_cast<const ArrayType&>(array));
+    auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(array_.type());
     assert(timestamp_type);
     DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type);
     std::vector<Literal> literals;

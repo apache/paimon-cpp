@@ -27,6 +27,7 @@
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta_v2.h"
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/options_utils.h"
@@ -52,11 +53,11 @@ Result<Literal> BitmapFileIndex::ConvertLiteral(
     if (literal.IsNull()) {
         return Literal(FieldType::BIGINT);
     } else {
-        auto ts_type = std::dynamic_pointer_cast<arrow::TimestampType>(arrow_type);
-        if (!ts_type) {
+        if (!arrow_type || arrow_type->id() != arrow::Type::TIMESTAMP) {
             return Status::Invalid(fmt::format("literal type TIMESTAMP mismatch arrow type {}",
-                                               arrow_type->ToString()));
+                                               arrow_type ? arrow_type->ToString() : "null"));
         }
+        auto ts_type = checked_pointer_cast<arrow::TimestampType>(arrow_type);
         int64_t precision = DateTimeUtils::GetPrecisionFromType(ts_type);
         int64_t value = 0;
         if (precision <= Timestamp::MILLIS_PRECISION) {
@@ -136,11 +137,14 @@ BitmapFileIndexWriter::BitmapFileIndexWriter(int8_t version,
 Status BitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(batch, struct_type_));
-    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-    if (!struct_array || struct_array->num_fields() != 1) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid("invalid batch for BitmapFileIndexWriter, expected a struct array");
+    }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
+    if (struct_array->num_fields() != 1) {
         return Status::Invalid(
-            "invalid batch for BitmapFileIndexWriter, supposed to be struct array with single "
-            "field.");
+            "invalid batch for BitmapFileIndexWriter, expected a struct array with exactly one "
+            "field");
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<Literal> array_values,

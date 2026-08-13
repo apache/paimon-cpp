@@ -27,8 +27,8 @@
 #include "arrow/array/array_primitive.h"
 #include "arrow/array/builder_base.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/casting/casting_utils.h"
@@ -52,8 +52,7 @@ Result<Literal> TimestampToNumericPrimitiveCastExecutor::Cast(
 Result<std::shared_ptr<arrow::Array>> TimestampToNumericPrimitiveCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
-    auto timestamp_type =
-        arrow::internal::checked_pointer_cast<arrow::TimestampType>(array->type());
+    auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(array->type());
     assert(timestamp_type);
     assert(target_type->id() == arrow::Type::type::INT32 ||
            target_type->id() == arrow::Type::type::INT64);

@@ -32,10 +32,10 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
-#include "arrow/util/checked_cast.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
@@ -248,60 +248,48 @@ TEST_F(FieldMappingReaderTest, TestGenerateSinglePartitionArray) {
         ASSERT_OK_AND_ASSIGN(auto p7_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/0, /*batch_size=*/2));
         ASSERT_EQ(p7_array->length(), 2);
-        ASSERT_EQ(arrow::internal::checked_cast<arrow::Date32Array*>(p7_array.get())->Value(0),
-                  100);
+        ASSERT_EQ(checked_cast<arrow::Date32Array*>(p7_array.get())->Value(0), 100);
     }
     {
         ASSERT_OK_AND_ASSIGN(auto p6_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/1, /*batch_size=*/2));
         ASSERT_EQ(p6_array->length(), 2);
-        ASSERT_EQ(arrow::internal::checked_cast<arrow::BinaryArray*>(p6_array.get())->Value(0),
-                  "6");
+        ASSERT_EQ(checked_cast<arrow::BinaryArray*>(p6_array.get())->Value(0), "6");
     }
     {
         ASSERT_OK_AND_ASSIGN(auto p5_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/2, /*batch_size=*/1));
         ASSERT_EQ(p5_array->length(), 1);
-        ASSERT_EQ(arrow::internal::checked_cast<arrow::StringArray*>(p5_array.get())->Value(0),
-                  "5");
+        ASSERT_EQ(checked_cast<arrow::StringArray*>(p5_array.get())->Value(0), "5");
     }
     {
         ASSERT_OK_AND_ASSIGN(auto p4_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/3, /*batch_size=*/1));
-        ASSERT_EQ(
-            arrow::internal::checked_cast<arrow::NumericArray<arrow::Int64Type>*>(p4_array.get())
-                ->Value(0),
-            static_cast<int64_t>(4));
+        ASSERT_EQ(checked_cast<arrow::NumericArray<arrow::Int64Type>*>(p4_array.get())->Value(0),
+                  static_cast<int64_t>(4));
     }
     {
         ASSERT_OK_AND_ASSIGN(auto p3_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/4, /*batch_size=*/1));
-        ASSERT_EQ(
-            arrow::internal::checked_cast<arrow::NumericArray<arrow::Int32Type>*>(p3_array.get())
-                ->Value(0),
-            static_cast<int32_t>(3));
+        ASSERT_EQ(checked_cast<arrow::NumericArray<arrow::Int32Type>*>(p3_array.get())->Value(0),
+                  static_cast<int32_t>(3));
     }
     {
         ASSERT_OK_AND_ASSIGN(auto p2_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/5, /*batch_size=*/1));
-        ASSERT_EQ(
-            arrow::internal::checked_cast<arrow::NumericArray<arrow::Int16Type>*>(p2_array.get())
-                ->Value(0),
-            static_cast<int16_t>(2));
+        ASSERT_EQ(checked_cast<arrow::NumericArray<arrow::Int16Type>*>(p2_array.get())->Value(0),
+                  static_cast<int16_t>(2));
     }
     {
         ASSERT_OK_AND_ASSIGN(auto p1_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/6, /*batch_size=*/1));
-        ASSERT_EQ(
-            arrow::internal::checked_cast<arrow::NumericArray<arrow::Int8Type>*>(p1_array.get())
-                ->Value(0),
-            static_cast<int64_t>(1));
+        ASSERT_EQ(checked_cast<arrow::NumericArray<arrow::Int8Type>*>(p1_array.get())->Value(0),
+                  static_cast<int64_t>(1));
     }
     {
         ASSERT_OK_AND_ASSIGN(auto p0_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/7, /*batch_size=*/1));
-        ASSERT_EQ(arrow::internal::checked_cast<arrow::BooleanArray*>(p0_array.get())->Value(0),
-                  false);
+        ASSERT_EQ(checked_cast<arrow::BooleanArray*>(p0_array.get())->Value(0), false);
     }
 }
 

@@ -32,6 +32,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/compact/noop_compact_manager.h"
 #include "paimon/core/core_options.h"
@@ -148,7 +149,7 @@ class MergeTreeCompactManagerFactoryWriteTest : public ::testing::Test {
         auto struct_type = arrow::struct_(fields);
         arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                             {std::make_shared<arrow::StringBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(string_builder->Append(value));
 
@@ -175,8 +176,8 @@ class MergeTreeCompactManagerFactoryWriteTest : public ::testing::Test {
         arrow::StructBuilder struct_builder(
             struct_type, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int64Builder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto int64_builder = static_cast<arrow::Int64Builder*>(struct_builder.field_builder(1));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto int64_builder = checked_cast<arrow::Int64Builder*>(struct_builder.field_builder(1));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(string_builder->Append(key));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(int64_builder->Append(sequence));

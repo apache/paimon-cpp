@@ -28,9 +28,9 @@
 #include "arrow/array/array_binary.h"
 #include "arrow/array/builder_primitive.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/defs.h"
@@ -63,7 +63,7 @@ Result<Literal> StringToBooleanCastExecutor::Cast(
 Result<std::shared_ptr<arrow::Array>> StringToBooleanCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
-    auto* string_array = arrow::internal::checked_cast<arrow::StringArray*>(array.get());
+    auto* string_array = checked_cast<arrow::StringArray*>(array.get());
     assert(string_array);
     auto bool_builder = std::make_shared<arrow::BooleanBuilder>(pool);
     for (int64_t i = 0; i < string_array->length(); ++i) {

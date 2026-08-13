@@ -25,6 +25,7 @@
 #include "arrow/compute/api.h"
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/executor.h"
 #include "paimon/format/file_format.h"
@@ -137,9 +138,9 @@ class PrefetchFileBatchReaderImplTest : public ::testing::Test,
             data_type_, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int64Builder>(),
              std::make_shared<arrow::BooleanBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto big_int_builder = static_cast<arrow::Int64Builder*>(struct_builder.field_builder(1));
-        auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto big_int_builder = checked_cast<arrow::Int64Builder*>(struct_builder.field_builder(1));
+        auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
         for (int32_t i = 0 + offset; i < length + offset; ++i) {
             EXPECT_TRUE(struct_builder.Append().ok());
             EXPECT_TRUE(string_builder->Append("str_" + std::to_string(i)).ok());

@@ -28,6 +28,7 @@
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -77,7 +78,7 @@ Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithB
         } else if (array_length != array->length()) {
             return Status::Invalid("array for single reader length mismatch others");
         }
-        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(array);
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
         assert(struct_array);
         array_for_each_reader.push_back(struct_array);
     }

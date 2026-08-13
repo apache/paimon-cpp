@@ -34,6 +34,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
 #include "paimon/catalog_options.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
@@ -976,11 +977,11 @@ TEST(RestApiErrorTest, ErrorToStatus) {
     ASSERT_NOK_WITH_MSG(not_authorized, "not authorized");
     ASSERT_NE(nullptr, not_authorized.detail());
     ASSERT_EQ(std::string(RestErrorDetail::kTypeId), not_authorized.detail()->type_id());
-    ASSERT_EQ(401, std::static_pointer_cast<RestErrorDetail>(not_authorized.detail())->GetCode());
+    ASSERT_EQ(401, checked_pointer_cast<RestErrorDetail>(not_authorized.detail())->GetCode());
     response.code = 403;
     Status forbidden = RestApi::ErrorToStatus(response);
     ASSERT_NOK_WITH_MSG(forbidden, "forbidden");
-    ASSERT_EQ(403, std::static_pointer_cast<RestErrorDetail>(forbidden.detail())->GetCode());
+    ASSERT_EQ(403, checked_pointer_cast<RestErrorDetail>(forbidden.detail())->GetCode());
 
     // 503 and the codes without an own mapping (e.g. 429) become IOError with a
     // message naming the code

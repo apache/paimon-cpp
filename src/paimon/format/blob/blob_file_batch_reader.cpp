@@ -33,6 +33,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/delta_varint_compressor.h"
 #include "paimon/common/utils/stream_utils.h"
 #include "paimon/data/blob.h"
@@ -261,14 +262,17 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildTargetArray(
     // For descriptor mode, build using StructBuilder to handle nulls properly
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> array_builder,
                                       arrow::MakeBuilder(target_type_, arrow_pool_.get()));
-    auto builder = dynamic_cast<arrow::StructBuilder*>(array_builder.get());
-    if (builder == nullptr) {
+    if (!array_builder || !array_builder->type() ||
+        array_builder->type()->id() != arrow::Type::STRUCT) {
         return Status::Invalid("cast to struct builder failed");
     }
-    auto field_builder = dynamic_cast<arrow::LargeBinaryBuilder*>(builder->field_builder(0));
-    if (field_builder == nullptr) {
+    auto* builder = checked_cast<arrow::StructBuilder*>(array_builder.get());
+    auto* field_builder_base = builder->field_builder(0);
+    if (!field_builder_base || !field_builder_base->type() ||
+        field_builder_base->type()->id() != arrow::Type::LARGE_BINARY) {
         return Status::Invalid("cast to large binary builder failed");
     }
+    auto* field_builder = checked_cast<arrow::LargeBinaryBuilder*>(field_builder_base);
     for (int32_t k = 0; k < rows_to_read; ++k) {
         const size_t i = current_pos_ + k;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append());

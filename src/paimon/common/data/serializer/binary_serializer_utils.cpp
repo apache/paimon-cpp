@@ -21,6 +21,7 @@
 
 #include "paimon/common/data/binary_array_writer.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 namespace paimon {
 Result<std::shared_ptr<BinaryArray>> BinarySerializerUtils::WriteBinaryArray(
@@ -30,8 +31,7 @@ Result<std::shared_ptr<BinaryArray>> BinarySerializerUtils::WriteBinaryArray(
         return binary_array;
     }
     auto binary_array = std::make_shared<BinaryArray>();
-    auto list_type = std::dynamic_pointer_cast<arrow::ListType>(type);
-    assert(list_type);
+    auto list_type = checked_pointer_cast<arrow::ListType>(type);
     auto value_type = list_type->value_type();
     // TODO(xinyu.lxy): reuse BinaryWriter
     BinaryArrayWriter binary_writer(binary_array.get(), value->Size(),
@@ -49,8 +49,7 @@ Result<std::shared_ptr<BinaryMap>> BinarySerializerUtils::WriteBinaryMap(
     if (auto binary_map = std::dynamic_pointer_cast<BinaryMap>(value)) {
         return binary_map;
     }
-    auto map_type = std::dynamic_pointer_cast<arrow::MapType>(type);
-    assert(map_type);
+    auto map_type = checked_pointer_cast<arrow::MapType>(type);
     auto key_type = map_type->key_type();
     auto value_type = map_type->item_type();
     auto key_array = value->KeyArray();
@@ -82,8 +81,7 @@ Result<std::shared_ptr<BinaryRow>> BinarySerializerUtils::WriteBinaryRow(
         return binary_row;
     }
 
-    auto struct_type = std::dynamic_pointer_cast<arrow::StructType>(type);
-    assert(struct_type);
+    auto struct_type = checked_pointer_cast<arrow::StructType>(type);
     auto field_count = struct_type->num_fields();
     auto binary_row = std::make_shared<BinaryRow>(field_count);
     BinaryRowWriter binary_writer(binary_row.get(), /*initial_size=*/1024, pool);
@@ -155,7 +153,7 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
             break;
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto timestamp_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
             assert(timestamp_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             if (getter->IsNullAt(pos)) {
@@ -171,7 +169,7 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
             break;
         }
         case arrow::Type::type::DECIMAL128: {
-            auto* decimal_type = arrow::internal::checked_cast<arrow::Decimal128Type*>(type.get());
+            auto* decimal_type = checked_cast<arrow::Decimal128Type*>(type.get());
             assert(decimal_type);
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();

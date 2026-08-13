@@ -32,10 +32,10 @@
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/abi.h"
 #include "arrow/ipc/json_simple.h"
-#include "arrow/util/checked_cast.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/io/async_key_value_projection_reader.h"
@@ -175,14 +175,13 @@ TEST_P(KeyValueProjectionReaderTest, TestBulkData) {
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     ASSERT_TRUE(arrow::MakeBuilder(arrow_pool.get(), src_type, &array_builder).ok());
 
-    auto struct_builder =
-        arrow::internal::checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
-    auto seq_builder = static_cast<arrow::Int64Builder*>(struct_builder->field_builder(0));
-    auto kind_builder = static_cast<arrow::Int8Builder*>(struct_builder->field_builder(1));
-    auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder->field_builder(2));
-    auto short_builder = static_cast<arrow::Int16Builder*>(struct_builder->field_builder(3));
-    auto float_builder = static_cast<arrow::FloatBuilder*>(struct_builder->field_builder(4));
-    auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder->field_builder(5));
+    auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
+    auto seq_builder = checked_cast<arrow::Int64Builder*>(struct_builder->field_builder(0));
+    auto kind_builder = checked_cast<arrow::Int8Builder*>(struct_builder->field_builder(1));
+    auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder->field_builder(2));
+    auto short_builder = checked_cast<arrow::Int16Builder*>(struct_builder->field_builder(3));
+    auto float_builder = checked_cast<arrow::FloatBuilder*>(struct_builder->field_builder(4));
+    auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder->field_builder(5));
     for (int32_t i = 0; i < 2000; ++i) {
         ASSERT_TRUE(struct_builder->Append().ok());
         ASSERT_TRUE(int_builder->Append(i).ok());
@@ -202,7 +201,7 @@ TEST_P(KeyValueProjectionReaderTest, TestBulkData) {
     }
     std::shared_ptr<arrow::Array> src_array;
     ASSERT_TRUE(struct_builder->Finish(&src_array).ok());
-    auto typed_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(src_array);
+    auto typed_array = checked_pointer_cast<arrow::StructArray>(src_array);
 
     auto target_type = std::dynamic_pointer_cast<arrow::StructType>(
         arrow::struct_({fields[2], fields[3], fields[4], fields[5]}));

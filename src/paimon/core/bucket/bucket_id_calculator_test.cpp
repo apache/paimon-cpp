@@ -29,9 +29,9 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
-#include "arrow/util/checked_cast.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/bucket/default_bucket_function.h"
 #include "paimon/core/bucket/mod_bucket_function.h"
@@ -138,7 +138,7 @@ TEST_F(BucketIdCalculatorTest, TestCompatibleWithJava) {
                          CalculateBucketIds(/*is_pk_table=*/true, /*num_buckets=*/12345,
                                             bucket_schema, bucket_array));
 
-    auto bucket_id_array = arrow::internal::checked_cast<arrow::Int32Array*>(
+    auto bucket_id_array = checked_cast<arrow::Int32Array*>(
         bucket_array_with_id->field(bucket_schema->num_fields()).get());
     ASSERT_TRUE(bucket_id_array);
     // test compatible with java
@@ -189,7 +189,7 @@ TEST_F(BucketIdCalculatorTest, TestCompatibleWithJavaWithNull) {
                          CalculateBucketIds(/*is_pk_table=*/false, /*num_buckets=*/12345,
                                             bucket_schema, bucket_array));
 
-    auto bucket_id_array = arrow::internal::checked_cast<arrow::Int32Array*>(
+    auto bucket_id_array = checked_cast<arrow::Int32Array*>(
         bucket_array_with_id->field(bucket_schema->num_fields()).get());
     ASSERT_TRUE(bucket_id_array);
     // test compatible with java
@@ -236,7 +236,7 @@ TEST_F(BucketIdCalculatorTest, TestCompatibleWithJavaWithTimestamp) {
                          CalculateBucketIds(/*is_pk_table=*/false, /*num_buckets=*/12345,
                                             bucket_schema, bucket_array));
 
-    auto bucket_id_array = arrow::internal::checked_cast<arrow::Int32Array*>(
+    auto bucket_id_array = checked_cast<arrow::Int32Array*>(
         bucket_array_with_id->field(bucket_schema->num_fields()).get());
     ASSERT_TRUE(bucket_id_array);
     // test compatible with java

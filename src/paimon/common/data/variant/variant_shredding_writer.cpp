@@ -27,11 +27,11 @@
 #include <utility>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_builder.h"
 #include "paimon/common/data/variant/variant_defs.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -53,7 +53,7 @@ Result<__int128_t> ScaleUpUnscaled(__int128_t unscaled, int32_t power) {
 }
 
 Status AppendDecimalTo(__int128_t unscaled, arrow::ArrayBuilder* builder) {
-    auto* decimal_builder = static_cast<arrow::Decimal128Builder*>(builder);
+    auto* decimal_builder = checked_cast<arrow::Decimal128Builder*>(builder);
     arrow::Decimal128 value(static_cast<int64_t>(unscaled >> 64),
                             static_cast<uint64_t>(static_cast<__uint128_t>(unscaled)));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(decimal_builder->Append(value));
@@ -81,7 +81,7 @@ Result<std::unique_ptr<VariantShreddedColumnWriter>> VariantShreddedColumnWriter
     auto writer = std::unique_ptr<VariantShreddedColumnWriter>(
         new VariantShreddedColumnWriter(schema, std::move(root_builder)));
     PAIMON_RETURN_NOT_OK(BuildNode(
-        schema, static_cast<arrow::StructBuilder*>(writer->root_builder_.get()), &writer->root_));
+        schema, checked_cast<arrow::StructBuilder*>(writer->root_builder_.get()), &writer->root_));
     return writer;
 }
 
@@ -95,28 +95,29 @@ Status VariantShreddedColumnWriter::BuildNode(const std::shared_ptr<VariantSchem
                         group->num_children(), schema->num_fields));
     }
     if (schema->top_level_metadata_idx >= 0) {
-        node->metadata = static_cast<arrow::BinaryBuilder*>(
+        node->metadata = checked_cast<arrow::BinaryBuilder*>(
             group->field_builder(schema->top_level_metadata_idx));
     }
     if (schema->variant_idx >= 0) {
-        node->value = static_cast<arrow::BinaryBuilder*>(group->field_builder(schema->variant_idx));
+        node->value =
+            checked_cast<arrow::BinaryBuilder*>(group->field_builder(schema->variant_idx));
     }
     if (schema->typed_idx >= 0) {
         arrow::ArrayBuilder* typed_builder = group->field_builder(schema->typed_idx);
         if (schema->has_object_schema) {
-            node->typed_object = static_cast<arrow::StructBuilder*>(typed_builder);
+            node->typed_object = checked_cast<arrow::StructBuilder*>(typed_builder);
             node->object_children.resize(schema->object_schema.size());
             for (size_t i = 0; i < schema->object_schema.size(); ++i) {
-                auto* child_group = static_cast<arrow::StructBuilder*>(
+                auto* child_group = checked_cast<arrow::StructBuilder*>(
                     node->typed_object->field_builder(static_cast<int>(i)));
                 PAIMON_RETURN_NOT_OK(BuildNode(schema->object_schema[i].schema, child_group,
                                                &node->object_children[i]));
             }
         } else if (schema->array_schema) {
-            node->typed_list = static_cast<arrow::ListBuilder*>(typed_builder);
+            node->typed_list = checked_cast<arrow::ListBuilder*>(typed_builder);
             node->array_element = std::make_unique<Node>();
             auto* element_group =
-                static_cast<arrow::StructBuilder*>(node->typed_list->value_builder());
+                checked_cast<arrow::StructBuilder*>(node->typed_list->value_builder());
             PAIMON_RETURN_NOT_OK(
                 BuildNode(schema->array_schema, element_group, node->array_element.get()));
         } else if (schema->scalar_schema) {
@@ -272,7 +273,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
                 case VariantSchema::ScalarKind::kByte:
                     if (value == static_cast<int8_t>(value)) {
                         PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                            static_cast<arrow::Int8Builder*>(node->typed_scalar)
+                            checked_cast<arrow::Int8Builder*>(node->typed_scalar)
                                 ->Append(static_cast<int8_t>(value)));
                         *shredded = true;
                     }
@@ -280,7 +281,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
                 case VariantSchema::ScalarKind::kShort:
                     if (value == static_cast<int16_t>(value)) {
                         PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                            static_cast<arrow::Int16Builder*>(node->typed_scalar)
+                            checked_cast<arrow::Int16Builder*>(node->typed_scalar)
                                 ->Append(static_cast<int16_t>(value)));
                         *shredded = true;
                     }
@@ -288,14 +289,14 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
                 case VariantSchema::ScalarKind::kInt:
                     if (value == static_cast<int32_t>(value)) {
                         PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                            static_cast<arrow::Int32Builder*>(node->typed_scalar)
+                            checked_cast<arrow::Int32Builder*>(node->typed_scalar)
                                 ->Append(static_cast<int32_t>(value)));
                         *shredded = true;
                     }
                     break;
                 case VariantSchema::ScalarKind::kLong:
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                        static_cast<arrow::Int64Builder*>(node->typed_scalar)->Append(value));
+                        checked_cast<arrow::Int64Builder*>(node->typed_scalar)->Append(value));
                     *shredded = true;
                     break;
                 case VariantSchema::ScalarKind::kDecimal: {
@@ -376,7 +377,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
                     case VariantSchema::ScalarKind::kByte:
                         if (long_value == static_cast<int8_t>(long_value)) {
                             PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                                static_cast<arrow::Int8Builder*>(node->typed_scalar)
+                                checked_cast<arrow::Int8Builder*>(node->typed_scalar)
                                     ->Append(static_cast<int8_t>(long_value)));
                             *shredded = true;
                         }
@@ -384,7 +385,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
                     case VariantSchema::ScalarKind::kShort:
                         if (long_value == static_cast<int16_t>(long_value)) {
                             PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                                static_cast<arrow::Int16Builder*>(node->typed_scalar)
+                                checked_cast<arrow::Int16Builder*>(node->typed_scalar)
                                     ->Append(static_cast<int16_t>(long_value)));
                             *shredded = true;
                         }
@@ -392,14 +393,14 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
                     case VariantSchema::ScalarKind::kInt:
                         if (long_value == static_cast<int32_t>(long_value)) {
                             PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                                static_cast<arrow::Int32Builder*>(node->typed_scalar)
+                                checked_cast<arrow::Int32Builder*>(node->typed_scalar)
                                     ->Append(static_cast<int32_t>(long_value)));
                             *shredded = true;
                         }
                         break;
                     default:
                         PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                            static_cast<arrow::Int64Builder*>(node->typed_scalar)
+                            checked_cast<arrow::Int64Builder*>(node->typed_scalar)
                                 ->Append(long_value));
                         *shredded = true;
                         break;
@@ -411,7 +412,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
             if (target.kind == VariantSchema::ScalarKind::kBoolean) {
                 PAIMON_ASSIGN_OR_RAISE(bool value, variant.GetBoolean());
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                    static_cast<arrow::BooleanBuilder*>(node->typed_scalar)->Append(value));
+                    checked_cast<arrow::BooleanBuilder*>(node->typed_scalar)->Append(value));
                 *shredded = true;
             }
             break;
@@ -420,7 +421,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
             if (target.kind == VariantSchema::ScalarKind::kString) {
                 PAIMON_ASSIGN_OR_RAISE(std::string_view value, variant.GetString());
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                    static_cast<arrow::StringBuilder*>(node->typed_scalar)->Append(value));
+                    checked_cast<arrow::StringBuilder*>(node->typed_scalar)->Append(value));
                 *shredded = true;
             }
             break;
@@ -429,7 +430,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
             if (target.kind == VariantSchema::ScalarKind::kDouble) {
                 PAIMON_ASSIGN_OR_RAISE(double value, variant.GetDouble());
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                    static_cast<arrow::DoubleBuilder*>(node->typed_scalar)->Append(value));
+                    checked_cast<arrow::DoubleBuilder*>(node->typed_scalar)->Append(value));
                 *shredded = true;
             }
             break;
@@ -438,7 +439,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
             if (target.kind == VariantSchema::ScalarKind::kFloat) {
                 PAIMON_ASSIGN_OR_RAISE(float value, variant.GetFloat());
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                    static_cast<arrow::FloatBuilder*>(node->typed_scalar)->Append(value));
+                    checked_cast<arrow::FloatBuilder*>(node->typed_scalar)->Append(value));
                 *shredded = true;
             }
             break;
@@ -447,7 +448,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
             if (target.kind == VariantSchema::ScalarKind::kDate) {
                 PAIMON_ASSIGN_OR_RAISE(int64_t value, variant.GetLong());
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                    static_cast<arrow::Date32Builder*>(node->typed_scalar)
+                    checked_cast<arrow::Date32Builder*>(node->typed_scalar)
                         ->Append(static_cast<int32_t>(value)));
                 *shredded = true;
             }
@@ -457,7 +458,7 @@ Status VariantShreddedColumnWriter::TryTypedShred(const GenericVariant& variant,
             if (target.kind == VariantSchema::ScalarKind::kBinary) {
                 PAIMON_ASSIGN_OR_RAISE(std::string_view value, variant.GetBinary());
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                    static_cast<arrow::BinaryBuilder*>(node->typed_scalar)->Append(value));
+                    checked_cast<arrow::BinaryBuilder*>(node->typed_scalar)->Append(value));
                 *shredded = true;
             }
             break;

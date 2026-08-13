@@ -29,6 +29,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/core_options.h"
@@ -174,7 +175,7 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
     arrow::Type::type type_id = array->type_id();
     if (type_id == arrow::Type::DICTIONARY) {
         const auto* dictionary_type =
-            static_cast<const arrow::DictionaryType*>(array->type().get());
+            checked_cast<const arrow::DictionaryType*>(array->type().get());
         arrow::Type::type value_type = dictionary_type->value_type()->id();
         if (value_type != arrow::Type::STRING && value_type != arrow::Type::LARGE_STRING) {
             return Status::Invalid(fmt::format(
@@ -193,7 +194,7 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
 
     if (type_id == arrow::Type::STRUCT) {
         std::shared_ptr<arrow::StructArray> struct_array =
-            std::static_pointer_cast<arrow::StructArray>(array);
+            checked_pointer_cast<arrow::StructArray>(array);
         arrow::ArrayVector children;
         for (int32_t i = 0; i < struct_array->num_fields(); i++) {
             std::shared_ptr<arrow::Array> child = struct_array->field(i);
@@ -222,8 +223,7 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
     }
 
     if (type_id == arrow::Type::MAP) {
-        std::shared_ptr<arrow::MapArray> map_array =
-            std::static_pointer_cast<arrow::MapArray>(array);
+        std::shared_ptr<arrow::MapArray> map_array = checked_pointer_cast<arrow::MapArray>(array);
         std::shared_ptr<arrow::Array> original_keys = map_array->keys();
         std::shared_ptr<arrow::Array> original_items = map_array->items();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> keys,
@@ -233,7 +233,7 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
         if (keys == original_keys && items == original_items) {
             return array;
         }
-        const auto* map_type = static_cast<const arrow::MapType*>(map_array->type().get());
+        const auto* map_type = checked_cast<const arrow::MapType*>(map_array->type().get());
         std::shared_ptr<arrow::MapType> casted_type = std::make_shared<arrow::MapType>(
             map_type->key_field()->WithType(keys->type()),
             map_type->item_field()->WithType(items->type()), map_type->keys_sorted());
@@ -242,15 +242,14 @@ Result<std::shared_ptr<arrow::Array>> CastDictionaryArrayToString(
             map_array->null_bitmap(), map_array->null_count(), map_array->offset());
     }
 
-    std::shared_ptr<arrow::ListArray> list_array =
-        std::static_pointer_cast<arrow::ListArray>(array);
+    std::shared_ptr<arrow::ListArray> list_array = checked_pointer_cast<arrow::ListArray>(array);
     std::shared_ptr<arrow::Array> original_values = list_array->values();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> values,
                            CastDictionaryArrayToString(original_values, pool));
     if (values == original_values) {
         return array;
     }
-    const auto* list_type = static_cast<const arrow::ListType*>(list_array->type().get());
+    const auto* list_type = checked_cast<const arrow::ListType*>(list_array->type().get());
     std::shared_ptr<arrow::DataType> casted_type =
         arrow::list(list_type->value_field()->WithType(values->type()));
     return std::make_shared<arrow::ListArray>(
@@ -270,19 +269,19 @@ Result<std::vector<GlobalIndexIOMeta>> BuildIndex(
         auto& [c_array, c_schema] = read_batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
-        if (!struct_array) {
+        if (!array || array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(
                 "array read from batch reader is not a struct array in GlobalIndexWriteTask");
         }
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
         auto row_id_array = struct_array->GetFieldByName(SpecialFields::RowId().Name());
-        auto typed_row_id_array = std::dynamic_pointer_cast<arrow::Int64Array>(row_id_array);
-        if (!typed_row_id_array) {
+        if (!row_id_array || row_id_array->type_id() != arrow::Type::INT64) {
             return Status::Invalid(
                 fmt::format("read array does not contain {} field, or it cannot be casted to "
                             "Int64Array in GlobalIndexWriteTask",
                             SpecialFields::RowId().Name()));
         }
+        auto typed_row_id_array = checked_pointer_cast<arrow::Int64Array>(row_id_array);
         std::vector<int64_t> relative_row_ids;
         relative_row_ids.reserve(typed_row_id_array->length());
         for (int64_t i = 0; i < typed_row_id_array->length(); i++) {

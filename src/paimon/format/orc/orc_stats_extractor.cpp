@@ -30,6 +30,7 @@
 #include "orc/Statistics.hh"
 #include "orc/Type.hh"
 #include "orc/Vector.hh"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/casting/decimal_to_decimal_cast_executor.h"
 #include "paimon/data/decimal.h"
@@ -226,8 +227,7 @@ Result<std::unique_ptr<ColumnStats>> OrcStatsExtractor::FetchColumnStatistics(
                     "cannot cast to TimestampColumnStatistics for orc::TIMESTAMP/TIMESTAMP_INSTANT "
                     "type");
             }
-            auto write_ts_type =
-                arrow::internal::checked_pointer_cast<::arrow::TimestampType>(write_type);
+            auto write_ts_type = checked_pointer_cast<::arrow::TimestampType>(write_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(write_ts_type);
             if (all_null || !typed_stats->hasMinimum()) {
                 return ColumnStats::CreateTimestampColumnStats(std::nullopt, std::nullopt,

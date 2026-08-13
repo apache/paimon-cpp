@@ -24,10 +24,10 @@
 #include <utility>
 
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/bucket/bucket_function.h"
@@ -166,16 +166,14 @@ Status BucketSelectConverter::WriteLiteralToRow(int32_t pos, const Literal& lite
         }
         case FieldType::TIMESTAMP: {
             auto ts = literal.GetValue<Timestamp>();
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(arrow_type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(arrow_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             writer->WriteTimestamp(pos, ts, precision);
             break;
         }
         case FieldType::DECIMAL: {
             auto dec = literal.GetValue<Decimal>();
-            const auto* decimal_type =
-                arrow::internal::checked_cast<const arrow::Decimal128Type*>(arrow_type.get());
+            const auto* decimal_type = checked_cast<const arrow::Decimal128Type*>(arrow_type.get());
             int32_t precision = decimal_type->precision();
             writer->WriteDecimal(pos, dec, precision);
             break;
@@ -206,8 +204,7 @@ Result<std::unique_ptr<BucketFunction>> BucketSelectConverter::CreateBucketFunct
             for (size_t i = 0; i < bucket_key_types.size(); i++) {
                 if (bucket_key_types[i] == FieldType::DECIMAL) {
                     const auto* decimal_type =
-                        arrow::internal::checked_cast<const arrow::Decimal128Type*>(
-                            bucket_key_arrow_types[i].get());
+                        checked_cast<const arrow::Decimal128Type*>(bucket_key_arrow_types[i].get());
                     field_infos.emplace_back(bucket_key_types[i], decimal_type->precision(),
                                              decimal_type->scale());
                 } else {

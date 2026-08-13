@@ -237,6 +237,47 @@ virtual ~ClassName() = default;
 - Use `std::optional<T>` for optional values.
 - Use `ScopeGuard` (in `src/paimon/common/utils/`) for RAII cleanup.
 
+### Checked Class-Pointer Casts
+
+Include `paimon/common/utils/checked_cast.h` and use the Paimon cast helpers for conversions
+between class pointers:
+
+- Use `checked_pointer_cast<T>` instead of `std::static_pointer_cast<T>` for `std::shared_ptr`
+  and `std::unique_ptr` conversions.
+- Use `checked_cast<T*>` instead of `static_cast<T*>` for raw-pointer casts within a polymorphic
+  class hierarchy.
+- Do not call `arrow::internal::checked_cast` or
+  `arrow::internal::checked_pointer_cast` directly.
+
+```cpp
+#include "paimon/common/utils/checked_cast.h"
+
+std::shared_ptr<arrow::StructArray> struct_array =
+    checked_pointer_cast<arrow::StructArray>(array);
+arrow::StringBuilder* string_builder = checked_cast<arrow::StringBuilder*>(builder);
+```
+
+The helpers use Arrow's debug-checked implementation: casts are dynamic in debug builds and
+static in release builds. They therefore express an internal type invariant; they do not validate
+recoverable runtime input. For data originating from files, schemas, C Data Interface imports, or
+other external boundaries, check for null and validate the Arrow type before casting:
+
+```cpp
+if (!array || array->type_id() != arrow::Type::STRUCT) {
+    return Status::Invalid("expected a struct array");
+}
+auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+```
+
+Do not add a null check after `checked_pointer_cast` as a substitute for runtime type validation;
+such a check detects a mismatched type only in debug builds. Use `dynamic_cast` and check its
+result when cast failure is an expected runtime branch and no explicit type discriminator is
+available.
+
+These helpers do not apply to non-polymorphic pointer conversions such as `void*` callback
+contexts, raw byte buffers, C FFI handles, or other opaque storage. Keep the appropriate explicit
+cast for those cases.
+
 ---
 
 ## Comments & Documentation

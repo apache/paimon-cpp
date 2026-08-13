@@ -24,7 +24,6 @@
 #include <vector>
 
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/status.h"
 #include "paimon/visibility.h"

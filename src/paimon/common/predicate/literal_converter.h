@@ -28,7 +28,7 @@
 
 #include "arrow/array/array_dict.h"
 #include "arrow/type_traits.h"
-#include "arrow/util/checked_cast.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/result.h"
 #include "paimon/visibility.h"
@@ -63,7 +63,7 @@ class PAIMON_EXPORT LiteralConverter {
                                                            const FieldType& literal_type) {
         using ArrayType = typename arrow::TypeTraits<DataType>::ArrayType;
         using ValueType = typename arrow::TypeTraits<DataType>::CType;
-        const ArrayType& array_(arrow::internal::checked_cast<const ArrayType&>(array));
+        const ArrayType& array_(checked_cast<const ArrayType&>(array));
         std::vector<Literal> literals;
         literals.reserve(array_.length());
         for (int64_t i = 0; i < array_.length(); i++) {
@@ -82,7 +82,7 @@ class PAIMON_EXPORT LiteralConverter {
                                                           bool own_data) {
         using ArrayType = typename arrow::TypeTraits<DataType>::ArrayType;
         using OffsetType = typename ArrayType::offset_type;
-        const ArrayType& array_(arrow::internal::checked_cast<const ArrayType&>(array));
+        const ArrayType& array_(checked_cast<const ArrayType&>(array));
         std::vector<Literal> literals;
         literals.reserve(array_.length());
         for (int64_t i = 0; i < array_.length(); i++) {
@@ -101,10 +101,8 @@ class PAIMON_EXPORT LiteralConverter {
     template <typename DictArrayType, typename IndicesArrayType>
     static std::vector<Literal> GetLiteralFromDictionaryArray(
         const arrow::DictionaryArray& dict_array, const FieldType& literal_type, bool own_data) {
-        auto* dictionary =
-            arrow::internal::checked_cast<DictArrayType*>(dict_array.dictionary().get());
-        auto* indices =
-            arrow::internal::checked_cast<IndicesArrayType*>(dict_array.indices().get());
+        auto* dictionary = checked_cast<DictArrayType*>(dict_array.dictionary().get());
+        auto* indices = checked_cast<IndicesArrayType*>(dict_array.indices().get());
         assert(dictionary);
         assert(indices);
         std::vector<Literal> literals;

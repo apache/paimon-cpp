@@ -23,9 +23,44 @@
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+namespace {
+
+class CastBase {
+ public:
+    virtual ~CastBase() = default;
+};
+
+class CastDerived : public CastBase {};
+
+}  // namespace
+
+TEST(CheckedCastTest, DelegatesToArrowCheckedCast) {
+    std::shared_ptr<CastBase> shared_base = std::make_shared<CastDerived>();
+    std::shared_ptr<CastDerived> shared_derived = checked_pointer_cast<CastDerived>(shared_base);
+    ASSERT_NE(shared_derived, nullptr);
+
+    std::unique_ptr<CastBase> unique_base = std::make_unique<CastDerived>();
+    std::unique_ptr<CastDerived> unique_derived =
+        checked_pointer_cast<CastDerived>(std::move(unique_base));
+    ASSERT_NE(unique_derived, nullptr);
+
+    CastBase* raw_base = shared_base.get();
+    ASSERT_EQ(checked_cast<CastDerived*>(raw_base), shared_derived.get());
+
+    std::shared_ptr<CastBase> null_base;
+    ASSERT_EQ(checked_pointer_cast<CastDerived>(null_base), nullptr);
+
+#ifndef NDEBUG
+    std::shared_ptr<CastBase> wrong_type = std::make_shared<CastBase>();
+    ASSERT_EQ(checked_pointer_cast<CastDerived>(wrong_type), nullptr);
+    ASSERT_EQ(checked_cast<CastDerived*>(wrong_type.get()), nullptr);
+#endif
+}
 
 TEST(ArrowUtilsTest, TestCreateProjection) {
     arrow::FieldVector file_fields = {
@@ -346,7 +381,7 @@ TEST(ArrowUtilsTest, TestRemoveFieldFromStructArrayFieldNotFound) {
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(
                          struct_type, R"([{"a":1,"b":"x"},{"a":2,"b":"y"},{"a":3,"b":"z"}])")
                          .ValueOrDie();
-    auto src_struct_array = std::static_pointer_cast<arrow::StructArray>(src_array);
+    auto src_struct_array = checked_pointer_cast<arrow::StructArray>(src_array);
 
     ASSERT_OK_AND_ASSIGN(auto result,
                          ArrowUtils::RemoveFieldFromStructArray(src_struct_array, "missing"));
@@ -364,7 +399,7 @@ TEST(ArrowUtilsTest, TestRemoveFieldFromStructArraySuccess) {
             struct_type,
             R"([{"a":1,"b":"x","c":10},{"a":2,"b":"y","c":20},{"a":3,"b":"z","c":30}])")
             .ValueOrDie();
-    auto src_struct_array = std::static_pointer_cast<arrow::StructArray>(src_array);
+    auto src_struct_array = checked_pointer_cast<arrow::StructArray>(src_array);
 
     ASSERT_OK_AND_ASSIGN(auto result,
                          ArrowUtils::RemoveFieldFromStructArray(src_struct_array, "b"));
@@ -374,7 +409,7 @@ TEST(ArrowUtilsTest, TestRemoveFieldFromStructArraySuccess) {
     auto expected_array = arrow::ipc::internal::json::ArrayFromJSON(
                               expected_type, R"([{"a":1,"c":10},{"a":2,"c":20},{"a":3,"c":30}])")
                               .ValueOrDie();
-    auto expected_struct_array = std::static_pointer_cast<arrow::StructArray>(expected_array);
+    auto expected_struct_array = checked_pointer_cast<arrow::StructArray>(expected_array);
 
     ASSERT_EQ(result->type()->num_fields(), 2);
     ASSERT_EQ(result->type()->field(0)->name(), "a");
@@ -415,7 +450,7 @@ TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsets) {
     ASSERT_NE(normalized_batch.get(), record_batch.get());
     ASSERT_TRUE(normalized_batch->Equals(*record_batch));
     std::shared_ptr<arrow::StructArray> normalized_nested =
-        std::static_pointer_cast<arrow::StructArray>(normalized_batch->column(0));
+        checked_pointer_cast<arrow::StructArray>(normalized_batch->column(0));
     ASSERT_EQ(normalized_nested->offset(), 0);
     ASSERT_EQ(normalized_nested->field(0)->offset(), 0);
     ASSERT_EQ(normalized_batch->column(1)->offset(), 0);

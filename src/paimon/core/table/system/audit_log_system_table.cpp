@@ -32,7 +32,6 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
@@ -40,6 +39,7 @@
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -94,10 +94,10 @@ class ChangelogBatchReader : public BatchReader {
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                     std::shared_ptr<arrow::Array> arrow_array,
                     arrow::ImportArray(c_array.get(), c_schema.get()));
-                struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-                if (!struct_array) {
+                if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
                     return Status::Invalid("audit_log system table expects struct batches");
                 }
+                struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
                 PAIMON_ASSIGN_OR_RAISE(struct_array, PrependPendingUpdateBefore(struct_array));
                 PAIMON_ASSIGN_OR_RAISE(row_group_lengths, BuildRowGroupLengths(struct_array));
             }
@@ -160,22 +160,22 @@ class ChangelogBatchReader : public BatchReader {
             std::shared_ptr<arrow::Array> combined,
             arrow::Concatenate({pending_update_before_, struct_array}, arrow_pool_));
         pending_update_before_.reset();
-        std::shared_ptr<arrow::StructArray> result =
-            std::dynamic_pointer_cast<arrow::StructArray>(combined);
-        if (!result) {
+        if (!combined || combined->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid("failed to concatenate binlog struct batches");
         }
+        std::shared_ptr<arrow::StructArray> result =
+            checked_pointer_cast<arrow::StructArray>(combined);
         return result;
     }
 
     Result<std::vector<int32_t>> BuildRowGroupLengths(
         const std::shared_ptr<arrow::StructArray>& struct_array) {
-        std::shared_ptr<arrow::Int8Array> value_kind_array =
-            std::dynamic_pointer_cast<arrow::Int8Array>(
-                struct_array->GetFieldByName(SpecialFields::ValueKind().Name()));
-        if (!value_kind_array) {
+        auto value_kind = struct_array->GetFieldByName(SpecialFields::ValueKind().Name());
+        if (!value_kind || value_kind->type_id() != arrow::Type::INT8) {
             return Status::Invalid("cannot find _VALUE_KIND in audit_log batch");
         }
+        std::shared_ptr<arrow::Int8Array> value_kind_array =
+            checked_pointer_cast<arrow::Int8Array>(value_kind);
 
         std::vector<int32_t> row_group_lengths;
         row_group_lengths.reserve(struct_array->length());
@@ -191,10 +191,10 @@ class ChangelogBatchReader : public BatchReader {
             if (i + 1 == value_kind_array->length()) {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> pending,
                                        CopyToStablePool(struct_array->Slice(i, /*length=*/1)));
-                pending_update_before_ = std::dynamic_pointer_cast<arrow::StructArray>(pending);
-                if (!pending_update_before_) {
+                if (!pending || pending->type_id() != arrow::Type::STRUCT) {
                     return Status::Invalid("failed to cache UPDATE_BEFORE in binlog reader");
                 }
+                pending_update_before_ = checked_pointer_cast<arrow::StructArray>(pending);
                 break;
             }
             if (value_kind_array->IsNull(i + 1) ||
@@ -220,12 +220,12 @@ class ChangelogBatchReader : public BatchReader {
     Result<std::shared_ptr<arrow::Array>> BuildRowKindArray(
         const std::shared_ptr<arrow::StructArray>& struct_array,
         const std::vector<int32_t>& row_group_lengths) const {
-        std::shared_ptr<arrow::Int8Array> value_kind_array =
-            std::dynamic_pointer_cast<arrow::Int8Array>(
-                struct_array->GetFieldByName(SpecialFields::ValueKind().Name()));
-        if (!value_kind_array) {
+        auto value_kind = struct_array->GetFieldByName(SpecialFields::ValueKind().Name());
+        if (!value_kind || value_kind->type_id() != arrow::Type::INT8) {
             return Status::Invalid("cannot find _VALUE_KIND in audit_log batch");
         }
+        std::shared_ptr<arrow::Int8Array> value_kind_array =
+            checked_pointer_cast<arrow::Int8Array>(value_kind);
         arrow::StringBuilder builder(arrow_pool_);
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(row_group_lengths.size()));
         int64_t offset = 0;
@@ -251,12 +251,12 @@ class ChangelogBatchReader : public BatchReader {
     Result<std::shared_ptr<arrow::Array>> BuildSequenceNumberArray(
         const std::shared_ptr<arrow::StructArray>& struct_array,
         const std::vector<int32_t>& row_group_lengths) const {
-        std::shared_ptr<arrow::Int64Array> sequence_array =
-            std::dynamic_pointer_cast<arrow::Int64Array>(
-                struct_array->GetFieldByName(SpecialFields::SequenceNumber().Name()));
-        if (!sequence_array) {
+        auto sequence = struct_array->GetFieldByName(SpecialFields::SequenceNumber().Name());
+        if (!sequence || sequence->type_id() != arrow::Type::INT64) {
             return Status::Invalid("cannot find _SEQUENCE_NUMBER in audit_log batch");
         }
+        std::shared_ptr<arrow::Int64Array> sequence_array =
+            checked_pointer_cast<arrow::Int64Array>(sequence);
         arrow::Int64Builder builder(arrow_pool_);
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(row_group_lengths.size()));
         int64_t offset = 0;

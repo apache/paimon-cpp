@@ -24,8 +24,8 @@
 #include <variant>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/status.h"
 
@@ -104,8 +104,7 @@ Result<InternalRow::FieldGetterFunc> InternalRow::CreateFieldGetter(
             break;
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(field_type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field_type);
             assert(timestamp_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             field_getter = [field_idx, precision](const InternalRow& row) -> VariantType {
@@ -114,8 +113,7 @@ Result<InternalRow::FieldGetterFunc> InternalRow::CreateFieldGetter(
             break;
         }
         case arrow::Type::type::DECIMAL128: {
-            auto* decimal_type =
-                arrow::internal::checked_cast<arrow::Decimal128Type*>(field_type.get());
+            auto* decimal_type = checked_cast<arrow::Decimal128Type*>(field_type.get());
             assert(decimal_type);
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
@@ -125,7 +123,7 @@ Result<InternalRow::FieldGetterFunc> InternalRow::CreateFieldGetter(
             break;
         }
         case arrow::Type::type::STRUCT: {
-            auto* struct_type = arrow::internal::checked_cast<arrow::StructType*>(field_type.get());
+            auto* struct_type = checked_cast<arrow::StructType*>(field_type.get());
             assert(struct_type);
             auto num_fields = struct_type->num_fields();
             field_getter = [field_idx, num_fields](const InternalRow& row) -> VariantType {

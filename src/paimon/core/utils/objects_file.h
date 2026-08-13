@@ -32,6 +32,7 @@
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/meta_to_arrow_array_converter.h"
@@ -167,10 +168,10 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> typed_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        auto* struct_array = dynamic_cast<arrow::StructArray*>(typed_array.get());
-        if (!struct_array) {
+        if (!typed_array || typed_array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(fmt::format("file {}, cannot cast to struct array", file_name));
         }
+        auto* struct_array = checked_cast<arrow::StructArray*>(typed_array.get());
         result->reserve(struct_array->length());
         for (int64_t i = 0; i < struct_array->length(); i++) {
             ColumnarRow row(struct_array->fields(), pool_, i);

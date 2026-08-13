@@ -35,6 +35,7 @@
 #include "lumina/core/Types.h"
 #include "lumina/extensions/experimental/BuildCombinedExtensionV0.h"
 #include "paimon/common/global_index/global_index_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -165,7 +166,7 @@ template <typename ValueType, typename ArrayType>
 void AppendPrimitiveTagValue(const std::shared_ptr<arrow::Array>& array, int64_t index,
                              std::vector<ValueType>* values) {
     values->push_back(
-        static_cast<ValueType>(static_cast<const ArrayType*>(array.get())->Value(index)));
+        static_cast<ValueType>(checked_cast<const ArrayType*>(array.get())->Value(index)));
 }
 
 template <typename ValueType>
@@ -211,7 +212,7 @@ Status AppendTagValue(const std::shared_ptr<arrow::Array>& array, int64_t index,
         AppendPrimitiveTagValue<ValueType, arrow::DoubleArray>(array, index, values);
     } else if constexpr (std::is_same_v<ValueType, std::string>) {
         PAIMON_RETURN_NOT_OK(validate_array_type(arrow::Type::STRING, "string"));
-        auto string_array = static_cast<const arrow::StringArray*>(array.get());
+        auto string_array = checked_cast<const arrow::StringArray*>(array.get());
         auto view = string_array->GetView(index);
         values->emplace_back(view.data(), view.size());
     } else {

@@ -28,6 +28,7 @@
 #include "paimon/common/data/generic_array.h"
 #include "paimon/common/data/generic_map.h"
 #include "paimon/common/data/serializer/binary_serializer_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -37,7 +38,7 @@ namespace {
 VariantType IntMap(std::vector<VariantType> keys, std::vector<VariantType> values) {
     std::shared_ptr<InternalArray> key_array = std::make_shared<GenericArray>(std::move(keys));
     std::shared_ptr<InternalArray> value_array = std::make_shared<GenericArray>(std::move(values));
-    return VariantType(std::static_pointer_cast<InternalMap>(
+    return VariantType(checked_pointer_cast<InternalMap>(
         std::make_shared<GenericMap>(std::move(key_array), std::move(value_array))));
 }
 

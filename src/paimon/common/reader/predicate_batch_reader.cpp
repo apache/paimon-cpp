@@ -38,6 +38,7 @@
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
@@ -96,8 +97,7 @@ Status PredicateBatchReader::BindPredicateToArray(const arrow::Array& array) {
     if (array.type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("predicate batch reader requires a struct array");
     }
-    const auto& struct_type =
-        arrow::internal::checked_cast<const arrow::StructType&>(*array.type());
+    const auto& struct_type = checked_cast<const arrow::StructType&>(*array.type());
     std::shared_ptr<arrow::Schema> schema = arrow::schema(struct_type.fields());
     PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
         *schema, predicate_, /*validate_field_idx=*/false));

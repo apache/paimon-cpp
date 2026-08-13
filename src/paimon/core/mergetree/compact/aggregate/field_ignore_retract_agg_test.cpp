@@ -27,6 +27,7 @@
 #include "arrow/type_fwd.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/generic_array.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/mergetree/compact/aggregate/field_collect_agg.h"
 #include "paimon/core/mergetree/compact/aggregate/field_sum_agg.h"
@@ -83,9 +84,9 @@ TEST(FieldIgnoreRetractAggTest, ReversedAggBypassesWrappedOverride) {
         FieldCollectAgg::Create(arrow::list(arrow::int32()), options, "f0", GetDefaultPool()));
     auto agg = std::make_unique<FieldIgnoreRetractAgg>(std::move(collect_agg));
 
-    VariantType accumulator = VariantType(std::static_pointer_cast<InternalArray>(
+    VariantType accumulator = VariantType(checked_pointer_cast<InternalArray>(
         std::make_shared<GenericArray>(std::vector<VariantType>{int32_t{1}, int32_t{2}})));
-    VariantType input = VariantType(std::static_pointer_cast<InternalArray>(
+    VariantType input = VariantType(checked_pointer_cast<InternalArray>(
         std::make_shared<GenericArray>(std::vector<VariantType>{int32_t{3}, int32_t{4}})));
 
     ASSERT_OK_AND_ASSIGN(VariantType result, agg->AggReversed(accumulator, input));

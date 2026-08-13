@@ -24,6 +24,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -60,7 +61,7 @@ TEST(DataTypeJsonParserTest, ParseTypeMapTypeSuccess) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> field,
                          DataTypeJsonParser::ParseType(name, doc));
     ASSERT_NE(field, nullptr);
-    auto map_type = std::static_pointer_cast<arrow::MapType>(field->type());
+    auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
     ASSERT_FALSE(map_type->key_field()->nullable());
 }
 

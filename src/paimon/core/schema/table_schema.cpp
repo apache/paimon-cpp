@@ -26,10 +26,10 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/object_utils.h"
@@ -103,7 +103,7 @@ Result<std::shared_ptr<arrow::Field>> TableSchema::AssignFieldIdsRecursively(
             // paimon field ids 0/1 (mapped to parquet field ids on write).
             return metadata ? field->WithMergedMetadata(metadata) : field;
         }
-        auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(field->type());
+        auto struct_type = checked_pointer_cast<arrow::StructType>(field->type());
         arrow::FieldVector new_childs;
         for (const auto& child : struct_type->fields()) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -112,14 +112,14 @@ Result<std::shared_ptr<arrow::Field>> TableSchema::AssignFieldIdsRecursively(
         }
         return arrow::field(field->name(), arrow::struct_(new_childs), field->nullable(), metadata);
     } else if (type->id() == arrow::Type::LIST) {
-        auto list_type = arrow::internal::checked_pointer_cast<arrow::ListType>(field->type());
+        auto list_type = checked_pointer_cast<arrow::ListType>(field->type());
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> new_value_field,
                                AssignFieldIdsRecursively(list_type->value_field(),
                                                          /*set_field_id=*/false, field_id));
         return arrow::field(field->name(), arrow::list(new_value_field), field->nullable(),
                             metadata);
     } else if (field->type()->id() == arrow::Type::MAP) {
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(field->type());
+        auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
         std::shared_ptr<arrow::Field> key_field = map_type->key_field();
         std::shared_ptr<arrow::Field> value_field = map_type->item_field();
         PAIMON_ASSIGN_OR_RAISE(

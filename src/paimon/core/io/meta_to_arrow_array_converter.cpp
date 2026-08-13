@@ -17,21 +17,22 @@
  */
 #include "paimon/core/io/meta_to_arrow_array_converter.h"
 
+#include "paimon/common/utils/checked_cast.h"
+
 namespace paimon {
 Result<std::unique_ptr<MetaToArrowArrayConverter>> MetaToArrowArrayConverter::Create(
     const std::shared_ptr<arrow::DataType>& meta_data_type,
     const std::shared_ptr<MemoryPool>& pool) {
-    auto struct_type = std::dynamic_pointer_cast<arrow::StructType>(meta_data_type);
-    if (!struct_type) {
+    if (!meta_data_type || meta_data_type->id() != arrow::Type::STRUCT) {
         return Status::Invalid("meta_data_type in MetaToArrowArrayConverter must be struct type");
     }
+    auto struct_type = checked_pointer_cast<arrow::StructType>(meta_data_type);
     auto arrow_pool = GetArrowPool(pool);
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
         arrow_pool.get(), arrow::struct_(struct_type->fields()), &array_builder));
 
-    auto struct_builder =
-        arrow::internal::checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
+    auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
     assert(struct_builder);
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;
     appenders.reserve(struct_type->num_fields());

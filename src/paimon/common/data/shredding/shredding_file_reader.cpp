@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -86,7 +87,7 @@ Result<BatchReader::ReadBatchWithBitmap> ShreddingFileReader::NextBatchWithBitma
     if (arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("cannot cast batch to StructArray in ShreddingFileReader");
     }
-    auto struct_array = std::static_pointer_cast<arrow::StructArray>(arrow_array);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
 
     arrow::ArrayVector resolved_arrays = struct_array->fields();
     arrow::FieldVector resolved_fields = struct_array->struct_type()->fields();

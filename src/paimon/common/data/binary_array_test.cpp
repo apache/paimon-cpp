@@ -26,11 +26,11 @@
 #include "arrow/api.h"
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
-#include "arrow/util/checked_cast.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_array_writer.h"
 #include "paimon/common/data/binary_map.h"
 #include "paimon/common/data/columnar/columnar_array.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
@@ -334,7 +334,7 @@ TEST(BinaryArrayTest, TestFromLongArray) {
     auto f1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::list(arrow::int64()),
                                                         R"([[123, null], [789], [12345], [12]])")
                   .ValueOrDie();
-    auto list_array = arrow::internal::checked_pointer_cast<arrow::ListArray>(f1);
+    auto list_array = checked_pointer_cast<arrow::ListArray>(f1);
     auto array = ColumnarArray(list_array->values().get(), pool, /*offset=*/0, 2);
 
     BinaryArray ret = BinaryArray::FromLongArray(&array, pool.get());
@@ -365,7 +365,7 @@ TEST(BinaryArrayTest, TestFromAllNullLongArray) {
     auto f1 = arrow::ipc::internal::json::ArrayFromJSON(arrow::list(arrow::int64()),
                                                         R"([[null, null], [789], [12345], [12]])")
                   .ValueOrDie();
-    auto list_array = arrow::internal::checked_pointer_cast<arrow::ListArray>(f1);
+    auto list_array = checked_pointer_cast<arrow::ListArray>(f1);
     auto array = ColumnarArray(list_array->values().get(), pool, /*offset=*/0, 2);
 
     BinaryArray ret = BinaryArray::FromLongArray(&array, pool.get());

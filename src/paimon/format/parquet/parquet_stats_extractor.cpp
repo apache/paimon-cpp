@@ -25,11 +25,11 @@
 
 #include "arrow/memory_pool.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
@@ -81,14 +81,12 @@ Result<std::unique_ptr<ColumnStats>> ConvertStatsToColumnStats(
     }
     switch (id) {
         case arrow::Type::BOOL: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::BoolStatistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::BoolStatistics>(stats);
             auto [min, max] = CollectMinMaxStats(typed_stats);
             return ColumnStats::CreateBooleanColumnStats(min, max, null_count);
         }
         case arrow::Type::INT8: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::Int32Statistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::Int32Statistics>(stats);
             std::optional<int8_t> min;
             std::optional<int8_t> max;
             if (typed_stats && typed_stats->HasMinMax()) {
@@ -98,8 +96,7 @@ Result<std::unique_ptr<ColumnStats>> ConvertStatsToColumnStats(
             return ColumnStats::CreateTinyIntColumnStats(min, max, null_count);
         }
         case arrow::Type::INT16: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::Int32Statistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::Int32Statistics>(stats);
             std::optional<int16_t> min;
             std::optional<int16_t> max;
             if (typed_stats && typed_stats->HasMinMax()) {
@@ -109,32 +106,27 @@ Result<std::unique_ptr<ColumnStats>> ConvertStatsToColumnStats(
             return ColumnStats::CreateSmallIntColumnStats(min, max, null_count);
         }
         case arrow::Type::INT32: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::Int32Statistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::Int32Statistics>(stats);
             auto [min, max] = CollectMinMaxStats(typed_stats);
             return ColumnStats::CreateIntColumnStats(min, max, null_count);
         }
         case arrow::Type::INT64: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::Int64Statistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::Int64Statistics>(stats);
             auto [min, max] = CollectMinMaxStats(typed_stats);
             return ColumnStats::CreateBigIntColumnStats(min, max, null_count);
         }
         case arrow::Type::FLOAT: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::FloatStatistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::FloatStatistics>(stats);
             auto [min, max] = CollectMinMaxStats(typed_stats);
             return ColumnStats::CreateFloatColumnStats(min, max, null_count);
         }
         case arrow::Type::DOUBLE: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::DoubleStatistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::DoubleStatistics>(stats);
             auto [min, max] = CollectMinMaxStats(typed_stats);
             return ColumnStats::CreateDoubleColumnStats(min, max, null_count);
         }
         case arrow::Type::STRING: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::ByteArrayStatistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::ByteArrayStatistics>(stats);
             std::optional<std::string> min;
             std::optional<std::string> max;
             if (typed_stats && typed_stats->HasMinMax()) {
@@ -147,26 +139,22 @@ Result<std::unique_ptr<ColumnStats>> ConvertStatsToColumnStats(
             return ColumnStats::CreateStringColumnStats(std::nullopt, std::nullopt, null_count);
         }
         case arrow::Type::DATE32: {
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::Int32Statistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::Int32Statistics>(stats);
             auto [min, max] = CollectMinMaxStats<::parquet::Int32Statistics>(typed_stats);
             return ColumnStats::CreateDateColumnStats(min, max, null_count);
         }
         case arrow::Type::TIMESTAMP: {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<::arrow::TimestampType>(data_type);
+            auto timestamp_type = checked_pointer_cast<::arrow::TimestampType>(data_type);
             if (timestamp_type->unit() == arrow::TimeUnit::type::NANO) {
                 // int96 does not have statistics
                 return ColumnStats::CreateTimestampColumnStats(
                     std::nullopt, std::nullopt, std::nullopt, Timestamp::MAX_PRECISION);
             }
-            auto typed_stats =
-                arrow::internal::checked_pointer_cast<::parquet::Int64Statistics>(stats);
+            auto typed_stats = checked_pointer_cast<::parquet::Int64Statistics>(stats);
             auto [min, max] = CollectMinMaxStats(typed_stats);
             // while write type is ts(second), data type in parquet file will be ts(milli), correct
             // precision is supposed to be extracted from write type
-            auto write_ts_type =
-                arrow::internal::checked_pointer_cast<::arrow::TimestampType>(write_type);
+            auto write_ts_type = checked_pointer_cast<::arrow::TimestampType>(write_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(write_ts_type);
             if (!min || !max) {
                 return ColumnStats::CreateTimestampColumnStats(std::nullopt, std::nullopt,
@@ -184,22 +172,19 @@ Result<std::unique_ptr<ColumnStats>> ConvertStatsToColumnStats(
                                                            null_count, precision);
         }
         case arrow::Type::DECIMAL128: {
-            auto decimal_type =
-                arrow::internal::checked_pointer_cast<::arrow::Decimal128Type>(data_type);
+            auto decimal_type = checked_pointer_cast<::arrow::Decimal128Type>(data_type);
             int32_t precision = decimal_type->precision();
             int32_t scale = decimal_type->scale();
             std::optional<Decimal> min_value;
             std::optional<Decimal> max_value;
             if (primitive_node->physical_type() == ::parquet::Type::INT32) {
-                auto typed_stats =
-                    arrow::internal::checked_pointer_cast<::parquet::Int32Statistics>(stats);
+                auto typed_stats = checked_pointer_cast<::parquet::Int32Statistics>(stats);
                 if (typed_stats && typed_stats->HasMinMax()) {
                     min_value = Decimal(precision, scale, typed_stats->min());
                     max_value = Decimal(precision, scale, typed_stats->max());
                 }
             } else if (primitive_node->physical_type() == ::parquet::Type::INT64) {
-                auto typed_stats =
-                    arrow::internal::checked_pointer_cast<::parquet::Int64Statistics>(stats);
+                auto typed_stats = checked_pointer_cast<::parquet::Int64Statistics>(stats);
                 if (typed_stats && typed_stats->HasMinMax()) {
                     min_value = Decimal(precision, scale, typed_stats->min());
                     max_value = Decimal(precision, scale, typed_stats->max());
@@ -230,8 +215,7 @@ void MergeTypedStats(
     if (!entry) {
         entry = stats;
     } else {
-        arrow::internal::checked_pointer_cast<T>(entry)->Merge(
-            *arrow::internal::checked_pointer_cast<T>(stats));
+        checked_pointer_cast<T>(entry)->Merge(*checked_pointer_cast<T>(stats));
     }
 }
 
@@ -321,8 +305,7 @@ ParquetStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fi
             }
             result_stats.push_back(ColumnStats::CreateNestedColumnStats(nested_type, std::nullopt));
         } else {
-            auto primitive_node =
-                arrow::internal::checked_pointer_cast<::parquet::schema::PrimitiveNode>(node);
+            auto primitive_node = checked_pointer_cast<::parquet::schema::PrimitiveNode>(node);
             assert(primitive_node != nullptr);
             auto iter = merged_stats.find(node->name());
             const std::shared_ptr<::parquet::Statistics>& parquet_stats =

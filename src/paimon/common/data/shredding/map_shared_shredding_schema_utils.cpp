@@ -30,6 +30,7 @@
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -62,7 +63,7 @@ Result<std::unique_ptr<MapSharedShreddingAccessBuilder>> MapSharedShreddingAcces
             fmt::format("MapSharedShreddingAccessBuilder requires MAP field, got {}",
                         field->type()->ToString()));
     }
-    auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(field->type());
+    auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
     if (map_type->key_type()->id() != arrow::Type::STRING) {
         return Status::Invalid(fmt::format(
             "MapSharedShreddingAccessBuilder only supports MAP with STRING keys, got {}",

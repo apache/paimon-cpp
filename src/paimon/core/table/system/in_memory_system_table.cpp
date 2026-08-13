@@ -26,6 +26,7 @@
 
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/generic_row_to_arrow_array_converter.h"
 #include "paimon/core/table/system/system_table_scan.h"
 #include "paimon/memory/memory_pool.h"
@@ -113,7 +114,7 @@ Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
 Result<std::unique_ptr<TableRead>> InMemorySystemTable::NewRead(
     const std::shared_ptr<ReadContext>& context) const {
     return std::make_unique<InMemorySystemTableRead>(
-        std::static_pointer_cast<const InMemorySystemTable>(shared_from_this()),
+        checked_pointer_cast<const InMemorySystemTable>(shared_from_this()),
         context->GetMemoryPool());
 }
 

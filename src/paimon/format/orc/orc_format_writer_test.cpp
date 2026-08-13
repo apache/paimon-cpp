@@ -40,6 +40,7 @@
 #include "orc/Vector.hh"
 #include "orc/Writer.hh"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/format/orc/orc_format_defs.h"
 #include "paimon/format/orc/orc_input_stream_impl.h"
 #include "paimon/format/orc/orc_metrics.h"
@@ -77,9 +78,9 @@ class OrcFormatWriterTest : public ::testing::Test {
             data_type, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int32Builder>(),
              std::make_shared<arrow::BooleanBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
-        auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
+        auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
         for (int32_t i = 0 + offset; i < record_batch_size + offset; ++i) {
             EXPECT_TRUE(struct_builder.Append().ok());
             if (i % 2 == 0) {
@@ -135,7 +136,7 @@ class OrcFormatWriterTest : public ::testing::Test {
 
         auto struct_batch = dynamic_cast<::orc::StructVectorBatch*>(batch.get());
         ASSERT_TRUE(struct_batch);
-        auto string_batch = static_cast<::orc::StringVectorBatch*>(struct_batch->fields[0]);
+        auto string_batch = checked_cast<::orc::StringVectorBatch*>(struct_batch->fields[0]);
         ASSERT_TRUE(string_batch);
         auto int_batch = dynamic_cast<::orc::IntVectorBatch*>(struct_batch->fields[1]);
         ASSERT_TRUE(int_batch);

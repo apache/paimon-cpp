@@ -26,6 +26,7 @@
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/predicate/literal.h"
@@ -92,11 +93,15 @@ Result<std::shared_ptr<RangeBitmapFileIndexWriter>> RangeBitmapFileIndexWriter::
 Status RangeBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                       arrow::ImportArray(batch, struct_type_));
-    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
-    if (!struct_array || struct_array->num_fields() != 1) {
+    if (!array || array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid(
-            "invalid batch for RangeBitmapFileIndexWriter, supposed to be struct array with single "
-            "field.");
+            "invalid batch for RangeBitmapFileIndexWriter, expected a struct array");
+    }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+    if (struct_array->num_fields() != 1) {
+        return Status::Invalid(
+            "invalid batch for RangeBitmapFileIndexWriter, expected a struct array with exactly "
+            "one field");
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> array_values,
                            LiteralConverter::ConvertLiteralsFromArray(*(struct_array->field(0)),

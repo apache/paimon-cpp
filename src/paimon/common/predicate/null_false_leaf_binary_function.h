@@ -22,7 +22,6 @@
 
 #include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/predicate/leaf_function.h"
 #include "paimon/common/predicate/literal_converter.h"

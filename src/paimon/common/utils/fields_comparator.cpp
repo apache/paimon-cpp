@@ -23,10 +23,10 @@
 #include <string>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
@@ -155,8 +155,7 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
                 });
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(input_type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(input_type);
             assert(timestamp_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             return FieldsComparator::FieldComparatorFunc(
@@ -167,8 +166,7 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
                 });
         }
         case arrow::Type::type::DECIMAL128: {
-            auto* decimal_type =
-                arrow::internal::checked_cast<arrow::Decimal128Type*>(input_type.get());
+            auto* decimal_type = checked_cast<arrow::Decimal128Type*>(input_type.get());
             assert(decimal_type);
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
