@@ -50,7 +50,9 @@ namespace paimon {
 ///    first) and, inside each group, orders them by first row id. Row id ranges the group's
 ///    files do not cover are represented by gap segments, which stand for all-placeholder rows.
 /// 2. All groups span the same overall row id range, so with the same row-ranges selection
-///    applied they yield the same number of rows and can be stepped in lockstep.
+///    applied they yield the same number of rows and can be stepped in lockstep. A deletion
+///    vector has to reach every group the same way, through the file segments' readers and
+///    through the row ids the caller leaves in a gap segment's `gap_selected_ranges`.
 /// 3. Each output row takes the first group, in max-sequence order, whose row is not a
 ///    placeholder. Placeholder rows are identified by exact equality with the
 ///    BlobDefs::kPlaceholderSentinel bytes, emitted by the blob format reader when

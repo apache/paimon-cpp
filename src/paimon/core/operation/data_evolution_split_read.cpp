@@ -19,11 +19,13 @@
 #include "paimon/core/operation/data_evolution_split_read.h"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <map>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -48,9 +50,76 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/range_helper.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/utils/blob_view_lookup.h"
+#include "paimon/core/utils/data_evolution_utils.h"
+
 namespace paimon {
+namespace {
+/// A read-only view over one file's window of a row range group's deletion vector. The reader
+/// probes with positions local to its file; IsDeleted(p) forwards them as IsDeleted(p + offset),
+/// the anchor-relative positions the group deletion vector is indexed by.
+///
+/// The shift rides on a full DeletionVector because that is what DeletionVector::Factory hands
+/// to ApplyIndexAndDvReaderIfNeeded; narrowing it to Paimon Java's read-only DeletionVectorJudger
+/// would reach every caller of the factory. The mutating and serializing halves reject instead.
+class PositionShiftedDeletionVector : public DeletionVector {
+ public:
+    PositionShiftedDeletionVector(const std::shared_ptr<DeletionVector>& inner, int64_t offset,
+                                  int64_t length)
+        : inner_(inner), offset_(offset), length_(length) {}
+
+    Result<bool> IsDeleted(int64_t position) const override {
+        if (position < 0 || position >= length_) {
+            return Status::Invalid(
+                fmt::format("PositionShiftedDeletionVector position {} out of window [0, {})",
+                            position, length_));
+        }
+        return inner_->IsDeleted(position + offset_);
+    }
+
+    /// Conservative: false only means the group deletion vector holds deletions somewhere, not
+    /// necessarily inside this window. Over-reporting just makes the wrapping filter a no-op.
+    bool IsEmpty() const override {
+        return inner_->IsEmpty();
+    }
+
+    /// Deleted positions inside this window. Off the read path, which only calls IsDeleted and
+    /// IsEmpty; the row counting that does consult a vector's cardinality builds its factory
+    /// from the split's deletion files, never from this view.
+    Result<int64_t> GetCardinality() const override {
+        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 valid, inner_->IsValid(offset_, length_));
+        return length_ - valid.Cardinality();
+    }
+
+    Status Delete(int64_t) override {
+        return Status::Invalid("PositionShiftedDeletionVector is read-only");
+    }
+
+    Result<bool> CheckedDelete(int64_t) override {
+        return Status::Invalid("PositionShiftedDeletionVector is read-only");
+    }
+
+    Status Merge(const std::shared_ptr<DeletionVector>&) override {
+        return Status::Invalid("PositionShiftedDeletionVector is read-only");
+    }
+
+    Result<int32_t> SerializeTo(const std::shared_ptr<MemoryPool>&, DataOutputStream*) override {
+        return Status::Invalid("PositionShiftedDeletionVector does not support serialization");
+    }
+
+    Result<PAIMON_UNIQUE_PTR<Bytes>> SerializeToBytes(const std::shared_ptr<MemoryPool>&) override {
+        return Status::Invalid("PositionShiftedDeletionVector does not support serialization");
+    }
+
+ private:
+    std::shared_ptr<DeletionVector> inner_;
+    const int64_t offset_;
+    const int64_t length_;
+};
+}  // namespace
+
 int64_t DataEvolutionSplitRead::BlobBunch::RowCount() const {
     if (files_.empty()) {
         return 0;
@@ -145,7 +214,8 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateReader(
             batch_reader = std::make_unique<CompleteIndexScoreBatchReader>(
                 std::move(batch_reader), indexed_split->Scores(), pool_);
         }
-        return WrapWithBlobViewResolverIfNeeded(data_split, std::move(batch_reader));
+        return WrapWithBlobViewResolverIfNeeded(data_split, std::move(batch_reader),
+                                                indexed_split->RowRanges());
     } else if (auto data_split = std::dynamic_pointer_cast<DataSplit>(split)) {
         if (HasIndexScoreField(raw_read_schema_)) {
             return Status::Invalid(
@@ -153,14 +223,15 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateReader(
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> inner_reader,
                                InnerCreateReader(data_split, /*row_ranges=*/std::nullopt));
-        return WrapWithBlobViewResolverIfNeeded(data_split, std::move(inner_reader));
+        return WrapWithBlobViewResolverIfNeeded(data_split, std::move(inner_reader),
+                                                /*row_ranges=*/std::nullopt);
     }
     return Status::Invalid("Invalid Split, cannot cast to IndexedSplit or DataSplit");
 }
 
 Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewResolverIfNeeded(
-    const std::shared_ptr<DataSplit>& data_split,
-    std::unique_ptr<BatchReader>&& inner_reader) const {
+    const std::shared_ptr<DataSplit>& data_split, std::unique_ptr<BatchReader>&& inner_reader,
+    const std::optional<std::vector<Range>>& row_ranges) const {
     if (!options_.BlobViewResolveEnabled()) {
         // preserve serialized BlobViewStruct bytes, e.g. for forwarding blob view values to
         // another blob-view table
@@ -176,7 +247,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
             "invalid config for blob view, supposed to set BLOB_VIEW_UPSTREAM_WAREHOUSE");
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> pre_reader,
-                           CreateBlobViewReader(data_split, read_blob_view_fields));
+                           CreateBlobViewReader(data_split, read_blob_view_fields, row_ranges));
     PAIMON_ASSIGN_OR_RAISE(std::unordered_set<BlobViewStruct> blob_view_structs,
                            ExtractBlobViewStructs(pre_reader.get()));
     auto catalog_context = std::make_shared<CatalogContext>(
@@ -194,7 +265,8 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
 
 Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobViewReader(
     const std::shared_ptr<DataSplit>& data_split,
-    const std::vector<std::string>& read_blob_view_fields) const {
+    const std::vector<std::string>& read_blob_view_fields,
+    const std::optional<std::vector<Range>>& row_ranges) const {
     auto split_impl = dynamic_cast<DataSplitImpl*>(data_split.get());
     if (split_impl == nullptr) {
         return Status::Invalid("unexpected error, split cast to impl failed");
@@ -217,23 +289,40 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobViewReade
         std::shared_ptr<DataFilePathFactory> data_file_path_factory,
         path_factory_->CreateDataFilePathFactory(split_impl->Partition(), split_impl->Bucket()));
 
-    // skip blob files: they only contain blob payloads, not the blob-view columns.
-    std::vector<std::shared_ptr<DataFileMeta>> data_files;
-    data_files.reserve(split_impl->DataFiles().size());
-    for (const auto& file : split_impl->DataFiles()) {
-        if (!BlobUtils::IsBlobFile(file->file_name)) {
-            data_files.push_back(file);
+    DeletionVector::Factory split_dv_factory = CreateSplitDvFactory(*split_impl);
+    auto metas = split_impl->DataFiles();
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> split_by_row_id,
+                           MergeRangesAndSort(std::move(metas)));
+
+    std::vector<std::unique_ptr<BatchReader>> batch_readers;
+    for (const std::vector<std::shared_ptr<DataFileMeta>>& group : split_by_row_id) {
+        // skip blob files: they only contain blob payloads, not the blob-view columns.
+        std::vector<std::shared_ptr<DataFileMeta>> data_files;
+        data_files.reserve(group.size());
+        for (const auto& file : group) {
+            if (!BlobUtils::IsBlobFile(file->file_name)) {
+                data_files.push_back(file);
+            }
+        }
+        if (data_files.empty()) {
+            continue;
+        }
+        // the anchor is looked up over the whole group, as the main read does, so both find the
+        // same deletion vector; only the shifted views are built for the files read here
+        PAIMON_ASSIGN_OR_RAISE(std::optional<GroupDeletionVector> group_dv,
+                               ReadGroupDeletionVector(group, split_dv_factory));
+        PAIMON_ASSIGN_OR_RAISE(DeletionVector::Factory group_dv_factory,
+                               CreateGroupDvFactory(data_files, group_dv));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
+            CreateRawFileReaders(split_impl->Partition(), data_files, blob_view_schema,
+                                 /*predicate=*/nullptr, group_dv_factory, row_ranges,
+                                 data_file_path_factory,
+                                 /*extra_format_options=*/{}));
+        for (std::unique_ptr<FileBatchReader>& raw_file_reader : raw_file_readers) {
+            batch_readers.push_back(std::move(raw_file_reader));
         }
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
-        CreateRawFileReaders(split_impl->Partition(), data_files, blob_view_schema,
-                             /*predicate=*/nullptr, /*dv_factory=*/nullptr,
-                             /*row_ranges=*/std::nullopt, data_file_path_factory,
-                             /*extra_format_options=*/{}));
-
-    auto batch_readers =
-        ObjectUtils::MoveVector<std::unique_ptr<BatchReader>>(std::move(raw_file_readers));
     return std::make_unique<ConcatBatchReader>(std::move(batch_readers), pool_);
 }
 
@@ -298,25 +387,32 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
         std::shared_ptr<DataFilePathFactory> data_file_path_factory,
         path_factory_->CreateDataFilePathFactory(split_impl->Partition(), split_impl->Bucket()));
     auto metas = split_impl->DataFiles();
+    DeletionVector::Factory split_dv_factory = CreateSplitDvFactory(*split_impl);
+
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> split_by_row_id,
                            MergeRangesAndSort(std::move(metas)));
 
     std::vector<std::unique_ptr<BatchReader>> sub_readers;
     for (const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files : split_by_row_id) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<GroupDeletionVector> group_dv,
+                               ReadGroupDeletionVector(need_merge_files, split_dv_factory));
+        PAIMON_ASSIGN_OR_RAISE(DeletionVector::Factory group_dv_factory,
+                               CreateGroupDvFactory(need_merge_files, group_dv));
         if (need_merge_files.size() == 1) {
             // No need to merge fields, just create a single file reader
             PAIMON_ASSIGN_OR_RAISE(
                 std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
                 CreateRawFileReaders(split_impl->Partition(), need_merge_files, raw_read_schema_,
-                                     /*predicate=*/nullptr,
-                                     /*dv_factory=*/nullptr, row_ranges, data_file_path_factory,
+                                     /*predicate=*/nullptr, group_dv_factory, row_ranges,
+                                     data_file_path_factory,
                                      /*extra_format_options=*/{}));
             assert(raw_file_readers.size() == 1);
             sub_readers.push_back(std::move(raw_file_readers[0]));
         } else {
-            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataEvolutionFileReader> evolution_reader,
-                                   CreateUnionReader(split_impl->Partition(), need_merge_files,
-                                                     row_ranges, data_file_path_factory));
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<DataEvolutionFileReader> evolution_reader,
+                CreateUnionReader(split_impl->Partition(), need_merge_files, row_ranges,
+                                  data_file_path_factory, group_dv_factory, group_dv));
             sub_readers.push_back(std::move(evolution_reader));
         }
     }
@@ -333,13 +429,17 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
-    if (dv_factory) {
-        return Status::Invalid("DataEvolutionSplitRead do not support deletion vector");
-    }
     if (predicate) {
         assert(false);
         // as DataEvolutionSplitRead will skip predicate
         return Status::Invalid("DataEvolutionSplitRead do not support predicate");
+    }
+    // the factory is per row range group and already returns a view taking file-local positions.
+    // Unlike RawFileSplitRead the vector is not folded into the format reader's selection: it is
+    // no BitmapDeletionVector, and the blob fallback path's gap segments have no format reader.
+    std::shared_ptr<DeletionVector> deletion_vector;
+    if (dv_factory) {
+        PAIMON_ASSIGN_OR_RAISE(deletion_vector, dv_factory(file->file_name));
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap32> selection_row_ids,
                            file->ToFileSelection(row_ranges));
@@ -358,6 +458,10 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
         reader = std::move(file_reader);
     }
 
+    if (deletion_vector && !deletion_vector->IsEmpty()) {
+        reader =
+            std::make_unique<ApplyDeletionVectorBatchReader>(std::move(reader), deletion_vector);
+    }
     return std::move(reader);
 }
 
@@ -398,7 +502,9 @@ DataEvolutionSplitRead::SplitFieldBunches(
 Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateUnionReader(
     const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
     const std::optional<std::vector<Range>>& row_ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const DeletionVector::Factory& group_dv_factory,
+    const std::optional<GroupDeletionVector>& group_dv) const {
     auto blob_field_to_field_id =
         [&](const std::shared_ptr<DataFileMeta>& file_meta) -> Result<int32_t> {
         if (!BlobUtils::IsBlobFile(file_meta->file_name)) {
@@ -493,12 +599,13 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateU
                 PAIMON_ASSIGN_OR_RAISE(
                     file_batch_readers[file_idx],
                     CreateBlobFallbackReader(partition, blob_bunch->Files(), file_read_schema,
-                                             row_ranges, data_file_path_factory));
+                                             row_ranges, data_file_path_factory, group_dv_factory,
+                                             group_dv));
             } else {
                 PAIMON_ASSIGN_OR_RAISE(
                     std::vector<std::unique_ptr<FileBatchReader>> file_readers,
                     CreateRawFileReaders(partition, bunch->Files(), file_read_schema,
-                                         /*predicate=*/nullptr, /*dv_factory=*/{}, row_ranges,
+                                         /*predicate=*/nullptr, group_dv_factory, row_ranges,
                                          data_file_path_factory,
                                          /*extra_format_options=*/{}));
                 if (file_readers.size() == 1) {
@@ -543,7 +650,9 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
     const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& files,
     const std::shared_ptr<arrow::Schema>& file_read_schema,
     const std::optional<std::vector<Range>>& row_ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const DeletionVector::Factory& group_dv_factory,
+    const std::optional<GroupDeletionVector>& group_dv) const {
     int64_t union_first_row_id = std::numeric_limits<int64_t>::max();
     int64_t union_last_row_id = std::numeric_limits<int64_t>::min();
     using FileWithFirstRowId = std::pair<int64_t, std::shared_ptr<DataFileMeta>>;
@@ -579,6 +688,13 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
             if (first_row_id > next_row_id) {
                 std::vector<Range> gap_selected_ranges =
                     SelectedRangesInRange(next_row_id, first_row_id - 1, row_ranges);
+                if (group_dv && !gap_selected_ranges.empty()) {
+                    // gap segments have no file reader to wrap, so the deleted row ids are
+                    // dropped from their ranges to stay aligned with the other layers
+                    PAIMON_ASSIGN_OR_RAISE(
+                        gap_selected_ranges,
+                        ExcludeDeletedRowIds(gap_selected_ranges, group_dv.value()));
+                }
                 if (!gap_selected_ranges.empty()) {
                     segments.push_back(
                         BlobFallbackBatchReader::Segment{nullptr, std::move(gap_selected_ranges)});
@@ -587,7 +703,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
             PAIMON_ASSIGN_OR_RAISE(
                 std::vector<std::unique_ptr<FileBatchReader>> file_readers,
                 CreateRawFileReaders(partition, {file}, file_read_schema,
-                                     /*predicate=*/nullptr, /*dv_factory=*/{}, row_ranges,
+                                     /*predicate=*/nullptr, group_dv_factory, row_ranges,
                                      data_file_path_factory, blob_format_options));
             if (file_readers.size() != 1) {
                 return Status::Invalid("Unexpected: blob fallback file reader was skipped.");
@@ -598,6 +714,10 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
         if (next_row_id <= union_last_row_id) {
             std::vector<Range> gap_selected_ranges =
                 SelectedRangesInRange(next_row_id, union_last_row_id, row_ranges);
+            if (group_dv && !gap_selected_ranges.empty()) {
+                PAIMON_ASSIGN_OR_RAISE(gap_selected_ranges,
+                                       ExcludeDeletedRowIds(gap_selected_ranges, group_dv.value()));
+            }
             if (!gap_selected_ranges.empty()) {
                 segments.push_back(
                     BlobFallbackBatchReader::Segment{nullptr, std::move(gap_selected_ranges)});
@@ -674,5 +794,104 @@ DataEvolutionSplitRead::MergeRangesAndSort(std::vector<std::shared_ptr<DataFileM
                      std::make_move_iterator(blob_files.end()));
     }
     return result;
+}
+
+DeletionVector::Factory DataEvolutionSplitRead::CreateSplitDvFactory(
+    const DataSplitImpl& split_impl) const {
+    const std::vector<std::optional<DeletionFile>>& deletion_files = split_impl.DeletionFiles();
+    bool has_deletion_files =
+        std::any_of(deletion_files.begin(), deletion_files.end(),
+                    [](const std::optional<DeletionFile>& file) { return file != std::nullopt; });
+    if (!has_deletion_files) {
+        return DeletionVector::Factory();
+    }
+    return DeletionVector::CreateFactory(
+        options_.GetFileSystem(),
+        DeletionVector::CreateDeletionFileMap(split_impl.DataFiles(), deletion_files), pool_);
+}
+
+Result<std::optional<DataEvolutionSplitRead::GroupDeletionVector>>
+DataEvolutionSplitRead::ReadGroupDeletionVector(
+    const std::vector<std::shared_ptr<DataFileMeta>>& group,
+    const DeletionVector::Factory& split_dv_factory) {
+    if (!split_dv_factory) {
+        return std::optional<GroupDeletionVector>();
+    }
+    // A split may pack a group holding nothing but blob files, written when only the blob column
+    // was, next to one that does carry a deletion vector. No anchor means no writer could have
+    // keyed a vector by it, so it reads undeleted instead of failing the whole split.
+    if (std::none_of(group.begin(), group.end(), [](const std::shared_ptr<DataFileMeta>& file) {
+            return DataEvolutionUtils::IsNormalFile(file->file_name);
+        })) {
+        return std::optional<GroupDeletionVector>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFileMeta> anchor,
+                           DataEvolutionUtils::RetrieveAnchorFile(group));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DeletionVector> deletion_vector,
+                           split_dv_factory(anchor->file_name));
+    if (!deletion_vector || deletion_vector->IsEmpty()) {
+        return std::optional<GroupDeletionVector>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(int64_t anchor_first_row_id, anchor->NonNullFirstRowId());
+    return std::make_optional(GroupDeletionVector{
+        deletion_vector, Range(anchor_first_row_id, anchor_first_row_id + anchor->row_count - 1)});
+}
+
+Result<DeletionVector::Factory> DataEvolutionSplitRead::CreateGroupDvFactory(
+    const std::vector<std::shared_ptr<DataFileMeta>>& group,
+    const std::optional<GroupDeletionVector>& group_dv) {
+    if (!group_dv) {
+        return DeletionVector::Factory();
+    }
+    auto shifted_dvs =
+        std::make_shared<std::unordered_map<std::string, std::shared_ptr<DeletionVector>>>();
+    for (const auto& file : group) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t first_row_id, file->NonNullFirstRowId());
+        int64_t last_row_id = first_row_id + file->row_count - 1;
+        if (first_row_id < group_dv->anchor_range.from || last_row_id > group_dv->anchor_range.to) {
+            return Status::Invalid(fmt::format(
+                "Deletion vector range [{}, {}] should contain row id range [{}, {}] of file {}.",
+                group_dv->anchor_range.from, group_dv->anchor_range.to, first_row_id, last_row_id,
+                file->file_name));
+        }
+        int64_t offset = first_row_id - group_dv->anchor_range.from;
+        bool covers_whole_anchor_range = offset == 0 && last_row_id == group_dv->anchor_range.to;
+        (*shifted_dvs)[file->file_name] =
+            covers_whole_anchor_range ? group_dv->deletion_vector
+                                      : std::make_shared<PositionShiftedDeletionVector>(
+                                            group_dv->deletion_vector, offset, file->row_count);
+    }
+    return DeletionVector::Factory(
+        [shifted_dvs](const std::string& file_name) -> Result<std::shared_ptr<DeletionVector>> {
+            auto iter = shifted_dvs->find(file_name);
+            if (iter == shifted_dvs->end()) {
+                return std::shared_ptr<DeletionVector>();
+            }
+            return iter->second;
+        });
+}
+
+Result<std::vector<Range>> DataEvolutionSplitRead::ExcludeDeletedRowIds(
+    const std::vector<Range>& ranges, const GroupDeletionVector& group_dv) {
+    std::vector<Range> remaining;
+    for (const auto& range : ranges) {
+        std::optional<int64_t> run_start;
+        for (int64_t row_id = range.from; row_id <= range.to; row_id++) {
+            PAIMON_ASSIGN_OR_RAISE(bool is_deleted, group_dv.deletion_vector->IsDeleted(
+                                                        row_id - group_dv.anchor_range.from));
+            if (is_deleted) {
+                if (run_start) {
+                    remaining.emplace_back(run_start.value(), row_id - 1);
+                    run_start = std::nullopt;
+                }
+            } else if (!run_start) {
+                run_start = row_id;
+            }
+        }
+        if (run_start) {
+            remaining.emplace_back(run_start.value(), range.to);
+        }
+    }
+    return remaining;
 }
 }  // namespace paimon

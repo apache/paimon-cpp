@@ -358,6 +358,9 @@ struct PAIMON_EXPORT Options {
     /// files containing deletion vectors are generated when data is written, which marks the data
     /// for deletion. During read operations, by applying these index files, merging can be avoided.
     /// Default value is false.
+    /// @note On a data-evolution table (`DATA_EVOLUTION_ENABLED`), Paimon C++ reads deletion
+    /// vectors but does not write them: the deletes have to be issued by another engine, and such
+    /// a table is never compacted.
     static const char DELETION_VECTORS_ENABLED[];
 
     /// "deletion-vector.index-file.target-size" - The target size of deletion vector index file.

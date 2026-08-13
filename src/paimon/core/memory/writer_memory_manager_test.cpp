@@ -245,4 +245,19 @@ TEST(WriterMemoryManagerTest, ReturnsConfigurationErrorWhenNoWriterCanReleaseEno
     ASSERT_EQ(flush_history, std::vector<std::string>({"writer_a"}));
 }
 
+TEST(WriterMemoryManagerTest, NoopManagerDoesNotTrackOrFlushWriter) {
+    NoopWriterMemoryManager manager;
+    std::vector<std::string> flush_history;
+    FakeBatchWriter writer("writer", &flush_history);
+    writer.SetMemoryUsage(100);
+
+    manager.RegisterWriter(&writer);
+    ASSERT_OK(manager.OnWriteCompleted(&writer));
+    manager.RefreshWriterMemory(&writer);
+    manager.UnregisterWriter(&writer);
+
+    ASSERT_TRUE(flush_history.empty());
+    ASSERT_EQ(writer.GetMemoryUsage(), 100);
+}
+
 }  // namespace paimon::test

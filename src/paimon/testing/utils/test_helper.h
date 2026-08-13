@@ -20,6 +20,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,16 +29,19 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/api.h"
+#include "fmt/format.h"
 #include "paimon/api.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/operation/append_only_file_store_write.h"
 #include "paimon/core/operation/file_store_commit_impl.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -338,6 +342,29 @@ class TestHelper {
     Result<std::string> PartitionStr(const BinaryRow& partition) const {
         auto abstract_write = dynamic_cast<AbstractFileStoreWrite*>(write_.get());
         return abstract_write->file_store_path_factory_->GetPartitionString(partition);
+    }
+
+    /// Appends a new schema holding `fields` on top of the table's latest one, the way an ALTER
+    /// TABLE would, so later writes and reads see the evolved schema.
+    static Status WriteNextSchema(const std::shared_ptr<FileSystem>& file_system,
+                                  const std::string& table_path,
+                                  const std::vector<DataField>& fields, int32_t highest_field_id,
+                                  const std::map<std::string, std::string>& options) {
+        SchemaManager schema_manager(file_system, table_path);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema_opt,
+                               schema_manager.Latest());
+        if (!latest_schema_opt) {
+            return Status::Invalid("table schema does not exist");
+        }
+        auto next_schema = std::make_shared<TableSchema>(*latest_schema_opt.value());
+        next_schema->id_ = latest_schema_opt.value()->Id() + 1;
+        next_schema->fields_ = fields;
+        next_schema->highest_field_id_ = highest_field_id;
+        next_schema->options_ = options;
+        PAIMON_ASSIGN_OR_RAISE(std::string schema_content, next_schema->ToJsonString());
+        std::string schema_path = PathUtil::JoinPath(schema_manager.SchemaDirectory(),
+                                                     fmt::format("schema-{}", next_schema->Id()));
+        return file_system->AtomicStore(schema_path, schema_content);
     }
 
     static void CheckCommitMessages(std::vector<std::shared_ptr<CommitMessage>> expected,

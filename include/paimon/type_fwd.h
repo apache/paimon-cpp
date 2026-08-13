@@ -56,6 +56,7 @@ class FileStatus;
 class BasicFileStatus;
 
 class RecordBatch;
+class RealtimeContext;
 
 class FormatWriter;
 

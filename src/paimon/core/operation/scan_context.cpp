@@ -32,6 +32,7 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
                          std::optional<int32_t> limit,
                          const std::shared_ptr<ScanFilter>& scan_filter,
                          const std::shared_ptr<GlobalIndexResult>& global_index_result,
+                         const std::shared_ptr<RealtimeContext>& realtime_context,
                          const std::shared_ptr<MemoryPool>& memory_pool,
                          const std::shared_ptr<Executor>& executor,
                          const std::shared_ptr<FileSystem>& specific_file_system,
@@ -43,6 +44,7 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
       limit_(limit),
       scan_filters_(scan_filter),
       global_index_result_(global_index_result),
+      realtime_context_(realtime_context),
       memory_pool_(memory_pool),
       executor_(executor),
       specific_file_system_(specific_file_system),
@@ -63,6 +65,7 @@ class ScanContextBuilder::Impl {
         partition_filters_.clear();
         predicates_.reset();
         global_index_result_.reset();
+        realtime_context_.reset();
         memory_pool_ = GetDefaultPool();
         executor_ = CreateDefaultExecutor();
         specific_file_system_.reset();
@@ -79,6 +82,7 @@ class ScanContextBuilder::Impl {
     std::vector<std::map<std::string, std::string>> partition_filters_;
     std::shared_ptr<Predicate> predicates_;
     std::shared_ptr<GlobalIndexResult> global_index_result_;
+    std::shared_ptr<RealtimeContext> realtime_context_;
     std::shared_ptr<MemoryPool> memory_pool_ = GetDefaultPool();
     std::shared_ptr<Executor> executor_ = CreateDefaultExecutor();
     std::shared_ptr<FileSystem> specific_file_system_;
@@ -121,6 +125,12 @@ ScanContextBuilder& ScanContextBuilder::SetPredicate(const std::shared_ptr<Predi
 ScanContextBuilder& ScanContextBuilder::SetGlobalIndexResult(
     const std::shared_ptr<GlobalIndexResult>& global_index_result) {
     impl_->global_index_result_ = global_index_result;
+    return *this;
+}
+
+ScanContextBuilder& ScanContextBuilder::WithRealtimeContext(
+    const std::shared_ptr<RealtimeContext>& realtime_context) {
+    impl_->realtime_context_ = realtime_context;
     return *this;
 }
 
@@ -172,8 +182,9 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         impl_->path_, impl_->is_streaming_mode_, impl_->limit_,
         std::make_shared<ScanFilter>(impl_->predicates_, impl_->partition_filters_,
                                      impl_->bucket_filter_),
-        impl_->global_index_result_, impl_->memory_pool_, impl_->executor_,
-        impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_);
+        impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_,
+        impl_->executor_, impl_->specific_file_system_, impl_->table_schema_, impl_->options_,
+        impl_->cache_);
     impl_->Reset();
     return ctx;
 }

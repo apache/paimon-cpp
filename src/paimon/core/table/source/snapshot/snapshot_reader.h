@@ -96,6 +96,10 @@ class SnapshotReader {
         return scan_->GetNonPartitionPredicate();
     }
 
+    const std::optional<RowRangeIndex>& GetRowRangeIndex() const {
+        return scan_->GetRowRangeIndex();
+    }
+
     std::shared_ptr<PredicateFilter> GetPartitionPredicate() const {
         return scan_->GetPartitionPredicate();
     }

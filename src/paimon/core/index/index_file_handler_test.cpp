@@ -313,7 +313,9 @@ TEST_F(IndexFileHandlerTest, TestScanByPartitionBucketAndReadAllDeletionVectors)
     ASSERT_EQ(deletion_vectors.size(), 1);
     ASSERT_TRUE(deletion_vectors.find("data-0d0f29cc-63c6-4fab-a594-71bd7d06fcde-0.orc") !=
                 deletion_vectors.end());
-    ASSERT_EQ(deletion_vectors["data-0d0f29cc-63c6-4fab-a594-71bd7d06fcde-0.orc"]->GetCardinality(),
+    ASSERT_EQ(deletion_vectors["data-0d0f29cc-63c6-4fab-a594-71bd7d06fcde-0.orc"]
+                  ->GetCardinality()
+                  .value(),
               1);
 }
 

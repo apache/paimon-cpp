@@ -308,3 +308,45 @@ Implementation Guidance
 - Expect per-file schema variability; design readers to align by field IDs rather than positional indices.
 - Do not assume identical overflow semantics across C++ and Java; tests should validate acceptable ranges and nullability.
 - For timestamp handling, consider precision/range constraints in C++ when interoperating with Java-produced data splits.
+
+.. _data-evolution-deletion-vectors:
+
+Deletion Vectors on Data-Evolution Tables
+-----------------------------------------
+
+A data-evolution table (``data-evolution.enabled = true``) may enable
+``deletion-vectors.enabled``. Reading such a table is supported: a deleted row disappears
+from the result, including from the columns merged out of the other files that cover it.
+
+How the Deletion Vector Is Located
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A data-evolution split holds several files per row id range, one per group of columns. The
+deletion vector of such a row range group is not per file: it is maintained against the
+group's *anchor file*, the oldest normal file of the group, compared by
+``(max_sequence_number, file_name)`` and skipping blob and vector-store files. Its positions
+are therefore relative to the anchor file's row id range.
+
+Reading applies that one vector to every file of the group, shifted by the file's offset
+inside the anchor range, so all the readers being merged drop the same rows and stay
+positionally aligned. The blob fallback path has no file reader to wrap for the placeholder
+gaps it pads uncovered row ids with, so it removes the deleted row ids from those gap ranges
+instead.
+
+The rule that picks the anchor has to stay identical to the engine that writes the vectors:
+a vector keyed by any other file of the group is never found, and its deleted rows silently
+come back.
+
+Limitations
+~~~~~~~~~~~
+
+- Only the default 32-bit deletion vectors can be read. ``deletion-vectors.bitmap64`` is not
+  supported yet, and a read fails when it actually encounters a 64-bit deletion vector.
+- Paimon C++ does not write deletion vectors for data-evolution tables, so the deletes
+  themselves have to be issued by another engine.
+- A commit that drops data files from such a table, an overwrite for instance, is refused.
+  Whether it conflicts with a concurrent commit rewriting those files' deletion vectors cannot
+  be decided yet, so it fails rather than committing against a stale state. Appending is
+  unaffected, and so is another engine replacing a deletion vector.
+- Such a table is never compacted; see
+  :ref:`the compaction note <data-evolution-deletion-vectors-compaction>`.

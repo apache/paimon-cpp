@@ -30,6 +30,7 @@
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/realtime/realtime_commit_progress.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/type_fwd.h"
@@ -70,6 +71,21 @@ class PAIMON_EXPORT FileStoreCommit {
     virtual Status Commit(const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
                           int64_t commit_identifier = BATCH_WRITE_COMMIT_IDENTIFIER,
                           std::optional<int64_t> watermark = std::nullopt) = 0;
+
+    /// Commit sealed real-time segments and persist their partition-bucket offset progress.
+    ///
+    /// Entries for each partition-bucket must form a contiguous range beginning after the offset
+    /// recorded by the latest committed snapshot. Input entries may be unordered; this method
+    /// orders them by partition, bucket, and offset before validating continuity. The resulting
+    /// snapshot atomically publishes the data files and the updated offset map.
+    ///
+    /// @param realtime_commits Commit messages and inclusive offset ranges to commit.
+    /// @param commit_identifier Identifier of the streaming commit operation.
+    /// @param watermark Optional event-time watermark.
+    /// @return The id of the final snapshot produced by this commit.
+    virtual Result<int64_t> CommitWithProgress(
+        const std::vector<RealtimeCommitProgress>& realtime_commits, int64_t commit_identifier,
+        std::optional<int64_t> watermark) = 0;
 
     /// Filter out all `std::vector<CommitMessage>` which have been committed and commit the
     /// remaining ones.

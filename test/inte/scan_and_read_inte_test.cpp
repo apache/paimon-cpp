@@ -1681,6 +1681,41 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot5WithPredicate) {
     CheckStreamScanResult(table_scan, table_read, expected_snapshot_ids, expected_arrays);
 }
 
+TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamPredicateFilter) {
+    std::string table_path = paimon::test::GetDataDir() + FileFormat() +
+                             "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
+
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "5")
+        .AddOption(Options::SCAN_MODE, "from-snapshot")
+        .WithStreamingMode(true);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/3, /*field_name=*/"f3", FieldType::DOUBLE, Literal(31.05));
+    scan_context_builder.SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         FinishScanContext(scan_context_builder));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+
+    ReadContextBuilder read_context_builder(table_path);
+    AddReadOptionsForPrefetch(&read_context_builder);
+    read_context_builder.SetPredicate(predicate).EnablePredicateFilter(true);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+
+    std::vector<std::optional<int64_t>> expected_snapshot_ids = {std::nullopt, 5};
+    auto expected_snapshot5_stream = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
+[3, "Alex", 10, 0, 31.2],
+[0, "Marco2", 10, 0, 31.1]
+        ])")
+            .ValueOrDie());
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> expected_arrays = {nullptr,
+                                                                         expected_snapshot5_stream};
+    CheckStreamScanResult(table_scan, table_read, expected_snapshot_ids, expected_arrays);
+}
+
 // test first row merge engine
 TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowBatchScanSnapshot5) {
     auto file_format = FileFormat();

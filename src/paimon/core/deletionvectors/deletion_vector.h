@@ -104,7 +104,7 @@ class DeletionVector {
     virtual bool IsEmpty() const = 0;
 
     /// @return the number of distinct integers added to the DeletionVector.
-    virtual int64_t GetCardinality() const = 0;
+    virtual Result<int64_t> GetCardinality() const = 0;
 
     /// Serializes the deletion vector.
     virtual Result<int32_t> SerializeTo(const std::shared_ptr<MemoryPool>& pool,

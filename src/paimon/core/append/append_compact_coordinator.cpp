@@ -19,7 +19,6 @@
 #include "paimon/append/append_compact_coordinator.h"
 
 #include <algorithm>
-#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -171,7 +170,8 @@ std::unique_ptr<AppendOnlyFileStoreWrite> CreateFileStoreWrite(
         /*io_manager=*/nullptr, core_options,
         /*ignore_previous_files=*/true,
         /*is_streaming_mode=*/false,
-        /*ignore_num_bucket_check=*/false, executor, pool);
+        /*ignore_num_bucket_check=*/false,
+        /*realtime_context=*/nullptr, executor, pool);
 }
 
 /// Load schema from table path and merge user options with schema options.

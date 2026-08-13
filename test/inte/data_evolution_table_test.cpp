@@ -16,9 +16,11 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include <algorithm>
 #include <tuple>
 
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/io/cache/lru_cache.h"
@@ -37,6 +39,7 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/testing/utils/deletion_vector_test_helper.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -116,6 +119,9 @@ class DataEvolutionTableTest : public ::testing::Test,
         return WriteArray(table_path, /*partition=*/{}, write_cols, write_array);
     }
 
+    /// Stamps `reset_first_row_id` on the metas the caller holds. The commit assigns row ids
+    /// onto its own copies, so a caller that later looks a file up by row id range, to find a
+    /// row range group's anchor, has to mirror the assignment here.
     void SetFirstRowId(int64_t reset_first_row_id,
                        std::vector<std::shared_ptr<CommitMessage>>& commit_msgs) const {
         for (auto& commit_msg : commit_msgs) {
@@ -136,6 +142,245 @@ class DataEvolutionTableTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
                                FileStoreCommit::Create(std::move(commit_context)));
         return file_store_commit->Commit(commit_msgs);
+    }
+
+    /// Creates the default (f0, f1, f2) data evolution table and returns the options it was
+    /// created with, which a test that later evolves the schema has to pass along.
+    /// `extra_options` is merged in for tests that also pin a read batch or split target size.
+    std::map<std::string, std::string> CreateDataEvolutionTable(
+        bool deletion_vectors_enabled,
+        const std::map<std::string, std::string>& extra_options = {}) const {
+        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+                                                      {Options::FILE_FORMAT, FileFormat()},
+                                                      {Options::FILE_SYSTEM, "local"},
+                                                      {Options::ROW_TRACKING_ENABLED, "true"},
+                                                      {Options::DATA_EVOLUTION_ENABLED, "true"}};
+        if (deletion_vectors_enabled) {
+            options.emplace(Options::DELETION_VECTORS_ENABLED, "true");
+        }
+        options.insert(extra_options.begin(), extra_options.end());
+        CreateTable(/*partition_keys=*/{}, options);
+        return options;
+    }
+
+    /// DeletionVectorTestHelper::CreateDeletionVectorCommitMessage, documented there, plus the
+    /// commit of the message it returns.
+    Result<std::shared_ptr<CommitMessage>> CommitDeletionVectors(
+        const std::string& table_path, const std::shared_ptr<CommitMessage>& base_commit_msg,
+        const std::map<std::string, std::vector<int64_t>>& deleted_positions_by_anchor,
+        const std::shared_ptr<CommitMessage>& replaced_commit_msg = nullptr) const {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<CommitMessage> commit_message,
+            DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+                dir_->GetFileSystem(), table_path, /*file_format_identifier=*/FileFormat(),
+                base_commit_msg, deleted_positions_by_anchor, GetDefaultPool(),
+                replaced_commit_msg));
+        PAIMON_RETURN_NOT_OK(Commit(table_path, {commit_message}));
+        return commit_message;
+    }
+
+    /// Writes one row range group holding `f0_values`, starting at `first_row_id`: a full-row
+    /// write plus a partial f2 write over the same rows, so the group's split merges columns
+    /// from two files and is not raw convertible. When `partition` is set the files land in that
+    /// partition and every row carries its value in f1, the partition key.
+    ///
+    /// The f2 write starts only once the full-row write is committed, which is what makes the
+    /// f2 file the newer of the pair. Writing both before either commit left the column merge
+    /// free to serve f2 from the full-row write instead.
+    Result<std::vector<std::shared_ptr<CommitMessage>>> WriteAndCommitGroup(
+        const std::string& table_path, int64_t first_row_id, const std::vector<int32_t>& f0_values,
+        const std::map<std::string, std::string>& partition = {}) const {
+        auto partition_f1 = partition.find("f1");
+        std::string base_json = "[";
+        std::string f2_json = "[";
+        for (size_t i = 0; i < f0_values.size(); i++) {
+            if (i > 0) {
+                base_json += ", ";
+                f2_json += ", ";
+            }
+            std::string f1_value =
+                partition_f1 == partition.end() ? fmt::format("a{}", i) : partition_f1->second;
+            base_json += fmt::format(R"([{}, "{}", "x{}"])", f0_values[i], f1_value, i);
+            f2_json += fmt::format(R"(["y{}"])", i);
+        }
+        base_json += "]";
+        f2_json += "]";
+
+        auto base_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), base_json)
+                .ValueOrDie());
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::shared_ptr<CommitMessage>> base_msgs,
+            WriteArray(table_path, partition, arrow::schema(fields_)->field_names(), base_array));
+        // both writes are stamped with the same first row id, so their files cover the same row
+        // id range and form one row range group
+        SetFirstRowId(first_row_id, base_msgs);
+        PAIMON_RETURN_NOT_OK(Commit(table_path, base_msgs));
+
+        arrow::FieldVector f2_fields = {fields_[2]};
+        auto f2_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(f2_fields), f2_json)
+                .ValueOrDie());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<CommitMessage>> f2_msgs,
+                               WriteArray(table_path, partition, {"f2"}, f2_array));
+        SetFirstRowId(first_row_id, f2_msgs);
+        PAIMON_RETURN_NOT_OK(Commit(table_path, f2_msgs));
+
+        std::vector<std::shared_ptr<CommitMessage>> group_msgs;
+        group_msgs.insert(group_msgs.end(), base_msgs.begin(), base_msgs.end());
+        group_msgs.insert(group_msgs.end(), f2_msgs.begin(), f2_msgs.end());
+        return group_msgs;
+    }
+
+    /// Flattens the f0 column of a read result, looked up by name so the row kind column the
+    /// reader prepends does not shift it.
+    static Result<std::vector<int32_t>> CollectF0Values(
+        const std::shared_ptr<arrow::ChunkedArray>& rows) {
+        std::vector<int32_t> values;
+        if (!rows) {
+            return values;
+        }
+        for (const std::shared_ptr<arrow::Array>& chunk : rows->chunks()) {
+            auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(chunk);
+            if (!struct_array) {
+                return Status::Invalid("read result chunk is not a struct array");
+            }
+            auto f0_array =
+                std::dynamic_pointer_cast<arrow::Int32Array>(struct_array->GetFieldByName("f0"));
+            if (!f0_array) {
+                return Status::Invalid("read result has no int32 f0 column");
+            }
+            for (int64_t i = 0; i < f0_array->length(); i++) {
+                values.push_back(f0_array->Value(i));
+            }
+        }
+        return values;
+    }
+
+    struct LimitScanResult {
+        /// The read that produced `rows`. Its memory pool owns the buffers behind them, so it
+        /// has to outlive them: these two members are declared first on purpose, since members
+        /// are destroyed in reverse order.
+        std::unique_ptr<TableRead> table_read;
+        std::unique_ptr<BatchReader> batch_reader;
+        /// The splits the limit push down kept in the plan.
+        std::vector<std::shared_ptr<Split>> splits;
+        /// The rows reading those splits produced, null when the read returned nothing. The
+        /// read does not truncate to the limit, so this is everything the kept splits hold, or
+        /// everything that survives the predicate when `enable_predicate_filter` is set.
+        std::shared_ptr<arrow::ChunkedArray> rows;
+    };
+
+    /// Scans with a pushed-down row limit and reads the planned splits back. The push down only
+    /// prunes splits, so a correct plan must still expose at least `limit` rows to the read.
+    ///
+    /// `enable_predicate_filter` turns the predicate into a row filter while reading. It is off
+    /// by default, matching the read context default: a predicate then only prunes while
+    /// planning, and the read returns every row the kept splits hold.
+    Result<LimitScanResult> ScanAndReadWithLimit(
+        const std::string& table_path, const std::vector<std::string>& read_schema, int32_t limit,
+        const std::shared_ptr<Predicate>& predicate = nullptr,
+        const std::vector<Range>& row_ranges = {}, bool enable_predicate_filter = false) const {
+        ScanContextBuilder scan_context_builder(table_path);
+        scan_context_builder.SetLimit(limit);
+        scan_context_builder.SetPredicate(predicate);
+        if (!row_ranges.empty()) {
+            scan_context_builder.SetGlobalIndexResult(
+                BitmapGlobalIndexResult::FromRanges(row_ranges));
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
+                               FinishScanContext(scan_context_builder));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
+                               TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> result_plan, table_scan->CreatePlan());
+
+        LimitScanResult result;
+        result.splits = result_plan->Splits();
+        ReadContextBuilder read_context_builder(table_path);
+        read_context_builder.SetReadFieldNames(read_schema)
+            .SetPredicate(predicate)
+            .EnablePredicateFilter(enable_predicate_filter);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
+                               read_context_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(result.table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(result.batch_reader, result.table_read->CreateReader(result.splits));
+        PAIMON_ASSIGN_OR_RAISE(result.rows,
+                               ReadResultCollector::CollectResult(result.batch_reader.get()));
+        return result;
+    }
+
+    /// Plans the table without any push down and returns the planned splits, so a test can
+    /// assert what the scan handed the read: which data file each deletion file landed on, and
+    /// the row count derived from them. Reading the splits back is ScanAndReadWithLimit's job,
+    /// which keeps the reader that owns the returned rows alive.
+    Result<std::vector<std::shared_ptr<Split>>> PlanSplits(const std::string& table_path) const {
+        ScanContextBuilder scan_context_builder(table_path);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
+                               FinishScanContext(scan_context_builder));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
+                               TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+        return plan->Splits();
+    }
+
+    /// Anchor file name of every row range group of the table, ordered by ascending first row
+    /// id, derived from the planned splits.
+    ///
+    /// Deriving them from the same metas the read groups keeps the two in step. Deriving them
+    /// from the metas a write hands back uses pre-commit copies, and a vector keyed by a file
+    /// the read does not consider the anchor is never found, silently leaving rows undeleted.
+    Result<std::vector<std::string>> PlannedAnchorFileNames(const std::string& table_path) const {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Split>> splits, PlanSplits(table_path));
+        std::vector<std::shared_ptr<DataFileMeta>> data_files;
+        for (const std::shared_ptr<Split>& split : splits) {
+            auto split_impl = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            if (!split_impl) {
+                return Status::Invalid("split cannot cast to DataSplitImpl");
+            }
+            for (const std::shared_ptr<DataFileMeta>& file : split_impl->DataFiles()) {
+                data_files.push_back(file);
+            }
+        }
+        return DeletionVectorTestHelper::RetrieveAnchorFileNames(data_files);
+    }
+
+    /// PlannedAnchorFileNames for a table holding a single row range group.
+    Result<std::string> PlannedAnchorFileName(const std::string& table_path) const {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> anchor_file_names,
+                               PlannedAnchorFileNames(table_path));
+        if (anchor_file_names.size() != 1) {
+            return Status::Invalid("expected exactly one row range group in the table");
+        }
+        return anchor_file_names[0];
+    }
+
+    using DeletionCardinalityMap = std::map<std::string, int64_t>;
+
+    /// Maps every data file of `split` that carries a deletion file to that file's cardinality.
+    static Result<DeletionCardinalityMap> DeletionCardinalityByDataFile(
+        const std::shared_ptr<Split>& split) {
+        auto split_impl = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        if (!split_impl) {
+            return Status::Invalid("split cannot cast to DataSplitImpl");
+        }
+        const std::vector<std::shared_ptr<DataFileMeta>>& data_files = split_impl->DataFiles();
+        const std::vector<std::optional<DeletionFile>>& deletion_files =
+            split_impl->DeletionFiles();
+        if (!deletion_files.empty() && deletion_files.size() != data_files.size()) {
+            return Status::Invalid("deletion files are not aligned with data files");
+        }
+        DeletionCardinalityMap cardinality_by_file;
+        for (size_t i = 0; i < deletion_files.size(); i++) {
+            if (deletion_files[i] == std::nullopt) {
+                continue;
+            }
+            if (deletion_files[i].value().cardinality == std::nullopt) {
+                return Status::Invalid("deletion file is missing its cardinality");
+            }
+            cardinality_by_file[data_files[i]->file_name] =
+                deletion_files[i].value().cardinality.value();
+        }
+        return cardinality_by_file;
     }
 
     Status CommitWithRowIdCheckFromSnapshot(
@@ -2106,6 +2351,600 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
                               expected_array, /*predicate=*/nullptr,
                               /*row_ranges=*/row_ranges));
     }
+}
+
+TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectors) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    // full-row write assigns row ids 0-3, producing the anchor file of the row range group
+    auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [2, "b", "y"],
+        [3, "c", "z"],
+        [4, "d", "w"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs0,
+                         WriteArray(table_path, schema->field_names(), src_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs0);
+    ASSERT_OK(Commit(table_path, commit_msgs0));
+
+    // partial write of f2 over the same row range: the group merges columns from two files
+    arrow::FieldVector f2_fields = {fields_[2]};
+    auto update_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(f2_fields), R"([
+        ["x2"],
+        ["y2"],
+        ["z2"],
+        ["w2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs1, WriteArray(table_path, {"f2"}, update_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs1);
+    ASSERT_OK(Commit(table_path, commit_msgs1));
+
+    auto expected_all = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x2"],
+        [2, "b", "y2"],
+        [3, "c", "z2"],
+        [4, "d", "w2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_all));
+
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, commit_msgs0[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{1, 3}}}));
+
+    // both files of the group must drop the same rows to keep the column merge aligned
+    auto expected_deleted = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x2"],
+        [3, "c", "z2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_deleted));
+
+    auto expected_with_row_id = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "a", "x2", 0],
+        [3, "c", "z2", 2]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_with_row_id));
+
+    // a row-range selection composes with the deletion vector: rows {1, 2} minus deleted {1}
+    auto expected_selected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [3, "c", "z2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_selected,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 2)}));
+}
+
+TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsAcrossReadBatches) {
+    // the 12 rows below span several read batches, so the deletion vector empties a whole
+    // batch of every file of the group: each file reader then skips that batch entirely and
+    // the column merge has to stay aligned on the surviving row count alone
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true, {{Options::READ_BATCH_SIZE, "4"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}));
+
+    // positions 4-7 cover a whole read batch, position 9 only part of the next one
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{4, 5, 6, 7, 9}}}));
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [0, "a0", "y0"],
+        [1, "a1", "y1"],
+        [2, "a2", "y2"],
+        [3, "a3", "y3"],
+        [8, "a8", "y8"],
+        [10, "a10", "y10"],
+        [11, "a11", "y11"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+
+    arrow::FieldVector row_id_fields = {SpecialFields::RowId().field_};
+    auto expected_row_ids = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(row_id_fields), R"([
+        [0], [1], [2], [3], [8], [10], [11]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"_ROW_ID"}, expected_row_ids));
+
+    // a row-range selection that spans the fully deleted batch composes with it
+    auto expected_selected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [3, "a3", "y3"],
+        [8, "a8", "y8"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_selected,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(3, 8)}));
+}
+
+TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsOnPartOfRowRangeGroups) {
+    // one split per row range group, so a group's deletion file must not reach the other
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true,
+                             {{Options::SOURCE_SPLIT_TARGET_SIZE, "1"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    auto src_array0 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [2, "b", "y"],
+        [3, "c", "z"],
+        [4, "d", "w"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs0,
+                         WriteArray(table_path, schema->field_names(), src_array0));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs0);
+    ASSERT_OK(Commit(table_path, commit_msgs0));
+
+    auto src_array1 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [5, "e", "v"],
+        [6, "f", "u"],
+        [7, "g", "t"],
+        [8, "h", "s"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
+                         WriteArray(table_path, schema->field_names(), src_array1));
+    SetFirstRowId(/*reset_first_row_id=*/4, commit_msgs1);
+    ASSERT_OK(Commit(table_path, commit_msgs1));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                         PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchor_file_names.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, commit_msgs0[0],
+                                    {{anchor_file_names[0], /*deleted_positions=*/{1, 3}}}));
+
+    // the deletion vector applies to its own group only, the other group keeps every row
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [3, "c", "z"],
+        [5, "e", "v"],
+        [6, "f", "u"],
+        [7, "g", "t"],
+        [8, "h", "s"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+
+    // a projection-only read drops the same rows
+    arrow::FieldVector f0_fields = {fields_[0]};
+    auto expected_f0 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(f0_fields), R"([
+        [1], [3], [5], [6], [7], [8]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0"}, expected_f0));
+
+    arrow::FieldVector row_id_fields = {SpecialFields::RowId().field_};
+    auto expected_row_ids = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(row_id_fields), R"([
+        [0], [2], [4], [5], [6], [7]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"_ROW_ID"}, expected_row_ids));
+}
+
+TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsOnEveryRowRangeGroup) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    // one split (the default target size keeps both groups together), so a single split
+    // deletion vector factory serves two groups anchored at different row ids
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> group_msgs0,
+        WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{0, 1, 2, 3}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4, /*f0_values=*/{4, 5, 6, 7}));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                         PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchor_file_names.size(), 2);
+
+    // Positions are anchor-relative, so the groups deliberately delete different ones: group 0
+    // drops {1, 3} of row ids 0-3, group 1 drops {0, 2} of row ids 4-7. Reading a group with the
+    // other group's vector, or with its anchor range as the shift base, cannot match below.
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs0[0],
+                                    {{anchor_file_names[0], /*deleted_positions=*/{1, 3}},
+                                     {anchor_file_names[1], /*deleted_positions=*/{0, 2}}}));
+
+    // The read looks a group's deletion vector up by its anchor file name, so the scan has to
+    // hand it exactly that. Asserting it separates a scan-side mix-up from a read-side one.
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> planned_splits,
+                         PlanSplits(table_path));
+    ASSERT_EQ(planned_splits.size(), 1);
+    auto planned_split_impl = std::dynamic_pointer_cast<DataSplitImpl>(planned_splits[0]);
+    ASSERT_TRUE(planned_split_impl);
+
+    ASSERT_OK_AND_ASSIGN(DeletionCardinalityMap cardinality_by_file,
+                         DeletionCardinalityByDataFile(planned_splits[0]));
+    DeletionCardinalityMap expected_cardinalities = {{anchor_file_names[0], 2},
+                                                     {anchor_file_names[1], 2}};
+    ASSERT_EQ(cardinality_by_file, expected_cardinalities);
+
+    // the same split reports the surviving row count the limit push down prunes on: the two
+    // groups hold 4 rows each and each deletion vector drops 2 of them
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> merged_row_count,
+                         planned_split_impl->MergedRowCount());
+    ASSERT_EQ(std::optional<int64_t>(4), merged_row_count);
+
+    // a count query answers from that metadata alone, never reading a row, so the deletion
+    // vectors have to reach it too: without them it reports the 8 rows the files hold
+    ReadContextBuilder count_context_builder(table_path);
+    count_context_builder.SetReadFieldNames(schema->field_names());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> count_context,
+                         count_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> count_table_read,
+                         TableRead::Create(std::move(count_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CountReader> count_reader,
+                         count_table_read->CreateCountReader(planned_splits));
+    ASSERT_OK_AND_ASSIGN(int64_t counted_rows, count_reader->CountRows());
+    ASSERT_EQ(counted_rows, 4);
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [0, "a0", "y0"],
+        [2, "a2", "y2"],
+        [5, "a1", "y1"],
+        [7, "a3", "y3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+
+    arrow::FieldVector row_id_fields = {SpecialFields::RowId().field_};
+    auto expected_row_ids = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(row_id_fields), R"([
+        [0], [2], [5], [7]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"_ROW_ID"}, expected_row_ids));
+
+    // a row-range selection straddling the group boundary composes with both deletion vectors:
+    // row ids {2, 3, 4, 5} minus the deleted {3, 4}
+    auto expected_selected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [2, "a2", "y2"],
+        [5, "a1", "y1"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_selected,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(2, 5)}));
+}
+
+TEST_P(DataEvolutionTableTest, TestReadWithFullyDeletedRowRangeGroup) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    // one split (the default target size keeps both groups together), so the emptied group's
+    // readers are concatenated with the surviving group's
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> group_msgs0,
+        WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{0, 1, 2, 3}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4, /*f0_values=*/{4, 5, 6, 7}));
+
+    // both file readers of the first group then yield nothing, and its column merge must
+    // produce no rows at all instead of misaligning
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                         PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchor_file_names.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs0[0],
+                                    {{anchor_file_names[0], /*deleted_positions=*/{0, 1, 2, 3}}}));
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [4, "a0", "y0"],
+        [5, "a1", "y1"],
+        [6, "a2", "y2"],
+        [7, "a3", "y3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+
+    arrow::FieldVector row_id_fields = {SpecialFields::RowId().field_};
+    auto expected_row_ids = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(row_id_fields), R"([
+        [4], [5], [6], [7]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"_ROW_ID"}, expected_row_ids));
+
+    // a row-range selection spanning both groups keeps only what survives in the second one
+    auto expected_selected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [4, "a0", "y0"],
+        [5, "a1", "y1"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_selected,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(0, 5)}));
+
+    // a selection covering only deleted rows returns nothing. The plan is asserted non-empty
+    // too: the scan cannot prune the split on row ids alone, so the emptiness comes from the
+    // deletion vector rather than from a plan with nothing to read.
+    ASSERT_OK_AND_ASSIGN(LimitScanResult only_deleted,
+                         ScanAndReadWithLimit(table_path, schema->field_names(), /*limit=*/100,
+                                              /*predicate=*/nullptr,
+                                              /*row_ranges=*/{Range(0, 3)}));
+    ASSERT_FALSE(only_deleted.splits.empty());
+    ASSERT_FALSE(only_deleted.rows);
+}
+
+TEST_P(DataEvolutionTableTest, TestReadAfterUpdatingDeletionVectors) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [2, "b", "y"],
+        [3, "c", "z"],
+        [4, "d", "w"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
+                         WriteArray(table_path, schema->field_names(), src_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs);
+    ASSERT_OK(Commit(table_path, commit_msgs));
+
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CommitMessage> first_dv_msg,
+                         CommitDeletionVectors(table_path, commit_msgs[0],
+                                               {{anchor_file_name, /*deleted_positions=*/{1}}}));
+
+    auto expected_after_first = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [3, "c", "z"],
+        [4, "d", "w"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_after_first));
+
+    // a second deletion vector replaces the first one instead of both staying live
+    ASSERT_OK(CommitDeletionVectors(table_path, commit_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{1, 3}}},
+                                    /*replaced_commit_msg=*/first_dv_msg));
+
+    auto expected_after_update = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [3, "c", "z"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_after_update));
+}
+
+TEST_P(DataEvolutionTableTest, TestReadWithDeletionVectorsAfterAddingColumn) {
+    if (FileFormat() == "avro") {
+        GTEST_SKIP() << "Avro has no stats, which the added column's scan pruning relies on";
+    }
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [2, "b", "y"],
+        [3, "c", "z"],
+        [4, "d", "w"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
+                         WriteArray(table_path, arrow::schema(fields_)->field_names(), src_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs);
+    ASSERT_OK(Commit(table_path, commit_msgs));
+
+    // add column f3, then fill it for the same row range: the group merges columns from two
+    // files written under different schema ids
+    auto f3 = arrow::field("f3", arrow::int64());
+    ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path,
+                                          {DataField(0, fields_[0]), DataField(1, fields_[1]),
+                                           DataField(2, fields_[2]), DataField(3, f3)},
+                                          /*highest_field_id=*/3, options));
+
+    auto f3_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f3}), R"([
+        [10], [20], [30], [40]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto f3_commit_msgs, WriteArray(table_path, {"f3"}, f3_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, f3_commit_msgs);
+    ASSERT_OK(Commit(table_path, f3_commit_msgs));
+
+    // the deletion vector is still anchored on the oldest normal file, written before the
+    // column was added
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, commit_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{1, 3}}}));
+
+    arrow::FieldVector evolved_fields = {fields_[0], fields_[1], fields_[2], f3};
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(evolved_fields), R"([
+        [1, "a", "x", 10],
+        [3, "c", "z", 30]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "f3"}, expected_array));
+
+    // projecting only the added column keeps the same surviving rows
+    auto expected_f3 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({f3}), R"([
+        [10], [30]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f3"}, expected_f3));
+}
+
+TEST_P(DataEvolutionTableTest, TestLimitPushDownWithHeavilyDeletedFirstRowRangeGroup) {
+    // one split per row range group, so the limit has to span both to be satisfied
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true,
+                             {{Options::SOURCE_SPLIT_TARGET_SIZE, "1"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> group_msgs0,
+        WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{0, 1, 2, 3}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4, /*f0_values=*/{4, 5, 6, 7}));
+
+    // the first group keeps a single surviving row
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
+                         PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchor_file_names.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs0[0],
+                                    {{anchor_file_names[0], /*deleted_positions=*/{0, 1, 2}}}));
+
+    // the first split alone satisfies a limit of 1: it still holds the one row that survived
+    // the deletion vector
+    ASSERT_OK_AND_ASSIGN(LimitScanResult limit_1,
+                         ScanAndReadWithLimit(table_path, {"f0"}, /*limit=*/1));
+    ASSERT_EQ(limit_1.splits.size(), 1);
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> limit_1_values, CollectF0Values(limit_1.rows));
+    ASSERT_EQ(limit_1_values, (std::vector<int32_t>{3}));
+
+    // the first split contributes only one surviving row, so a limit of 3 needs the second one
+    ASSERT_OK_AND_ASSIGN(LimitScanResult limit_3,
+                         ScanAndReadWithLimit(table_path, {"f0"}, /*limit=*/3));
+    ASSERT_EQ(limit_3.splits.size(), 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> limit_3_values, CollectF0Values(limit_3.rows));
+    ASSERT_EQ(limit_3_values, (std::vector<int32_t>{3, 4, 5, 6, 7}));
+}
+
+TEST_P(DataEvolutionTableTest, TestLimitPushDownDisabledByNonPartitionFilter) {
+    // one split per row range group, so the plan can drop the group holding the matches
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false,
+                             {{Options::SOURCE_SPLIT_TARGET_SIZE, "1"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // First row range group: no f0 value lies in [100, 200], but the 300 keeps the group's stats
+    // range straddling the filter so the scan cannot prune it. It therefore reaches the plan
+    // reporting four rows, and contributes none of them to the result.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{0, 1, 2, 300}));
+    // second row range group: every f0 value matches
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4,
+                                  /*f0_values=*/{100, 101, 102, 103}));
+
+    // the metadata row count of the first split alone satisfies the limit, but the filter runs
+    // while reading and drops every one of its rows. Pruning the plan on the metadata count
+    // would return nothing, so the push down has to be skipped and both splits kept.
+    auto at_least_100 = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"f0",
+                                                         FieldType::INT, Literal(100));
+    auto at_most_200 = PredicateBuilder::LessOrEqual(/*field_index=*/0, /*field_name=*/"f0",
+                                                     FieldType::INT, Literal(200));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({at_least_100, at_most_200}));
+    // filtering while reading is what makes the metadata count an upper bound, so the read has
+    // to opt into it for the rows below to show what the push down would have thrown away
+    ASSERT_OK_AND_ASSIGN(LimitScanResult limited,
+                         ScanAndReadWithLimit(table_path, {"f0"}, /*limit=*/2, predicate,
+                                              /*row_ranges=*/{},
+                                              /*enable_predicate_filter=*/true));
+    ASSERT_EQ(limited.splits.size(), 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> values, CollectF0Values(limited.rows));
+    ASSERT_EQ(values, (std::vector<int32_t>{100, 101, 102, 103}));
+}
+
+TEST_P(DataEvolutionTableTest, TestLimitPushDownKeptByPartitionFilter) {
+    std::vector<std::string> partition_keys = {"f1"};
+    CreateTable(partition_keys);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // one row range group per partition, each holding four rows with its own f0 range. A split
+    // never spans partitions, so the plan holds one split per partition for the push down to
+    // prune.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{0, 1, 2, 3},
+                                  /*partition=*/{{"f1", "p0"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4,
+                                  /*f0_values=*/{10, 11, 12, 13}, /*partition=*/{{"f1", "p1"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/8,
+                                  /*f0_values=*/{20, 21, 22, 23}, /*partition=*/{{"f1", "p2"}}));
+
+    // a predicate on the partition key alone is evaluated while planning, never while reading,
+    // so every row a surviving split reports is actually returned and the push down stays on
+    auto not_p0 =
+        PredicateBuilder::NotEqual(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                   Literal(FieldType::STRING, "p0", 2));
+
+    // baseline: a limit no split combination can reach prunes nothing, so this only shows which
+    // splits the partition filter itself leaves behind
+    ASSERT_OK_AND_ASSIGN(LimitScanResult unpruned,
+                         ScanAndReadWithLimit(table_path, {"f0", "f1"}, /*limit=*/100, not_p0));
+    ASSERT_EQ(unpruned.splits.size(), 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> unpruned_values, CollectF0Values(unpruned.rows));
+    std::sort(unpruned_values.begin(), unpruned_values.end());
+    ASSERT_EQ(unpruned_values, (std::vector<int32_t>{10, 11, 12, 13, 20, 21, 22, 23}));
+
+    // the first matching split already holds four rows, so a limit of 2 drops the second one.
+    // Treating the partition filter as a read-time filter would skip the push down and keep both.
+    ASSERT_OK_AND_ASSIGN(LimitScanResult limited,
+                         ScanAndReadWithLimit(table_path, {"f0", "f1"}, /*limit=*/2, not_p0));
+    ASSERT_EQ(limited.splits.size(), 1);
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> limited_values, CollectF0Values(limited.rows));
+    std::sort(limited_values.begin(), limited_values.end());
+    ASSERT_TRUE(limited_values == (std::vector<int32_t>{10, 11, 12, 13}) ||
+                limited_values == (std::vector<int32_t>{20, 21, 22, 23}))
+        << "unexpected kept rows for limit 2";
+
+    // one non-partition conjunct added to the same partition filter: the predicate is no longer
+    // settled while planning, so the push down is skipped and the split the limit would have
+    // dropped stays
+    auto at_least_10 = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"f0",
+                                                        FieldType::INT, Literal(10));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> mixed_predicate,
+                         PredicateBuilder::And({not_p0, at_least_10}));
+    ASSERT_OK_AND_ASSIGN(LimitScanResult mixed, ScanAndReadWithLimit(table_path, {"f0", "f1"},
+                                                                     /*limit=*/2, mixed_predicate));
+    ASSERT_EQ(mixed.splits.size(), 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> mixed_values, CollectF0Values(mixed.rows));
+    std::sort(mixed_values.begin(), mixed_values.end());
+    ASSERT_EQ(mixed_values, (std::vector<int32_t>{10, 11, 12, 13, 20, 21, 22, 23}));
+}
+
+TEST_P(DataEvolutionTableTest, TestLimitPushDownDisabledByRowRangeIndex) {
+    // one split per row range group, so the plan can drop the group holding the selection
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false,
+                             {{Options::SOURCE_SPLIT_TARGET_SIZE, "1"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{0, 1, 2, 3}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4,
+                                  /*f0_values=*/{100, 101, 102, 103}));
+
+    // the index selects one row of the first group and two of the second, but the first split
+    // still reports four rows. Pruning on that count would drop the second group and return a
+    // single row for a limit of 2, so the push down has to be skipped.
+    ASSERT_OK_AND_ASSIGN(LimitScanResult limited,
+                         ScanAndReadWithLimit(table_path, {"f0"}, /*limit=*/2,
+                                              /*predicate=*/nullptr,
+                                              /*row_ranges=*/{Range(3, 3), Range(5, 6)}));
+    ASSERT_EQ(limited.splits.size(), 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> values, CollectF0Values(limited.rows));
+    ASSERT_EQ(values, (std::vector<int32_t>{3, 101, 102}));
 }
 
 std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionTableTest() {

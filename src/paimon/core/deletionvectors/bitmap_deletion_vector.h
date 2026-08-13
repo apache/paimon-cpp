@@ -56,7 +56,7 @@ class BitmapDeletionVector : public DeletionVector {
         return roaring_bitmap_.IsEmpty();
     }
 
-    int64_t GetCardinality() const override {
+    Result<int64_t> GetCardinality() const override {
         return roaring_bitmap_.Cardinality();
     }
 

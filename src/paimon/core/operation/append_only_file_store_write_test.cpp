@@ -26,6 +26,7 @@
 
 #include "arrow/array/array_base.h"
 #include "arrow/array/builder_binary.h"
+#include "arrow/array/concatenate.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
@@ -54,8 +55,10 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/reader/file_batch_reader.h"
+#include "paimon/realtime/realtime_context.h"
 #include "paimon/record_batch.h"
 #include "paimon/status.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/write_context.h"
 
@@ -169,6 +172,31 @@ class AppendOnlyFileStoreWriteTest : public testing::Test {
         return arrow::ImportSchema(c_file_schema.get()).ValueOrDie();
     }
 
+    std::shared_ptr<arrow::StructArray> ReadDataFileArray(
+        const std::string& table_path, const std::shared_ptr<DataFileMeta>& file,
+        const std::map<std::string, std::string>& options) const {
+        std::string file_path =
+            PathUtil::JoinPath(PathUtil::JoinPath(table_path, "bucket-0"), file->file_name);
+        auto fs = std::make_shared<LocalFileSystem>();
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs->Open(file_path));
+        EXPECT_OK_AND_ASSIGN(auto format_str, file->FileFormat());
+        EXPECT_OK_AND_ASSIGN(auto file_format, FileFormatFactory::Get(format_str, options));
+        EXPECT_OK_AND_ASSIGN(auto reader_builder, file_format->CreateReaderBuilder(10));
+        EXPECT_OK_AND_ASSIGN(auto reader, reader_builder->Build(input_stream));
+        EXPECT_OK_AND_ASSIGN(auto c_file_schema, reader->GetFileSchema());
+        EXPECT_OK(reader->SetReadSchema(c_file_schema.get(), /*predicate=*/nullptr,
+                                        /*selection_bitmap=*/std::nullopt));
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(reader.get()));
+        EXPECT_NE(nullptr, result);
+        if (!result) {
+            return nullptr;
+        }
+        std::shared_ptr<arrow::Array> array =
+            arrow::Concatenate(result->chunks(), arrow::default_memory_pool()).ValueOrDie();
+        return std::static_pointer_cast<arrow::StructArray>(array);
+    }
+
     MapSharedShreddingFieldMeta ShreddingMeta(const std::shared_ptr<arrow::Schema>& file_schema,
                                               int32_t field_index) const {
         auto metadata = file_schema->field(field_index)->metadata();
@@ -199,6 +227,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestWriteWithInvalidBatch) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto file_store_write,
                              FileStoreWrite::Create(std::move(write_context)));
+        ASSERT_NOK_WITH_MSG(file_store_write->PrepareCommitWithProgress(/*commit_identifier=*/0),
+                            "PrepareCommitWithProgress is only supported by a real-time writer");
         ASSERT_NOK_WITH_MSG(file_store_write->Write(nullptr), "batch is null pointer");
     }
     {
@@ -234,6 +264,92 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestWriteWithInvalidBatch) {
                             "batch bucket is 1 while options bucket is -1");
         ArrowArrayRelease(&arrow_array);
     }
+}
+
+TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange) {
+    std::map<std::string, std::string> options = {
+        {"file.format", "parquet"},
+        {"write-only", "true"},
+        {"bucket", "1"},
+        {"bucket-key", "id"},
+    };
+    auto logical_schema =
+        arrow::schema({arrow::field("id", arrow::int32()), arrow::field("name", arrow::utf8())});
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    CreateTable(dir->Str(), logical_schema, options);
+    std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+
+    {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> batch_realtime_context,
+                             RealtimeContext::Create());
+        WriteContextBuilder batch_builder(table_path, commit_user_);
+        batch_builder.SetOptions(options).WithRealtimeContext(batch_realtime_context);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> batch_context, batch_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> batch_writer,
+                             FileStoreWrite::Create(std::move(batch_context)));
+        ASSERT_NOK_WITH_MSG(batch_writer->PrepareCommitWithProgress(/*commit_identifier=*/0),
+                            "PrepareCommitWithProgress requires streaming mode");
+        ASSERT_OK(batch_writer->Close());
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    WriteContextBuilder builder(table_path, commit_user_);
+    builder.SetOptions(options).WithStreamingMode(true).WithRealtimeContext(realtime_context);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+
+    ASSERT_OK(file_store_write->Write(MakeBatch(logical_schema, R"([
+        [1, "a"],
+        [2, "b"]
+    ])")));
+    ASSERT_NOK_WITH_MSG(
+        file_store_write->PrepareCommit(/*wait_compaction=*/false, /*commit_identifier=*/0),
+        "real-time writer must use PrepareCommitWithProgress");
+    ASSERT_OK_AND_ASSIGN(auto first_prepared,
+                         file_store_write->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, first_prepared.size());
+    ASSERT_TRUE(first_prepared[0].partition_bucket.partition.empty());
+    ASSERT_EQ(0, first_prepared[0].partition_bucket.bucket);
+    ASSERT_EQ(Range(0, 1), first_prepared[0].offset_range);
+    std::shared_ptr<DataFileMeta> first_file = OnlyNewFile({first_prepared[0].commit_message});
+    ASSERT_FALSE(first_file->write_cols.has_value());
+    std::shared_ptr<arrow::Schema> first_schema =
+        ReadDataFileSchema(table_path, first_file, options);
+    ASSERT_EQ(2, first_schema->num_fields());
+    ASSERT_EQ("id", first_schema->field(0)->name());
+    std::shared_ptr<arrow::StructArray> first_array =
+        ReadDataFileArray(table_path, first_file, options);
+    ASSERT_NE(nullptr, first_array);
+    std::shared_ptr<arrow::Array> expected_first_array =
+        arrow::ipc::internal::json::ArrayFromJSON(first_array->type(), R"([
+            [1, "a"],
+            [2, "b"]
+        ])")
+            .ValueOrDie();
+    ASSERT_TRUE(first_array->Equals(*expected_first_array)) << first_array->ToString();
+
+    ASSERT_OK(file_store_write->Write(MakeBatch(logical_schema, R"([
+        [3, "c"]
+    ])")));
+    ASSERT_OK_AND_ASSIGN(auto second_prepared,
+                         file_store_write->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, second_prepared.size());
+    ASSERT_TRUE(second_prepared[0].partition_bucket.partition.empty());
+    ASSERT_EQ(0, second_prepared[0].partition_bucket.bucket);
+    ASSERT_EQ(Range(2, 2), second_prepared[0].offset_range);
+    std::shared_ptr<DataFileMeta> second_file = OnlyNewFile({second_prepared[0].commit_message});
+    std::shared_ptr<arrow::StructArray> second_array =
+        ReadDataFileArray(table_path, second_file, options);
+    ASSERT_NE(nullptr, second_array);
+    std::shared_ptr<arrow::Array> expected_second_array =
+        arrow::ipc::internal::json::ArrayFromJSON(second_array->type(), R"([
+            [3, "c"]
+        ])")
+            .ValueOrDie();
+    ASSERT_TRUE(second_array->Equals(*expected_second_array)) << second_array->ToString();
+    ASSERT_OK(file_store_write->Close());
 }
 
 TEST_F(AppendOnlyFileStoreWriteTest, TestGetMaxSequenceNumberFromMultiPartition) {

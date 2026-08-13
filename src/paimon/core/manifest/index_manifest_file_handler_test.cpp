@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -218,17 +219,119 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerOverwritesDuplicateAddedEntri
     ASSERT_EQ(written_entries[0].index_file->RowCount(), 20);
 }
 
-TEST_F(IndexManifestFileHandlerTest, DvWithBucketUnawareModeReturnsNotImplemented) {
+TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUnawareMode) {
     ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/-1));
 
     auto partition = BinaryRow::EmptyRow();
+    // an unaware bucket table writes every index file under bucket 0, so only the index file
+    // name tells the two entries apart
+    std::vector<IndexManifestEntry> previous_entries = {
+        MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-0", {"data-0.orc"}, 1),
+        MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-1", {"data-1.orc"}, 1)};
+
+    ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
+                         IndexManifestFileHandler::Write(
+                             /*previous_index_manifest=*/std::nullopt, previous_entries,
+                             /*bucket_mode=*/-1, index_manifest_file.get()));
+
+    // updating the vector of data-0.orc replaces its index file, and the data file it covers
+    // moves to the new one
     std::vector<IndexManifestEntry> new_entries = {
+        MakeDvEntry(FileKind::Delete(), partition, /*bucket=*/0, "dv-0", {"data-0.orc"}, 1),
+        MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-0-new", {"data-0.orc"}, 2)};
+
+    ASSERT_OK_AND_ASSIGN(
+        std::string current_manifest,
+        IndexManifestFileHandler::Write(previous_manifest, new_entries,
+                                        /*bucket_mode=*/-1, index_manifest_file.get()));
+
+    std::vector<IndexManifestEntry> written_entries;
+    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_EQ(written_entries.size(), 2);
+    std::set<std::string> written_file_names;
+    for (const auto& entry : written_entries) {
+        written_file_names.insert(entry.index_file->FileName());
+    }
+    ASSERT_EQ(written_file_names, (std::set<std::string>{"dv-0-new", "dv-1"}));
+
+    // the same replacement with the added entry listed first: the delta carries no order the
+    // commit path is bound to, so the added entry must not be read as a second vector for
+    // data-0.orc just because its delete trails it
+    std::vector<IndexManifestEntry> reordered_entries = {
+        MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-0-newer", {"data-0.orc"}, 3),
+        MakeDvEntry(FileKind::Delete(), partition, /*bucket=*/0, "dv-0-new", {"data-0.orc"}, 2)};
+
+    ASSERT_OK_AND_ASSIGN(
+        std::string reordered_manifest,
+        IndexManifestFileHandler::Write(current_manifest, reordered_entries,
+                                        /*bucket_mode=*/-1, index_manifest_file.get()));
+
+    written_entries.clear();
+    ASSERT_OK(index_manifest_file->Read(reordered_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_EQ(written_entries.size(), 2);
+    written_file_names.clear();
+    for (const auto& entry : written_entries) {
+        written_file_names.insert(entry.index_file->FileName());
+    }
+    ASSERT_EQ(written_file_names, (std::set<std::string>{"dv-0-newer", "dv-1"}));
+}
+
+TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/-1));
+
+    auto partition = BinaryRow::EmptyRow();
+    std::vector<IndexManifestEntry> previous_entries = {
         MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-0", {"data-0.orc"}, 1)};
 
-    ASSERT_NOK_WITH_MSG(IndexManifestFileHandler::Write(
-                            /*previous_index_manifest=*/std::nullopt, new_entries,
-                            /*bucket_mode=*/-1, index_manifest_file.get()),
-                        "not yet support dv with BUCKET_UNAWARE mode");
+    ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
+                         IndexManifestFileHandler::Write(
+                             /*previous_index_manifest=*/std::nullopt, previous_entries,
+                             /*bucket_mode=*/-1, index_manifest_file.get()));
+
+    // every delta below was built against a base the previous manifest is not, so applying it
+    // would leave the read either with two vectors for one data file or with none
+    {
+        // adding a vector for data-0.orc without dropping the one it already has
+        std::vector<IndexManifestEntry> new_entries = {
+            MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-1", {"data-0.orc"}, 1)};
+
+        ASSERT_NOK_WITH_MSG(
+            IndexManifestFileHandler::Write(previous_manifest, new_entries,
+                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+            "Trying to add a second deletion vector for data file data-0.orc");
+    }
+    {
+        // adding an index file the manifest already holds
+        std::vector<IndexManifestEntry> new_entries = {
+            MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-0", {"data-1.orc"}, 1)};
+
+        ASSERT_NOK_WITH_MSG(
+            IndexManifestFileHandler::Write(previous_manifest, new_entries,
+                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+            "Trying to add deletion vector index file dv-0 which is already added.");
+    }
+    {
+        // deleting an index file the manifest does not hold
+        std::vector<IndexManifestEntry> new_entries = {
+            MakeDvEntry(FileKind::Delete(), partition, /*bucket=*/0, "dv-1", {"data-1.orc"}, 1)};
+
+        ASSERT_NOK_WITH_MSG(
+            IndexManifestFileHandler::Write(previous_manifest, new_entries,
+                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+            "Trying to delete deletion vector index file dv-1 which does not exist.");
+    }
+    {
+        // deleting an index file the manifest does hold, but under the data files of another
+        // one: the vector of data-1.orc is not there to drop, and dropping dv-0 silently would
+        // bring the deleted rows of data-0.orc back
+        std::vector<IndexManifestEntry> new_entries = {
+            MakeDvEntry(FileKind::Delete(), partition, /*bucket=*/0, "dv-0", {"data-1.orc"}, 1)};
+
+        ASSERT_NOK_WITH_MSG(
+            IndexManifestFileHandler::Write(previous_manifest, new_entries,
+                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+            "Trying to delete the deletion vector of data file data-1.orc, which does not exist.");
+    }
 }
 
 }  // namespace paimon::test

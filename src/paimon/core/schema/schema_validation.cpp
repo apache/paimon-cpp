@@ -479,9 +479,6 @@ Status SchemaValidation::ValidateRowTracking(const TableSchema& table_schema,
     if (options.DataEvolutionEnabled()) {
         PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
             row_tracking_enabled, "Data evolution config must enabled with row-tracking.enabled"));
-        PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
-            !options.DeletionVectorsEnabled(),
-            "Data evolution config must disabled with deletion-vectors.enabled"));
     }
 
     std::vector<std::string> blob_names;

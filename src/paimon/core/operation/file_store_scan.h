@@ -152,6 +152,10 @@ class FileStoreScan {
         return predicates_;
     }
 
+    const std::optional<RowRangeIndex>& GetRowRangeIndex() const {
+        return row_range_index_;
+    }
+
     std::shared_ptr<PredicateFilter> GetPartitionPredicate() const {
         return partition_filter_;
     }

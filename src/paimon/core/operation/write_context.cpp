@@ -41,6 +41,7 @@ WriteContext::WriteContext(const std::string& root_path, const std::string& comm
                            const std::string& temp_directory,
                            const std::shared_ptr<FileSystem>& specific_file_system,
                            const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
+                           const std::shared_ptr<RealtimeContext>& realtime_context,
                            const std::map<std::string, std::string>& options)
     : root_path_(root_path),
       commit_user_(commit_user),
@@ -56,6 +57,7 @@ WriteContext::WriteContext(const std::string& root_path, const std::string& comm
       temp_directory_(temp_directory),
       specific_file_system_(specific_file_system),
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
+      realtime_context_(realtime_context),
       options_(options) {}
 
 WriteContext::~WriteContext() = default;
@@ -77,6 +79,7 @@ class WriteContextBuilder::Impl {
         write_schema_.clear();
         fs_scheme_to_identifier_map_.clear();
         specific_file_system_.reset();
+        realtime_context_.reset();
         options_.clear();
     }
 
@@ -95,6 +98,7 @@ class WriteContextBuilder::Impl {
     std::string temp_directory_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<FileSystem> specific_file_system_;
+    std::shared_ptr<RealtimeContext> realtime_context_;
     std::map<std::string, std::string> options_;
 };
 
@@ -183,6 +187,12 @@ WriteContextBuilder& WriteContextBuilder::WithFileSystem(
     return *this;
 }
 
+WriteContextBuilder& WriteContextBuilder::WithRealtimeContext(
+    const std::shared_ptr<RealtimeContext>& realtime_context) {
+    impl_->realtime_context_ = realtime_context;
+    return *this;
+}
+
 Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
     PAIMON_ASSIGN_OR_RAISE(impl_->root_path_, PathUtil::NormalizePath(impl_->root_path_));
     if (impl_->root_path_.empty()) {
@@ -198,7 +208,7 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         impl_->ignore_num_bucket_check_, impl_->ignore_previous_files_, enable_multi_thread_spill,
         impl_->write_id_, impl_->branch_, impl_->write_schema_, impl_->memory_pool_,
         impl_->executor_, impl_->temp_directory_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->options_);
+        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_);
     impl_->Reset();
     return ctx;
 }

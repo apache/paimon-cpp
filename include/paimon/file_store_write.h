@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "paimon/commit_message.h"
@@ -28,6 +29,7 @@
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/realtime/realtime_commit_progress.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/type_fwd.h"
@@ -85,8 +87,28 @@ class PAIMON_EXPORT FileStoreWrite {
     ///
     /// @return A Result containing `std::vector<std::shared_ptr<CommitMessage>>` objects,
     ///         representing the generated commit messages.
+    /// @note Real-time writers must use `PrepareCommitWithProgress()` so offset ranges are not
+    ///       discarded.
     virtual Result<std::vector<std::shared_ptr<CommitMessage>>> PrepareCommit(
         bool wait_compaction = true, int64_t commit_identifier = BATCH_WRITE_COMMIT_IDENTIFIER) = 0;
+
+    /// Generates commit messages together with partition-bucket real-time offset ranges.
+    ///
+    /// Each range is returned atomically with the commit message generated from the same sealed
+    /// segment.
+    ///
+    /// @param commit_identifier Identifier of this prepare-commit operation in streaming mode.
+    /// @return Real-time commit messages with their partition-bucket offset ranges.
+    /// @note Calling this method on a non-real-time writer or in batch mode returns an error.
+    virtual Result<std::vector<RealtimeCommitProgress>> PrepareCommitWithProgress(
+        int64_t commit_identifier);
+
+    /// Refreshes a real-time writer after `snapshot_id` has committed successfully.
+    ///
+    /// The writer loads the snapshot's partition-bucket offsets and releases sealed memory that is
+    /// fully covered by disk. Calling this method on a non-real-time writer returns an error.
+    virtual Status RefreshCommittedSnapshot(int64_t snapshot_id);
+
     virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
     virtual Status Close() = 0;
 };
