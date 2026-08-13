@@ -62,8 +62,8 @@ TEST(MapSharedShreddingAccessBuilderTest, BuildSelectedKeysField) {
 
     auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(field->type());
     ASSERT_EQ(struct_type->num_fields(), 2);
-    ASSERT_EQ(struct_type->field(0)->name(), "0");
-    ASSERT_EQ(struct_type->field(1)->name(), "1");
+    ASSERT_EQ(struct_type->field(0)->name(), "age");
+    ASSERT_EQ(struct_type->field(1)->name(), "score");
     ASSERT_TRUE(struct_type->field(0)->type()->Equals(arrow::int64()));
     ASSERT_TRUE(struct_type->field(1)->type()->Equals(arrow::int64()));
     ASSERT_TRUE(struct_type->field(0)->nullable());
@@ -88,6 +88,12 @@ TEST(MapSharedShreddingAccessBuilderTest, RejectInvalidKeys) {
                              MapSharedShreddingAccessBuilder::Create(ExportField(map_field).get()));
         ASSERT_OK(builder->AddKey("a"));
         ASSERT_NOK_WITH_MSG(builder->AddKey("a"), "must not be duplicated");
+    }
+    {
+        auto map_field = arrow::field("attributes", arrow::map(arrow::utf8(), arrow::int64()));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> builder,
+                             MapSharedShreddingAccessBuilder::Create(ExportField(map_field).get()));
+        ASSERT_NOK_WITH_MSG(builder->AddKey("a,b"), "must not contain the ',' delimiter");
     }
 }
 

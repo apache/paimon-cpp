@@ -74,6 +74,10 @@ Result<std::unique_ptr<MapSharedShreddingAccessBuilder>> MapSharedShreddingAcces
 }
 
 Status MapSharedShreddingAccessBuilder::AddKey(const std::string& key) {
+    if (key.find(',') != std::string::npos) {
+        return Status::Invalid(
+            fmt::format("selected MAP key {} must not contain the ',' delimiter", key));
+    }
     if (!impl_->unique_keys.insert(key).second) {
         return Status::Invalid(fmt::format("selected MAP key must not be duplicated: {}", key));
     }
@@ -94,7 +98,7 @@ Result<std::unique_ptr<struct ArrowSchema>> MapSharedShreddingAccessBuilder::Bui
             encoded_keys.push_back(',');
         }
         encoded_keys.append(impl_->keys[i]);
-        fields.push_back(arrow::field(std::to_string(i), impl_->map_type->item_type(),
+        fields.push_back(arrow::field(impl_->keys[i], impl_->map_type->item_type(),
                                       /*nullable=*/true));
     }
     auto metadata = arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {encoded_keys});

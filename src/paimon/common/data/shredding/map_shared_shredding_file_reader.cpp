@@ -31,33 +31,11 @@
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/casting/casting_utils.h"
+#include "paimon/core/utils/nested_projection_utils.h"
 
 namespace paimon {
 namespace {
-
-Result<std::string_view> GetStringMapKey(const std::shared_ptr<arrow::Array>& keys, int64_t index) {
-    if (keys->IsNull(index)) {
-        return Status::Invalid("selected-key MAP read found a null MAP key");
-    }
-    if (keys->type_id() == arrow::Type::STRING) {
-        return arrow::internal::checked_pointer_cast<arrow::StringArray>(keys)->GetView(index);
-    } else if (keys->type_id() == arrow::Type::DICTIONARY) {
-        auto dictionary = arrow::internal::checked_pointer_cast<arrow::DictionaryArray>(keys);
-        int64_t dictionary_index = dictionary->GetValueIndex(index);
-        const auto& values = dictionary->dictionary();
-        if (values->IsNull(dictionary_index)) {
-            return Status::Invalid("selected-key MAP read found a null dictionary MAP key");
-        }
-        if (values->type_id() == arrow::Type::STRING) {
-            return arrow::internal::checked_pointer_cast<arrow::StringArray>(values)->GetView(
-                dictionary_index);
-        }
-    }
-    return Status::Invalid(
-        fmt::format("selected-key MAP read only supports string or dictionary key array"));
-}
 
 std::vector<std::pair<std::string, int32_t>> ResolveSelectedKeyIds(
     const MapSharedShreddingFieldMeta& meta, const std::vector<std::string>& selected_keys) {
@@ -149,9 +127,9 @@ class DefaultSelectedKeysReadPlan : public MapFieldReadPlan {
 
 }  // namespace
 
-Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateFullMapReadPlan(
-    const std::shared_ptr<arrow::Field>& logical_map_field, const MapSharedShreddingFieldMeta& meta,
-    const std::vector<std::string>& selected_keys) {
+Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateMapReadPlan(
+    const std::shared_ptr<arrow::Field>& logical_map_field,
+    const MapSharedShreddingFieldMeta& meta) {
     if (logical_map_field->type()->id() != arrow::Type::MAP) {
         return Status::Invalid(fmt::format("full MAP read plan requires MAP field {}, got {}",
                                            logical_map_field->name(),
@@ -159,6 +137,14 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateFullMap
     }
     auto logical_map_type =
         arrow::internal::checked_pointer_cast<arrow::MapType>(logical_map_field->type());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                           NestedProjectionUtils::GetMapSelectedKeys(logical_map_field));
+    if (selected_keys.empty()) {
+        selected_keys.reserve(meta.name_to_id.size());
+        for (const auto& [key_name, _] : meta.name_to_id) {
+            selected_keys.push_back(key_name);
+        }
+    }
     std::set<int32_t> selected_physical_column_ids;
     bool include_overflow = false;
     for (const auto& selected_key : selected_keys) {
@@ -186,27 +172,13 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateFullMap
 
 Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(
     const std::shared_ptr<arrow::Field>& selected_keys_field,
-    const MapSharedShreddingFieldMeta& meta, const std::vector<std::string>& selected_keys) {
-    if (selected_keys_field->type()->id() != arrow::Type::STRUCT) {
-        return Status::Invalid(
-            fmt::format("selected-key MAP field {} is not a STRUCT", selected_keys_field->name()));
-    }
+    const MapSharedShreddingFieldMeta& meta) {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<std::string> selected_keys,
+        NestedProjectionUtils::ValidateMapSharedShreddingAccessField(selected_keys_field));
     auto selected_keys_type =
         arrow::internal::checked_pointer_cast<arrow::StructType>(selected_keys_field->type());
-    if (selected_keys_type->num_fields() == 0 ||
-        selected_keys.size() != static_cast<size_t>(selected_keys_type->num_fields())) {
-        return Status::Invalid(fmt::format(
-            "selected-key metadata size {} does not match STRUCT field count {} for {}",
-            selected_keys.size(), selected_keys_type->num_fields(), selected_keys_field->name()));
-    }
     const auto& value_field = selected_keys_type->field(0);
-    for (int32_t i = 1; i < selected_keys_type->num_fields(); ++i) {
-        if (!selected_keys_type->field(i)->type()->Equals(value_field->type())) {
-            return Status::Invalid(fmt::format(
-                "selected-key MAP fields must have the same value type, but {} and {} differ",
-                value_field->type()->ToString(), selected_keys_type->field(i)->type()->ToString()));
-        }
-    }
 
     std::set<int32_t> selected_physical_column_ids;
     bool include_overflow = false;
@@ -242,34 +214,15 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateSharedS
 Result<std::unique_ptr<MapFieldReadPlan>>
 MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
     const std::shared_ptr<arrow::Field>& file_map_field,
-    const std::shared_ptr<arrow::Field>& selected_keys_field,
-    const std::vector<std::string>& selected_keys) {
+    const std::shared_ptr<arrow::Field>& selected_keys_field) {
     if (file_map_field->type()->id() != arrow::Type::MAP) {
         return Status::Invalid(
-            fmt::format("selected-key MAP projection {} requires MAP file field, "
-                        "got {}",
+            fmt::format("selected-key MAP projection {} requires MAP file field, got {}",
                         selected_keys_field->name(), file_map_field->type()->ToString()));
     }
-    if (selected_keys_field->type()->id() != arrow::Type::STRUCT) {
-        return Status::Invalid(
-            fmt::format("selected-key MAP field {} is not a STRUCT", selected_keys_field->name()));
-    }
-    auto selected_keys_type =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(selected_keys_field->type());
-    if (selected_keys_type->num_fields() == 0 ||
-        selected_keys.size() != static_cast<size_t>(selected_keys_type->num_fields())) {
-        return Status::Invalid(fmt::format(
-            "selected-key metadata size {} does not match STRUCT field count {} for {}",
-            selected_keys.size(), selected_keys_type->num_fields(), selected_keys_field->name()));
-    }
-    const auto& value_field = selected_keys_type->field(0);
-    for (int32_t i = 1; i < selected_keys_type->num_fields(); ++i) {
-        if (!selected_keys_type->field(i)->type()->Equals(value_field->type())) {
-            return Status::Invalid(fmt::format(
-                "selected-key MAP fields must have the same value type, but {} and {} differ",
-                value_field->type()->ToString(), selected_keys_type->field(i)->type()->ToString()));
-        }
-    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<std::string> selected_keys,
+        NestedProjectionUtils::ValidateMapSharedShreddingAccessField(selected_keys_field));
     auto physical_read_field = selected_keys_field->WithType(file_map_field->type());
     std::unique_ptr<MapFieldReadPlan> read_plan = std::make_unique<DefaultSelectedKeysReadPlan>(
         selected_keys_field, physical_read_field, selected_keys);
@@ -719,7 +672,8 @@ Result<std::shared_ptr<arrow::Array>> DefaultSelectedKeysReadPlan::Materialize(
             arrow::ArrayBuilder* value_builder = access_builder->field_builder(key_index);
             bool appended = false;
             for (int64_t entry = begin; entry < end; ++entry) {
-                PAIMON_ASSIGN_OR_RAISE(std::string_view key, GetStringMapKey(keys, entry));
+                PAIMON_ASSIGN_OR_RAISE(std::string_view key,
+                                       NestedProjectionUtils::GetMapKeyViewAt(keys, entry));
                 if (key != selected_keys_[key_index]) {
                     continue;
                 }

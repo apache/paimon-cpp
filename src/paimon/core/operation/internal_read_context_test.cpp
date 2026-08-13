@@ -25,6 +25,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/status.h"
@@ -301,6 +302,36 @@ TEST(InternalReadContext, TestProjectedSchemaMetadataWhitelist) {
 
     auto custom_metadata_result = aligned_field->metadata()->Get("custom.key");
     ASSERT_FALSE(custom_metadata_result.ok());
+}
+
+TEST(InternalReadContext, TestMapSharedShreddingAccessRequiresSharedShreddingLayout) {
+    auto map_field = arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64()));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> unique_table_schema,
+        TableSchema::Create(/*schema_id=*/0, arrow::schema({map_field}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}));
+    std::shared_ptr<TableSchema> table_schema = std::move(unique_table_schema);
+
+    auto c_map_field = std::make_unique<ArrowSchema>();
+    ASSERT_TRUE(arrow::ExportField(*map_field, c_map_field.get()).ok());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> access_builder,
+                         MapSharedShreddingAccessBuilder::Create(c_map_field.get()));
+    ASSERT_OK(access_builder->AddKey("a"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_access_field, access_builder->Build());
+    auto imported_access_field = arrow::ImportField(c_access_field.get());
+    ASSERT_TRUE(imported_access_field.ok());
+    std::shared_ptr<arrow::Field> access_field = imported_access_field.ValueOrDie();
+
+    auto c_read_schema = std::make_unique<ArrowSchema>();
+    ASSERT_TRUE(arrow::ExportSchema(*arrow::schema({access_field}), c_read_schema.get()).ok());
+    ReadContextBuilder context_builder("/tmp/unused-table-path");
+    context_builder.SetReadSchema(std::move(c_read_schema));
+    ASSERT_OK_AND_ASSIGN(auto unique_read_context, context_builder.Finish());
+    std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
+
+    ASSERT_NOK_WITH_MSG(
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()),
+        "Selected-key MAP pushdown only supports top-level shared-shredding MAP field: tags");
 }
 
 }  // namespace paimon::test

@@ -88,7 +88,7 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::FilterMapSelectedKeysR
 
     auto type_id = read_field->type()->id();
     if (NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field)) {
-        // The shared-shredding wrapper (including its legacy MAP fallback) has already
+        // The shared-shredding wrapper (including its default MAP fallback) has already
         // materialized this projection as a STRUCT.
         return array;
     }

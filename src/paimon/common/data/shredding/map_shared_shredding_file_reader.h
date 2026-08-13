@@ -60,18 +60,17 @@ class MapFieldReadPlan {
 
 class MapFieldReadPlanFactory {
  public:
-    static Result<std::unique_ptr<MapFieldReadPlan>> CreateFullMapReadPlan(
+    static Result<std::unique_ptr<MapFieldReadPlan>> CreateMapReadPlan(
         const std::shared_ptr<arrow::Field>& logical_map_field,
-        const MapSharedShreddingFieldMeta& meta, const std::vector<std::string>& selected_keys);
+        const MapSharedShreddingFieldMeta& meta);
 
     static Result<std::unique_ptr<MapFieldReadPlan>> CreateSharedSelectedKeysReadPlan(
         const std::shared_ptr<arrow::Field>& selected_keys_field,
-        const MapSharedShreddingFieldMeta& meta, const std::vector<std::string>& selected_keys);
+        const MapSharedShreddingFieldMeta& meta);
 
     static Result<std::unique_ptr<MapFieldReadPlan>> CreateDefaultSelectedKeysReadPlan(
         const std::shared_ptr<arrow::Field>& file_map_field,
-        const std::shared_ptr<arrow::Field>& selected_keys_field,
-        const std::vector<std::string>& selected_keys);
+        const std::shared_ptr<arrow::Field>& selected_keys_field);
 };
 
 class MapSharedShreddingFileReader : public FileBatchReader {

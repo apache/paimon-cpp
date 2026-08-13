@@ -59,23 +59,17 @@ Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTab
                 "Selected-key MAP pushdown only supports string MAP keys for field '{}'",
                 table_field->name()));
         }
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
-                               NestedProjectionUtils::GetMapSelectedKeys(read_field));
+        PAIMON_RETURN_NOT_OK(
+            NestedProjectionUtils::ValidateMapSharedShreddingAccessField(read_field).status());
         auto read_struct =
             arrow::internal::checked_pointer_cast<arrow::StructType>(read_field->type());
-        if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
+        const auto& selected_value_type = read_struct->field(0)->type();
+        if (!selected_value_type->Equals(table_map->item_type())) {
             return Status::Invalid(fmt::format(
-                "Selected-key metadata size {} does not match STRUCT field count {} for '{}'",
-                selected_keys.size(), read_struct->num_fields(), table_field->name()));
-        }
-        for (const auto& selected_field : read_struct->fields()) {
-            if (!selected_field->type()->Equals(table_map->item_type())) {
-                return Status::Invalid(fmt::format(
-                    "Selected-key MAP pushdown does not support pruning MAP value fields for "
-                    "'{}': selected type {} vs MAP value type {}",
-                    table_field->name(), selected_field->type()->ToString(),
-                    table_map->item_type()->ToString()));
-            }
+                "Selected-key MAP pushdown does not support pruning MAP value fields for "
+                "'{}': selected type {} vs MAP value type {}",
+                table_field->name(), selected_value_type->ToString(),
+                table_map->item_type()->ToString()));
         }
         auto aligned_field = table_field->WithType(read_field->type());
         return DataField::MergeFieldMetadataByWhitelist(aligned_field, read_field,

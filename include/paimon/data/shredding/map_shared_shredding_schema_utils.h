@@ -60,7 +60,7 @@ struct PAIMON_EXPORT MapSharedShreddingFieldMeta {
 ///
 /// The built field is a STRUCT which replaces the MAP field in the read schema. Each child
 /// corresponds to one selected key and contains that key's MAP value, or NULL when the key is
-/// absent. Children are named by their ordinal ("0", "1", ...), and preserve insertion order.
+/// absent. Children use the selected keys as their names and preserve insertion order.
 ///
 /// Example: read keys "age" and "score" from MAP column `attributes`:
 ///

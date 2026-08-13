@@ -274,32 +274,24 @@ AbstractSplitRead::ApplySharedShreddingReaderIfNeeded(
             continue;
         }
 
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
-                               NestedProjectionUtils::GetMapSelectedKeys(read_field));
         std::unique_ptr<MapFieldReadPlan> field_read_plan;
         if (is_shared_shredding_map_access) {
             if (is_shared_shredding_file) {
                 PAIMON_ASSIGN_OR_RAISE(MapSharedShreddingFieldMeta meta,
                                        MapSharedShreddingUtils::DeserializeMetadata(metadata));
-                PAIMON_ASSIGN_OR_RAISE(field_read_plan,
-                                       MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(
-                                           read_field, meta, selected_keys));
+                PAIMON_ASSIGN_OR_RAISE(
+                    field_read_plan,
+                    MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(read_field, meta));
             } else {
                 PAIMON_ASSIGN_OR_RAISE(field_read_plan,
                                        MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
-                                           file_field, read_field, selected_keys));
+                                           file_field, read_field));
             }
         } else {
             PAIMON_ASSIGN_OR_RAISE(MapSharedShreddingFieldMeta meta,
                                    MapSharedShreddingUtils::DeserializeMetadata(metadata));
-            if (selected_keys.empty()) {
-                selected_keys.reserve(meta.name_to_id.size());
-                for (const auto& [key_name, _] : meta.name_to_id) {
-                    selected_keys.push_back(key_name);
-                }
-            }
-            PAIMON_ASSIGN_OR_RAISE(field_read_plan, MapFieldReadPlanFactory::CreateFullMapReadPlan(
-                                                        read_field, meta, selected_keys));
+            PAIMON_ASSIGN_OR_RAISE(field_read_plan,
+                                   MapFieldReadPlanFactory::CreateMapReadPlan(read_field, meta));
         }
         field_read_plans.emplace(field_name, std::move(field_read_plan));
         PAIMON_ASSIGN_OR_RAISE(int32_t field_id,

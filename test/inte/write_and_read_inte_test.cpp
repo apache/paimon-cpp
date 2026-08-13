@@ -181,6 +181,23 @@ class WriteAndReadInteTest
         return std::make_shared<arrow::ChunkedArray>(expected)->Equals(actual);
     }
 
+    Result<std::shared_ptr<arrow::Field>> BuildMapSharedShreddingAccessField(
+        const std::shared_ptr<arrow::Field>& map_field,
+        const std::vector<std::string>& selected_keys) const {
+        auto c_map_field = std::make_unique<ArrowSchema>();
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportField(*map_field, c_map_field.get()));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MapSharedShreddingAccessBuilder> access_builder,
+                               MapSharedShreddingAccessBuilder::Create(c_map_field.get()));
+        for (const auto& selected_key : selected_keys) {
+            PAIMON_RETURN_NOT_OK(access_builder->AddKey(selected_key));
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ArrowSchema> c_access_field,
+                               access_builder->Build());
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Field> access_field,
+                                          arrow::ImportField(c_access_field.get()));
+        return access_field;
+    }
+
     Result<std::shared_ptr<Plan>> InnerScan(
         const std::map<std::string, std::string>& options) const {
         std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
@@ -2344,6 +2361,21 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingReadAfterRenameColumn) {
         [0, 2, [["c", 21]]]
     ])"));
     ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields_v1[1], {"b", "a"}));
+    auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options_v1, read_schema, expected_type,
+                                                             R"([
+        [0, 1, [12, 11]],
+        [0, 2, [null, null]]
+    ])"));
+    ASSERT_TRUE(success);
 }
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingWithSchemaEvolution) {
@@ -2433,6 +2465,27 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingWithSchemaEvolution) {
                 [0, [["a", 32]], [["c", 52]], "new-2"]
             ])"));
     ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> f0_access_field,
+                         BuildMapSharedShreddingAccessField(fields_v1[0], {"z", "a"}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> f2_access_field,
+                         BuildMapSharedShreddingAccessField(fields_v1[3], {"x", "c"}));
+    auto read_schema =
+        arrow::schema({f0_access_field, f2_access_field, arrow::field("k2", arrow::utf8())});
+    expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        f0_access_field,
+        f2_access_field,
+        arrow::field("k2", arrow::utf8()),
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options_v1, read_schema, expected_type,
+                                                             R"([
+                [0, [11, 10], null, "old-1"],
+                [0, [null, 12], null, "old-2"],
+                [0, [31, 30], [51, 50], "new-1"],
+                [0, [null, 32], [null, 52], "new-2"]
+            ])"));
+    ASSERT_TRUE(success);
 }
 
 // Verify storage-layout evolution: default->shared-shredding.
@@ -2492,6 +2545,23 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShredding) {
                 [0, 2, null],
                 [0, 3, [["a", 30], ["z", 31]]],
                 [0, 4, [["a", 40]]]
+            ])"));
+    ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"z", "a"}));
+    auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    auto expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options_v1, read_schema, expected_type,
+                                                             R"([
+                [0, 1, [11, 10]],
+                [0, 2, null],
+                [0, 3, [31, 30]],
+                [0, 4, [null, 40]]
             ])"));
     ASSERT_TRUE(success);
 }
@@ -2718,6 +2788,22 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingWithStructValue) {
                 [0, 3, null]
             ])"));
     ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"a", "z"}));
+    auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    auto expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options, read_schema, expected_type,
+                                                             R"([
+                [0, 1, [["alice", 10], ["zoe", 11]]],
+                [0, 2, [["amy", null], null]],
+                [0, 3, null]
+            ])"));
+    ASSERT_TRUE(success);
 }
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithComplexValue) {
@@ -2812,6 +2898,26 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithComplexValue) {
                 [0, 3, null]
             ])"));
     ASSERT_TRUE(selected_success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"z", "a"}));
+    read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(bool access_success,
+                         ReadAndCheckWithReadSchema(options, read_schema, expected_type,
+                                                    R"([
+                [0, 1, [
+                    ["zeta", [9], [["iz", 90]]],
+                    ["alpha", [1, 2], [["ia", 10], ["ib", 20]]]
+                ]],
+                [0, 2, [null, ["amy", null, [["ia", 30]]]]],
+                [0, 3, null]
+            ])"));
+    ASSERT_TRUE(access_success);
 }
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithAllSupportedComplexValueTypes) {
@@ -2938,6 +3044,28 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithAllSupportedComplexValueT
                 ]],
                 [0, 2, null],
                 [0, 3, []]
+            ])"));
+    ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"fixed-a"}));
+    auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    auto expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options, read_schema, expected_type,
+                                                             R"([
+                [0, 1, [[
+                    true, 1, 2, 3, 4, 5.5, 6.25, "str", "bin",
+                    "12345678.90", "123456789012345678.12345", 19500,
+                    "2023-11-14 22:13:20.123", "2023-11-14 22:13:20.123456789",
+                    "2023-11-14 22:13:20.123", "2023-11-14 22:13:20.123456",
+                    [7, null, 8], [["m1", 10], ["m2", null]], ["nested", 99]
+                ]]],
+                [0, 2, null],
+                [0, 3, [null]]
             ])"));
     ASSERT_TRUE(success);
 }
@@ -3136,6 +3264,23 @@ TEST_P(WriteAndReadInteTest, TestOrcDictionaryLazyDecodingWithSharedShredding) {
                 [0, 4, [["a", "red"]]]
             ])"));
     ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"z", "a"}));
+    auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    auto expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options_v1, read_schema, expected_type,
+                                                             R"([
+                [0, 1, ["blue", "red"]],
+                [0, 2, ["green", "red"]],
+                [0, 3, ["yellow", "red"]],
+                [0, 4, [null, "red"]]
+            ])"));
+    ASSERT_TRUE(success);
 }
 
 // Verify shared-shredding in the PK read path.
@@ -3189,6 +3334,22 @@ TEST_P(WriteAndReadInteTest, TestPkSharedShreddingMap) {
                 [0, 1, [["a", 100], ["z", 101]]],
                 [0, 2, [["b", 20]]],
                 [0, 3, [["c", 30]]]
+            ])"));
+    ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"a", "z"}));
+    auto read_schema = arrow::schema({arrow::field("pk", arrow::int32()), access_field});
+    auto expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("pk", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options, read_schema, expected_type,
+                                                             R"([
+                [0, 1, [100, 101]],
+                [0, 2, [null, null]],
+                [0, 3, [null, null]]
             ])"));
     ASSERT_TRUE(success);
 }
@@ -3307,16 +3468,9 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithOverflow) {
 
     // Sub-case 4: selected keys are exposed as STRUCT children instead of a filtered MAP.
     {
-        auto c_map_field = std::make_unique<ArrowSchema>();
-        ASSERT_TRUE(arrow::ExportField(*arrow::field("tags", map_type), c_map_field.get()).ok());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> access_builder,
-                             MapSharedShreddingAccessBuilder::Create(c_map_field.get()));
-        ASSERT_OK(access_builder->AddKey("c"));
-        ASSERT_OK(access_builder->AddKey("a"));
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_access_field, access_builder->Build());
-        auto imported_access_field = arrow::ImportField(c_access_field.get());
-        ASSERT_TRUE(imported_access_field.ok());
-        std::shared_ptr<arrow::Field> access_field = imported_access_field.ValueOrDie();
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::Field> access_field,
+            BuildMapSharedShreddingAccessField(arrow::field("tags", map_type), {"c", "a"}));
 
         auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
         auto expected_type = arrow::struct_({
@@ -3424,6 +3578,26 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithNullOrMissin
                 ])"));
         ASSERT_TRUE(success);
     }
+
+    // Sub-case 5: expose an existing and a never-written key as STRUCT children.
+    {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                             BuildMapSharedShreddingAccessField(fields[1], {"a", "nonexistent"}));
+        auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+        auto expected_type = arrow::struct_({
+            arrow::field("_VALUE_KIND", arrow::int8()),
+            arrow::field("id", arrow::int32()),
+            access_field,
+        });
+        ASSERT_OK_AND_ASSIGN(bool success,
+                             ReadAndCheckWithReadSchema(options, read_schema, expected_type,
+                                                        R"([
+                    [0, 1, null],
+                    [0, 2, [null, null]],
+                    [0, 3, [30, null]]
+                ])"));
+        ASSERT_TRUE(success);
+    }
 }
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallMultipleColumns) {
@@ -3513,6 +3687,29 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallMultipleColumns)
                 ])"));
         ASSERT_TRUE(success);
     }
+
+    // Sub-case 3: expose selected keys from multiple MAP columns as independent STRUCTs.
+    {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> tags_access_field,
+                             BuildMapSharedShreddingAccessField(fields[1], {"a", "b"}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> metrics_access_field,
+                             BuildMapSharedShreddingAccessField(fields[2], {"x"}));
+        auto read_schema = arrow::schema(
+            {arrow::field("id", arrow::int32()), tags_access_field, metrics_access_field});
+        auto expected_type = arrow::struct_({
+            arrow::field("_VALUE_KIND", arrow::int8()),
+            arrow::field("id", arrow::int32()),
+            tags_access_field,
+            metrics_access_field,
+        });
+        ASSERT_OK_AND_ASSIGN(bool success,
+                             ReadAndCheckWithReadSchema(options, read_schema, expected_type,
+                                                        R"([
+                    [0, 1, [1, 2], [100]],
+                    [0, 2, [10, null], [1000]]
+                ])"));
+        ASSERT_TRUE(success);
+    }
 }
 
 TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShreddingPartialKeyRecall) {
@@ -3587,15 +3784,8 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShreddingPartial
             ])"));
     ASSERT_TRUE(success);
 
-    auto c_map_field = std::make_unique<ArrowSchema>();
-    ASSERT_TRUE(arrow::ExportField(*arrow::field("tags", map_type), c_map_field.get()).ok());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> access_builder,
-                         MapSharedShreddingAccessBuilder::Create(c_map_field.get()));
-    ASSERT_OK(access_builder->AddKey("a"));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_access_field, access_builder->Build());
-    auto imported_access_field = arrow::ImportField(c_access_field.get());
-    ASSERT_TRUE(imported_access_field.ok());
-    std::shared_ptr<arrow::Field> access_field = imported_access_field.ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(arrow::field("tags", map_type), {"a"}));
     read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
     expected_type = arrow::struct_({
         arrow::field("_VALUE_KIND", arrow::int8()),
@@ -3687,6 +3877,24 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutSharedShreddingToDefaultPartial
                 [0, 4, null]
             ])"));
     ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"a"}));
+    read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_NOK_WITH_MSG(ReadAndCheckWithReadSchema(options_v1, read_schema, expected_type,
+                                                   R"([
+                [0, 1, [10]],
+                [0, 2, [null]],
+                [0, 3, [30]],
+                [0, 4, null]
+            ])"),
+                        "Selected-key MAP pushdown only supports top-level shared-shredding MAP "
+                        "field: tags");
 }
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingDuplicateSelectedKeys) {
@@ -3782,6 +3990,22 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingAllNullMapColumn) {
     ASSERT_OK_AND_ASSIGN(bool success,
                          helper->ReadAndCheckResult(arrow::struct_(expected_fields), splits,
                                                     R"([
+                [0, 1, null],
+                [0, 2, null],
+                [0, 3, null]
+            ])"));
+    ASSERT_TRUE(success);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> access_field,
+                         BuildMapSharedShreddingAccessField(fields[1], {"a"}));
+    auto read_schema = arrow::schema({arrow::field("id", arrow::int32()), access_field});
+    auto expected_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        access_field,
+    });
+    ASSERT_OK_AND_ASSIGN(success, ReadAndCheckWithReadSchema(options, read_schema, expected_type,
+                                                             R"([
                 [0, 1, null],
                 [0, 2, null],
                 [0, 3, null]

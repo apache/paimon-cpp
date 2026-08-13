@@ -552,7 +552,7 @@ TEST(NestedProjectionUtilsTest, GetMapSelectedKeysDuplicateKey) {
 TEST(NestedProjectionUtilsTest, IsMapSharedShreddingAccessField) {
     auto metadata = arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,b"});
     auto access_type =
-        arrow::struct_({arrow::field("0", arrow::int64()), arrow::field("1", arrow::int64())});
+        arrow::struct_({arrow::field("a", arrow::int64()), arrow::field("b", arrow::int64())});
 
     ASSERT_TRUE(NestedProjectionUtils::IsMapSharedShreddingAccessField(
         arrow::field("tags", access_type, /*nullable=*/true, metadata)));
@@ -564,8 +564,8 @@ TEST(NestedProjectionUtilsTest, IsMapSharedShreddingAccessField) {
 
 TEST(NestedProjectionUtilsTest, BuildMapSharedShreddingAccessDataType) {
     auto read_type = arrow::struct_({
-        arrow::field("0", arrow::int64(), /*nullable=*/true),
-        arrow::field("1", arrow::int64(), /*nullable=*/true),
+        arrow::field("a", arrow::int64(), /*nullable=*/true),
+        arrow::field("b", arrow::int64(), /*nullable=*/true),
     });
     auto read_metadata = arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,b"});
     auto read_field = arrow::field("tags", read_type, /*nullable=*/true, std::move(read_metadata));
@@ -577,8 +577,8 @@ TEST(NestedProjectionUtilsTest, BuildMapSharedShreddingAccessDataType) {
         NestedProjectionUtils::BuildMapSharedShreddingAccessDataType(read_field, data_type));
     auto result_struct = arrow::internal::checked_pointer_cast<arrow::StructType>(result);
     ASSERT_EQ(result_struct->num_fields(), 2);
-    ASSERT_EQ(result_struct->field(0)->name(), "0");
-    ASSERT_EQ(result_struct->field(1)->name(), "1");
+    ASSERT_EQ(result_struct->field(0)->name(), "a");
+    ASSERT_EQ(result_struct->field(1)->name(), "b");
     ASSERT_TRUE(result_struct->field(0)->type()->Equals(data_value_type));
     ASSERT_TRUE(result_struct->field(1)->type()->Equals(data_value_type));
     ASSERT_TRUE(result_struct->field(0)->nullable());
@@ -587,12 +587,12 @@ TEST(NestedProjectionUtilsTest, BuildMapSharedShreddingAccessDataType) {
 
 TEST(NestedProjectionUtilsTest, BuildMapSharedShreddingAccessDataTypeInvalidInput) {
     auto access_metadata = arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,b"});
-    auto access_field = arrow::field("tags", arrow::struct_({arrow::field("0", arrow::int64())}),
+    auto access_field = arrow::field("tags", arrow::struct_({arrow::field("a", arrow::int64())}),
                                      /*nullable=*/true, access_metadata);
 
     ASSERT_NOK_WITH_MSG(
         NestedProjectionUtils::BuildMapSharedShreddingAccessDataType(
-            arrow::field("tags", arrow::struct_({arrow::field("0", arrow::int64())})),
+            arrow::field("tags", arrow::struct_({arrow::field("a", arrow::int64())})),
             arrow::map(arrow::utf8(), arrow::int64())),
         "is not a selected-key MAP projection");
     ASSERT_NOK_WITH_MSG(
