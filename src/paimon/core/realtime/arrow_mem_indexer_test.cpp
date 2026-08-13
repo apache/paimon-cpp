@@ -141,7 +141,7 @@ TEST_F(ArrowMemIndexerTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
         MemQueryContext context{c_schema.get(), /*predicate=*/nullptr,
                                 /*enable_predicate_pushdown=*/false};
         ASSERT_OK_AND_ASSIGN(
-            std::vector<std::unique_ptr<RealtimeReader>> readers,
+            std::vector<std::unique_ptr<BatchReader>> readers,
             indexer_->CreateQueryReaders(view, /*offset_lower_exclusive=*/11, context));
         ASSERT_EQ(1, readers.size());
 
@@ -173,7 +173,7 @@ TEST_F(ArrowMemIndexerTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
     MemQueryContext context{c_schema.get(), /*predicate=*/nullptr,
                             /*enable_predicate_pushdown=*/false};
     ASSERT_OK_AND_ASSIGN(
-        std::vector<std::unique_ptr<RealtimeReader>> readers,
+        std::vector<std::unique_ptr<BatchReader>> readers,
         indexer_->CreateQueryReaders(view, /*offset_lower_exclusive=*/14, context));
     ASSERT_TRUE(readers.empty());
 }

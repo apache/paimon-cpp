@@ -540,6 +540,10 @@ struct PAIMON_EXPORT Options {
     /// "scan.timestamp" can be used as an alternative string input for the same mode.
     static const char SCAN_TIMESTAMP_MILLIS[];
 
+    /// "realtime.read-view-ttl-millis" - Lifetime in milliseconds of a real-time memory view
+    /// pinned by scan planning before reader creation. Default value is 300000.
+    static const char REALTIME_READ_VIEW_TTL_MILLIS[];
+
     /// "scan.timestamp" - Optional timestamp string used in case of "from-timestamp" scan mode,
     /// as an alternative to "scan.timestamp-millis".
     /// It will be automatically converted to timestamp in unix milliseconds, using local time zone.

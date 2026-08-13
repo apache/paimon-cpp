@@ -76,14 +76,20 @@ class PAIMON_EXPORT MemReadView {
 };
 
 /// Outermost query reader that pins a `MemReadView`.
-///
-/// Plugins may freely compose regular `BatchReader` implementations, then wrap the resulting
-/// reader with this class before returning it from `MemIndexer::CreateQueryReaders`.
 class PAIMON_EXPORT RealtimeReader final : public BatchReader {
  public:
     /// Creates a reader that delegates reads to `reader` and pins `read_view` for its lifetime.
-    RealtimeReader(std::shared_ptr<MemReadView> read_view, std::unique_ptr<BatchReader> reader)
-        : read_view_(std::move(read_view)), reader_(std::move(reader)) {}
+    static Result<std::unique_ptr<RealtimeReader>> Create(std::shared_ptr<MemReadView> read_view,
+                                                          std::unique_ptr<BatchReader> reader) {
+        if (!read_view) {
+            return Status::Invalid("real-time reader view is null");
+        }
+        if (!reader) {
+            return Status::Invalid("real-time inner reader is null");
+        }
+        return std::unique_ptr<RealtimeReader>(
+            new RealtimeReader(std::move(read_view), std::move(reader)));
+    }
 
     /// Delegates batch reads to the wrapped plugin reader.
     Result<ReadBatch> NextBatch() override {
@@ -102,13 +108,16 @@ class PAIMON_EXPORT RealtimeReader final : public BatchReader {
 
     /// Closes the delegated reader and releases the pinned read view.
     void Close() override {
-        if (reader_) {
-            reader_->Close();
-        }
+        reader_->Close();
         read_view_.reset();
     }
 
  private:
+    RealtimeReader(std::shared_ptr<MemReadView> read_view, std::unique_ptr<BatchReader> reader)
+        : read_view_(std::move(read_view)), reader_(std::move(reader)) {}
+
+    // Keep the view before the delegated reader so reverse member destruction closes the reader
+    // before releasing the data it references.
     std::shared_ptr<MemReadView> read_view_;
     std::unique_ptr<BatchReader> reader_;
 };
@@ -167,9 +176,9 @@ class PAIMON_EXPORT MemIndexer {
     ///
     /// Each output batch contains `_VALUE_KIND` first, followed by the fields requested by
     /// `context.read_schema` except a duplicate `_VALUE_KIND`. Concatenating all returned readers
-    /// must produce every matching row once. Each returned `RealtimeReader` pins `view` while
-    /// allowing the plugin to compose regular `BatchReader` implementations internally.
-    virtual Result<std::vector<std::unique_ptr<RealtimeReader>>> CreateQueryReaders(
+    /// must produce every matching row once. Paimon retains `view` for the lifetime of the
+    /// resulting framework reader.
+    virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
         const std::shared_ptr<MemReadView>& view, int64_t offset_lower_exclusive,
         const MemQueryContext& context) = 0;
 

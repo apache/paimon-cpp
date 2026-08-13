@@ -50,6 +50,8 @@
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/function.h"
+#include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/realtime/mem_indexer.h"
@@ -63,6 +65,39 @@
 #include "paimon/write_context.h"
 
 namespace paimon::test {
+
+class UnsupportedFunction : public Function {
+ public:
+    Type GetType() const override {
+        return Type::EQUAL;
+    }
+
+    std::string ToString() const override {
+        return "unsupported";
+    }
+};
+
+class UnsupportedPredicate : public Predicate {
+ public:
+    bool operator==(const Predicate&) const override {
+        return false;
+    }
+
+    const Function& GetFunction() const override {
+        return function_;
+    }
+
+    std::shared_ptr<Predicate> Negate() const override {
+        return nullptr;
+    }
+
+    std::string ToString() const override {
+        return function_.ToString();
+    }
+
+ private:
+    UnsupportedFunction function_;
+};
 
 class ConcurrentTestState {
  public:
@@ -492,7 +527,7 @@ TEST_F(RealtimeWriteInteTest, TestReadMemoryBeforePrepareCommit) {
     std::shared_ptr<RealtimeSplit> realtime_split =
         std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
     ASSERT_NE(nullptr, realtime_split);
-    ASSERT_EQ(RealtimeSplit::CURRENT_VERSION, realtime_split->Version());
+    ASSERT_EQ(RealtimeSplit::kCurrentVersion, realtime_split->Version());
     ASSERT_FALSE(realtime_split->SnapshotId().has_value());
     ASSERT_EQ(-1, realtime_split->CommittedOffset());
     ASSERT_EQ(9, realtime_split->MemoryUpperOffset());
@@ -506,7 +541,26 @@ TEST_F(RealtimeWriteInteTest, TestReadMemoryBeforePrepareCommit) {
     ASSERT_OK(writer->Close());
 }
 
-TEST_F(RealtimeWriteInteTest, TestRealtimeSplitTicketIsSingleUse) {
+TEST_F(RealtimeWriteInteTest, TestReadFailsAfterRealtimeSplitTicketExpires) {
+    options_[Options::REALTIME_READ_VIEW_TTL_MILLIS] = "10";
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    std::vector<Row> rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_NOK_WITH_MSG(ReadRows(plan, realtime_context), "ticket does not exist or has expired");
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestSuccessfulReaderCreationConsumesRealtimeSplitTicket) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
@@ -534,6 +588,37 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeSplitTicketIsSingleUse) {
 
     ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
                         "ticket does not exist or has expired");
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTicket) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    std::vector<Row> rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, plan->Splits().size());
+
+    ReadContextBuilder read_builder(table_path_);
+    read_builder.SetOptions(options_)
+        .SetReadFieldNames({"id", "payload", "pt"})
+        .SetPredicate(std::make_shared<UnsupportedPredicate>())
+        .EnablePredicateFilter(true)
+        .WithRealtimeContext(realtime_context)
+        .WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()), "does not support Test");
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
+    ASSERT_EQ(rows, actual_rows);
     ASSERT_OK(writer->Close());
 }
 

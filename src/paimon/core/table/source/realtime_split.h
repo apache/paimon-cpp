@@ -34,12 +34,12 @@ namespace paimon {
 /// Split combining committed disk splits and a ticket for one immutable memory view.
 ///
 /// The current fields are process-independent except that `opaque_ticket` can only be resolved by
-/// the `RealtimeContext` that created it. The ticket is single-use: creating a reader consumes it,
-/// so retrying a reader task requires planning a new `RealtimeSplit`.
+/// the `RealtimeContext` that created it. Successful reader creation consumes the ticket; a failed
+/// creation can retry the same split until the ticket expires.
 class RealtimeSplit : public Split {
  public:
     /// Current metadata version of a real-time split.
-    static constexpr int32_t CURRENT_VERSION = 1;
+    static constexpr int32_t kCurrentVersion = 1;
 
     RealtimeSplit(int32_t version, std::optional<int64_t> snapshot_id,
                   std::map<std::string, std::string> partition, int32_t bucket,

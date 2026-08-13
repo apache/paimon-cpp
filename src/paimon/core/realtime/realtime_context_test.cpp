@@ -45,6 +45,19 @@ class TestingReadView : public MemReadView {
     }
 };
 
+class TestingBatchReader : public BatchReader {
+ public:
+    Result<ReadBatch> NextBatch() override {
+        return MakeEofBatch();
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return nullptr;
+    }
+
+    void Close() override {}
+};
+
 class TestingMemIndexer : public MemIndexer {
  public:
     Status Write(RealtimeWriteBatch&&) override {
@@ -65,9 +78,9 @@ class TestingMemIndexer : public MemIndexer {
         return std::make_shared<TestingReadView>();
     }
 
-    Result<std::vector<std::unique_ptr<RealtimeReader>>> CreateQueryReaders(
+    Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
         const std::shared_ptr<MemReadView>&, int64_t, const MemQueryContext&) override {
-        return std::vector<std::unique_ptr<RealtimeReader>>();
+        return std::vector<std::unique_ptr<BatchReader>>();
     }
 
     Status AdvanceCommittedOffset(int64_t committed_offset) override {
@@ -113,6 +126,15 @@ std::unique_ptr<ArrowSchema> MakeWriteSchema() {
         arrow::ExportSchema(*arrow::schema({arrow::field("id", arrow::int64())}), c_schema.get())
             .ok());
     return c_schema;
+}
+
+TEST(RealtimeReaderTest, TestRejectsIncompleteReader) {
+    ASSERT_NOK_WITH_MSG(
+        RealtimeReader::Create(/*read_view=*/nullptr, std::make_unique<TestingBatchReader>()),
+        "view is null");
+    ASSERT_NOK_WITH_MSG(RealtimeReader::Create(std::make_shared<TestingReadView>(),
+                                               /*reader=*/nullptr),
+                        "inner reader is null");
 }
 
 TEST(RealtimeContextTest, TestReusesIndexerAndCapturesRegisteredViews) {

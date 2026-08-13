@@ -92,9 +92,6 @@ struct PAIMON_EXPORT RealtimePartitionBucketView {
 /// process-local reads.
 class PAIMON_EXPORT RealtimeContext {
  public:
-    /// Default lifetime of a pinned read view that has not been explicitly released.
-    static constexpr int64_t kDefaultReadViewTtlMillis = 5 * 60 * 1000;
-
     /// Creates a context backed by Paimon's default Arrow `MemIndexer`.
     static Result<std::shared_ptr<RealtimeContext>> Create();
 

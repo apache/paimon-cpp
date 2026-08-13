@@ -337,7 +337,7 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
         return std::make_unique<RealtimeTableScan>(
             std::move(batch_scan), context->GetRealtimeContext(), path_factory,
             snapshot_reader->GetSnapshotManager(), core_options.GetFileSystem(),
-            context->GetScanFilters());
+            context->GetScanFilters(), core_options.GetRealtimeReadViewTtlMillis());
     }
     if (!core_options.DataEvolutionEnabled()) {
         return batch_scan;

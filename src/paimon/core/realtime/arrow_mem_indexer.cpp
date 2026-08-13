@@ -315,7 +315,7 @@ Result<std::shared_ptr<MemReadView>> ArrowMemIndexer::AcquireReadView() {
     return std::shared_ptr<MemReadView>(new ReadView(std::move(batches)));
 }
 
-Result<std::vector<std::unique_ptr<RealtimeReader>>> ArrowMemIndexer::CreateQueryReaders(
+Result<std::vector<std::unique_ptr<BatchReader>>> ArrowMemIndexer::CreateQueryReaders(
     const std::shared_ptr<MemReadView>& view, int64_t offset_lower_exclusive,
     const MemQueryContext& context) {
     std::shared_ptr<ReadView> arrow_view = std::dynamic_pointer_cast<ReadView>(view);
@@ -330,12 +330,12 @@ Result<std::vector<std::unique_ptr<RealtimeReader>>> ArrowMemIndexer::CreateQuer
     // TODO(xinyu.lxy): Support predicate pushdown after adding batch statistics or index metadata.
     // The default Arrow indexer currently ignores context.predicate and
     // context.enable_predicate_pushdown, and returns all offset-matching rows as candidates.
-    std::vector<std::unique_ptr<RealtimeReader>> readers;
+    std::vector<std::unique_ptr<BatchReader>> readers;
     if (arrow_view->GetOffsetRange() && arrow_view->GetOffsetRange()->to > offset_lower_exclusive) {
         std::unique_ptr<BatchReader> reader = std::make_unique<QueryBatchReader>(
             arrow_view.get(), offset_lower_exclusive, read_schema, arrow_pool_);
         reader = std::make_unique<CompleteRowKindBatchReader>(std::move(reader), memory_pool_);
-        readers.push_back(std::make_unique<RealtimeReader>(arrow_view, std::move(reader)));
+        readers.push_back(std::move(reader));
     }
     return readers;
 }

@@ -136,12 +136,11 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
         if (!memory_range) {
             return Status::Invalid("real-time split cannot reference an empty memory view");
         }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::string opaque_ticket,
-            realtime_context_->PinReadView(memory, RealtimeContext::kDefaultReadViewTtlMillis));
+        PAIMON_ASSIGN_OR_RAISE(std::string opaque_ticket,
+                               realtime_context_->PinReadView(memory, read_view_ttl_millis_));
         pinned_tickets.push_back(opaque_ticket);
         return std::make_shared<RealtimeSplit>(
-            RealtimeSplit::CURRENT_VERSION, snapshot_id, key.partition, key.bucket,
+            RealtimeSplit::kCurrentVersion, snapshot_id, key.partition, key.bucket,
             std::move(grouped_disk_splits), GetCommittedOffset(committed_offsets, key),
             memory_range->to, std::move(opaque_ticket));
     };
@@ -173,13 +172,15 @@ RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
                                      const std::shared_ptr<FileStorePathFactory>& path_factory,
                                      const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                      const std::shared_ptr<FileSystem>& file_system,
-                                     const std::shared_ptr<ScanFilter>& scan_filter)
+                                     const std::shared_ptr<ScanFilter>& scan_filter,
+                                     int64_t read_view_ttl_millis)
     : disk_scan_(std::move(disk_scan)),
       realtime_context_(realtime_context),
       path_factory_(path_factory),
       snapshot_manager_(snapshot_manager),
       file_system_(file_system),
-      scan_filter_(scan_filter) {}
+      scan_filter_(scan_filter),
+      read_view_ttl_millis_(read_view_ttl_millis) {}
 
 Result<std::shared_ptr<Plan>> RealtimeTableScan::CreatePlan() {
     // Memory is pinned first. If a commit and reclaim happens before disk planning, the old memory

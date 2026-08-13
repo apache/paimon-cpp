@@ -53,6 +53,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
 
     ASSERT_EQ("__DEFAULT_PARTITION__", core_options.GetPartitionDefaultName());
     ASSERT_EQ(std::nullopt, core_options.GetScanSnapshotId());
+    ASSERT_EQ(5 * 60 * 1000, core_options.GetRealtimeReadViewTtlMillis());
     ASSERT_EQ("zstd", core_options.GetFileCompression());
     ASSERT_EQ("zstd", core_options.GetWriteFileCompression(0));
     ASSERT_EQ("zstd", core_options.GetWriteFileCompression(3));
@@ -793,6 +794,14 @@ TEST(CoreOptionsTest, TestScanTimestampMillis) {
                          CoreOptions::FromMap({{Options::SCAN_TIMESTAMP_MILLIS, "1721614515032"}}));
     ASSERT_EQ(1721614515032, core_options.GetScanTimestampMillis().value());
     ASSERT_EQ(StartupMode::FromTimestamp(), core_options.GetStartupMode());
+}
+
+TEST(CoreOptionsTest, TestRealtimeReadViewTtlMillis) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                         CoreOptions::FromMap({{Options::REALTIME_READ_VIEW_TTL_MILLIS, "1234"}}));
+    ASSERT_EQ(1234, core_options.GetRealtimeReadViewTtlMillis());
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::REALTIME_READ_VIEW_TTL_MILLIS, "0"}}),
+                        "realtime.read-view-ttl-millis must be positive");
 }
 
 TEST(CoreOptionsTest, TestScanTimestampMillisExplicitMode) {

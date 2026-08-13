@@ -43,7 +43,7 @@ class RealtimeTableScan : public TableScan {
                       const std::shared_ptr<FileStorePathFactory>& path_factory,
                       const std::shared_ptr<SnapshotManager>& snapshot_manager,
                       const std::shared_ptr<FileSystem>& file_system,
-                      const std::shared_ptr<ScanFilter>& scan_filter);
+                      const std::shared_ptr<ScanFilter>& scan_filter, int64_t read_view_ttl_millis);
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
 
@@ -72,6 +72,7 @@ class RealtimeTableScan : public TableScan {
     std::shared_ptr<SnapshotManager> snapshot_manager_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<ScanFilter> scan_filter_;
+    int64_t read_view_ttl_millis_;
 };
 
 }  // namespace paimon
