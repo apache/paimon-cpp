@@ -158,7 +158,8 @@ Result<std::optional<int64_t>> DataSplitImpl::RawMergedRowCount(
                 return Status::Invalid(
                     "deletion vector not found for file with missing cardinality");
             }
-            sum += data_file->row_count - deletion_vector->GetCardinality();
+            PAIMON_ASSIGN_OR_RAISE(int64_t deleted_row_count, deletion_vector->GetCardinality());
+            sum += data_file->row_count - deleted_row_count;
         }
     }
 
@@ -166,9 +167,17 @@ Result<std::optional<int64_t>> DataSplitImpl::RawMergedRowCount(
 }
 
 bool DataSplitImpl::DataEvolutionRowCountAvailable() const {
-    return std::all_of(data_files_.begin(), data_files_.end(),
-                       [](const std::shared_ptr<DataFileMeta>& file) {
-                           return file->first_row_id != std::nullopt;
+    bool all_files_have_first_row_id = std::all_of(data_files_.begin(), data_files_.end(),
+                                                   [](const std::shared_ptr<DataFileMeta>& file) {
+                                                       return file->first_row_id != std::nullopt;
+                                                   });
+    if (!all_files_have_first_row_id) {
+        return false;
+    }
+    return std::all_of(data_deletion_files_.begin(), data_deletion_files_.end(),
+                       [](const std::optional<DeletionFile>& deletion_file) {
+                           return deletion_file == std::nullopt ||
+                                  deletion_file.value().cardinality != std::nullopt;
                        });
 }
 
@@ -192,6 +201,11 @@ Result<int64_t> DataSplitImpl::DataEvolutionMergedRowCount() const {
             max_count = std::max(max_count, file->row_count);
         }
         sum += max_count;
+    }
+    for (const auto& deletion_file : data_deletion_files_) {
+        if (deletion_file != std::nullopt) {
+            sum -= deletion_file.value().cardinality.value();
+        }
     }
     return sum;
 }

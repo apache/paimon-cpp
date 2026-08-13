@@ -51,7 +51,7 @@ class FailingDeletionVector : public DeletionVector {
         return true;
     }
 
-    int64_t GetCardinality() const override {
+    Result<int64_t> GetCardinality() const override {
         return 0;
     }
 

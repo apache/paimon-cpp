@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "paimon/result.h"
@@ -151,7 +152,7 @@ class PAIMON_EXPORT BasicFileStatus {
     virtual std::string GetPath() const = 0;
 };
 
-/// Extended file status information interface.
+/// Extended file status information.
 ///
 /// This class extends BasicFileStatus to provide comprehensive file system metadata including file
 /// size, modification time, and other attributes. It's used for operations that require detailed
@@ -161,21 +162,45 @@ class PAIMON_EXPORT FileStatus {
     FileStatus() = default;
     virtual ~FileStatus() = default;
 
+    /// Sentinel returned by `GetModificationTime()` when the modification time is not known.
+    static constexpr int64_t kUnknownModificationTime = -1;
+
+    /// Create a file status from caller-supplied metadata.
+    /// @param path The path of the file or directory.
+    /// @param length The size of the file in bytes. It may be negative only when the size is
+    ///               unknown.
+    /// @param is_dir Whether the path represents a directory. Defaults to false.
+    FileStatus(std::string path, int64_t length, bool is_dir = false)
+        : path_(std::move(path)), length_(length), is_dir_(is_dir) {}
+
     /// Get the size of the file in bytes.
     /// @note For directories, this method is undefined behavior.
-    virtual int64_t GetLen() const = 0;
+    virtual int64_t GetLen() const {
+        return length_;
+    }
 
     /// Check if this entry represents a directory.
-    virtual bool IsDir() const = 0;
+    virtual bool IsDir() const {
+        return is_dir_;
+    }
 
     /// Get the path of this file or directory.
-    virtual std::string GetPath() const = 0;
+    virtual std::string GetPath() const {
+        return path_;
+    }
 
     /// Get the last modification time of the file.
     ///
     /// @return A long value representing the time the file was last modified, measured in
     /// milliseconds since the epoch (UTC January 1, 1970).
-    virtual int64_t GetModificationTime() const = 0;
+    virtual int64_t GetModificationTime() const {
+        return kUnknownModificationTime;
+    }
+
+ private:
+    std::string path_;
+    int64_t length_ = -1;
+    bool is_dir_ = false;
 };
 
 /// Abstract file system interface.
@@ -192,6 +217,24 @@ class PAIMON_EXPORT FileSystem {
     /// @return Result containing a unique pointer to `InputStream` on success, or error status on
     ///         failure (e.g., file not found, permission denied).
     virtual Result<std::unique_ptr<InputStream>> Open(const std::string& path) const = 0;
+
+    /// Open an existing regular file for reading with known file metadata.
+    /// @param file_status The trusted status of the file to open. Its path and length must
+    ///                    identify an existing regular file. Its length must be non-negative;
+    ///                    zero is valid for an empty file.
+    /// @return Result containing a unique pointer to `InputStream` on success, or error status on
+    ///         failure (e.g., invalid file size, file not found, permission denied).
+    /// @note File systems may rely on `file_status` to skip metadata requests. The caller must
+    ///       not expect this method to validate the path, file type, or size. A stale or
+    ///       incorrect status, or a file removed after planning, can cause reads to end early or
+    ///       fail when read instead of failing at open time. Wrapping file systems should forward
+    ///       both `Open` overloads.
+    virtual Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const {
+        if (file_status.GetLen() < 0) {
+            return Status::Invalid("file size must be non-negative");
+        }
+        return Open(file_status.GetPath());
+    }
 
     /// Create a new file for writing.
     /// @param path The file path to create.

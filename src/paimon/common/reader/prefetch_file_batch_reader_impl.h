@@ -56,12 +56,12 @@ class Metrics;
 class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
  public:
     static Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> Create(
-        const std::string& data_file_path, const ReaderBuilder* reader_builder,
-        const std::shared_ptr<FileSystem>& fs, uint32_t prefetch_max_parallel_num,
-        int32_t batch_size, uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
-        const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
-        PrefetchCacheMode prefetch_cache_mode, const CacheConfig& cache_config,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::string& data_file_path, int64_t data_file_size,
+        const ReaderBuilder* reader_builder, const std::shared_ptr<FileSystem>& fs,
+        uint32_t prefetch_max_parallel_num, int32_t batch_size, uint32_t prefetch_batch_count,
+        bool enable_adaptive_prefetch_strategy, const std::shared_ptr<Executor>& executor,
+        bool initialize_read_ranges, PrefetchCacheMode prefetch_cache_mode,
+        const CacheConfig& cache_config, const std::shared_ptr<MemoryPool>& pool);
 
     ~PrefetchFileBatchReaderImpl() override;
 

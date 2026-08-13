@@ -25,6 +25,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/internal_read_context.h"
@@ -687,6 +688,161 @@ TEST_F(DataEvolutionSplitReadTest, TestSplitWithMultipleBlobFilesPerGroup) {
     std::vector<std::vector<std::shared_ptr<DataFileMeta>>> expected_metas = {
         {files[6], files[0], files[1], files[2]}, {files[3], files[4], files[5]}};
     ASSERT_EQ(expected_metas, split_metas);
+}
+
+namespace {
+std::shared_ptr<DeletionVector> MakeBitmapDv(const std::vector<int64_t>& deleted_positions) {
+    RoaringBitmap32 bitmap;
+    for (int64_t position : deleted_positions) {
+        bitmap.Add(static_cast<uint32_t>(position));
+    }
+    return std::make_shared<BitmapDeletionVector>(bitmap);
+}
+
+DeletionVector::Factory MakeSingleFileDvFactory(const std::string& expected_file_name,
+                                                const std::shared_ptr<DeletionVector>& dv) {
+    return [expected_file_name,
+            dv](const std::string& file_name) -> Result<std::shared_ptr<DeletionVector>> {
+        if (file_name == expected_file_name) {
+            return dv;
+        }
+        return std::shared_ptr<DeletionVector>();
+    };
+}
+}  // namespace
+
+TEST_F(DataEvolutionSplitReadTest, TestReadGroupDeletionVector) {
+    // the anchor is the oldest normal file; blob files never anchor the deletion vector
+    std::vector<std::shared_ptr<DataFileMeta>> group = {
+        CreateNormalFile("newest.parquet", /*first_row_id=*/0, /*row_count=*/100,
+                         /*max_sequence_number=*/20),
+        CreateNormalFile("anchor.parquet", /*first_row_id=*/0, /*row_count=*/100,
+                         /*max_sequence_number=*/10),
+        CreateDataFileMeta("blob0.blob", /*first_row_id=*/0, /*row_count=*/100, /*max_seq=*/5)};
+
+    auto dv = MakeBitmapDv({3, 7});
+    ASSERT_OK_AND_ASSIGN(std::optional<DataEvolutionSplitRead::GroupDeletionVector> group_dv,
+                         DataEvolutionSplitRead::ReadGroupDeletionVector(
+                             group, MakeSingleFileDvFactory("anchor.parquet", dv)));
+    ASSERT_TRUE(group_dv.has_value());
+    ASSERT_EQ(group_dv->deletion_vector, dv);
+    ASSERT_EQ(group_dv->anchor_range, Range(0, 99));
+
+    // no deletion vector on the anchor file
+    ASSERT_OK_AND_ASSIGN(group_dv, DataEvolutionSplitRead::ReadGroupDeletionVector(
+                                       group, MakeSingleFileDvFactory("newest.parquet", dv)));
+    ASSERT_FALSE(group_dv.has_value());
+
+    // an empty deletion vector is treated as absent
+    ASSERT_OK_AND_ASSIGN(group_dv,
+                         DataEvolutionSplitRead::ReadGroupDeletionVector(
+                             group, MakeSingleFileDvFactory("anchor.parquet", MakeBitmapDv({}))));
+    ASSERT_FALSE(group_dv.has_value());
+
+    // a split without any deletion file hands down a null factory, which is not an error
+    ASSERT_OK_AND_ASSIGN(group_dv, DataEvolutionSplitRead::ReadGroupDeletionVector(
+                                       group, DeletionVector::Factory()));
+    ASSERT_FALSE(group_dv.has_value());
+
+    // a group of nothing but dedicated storage files has no anchor, so no deletion vector can be
+    // keyed by it. The split's factory is non-null because another group of the same split
+    // carries one, which must not fail this group's read.
+    std::vector<std::shared_ptr<DataFileMeta>> anchorless_group = {
+        CreateDataFileMeta("blob1.blob", /*first_row_id=*/100, /*row_count=*/100, /*max_seq=*/5),
+        CreateDataFileMeta("blob2.blob", /*first_row_id=*/100, /*row_count=*/100, /*max_seq=*/6),
+        CreateDataFileMeta("vector-store.vector.parquet", /*first_row_id=*/100, /*row_count=*/100,
+                           /*max_seq=*/7)};
+    ASSERT_OK_AND_ASSIGN(group_dv,
+                         DataEvolutionSplitRead::ReadGroupDeletionVector(
+                             anchorless_group, MakeSingleFileDvFactory("anchor.parquet", dv)));
+    ASSERT_FALSE(group_dv.has_value());
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestCreateGroupDvFactoryShiftsPositions) {
+    auto anchor = CreateNormalFile("anchor.parquet", /*first_row_id=*/100, /*row_count=*/100,
+                                   /*max_sequence_number=*/10);
+    // blob file covers row ids [140, 169], its offset inside the anchor range is 40
+    auto blob = CreateDataFileMeta("blob0.blob", /*first_row_id=*/140, /*row_count=*/30,
+                                   /*max_seq=*/20);
+    std::vector<std::shared_ptr<DataFileMeta>> group = {anchor, blob};
+
+    // deletion vector positions are anchor-relative: positions {10, 45} are row ids {110, 145}
+    DataEvolutionSplitRead::GroupDeletionVector group_dv{MakeBitmapDv({10, 45}), Range(100, 199)};
+    ASSERT_OK_AND_ASSIGN(DeletionVector::Factory factory,
+                         DataEvolutionSplitRead::CreateGroupDvFactory(group, group_dv));
+    ASSERT_TRUE(factory);
+
+    // the anchor file reads the deletion vector unshifted
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DeletionVector> anchor_dv, factory("anchor.parquet"));
+    ASSERT_TRUE(anchor_dv);
+    ASSERT_OK_AND_ASSIGN(bool is_deleted, anchor_dv->IsDeleted(10));
+    ASSERT_TRUE(is_deleted);
+    ASSERT_OK_AND_ASSIGN(is_deleted, anchor_dv->IsDeleted(45));
+    ASSERT_TRUE(is_deleted);
+    ASSERT_OK_AND_ASSIGN(is_deleted, anchor_dv->IsDeleted(5));
+    ASSERT_FALSE(is_deleted);
+
+    // the blob file reads it shifted to its local positions: local 5 is row id 145
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DeletionVector> blob_dv, factory("blob0.blob"));
+    ASSERT_TRUE(blob_dv);
+    ASSERT_OK_AND_ASSIGN(is_deleted, blob_dv->IsDeleted(5));
+    ASSERT_TRUE(is_deleted);
+    ASSERT_OK_AND_ASSIGN(is_deleted, blob_dv->IsDeleted(10));
+    ASSERT_FALSE(is_deleted);
+    ASSERT_FALSE(blob_dv->IsEmpty());
+    // the view is limited to the blob file's 30-row window: cardinality only counts the
+    // deleted position inside the window, probing beyond the window is rejected
+    ASSERT_EQ(blob_dv->GetCardinality().value(), 1);
+    ASSERT_NOK_WITH_MSG(blob_dv->IsDeleted(30), "out of window");
+
+    // the mutating and serializing halves would silently drop the shift, so they reject
+    ASSERT_NOK_WITH_MSG(blob_dv->Delete(0), "read-only");
+    ASSERT_NOK_WITH_MSG(blob_dv->CheckedDelete(0), "read-only");
+    ASSERT_NOK_WITH_MSG(blob_dv->Merge(MakeBitmapDv({0})), "read-only");
+    ASSERT_NOK_WITH_MSG(blob_dv->SerializeTo(GetDefaultPool(), /*out=*/nullptr),
+                        "does not support serialization");
+    ASSERT_NOK_WITH_MSG(blob_dv->SerializeToBytes(GetDefaultPool()),
+                        "does not support serialization");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DeletionVector> unknown_dv, factory("unknown.parquet"));
+    ASSERT_FALSE(unknown_dv);
+
+    ASSERT_OK_AND_ASSIGN(DeletionVector::Factory null_factory,
+                         DataEvolutionSplitRead::CreateGroupDvFactory(group, std::nullopt));
+    ASSERT_FALSE(null_factory);
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestCreateGroupDvFactoryRejectsFileOutsideAnchorRange) {
+    auto anchor = CreateNormalFile("anchor.parquet", /*first_row_id=*/100, /*row_count=*/100,
+                                   /*max_sequence_number=*/10);
+    auto blob = CreateDataFileMeta("blob0.blob", /*first_row_id=*/180, /*row_count=*/30,
+                                   /*max_seq=*/20);
+    std::vector<std::shared_ptr<DataFileMeta>> group = {anchor, blob};
+
+    DataEvolutionSplitRead::GroupDeletionVector group_dv{MakeBitmapDv({10}), Range(100, 199)};
+    ASSERT_NOK_WITH_MSG(DataEvolutionSplitRead::CreateGroupDvFactory(group, group_dv),
+                        "should contain row id range");
+}
+
+TEST_F(DataEvolutionSplitReadTest, TestExcludeDeletedRowIds) {
+    // anchor range starts at 100, deleted anchor positions {3, 4, 7} are row ids {103, 104, 107}
+    DataEvolutionSplitRead::GroupDeletionVector group_dv{MakeBitmapDv({3, 4, 7}), Range(100, 199)};
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Range> remaining,
+                         DataEvolutionSplitRead::ExcludeDeletedRowIds({Range(102, 108)}, group_dv));
+    std::vector<Range> expected = {Range(102, 102), Range(105, 106), Range(108, 108)};
+    ASSERT_EQ(remaining, expected);
+
+    // ranges without deleted rows are kept whole
+    ASSERT_OK_AND_ASSIGN(remaining, DataEvolutionSplitRead::ExcludeDeletedRowIds(
+                                        {Range(110, 115), Range(120, 121)}, group_dv));
+    expected = {Range(110, 115), Range(120, 121)};
+    ASSERT_EQ(remaining, expected);
+
+    // a fully deleted range disappears
+    ASSERT_OK_AND_ASSIGN(remaining,
+                         DataEvolutionSplitRead::ExcludeDeletedRowIds({Range(103, 104)}, group_dv));
+    ASSERT_TRUE(remaining.empty());
 }
 
 }  // namespace paimon::test

@@ -43,7 +43,7 @@ class IndexManifestFileHandler {
     class IndexManifestFileCombiner {
      public:
         virtual ~IndexManifestFileCombiner() = default;
-        virtual std::vector<IndexManifestEntry> Combine(
+        virtual Result<std::vector<IndexManifestEntry>> Combine(
             const std::vector<IndexManifestEntry>& prev_index_files,
             const std::vector<IndexManifestEntry>& new_index_files) const = 0;
     };
@@ -51,7 +51,7 @@ class IndexManifestFileHandler {
     /// Combine previous and new index files by partition, bucket and index type.
     class BucketedCombiner : public IndexManifestFileCombiner {
      public:
-        std::vector<IndexManifestEntry> Combine(
+        Result<std::vector<IndexManifestEntry>> Combine(
             const std::vector<IndexManifestEntry>& prev_index_files,
             const std::vector<IndexManifestEntry>& new_index_files) const override;
     };
@@ -59,7 +59,20 @@ class IndexManifestFileHandler {
     /// Combine previous and new index files by file name.
     class GlobalFileNameCombiner : public IndexManifestFileCombiner {
      public:
-        std::vector<IndexManifestEntry> Combine(
+        Result<std::vector<IndexManifestEntry>> Combine(
+            const std::vector<IndexManifestEntry>& prev_index_files,
+            const std::vector<IndexManifestEntry>& new_index_files) const override;
+    };
+
+    /// Combine previous and new deletion vector index files by file name, for a table without
+    /// buckets, where the bucket cannot tell two index files apart.
+    ///
+    /// A data file is covered by at most one deletion vector, so a delta that adds a second one
+    /// for a data file, or drops one that is not there, was built against a different base and
+    /// is rejected rather than silently changing which rows the read returns.
+    class GlobalDeletionVectorCombiner : public IndexManifestFileCombiner {
+     public:
+        Result<std::vector<IndexManifestEntry>> Combine(
             const std::vector<IndexManifestEntry>& prev_index_files,
             const std::vector<IndexManifestEntry>& new_index_files) const override;
     };

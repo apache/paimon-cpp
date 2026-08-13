@@ -47,6 +47,21 @@ not block writes.
    (``bucket > 0``). Dynamic bucketing (``bucket = -1``) does not support
    compaction. Tables with blob columns also skip compaction.
 
+.. _data-evolution-deletion-vectors-compaction:
+
+.. note::
+   A data-evolution table (``data-evolution.enabled = true``) may enable
+   ``deletion-vectors.enabled``. Paimon C++ never compacts such a table: auto
+   compaction never runs on it, since data evolution requires ``bucket = -1``,
+   and ``AppendCompactCoordinator::Run``, the dedicated compaction entry point,
+   rejects it outright rather than dropping the deletes. This matches the
+   Paimon Java revision this support was ported from, which ends the compaction
+   scan as soon as deletion vectors are enabled; later Java releases do compact
+   such a table, and Paimon C++ has not caught up.
+
+   Reading such a table is supported; see
+   :ref:`data-evolution-deletion-vectors`.
+
 Auto Compaction
 ~~~~~~~~~~~~~~~
 During each flush, the writer triggers a best-effort auto compaction. The

@@ -56,7 +56,7 @@ std::pair<int64_t, int64_t> ComputeBatchSliceByReadRange(
 }  // namespace
 
 Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl::Create(
-    const std::string& data_file_path, const ReaderBuilder* reader_builder,
+    const std::string& data_file_path, int64_t data_file_size, const ReaderBuilder* reader_builder,
     const std::shared_ptr<FileSystem>& fs, uint32_t prefetch_max_parallel_num, int32_t batch_size,
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
@@ -83,20 +83,22 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 
     std::shared_ptr<ReadAheadCache> cache;
     if (prefetch_cache_mode != PrefetchCacheMode::NEVER) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream, fs->Open(data_file_path));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
+                               fs->Open(FileStatus(data_file_path, data_file_size)));
         cache = std::make_shared<ReadAheadCache>(input_stream, cache_config, pool);
     }
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
     for (uint32_t i = 0; i < prefetch_max_parallel_num; i++) {
-        futures.push_back(Via(executor.get(),
-                              [&fs, &data_file_path, &reader_builder,
-                               &cache]() -> Result<std::unique_ptr<FileBatchReader>> {
-                                  PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                                                         fs->Open(data_file_path));
-                                  auto cache_input_stream = std::make_shared<CacheInputStream>(
-                                      std::move(input_stream), cache);
-                                  return reader_builder->Build(cache_input_stream);
-                              }));
+        futures.push_back(
+            Via(executor.get(),
+                [&fs, &data_file_path, data_file_size, &reader_builder,
+                 &cache]() -> Result<std::unique_ptr<FileBatchReader>> {
+                    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
+                                           fs->Open(FileStatus(data_file_path, data_file_size)));
+                    auto cache_input_stream =
+                        std::make_shared<CacheInputStream>(std::move(input_stream), cache);
+                    return reader_builder->Build(cache_input_stream);
+                }));
     }
     std::vector<std::shared_ptr<PrefetchFileBatchReader>> readers;
     for (auto& file_batch_reader : CollectAll(futures)) {

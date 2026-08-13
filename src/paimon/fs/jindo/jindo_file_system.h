@@ -38,6 +38,8 @@ class JindoFileSystem : public FileSystem {
     explicit JindoFileSystem(std::unique_ptr<JdoFileSystem>&& fs);
     ~JindoFileSystem() override = default;
 
+    using FileSystem::Open;
+
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override;
     Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
                                                  bool overwrite) const override;

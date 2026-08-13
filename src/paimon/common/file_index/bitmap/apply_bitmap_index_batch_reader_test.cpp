@@ -93,8 +93,8 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
                 ASSERT_OK_AND_ASSIGN(
                     file_batch_reader,
                     PrefetchFileBatchReaderImpl::Create(
-                        /*data_file_path=*/"DUMMY", &reader_builder, fs_, prefetch_batch_count,
-                        batch_size, prefetch_batch_count * 2,
+                        /*data_file_path=*/"DUMMY", /*data_file_size=*/0, &reader_builder, fs_,
+                        prefetch_batch_count, batch_size, prefetch_batch_count * 2,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
                         /*prefetch_cache_mode=*/PrefetchCacheMode::ALWAYS, CacheConfig(), pool_));

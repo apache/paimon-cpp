@@ -66,8 +66,8 @@ TEST(DeletionVectorsIndexFileTest, Basic) {
     // Round trip: write then read all deletion vectors from index file.
     ASSERT_OK_AND_ASSIGN(auto read_back, index_file->ReadAllDeletionVectors(meta));
     ASSERT_EQ(read_back.size(), input.size());
-    ASSERT_EQ(read_back.at("dv1")->GetCardinality(), 10);
-    ASSERT_EQ(read_back.at("dv2")->GetCardinality(), 10);
+    ASSERT_EQ(read_back.at("dv1")->GetCardinality().value(), 10);
+    ASSERT_EQ(read_back.at("dv2")->GetCardinality().value(), 10);
 
     ASSERT_OK_AND_ASSIGN(bool is_deleted, read_back.at("dv1")->IsDeleted(0));
     ASSERT_TRUE(is_deleted);
@@ -102,7 +102,7 @@ TEST(DeletionVectorsIndexFileTest, ExternalPathAndIndexFileMeta) {
     // Round trip for external path index file.
     ASSERT_OK_AND_ASSIGN(auto read_back, index_file.ReadAllDeletionVectors(meta));
     ASSERT_EQ(read_back.size(), 1);
-    ASSERT_EQ(read_back.at("dv_ext")->GetCardinality(), 5);
+    ASSERT_EQ(read_back.at("dv_ext")->GetCardinality().value(), 5);
     ASSERT_OK_AND_ASSIGN(bool is_deleted, read_back.at("dv_ext")->IsDeleted(0));
     ASSERT_TRUE(is_deleted);
     ASSERT_OK_AND_ASSIGN(is_deleted, read_back.at("dv_ext")->IsDeleted(5));

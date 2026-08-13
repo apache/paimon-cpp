@@ -1323,6 +1323,139 @@ TEST(DataSplitTest, TestPartialMergedRowCountFallsBackToDataEvolution) {
     ASSERT_EQ(std::optional<int64_t>(7), merged_row_count);
 }
 
+TEST(DataSplitTest, TestDataEvolutionMergedRowCountSubtractsDeletionFileCardinality) {
+    auto pool = GetDefaultPool();
+    auto file_meta1 = std::make_shared<DataFileMeta>(
+        "data-0.orc", /*file_size=*/100, /*row_count=*/5, DataFileMeta::EmptyMinKey(),
+        DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+        /*min_sequence_number=*/0, /*max_sequence_number=*/2, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/Timestamp(1725562946338ll, 0),
+        /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/100,
+        /*write_cols=*/std::nullopt);
+    auto file_meta2 = std::make_shared<DataFileMeta>(
+        "data-1.orc", /*file_size=*/100, /*row_count=*/5, DataFileMeta::EmptyMinKey(),
+        DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+        /*min_sequence_number=*/3, /*max_sequence_number=*/7, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/Timestamp(1725562947338ll, 0),
+        /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/100,
+        /*write_cols=*/std::nullopt);
+
+    DataSplitImpl::Builder builder(
+        /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
+        /*bucket=*/0, /*bucket_path=*/"fake_table/f1=10/bucket-0", {file_meta1, file_meta2});
+
+    // only the anchor file of the row range group carries a deletion file
+    auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(
+        builder.WithSnapshot(1)
+            .WithDataDeletionFiles({DeletionFile("fake/index-0", /*offset=*/1, /*length=*/22,
+                                                 /*cardinality=*/2),
+                                    std::nullopt})
+            .IsStreaming(false)
+            .RawConvertible(false)
+            .Build()
+            .value());
+
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> merged_row_count, data_split->MergedRowCount());
+    ASSERT_EQ(std::optional<int64_t>(3), merged_row_count);
+}
+
+// A data evolution split carrying deletion files is planned by one engine and read by another,
+// so the combination of first row ids and deletion files has to survive a serialization round
+// trip. Mirrors Java's DataSplitCompatibleTest#testDeletionFilesSerialize.
+TEST(DataSplitTest, TestSerializeDataEvolutionSplitWithDeletionFiles) {
+    auto pool = GetDefaultPool();
+    auto file_meta1 = std::make_shared<DataFileMeta>(
+        "data-0.orc", /*file_size=*/100, /*row_count=*/10, DataFileMeta::EmptyMinKey(),
+        DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+        /*min_sequence_number=*/0, /*max_sequence_number=*/2, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/Timestamp(1725562946338ll, 0),
+        /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/0,
+        /*write_cols=*/std::nullopt);
+    auto file_meta2 = std::make_shared<DataFileMeta>(
+        "data-1.orc", /*file_size=*/100, /*row_count=*/10, DataFileMeta::EmptyMinKey(),
+        DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+        /*min_sequence_number=*/3, /*max_sequence_number=*/7, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/Timestamp(1725562947338ll, 0),
+        /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/0,
+        /*write_cols=*/std::nullopt);
+
+    DataSplitImpl::Builder builder(
+        /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
+        /*bucket=*/0, /*bucket_path=*/"fake_table/f1=10/bucket-0", {file_meta1, file_meta2});
+    // only the anchor file of the row range group carries a deletion file
+    auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(
+        builder.WithSnapshot(1)
+            .WithTotalBuckets(1)
+            .WithDataDeletionFiles({DeletionFile("fake/index-0", /*offset=*/1, /*length=*/22,
+                                                 /*cardinality=*/3),
+                                    std::nullopt})
+            .IsStreaming(false)
+            .RawConvertible(false)
+            .Build()
+            .value());
+
+    ASSERT_OK_AND_ASSIGN(std::string serialize_bytes, Split::Serialize(data_split, pool));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> deserialized,
+                         Split::Deserialize(serialize_bytes.data(), serialize_bytes.size(), pool));
+    auto result_data_split = std::dynamic_pointer_cast<DataSplitImpl>(deserialized);
+    ASSERT_TRUE(result_data_split);
+
+    ASSERT_EQ(*result_data_split, *data_split) << result_data_split->ToString();
+    ASSERT_EQ(result_data_split->DeletionFiles().size(), 2);
+    ASSERT_TRUE(result_data_split->DeletionFiles()[0].has_value());
+    ASSERT_EQ(result_data_split->DeletionFiles()[0].value().cardinality, std::optional<int64_t>(3));
+    ASSERT_FALSE(result_data_split->DeletionFiles()[1].has_value());
+    for (const auto& file : result_data_split->DataFiles()) {
+        ASSERT_EQ(file->first_row_id, std::optional<int64_t>(0));
+    }
+    // the deletion vector still shortens the merged row count after the round trip
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> merged_row_count,
+                         result_data_split->MergedRowCount());
+    ASSERT_EQ(std::optional<int64_t>(7), merged_row_count);
+}
+
+TEST(DataSplitTest, TestDataEvolutionMergedRowCountUnavailableWithoutCardinality) {
+    auto pool = GetDefaultPool();
+    auto file_meta1 = std::make_shared<DataFileMeta>(
+        "data-0.orc", /*file_size=*/100, /*row_count=*/5, DataFileMeta::EmptyMinKey(),
+        DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
+        /*min_sequence_number=*/0, /*max_sequence_number=*/2, /*schema_id=*/0,
+        /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
+        /*creation_time=*/Timestamp(1725562946338ll, 0),
+        /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
+        /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
+        /*first_row_id=*/100,
+        /*write_cols=*/std::nullopt);
+
+    DataSplitImpl::Builder builder(
+        /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
+        /*bucket=*/0, /*bucket_path=*/"fake_table/f1=10/bucket-0", {file_meta1});
+
+    auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(
+        builder.WithSnapshot(1)
+            .WithDataDeletionFiles({DeletionFile("fake/index-0", /*offset=*/1, /*length=*/22,
+                                                 /*cardinality=*/std::nullopt)})
+            .IsStreaming(false)
+            .RawConvertible(false)
+            .Build()
+            .value());
+
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> merged_row_count, data_split->MergedRowCount());
+    ASSERT_EQ(std::nullopt, merged_row_count);
+}
+
 // Covers the refactored path where a deletion file exists but its cardinality metadata is
 // missing (nullopt). In that case MergedRowCount must call the provided dv_factory to read the
 // deletion vector and derive the exact cardinality, instead of returning nullopt.
@@ -1376,7 +1509,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountResolvesMissingCardinalityViaFactor
     roaring.Add(1);
     roaring.Add(3);
     auto deletion_vector = std::make_shared<BitmapDeletionVector>(roaring);
-    ASSERT_EQ(2, deletion_vector->GetCardinality());
+    ASSERT_EQ(2, deletion_vector->GetCardinality().value());
 
     DeletionVector::Factory dv_factory =
         [&deletion_vector](

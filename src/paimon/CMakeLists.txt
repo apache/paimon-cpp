@@ -425,6 +425,7 @@ set(PAIMON_CORE_SRCS
     core/utils/branch_manager.cpp
     core/utils/blob_view_lookup.cpp
     core/utils/consumer_manager.cpp
+    core/utils/data_evolution_utils.cpp
     core/utils/field_mapping.cpp
     core/utils/nested_projection_utils.cpp
     core/utils/file_store_path_factory.cpp
@@ -883,6 +884,7 @@ if(PAIMON_BUILD_TESTS)
                     core/utils/blob_view_lookup_test.cpp
                     core/utils/branch_manager_test.cpp
                     core/utils/consumer_manager_test.cpp
+                    core/utils/data_evolution_utils_test.cpp
                     core/utils/file_store_path_factory_cache_test.cpp
                     core/utils/field_mapping_test.cpp
                     core/utils/nested_projection_utils_test.cpp

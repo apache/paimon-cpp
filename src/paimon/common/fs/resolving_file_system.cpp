@@ -79,6 +79,13 @@ Result<std::unique_ptr<InputStream>> ResolvingFileSystem::Open(const std::string
     return fs->Open(path);
 }
 
+Result<std::unique_ptr<InputStream>> ResolvingFileSystem::Open(
+    const FileStatus& file_status) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> fs,
+                           GetRealFileSystem(file_status.GetPath()));
+    return fs->Open(file_status);
+}
+
 Result<std::unique_ptr<OutputStream>> ResolvingFileSystem::Create(const std::string& path,
                                                                   bool overwrite) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> fs, GetRealFileSystem(path));

@@ -79,6 +79,27 @@ class PAIMON_EXPORT NestedProjectionUtils {
     static Result<std::vector<std::string>> GetMapSelectedKeys(
         const std::shared_ptr<arrow::Field>& field);
 
+    /// @return true when `field` is a selected-key MAP projection: a STRUCT carrying
+    /// `paimon.map.selected-keys` metadata.
+    static bool IsMapSharedShreddingAccessField(const std::shared_ptr<arrow::Field>& field);
+
+    /// Validates a selected-key MAP projection and returns its selected keys. The field must be a
+    /// non-empty STRUCT, its metadata key count must match its child count, and all children must
+    /// have the same value type.
+    static Result<std::vector<std::string>> ValidateMapSharedShreddingAccessField(
+        const std::shared_ptr<arrow::Field>& field);
+
+    /// Rewrites a selected-key STRUCT projection to use the data file's complete MAP value type
+    /// for every child before materialization. Cpp paimon does not support schema evolution for
+    /// for field inside the MAP value.
+    static Result<std::shared_ptr<arrow::DataType>> BuildMapSharedShreddingAccessDataType(
+        const std::shared_ptr<arrow::Field>& read_field,
+        const std::shared_ptr<arrow::DataType>& data_type);
+
+    /// Returns a string view for a MAP key stored as string or dictionary<string|large_string>.
+    static Result<std::string_view> GetMapKeyViewAt(const std::shared_ptr<arrow::Array>& key_array,
+                                                    int64_t entry_idx);
+
     /// Filter a MapArray so that only entries whose key is in `selected_keys` are kept.
     /// Supports string keys and dictionary<string|large_string> keys.
     /// The output map entry order follows

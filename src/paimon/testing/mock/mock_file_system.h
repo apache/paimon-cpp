@@ -103,6 +103,8 @@ class MockFileSystem : public FileSystem {
     MockFileSystem() = default;
     ~MockFileSystem() override = default;
 
+    using FileSystem::Open;
+
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
         return std::make_unique<MockInputStream>();
     }

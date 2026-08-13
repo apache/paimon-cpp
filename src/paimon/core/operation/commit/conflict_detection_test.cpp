@@ -572,26 +572,10 @@ TEST_F(ConflictDetectionTest, TestBucketKeepSameCacheEviction) {
     ASSERT_EQ(1U, evicted_partition_buckets.size());
 }
 
-TEST_F(ConflictDetectionTest, TestDeletionVectorsNotSupportedWithBucketUnawareMode) {
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<TableSchema> table_schema,
-        TableSchema::Create(/*schema_id=*/0, arrow::schema(fields_), /*partition_keys=*/{"f1"},
-                            /*primary_keys=*/{}, /*options=*/{}));
-    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
-                         CoreOptions::FromMap({{Options::BUCKET, "0"},
-                                               {Options::DELETION_VECTORS_ENABLED, "true"}}));
-    ConflictDetection detection(table_schema, core_options, /*snapshot_manager=*/nullptr,
-                                /*manifest_list=*/nullptr, /*manifest_file=*/nullptr,
-                                /*commit_scanner=*/nullptr, "test_user", "test_table",
-                                /*path_factory=*/nullptr);
-
-    ASSERT_NOK_WITH_MSG(CheckConflicts(detection, /*base_entries=*/{}, /*delta_entries=*/{},
-                                       Snapshot::CommitKind::Append()),
-                        "not yet support dv with BUCKET_UNAWARE mode");
-}
-
-TEST_F(ConflictDetectionTest,
-       TestDeletionVectorsNotSupportedWithResolvedBucketUnawareModeFromMinusOne) {
+TEST_F(ConflictDetectionTest, TestDeletionVectorsAllowedWithBucketUnawareMode) {
+    // an unaware bucket table may carry deletion vectors, told apart by index file name rather
+    // than by bucket. Adding files commits; dropping one needs the pairing this class does not
+    // build and is refused
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<TableSchema> table_schema,
         TableSchema::Create(/*schema_id=*/0, arrow::schema(fields_), /*partition_keys=*/{"f1"},
@@ -604,9 +588,38 @@ TEST_F(ConflictDetectionTest,
                                 /*commit_scanner=*/nullptr, "test_user", "test_table",
                                 /*path_factory=*/nullptr);
 
-    ASSERT_NOK_WITH_MSG(CheckConflicts(detection, /*base_entries=*/{}, /*delta_entries=*/{},
-                                       Snapshot::CommitKind::Append()),
-                        "not yet support dv with BUCKET_UNAWARE mode");
+    ASSERT_OK(CheckConflicts(detection, /*base_entries=*/{}, /*delta_entries=*/{},
+                             Snapshot::CommitKind::Append()));
+
+    ASSERT_OK(CheckConflicts(detection, /*base_entries=*/{},
+                             {CreateManifestEntry("added.parquet", FileKind::Add())},
+                             Snapshot::CommitKind::Append()));
+
+    ASSERT_NOK_WITH_MSG(
+        CheckConflicts(detection, {CreateManifestEntry("dropped.parquet", FileKind::Add())},
+                       {CreateManifestEntry("dropped.parquet", FileKind::Delete())},
+                       Snapshot::CommitKind::Append()),
+        "Committing the deletion of data file dropped.parquet is not supported");
+}
+
+TEST_F(ConflictDetectionTest, TestDeletionVectorsDeleteAllowedWithoutBucketUnawareMode) {
+    // the guard above is specific to a table whose deletion vectors the entries cannot reference:
+    // a bucketed table pairs them by bucket, so deleting a data file stays allowed there
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> table_schema,
+        TableSchema::Create(/*schema_id=*/0, arrow::schema(fields_), /*partition_keys=*/{"f1"},
+                            /*primary_keys=*/{}, /*options=*/{}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                         CoreOptions::FromMap({{Options::BUCKET, "2"},
+                                               {Options::DELETION_VECTORS_ENABLED, "true"}}));
+    ConflictDetection detection(table_schema, core_options, /*snapshot_manager=*/nullptr,
+                                /*manifest_list=*/nullptr, /*manifest_file=*/nullptr,
+                                /*commit_scanner=*/nullptr, "test_user", "test_table",
+                                /*path_factory=*/nullptr);
+
+    ASSERT_OK(CheckConflicts(detection, {CreateManifestEntry("dropped.parquet", FileKind::Add())},
+                             {CreateManifestEntry("dropped.parquet", FileKind::Delete())},
+                             Snapshot::CommitKind::Append()));
 }
 
 TEST_F(ConflictDetectionTest, TestDeletionVectorsAllowedWithResolvedDynamicBucketMode) {

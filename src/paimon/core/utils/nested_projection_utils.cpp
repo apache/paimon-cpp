@@ -446,78 +446,103 @@ Result<std::vector<std::string>> NestedProjectionUtils::GetMapSelectedKeys(
     return result;
 }
 
-namespace {
+bool NestedProjectionUtils::IsMapSharedShreddingAccessField(
+    const std::shared_ptr<arrow::Field>& field) {
+    if (field->type()->id() != arrow::Type::STRUCT || !field->HasMetadata() || !field->metadata()) {
+        return false;
+    }
+    return field->metadata()->Contains(DataField::MAP_SELECTED_KEYS);
+}
 
-struct MapKeyAccessor {
-    std::shared_ptr<arrow::StringArray> string_keys;
-    std::shared_ptr<arrow::DictionaryArray> dict_keys;
-    std::shared_ptr<arrow::StringArray> dict_values;
-    std::shared_ptr<arrow::LargeStringArray> dict_large_values;
-};
+Result<std::vector<std::string>> NestedProjectionUtils::ValidateMapSharedShreddingAccessField(
+    const std::shared_ptr<arrow::Field>& field) {
+    if (field->type()->id() != arrow::Type::STRUCT) {
+        return Status::Invalid(
+            fmt::format("selected-key MAP field {} is not a STRUCT", field->name()));
+    }
+    auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(field->type());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys, GetMapSelectedKeys(field));
+    if (struct_type->num_fields() == 0 ||
+        selected_keys.size() != static_cast<size_t>(struct_type->num_fields())) {
+        return Status::Invalid(
+            fmt::format("selected-key metadata size {} does not match STRUCT field count {} for {}",
+                        selected_keys.size(), struct_type->num_fields(), field->name()));
+    }
+    const auto& value_type = struct_type->field(0)->type();
+    for (int32_t i = 1; i < struct_type->num_fields(); ++i) {
+        if (!struct_type->field(i)->type()->Equals(value_type)) {
+            return Status::Invalid(fmt::format(
+                "selected-key MAP fields must have the same value type, but {} and {} differ",
+                value_type->ToString(), struct_type->field(i)->type()->ToString()));
+        }
+    }
+    return selected_keys;
+}
 
-Result<MapKeyAccessor> BuildMapKeyAccessor(const std::shared_ptr<arrow::Array>& key_array) {
-    MapKeyAccessor accessor;
+Result<std::shared_ptr<arrow::DataType>>
+NestedProjectionUtils::BuildMapSharedShreddingAccessDataType(
+    const std::shared_ptr<arrow::Field>& read_field,
+    const std::shared_ptr<arrow::DataType>& data_type) {
+    if (!IsMapSharedShreddingAccessField(read_field)) {
+        return Status::Invalid(
+            fmt::format("field {} is not a selected-key MAP projection", read_field->name()));
+    }
+    if (data_type->id() != arrow::Type::MAP) {
+        return Status::Invalid(
+            fmt::format("selected-key MAP projection {} requires MAP data type, got {}",
+                        read_field->name(), data_type->ToString()));
+    }
+    PAIMON_RETURN_NOT_OK(ValidateMapSharedShreddingAccessField(read_field).status());
+    auto read_struct = arrow::internal::checked_pointer_cast<arrow::StructType>(read_field->type());
+    auto data_map = arrow::internal::checked_pointer_cast<arrow::MapType>(data_type);
+    arrow::FieldVector data_children;
+    data_children.reserve(read_struct->num_fields());
+    for (const auto& read_child : read_struct->fields()) {
+        data_children.push_back(read_child->WithType(data_map->item_type()));
+    }
+    return arrow::struct_(std::move(data_children));
+}
+
+Result<std::string_view> NestedProjectionUtils::GetMapKeyViewAt(
+    const std::shared_ptr<arrow::Array>& key_array, int64_t entry_idx) {
+    if (key_array->IsNull(entry_idx)) {
+        return Status::Invalid("selected-key MAP read found null MAP key at entry " +
+                               std::to_string(entry_idx));
+    }
     if (key_array->type_id() == arrow::Type::STRING) {
-        accessor.string_keys = std::static_pointer_cast<arrow::StringArray>(key_array);
-        return accessor;
+        return arrow::internal::checked_pointer_cast<arrow::StringArray>(key_array)->GetView(
+            entry_idx);
     }
     if (key_array->type_id() == arrow::Type::DICTIONARY) {
-        auto dict_type = std::static_pointer_cast<arrow::DictionaryType>(key_array->type());
+        auto dict_type =
+            arrow::internal::checked_pointer_cast<arrow::DictionaryType>(key_array->type());
         if (dict_type->value_type()->id() != arrow::Type::STRING &&
             dict_type->value_type()->id() != arrow::Type::LARGE_STRING) {
             return Status::Invalid(
-                fmt::format("FilterMapArrayBySelectedKeys only supports string keys or "
+                fmt::format("selected-key MAP read only supports string keys or "
                             "dictionary<string|large_string> keys, got {}",
                             key_array->type()->ToString()));
         }
-        accessor.dict_keys = std::static_pointer_cast<arrow::DictionaryArray>(key_array);
-        if (dict_type->value_type()->id() == arrow::Type::STRING) {
-            accessor.dict_values =
-                std::static_pointer_cast<arrow::StringArray>(accessor.dict_keys->dictionary());
-        } else {
-            accessor.dict_large_values =
-                std::static_pointer_cast<arrow::LargeStringArray>(accessor.dict_keys->dictionary());
+        auto dict_keys = arrow::internal::checked_pointer_cast<arrow::DictionaryArray>(key_array);
+        int64_t dict_idx = dict_keys->GetValueIndex(entry_idx);
+        const auto& dictionary = dict_keys->dictionary();
+        if (dictionary->IsNull(dict_idx)) {
+            return Status::Invalid(
+                "selected-key MAP read found null dictionary MAP key at dictionary index " +
+                std::to_string(dict_idx));
         }
-        return accessor;
+        if (dict_type->value_type()->id() == arrow::Type::STRING) {
+            return arrow::internal::checked_pointer_cast<arrow::StringArray>(dictionary)
+                ->GetView(dict_idx);
+        }
+        return arrow::internal::checked_pointer_cast<arrow::LargeStringArray>(dictionary)
+            ->GetView(dict_idx);
     }
     return Status::Invalid(
-        fmt::format("FilterMapArrayBySelectedKeys only supports string keys or "
+        fmt::format("selected-key MAP read only supports string keys or "
                     "dictionary<string|large_string> keys, got {}",
                     key_array->type()->ToString()));
 }
-
-Result<std::string_view> GetMapKeyViewAt(const MapKeyAccessor& accessor, int64_t entry_idx) {
-    if (accessor.string_keys) {
-        if (accessor.string_keys->IsNull(entry_idx)) {
-            return Status::Invalid("FilterMapArrayBySelectedKeys found null map key at entry " +
-                                   std::to_string(entry_idx));
-        }
-        return accessor.string_keys->GetView(entry_idx);
-    }
-
-    if (accessor.dict_keys->IsNull(entry_idx)) {
-        return Status::Invalid("FilterMapArrayBySelectedKeys found null map key at entry " +
-                               std::to_string(entry_idx));
-    }
-    int64_t dict_idx = accessor.dict_keys->GetValueIndex(entry_idx);
-    if (accessor.dict_values) {
-        if (accessor.dict_values->IsNull(dict_idx)) {
-            return Status::Invalid(
-                "FilterMapArrayBySelectedKeys found null dictionary map key at dictionary index " +
-                std::to_string(dict_idx));
-        }
-        return accessor.dict_values->GetView(dict_idx);
-    }
-
-    if (accessor.dict_large_values->IsNull(dict_idx)) {
-        return Status::Invalid(
-            "FilterMapArrayBySelectedKeys found null dictionary map key at dictionary index " +
-            std::to_string(dict_idx));
-    }
-    return accessor.dict_large_values->GetView(dict_idx);
-}
-
-}  // namespace
 
 Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::FilterMapArrayBySelectedKeys(
     const std::shared_ptr<arrow::Array>& array, const std::vector<std::string>& selected_keys,
@@ -534,12 +559,11 @@ Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::FilterMapArrayBySel
             "FilterMapArrayBySelectedKeys requires map array, got {}", array->type()->ToString()));
     }
 
-    auto map_array = std::static_pointer_cast<arrow::MapArray>(array);
-    auto map_type = std::static_pointer_cast<arrow::MapType>(array->type());
+    auto map_array = arrow::internal::checked_pointer_cast<arrow::MapArray>(array);
+    auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(array->type());
     assert(map_array && map_type);
 
     auto key_array = map_array->keys();
-    PAIMON_ASSIGN_OR_RAISE(MapKeyAccessor key_accessor, BuildMapKeyAccessor(key_array));
 
     auto values_array = map_array->items();
     int64_t num_maps = map_array->length();
@@ -575,7 +599,7 @@ Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::FilterMapArrayBySel
         for (const auto& selected_key : selected_keys) {
             for (int64_t entry_idx = start; entry_idx < end; ++entry_idx) {
                 PAIMON_ASSIGN_OR_RAISE(std::string_view key_view,
-                                       GetMapKeyViewAt(key_accessor, entry_idx));
+                                       GetMapKeyViewAt(key_array, entry_idx));
                 if (key_view == selected_key) {
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->Append(
                         key_view.data(), static_cast<int32_t>(key_view.size())));

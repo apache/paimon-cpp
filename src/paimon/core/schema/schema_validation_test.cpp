@@ -63,6 +63,14 @@ TEST(SchemaValidationTest, TestRowTracking) {
         std::shared_ptr<TableSchema> table_schema,
         TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    // such a table may also enable deletion vectors, which another engine issues and this one
+    // only reads
+    options.emplace(Options::DELETION_VECTORS_ENABLED, "true");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> deletion_vector_table_schema,
+        TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*deletion_vector_table_schema));
 }
 
 TEST(SchemaValidationTest, TestWithBlobField) {
@@ -79,6 +87,22 @@ TEST(SchemaValidationTest, TestWithBlobField) {
         std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
                                                       {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                      {Options::BLOB_FIELD, "f3"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // a blob table with data evolution may also enable deletion vectors
+        arrow::FieldVector fields = {f0, f1, f2, f3};
+        auto schema = arrow::schema(fields);
+        std::vector<std::string> primary_keys = {};
+        std::vector<std::string> partition_keys = {"f1"};
+        std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                      {Options::ROW_TRACKING_ENABLED, "true"},
+                                                      {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"},
                                                       {Options::BLOB_FIELD, "f3"}};
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<TableSchema> table_schema,
@@ -772,16 +796,6 @@ TEST(SchemaValidationTest, ValidateInvalidConfiguration) {
                                                  /*primary_keys=*/{}, options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                             "Data evolution config must enabled with row-tracking.enabled");
-    }
-    {
-        std::map<std::string, std::string> options = {{Options::ROW_TRACKING_ENABLED, "true"},
-                                                      {Options::DATA_EVOLUTION_ENABLED, "true"},
-                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
-                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
-                                                 /*primary_keys=*/{}, options));
-        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                            "Data evolution config must disabled with deletion-vectors.enabled");
     }
 }
 

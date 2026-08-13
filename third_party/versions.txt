@@ -144,7 +144,7 @@ PAIMON_JIEBA_BUILD_SHA256_CHECKSUM=e6e517b778e0f4a99cbed1ee3eaa041616b74bc685e03
 PAIMON_JIEBA_PKG_NAME=jieba-${PAIMON_JIEBA_BUILD_VERSION}.tar.gz
 
 PAIMON_BOOST_BUILD_VERSION=1_66_0
-PAIMON_BOOST_BUILD_SHA256_CHECKSUM=28e9200637800fbfd1292b2c6876189dba7e8e1c5282c71fac6515e96f7af2b0
+PAIMON_BOOST_BUILD_SHA256_CHECKSUM=bd0df411efd9a585e5a2212275f8762079fed8842264954675a4fddc46cfcf60
 PAIMON_BOOST_PKG_NAME=boost_${PAIMON_BOOST_BUILD_VERSION}.tar.gz
 
 # The first field is the name of the environment variable expected by cmake.
@@ -184,5 +184,5 @@ DEPENDENCIES=(
   "PAIMON_LUCENE_URL ${PAIMON_LUCENE_PKG_NAME} ${THIRDPARTY_MIRROR_URL}https://github.com/luceneplusplus/LucenePlusPlus/archive/refs/tags/rel_${PAIMON_LUCENE_BUILD_VERSION}.tar.gz"
   "PAIMON_LIMONP_URL ${PAIMON_LIMONP_PKG_NAME} ${THIRDPARTY_MIRROR_URL}https://github.com/yanyiwu/limonp/archive/refs/tags/v${PAIMON_LIMONP_BUILD_VERSION}.tar.gz"
   "PAIMON_JIEBA_URL ${PAIMON_JIEBA_PKG_NAME} ${THIRDPARTY_MIRROR_URL}https://github.com/yanyiwu/cppjieba/archive/refs/tags/${PAIMON_JIEBA_BUILD_VERSION}.tar.gz"
-  "PAIMON_BOOST_URL ${PAIMON_BOOST_PKG_NAME} https://paimon-cpp.oss-cn-beijing.aliyuncs.com/thirdparty/boost/${PAIMON_BOOST_PKG_NAME}"
+  "PAIMON_BOOST_URL ${PAIMON_BOOST_PKG_NAME} https://archives.boost.io/release/1.66.0/source/${PAIMON_BOOST_PKG_NAME}"
 )

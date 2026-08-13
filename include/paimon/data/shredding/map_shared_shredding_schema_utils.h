@@ -56,6 +56,48 @@ struct PAIMON_EXPORT MapSharedShreddingFieldMeta {
     }
 };
 
+/// Builds a selected-key projection field for a top-level shared-shredding MAP column.
+///
+/// The built field is a STRUCT which replaces the MAP field in the read schema. Each child
+/// corresponds to one selected key and contains that key's MAP value, or NULL when the key is
+/// absent. Children use the selected keys as their names and preserve insertion order.
+///
+/// Example: read keys "age" and "score" from MAP column `attributes`:
+///
+///     auto builder = MapSharedShreddingAccessBuilder::Create(attributes_field);
+///     builder->AddKey("age");
+///     builder->AddKey("score");
+///     auto field = builder->Build();
+///
+/// Use the returned field in `ReadContextBuilder::SetReadSchema`.
+class PAIMON_EXPORT MapSharedShreddingAccessBuilder {
+ public:
+    /// Creates a builder bound to the original MAP field.
+    ///
+    /// The field must be a MAP with STRING keys. Its name, nullability, and value type are
+    /// retained for the selected-key projection. Ownership of the Arrow C schema resources is
+    /// transferred to this method.
+    static Result<std::unique_ptr<MapSharedShreddingAccessBuilder>> Create(
+        struct ArrowSchema* map_field);
+
+    ~MapSharedShreddingAccessBuilder();
+
+    /// Adds a selected MAP key.
+    ///
+    /// @param key The string MAP key. Keys are returned in insertion order.
+    Status AddKey(const std::string& key);
+
+    /// Builds a STRUCT projection field which retains the original MAP field's name and
+    /// nullability. Every selected-key child uses the complete MAP value type and is nullable.
+    Result<std::unique_ptr<struct ArrowSchema>> Build() const;
+
+ private:
+    class Impl;
+    explicit MapSharedShreddingAccessBuilder(std::unique_ptr<Impl>&& impl);
+
+    std::unique_ptr<Impl> impl_;
+};
+
 class PAIMON_EXPORT MapSharedShreddingSchemaUtils {
  public:
     MapSharedShreddingSchemaUtils() = delete;

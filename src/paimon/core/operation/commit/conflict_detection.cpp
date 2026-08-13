@@ -115,12 +115,7 @@ Status ConflictDetection::CheckConflicts(
         row_id_column_conflict_checker,
     const Snapshot::CommitKind& commit_kind) const {
     std::string base_commit_user = latest_snapshot.CommitUser();
-    if (options_.DeletionVectorsEnabled() &&
-        ResolveBucketMode(options_.GetBucket(), table_schema_) == BucketMode::BUCKET_UNAWARE) {
-        return Status::NotImplemented(
-            "check conflicts failed. not yet support dv with BUCKET_UNAWARE mode");
-    }
-
+    PAIMON_RETURN_NOT_OK(CheckDeletionVectorsNotBypassed(delta_entries));
     std::vector<ManifestEntry> all_entries = base_entries;
     all_entries.insert(all_entries.end(), delta_entries.begin(), delta_entries.end());
     PAIMON_RETURN_NOT_OK(CheckBucketKeepSame(all_entries, commit_kind, base_commit_user,
@@ -174,6 +169,24 @@ bool ConflictDetection::ShouldBeOverwriteCommit(
     }
 
     return false;
+}
+
+Status ConflictDetection::CheckDeletionVectorsNotBypassed(
+    const std::vector<ManifestEntry>& delta_entries) const {
+    if (!options_.DeletionVectorsEnabled() ||
+        ResolveBucketMode(options_.GetBucket(), table_schema_) != BucketMode::BUCKET_UNAWARE) {
+        return Status::OK();
+    }
+    for (const ManifestEntry& entry : delta_entries) {
+        if (entry.Kind() == FileKind::Delete()) {
+            return Status::NotImplemented(fmt::format(
+                "Committing the deletion of data file {} is not supported while deletion vectors "
+                "are enabled on a table without buckets: the conflict between it and a concurrent "
+                "commit rewriting that file's deletion vector cannot be detected yet.",
+                entry.File()->file_name));
+        }
+    }
+    return Status::OK();
 }
 
 Status ConflictDetection::CheckBucketKeepSame(

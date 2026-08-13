@@ -50,6 +50,7 @@ DeletionVectorsIndexFile::ReadAllDeletionVectors(
 
     std::map<std::string, std::shared_ptr<DeletionVector>> deletion_vectors;
     std::string file_path = path_factory_->ToPath(file_meta);
+    // TODO(mrdrivingduck): Use file_meta->FileSize() to avoid an object-store metadata request.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path));
     auto data_input_stream = std::make_shared<DataInputStream>(input_stream);
     PAIMON_RETURN_NOT_OK(CheckVersion(data_input_stream));

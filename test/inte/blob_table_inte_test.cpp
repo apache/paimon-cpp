@@ -54,7 +54,6 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
-#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -78,6 +77,7 @@
 #include "paimon/table/source/data_split.h"
 #include "paimon/table/source/startup_mode.h"
 #include "paimon/table/source/table_read.h"
+#include "paimon/testing/utils/deletion_vector_test_helper.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -187,23 +187,89 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         return file_store_commit->Commit(commit_msgs);
     }
 
+    /// DeletionVectorTestHelper::CreateDeletionVectorCommitMessage, documented there, plus the
+    /// commit of the message it returns.
+    Result<std::shared_ptr<CommitMessage>> CommitDeletionVectors(
+        const std::string& table_path, const std::shared_ptr<CommitMessage>& base_commit_msg,
+        const std::map<std::string, std::vector<int64_t>>& deleted_positions_by_anchor,
+        const std::shared_ptr<CommitMessage>& replaced_commit_msg = nullptr) const {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<CommitMessage> commit_message,
+            DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+                dir_->GetFileSystem(), table_path, /*file_format_identifier=*/GetParam(),
+                base_commit_msg, deleted_positions_by_anchor, pool_, replaced_commit_msg));
+        PAIMON_RETURN_NOT_OK(Commit(table_path, {commit_message}));
+        return commit_message;
+    }
+
+    /// Creates the (f0 INT, view) blob-view table the dangling-reference tests share: unaware
+    /// bucket, data evolution on, and `view` resolved against `upstream_warehouse`. Returns the
+    /// table's fields, which the callers reuse to build their expected arrays.
+    arrow::FieldVector CreateBlobViewTable(const std::string& upstream_warehouse,
+                                           bool deletion_vectors_enabled) const {
+        arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                     BlobUtils::ToArrowField("view", true)};
+        std::map<std::string, std::string> options = {
+            {Options::MANIFEST_FORMAT, "orc"},
+            {Options::FILE_FORMAT, GetParam()},
+            {Options::BUCKET, "-1"},
+            {Options::ROW_TRACKING_ENABLED, "true"},
+            {Options::DATA_EVOLUTION_ENABLED, "true"},
+            {Options::BLOB_VIEW_FIELD, "view"},
+            {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, upstream_warehouse},
+            {Options::FILE_SYSTEM, "local"}};
+        if (deletion_vectors_enabled) {
+            options.emplace(Options::DELETION_VECTORS_ENABLED, "true");
+        }
+        CreateTable(fields, /*partition_keys=*/{}, options);
+        return fields;
+    }
+
+    /// Writes and commits the two rows the blob-view skip tests share: row 0 holds a blob view
+    /// reference to an upstream table that does not exist, row 1 holds no blob view at all.
+    /// Resolving row 0 fails the whole read, so any read the pre-read still reaches it from must
+    /// error; only dropping the row through the deletion vector or the row ranges avoids that,
+    /// because those are the two filters the pre-read applies. The table must already exist with
+    /// fields (f0, view).
+    ///
+    /// `first_row_id`, when set, is stamped on the returned metas before committing: the commit
+    /// assigns row ids onto its own copies, so a caller that needs them (to look up the group's
+    /// anchor) has to set them here, matching what the commit would assign.
+    Result<std::vector<std::shared_ptr<CommitMessage>>> WriteDanglingBlobViewRows(
+        const std::string& table_path,
+        const std::optional<int64_t>& first_row_id = std::nullopt) const {
+        Identifier upstream_identifier("nonexistent_db", "nonexistent_table");
+        BlobViewStruct view_struct(upstream_identifier, /*field_id=*/2, /*row_id=*/0);
+        auto serialized = view_struct.Serialize(pool_);
+        arrow::LargeBinaryBuilder view_builder;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(view_builder.Append(
+            reinterpret_cast<const uint8_t*>(serialized->data()), serialized->size()));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(view_builder.AppendNull());
+        std::shared_ptr<arrow::Array> write_view_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(view_builder.Finish(&write_view_array));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> write_f0_array,
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([100, 101])"));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> write_struct,
+            arrow::StructArray::Make(arrow::ArrayVector({write_f0_array, write_view_array}),
+                                     std::vector<std::string>({"f0", "view"})));
+
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::shared_ptr<CommitMessage>> commit_msgs,
+            WriteArray(table_path, /*partition=*/{}, {"f0", "view"}, {write_struct}));
+        if (first_row_id) {
+            SetFirstRowId(first_row_id.value(), commit_msgs);
+        }
+        PAIMON_RETURN_NOT_OK(Commit(table_path, commit_msgs));
+        return commit_msgs;
+    }
+
     Status WriteNextSchema(const std::string& table_path, const std::vector<DataField>& fields,
                            int32_t highest_field_id,
                            const std::map<std::string, std::string>& options) const {
-        SchemaManager schema_manager(dir_->GetFileSystem(), table_path);
-        PAIMON_ASSIGN_OR_RAISE(auto latest_schema_opt, schema_manager.Latest());
-        if (!latest_schema_opt) {
-            return Status::Invalid("table schema does not exist");
-        }
-        auto next_schema = std::make_shared<TableSchema>(*latest_schema_opt.value());
-        next_schema->id_ = latest_schema_opt.value()->Id() + 1;
-        next_schema->fields_ = fields;
-        next_schema->highest_field_id_ = highest_field_id;
-        next_schema->options_ = options;
-        PAIMON_ASSIGN_OR_RAISE(std::string schema_content, next_schema->ToJsonString());
-        std::string schema_path = PathUtil::JoinPath(schema_manager.SchemaDirectory(),
-                                                     "schema-" + std::to_string(next_schema->Id()));
-        return dir_->GetFileSystem()->AtomicStore(schema_path, schema_content);
+        return TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path, fields,
+                                           highest_field_id, options);
     }
 
     /// Scan table and return the plan (without reading data).
@@ -1284,6 +1350,90 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateMultipleLayers) {
         ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_single,
                               /*predicate=*/nullptr, /*row_ranges=*/{Range(i, i)}));
     }
+}
+
+TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateWithDeletionVectors) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                 arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
+        {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::DELETION_VECTORS_ENABLED, "true"}};
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields);
+
+    auto src_array0 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        [1, "a", "blob_0"],
+        [2, "b", "blob_1"],
+        [3, "c", "blob_2"],
+        [4, "d", "blob_3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs0,
+                         WriteArray(table_path, {}, schema->field_names(), {src_array0}));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs0);
+    ASSERT_OK(Commit(table_path, commit_msgs0));
+
+    // second layer updates row 0 within rows [0, 1], rows [2, 3] are its placeholder gap
+    auto update_array1 = MakeBlobUpdateArray(fields[2], {"update1_0", "PH"});
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs1, WriteArray(table_path, {}, {"b0"}, {update_array1}));
+    SetFirstRowId(/*reset_first_row_id=*/0, commit_msgs1);
+    ASSERT_OK(Commit(table_path, commit_msgs1));
+
+    // third layer updates row 3 within rows [2, 3], rows [0, 1] are its placeholder gap
+    auto update_array2 = MakeBlobUpdateArray(fields[2], {"PH", "update2_3"});
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs2, WriteArray(table_path, {}, {"b0"}, {update_array2}));
+    SetFirstRowId(/*reset_first_row_id=*/2, commit_msgs2);
+    ASSERT_OK(Commit(table_path, commit_msgs2));
+
+    // delete row 1 and row 3: each sits inside one blob layer's file and the other layer's
+    // gap, so both blob layers and the normal file must drop the same rows to stay aligned
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name,
+                         DeletionVectorTestHelper::RetrieveAnchorFileName(commit_msgs0));
+    ASSERT_OK(CommitDeletionVectors(table_path, commit_msgs0[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{1, 3}}}));
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        [1, "a", "update1_0"],
+        [3, "c", "blob_2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
+
+    auto expected_with_row_id = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields[0], fields[1], fields[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "a", "update1_0", 0],
+        [3, "c", "blob_2", 2]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "b0", "_ROW_ID"}, expected_with_row_id));
+
+    // Projecting only the blob column leaves no data bunch, so the whole read is the blob
+    // fallback path: the layer files carry the shifted deletion vector and the placeholder gap
+    // segments drop the deleted row ids, with no normal file to anchor the row count.
+    auto expected_blob_only = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[2]}), R"([
+        ["update1_0"],
+        ["blob_2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"b0"}, expected_blob_only));
+
+    // a row-range selection composes with the deletion vector: rows {0, 1} minus deleted {1}.
+    // The range stops before row 2, the other survivor, so it cannot pass by returning what the
+    // unrestricted read above already returned.
+    auto expected_selected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+        [1, "a", "update1_0"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_selected,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(0, 1)}));
 }
 
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateCompactedLayers) {
@@ -3890,53 +4040,131 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewFailsWhenBothPathsAbsent) {
-    auto file_format = GetParam();
     auto upstream_dir = UniqueTestDirectory::Create("local");
-    const std::string upstream_db_name = "nonexistent_db";
-    const std::string upstream_table_name = "nonexistent_table";
-
-    // Build downstream table that references the non-existent upstream table.
-    arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
-                                 BlobUtils::ToArrowField("view", true)};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
-        {Options::FILE_FORMAT, file_format},
-        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_VIEW_FIELD, "view"},
-        {Options::BLOB_VIEW_UPSTREAM_WAREHOUSE, upstream_dir->Str()},
-        {Options::FILE_SYSTEM, "local"}};
-    CreateTable(fields, /*partition_keys=*/{}, options);
+    arrow::FieldVector fields =
+        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/false);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
-
-    // Write a single row with a BlobViewStruct pointing to the non-existent upstream table.
-    Identifier upstream_identifier(upstream_db_name, upstream_table_name);
-    BlobViewStruct view_struct(upstream_identifier, /*field_id=*/2, /*row_id=*/0);
-    auto serialized = view_struct.Serialize(pool_);
-    arrow::LargeBinaryBuilder view_builder;
-    ASSERT_TRUE(
-        view_builder
-            .Append(reinterpret_cast<const uint8_t*>(serialized->data()), serialized->size())
-            .ok());
-    std::shared_ptr<arrow::Array> write_view_array;
-    ASSERT_TRUE(view_builder.Finish(&write_view_array).ok());
-    auto write_f0_array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([100])").ValueOrDie();
-    auto write_struct = std::dynamic_pointer_cast<arrow::StructArray>(
-        arrow::StructArray::Make(arrow::ArrayVector({write_f0_array, write_view_array}),
-                                 std::vector<std::string>({"f0", "view"}))
-            .ValueOrDie());
-
     auto schema = arrow::schema(fields);
-    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
-                         WriteArray(table_path, {}, schema->field_names(), {write_struct}));
-    ASSERT_OK(Commit(table_path, commit_msgs));
 
-    // Reading should fail because both paths are absent.
+    ASSERT_OK(WriteDanglingBlobViewRows(table_path));
+
+    // reading fails because neither the table path nor the fallback one exists upstream
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
                         "Ambiguous table path");
+}
+
+TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
+    auto upstream_dir = UniqueTestDirectory::Create("local");
+    arrow::FieldVector fields =
+        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields);
+
+    // resolving row 0 would fail the whole query, so the pre-read that collects the structs to
+    // resolve must honor the deletion vector too
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> commit_msgs,
+                         WriteDanglingBlobViewRows(table_path, /*first_row_id=*/0));
+
+    // without the deletion vector the dangling reference fails the read
+    ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
+    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
+                        "Ambiguous table path");
+
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name,
+                         DeletionVectorTestHelper::RetrieveAnchorFileName(commit_msgs));
+    ASSERT_OK(CommitDeletionVectors(table_path, commit_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{0}}}));
+
+    // the deleted row is never resolved, so only the surviving row is returned
+    ASSERT_OK_AND_ASSIGN(auto dv_plan, ScanTable(table_path));
+    ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), dv_plan,
+                                                /*predicate=*/nullptr));
+    ASSERT_TRUE(result.chunked_array);
+    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
+    ASSERT_EQ(read_struct->length(), 1);
+
+    auto expected_struct = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([[101, null]])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto expected_with_rk, PrependRowKindColumn(expected_struct));
+    ASSERT_TRUE(read_struct->Equals(expected_with_rk))
+        << "read_struct:" << read_struct->ToString() << std::endl
+        << "expected:" << expected_with_rk->ToString();
+}
+
+TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceInEveryRowRangeGroup) {
+    auto upstream_dir = UniqueTestDirectory::Create("local");
+    arrow::FieldVector fields =
+        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields);
+
+    // two commits, so the two pairs of rows form two row range groups. The blob view pre-read
+    // walks the groups one by one; a group it drops, or reads with another group's deletion
+    // vector, still hands its dangling reference to the resolver and fails the whole read.
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> commit_msgs0,
+                         WriteDanglingBlobViewRows(table_path, /*first_row_id=*/0));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> commit_msgs1,
+                         WriteDanglingBlobViewRows(table_path, /*first_row_id=*/2));
+
+    // without deletion vectors both groups' dangling references fail the read
+    ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
+    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
+                        "Ambiguous table path");
+
+    // each group's anchor gets a deletion vector dropping its row 0, the dangling one
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name0,
+                         DeletionVectorTestHelper::RetrieveAnchorFileName(commit_msgs0));
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name1,
+                         DeletionVectorTestHelper::RetrieveAnchorFileName(commit_msgs1));
+    ASSERT_NE(anchor_file_name0, anchor_file_name1);
+    ASSERT_OK(CommitDeletionVectors(table_path, commit_msgs0[0],
+                                    {{anchor_file_name0, /*deleted_positions=*/{0}},
+                                     {anchor_file_name1, /*deleted_positions=*/{0}}}));
+
+    // both groups keep only their row 1, which holds no blob view at all
+    auto expected_struct = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[101, null], [101, null]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_struct));
+}
+
+// Pins one of the limitations documented on CreateBlobViewReader: the pre-read takes no
+// predicate, so filtering a row out that way does not stop its blob view reference from being
+// resolved. This asserts the current behavior, not a desired one.
+TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
+    auto upstream_dir = UniqueTestDirectory::Create("local");
+    arrow::FieldVector fields =
+        CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields);
+
+    // row 0 (f0 = 100) holds the dangling reference, row 1 (f0 = 101) holds no blob view
+    ASSERT_OK(WriteDanglingBlobViewRows(table_path));
+
+    // reading the whole split fails on the dangling reference of row 0
+    ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
+    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
+                        "Ambiguous table path");
+
+    // a predicate keeping only row 1 does not rescue the query: it is evaluated above the split
+    // read, while the pre-read takes none, so row 0's reference is still collected and resolved
+    auto keep_row_1 = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0",
+                                              FieldType::INT, Literal(101));
+    ASSERT_OK_AND_ASSIGN(auto filtered_plan, ScanTable(table_path, keep_row_1));
+    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), filtered_plan, keep_row_1),
+                        "Ambiguous table path");
+
+    // dropping the same row through the row ranges does: the pre-read honors them the same way
+    // the main read does, so row 0 is never resolved
+    auto expected_struct = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([[101, null]])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_struct,
+                          /*predicate=*/nullptr, /*row_ranges=*/{Range(1, 1)}));
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {

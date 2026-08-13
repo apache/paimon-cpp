@@ -37,7 +37,9 @@ class DataSplit;
 DataTableBatchScan::DataTableBatchScan(bool pk_table, const CoreOptions& core_options,
                                        const std::shared_ptr<SnapshotReader>& snapshot_reader,
                                        bool read_optimized, std::optional<int32_t> push_down_limit)
-    : AbstractTableScan(core_options, snapshot_reader), push_down_limit_(push_down_limit) {
+    : AbstractTableScan(core_options, snapshot_reader),
+      push_down_limit_(push_down_limit),
+      logger_(Logger::GetLogger("DataTableBatchScan")) {
     if (pk_table && read_optimized) {
         int32_t top_level = core_options.GetNumLevels() - 1;
         snapshot_reader_->WithLevelFilter(
@@ -67,6 +69,21 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::CreatePlan() {
     return Status::Invalid("end of scan");
 }
 
+bool DataTableBatchScan::CanPushDownLimit() const {
+    if (push_down_limit_ == std::nullopt) {
+        return false;
+    }
+    if (snapshot_reader_->GetNonPartitionPredicate()) {
+        // a non-partition filter runs while reading, so the metadata count is an upper bound
+        return false;
+    }
+    if (snapshot_reader_->GetRowRangeIndex()) {
+        // a row range index selects a subset of each split's rows, likewise an upper bound
+        return false;
+    }
+    return true;
+}
+
 Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
     const std::shared_ptr<StartingScanner::ScanResult>& scan_result) const {
     auto current_scan_result =
@@ -75,7 +92,7 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
         // NoSnapshot
         return PlanImpl::EmptyPlan();
     }
-    if (push_down_limit_ == std::nullopt) {
+    if (!CanPushDownLimit()) {
         return current_scan_result->GetPlan();
     }
     std::vector<std::shared_ptr<Split>> splits = current_scan_result->Splits();
@@ -87,19 +104,29 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
         if (!data_split) {
             return Status::Invalid("DataSplit cannot cast to DataSplitImpl");
         }
-        if (data_split->RawConvertible()) {
-            PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> partial_merged_row_count,
-                                   data_split->MergedRowCount());
-            if (!partial_merged_row_count.has_value()) {
-                // Cannot safely estimate split rows from metadata; skip push-down limit.
-                return current_scan_result->GetPlan();
-            }
-            limited_data_splits.emplace_back(data_split);
-            scanned_row_count += partial_merged_row_count.value();
-            if (scanned_row_count >= push_down_limit_.value()) {
-                PAIMON_ASSIGN_OR_RAISE(int64_t snapshot_id, current_scan_result->SnapshotId());
-                return std::make_shared<PlanImpl>(snapshot_id, limited_data_splits);
-            }
+        // A split the read has to merge by key, or whose deletion file carries no cardinality,
+        // cannot be counted from metadata and would have to be pruned blindly, so the push down
+        // is abandoned. A data-evolution split merges by column over a known row id range and
+        // still counts.
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> merged_row_count,
+                               data_split->MergedRowCount());
+        if (!merged_row_count.has_value()) {
+            PAIMON_LOG_DEBUG(logger_,
+                             "Limit push down abandoned: split %zu of %zu cannot be counted from "
+                             "metadata.",
+                             limited_data_splits.size() + 1, splits.size());
+            return current_scan_result->GetPlan();
+        }
+        limited_data_splits.emplace_back(data_split);
+        scanned_row_count += merged_row_count.value();
+        if (scanned_row_count >= push_down_limit_.value()) {
+            PAIMON_ASSIGN_OR_RAISE(int64_t snapshot_id, current_scan_result->SnapshotId());
+            PAIMON_LOG_DEBUG(logger_,
+                             "Limit push down kept %zu of %zu splits for limit %d, holding %ld "
+                             "rows.",
+                             limited_data_splits.size(), splits.size(), push_down_limit_.value(),
+                             scanned_row_count);
+            return std::make_shared<PlanImpl>(snapshot_id, limited_data_splits);
         }
     }
     return current_scan_result->GetPlan();

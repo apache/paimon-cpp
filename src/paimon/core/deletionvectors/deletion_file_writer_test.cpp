@@ -77,8 +77,8 @@ TEST(DeletionFileWriterTest, WriteCloseAndReadBack) {
     ASSERT_OK_AND_ASSIGN(auto read_back, index_file.ReadAllDeletionVectors(meta));
 
     ASSERT_EQ(read_back.size(), 2);
-    ASSERT_EQ(read_back.at("data-file-1")->GetCardinality(), 3);
-    ASSERT_EQ(read_back.at("data-file-2")->GetCardinality(), 1);
+    ASSERT_EQ(read_back.at("data-file-1")->GetCardinality().value(), 3);
+    ASSERT_EQ(read_back.at("data-file-2")->GetCardinality().value(), 1);
 
     ASSERT_OK_AND_ASSIGN(bool is_deleted, read_back.at("data-file-1")->IsDeleted(3));
     ASSERT_TRUE(is_deleted);

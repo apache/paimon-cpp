@@ -226,6 +226,12 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// key list, for example: "k1,k2". Only map fields with string key type
     /// (Arrow utf8) are supported.
     ///
+    /// Attaching this metadata to a MAP field only filters the returned MAP after
+    /// reading. To push down selected keys from a shared-shredding MAP and return
+    /// them as STRUCT children, build the field with
+    /// `MapSharedShreddingAccessBuilder`. To read selected paths from a VARIANT
+    /// field, build the field with `VariantAccessBuilder`.
+    ///
     /// Example:
     /// @code{.cpp}
     /// auto map_field = arrow::field("m", arrow::map(arrow::utf8(), arrow::int32()));

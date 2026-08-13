@@ -81,6 +81,17 @@ class ConflictDetection {
         const std::unordered_map<BinaryRow, int32_t>& previous_total_buckets) const;
 
  private:
+    /// Refuses a delta that drops data files from a bucket-unaware table with deletion vectors.
+    ///
+    /// Such a table keeps its vectors in the index manifest, which the data file entries
+    /// compared here do not reference. Paimon Java pairs the two first
+    /// (ConflictDetection#buildBaseEntriesWithDV) so that dropping a data file conflicts with a
+    /// concurrent commit rewriting that file's vector; that pairing is not ported, so the shape
+    /// needing it is refused rather than let through unchecked. Adding files cannot orphan a
+    /// vector and stays allowed, as does replacing one, which travels through the delta index
+    /// entries this check does not inspect.
+    Status CheckDeletionVectorsNotBypassed(const std::vector<ManifestEntry>& delta_entries) const;
+
     Status CheckBucketKeepSame(const std::vector<ManifestEntry>& all_entries,
                                const Snapshot::CommitKind& commit_kind,
                                const std::string& base_commit_user,

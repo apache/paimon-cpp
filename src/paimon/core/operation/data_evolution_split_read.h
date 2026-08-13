@@ -44,6 +44,7 @@ class Schema;
 namespace paimon {
 class DataFilePathFactory;
 class DataSplit;
+class DataSplitImpl;
 class Executor;
 class FileBatchReader;
 class FileStorePathFactory;
@@ -61,14 +62,21 @@ struct DeletionFile;
 /// CompleteRowKindBatchReader->(PredicateBatchReader)
 /// ->ConcatBatchReader across files->DataEvolutionFileReader
 /// ->(ConcatBatchReader across blob files | BlobFallbackBatchReader across blob sequence layers)
-/// ->FieldMappingReader->(CompleteRowTrackingFieldsBatchReader)->(ShreddingFileReader)
+/// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ApplyBitmapIndexBatchReader)
+/// ->(CompleteRowTrackingFieldsBatchReader)->(ShreddingFileReader)
 /// ->(MapSharedShreddingFileReader)
 /// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
 ///
 ///
 /// A union `SplitRead` to read multiple inner files to merge columns, note that this class
-/// does not support filtering push down and deletion vectors, as they can interfere with the
-/// process of merging columns.
+/// does not support filtering push down: a predicate would have to be evaluated consistently
+/// across the files being merged, which is not implemented here.
+///
+/// Deletion vectors are supported: a row range group's vector is maintained against the
+/// group's anchor file (DataEvolutionUtils::RetrieveAnchorFile), so its positions are
+/// anchor-relative. Every reader of the group must drop the same rows to keep the column merge
+/// aligned: file readers apply it shifted by the file's offset inside the anchor range, and the
+/// blob fallback path drops the deleted row ids from its placeholder gap segments.
 class DataEvolutionSplitRead : public AbstractSplitRead {
  public:
     DataEvolutionSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
@@ -152,10 +160,41 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
         std::vector<std::shared_ptr<DataFileMeta>> files_;
     };
 
+    /// The deletion vector of one row range group, read from the group's anchor file. Its
+    /// positions are relative to `anchor_range`, the anchor file's row id range.
+    struct GroupDeletionVector {
+        std::shared_ptr<DeletionVector> deletion_vector;
+        Range anchor_range;
+    };
+
  private:
     Result<std::unique_ptr<BatchReader>> InnerCreateReader(
         const std::shared_ptr<DataSplit>& data_split,
         const std::optional<std::vector<Range>>& row_ranges) const;
+
+    /// Builds the deletion vector factory over the split's deletion files, keyed by data file
+    /// name. Only anchor files carry one. Returns a null factory when the split has none.
+    DeletionVector::Factory CreateSplitDvFactory(const DataSplitImpl& split_impl) const;
+
+    /// Reads the deletion vector of one row range group from its anchor file. Returns nullopt
+    /// when `split_dv_factory` is null, or when the anchor carries no deletion vector or an
+    /// empty one.
+    static Result<std::optional<GroupDeletionVector>> ReadGroupDeletionVector(
+        const std::vector<std::shared_ptr<DataFileMeta>>& group,
+        const DeletionVector::Factory& split_dv_factory);
+
+    /// Builds the per-file deletion vector factory of one row range group: each file gets the
+    /// group's deletion vector at its own local positions, shifted by the file's offset inside
+    /// the anchor range and limited to its row count. Null factory when the group has no vector.
+    static Result<DeletionVector::Factory> CreateGroupDvFactory(
+        const std::vector<std::shared_ptr<DataFileMeta>>& group,
+        const std::optional<GroupDeletionVector>& group_dv);
+
+    /// Removes the row ids deleted by `group_dv` from the sorted disjoint `ranges` (absolute
+    /// row ids). Probes the vector once per row id, since it exposes no range API; the cost is
+    /// paid once per gap segment while building the reader, not per batch.
+    static Result<std::vector<Range>> ExcludeDeletedRowIds(const std::vector<Range>& ranges,
+                                                           const GroupDeletionVector& group_dv);
 
     static Result<std::vector<std::shared_ptr<DataEvolutionSplitRead::FieldBunch>>>
     SplitFieldBunches(const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
@@ -172,30 +211,45 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
 
     static Result<std::unordered_set<BlobViewStruct>> ExtractBlobViewStructs(BatchReader* reader);
 
+    /// Pre-reads the blob view columns of `data_split` to collect the BlobViewStructs to
+    /// resolve. It applies the same `row_ranges` selection and the same row range group deletion
+    /// vectors as the main read, so a reference held only by a row those two drop is never
+    /// resolved.
+    ///
+    /// It stays wider than the main read: it passes no predicate and reads a group's normal
+    /// files one by one instead of merging their columns, so a reference the main read would
+    /// filter out or overwrite is still resolved here, and a dangling one still fails the query.
     Result<std::unique_ptr<BatchReader>> CreateBlobViewReader(
         const std::shared_ptr<DataSplit>& data_split,
-        const std::vector<std::string>& read_blob_view_fields) const;
+        const std::vector<std::string>& read_blob_view_fields,
+        const std::optional<std::vector<Range>>& row_ranges) const;
 
     Result<std::unique_ptr<BatchReader>> WrapWithBlobViewResolverIfNeeded(
-        const std::shared_ptr<DataSplit>& data_split,
-        std::unique_ptr<BatchReader>&& inner_reader) const;
+        const std::shared_ptr<DataSplit>& data_split, std::unique_ptr<BatchReader>&& inner_reader,
+        const std::optional<std::vector<Range>>& row_ranges) const;
 
  private:
     Result<std::unique_ptr<DataEvolutionFileReader>> CreateUnionReader(
         const BinaryRow& partition,
         const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const DeletionVector::Factory& group_dv_factory,
+        const std::optional<GroupDeletionVector>& group_dv) const;
 
     /// Builds the row-level fallback reader for a blob bunch spanning multiple max sequence
     /// number layers: groups the files by max sequence number, pads uncovered row id ranges of
     /// each layer with placeholder gap segments, and resolves each row to the newest
-    /// non-placeholder layer. See BlobFallbackBatchReader.
+    /// non-placeholder layer. See BlobFallbackBatchReader. `group_dv_factory` wraps the file
+    /// readers and `group_dv` drops deleted row ids from the gap segments, so every layer keeps
+    /// emitting the same surviving rows.
     Result<std::unique_ptr<BatchReader>> CreateBlobFallbackReader(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& files,
         const std::shared_ptr<arrow::Schema>& file_read_schema,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const DeletionVector::Factory& group_dv_factory,
+        const std::optional<GroupDeletionVector>& group_dv) const;
 };
 
 }  // namespace paimon

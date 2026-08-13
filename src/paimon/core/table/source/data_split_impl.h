@@ -202,6 +202,8 @@ class DataSplitImpl : public DataSplit {
     std::vector<std::shared_ptr<DataFileMeta>> before_files_;
     std::vector<std::optional<DeletionFile>> before_deletion_files_;
     std::vector<std::shared_ptr<DataFileMeta>> data_files_;
+    /// Either empty or aligned one-to-one with `data_files_`. For data evolution tables, only
+    /// anchor files (the oldest normal file of a row range group) carry a deletion file.
     std::vector<std::optional<DeletionFile>> data_deletion_files_;
 
     bool is_streaming_ = false;

@@ -388,6 +388,19 @@ Result<std::unique_ptr<InputStream>> ObjectStoreFileSystem::Open(const std::stri
                                                     ToUri(object_path), metadata.value().size);
 }
 
+Result<std::unique_ptr<InputStream>> ObjectStoreFileSystem::Open(
+    const FileStatus& file_status) const {
+    const std::string path = file_status.GetPath();
+    const int64_t file_size = file_status.GetLen();
+    PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(file_size, "file size"));
+    PAIMON_ASSIGN_OR_RAISE(ObjectStorePath object_path, ParsePath(path));
+    if (object_path.key.empty()) {
+        return Status::Invalid(fmt::format("{} is a directory", path));
+    }
+    return std::make_unique<ObjectStoreInputStream>(client_, read_ahead_limiter_, object_path,
+                                                    ToUri(object_path), file_size);
+}
+
 Result<std::unique_ptr<FileStatus>> ObjectStoreFileSystem::GetFileStatus(
     const std::string& path) const {
     PAIMON_ASSIGN_OR_RAISE(ObjectStorePath object_path, ParsePath(path));

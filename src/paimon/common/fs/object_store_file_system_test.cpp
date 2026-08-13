@@ -159,6 +159,15 @@ TEST(ObjectStoreFileSystemTest, TestOpenBucketRootIsDirectory) {
     ASSERT_EQ(client->list_calls_, 0);
 }
 
+TEST(ObjectStoreFileSystemTest, TestOpenWithKnownLengthSkipsHead) {
+    auto client = std::make_shared<MockObjectStoreClient>();
+    client->objects_["file"] = "data";
+    ObjectStoreFileSystem fs("s3", client);
+    ASSERT_OK_AND_ASSIGN(auto stream, fs.Open(FileStatus("s3://bucket/file", 4)));
+    ASSERT_EQ(stream->Length().value(), 4);
+    ASSERT_EQ(client->head_calls_, 0);
+}
+
 TEST(ObjectStoreFileSystemTest, TestPathWithLeadingSlashes) {
     auto client = std::make_shared<MockObjectStoreClient>();
     client->objects_["file"] = "data";

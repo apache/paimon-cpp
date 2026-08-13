@@ -36,7 +36,7 @@ TEST(BitmapDeletionVectorTest, BasicOperations) {
     for (int32_t i = 0; i < 2000; i += 2) {
         ASSERT_OK(dv.Delete(i));
     }
-    ASSERT_EQ(dv.GetCardinality(), 1000);
+    ASSERT_EQ(dv.GetCardinality().value(), 1000);
     for (int32_t i = 0; i < 2000; ++i) {
         if (i % 2 == 0) {
             ASSERT_TRUE(dv.IsDeleted(i).value());
@@ -102,24 +102,24 @@ TEST(BitmapDeletionVectorTest, SerializeToOutputStream) {
 TEST(BitmapDeletionVectorTest, GetCardinality) {
     RoaringBitmap32 empty;
     BitmapDeletionVector dv_empty(empty);
-    ASSERT_EQ(dv_empty.GetCardinality(), 0);
+    ASSERT_EQ(dv_empty.GetCardinality().value(), 0);
 
     RoaringBitmap32 cont;
     for (int32_t i = 0; i < 100; ++i) cont.Add(i);
     BitmapDeletionVector dv_cont(cont);
-    ASSERT_EQ(dv_cont.GetCardinality(), 100);
+    ASSERT_EQ(dv_cont.GetCardinality().value(), 100);
 
     RoaringBitmap32 gap;
     for (int32_t i = 0; i < 1000; i += 10) gap.Add(i);
     BitmapDeletionVector dv_gap(gap);
-    ASSERT_EQ(dv_gap.GetCardinality(), 100);
+    ASSERT_EQ(dv_gap.GetCardinality().value(), 100);
 
     RoaringBitmap32 del;
     for (int32_t i = 0; i < 10; ++i) del.Add(i);
     BitmapDeletionVector dv_del(del);
-    ASSERT_EQ(dv_del.GetCardinality(), 10);
+    ASSERT_EQ(dv_del.GetCardinality().value(), 10);
     ASSERT_OK(dv_del.Delete(100));
-    ASSERT_EQ(dv_del.GetCardinality(), 11);
+    ASSERT_EQ(dv_del.GetCardinality().value(), 11);
 }
 
 TEST(BitmapDeletionVectorTest, PositionOutOfRangeShouldFail) {
@@ -190,7 +190,7 @@ TEST(BitmapDeletionVectorTest, MergeTwoBitmapDeletionVectors) {
     ASSERT_TRUE(dv1->IsDeleted(5).value());
     ASSERT_FALSE(dv1->IsDeleted(0).value());
     ASSERT_FALSE(dv1->IsDeleted(6).value());
-    ASSERT_EQ(dv1->GetCardinality(), 5);
+    ASSERT_EQ(dv1->GetCardinality().value(), 5);
 }
 
 TEST(BitmapDeletionVectorTest, MergeEmptyDeletionVector) {
@@ -203,7 +203,7 @@ TEST(BitmapDeletionVectorTest, MergeEmptyDeletionVector) {
     auto dv_empty = std::make_shared<BitmapDeletionVector>(empty_roaring);
 
     ASSERT_OK(dv1->Merge(dv_empty));
-    ASSERT_EQ(dv1->GetCardinality(), 2);
+    ASSERT_EQ(dv1->GetCardinality().value(), 2);
     ASSERT_TRUE(dv1->IsDeleted(10).value());
     ASSERT_TRUE(dv1->IsDeleted(20).value());
 }
@@ -214,7 +214,7 @@ TEST(BitmapDeletionVectorTest, MergeNullDeletionVector) {
     auto dv1 = std::make_shared<BitmapDeletionVector>(roaring1);
 
     ASSERT_OK(dv1->Merge(nullptr));
-    ASSERT_EQ(dv1->GetCardinality(), 1);
+    ASSERT_EQ(dv1->GetCardinality().value(), 1);
     ASSERT_TRUE(dv1->IsDeleted(7).value());
 }
 
@@ -230,7 +230,7 @@ TEST(BitmapDeletionVectorTest, MergeIntoEmptyDeletionVector) {
     auto dv2 = std::make_shared<BitmapDeletionVector>(roaring2);
 
     ASSERT_OK(dv1->Merge(dv2));
-    ASSERT_EQ(dv1->GetCardinality(), 3);
+    ASSERT_EQ(dv1->GetCardinality().value(), 3);
     ASSERT_TRUE(dv1->IsDeleted(100).value());
     ASSERT_TRUE(dv1->IsDeleted(200).value());
     ASSERT_TRUE(dv1->IsDeleted(300).value());
