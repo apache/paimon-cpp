@@ -20,6 +20,7 @@
 #include "paimon/core/index/pk/primary_key_index_source_meta.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -47,7 +48,7 @@ class PrimaryKeyIndexSourceMetaTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(
             PrimaryKeyIndexSourceMeta meta,
             PrimaryKeyIndexSourceMeta::Create(data_level, std::move(source_files)));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, meta.Serialize(pool_.get()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, meta.Serialize(pool_));
         return std::string(bytes->data(), bytes->size());
     }
 
@@ -80,14 +81,15 @@ TEST_F(PrimaryKeyIndexSourceMetaTest, SerializeMatchesGoldenBytes) {
     ASSERT_EQ(files, meta.SourceFiles());
 }
 
-TEST_F(PrimaryKeyIndexSourceMetaTest, RoundTripWithChineseNameAndLargeRowCount) {
+TEST_F(PrimaryKeyIndexSourceMetaTest, RoundTripWithBmpNameAndLargeRowCount) {
     std::vector<PrimaryKeyIndexSourceFile> files;
+    // Java modified UTF-8 and standard UTF-8 use identical bytes for non-null BMP text.
     // Row count above 2^32 exercises the full big-endian int64 encoding.
     files.emplace_back("文件-0.parquet", (int64_t{1} << 40) + 7);
     files.emplace_back("data-1.parquet", 42);
     ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta meta,
                          PrimaryKeyIndexSourceMeta::Create(5, files));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes, meta.Serialize(pool_.get()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes, meta.Serialize(pool_));
     ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta decoded,
                          PrimaryKeyIndexSourceMeta::Deserialize(bytes->data(), bytes->size()));
     ASSERT_EQ(5, decoded.DataLevel());
@@ -161,12 +163,33 @@ TEST_F(PrimaryKeyIndexSourceMetaTest, CreateRejectsInvalidArguments) {
     ASSERT_NOK(PrimaryKeyIndexSourceMeta::Create(3, {{"a.parquet", -1}}));
 }
 
+TEST_F(PrimaryKeyIndexSourceMetaTest, SerializeValidatesStringLengthAndMemoryPool) {
+    std::string maximum_name(std::numeric_limits<uint16_t>::max(), 'a');
+    ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta maximum_meta,
+                         PrimaryKeyIndexSourceMeta::Create(1, {{maximum_name, 1}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> maximum_bytes, maximum_meta.Serialize(pool_));
+    ASSERT_OK_AND_ASSIGN(
+        PrimaryKeyIndexSourceMeta maximum_decoded,
+        PrimaryKeyIndexSourceMeta::Deserialize(maximum_bytes->data(), maximum_bytes->size()));
+    ASSERT_EQ(maximum_meta.SourceFiles(), maximum_decoded.SourceFiles());
+
+    std::string oversized_name(static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1, 'a');
+    ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta oversized_meta,
+                         PrimaryKeyIndexSourceMeta::Create(1, {{std::move(oversized_name), 1}}));
+    ASSERT_NOK_WITH_MSG(oversized_meta.Serialize(pool_), "too long for a 16-bit length");
+    ASSERT_NOK_WITH_MSG(maximum_meta.Serialize(nullptr), "null memory pool");
+}
+
+TEST_F(PrimaryKeyIndexSourceMetaTest, DeserializeRejectsNullBuffer) {
+    ASSERT_NOK_WITH_MSG(PrimaryKeyIndexSourceMeta::Deserialize(nullptr, 0), "null buffer");
+}
+
 TEST_F(PrimaryKeyIndexSourceMetaTest, FromIndexFileDecodesSourceMeta) {
     std::vector<PrimaryKeyIndexSourceFile> files;
     files.emplace_back("a.parquet", 100);
     ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta meta,
                          PrimaryKeyIndexSourceMeta::Create(7, files));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> source_meta, meta.Serialize(pool_.get()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> source_meta, meta.Serialize(pool_));
     std::shared_ptr<Bytes> index_meta = std::make_shared<Bytes>("index-payload", pool_.get());
     GlobalIndexMeta global_index_meta(/*_row_range_start=*/0, /*_row_range_end=*/100,
                                       /*_index_field_id=*/1, /*_extra_field_ids=*/std::nullopt,

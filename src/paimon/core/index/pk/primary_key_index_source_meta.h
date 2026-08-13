@@ -36,11 +36,11 @@ class IndexFileMeta;
 
 /// Ordered source data files covered by a source-backed primary-key index payload.
 ///
-/// Wire format (version 1), byte-compatible with Java `PrimaryKeyIndexSourceMeta`:
-/// big-endian int32 version, big-endian int32 data level (> 0), big-endian int32 source
-/// file count (> 0), then per source file a Java `writeUTF` file name (uint16 big-endian
-/// byte length + modified UTF-8 bytes) and a big-endian int64 row count. Trailing bytes
-/// are rejected.
+/// Wire format (version 1): big-endian int32 version, big-endian int32 data level (> 0),
+/// big-endian int32 source file count (> 0), then per source file a uint16 big-endian byte
+/// length, unchanged file name bytes, and a big-endian int64 row count. This matches Java
+/// `writeUTF` for ASCII and non-null BMP UTF-8 file names. Java modified UTF-8 support for
+/// supplementary code points requires a stream-level follow-up. Trailing bytes are rejected.
 class PrimaryKeyIndexSourceMeta {
  public:
     static constexpr int32_t VERSION = 1;
@@ -53,7 +53,7 @@ class PrimaryKeyIndexSourceMeta {
 
     static Result<PrimaryKeyIndexSourceMeta> Deserialize(const char* data, size_t length);
 
-    Result<std::shared_ptr<Bytes>> Serialize(MemoryPool* pool) const;
+    Result<std::shared_ptr<Bytes>> Serialize(const std::shared_ptr<MemoryPool>& pool) const;
 
     int32_t DataLevel() const {
         return data_level_;

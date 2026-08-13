@@ -38,7 +38,6 @@
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/core/options/compress_options.h"
-#include "paimon/executor.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -103,6 +102,13 @@ Result<std::shared_ptr<GlobalIndexWriter>> BTreeGlobalIndexer::CreateWriter(
 Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
     ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
     const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool) const {
+    return CreateReader(arrow_schema, file_reader, files, pool, /*executor=*/nullptr);
+}
+
+Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
+    ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
+    const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<Executor>& executor) const {
     // Get field type from arrow schema
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(arrow_schema));
@@ -123,9 +129,6 @@ Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
         }
         read_buffer_size = static_cast<int32_t>(tmp_buffer_size);
     }
-    // Readers are created per payload group and may coexist for many buckets. Share the
-    // process-wide executor instead of creating a dedicated thread pool for every group.
-    std::shared_ptr<Executor> executor = GetGlobalDefaultExecutor();
     return std::make_shared<LazyFilteredBTreeReader>(read_buffer_size, files, key_type, file_reader,
                                                      cache_manager_, pool, executor);
 }

@@ -178,14 +178,16 @@ TEST(PrimaryKeyIndexDefinitionsTest, RejectsMalformedJsonOptions) {
 TEST(PrimaryKeyIndexDefinitionsTest, RejectsDuplicateColumnWithinFamily) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
                          MakeSchema({{Options::PK_BTREE_INDEX_COLUMNS, "price,price"}}));
-    ASSERT_NOK(PrimaryKeyIndexDefinitions::Create(*schema));
+    ASSERT_NOK_WITH_MSG(PrimaryKeyIndexDefinitions::Create(*schema),
+                        "pk-btree.index.columns contains duplicate column 'price'.");
 }
 
 TEST(PrimaryKeyIndexDefinitionsTest, RejectsColumnSharedAcrossFamilies) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
                          MakeSchema({{Options::PK_BTREE_INDEX_COLUMNS, "price"},
                                      {Options::PK_BITMAP_INDEX_COLUMNS, "price"}}));
-    ASSERT_NOK(PrimaryKeyIndexDefinitions::Create(*schema));
+    ASSERT_NOK_WITH_MSG(PrimaryKeyIndexDefinitions::Create(*schema),
+                        "Column 'price' can own at most one primary-key index.");
 }
 
 TEST(PrimaryKeyIndexDefinitionsTest, ResolvesNonScalarFamiliesAndExcludesThemFromScalar) {

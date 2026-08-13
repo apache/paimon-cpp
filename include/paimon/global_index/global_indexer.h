@@ -35,6 +35,8 @@
 struct ArrowSchema;
 
 namespace paimon {
+class Executor;
+
 /// Interface for creating global index readers and writers.
 class PAIMON_EXPORT GlobalIndexer {
  public:
@@ -70,6 +72,27 @@ class PAIMON_EXPORT GlobalIndexer {
         ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
         const std::vector<GlobalIndexIOMeta>& files,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
+
+    /// Creates a reader using an executor supplied by the scan layer.
+    ///
+    /// Index implementations which do not perform asynchronous work may ignore the executor and
+    /// use the compatibility overload above.
+    ///
+    /// @param arrow_schema   Schema of the indexed data; used to interpret predicate literals.
+    /// @param file_reader    I/O handler for reading index artifacts from storage.
+    /// @param files          List of index file metadata entries produced during writing.
+    /// @param pool           Memory pool for temporary allocations; if nullptr, uses default.
+    /// @param executor       Executor shared by readers created for the same scan; nullptr means
+    ///                       that the reader should evaluate sequentially.
+    /// @return A `Result` containing a shared pointer to the created `GlobalIndexReader`,
+    ///         or an error if the index cannot be loaded or is incompatible, etc.
+    virtual Result<std::shared_ptr<GlobalIndexReader>> CreateReader(
+        ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
+        const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<Executor>& executor) const {
+        static_cast<void>(executor);
+        return CreateReader(arrow_schema, file_reader, files, pool);
+    }
 };
 
 }  // namespace paimon

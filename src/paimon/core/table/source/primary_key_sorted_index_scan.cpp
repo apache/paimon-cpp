@@ -524,9 +524,10 @@ class FsGlobalIndexFileReader : public GlobalIndexFileReader {
 PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFactory(
     const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<IndexFilePathFactories>& path_factories,
-    const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<Executor>& executor) {
     auto file_reader = std::make_shared<FsGlobalIndexFileReader>(file_system);
-    return [path_factories, table_schema, pool, file_reader](
+    return [path_factories, table_schema, pool, file_reader, executor](
                const FilePlan& file, const PrimaryKeyIndexDefinition& definition,
                const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
         if (definition.GetFamily() != PrimaryKeyIndexDefinition::Family::BTREE) {
@@ -560,7 +561,7 @@ PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFa
         ArrowSchema c_arrow_schema;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
         ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
-        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool);
+        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool, executor);
     };
 }
 

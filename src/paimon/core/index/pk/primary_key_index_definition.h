@@ -37,12 +37,12 @@ class PrimaryKeyIndexDefinition {
     };
 
     PrimaryKeyIndexDefinition(std::string column, int32_t field_id, std::string index_type,
-                              std::map<std::string, std::string> options, Family family)
+                              Family family, std::map<std::string, std::string> options)
         : column_(std::move(column)),
           field_id_(field_id),
           index_type_(std::move(index_type)),
-          options_(std::move(options)),
-          family_(family) {}
+          family_(family),
+          options_(std::move(options)) {}
 
     const std::string& Column() const {
         return column_;
@@ -56,20 +56,20 @@ class PrimaryKeyIndexDefinition {
         return index_type_;
     }
 
-    const std::map<std::string, std::string>& Options() const {
-        return options_;
-    }
-
     Family GetFamily() const {
         return family_;
+    }
+
+    const std::map<std::string, std::string>& Options() const {
+        return options_;
     }
 
  private:
     std::string column_;
     int32_t field_id_;
     std::string index_type_;
-    std::map<std::string, std::string> options_;
     Family family_;
+    std::map<std::string, std::string> options_;
 };
 
 }  // namespace paimon

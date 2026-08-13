@@ -175,7 +175,6 @@ set(PAIMON_COMMON_SRCS
     common/data/shredding/shredding_file_reader.cpp
     common/utils/delta_varint_compressor.cpp
     common/utils/fields_comparator.cpp
-    common/utils/java_modified_utf8.cpp
     common/utils/path_util.cpp
     common/utils/range.cpp
     common/utils/read_ahead_cache.cpp
@@ -492,7 +491,6 @@ if(PAIMON_BUILD_TESTS)
                     SOURCES
                     common/memory/memory_pool_test.cpp
                     common/memory/bytes_test.cpp
-                    common/utils/java_modified_utf8_test.cpp
                     common/memory/memory_segment_test.cpp
                     common/memory/memory_segment_utils_test.cpp
                     common/memory/memory_slice_test.cpp

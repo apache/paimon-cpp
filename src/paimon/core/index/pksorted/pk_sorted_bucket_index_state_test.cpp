@@ -61,9 +61,10 @@ class PkSortedBucketIndexStateTest : public ::testing::Test {
         int32_t field_id, const std::string& index_type, int32_t data_level,
         const std::vector<PrimaryKeyIndexSourceFile>& sources, int64_t total_row_count,
         int64_t row_range_start, int64_t row_range_end) const {
-        PrimaryKeyIndexSourceMeta source_meta =
-            PrimaryKeyIndexSourceMeta::Create(data_level, sources).value();
-        std::shared_ptr<Bytes> source_meta_bytes = source_meta.Serialize(pool_.get()).value();
+        EXPECT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta source_meta,
+                             PrimaryKeyIndexSourceMeta::Create(data_level, sources));
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<Bytes> source_meta_bytes,
+                             source_meta.Serialize(pool_));
         return MakePayloadWithSourceMetaBytes(field_id, index_type, total_row_count,
                                               row_range_start, row_range_end, source_meta_bytes);
     }

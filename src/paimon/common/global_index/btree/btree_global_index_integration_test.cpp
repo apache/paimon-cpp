@@ -16,6 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include <atomic>
+#include <cstdint>
+#include <functional>
+
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
@@ -29,6 +33,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
+#include "paimon/executor.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/io/global_index_file_reader.h"
@@ -82,6 +87,27 @@ class FakeGlobalIndexFileReader : public GlobalIndexFileReader {
  private:
     std::shared_ptr<FileSystem> fs_;
     std::string base_path_;
+};
+
+class CountingInlineExecutor : public Executor {
+ public:
+    void Add(std::function<void()> func) override {
+        submission_count_.fetch_add(1);
+        func();
+    }
+
+    void ShutdownNow() override {}
+
+    uint32_t GetThreadNum() const override {
+        return 1;
+    }
+
+    uint32_t SubmissionCount() const {
+        return submission_count_.load();
+    }
+
+ private:
+    std::atomic<uint32_t> submission_count_{0};
 };
 
 class BTreeGlobalIndexIntegrationTest : public ::testing::Test,
@@ -1972,9 +1998,10 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadMultiFilesWithMetaSelector) 
     // Create reader over all 3 files (internally uses LazyFilteredBTreeReader +
     // BTreeFileMetaSelector)
     auto file_reader = std::make_shared<FakeGlobalIndexFileReader>(fs_, base_path_);
+    auto executor = std::make_shared<CountingInlineExecutor>();
     auto c_schema = CreateArrowSchema(field);
-    ASSERT_OK_AND_ASSIGN(auto reader,
-                         indexer->CreateReader(c_schema.get(), file_reader, all_metas, pool_));
+    ASSERT_OK_AND_ASSIGN(auto reader, indexer->CreateReader(c_schema.get(), file_reader, all_metas,
+                                                            pool_, executor));
 
     // --- VisitEqual: key=12 -> only file1 is selected by meta selector -> row 5
     {
@@ -2023,6 +2050,7 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadMultiFilesWithMetaSelector) 
         Literal literal_5(5);
         ASSERT_OK_AND_ASSIGN(auto result, reader->VisitGreaterOrEqual(literal_5));
         CheckResult(result, {3, 4, 5, 6, 7, 9});
+        ASSERT_EQ(executor->SubmissionCount(), 3);
     }
 
     // --- VisitLessOrEqual: key <= 2 -> only file0 selected -> rows 0,1

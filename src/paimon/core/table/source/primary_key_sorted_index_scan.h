@@ -41,6 +41,8 @@
 #include "paimon/result.h"
 
 namespace paimon {
+class Executor;
+
 /// Plans and evaluates source-backed primary-key scalar index groups in file-local
 /// row-position space.
 ///
@@ -179,7 +181,8 @@ class PrimaryKeySortedIndexScan {
     static ReaderFactory MakeReaderFactory(
         const std::shared_ptr<FileSystem>& file_system,
         const std::shared_ptr<IndexFilePathFactories>& path_factories,
-        const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<Executor>& executor);
 };
 
 }  // namespace paimon

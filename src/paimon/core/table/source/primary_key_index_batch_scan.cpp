@@ -19,9 +19,13 @@
 
 #include "paimon/core/table/source/primary_key_index_batch_scan.h"
 
+#include <cstdint>
+#include <optional>
 #include <set>
 #include <string>
+#include <thread>
 
+#include "fmt/format.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/table/source/plan_impl.h"
@@ -30,12 +34,29 @@
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/executor.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate_builder.h"
 
 namespace paimon {
 namespace {
+Result<std::shared_ptr<Executor>> CreateGlobalIndexExecutor(const CoreOptions& core_options) {
+    uint32_t thread_num = std::thread::hardware_concurrency();
+    std::optional<int32_t> configured_thread_num = core_options.GetGlobalIndexThreadNum();
+    if (configured_thread_num) {
+        if (configured_thread_num.value() <= 0) {
+            return Status::Invalid(fmt::format("invalid global index thread number {}",
+                                               configured_thread_num.value()));
+        }
+        thread_num = static_cast<uint32_t>(configured_thread_num.value());
+    } else if (thread_num == 0) {
+        thread_num = 1;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor, CreateDefaultExecutor(thread_num));
+    return executor;
+}
+
 /// Restricts a predicate to leaves over the indexed fields: an AND keeps its convertible
 /// children, an OR is only kept when every child is convertible, and everything else is
 /// dropped. A null return means no part of the predicate can use the index.
@@ -252,10 +273,12 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
     PAIMON_ASSIGN_OR_RAISE(PrimaryKeySortedIndexScan::Plan index_plan,
                            PrimaryKeySortedIndexScan::CreatePlan(
                                snapshot_id, data_splits, scalar_definitions_, index_entries));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor,
+                           CreateGlobalIndexExecutor(core_options_));
     PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
         PrimaryKeySortedIndexScan::MakeReaderFactory(
             core_options_.GetFileSystem(), std::make_shared<IndexFilePathFactories>(path_factory_),
-            table_schema_, pool_);
+            table_schema_, pool_, executor);
     PAIMON_ASSIGN_OR_RAISE(
         PrimaryKeySortedIndexScan::EvaluatedPlan evaluated_plan,
         PrimaryKeySortedIndexScan::Evaluate(index_plan, table_schema_, index_predicate,

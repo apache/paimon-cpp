@@ -19,6 +19,7 @@
 
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
 
+#include <functional>
 #include <set>
 #include <utility>
 
@@ -32,6 +33,8 @@
 
 namespace paimon {
 namespace {
+using IndexOptions = std::map<std::string, std::string>;
+
 constexpr char kBTreeIndexType[] = "btree";
 constexpr char kBitmapIndexType[] = "bitmap";
 constexpr char kFullTextIndexType[] = "full-text";
@@ -55,26 +58,37 @@ std::vector<std::string> IndexColumns(const std::map<std::string, std::string>& 
     return columns;
 }
 
-Status ValidateNoDuplicates(const std::vector<std::string>& columns, const char* option_key) {
-    std::set<std::string> unique_columns;
+Status AddUniqueColumns(const std::vector<std::string>& columns,
+                        const std::function<Status(const std::string&)>& on_duplicate,
+                        std::set<std::string>* unique_columns) {
     for (const std::string& column : columns) {
-        if (!unique_columns.insert(column).second) {
-            return Status::Invalid(
-                fmt::format("{} contains duplicate column '{}'.", option_key, column));
+        if (!unique_columns->insert(column).second) {
+            return on_duplicate(column);
         }
     }
     return Status::OK();
 }
 
-Status ValidateUniqueColumns(std::set<std::string>* indexed_columns,
-                             const std::vector<std::string>& columns) {
-    for (const std::string& column : columns) {
-        if (!indexed_columns->insert(column).second) {
+Status ValidateNoDuplicates(const std::vector<std::string>& columns, const char* option_key) {
+    std::set<std::string> unique_columns;
+    return AddUniqueColumns(
+        columns,
+        [option_key](const std::string& column) {
+            return Status::Invalid(
+                fmt::format("{} contains duplicate column '{}'.", option_key, column));
+        },
+        &unique_columns);
+}
+
+Status ValidateUniqueColumns(const std::vector<std::string>& columns,
+                             std::set<std::string>* indexed_columns) {
+    return AddUniqueColumns(
+        columns,
+        [](const std::string& column) {
             return Status::Invalid(
                 fmt::format("Column '{}' can own at most one primary-key index.", column));
-        }
-    }
-    return Status::OK();
+        },
+        indexed_columns);
 }
 
 /// Resolves the effective option map of one sorted-index definition: table options first,
@@ -154,28 +168,28 @@ Result<PrimaryKeyIndexDefinitions> PrimaryKeyIndexDefinitions::Create(const Tabl
     PAIMON_RETURN_NOT_OK(
         ValidateNoDuplicates(full_text_columns, Options::PK_FULL_TEXT_INDEX_COLUMNS));
     std::set<std::string> indexed_columns;
-    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(&indexed_columns, vector_columns));
-    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(&indexed_columns, btree_columns));
-    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(&indexed_columns, bitmap_columns));
-    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(&indexed_columns, full_text_columns));
+    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(vector_columns, &indexed_columns));
+    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(btree_columns, &indexed_columns));
+    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(bitmap_columns, &indexed_columns));
+    PAIMON_RETURN_NOT_OK(ValidateUniqueColumns(full_text_columns, &indexed_columns));
 
     std::vector<PrimaryKeyIndexDefinition> definitions;
     for (const DataField& field : schema.Fields()) {
         const std::string& column = field.Name();
         if (ObjectUtils::Contains(btree_columns, column)) {
-            Result<std::map<std::string, std::string>> definition_options =
-                SortedIndexOptions(options, column, kBTreeOptionFamily, kBTreeAlgorithmPrefix);
-            PAIMON_RETURN_NOT_OK(definition_options.status());
+            PAIMON_ASSIGN_OR_RAISE(
+                IndexOptions definition_options,
+                SortedIndexOptions(options, column, kBTreeOptionFamily, kBTreeAlgorithmPrefix));
             definitions.emplace_back(column, field.Id(), kBTreeIndexType,
-                                     std::move(definition_options).value(),
-                                     PrimaryKeyIndexDefinition::Family::BTREE);
+                                     PrimaryKeyIndexDefinition::Family::BTREE,
+                                     std::move(definition_options));
         } else if (ObjectUtils::Contains(bitmap_columns, column)) {
-            Result<std::map<std::string, std::string>> definition_options =
-                SortedIndexOptions(options, column, kBitmapOptionFamily, kBitmapAlgorithmPrefix);
-            PAIMON_RETURN_NOT_OK(definition_options.status());
+            PAIMON_ASSIGN_OR_RAISE(
+                IndexOptions definition_options,
+                SortedIndexOptions(options, column, kBitmapOptionFamily, kBitmapAlgorithmPrefix));
             definitions.emplace_back(column, field.Id(), kBitmapIndexType,
-                                     std::move(definition_options).value(),
-                                     PrimaryKeyIndexDefinition::Family::BITMAP);
+                                     PrimaryKeyIndexDefinition::Family::BITMAP,
+                                     std::move(definition_options));
         } else if (ObjectUtils::Contains(vector_columns, column)) {
             std::string index_type;
             auto type_iter =
@@ -184,12 +198,12 @@ Result<PrimaryKeyIndexDefinitions> PrimaryKeyIndexDefinitions::Create(const Tabl
                 index_type = type_iter->second;
             }
             definitions.emplace_back(column, field.Id(), index_type,
-                                     std::map<std::string, std::string>(),
-                                     PrimaryKeyIndexDefinition::Family::VECTOR);
+                                     PrimaryKeyIndexDefinition::Family::VECTOR,
+                                     std::map<std::string, std::string>());
         } else if (ObjectUtils::Contains(full_text_columns, column)) {
             definitions.emplace_back(column, field.Id(), kFullTextIndexType,
-                                     std::map<std::string, std::string>(),
-                                     PrimaryKeyIndexDefinition::Family::FULL_TEXT);
+                                     PrimaryKeyIndexDefinition::Family::FULL_TEXT,
+                                     std::map<std::string, std::string>());
         }
     }
     return PrimaryKeyIndexDefinitions(std::move(definitions));

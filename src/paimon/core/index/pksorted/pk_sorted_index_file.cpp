@@ -100,8 +100,7 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexFile::Build(
     }
     const GlobalIndexIOMeta& io_meta = io_metas[0];
 
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> source_meta_bytes,
-                           source_meta.Serialize(pool.get()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> source_meta_bytes, source_meta.Serialize(pool));
     std::optional<std::string> external_path;
     if (is_external_path) {
         external_path = io_meta.file_path;

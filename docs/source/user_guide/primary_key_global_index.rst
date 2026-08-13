@@ -63,8 +63,11 @@ Current scope
 - The BTree payload reader is wired up. ``pk-bitmap`` (and vector / full-text)
   definitions are recognized for validation, but their evaluation conservatively falls
   back to a normal scan until their dedicated payload readers are supported.
-- The read path targets the Java release-2.0.0 wire contract (source metadata v1,
-  ``GlobalIndexMeta`` with ``_SOURCE_META``, commit message v12).
+- The read path targets the Java release-2.0.0 layout and scan semantics (source metadata
+  v1, ``GlobalIndexMeta`` with ``_SOURCE_META``, commit message v12). Source-file names
+  currently use the existing C++ length-prefixed UTF-8 streams; ASCII and non-null BMP
+  names are compatible with Java ``writeUTF``, while complete modified UTF-8 support for
+  supplementary code points will be handled by a shared stream-level change.
 - ``PkSortedIndexFile::Build`` can build one payload for an ordered source group from
   value-sorted input, which supports tooling and tests; automatic build and maintenance
   during compaction is not included yet.
