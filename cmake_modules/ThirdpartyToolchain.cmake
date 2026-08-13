@@ -324,8 +324,7 @@ elseif(EXISTS "${THIRDPARTY_DIR}/${PAIMON_BOOST_PKG_NAME}")
     set_urls(BOOST_SOURCE_URL "${THIRDPARTY_DIR}/${PAIMON_BOOST_PKG_NAME}")
 else()
     set_urls(BOOST_SOURCE_URL
-             "https://archives.boost.io/release/1.66.0/source/${PAIMON_BOOST_PKG_NAME}"
-    )
+             "https://archives.boost.io/release/1.66.0/source/${PAIMON_BOOST_PKG_NAME}")
 endif()
 
 if(APPLE)
