@@ -324,7 +324,7 @@ elseif(EXISTS "${THIRDPARTY_DIR}/${PAIMON_BOOST_PKG_NAME}")
     set_urls(BOOST_SOURCE_URL "${THIRDPARTY_DIR}/${PAIMON_BOOST_PKG_NAME}")
 else()
     set_urls(BOOST_SOURCE_URL
-             "https://paimon-cpp.oss-cn-beijing.aliyuncs.com/thirdparty/boost/${PAIMON_BOOST_PKG_NAME}"
+             "https://archives.boost.io/release/1.66.0/source/${PAIMON_BOOST_PKG_NAME}"
     )
 endif()
 
@@ -1021,8 +1021,7 @@ macro(build_boost)
                                       --user-config=${BOOST_USER_CONFIG}
                                       toolset=${BOOST_TOOLSET} cxxflags=${EP_CXX_FLAGS}
                                       linkflags=${EP_CXX_FLAGS} install
-                        INSTALL_COMMAND bash -c
-                                        "mkdir -p ${BOOST_INSTALL}/include/boost && cp -r ${BOOST_PREFIX}/src/boost_ep/libs/*/include/boost/* ${BOOST_INSTALL}/include/boost && cp -r ${BOOST_PREFIX}/src/boost_ep/libs/*/*/include/boost/* ${BOOST_INSTALL}/include/boost"
+                        INSTALL_COMMAND ""
                         DEPENDS zlib
                         BUILD_BYPRODUCTS ${BOOST_BYPRODUCTS}
                         LOG_DOWNLOAD ON
