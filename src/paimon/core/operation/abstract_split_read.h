@@ -66,13 +66,16 @@ class AbstractSplitRead : public SplitRead {
     /// `extra_format_options` are merged over the table options when building the format
     /// reader, e.g. to switch the blob format reader into placeholder-aware mode for the
     /// data-evolution blob fallback read path.
+    /// `file_selection`, when present, contains file-local row IDs and is applied independently
+    /// to every file in `data_files`.
     Result<std::vector<std::unique_ptr<FileBatchReader>>> CreateRawFileReaders(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-        const std::map<std::string, std::string>& extra_format_options) const;
+        const std::map<std::string, std::string>& extra_format_options,
+        const std::optional<RoaringBitmap32>& file_selection = std::nullopt) const;
 
  protected:
     AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
@@ -91,7 +94,8 @@ class AbstractSplitRead : public SplitRead {
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const = 0;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::optional<RoaringBitmap32>& file_selection) const = 0;
 
     // 1. project write cols to data schema
     // 2. add partition fields (if write cols not contain)
@@ -115,7 +119,8 @@ class AbstractSplitRead : public SplitRead {
         const BinaryRow& partition, const ReaderBuilder* reader_builder,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::optional<RoaringBitmap32>& file_selection) const;
 
     Result<std::pair<std::unique_ptr<FileBatchReader>, std::set<int32_t>>>
     ApplySharedShreddingReaderIfNeeded(std::unique_ptr<FileBatchReader>&& file_reader,

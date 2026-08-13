@@ -50,7 +50,8 @@ columns (the *payload* columns) only for matching row ranges.
 
 The optimization is disabled by default. Enable it with
 ``read.late-materialization.enabled=true``. It is applied only when predicate filtering is enabled,
-the probe and payload projections are both non-empty, and every input file has a first row ID.
+and the probe and payload projections are both non-empty. The selected file-local row IDs are
+pushed directly to each file reader, so row tracking and global row IDs are not required.
 Otherwise, the reader uses the normal single-pass path.
 
 ``read.late-materialization.max-match-rows`` limits the number of matching rows accumulated for a

@@ -197,7 +197,8 @@ Result<std::unique_ptr<FileBatchReader>> MergeFileSplitRead::ApplyIndexAndDvRead
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::optional<RoaringBitmap32>& file_selection) const {
     // merge read does not use index
     std::shared_ptr<DeletionVector> deletion_vector;
     if (dv_factory) {
@@ -214,6 +215,11 @@ Result<std::unique_ptr<FileBatchReader>> MergeFileSplitRead::ApplyIndexAndDvRead
         actual_selection = *deletion;
         PAIMON_ASSIGN_OR_RAISE(uint64_t num_rows, file_reader->GetNumberOfRows());
         actual_selection.value().Flip(0, num_rows);
+    }
+    if (file_selection) {
+        actual_selection = actual_selection ? RoaringBitmap32::And(actual_selection.value(),
+                                                                   file_selection.value())
+                                            : file_selection;
     }
 
     ::ArrowSchema c_read_schema;

@@ -97,7 +97,8 @@ class MergeFileSplitRead : public AbstractSplitRead {
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& ranges,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const override;
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::optional<RoaringBitmap32>& file_selection) const override;
 
     Result<std::unique_ptr<SortMergeReader>> CreateSortMergeReaderForSection(
         const std::vector<SortedRun>& section, const BinaryRow& partition,

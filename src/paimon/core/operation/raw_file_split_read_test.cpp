@@ -18,7 +18,9 @@
 
 #include "paimon/core/operation/raw_file_split_read.h"
 
+#include <map>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -43,6 +45,8 @@
 #include "paimon/format/file_format.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/data_split.h"
@@ -130,12 +134,20 @@ class RawFileSplitReadTest : public ::testing::Test {
     }
 
     void CheckReadResult(const std::shared_ptr<arrow::Schema>& read_schema,
-                         const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
+                         const std::shared_ptr<arrow::ChunkedArray>& expected_array,
+                         const std::shared_ptr<Predicate>& predicate = nullptr,
+                         bool enable_predicate_filter = false,
+                         const std::map<std::string, std::string>& options = {}) const {
         std::string path = paimon::test::GetDataDir() +
                            "/orc/multi_partition_append_table.db/"
                            "multi_partition_append_table";
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames(read_schema->field_names());
+        context_builder.SetOptions(options);
+        if (predicate) {
+            context_builder.SetPredicate(predicate);
+        }
+        context_builder.EnablePredicateFilter(enable_predicate_filter);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
@@ -377,6 +389,106 @@ TEST_F(RawFileSplitReadTest, TestCreateReaderWithNonPartitionWithReserveSequence
     CheckReadResult(read_schema, expected_array);
 }
 
+TEST_F(RawFileSplitReadTest, TestLateMaterializationWithoutFirstRowId) {
+    std::vector<DataField> read_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
+                                          DataField(3, arrow::field("f3", arrow::float64()))};
+    std::shared_ptr<arrow::Schema> read_schema =
+        DataField::ConvertDataFieldsToArrowSchema(read_fields);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/1, /*field_name=*/"f3", FieldType::DOUBLE, Literal(12.5));
+
+    std::vector<std::shared_ptr<arrow::Field>> expected_fields = read_schema->fields();
+    expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        arrow::struct_(expected_fields),
+        {R"([[0, "Emily", 13.1], [0, "Tony", 14.1], [0, "Lucy", 14.1]])"}, &expected_array);
+    ASSERT_TRUE(array_status.ok()) << array_status.ToString();
+
+    CheckReadResult(read_schema, expected_array, predicate, /*enable_predicate_filter=*/true,
+                    {{Options::READ_LATE_MATERIALIZATION_ENABLED, "true"}});
+}
+
+TEST_F(RawFileSplitReadTest, TestLateMaterializationDisabledUsesNormalPath) {
+    std::vector<DataField> read_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
+                                          DataField(3, arrow::field("f3", arrow::float64()))};
+    std::shared_ptr<arrow::Schema> read_schema =
+        DataField::ConvertDataFieldsToArrowSchema(read_fields);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/1, /*field_name=*/"f3", FieldType::DOUBLE, Literal(12.5));
+
+    std::vector<std::shared_ptr<arrow::Field>> expected_fields = read_schema->fields();
+    expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        arrow::struct_(expected_fields),
+        {R"([[0, "Emily", 13.1], [0, "Tony", 14.1], [0, "Lucy", 14.1]])"}, &expected_array);
+    ASSERT_TRUE(array_status.ok()) << array_status.ToString();
+
+    CheckReadResult(read_schema, expected_array, predicate, /*enable_predicate_filter=*/true);
+}
+
+TEST_F(RawFileSplitReadTest, TestLateMaterializationFallsBackWithoutPredicateFilter) {
+    std::vector<DataField> read_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
+                                          DataField(3, arrow::field("f3", arrow::float64()))};
+    std::shared_ptr<arrow::Schema> read_schema =
+        DataField::ConvertDataFieldsToArrowSchema(read_fields);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/1, /*field_name=*/"f3", FieldType::DOUBLE, Literal(0.0));
+
+    std::vector<std::shared_ptr<arrow::Field>> expected_fields = read_schema->fields();
+    expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        arrow::struct_(expected_fields),
+        {R"([[0, "Bob", 12.1], [0, "Emily", 13.1], [0, "Tony", 14.1],
+             [0, "Lucy", 14.1], [0, "Alice", 11.1]])"},
+        &expected_array);
+    ASSERT_TRUE(array_status.ok()) << array_status.ToString();
+
+    CheckReadResult(read_schema, expected_array, predicate, /*enable_predicate_filter=*/false,
+                    {{Options::READ_LATE_MATERIALIZATION_ENABLED, "true"}});
+}
+
+TEST_F(RawFileSplitReadTest, TestLateMaterializationFallsBackWithoutPayloadColumns) {
+    std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64()))};
+    std::shared_ptr<arrow::Schema> read_schema =
+        DataField::ConvertDataFieldsToArrowSchema(read_fields);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, /*field_name=*/"f3", FieldType::DOUBLE, Literal(12.5));
+
+    std::vector<std::shared_ptr<arrow::Field>> expected_fields = read_schema->fields();
+    expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        arrow::struct_(expected_fields), {R"([[0, 13.1], [0, 14.1], [0, 14.1]])"}, &expected_array);
+    ASSERT_TRUE(array_status.ok()) << array_status.ToString();
+
+    CheckReadResult(read_schema, expected_array, predicate, /*enable_predicate_filter=*/true,
+                    {{Options::READ_LATE_MATERIALIZATION_ENABLED, "true"}});
+}
+
+TEST_F(RawFileSplitReadTest, TestLateMaterializationFallsBackWhenMatchLimitExceeded) {
+    std::vector<DataField> read_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
+                                          DataField(3, arrow::field("f3", arrow::float64()))};
+    std::shared_ptr<arrow::Schema> read_schema =
+        DataField::ConvertDataFieldsToArrowSchema(read_fields);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/1, /*field_name=*/"f3", FieldType::DOUBLE, Literal(12.5));
+
+    std::vector<std::shared_ptr<arrow::Field>> expected_fields = read_schema->fields();
+    expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        arrow::struct_(expected_fields),
+        {R"([[0, "Emily", 13.1], [0, "Tony", 14.1], [0, "Lucy", 14.1]])"}, &expected_array);
+    ASSERT_TRUE(array_status.ok()) << array_status.ToString();
+
+    CheckReadResult(read_schema, expected_array, predicate, /*enable_predicate_filter=*/true,
+                    {{Options::READ_LATE_MATERIALIZATION_ENABLED, "true"},
+                     {Options::READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS, "1"}});
+}
+
 TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/multi_partition_append_table.db/"
@@ -505,9 +617,7 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
                              split_read->Match(data_split, /*force_keep_delete=*/false));
         ASSERT_FALSE(match_result);
     }
-    {
-        ASSERT_NOK(split_read->Match(nullptr, /*force_keep_delete=*/false));
-    }
+    { ASSERT_NOK(split_read->Match(nullptr, /*force_keep_delete=*/false)); }
 }
 
 }  // namespace paimon::test

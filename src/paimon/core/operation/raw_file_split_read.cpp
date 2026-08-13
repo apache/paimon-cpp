@@ -19,6 +19,7 @@
 #include "paimon/core/operation/raw_file_split_read.h"
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -225,11 +226,6 @@ auto RawFileSplitRead::TryCreateLateMaterializedReader(
     if (!plan) {
         return LateMaterializationReadResult();
     }
-    for (const auto& file : data_files) {
-        if (!file->first_row_id) {
-            return LateMaterializationReadResult();
-        }
-    }
 
     std::map<std::string, int32_t> probe_field_name_to_idx;
     for (int32_t i = 0; i < plan->probe_schema->num_fields(); ++i) {
@@ -261,7 +257,7 @@ auto RawFileSplitRead::TryCreateLateMaterializedReader(
         }
 
         std::vector<std::shared_ptr<arrow::Array>> probe_chunks;
-        std::vector<Range> selected_global_ranges;
+        RoaringBitmap32 selected_file_rows;
         while (true) {
             PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                                    probe_readers[0]->NextBatchWithBitmap());
@@ -297,9 +293,12 @@ auto RawFileSplitRead::TryCreateLateMaterializedReader(
                 }
                 PAIMON_ASSIGN_OR_RAISE(uint64_t file_row_id,
                                        probe_readers[0]->GetPreviousBatchFileRowId(batch_row_id));
-                int64_t global_row_id =
-                    file->first_row_id.value() + static_cast<int64_t>(file_row_id);
-                selected_global_ranges.emplace_back(global_row_id, global_row_id);
+                if (file_row_id > std::numeric_limits<uint32_t>::max()) {
+                    return Status::Invalid(
+                        fmt::format("late materialization file row id {} exceeds bitmap capacity",
+                                    file_row_id));
+                }
+                selected_file_rows.Add(static_cast<uint32_t>(file_row_id));
                 selected_bitmap.Add(batch_row_id);
             }
 
@@ -326,7 +325,7 @@ auto RawFileSplitRead::TryCreateLateMaterializedReader(
         completed_metrics->Merge(probe_readers[0]->GetReaderMetrics());
         probe_readers[0]->Close();
 
-        if (selected_global_ranges.empty()) {
+        if (selected_file_rows.IsEmpty()) {
             continue;
         }
 
@@ -335,13 +334,12 @@ auto RawFileSplitRead::TryCreateLateMaterializedReader(
                                           arrow::Concatenate(probe_chunks, probe_arrow_pool.get()));
         std::shared_ptr<arrow::StructArray> probe_struct =
             arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_data);
-        std::vector<Range> row_ranges =
-            Range::SortAndMergeOverlap(selected_global_ranges, /*adjacent=*/true);
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::unique_ptr<FileBatchReader>> payload_readers,
             CreateRawFileReaders(partition, {file}, plan->payload_schema,
-                                 /*predicate=*/nullptr, dv_factory, row_ranges,
-                                 data_file_path_factory, /*extra_format_options=*/{}));
+                                 /*predicate=*/nullptr, dv_factory,
+                                 /*row_ranges=*/std::nullopt, data_file_path_factory,
+                                 /*extra_format_options=*/{}, selected_file_rows));
         if (payload_readers.empty()) {
             return Status::Invalid("late materialization payload reader was filtered out");
         }
@@ -367,7 +365,8 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::optional<RoaringBitmap32>& file_selection) const {
     std::shared_ptr<FileIndexResult> file_index_result;
     if (options_.FileIndexReadEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
@@ -418,6 +417,14 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
         } else {
             actual_selection = std::move(range_selection);
         }
+    }
+
+    // Late materialization already operates on one FileBatchReader at a time, so its selection
+    // can stay file-local instead of making a round trip through global row IDs.
+    if (file_selection) {
+        actual_selection = actual_selection ? RoaringBitmap32::And(actual_selection.value(),
+                                                                   file_selection.value())
+                                            : file_selection;
     }
 
     if (actual_selection && actual_selection.value().IsEmpty()) {

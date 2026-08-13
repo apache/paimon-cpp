@@ -428,7 +428,8 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::optional<RoaringBitmap32>& file_selection) const {
     if (predicate) {
         assert(false);
         // as DataEvolutionSplitRead will skip predicate
@@ -443,6 +444,11 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap32> selection_row_ids,
                            file->ToFileSelection(row_ranges));
+    if (file_selection) {
+        selection_row_ids = selection_row_ids ? RoaringBitmap32::And(selection_row_ids.value(),
+                                                                     file_selection.value())
+                                              : file_selection;
+    }
     ::ArrowSchema c_read_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
     PAIMON_RETURN_NOT_OK(
