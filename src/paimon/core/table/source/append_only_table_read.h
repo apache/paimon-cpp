@@ -36,6 +36,7 @@ class Executor;
 class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
+class RealtimeSplit;
 
 class AppendOnlyTableRead : public TableRead {
  public:
@@ -47,10 +48,16 @@ class AppendOnlyTableRead : public TableRead {
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const std::shared_ptr<Split>& data_split) override;
 
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const std::vector<std::shared_ptr<Split>>& splits) override;
+
     Result<std::unique_ptr<CountReader>> CreateCountReader(
         const std::vector<std::shared_ptr<Split>>& splits) override;
 
  private:
+    Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
+        const std::shared_ptr<RealtimeSplit>& realtime_split, bool release_ticket);
+
     Result<std::unique_ptr<BatchReader>> CreateDiskReader(const std::shared_ptr<Split>& split);
 
     std::vector<std::unique_ptr<SplitRead>> split_reads_;

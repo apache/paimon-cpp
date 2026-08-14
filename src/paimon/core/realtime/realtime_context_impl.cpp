@@ -28,6 +28,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -44,9 +45,7 @@
 namespace paimon {
 
 RealtimeContextImpl::RealtimeContextImpl(const std::shared_ptr<MemIndexerFactory>& factory)
-    : factory_(factory) {
-    read_view_cleanup_thread_ = std::thread([this]() { CleanupReadViews(); });
-}
+    : factory_(factory) {}
 
 RealtimeContextImpl::~RealtimeContextImpl() {
     {
@@ -57,6 +56,26 @@ RealtimeContextImpl::~RealtimeContextImpl() {
     if (read_view_cleanup_thread_.joinable()) {
         read_view_cleanup_thread_.join();
     }
+}
+
+Result<std::shared_ptr<RealtimeContextImpl>> RealtimeContextImpl::Create(
+    const std::shared_ptr<MemIndexerFactory>& factory) {
+    if (!factory) {
+        return Status::Invalid("mem indexer factory is null");
+    }
+    std::shared_ptr<RealtimeContextImpl> context(new RealtimeContextImpl(factory));
+    PAIMON_RETURN_NOT_OK(context->Start());
+    return context;
+}
+
+Status RealtimeContextImpl::Start() {
+    try {
+        read_view_cleanup_thread_ = std::thread([this]() { CleanupReadViews(); });
+    } catch (const std::system_error& e) {
+        return Status::UnknownError(
+            std::string("failed to start real-time read-view cleanup thread: ") + e.what());
+    }
+    return Status::OK();
 }
 
 Result<RealtimeMemIndexerState> RealtimeContextImpl::GetOrCreateMemIndexer(
@@ -329,10 +348,7 @@ Result<std::shared_ptr<RealtimeContext>> RealtimeContext::Create() {
 
 Result<std::shared_ptr<RealtimeContext>> RealtimeContext::Create(
     const std::shared_ptr<MemIndexerFactory>& factory) {
-    if (!factory) {
-        return Status::Invalid("mem indexer factory is null");
-    }
-    return std::make_shared<RealtimeContextImpl>(factory);
+    return RealtimeContextImpl::Create(factory);
 }
 
 Result<std::shared_ptr<RealtimeContextImpl>> RealtimeContextImpl::Cast(

@@ -22,6 +22,7 @@
 #include <memory>
 #include <utility>
 
+#include "paimon/arrow/abi.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/realtime/mem_indexer.h"
 #include "paimon/result.h"

@@ -55,7 +55,8 @@ struct RealtimePartitionBucketView {
 
 class RealtimeContextImpl final : public RealtimeContext {
  public:
-    explicit RealtimeContextImpl(const std::shared_ptr<MemIndexerFactory>& factory);
+    static Result<std::shared_ptr<RealtimeContextImpl>> Create(
+        const std::shared_ptr<MemIndexerFactory>& factory);
 
     ~RealtimeContextImpl() override;
 
@@ -86,6 +87,10 @@ class RealtimeContextImpl final : public RealtimeContext {
         RealtimePartitionBucketView view;
         std::chrono::steady_clock::time_point expire_at;
     };
+
+    explicit RealtimeContextImpl(const std::shared_ptr<MemIndexerFactory>& factory);
+
+    Status Start();
 
     void CleanupReadViews();
 

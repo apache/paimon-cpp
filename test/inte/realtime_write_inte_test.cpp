@@ -627,6 +627,52 @@ TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTick
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestVectorReaderFailurePreservesEarlierSplitTicket) {
+    CreateTable(/*partition_keys=*/{"pt"});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    std::vector<Row> p0_rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p0_batch,
+                         MakeBatch(p0_rows, /*partitioned=*/true));
+    ASSERT_OK(writer->Write(std::move(p0_batch)));
+    std::vector<Row> p1_rows = MakeRows(/*first_id=*/10, /*count=*/3, /*partition=*/"p1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p1_batch,
+                         MakeBatch(p1_rows, /*partitioned=*/true));
+    ASSERT_OK(writer->Write(std::move(p1_batch)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(2, plan->Splits().size());
+
+    std::vector<std::shared_ptr<Split>> invalid_splits = plan->Splits();
+    std::shared_ptr<RealtimeSplit> second_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(invalid_splits[1]);
+    ASSERT_NE(nullptr, second_split);
+    std::vector<std::shared_ptr<Split>> second_disk_splits = second_split->DiskSplits();
+    invalid_splits[1] = std::make_shared<RealtimeSplit>(
+        RealtimeSplit::kCurrentVersion + 1, second_split->SnapshotId(), second_split->Partition(),
+        second_split->Bucket(), std::move(second_disk_splits), second_split->CommittedOffset(),
+        second_split->MemoryUpperOffset(), second_split->OpaqueTicket());
+
+    ReadContextBuilder read_builder(table_path_);
+    read_builder.SetOptions(options_)
+        .SetReadFieldNames({"id", "payload", "pt"})
+        .WithRealtimeContext(realtime_context)
+        .WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_NOK_WITH_MSG(table_read->CreateReader(invalid_splits),
+                        "unsupported real-time split version");
+
+    std::vector<Row> expected_rows = p0_rows;
+    expected_rows.insert(expected_rows.end(), p1_rows.begin(), p1_rows.end());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
+    ASSERT_EQ(expected_rows, actual_rows);
+    ASSERT_OK(writer->Close());
+}
+
 TEST_F(RealtimeWriteInteTest, TestCloseWriterKeepsContextReadable) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
