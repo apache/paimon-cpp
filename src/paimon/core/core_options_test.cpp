@@ -48,6 +48,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(std::numeric_limits<int64_t>::max(), core_options.GetTargetFileRowNum());
     ASSERT_EQ(256 * 1024 * 1024L, core_options.GetBlobTargetFileSize());
     ASSERT_TRUE(core_options.BlobSplitByFileSize());
+    ASSERT_EQ(4 * 1024L, core_options.GetBlobCopyBufferSize());
     ASSERT_EQ(187904815, core_options.GetCompactionFileSize(/*has_primary_key=*/false));
     ASSERT_EQ(93952404, core_options.GetCompactionFileSize(/*has_primary_key=*/true));
 
@@ -191,6 +192,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::TARGET_FILE_SIZE, "512MB"},
         {Options::TARGET_FILE_ROW_NUM, "123"},
         {Options::BLOB_TARGET_FILE_SIZE, "1G"},
+        {Options::BLOB_COPY_BUFFER_SIZE, "8 kb"},
         {Options::PARTITION_DEFAULT_NAME, "foo"},
         {Options::MANIFEST_TARGET_FILE_SIZE, "16MB"},
         {Options::MANIFEST_FULL_COMPACTION_FILE_SIZE, "32MB"},
@@ -326,6 +328,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(512 * 1024 * 1024L, core_options.GetTargetFileSize(/*has_primary_key=*/false));
     ASSERT_EQ(123, core_options.GetTargetFileRowNum());
     ASSERT_EQ(1024 * 1024 * 1024L, core_options.GetBlobTargetFileSize());
+    ASSERT_EQ(8 * 1024L, core_options.GetBlobCopyBufferSize());
     ASSERT_EQ("foo", core_options.GetPartitionDefaultName());
     ASSERT_EQ(16 * 1024 * 1024L, core_options.GetManifestTargetFileSize());
     ASSERT_EQ(32 * 1024 * 1024L, core_options.GetManifestFullCompactionThresholdSize());
@@ -475,6 +478,10 @@ TEST(CoreOptionsTest, TestFromMap) {
 TEST(CoreOptionsTest, TestInvalidCase) {
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::TARGET_FILE_ROW_NUM, "0"}}),
                         "target-file-row-num should be at least 1");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BLOB_COPY_BUFFER_SIZE, "0"}}),
+                        "must be between 1 byte and");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BLOB_COPY_BUFFER_SIZE, "3 gb"}}),
+                        "must be between 1 byte and");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BUCKET, "3.5"}}),
                         "Invalid Config [bucket: 3.5]");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::SCAN_SNAPSHOT_ID, "3.5"}}),

@@ -57,6 +57,11 @@ class KeyValueTableRead : public TableRead {
                       const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
 
+    /// Wraps the split reader with the managed blob resolver when the read schema holds
+    /// managed blob fields and the read wants payload bytes rather than descriptors.
+    Result<std::unique_ptr<BatchReader>> WrapWithManagedBlobResolverIfNeeded(
+        std::unique_ptr<BatchReader>&& reader) const;
+
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<InternalReadContext> context_;

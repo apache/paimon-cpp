@@ -508,7 +508,7 @@ TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnDvTable) {
 
     ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::Run(TablePath(), options, /*partitions=*/{},
                                                       /*file_system=*/nullptr, pool_),
-                        "not support for dv in UNAWARE_BUCKET mode");
+                        "does not support deletion vectors in UNAWARE_BUCKET mode");
 }
 
 /// Test that compact output files are written to external path when configured.

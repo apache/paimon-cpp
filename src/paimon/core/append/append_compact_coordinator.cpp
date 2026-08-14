@@ -24,12 +24,17 @@
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
+#include "fmt/ranges.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/core/append/append_compact_task.h"
+#include "paimon/core/append/data_evolution_compact_coordinator.h"
+#include "paimon/core/append/data_evolution_normal_compact_task.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
@@ -40,10 +45,14 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
+#include "paimon/fs/file_system.h"
+#include "paimon/logging.h"
 #include "paimon/memory/memory_pool.h"
 namespace paimon {
 
@@ -174,6 +183,46 @@ std::unique_ptr<AppendOnlyFileStoreWrite> CreateFileStoreWrite(
         /*realtime_context=*/nullptr, executor, pool);
 }
 
+/// Rejects caller options that change an immutable table option: they decide which
+/// compaction path runs and the physical layout the rewrite must preserve, so overriding
+/// them could route a data-evolution table into the plain append rewrite (reordering row
+/// ids) or slip a deletion-vector table past its rejection. Mirrors the immutable-option
+/// check of Java's AbstractFileStoreTable#copy, compared on the parsed effective values so
+/// that passing an explicit default is still allowed.
+Status ValidateImmutableOptions(const CoreOptions& schema_options,
+                                const CoreOptions& merged_options) {
+    std::vector<std::string> changed_options;
+    if (schema_options.RowTrackingEnabled() != merged_options.RowTrackingEnabled()) {
+        changed_options.emplace_back(Options::ROW_TRACKING_ENABLED);
+    }
+    if (schema_options.DataEvolutionEnabled() != merged_options.DataEvolutionEnabled()) {
+        changed_options.emplace_back(Options::DATA_EVOLUTION_ENABLED);
+    }
+    if (schema_options.DeletionVectorsEnabled() != merged_options.DeletionVectorsEnabled()) {
+        changed_options.emplace_back(Options::DELETION_VECTORS_ENABLED);
+    }
+    if (schema_options.GetBucket() != merged_options.GetBucket()) {
+        changed_options.emplace_back(Options::BUCKET);
+    }
+    if (schema_options.GetBlobFields() != merged_options.GetBlobFields()) {
+        changed_options.emplace_back(Options::BLOB_FIELD);
+    }
+    if (schema_options.GetBlobDescriptorFields() != merged_options.GetBlobDescriptorFields()) {
+        changed_options.emplace_back(Options::BLOB_DESCRIPTOR_FIELD);
+    }
+    if (schema_options.GetBlobViewFields() != merged_options.GetBlobViewFields()) {
+        changed_options.emplace_back(Options::BLOB_VIEW_FIELD);
+    }
+    if (!changed_options.empty()) {
+        return Status::Invalid(
+            fmt::format("Compaction options must not change immutable table options [{}]: they "
+                        "decide the compaction path and the physical layout the rewrite must "
+                        "preserve.",
+                        fmt::join(changed_options, ", ")));
+    }
+    return Status::OK();
+}
+
 /// Load schema from table path and merge user options with schema options.
 Result<std::pair<std::shared_ptr<TableSchema>, CoreOptions>> LoadSchemaAndOptions(
     const std::string& table_path, const std::map<std::string, std::string>& options,
@@ -193,6 +242,9 @@ Result<std::pair<std::shared_ptr<TableSchema>, CoreOptions>> LoadSchemaAndOption
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(final_options, file_system));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions schema_core_options,
+                           CoreOptions::FromMap(table_schema->Options(), file_system));
+    PAIMON_RETURN_NOT_OK(ValidateImmutableOptions(schema_core_options, core_options));
     return std::make_pair(table_schema, std::move(core_options));
 }
 
@@ -206,7 +258,7 @@ Status ValidateTable(const std::shared_ptr<TableSchema>& table_schema,
     }
     if (core_options.DeletionVectorsEnabled()) {
         return Status::NotImplemented(
-            "AppendCompactCoordinator not support for dv in UNAWARE_BUCKET mode");
+            "AppendCompactCoordinator does not support deletion vectors in UNAWARE_BUCKET mode");
     }
     return Status::OK();
 }
@@ -227,15 +279,18 @@ Result<std::shared_ptr<FileStorePathFactory>> BuildPathFactory(
         global_index_external_path, core_options.IndexFileInDataFileDir(), pool);
 }
 
-/// Scan the latest snapshot and collect small files grouped by partition.
-Result<LinkedHashMap<BinaryRow, std::vector<std::shared_ptr<DataFileMeta>>>> ScanSmallFiles(
+/// Scan the latest snapshot and collect files grouped by partition. When `small_files_only` is
+/// set, files at or above the compaction trigger size are dropped; a data-evolution plan needs
+/// every live file instead, since whether a file takes part depends on its field group, not
+/// only on its size.
+Result<LinkedHashMap<BinaryRow, std::vector<std::shared_ptr<DataFileMeta>>>> ScanFiles(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<SchemaManager>& schema_manager,
     const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<arrow::Schema>& arrow_schema,
     const std::shared_ptr<arrow::Schema>& partition_schema, const CoreOptions& core_options,
     const std::shared_ptr<FileStorePathFactory>& path_factory,
-    const std::vector<std::map<std::string, std::string>>& partitions,
+    const std::vector<std::map<std::string, std::string>>& partitions, bool small_files_only,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
     auto scan_filter = std::make_shared<ScanFilter>(
         /*predicate=*/nullptr, partitions, /*bucket_filter=*/std::nullopt);
@@ -256,7 +311,7 @@ Result<LinkedHashMap<BinaryRow, std::vector<std::shared_ptr<DataFileMeta>>>> Sca
 
     for (const auto& entry : add_entries) {
         const auto& file = entry.File();
-        if (file->file_size < compaction_file_size) {
+        if (!small_files_only || file->file_size < compaction_file_size) {
             partition_files[entry.Partition()].push_back(file);
         }
     }
@@ -279,6 +334,75 @@ std::vector<AppendCompactTask> GenerateCompactTasks(
         }
     }
     return tasks;
+}
+
+/// Cleans up the rewritten output files of already finished tasks, best effort. Used when a
+/// later task fails: the collected commit messages are discarded, so their outputs would
+/// otherwise linger until an orphan clean. Failures are logged and never mask the original
+/// compaction error the caller returns.
+void CleanupCompactOutputs(const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
+                           const std::shared_ptr<FileStorePathFactory>& path_factory,
+                           const CoreOptions& core_options) {
+    auto logger = Logger::GetLogger("AppendCompactCoordinator");
+    for (const auto& message : commit_messages) {
+        auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        if (!message_impl) {
+            // The log macros require at least one format argument.
+            PAIMON_LOG_WARN(logger, "%s",
+                            "Skipping cleanup of a compact output: unexpected commit message "
+                            "type");
+            continue;
+        }
+        Result<std::shared_ptr<DataFilePathFactory>> data_file_path_factory =
+            path_factory->CreateDataFilePathFactory(message_impl->Partition(),
+                                                    message_impl->Bucket());
+        if (!data_file_path_factory.ok()) {
+            PAIMON_LOG_WARN(logger,
+                            "Skipping cleanup of compact outputs in partition %s bucket %d: %s",
+                            message_impl->Partition().ToString().c_str(), message_impl->Bucket(),
+                            data_file_path_factory.status().ToString().c_str());
+            continue;
+        }
+        for (const auto& file : message_impl->GetCompactIncrement().CompactAfter()) {
+            for (const auto& path : data_file_path_factory.value()->CollectFiles(file)) {
+                auto status = core_options.GetFileSystem()->Delete(path);
+                if (!status.ok()) {
+                    PAIMON_LOG_WARN(logger, "Failed to delete compact output %s: %s", path.c_str(),
+                                    status.ToString().c_str());
+                }
+            }
+        }
+    }
+}
+
+/// Execute data-evolution compact tasks synchronously and collect commit messages.
+Result<std::vector<std::shared_ptr<CommitMessage>>> ExecuteDataEvolutionNormalCompactTasks(
+    std::vector<DataEvolutionNormalCompactTask>&& tasks, const std::string& table_path,
+    const std::shared_ptr<TableSchema>& table_schema,
+    const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& core_options,
+    const std::shared_ptr<FileStorePathFactory>& path_factory,
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
+    DataEvolutionCompactContext context{table_path,   table_schema, arrow_schema, core_options,
+                                        path_factory, executor,     pool};
+    auto logger = Logger::GetLogger("AppendCompactCoordinator");
+    PAIMON_LOG_DEBUG(logger, "Executing %zu data-evolution compact tasks for table %s",
+                     tasks.size(), table_path.c_str());
+
+    std::vector<std::shared_ptr<CommitMessage>> commit_messages;
+    commit_messages.reserve(tasks.size());
+    for (auto& task : tasks) {
+        Result<std::shared_ptr<CommitMessage>> message = task.DoCompact(context);
+        if (!message.ok()) {
+            PAIMON_LOG_WARN(logger, "Data-evolution compact task failed: %s, status: %s",
+                            task.ToString().c_str(), message.status().ToString().c_str());
+            // The failed task aborted its own output; the finished tasks' outputs will never
+            // be committed anymore, so remove them too.
+            CleanupCompactOutputs(commit_messages, path_factory, core_options);
+            return message.status();
+        }
+        commit_messages.push_back(std::move(message).value());
+    }
+    return commit_messages;
 }
 
 /// Execute compact tasks synchronously and collect commit messages.
@@ -338,15 +462,42 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AppendCompactCoordinator::Ru
         std::shared_ptr<FileStorePathFactory> path_factory,
         BuildPathFactory(table_path, table_schema, arrow_schema, core_options, pool));
 
-    // Scan small files from latest snapshot
+    // The legacy row-id rewriting mode was removed in Java; honor the same contract for
+    // tables whose options still carry it, instead of silently ignoring the option. Checked
+    // before any scanning, so even an empty table fails loudly.
+    bool data_evolution = core_options.DataEvolutionEnabled();
+    if (data_evolution && core_options.DataEvolutionCompactionRewriteRowIds()) {
+        return Status::Invalid(fmt::format(
+            "'{}' is no longer supported: normal data-evolution compaction preserves row ids "
+            "and logical deletions.",
+            Options::DATA_EVOLUTION_COMPACTION_REWRITE_ROW_IDS));
+    }
+
+    // Scan files from the latest snapshot. A data-evolution plan considers every live file,
+    // the plain append plan only small ones.
     LinkedHashMap<BinaryRow, std::vector<std::shared_ptr<DataFileMeta>>> partition_files;
-    PAIMON_ASSIGN_OR_RAISE(
-        partition_files,
-        ScanSmallFiles(snapshot_manager, schema_manager, table_schema, arrow_schema,
-                       partition_schema, core_options, path_factory, partitions, executor, pool));
+    PAIMON_ASSIGN_OR_RAISE(partition_files,
+                           ScanFiles(snapshot_manager, schema_manager, table_schema, arrow_schema,
+                                     partition_schema, core_options, path_factory, partitions,
+                                     /*small_files_only=*/!data_evolution, executor, pool));
 
     if (partition_files.empty()) {
         return std::vector<std::shared_ptr<CommitMessage>>{};
+    }
+
+    if (data_evolution) {
+        // Data-evolution tables compact across evolved field groups while preserving row ids;
+        // the plain append rewrite would reorder rows and drop the column merge, so it must
+        // not run here.
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<DataEvolutionNormalCompactTask> tasks,
+            DataEvolutionCompactCoordinator::PlanCompactTasks(partition_files, core_options));
+        if (tasks.empty()) {
+            return std::vector<std::shared_ptr<CommitMessage>>{};
+        }
+        return ExecuteDataEvolutionNormalCompactTasks(std::move(tasks), table_path, table_schema,
+                                                      arrow_schema, core_options, path_factory,
+                                                      executor, pool);
     }
 
     // Generate compact tasks via bin-packing

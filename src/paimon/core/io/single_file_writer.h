@@ -25,6 +25,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
@@ -60,17 +61,27 @@ class Metrics;
 template <typename T, typename R>
 class SingleFileWriter : public FileWriter<T, R> {
  public:
-    /// Abort executor to just have reference of path instead of whole writer.
+    /// Abort executor to just have reference of paths instead of whole writer. Besides the
+    /// data file itself it may carry companion files written next to it (e.g. a managed blob
+    /// reference sidecar), which an abort removes together.
     class AbortExecutor {
      public:
         AbortExecutor(const std::shared_ptr<FileSystem>& fs, const std::string& path)
-            : fs_(fs), path_(path), logger_(Logger::GetLogger("AbortExecutor")) {}
+            : AbortExecutor(fs, std::vector<std::string>{path}) {}
+
+        AbortExecutor(const std::shared_ptr<FileSystem>& fs, std::vector<std::string> paths)
+            : fs_(fs), paths_(std::move(paths)), logger_(Logger::GetLogger("AbortExecutor")) {}
 
         void Abort() {
-            if (fs_) {
-                auto status = fs_->Delete(path_);
-                if (!status.ok()) {
-                    PAIMON_LOG_WARN(logger_, "Exception occurs when deleting %s: %s", path_.c_str(),
+            if (!fs_) {
+                return;
+            }
+            for (const auto& path : paths_) {
+                auto status = fs_->Delete(path);
+                // A path already removed by another cleanup (e.g. the writer's own Abort) is
+                // fine; only a real failure is worth a warning.
+                if (!status.ok() && !status.IsNotExist()) {
+                    PAIMON_LOG_WARN(logger_, "Exception occurs when deleting %s: %s", path.c_str(),
                                     status.ToString().c_str());
                 }
             }
@@ -78,7 +89,7 @@ class SingleFileWriter : public FileWriter<T, R> {
 
      private:
         std::shared_ptr<FileSystem> fs_;
-        std::string path_;
+        std::vector<std::string> paths_;
         std::shared_ptr<Logger> logger_;
     };
 

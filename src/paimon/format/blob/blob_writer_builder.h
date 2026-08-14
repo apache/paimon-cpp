@@ -27,6 +27,7 @@
 
 #include "arrow/api.h"
 #include "paimon/common/data/blob_defs.h"
+#include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/defs.h"
 #include "paimon/format/blob/blob_format_writer.h"
@@ -79,8 +80,15 @@ class BlobWriterBuilder : public SpecificFSWriterBuilder {
         PAIMON_ASSIGN_OR_RAISE(
             bool write_placeholder,
             OptionsUtils::GetValueFromMap<bool>(options_, BlobDefs::kWritePlaceholderKey, false));
+        int64_t copy_buffer_size = BlobDefs::kDefaultCopyBufferSize;
+        auto copy_buffer_iter = options_.find(Options::BLOB_COPY_BUFFER_SIZE);
+        if (copy_buffer_iter != options_.end()) {
+            PAIMON_ASSIGN_OR_RAISE(copy_buffer_size,
+                                   MemorySize::ParseBytes(copy_buffer_iter->second));
+        }
         return BlobFormatWriter::Create(out, data_type_, write_null_on_missing_file,
-                                        write_null_on_fetch_failure, write_placeholder, fs_, pool_);
+                                        write_null_on_fetch_failure, write_placeholder, fs_, pool_,
+                                        copy_buffer_size);
     }
 
  private:

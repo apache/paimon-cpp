@@ -47,6 +47,14 @@ TEST(OrphanFilesCleanerTest, TestSupportToClean) {
         "manifest-list-469f3a0f-f6f1-4027-91bf-d1e897e8ea23-1"));
     ASSERT_TRUE(OrphanFilesCleanerImpl::SupportToClean(
         ".snapshot-2.13c988c3-784d-493d-8884-016ddddb1fc2.tmp"));
+    // A blob reference sidecar is cleanable: a live one is protected through its data file's
+    // extra files, so an unreferenced one is genuinely orphaned.
+    ASSERT_TRUE(OrphanFilesCleanerImpl::SupportToClean(
+        "data-2d5ea1ea-77c1-47ff-bb87-19a509962a37-0.parquet.blobref"));
+    // A managed blob pack may be shared by several data files through sidecars the cleaner
+    // does not resolve, so it is never treated as an orphan.
+    ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean(
+        "data-2d5ea1ea-77c1-47ff-bb87-19a509962a37-0.managed.blob"));
     ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean("tmp"));
     ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean("snapshot-1"));
     ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean("schema-0"));

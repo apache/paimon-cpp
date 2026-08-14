@@ -2555,6 +2555,12 @@ TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsRejectsUnsupportedOptions) 
     ASSERT_OK_AND_ASSIGN(CoreOptions ok_options,
                          CoreOptions::FromMap({{Options::FILE_SYSTEM, "local"}}));
     ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(ok_options));
+
+    // 'pk-clustering-override' is rejected by value, like Java: an explicit false equals the
+    // C++ behavior and is allowed.
+    ASSERT_OK_AND_ASSIGN(CoreOptions pk_clustering_false,
+                         CoreOptions::FromMap({{Options::PK_CLUSTERING_OVERRIDE, "false"}}));
+    ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(pk_clustering_false));
 }
 
 TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsAllowsManifestDeleteFileDropStats) {

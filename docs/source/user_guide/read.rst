@@ -348,5 +348,5 @@ Limitations
   Whether it conflicts with a concurrent commit rewriting those files' deletion vectors cannot
   be decided yet, so it fails rather than committing against a stale state. Appending is
   unaffected, and so is another engine replacing a deletion vector.
-- Such a table is never compacted; see
-  :ref:`the compaction note <data-evolution-deletion-vectors-compaction>`.
+- Such a table is never compacted while its deletion vectors are enabled; see
+  :ref:`data-evolution-compaction`.

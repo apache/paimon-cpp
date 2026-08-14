@@ -24,7 +24,9 @@
 #include <cstdint>
 #include <functional>
 #include <future>
+#include <map>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 
 #include "fmt/format.h"
@@ -33,6 +35,7 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
@@ -277,14 +280,31 @@ Status ExpireSnapshots::CleanUnusedDataFiles(const std::string& manifest_list_na
             }
         }
 
+        // One data file path factory per (partition, bucket): creating one re-derives the
+        // partition path and external path provider, too heavy to repeat for every file.
+        std::unordered_map<BinaryRow, std::map<int32_t, std::shared_ptr<DataFilePathFactory>>>
+            data_file_path_factories;
         std::vector<std::future<void>> futures;
         ScopeGuard guard([&futures]() { Wait(futures); });
         for (const auto& [data_file_to_delete, entry] : data_files_to_delete) {
-            auto delete_file_path = data_file_to_delete;
-            futures.push_back(Via(executor_.get(), [this, delete_file_path]() {
-                auto status = fs_->Delete(delete_file_path);
-                // delete quietly will ignore any status error
-                (void)status;
+            // An expired data file takes its companion files with it (e.g. the managed blob
+            // reference sidecar). CollectFiles resolves their paths, honoring external data
+            // paths.
+            std::shared_ptr<DataFilePathFactory>& data_file_path_factory =
+                data_file_path_factories[entry.Partition()][entry.Bucket()];
+            if (data_file_path_factory == nullptr) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    data_file_path_factory,
+                    path_factory_->CreateDataFilePathFactory(entry.Partition(), entry.Bucket()));
+            }
+            std::vector<std::string> delete_file_paths =
+                data_file_path_factory->CollectFiles(entry.File());
+            futures.push_back(Via(executor_.get(), [this, delete_file_paths]() {
+                for (const auto& delete_file_path : delete_file_paths) {
+                    auto status = fs_->Delete(delete_file_path);
+                    // delete quietly will ignore any status error
+                    (void)status;
+                }
             }));
             deletion_buckets_[entry.Partition()].insert(entry.Bucket());
         }
@@ -302,7 +322,6 @@ Status ExpireSnapshots::GetDataFilesToDelete(
         if (entry.Kind() == FileKind::Add()) {
             data_files_to_delete->erase(data_file_path);
         } else if (entry.Kind() == FileKind::Delete()) {
-            // TODO(jinli.zjw): do not support extra files
             data_files_to_delete->insert({data_file_path, entry});
         } else {
             return Status::Invalid(

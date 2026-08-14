@@ -189,6 +189,17 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
                                               SpecialFields::ValueKind()};
         file_fields.insert(file_fields.end(), data_schema->Fields().begin(),
                            data_schema->Fields().end());
+        // Blob columns of a primary-key table are stored as plain bytes in the kv data
+        // files (managed columns hold serialized descriptors), and the format readers
+        // produce them as binary. Declare them as binary on the file side so the field
+        // mapping casts them back to the requested large_binary type.
+        std::vector<std::string> blob_field_names;
+        for (const auto& field : data_schema->Fields()) {
+            if (BlobUtils::IsBlobField(field.ArrowField())) {
+                blob_field_names.push_back(field.Name());
+            }
+        }
+        file_fields = BlobUtils::ConvertBlobInlineDataFields(file_fields, blob_field_names);
         PAIMON_ASSIGN_OR_RAISE(field_mapping,
                                field_mapping_builder->CreateFieldMapping(file_fields));
     } else {

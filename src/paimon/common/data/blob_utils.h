@@ -76,6 +76,14 @@ class PAIMON_EXPORT BlobUtils {
     static bool IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata);
     static bool IsBlobFile(const std::string& file_name);
 
+    /// Names of the blob fields in `schema` whose payloads live outside the data file, which
+    /// holds a descriptor in their place. Inline blob fields (descriptor / view) are excluded,
+    /// they hold caller-provided bytes. Where the payload goes depends on the table: a
+    /// primary-key table externalizes it into a `.managed.blob` pack, an append
+    /// data-evolution table writes a dedicated `.blob` file per field group.
+    static std::vector<std::string> ManagedBlobFieldNames(
+        const std::shared_ptr<arrow::Schema>& schema, const std::set<std::string>& inline_fields);
+
     static std::shared_ptr<arrow::Field> ToArrowField(
         const std::string& field_name, bool nullable = false,
         std::unordered_map<std::string, std::string> metadata = {});

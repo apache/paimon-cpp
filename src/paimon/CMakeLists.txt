@@ -138,6 +138,7 @@ set(PAIMON_COMMON_SRCS
     common/reader/reader_utils.cpp
     common/reader/blob_fallback_batch_reader.cpp
     common/reader/blob_view_resolving_batch_reader.cpp
+    common/reader/managed_blob_resolving_batch_reader.cpp
     common/reader/complete_row_kind_batch_reader.cpp
     common/reader/data_evolution_file_reader.cpp
     common/sst/block_handle.cpp
@@ -207,6 +208,8 @@ set(PAIMON_CORE_SRCS
     core/bucket/bucket_select_converter.cpp
     core/append/append_compact_task.cpp
     core/append/append_compact_coordinator.cpp
+    core/append/data_evolution_compact_coordinator.cpp
+    core/append/data_evolution_normal_compact_task.cpp
     core/bucket/hive_bucket_function.cpp
     core/bucket/mod_bucket_function.cpp
     core/bucket/bucket_id_calculator.cpp
@@ -274,6 +277,9 @@ set(PAIMON_CORE_SRCS
     core/io/key_value_data_file_record_reader.cpp
     core/io/key_value_data_file_writer_factory.cpp
     core/io/key_value_data_file_writer.cpp
+    core/io/managed_blob_reference_collector.cpp
+    core/io/managed_blob_reference_file.cpp
+    core/io/primary_key_blob_externalizer.cpp
     core/io/key_value_in_memory_record_reader.cpp
     core/io/merged_key_value_record_reader.cpp
     core/io/key_value_meta_projection_consumer.cpp
@@ -590,6 +596,7 @@ if(PAIMON_BUILD_TESTS)
                     common/reader/complete_row_kind_batch_reader_test.cpp
                     common/reader/blob_fallback_batch_reader_test.cpp
                     common/reader/blob_view_resolving_batch_reader_test.cpp
+                    common/reader/managed_blob_resolving_batch_reader_test.cpp
                     common/reader/data_evolution_file_reader_test.cpp
                     common/reader/data_evolution_array_test.cpp
                     common/reader/data_evolution_row_test.cpp
@@ -692,6 +699,7 @@ if(PAIMON_BUILD_TESTS)
                     core/append/append_only_writer_test.cpp
                     core/append/append_compact_coordinator_test.cpp
                     core/append/bucketed_append_compact_manager_test.cpp
+                    core/append/data_evolution_compact_coordinator_test.cpp
                     core/bucket/bucket_select_converter_test.cpp
                     core/bucket/default_bucket_function_test.cpp
                     core/bucket/hive_bucket_function_test.cpp
@@ -737,6 +745,9 @@ if(PAIMON_BUILD_TESTS)
                     core/io/complete_row_tracking_fields_reader_test.cpp
                     core/io/data_file_meta_test.cpp
                     core/io/file_index_evaluator_test.cpp
+                    core/io/managed_blob_reference_collector_test.cpp
+                    core/io/managed_blob_reference_file_test.cpp
+                    core/io/primary_key_blob_externalizer_test.cpp
                     core/io/single_file_writer_test.cpp
                     core/io/rolling_blob_file_writer_test.cpp
                     core/global_index/indexed_split_test.cpp

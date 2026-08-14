@@ -31,6 +31,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/io/managed_blob_reference_file.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
@@ -70,6 +71,13 @@ OrphanFilesCleanerImpl::OrphanFilesCleanerImpl(
       metrics_(std::make_shared<MetricsImpl>()) {}
 
 bool OrphanFilesCleanerImpl::SupportToClean(const std::string& file_name) {
+    // Managed blob packs may be shared by several data files and are referenced through
+    // `.blobref` sidecars the cleaner does not resolve, so they are never treated as orphans.
+    // Both blob rules are defensive today: the cleaner only supports append tables (see
+    // OrphanFilesCleaner), and managed blobs only exist in primary-key tables.
+    if (StringUtils::EndsWith(file_name, ManagedBlobReferenceFile::kManagedBlobSuffix)) {
+        return false;
+    }
     static std::vector<std::pair<std::string, std::string>> supported_pattern = {
         {"manifest-", ""}, {"manifest-list-", ""}, {".", ".tmp"}};
     for (const auto& pattern : supported_pattern) {
@@ -78,7 +86,10 @@ bool OrphanFilesCleanerImpl::SupportToClean(const std::string& file_name) {
             return true;
         }
     }
-    static std::vector<std::string> supported_formats = {".orc", ".parquet", ".avro"};
+    // Blob reference sidecars are cleanable: live ones are protected through the used-file
+    // set, which registers every manifest entry's extra files.
+    static std::vector<std::string> supported_formats = {
+        ".orc", ".parquet", ".avro", ManagedBlobReferenceFile::kReferenceFileSuffix};
     for (const auto& format : supported_formats) {
         if (StringUtils::StartsWith(file_name, "data-") &&
             StringUtils::EndsWith(file_name, format)) {
@@ -308,6 +319,13 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
             manifest.FileName(), /*filter=*/nullptr, &manifest_entries));
         for (const auto& manifest_entry : manifest_entries) {
             used_files.insert(manifest_entry.FileName());
+            // Extra files (e.g. managed blob reference sidecars) live and die with their data
+            // file and must never be treated as orphans while the data file is live.
+            for (const auto& extra_file : manifest_entry.File()->extra_files) {
+                if (extra_file) {
+                    used_files.insert(extra_file.value());
+                }
+            }
         }
     }
 

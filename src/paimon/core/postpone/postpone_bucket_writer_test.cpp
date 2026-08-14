@@ -28,6 +28,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/data_define.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
@@ -36,9 +37,11 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/data_increment.h"
+#include "paimon/core/io/managed_blob_reference_file.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/utils/commit_increment.h"
@@ -80,6 +83,38 @@ class PostponeBucketWriterTest : public ::testing::Test,
         write_type_ = DataField::ConvertDataFieldsToArrowStructType(write_fields);
     }
     void TearDown() override {}
+
+    /// The (key, managed blob) schema shared by the managed blob writer tests.
+    static arrow::FieldVector ManagedBlobFields() {
+        return {arrow::field("key", arrow::utf8()),
+                BlobUtils::ToArrowField("b", /*nullable=*/true)};
+    }
+
+    /// A postpone writer over `ManagedBlobFields()` writing into `dir_path`.
+    Result<std::unique_ptr<PostponeBucketWriter>> CreateManagedBlobWriter(
+        const std::string& file_format, const std::string& dir_path) const {
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
+                               CoreOptions::FromMap({{Options::FILE_FORMAT, file_format}}));
+        auto path_factory = std::make_shared<DataFilePathFactory>();
+        PAIMON_RETURN_NOT_OK(
+            path_factory->Init(dir_path, file_format, options.DataFilePrefix(), nullptr));
+        return PostponeBucketWriter::Create(std::vector<std::string>{"key"}, path_factory,
+                                            /*schema_id=*/1, arrow::schema(ManagedBlobFields()),
+                                            options, pool_);
+    }
+
+    /// The single (key, payload) row the managed blob writer tests externalize.
+    static std::shared_ptr<arrow::Array> ManagedBlobBatch() {
+        arrow::StringBuilder key_builder;
+        arrow::LargeBinaryBuilder blob_builder;
+        EXPECT_TRUE(key_builder.Append("Lucy").ok());
+        EXPECT_TRUE(blob_builder.Append("postpone-payload").ok());
+        std::shared_ptr<arrow::Array> key_array;
+        std::shared_ptr<arrow::Array> blob_array;
+        EXPECT_TRUE(key_builder.Finish(&key_array).ok());
+        EXPECT_TRUE(blob_builder.Finish(&blob_array).ok());
+        return arrow::StructArray::Make({key_array, blob_array}, ManagedBlobFields()).ValueOrDie();
+    }
 
     void WriteBatch(const std::shared_ptr<arrow::Array>& array,
                     const std::vector<RecordBatch::RowKind>& row_kinds,
@@ -762,6 +797,63 @@ TEST_P(PostponeBucketWriterTest, TestIOException) {
         break;
     }
     ASSERT_TRUE(run_complete);
+}
+
+TEST_P(PostponeBucketWriterTest, TestManagedBlobExternalizedWithSidecar) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<PostponeBucketWriter> postpone_bucket_writer,
+                         CreateManagedBlobWriter(GetParam(), dir->Str()));
+    WriteBatch(ManagedBlobBatch(), /*row_kinds=*/{}, postpone_bucket_writer.get());
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         postpone_bucket_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    const auto& flushed_file = commit_increment.GetNewFilesIncrement().NewFiles()[0];
+
+    ASSERT_EQ(flushed_file->extra_files.size(), 1);
+    ASSERT_TRUE(flushed_file->extra_files[0].has_value());
+    ASSERT_EQ(flushed_file->extra_files[0].value(), flushed_file->file_name + ".blobref");
+    std::string sidecar_path = dir->Str() + "/" + flushed_file->extra_files[0].value();
+
+    // The pack path is recorded in the sidecar, not assumed from naming.
+    ASSERT_OK_AND_ASSIGN(std::vector<ManagedBlobReferenceFile::Reference> references,
+                         ManagedBlobReferenceFile::Read(file_system_, sidecar_path));
+    ASSERT_EQ(references.size(), 1);
+    std::string pack_path = references[0].ToString();
+    ASSERT_TRUE(StringUtils::EndsWith(pack_path, ManagedBlobReferenceFile::kManagedBlobSuffix));
+    ASSERT_TRUE(file_system_->GetFileStatus(pack_path).ok());
+
+    // A committed pack survives the writer teardown.
+    ASSERT_OK(postpone_bucket_writer->Close());
+    ASSERT_TRUE(file_system_->GetFileStatus(pack_path).ok());
+}
+
+TEST_P(PostponeBucketWriterTest, TestManagedBlobAbortedWithoutCommit) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<PostponeBucketWriter> postpone_bucket_writer,
+                         CreateManagedBlobWriter(GetParam(), dir->Str()));
+    WriteBatch(ManagedBlobBatch(), /*row_kinds=*/{}, postpone_bucket_writer.get());
+
+    // Find the uncommitted pack by listing the directory rather than assuming its name.
+    std::vector<std::string> pack_paths;
+    {
+        std::vector<std::unique_ptr<BasicFileStatus>> statuses;
+        ASSERT_OK(file_system_->ListDir(dir->Str(), &statuses));
+        for (const auto& status : statuses) {
+            if (StringUtils::EndsWith(status->GetPath(),
+                                      ManagedBlobReferenceFile::kManagedBlobSuffix)) {
+                pack_paths.push_back(status->GetPath());
+            }
+        }
+    }
+    ASSERT_EQ(pack_paths.size(), 1);
+    ASSERT_TRUE(file_system_->GetFileStatus(pack_paths[0]).ok());
+
+    // Closing without PrepareCommit aborts the write: the uncommitted pack is removed.
+    ASSERT_OK(postpone_bucket_writer->Close());
+    ASSERT_FALSE(file_system_->GetFileStatus(pack_paths[0]).ok());
 }
 
 }  // namespace paimon::test

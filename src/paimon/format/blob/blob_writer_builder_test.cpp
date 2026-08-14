@@ -59,6 +59,24 @@ TEST_F(BlobWriterBuilderTest, TestSimple) {
     ASSERT_OK(builder.Build(output_stream_, "none"));
 }
 
+TEST_F(BlobWriterBuilderTest, TestCopyBufferSizeOption) {
+    // An out-of-range value fails the build: the option string reaches the writer's
+    // range validation.
+    BlobWriterBuilder invalid_builder(struct_type_, {{Options::BLOB_COPY_BUFFER_SIZE, "0"}});
+    invalid_builder.WithFileSystem(file_system_);
+    ASSERT_NOK_WITH_MSG(invalid_builder.Build(output_stream_, "none"),
+                        "must be between 1 byte and");
+
+    // A memory-size string parses and builds.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<OutputStream> out,
+        file_system_->Create(dir_->Str() + "/file-copy-buffer.blob", /*overwrite=*/true));
+    BlobWriterBuilder builder(struct_type_, {{Options::BLOB_COPY_BUFFER_SIZE, "8 kb"}});
+    builder.WithFileSystem(file_system_);
+    ASSERT_OK(builder.Build(out, "none"));
+    ASSERT_OK(out->Close());
+}
+
 TEST_F(BlobWriterBuilderTest, TestWriteNullOptions) {
     auto prepare_batch = [&](const std::shared_ptr<Blob>& blob, ArrowArray* c_array) -> Status {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> array,

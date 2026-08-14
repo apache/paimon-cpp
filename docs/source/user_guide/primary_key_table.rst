@@ -80,3 +80,65 @@ merged according to the user-specified merge engine and the timestamp of each re
 New records written into the LSM tree will be first buffered in memory. When the
 memory buffer is full, all records in memory will be sorted and flushed to disk.
 A new sorted run is now created.
+
+.. _primary-key-managed-blob:
+
+Managed BLOB Storage
+--------------------
+A primary-key table may define top-level ``BLOB`` columns. Their payload bytes
+are table-managed: they never enter the merge-tree write buffer or the data
+files. Unlike ``BLOB`` columns in append tables, primary-key managed BLOB
+storage does not require ``row-tracking.enabled`` or
+``data-evolution.enabled`` — a row-tracking table cannot define primary keys
+in the first place. When a row is written, each non-null blob value is copied into a pack
+file named ``data-<uuid>-<n>.managed.blob`` in the bucket directory, and the
+row stores only a small descriptor (pack path, offset, length) in its place.
+A pack is sealed once it reaches ``blob.target-file-size``; the copy uses a
+``blob.copy-buffer-size`` buffer (default ``4 kb``, must be between 1 byte and
+2147483647 bytes). Retract rows (``DELETE`` / ``UPDATE_BEFORE``) never keep a
+payload; their blob value becomes NULL.
+
+Reads resolve the descriptors back to payload bytes with one ranged read per
+value, after merging, so only surviving rows ever fetch their payloads. Set
+``blob-as-descriptor`` to ``true`` to receive the serialized descriptors
+instead.
+
+Every data file carries a ``.blobref`` sidecar in its extra files, listing the
+pack files its rows reference. Compaction rewrites descriptors verbatim —
+payloads are never copied again — and rebuilds the sidecar so it lists exactly
+the packs the surviving rows still reference. The sidecar is removed wherever
+its data file is removed with its companion files; a pack file may be shared
+by several data files and is never deleted by table maintenance (orphan file
+clean skips ``.managed.blob`` files).
+
+.. note::
+   Snapshot expiration removes a ``.blobref`` sidecar together with its
+   expired data file, and an aborted writer cleans up its own sidecars. A
+   sidecar left behind by an abandoned uncommitted write or a failed commit
+   (e.g. a crashed process), however, is only removed once the orphan files
+   cleaner supports primary-key tables.
+
+Restrictions:
+
+- Only top-level scalar ``BLOB`` columns are managed. ``ARRAY<BLOB>`` and
+  ``MAP<K, BLOB>`` fields, which Paimon Java also externalizes, are not
+  supported yet.
+- ``blob-descriptor.source-table`` (re-materializing descriptors through the
+  source table's credentials) is not supported: configuring it fails schema
+  validation, and descriptors are always read and copied through the table's
+  own file system.
+- ``pk-clustering-override`` set to ``true`` is not supported; an explicit
+  ``false`` is accepted.
+- Only the ``deduplicate``, ``partial-update`` and ``first-row`` merge engines
+  are supported, and ``changelog-producer`` must stay ``none``.
+- A managed ``BLOB`` column cannot be a primary key, bucket key, sequence
+  field or partition key, and the table needs at least one other normal
+  column.
+- A ``BLOB`` column cannot order a partial-update sequence group, and a
+  sequence-group-protected managed ``BLOB`` field only supports no aggregate
+  function, ``last_value``, or ``fields.<field>.ignore-retract`` set to
+  ``true`` (retract rows do not retain the payload).
+- ``data-file.external-paths`` is not supported.
+- ``blob-descriptor-field`` / ``blob-view-field`` columns are inline blob
+  fields: they keep caller-provided bytes in the data files and are not
+  table-managed.

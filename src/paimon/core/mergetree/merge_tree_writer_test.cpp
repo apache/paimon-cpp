@@ -31,17 +31,20 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/compact/noop_compact_manager.h"
 #include "paimon/core/disk/io_manager.h"
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/data_increment.h"
+#include "paimon/core/io/managed_blob_reference_file.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/mergetree/compact/deduplicate_merge_function.h"
 #include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
@@ -209,6 +212,32 @@ class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
             last_sequence_number, primary_keys_, path_factory, key_comparator_,
             user_defined_seq_comparator, merge_function_wrapper_, schema_id, value_schema_, options,
             writer_compact_manager, io_manager, /*enable_multi_thread_spill=*/false, pool_);
+    }
+
+    /// Rebuilds the fixture schema as (f0 key, b managed blob) for the managed blob tests.
+    Status UseManagedBlobSchema() {
+        value_fields_ = {DataField(0, arrow::field("f0", arrow::utf8())),
+                         DataField(1, BlobUtils::ToArrowField("b", /*nullable=*/true))};
+        value_schema_ = DataField::ConvertDataFieldsToArrowSchema(value_fields_);
+        value_type_ = DataField::ConvertDataFieldsToArrowStructType(value_fields_);
+        PAIMON_ASSIGN_OR_RAISE(key_comparator_,
+                               FieldsComparator::Create({value_fields_[0]},
+                                                        /*is_ascending_order=*/true));
+        return Status::OK();
+    }
+
+    /// The single (key, payload) row the managed blob tests externalize.
+    std::shared_ptr<arrow::Array> ManagedBlobRow() const {
+        arrow::StringBuilder key_builder;
+        arrow::LargeBinaryBuilder blob_builder;
+        EXPECT_TRUE(key_builder.Append("Alice").ok());
+        EXPECT_TRUE(blob_builder.Append("blob-payload").ok());
+        std::shared_ptr<arrow::Array> key_array;
+        std::shared_ptr<arrow::Array> blob_array;
+        EXPECT_TRUE(key_builder.Finish(&key_array).ok());
+        EXPECT_TRUE(blob_builder.Finish(&blob_array).ok());
+        return arrow::StructArray::Make({key_array, blob_array}, value_schema_->fields())
+            .ValueOrDie();
     }
 
  private:
@@ -1756,6 +1785,180 @@ TEST_F(MergeTreeWriterTest, TestSpillWithIOException) {
         ASSERT_EQ(1, commit_increment.value().GetNewFilesIncrement().NewFiles().size());
         ASSERT_EQ(5, commit_increment.value().GetNewFilesIncrement().NewFiles()[0]->row_count);
 
+        ASSERT_OK(merge_writer->Close());
+        run_complete = true;
+        break;
+    }
+    ASSERT_TRUE(run_complete);
+}
+
+TEST_P(MergeTreeWriterTest, TestManagedBlobSidecarKeptAfterCommit) {
+    // The flushed file carries a sidecar in its extra files, and closing the writer after
+    // PrepareCommit keeps the data file, the sidecar and the pack.
+    ASSERT_OK(UseManagedBlobSchema());
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/1, options));
+    WriteBatch(ManagedBlobRow(), /*row_kinds=*/{}, merge_writer.get());
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    const auto& flushed_file = commit_increment.GetNewFilesIncrement().NewFiles()[0];
+    ASSERT_EQ(flushed_file->extra_files.size(), 1);
+    ASSERT_TRUE(flushed_file->extra_files[0].has_value());
+    ASSERT_EQ(flushed_file->extra_files[0].value(), flushed_file->file_name + ".blobref");
+    std::string data_path = dir->Str() + "/" + flushed_file->file_name;
+    std::string sidecar_path = data_path + ".blobref";
+
+    // The pack path is recorded in the sidecar, not assumed from naming.
+    ASSERT_OK_AND_ASSIGN(std::vector<ManagedBlobReferenceFile::Reference> references,
+                         ManagedBlobReferenceFile::Read(file_system_, sidecar_path));
+    ASSERT_EQ(references.size(), 1);
+    std::string pack_path = references[0].ToString();
+    ASSERT_TRUE(StringUtils::EndsWith(pack_path, ManagedBlobReferenceFile::kManagedBlobSuffix));
+
+    ASSERT_OK(merge_writer->Close());
+    EXPECT_TRUE(file_system_->GetFileStatus(data_path).ok());
+    EXPECT_TRUE(file_system_->GetFileStatus(sidecar_path).ok());
+    EXPECT_TRUE(file_system_->GetFileStatus(pack_path).ok());
+}
+
+TEST_P(MergeTreeWriterTest, TestManagedBlobSidecarRemovedWithoutCommit) {
+    // Closing the writer without PrepareCommit removes the flushed data file together with its
+    // sidecar, and the externalizer deletes the uncommitted pack.
+    ASSERT_OK(UseManagedBlobSchema());
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/1, options));
+    WriteBatch(ManagedBlobRow(), /*row_kinds=*/{}, merge_writer.get());
+    // Force the buffer to flush without draining the increment.
+    ASSERT_OK(merge_writer->Compact(/*full_compaction=*/false));
+    ASSERT_EQ(1, merge_writer->new_files_.size());
+    const auto& flushed_file = merge_writer->new_files_[0];
+    ASSERT_EQ(flushed_file->extra_files.size(), 1);
+    ASSERT_TRUE(flushed_file->extra_files[0].has_value());
+    std::string data_path = dir->Str() + "/" + flushed_file->file_name;
+    std::string sidecar_path = dir->Str() + "/" + flushed_file->extra_files[0].value();
+    ASSERT_OK_AND_ASSIGN(std::vector<ManagedBlobReferenceFile::Reference> references,
+                         ManagedBlobReferenceFile::Read(file_system_, sidecar_path));
+    ASSERT_EQ(references.size(), 1);
+    std::string pack_path = references[0].ToString();
+    ASSERT_TRUE(file_system_->GetFileStatus(data_path).ok());
+    ASSERT_TRUE(file_system_->GetFileStatus(sidecar_path).ok());
+    ASSERT_TRUE(file_system_->GetFileStatus(pack_path).ok());
+
+    ASSERT_OK(merge_writer->Close());
+    EXPECT_FALSE(file_system_->GetFileStatus(data_path).ok());
+    EXPECT_FALSE(file_system_->GetFileStatus(sidecar_path).ok());
+    EXPECT_FALSE(file_system_->GetFileStatus(pack_path).ok());
+}
+
+TEST_P(MergeTreeWriterTest, TestSharedShreddingKeepsManagedBlobSidecar) {
+    // A shredded map column and a managed blob column in one table. The reference collector
+    // reads the logical key-value batch, while the shredding conversion rewrites the batch into
+    // its physical layout afterwards, so the two must not disagree about column positions.
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({
+                             {Options::FILE_FORMAT, "orc"},
+                             {"fields.tags.map.storage-layout", "shared-shredding"},
+                             {"fields.tags.map.shared-shredding.max-columns", "3"},
+                             {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
+                         }));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    std::vector<DataField> value_fields = {
+        DataField(0, arrow::field("id", arrow::int32())),
+        DataField(1, arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64()))),
+        DataField(2, BlobUtils::ToArrowField("b", /*nullable=*/true)),
+    };
+    auto value_schema = DataField::ConvertDataFieldsToArrowSchema(value_fields);
+    auto value_type = DataField::ConvertDataFieldsToArrowStructType(value_fields);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FieldsComparator> key_comparator,
+                         FieldsComparator::Create({value_fields[0]},
+                                                  /*is_ascending_order=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(
+            /*last_sequence_number=*/-1, /*trimmed_primary_keys=*/{"id"}, path_factory,
+            key_comparator,
+            /*user_defined_seq_comparator=*/nullptr, merge_function_wrapper_, /*schema_id=*/1,
+            value_schema, options, noop_compact_manager_,
+            GetParam() ? std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_) : nullptr,
+            /*enable_multi_thread_spill=*/false, pool_));
+
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(value_type, R"([
+      [1, [["a", 10], ["b", 20]], "shredded-blob-payload"]
+    ])")
+                     .ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    const auto& flushed_file = commit_increment.GetNewFilesIncrement().NewFiles()[0];
+    ASSERT_EQ(flushed_file->extra_files.size(), 1);
+    ASSERT_TRUE(flushed_file->extra_files[0].has_value());
+
+    std::string sidecar_path = dir->Str() + "/" + flushed_file->extra_files[0].value();
+    ASSERT_OK_AND_ASSIGN(std::vector<ManagedBlobReferenceFile::Reference> references,
+                         ManagedBlobReferenceFile::Read(file_system_, sidecar_path));
+    ASSERT_EQ(references.size(), 1);
+    std::string pack_path = references[0].ToString();
+    EXPECT_TRUE(StringUtils::EndsWith(pack_path, ManagedBlobReferenceFile::kManagedBlobSuffix));
+    EXPECT_TRUE(file_system_->GetFileStatus(pack_path).ok());
+    ASSERT_OK(merge_writer->Close());
+}
+
+TEST_P(MergeTreeWriterTest, TestManagedBlobIOException) {
+    // The TestIOException sweep on a managed blob schema: every injected failure must also
+    // tear down the blob reference collector, the sidecar (via the abort executor's extra
+    // paths) and the pack writers without a crash or hang, and the first clean run commits.
+    ASSERT_OK(UseManagedBlobSchema());
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    bool run_complete = false;
+    auto io_hook = IOHook::GetInstance();
+    for (size_t i = 0; i < 200; i++) {
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
+        io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
+        auto path_factory = std::make_shared<DataFilePathFactory>();
+        ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+        auto merge_writer_result = CreateMergeWriter(
+            /*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0, options);
+        CHECK_HOOK_STATUS(merge_writer_result.status(), i);
+        auto merge_writer = std::move(merge_writer_result).value();
+
+        ::ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*ManagedBlobRow(), &c_array).ok());
+        RecordBatchBuilder batch_builder(&c_array);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch, batch_builder.Finish());
+        CHECK_HOOK_STATUS(merge_writer->Write(std::move(batch)), i);
+        auto commit_increment = merge_writer->PrepareCommit(/*wait_compaction=*/false);
+        CHECK_HOOK_STATUS(commit_increment.status(), i);
+        ASSERT_FALSE(commit_increment.value().GetNewFilesIncrement().NewFiles().empty());
         ASSERT_OK(merge_writer->Close());
         run_complete = true;
         break;

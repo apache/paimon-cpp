@@ -81,6 +81,7 @@
 #include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/defs.h"
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/logging.h"
@@ -94,7 +95,6 @@ namespace {
 
 constexpr const char* kCommitStrictModeLastSafeSnapshot = "commit.strict-mode.last-safe-snapshot";
 constexpr const char* kSequenceSnapshotOrdering = "sequence.snapshot-ordering";
-constexpr const char* kPkClusteringOverride = "pk-clustering-override";
 
 bool MatchPartitionSpec(const std::map<std::string, std::string>& partition,
                         const std::map<std::string, std::string>& partition_spec) {
@@ -119,8 +119,9 @@ Status FileStoreCommitImpl::ValidateCommitOptions(const CoreOptions& options) {
     if (raw_options.find(kSequenceSnapshotOrdering) != raw_options.end()) {
         unsupported_options.emplace_back(kSequenceSnapshotOrdering);
     }
-    if (raw_options.find(kPkClusteringOverride) != raw_options.end()) {
-        unsupported_options.emplace_back(kPkClusteringOverride);
+    // Rejected by value, like Java: an explicit false equals the C++ behavior and is fine.
+    if (options.PkClusteringOverride()) {
+        unsupported_options.emplace_back(Options::PK_CLUSTERING_OVERRIDE);
     }
 
     if (!unsupported_options.empty()) {

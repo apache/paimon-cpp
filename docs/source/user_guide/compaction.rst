@@ -43,24 +43,13 @@ to improve read efficiency. The compaction is performed asynchronously and does
 not block writes.
 
 .. note::
-   Append-only table compaction is only available for fixed-bucket mode
-   (``bucket > 0``). Dynamic bucketing (``bucket = -1``) does not support
-   compaction. Tables with blob columns also skip compaction.
-
-.. _data-evolution-deletion-vectors-compaction:
-
-.. note::
-   A data-evolution table (``data-evolution.enabled = true``) may enable
-   ``deletion-vectors.enabled``. Paimon C++ never compacts such a table: auto
-   compaction never runs on it, since data evolution requires ``bucket = -1``,
-   and ``AppendCompactCoordinator::Run``, the dedicated compaction entry point,
-   rejects it outright rather than dropping the deletes. This matches the
-   Paimon Java revision this support was ported from, which ends the compaction
-   scan as soon as deletion vectors are enabled; later Java releases do compact
-   such a table, and Paimon C++ has not caught up.
-
-   Reading such a table is supported; see
-   :ref:`data-evolution-deletion-vectors`.
+   Automatic append-only compaction is only available for fixed-bucket mode
+   (``bucket > 0``); it never runs under dynamic bucketing (``bucket = -1``)
+   or for tables with blob columns. Unaware-bucket append tables
+   (``bucket = -1``) are compacted through the dedicated entry point
+   ``AppendCompactCoordinator::Run`` instead; for a data-evolution table that
+   entry point plans across evolved field groups, described in
+   :ref:`data-evolution-compaction`.
 
 Auto Compaction
 ~~~~~~~~~~~~~~~
@@ -107,6 +96,67 @@ Append-Only Table Compaction Options
      - The minimum number of files to trigger an auto compaction for
        append-only tables.
 
+
+.. _data-evolution-compaction:
+
+Data-Evolution Table Compaction
+-------------------------------
+For a data-evolution table (``data-evolution.enabled = true``),
+``AppendCompactCoordinator::Run`` plans compaction across evolved field groups
+instead of running the plain append rewrite. Files are grouped by row id range:
+files covering the exact same rows form one evolved field group, holding
+different versions or different subsets of the table columns produced by
+partial-column updates. Each compact task merges the field groups of one
+contiguous row id run — the newest version of every column wins — and rewrites
+them into a single normal file holding every non-dedicated column.
+
+Row ids are never changed by this compaction: ``_ROW_ID`` values stay stable.
+The rewritten file carries the merged ``[min, max]`` sequence number range of
+its inputs, so per-row ``_SEQUENCE_NUMBER`` values, which derive from the
+file-level maximum, may rise to the group's maximum after the compaction.
+Blob files are dedicated storage and are not rewritten; their row ranges
+remain covered by the compacted data file. Tables holding vector-store files
+are rejected until Paimon C++ gains a ``VECTOR`` schema type that lets the
+rewrite exclude their columns; Paimon Java instead compacts the normal files
+of such tables and leaves the vector files in place.
+
+The normal-file bin-packing rules follow Paimon Java's
+``DataEvolutionCompactCoordinator``:
+
+- A file group's weight is ``sum(max(file_size, source.split.open-file-cost))``;
+  a bin of groups becomes a task once its weight exceeds ``target-file-size``.
+- A single file group heavier than the target is compacted on its own —
+  provided it holds at least ``compaction.min.file-num`` files (merging its
+  files is still worthwhile) — and is never packed with neighbors.
+- A row id gap always cuts the current bin, so tasks stay contiguous.
+- A bin becomes a task only when it holds at least ``compaction.min.file-num``
+  files.
+
+.. note::
+   Paimon C++ does not yet compact a data-evolution table with
+   ``deletion-vectors.enabled``: deletion vectors are keyed by the row range
+   group's anchor file and would need to be migrated onto the rewritten files
+   at commit time (Java's ``DataEvolutionCompactDeletionVectorRewriter``),
+   which is not ported yet. ``AppendCompactCoordinator::Run`` keeps rejecting
+   such a table. Auto compaction also never runs on data-evolution tables,
+   since data evolution requires ``bucket = -1``.
+
+   Compared with Paimon Java, the following are also not ported yet: the
+   projected-manifest candidate planning with its ~100,000-file batches and
+   multi-round commits (Paimon C++ plans the whole snapshot in one pass and
+   commits once), the concurrent-MERGE rebase retry of the Spark integration,
+   and the ``blob-compaction.enabled`` blob pack rewriting — that option has no
+   effect here, blob packs are never rewritten whatever it is set to.
+
+   Two further differences are intentional. The planning scan drops manifest
+   statistics only when ``manifest.delete-file-drop-stats`` asks for it, while
+   Paimon Java always drops them for this scan, so the DELETE entries this
+   compaction commits may carry statistics Java would have left out; the plans
+   themselves are identical. A table holding vector-store files is rejected
+   outright rather than compacted for its normal files, as described above.
+
+   Reading a data-evolution table with deletion vectors is supported; see
+   :ref:`data-evolution-deletion-vectors`.
 
 Primary Key Table Compaction
 ----------------------------

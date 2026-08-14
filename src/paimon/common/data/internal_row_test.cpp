@@ -70,6 +70,7 @@ TEST(InternalRowTest, TestCreateFieldGetter) {
         arrow::field("f21",
                      arrow::struct_({field("sub1", arrow::int64()), field("sub2", arrow::float64()),
                                      field("sub3", arrow::boolean())})),
+        arrow::field("f22", arrow::large_binary()),
     };
 
     auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
@@ -77,7 +78,7 @@ TEST(InternalRowTest, TestCreateFieldGetter) {
         [true, 1, 2, 3, 4, 5.1, 6.12, "abc", "def", "1970-01-02 00:00:01", "1970-01-02 00:00:00.001",
         "1970-01-02 00:00:00.000001", "1970-01-02 00:00:00.000000001", "1970-01-02 00:00:02", "1970-01-02 00:00:00.002",
         "1970-01-02 00:00:00.000002", "1970-01-02 00:00:00.000000002", "-123456789987654321.45678", 12345,
-        [1, 2, 3], [[true, 3], [false, 4]], [10, 10.1, false]]
+        [1, 2, 3], [[true, 3], [false, 4]], [10, 10.1, false], "ghi"]
     ])")
             .ValueOrDie());
     auto pool = GetDefaultPool();
@@ -134,6 +135,8 @@ TEST(InternalRowTest, TestCreateFieldGetter) {
     ASSERT_EQ(inner_row->GetLong(0), 10l);
     ASSERT_EQ(inner_row->GetDouble(1), 10.1);
     ASSERT_EQ(inner_row->GetBoolean(2), false);
+    auto string_view22 = DataDefine::GetVariantValue<std::string_view>(getters[22](row));
+    ASSERT_EQ(std::string(string_view22), "ghi");
 }
 
 TEST(InternalRowTest, TestCreateFieldGetterWithNull) {

@@ -37,6 +37,12 @@ class MemoryPool;
 /// and generates compaction tasks using a bin-packing algorithm. It then synchronously
 /// executes all tasks and returns the resulting commit messages.
 ///
+/// For a data-evolution table (`data-evolution.enabled` = true) the coordinator instead plans
+/// with `DataEvolutionCompactCoordinator`: files are grouped by row id range into evolved
+/// field groups, each task merges the field groups of one contiguous row id run into a single
+/// normal file holding every non-dedicated column, and row ids and file-level sequence number
+/// ranges are preserved.
+///
 /// @note This implementation does not support deletion vectors or streaming mode.
 ///       It only scans the current latest snapshot (batch mode).
 class PAIMON_EXPORT AppendCompactCoordinator {
@@ -45,12 +51,15 @@ class PAIMON_EXPORT AppendCompactCoordinator {
     ~AppendCompactCoordinator() = delete;
     /// Run the compaction coordinator.
     ///
-    /// Scans the latest snapshot for small files across the specified partitions,
-    /// generates compact tasks via bin-packing, executes them synchronously,
-    /// and returns the resulting commit messages.
+    /// Scans the latest snapshot across the specified partitions — small files only for a
+    /// plain append table, every live file for a data-evolution table — generates compact
+    /// tasks, executes them synchronously, and returns the resulting commit messages.
     ///
     /// @param table_path The root path of the table.
-    /// @param options User-defined options (will be merged with schema options).
+    /// @param options User-defined options, merged over the schema options. Options that
+    ///                decide the compaction path or the physical layout (row tracking, data
+    ///                evolution, deletion vectors, bucket and the blob layout fields) must
+    ///                not change the persisted values; such an override is rejected.
     /// @param partitions Partition filters; each element is a partition spec as key-value pairs.
     ///                   Empty vector means all partitions.
     /// @param file_system The file system to use. If nullptr, will be created from options.

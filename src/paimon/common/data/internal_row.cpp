@@ -103,6 +103,18 @@ Result<InternalRow::FieldGetterFunc> InternalRow::CreateFieldGetter(
             };
             break;
         }
+        case arrow::Type::type::LARGE_BINARY: {
+            // Managed blob columns of a primary-key table hold their serialized descriptors
+            // as large binary (mirrors Java's BLOB field getter).
+            field_getter = [field_idx, use_view](const InternalRow& row) -> VariantType {
+                if (use_view) {
+                    return row.GetStringView(field_idx);
+                } else {
+                    return row.GetBinary(field_idx);
+                }
+            };
+            break;
+        }
         case arrow::Type::type::TIMESTAMP: {
             auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);

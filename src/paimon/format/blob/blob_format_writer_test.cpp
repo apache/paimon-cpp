@@ -18,6 +18,7 @@
 
 #include "paimon/format/blob/blob_format_writer.h"
 
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -340,6 +341,20 @@ TEST_P(BlobFormatWriterTest, TestCreateWithInvalidParameters) {
                                                  /*write_null_on_fetch_failure=*/false,
                                                  /*write_placeholder=*/false, file_system_, pool_),
                         "field regular_col: binary is not BLOB");
+
+    // Test with out-of-range copy buffer sizes (mirrors Java's checkedBlobCopyBufferSize)
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false,
+                                 /*write_placeholder=*/false, file_system_, pool_,
+                                 /*copy_buffer_size=*/0),
+        "must be between 1 byte and");
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false,
+                                 /*write_placeholder=*/false, file_system_, pool_,
+                                 static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1),
+        "must be between 1 byte and");
 }
 
 TEST_P(BlobFormatWriterTest, TestInvalidCase) {
@@ -443,8 +458,8 @@ TEST_P(BlobFormatWriterTest, TestLargeBlob) {
     ASSERT_OK_AND_ASSIGN(auto large_file_stream,
                          file_system_->Create(large_file_path, /*overwrite=*/true));
 
-    // Write data larger than TMP_BUFFER_SIZE (1MB)
-    const size_t large_size = BlobFormatWriter::kTmpBufferSize * 2 + 1000;  // ~2MB
+    // Write data larger than the default copy buffer so the copy loops over several chunks
+    const size_t large_size = BlobDefs::kDefaultCopyBufferSize * 2 + 1000;  // ~9KB
     std::vector<char> large_data(large_size, 'A');
     ASSERT_OK_AND_ASSIGN(int64_t written, large_file_stream->Write(large_data.data(), large_size));
     ASSERT_EQ(written, large_size);
@@ -970,6 +985,31 @@ TEST_P(BlobFormatWriterTest, TestAddBatchWithZeroLengthBlob) {
 /// Placeholder tests always feed the sentinel bytes of the placeholder write protocol, so
 /// they do not depend on the blob_as_descriptor_ parameter and run once on the
 /// non-parameterized fixture.
+using BlobFormatWriterCopyBufferTest = BlobFormatWriterTestBase;
+
+TEST_F(BlobFormatWriterCopyBufferTest, TestTinyCopyBufferCopiesInChunks) {
+    // A one-byte copy buffer forces the payload copy to loop chunk by chunk; the record must
+    // still round-trip byte for byte.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> writer,
+        BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false,
+                                 /*write_placeholder=*/false, file_system_, pool_,
+                                 /*copy_buffer_size=*/1));
+    const std::string payload = "tiny-buffer-payload";
+    ASSERT_OK_AND_ASSIGN(auto blob_array, MakeBlobArrayFromBytes(payload));
+    ASSERT_OK(AddBatchOnce(writer, blob_array));
+    ASSERT_OK(writer->Flush());
+    ASSERT_OK(writer->Finish());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> struct_array, ReadBackAsData());
+    ASSERT_EQ(struct_array->length(), 1);
+    auto binary_array =
+        arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
+    ASSERT_FALSE(binary_array->IsNull(0));
+    ASSERT_EQ(binary_array->GetString(0), payload);
+}
+
 using BlobFormatWriterPlaceholderTest = BlobFormatWriterTestBase;
 
 std::string PlaceholderSentinelBytes() {

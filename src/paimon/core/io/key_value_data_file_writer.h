@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/managed_blob_reference_collector.h"
 #include "paimon/core/io/single_file_writer.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/manifest/file_source.h"
@@ -64,9 +65,19 @@ class KeyValueDataFileWriter
     /// schema and perform finalization callbacks. Must be set before Close().
     void SetMetadataFinalizer(MetadataFinalizer finalizer);
 
+    /// Attaches the managed blob reference collector of a primary-key managed blob table. The
+    /// collector records the pack files this data file's rows reference; its `.blobref`
+    /// sidecar is written on close and carried in the result's extra files. Must be set before
+    /// the first Write().
+    void SetBlobReferenceCollector(std::unique_ptr<ManagedBlobReferenceCollector> collector);
+
     Status Write(KeyValueBatch batch) override;
 
     Result<std::shared_ptr<DataFileMeta>> GetResult() override;
+
+    void Abort() override;
+
+    Result<AbortExecutor> GetAbortExecutor() const override;
 
  protected:
     Status BeforeFinish() override;
@@ -97,6 +108,7 @@ class KeyValueDataFileWriter
     std::shared_ptr<InternalRow> min_key_;
     std::shared_ptr<InternalRow> max_key_;
     MetadataFinalizer metadata_finalizer_;
+    std::unique_ptr<ManagedBlobReferenceCollector> blob_reference_collector_;
 };
 
 }  // namespace paimon

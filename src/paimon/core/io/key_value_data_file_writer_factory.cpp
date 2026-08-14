@@ -20,9 +20,12 @@
 #include "paimon/core/io/key_value_data_file_writer_factory.h"
 
 #include <functional>
+#include <set>
 #include <utility>
 
 #include "arrow/c/helpers.h"
+#include "arrow/type.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/key_value_data_file_writer.h"
@@ -56,14 +59,36 @@ KeyValueDataFileWriterFactory::CreateWriter() const {
     auto format = options_.GetWriteFileFormat(level_);
     PAIMON_ASSIGN_OR_RAISE(WriterResources resources,
                            CreateWriterResources(*format, write_schema_, create_stats_extractor_));
+    std::string path = path_factory_->NewPath();
     auto writer = std::make_unique<KeyValueDataFileWriter>(
         options_.GetWriteFileCompression(level_), std::move(converter), schema_id_, level_,
         file_source_, primary_keys_, resources.stats_extractor, write_schema_,
         path_factory_->IsExternalPath(), pool_);
-    PAIMON_RETURN_NOT_OK(
-        writer->Init(options_.GetFileSystem(), path_factory_->NewPath(), resources.writer_builder));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ManagedBlobReferenceCollector> collector,
+                           CreateBlobReferenceCollector(path));
+    if (collector) {
+        writer->SetBlobReferenceCollector(std::move(collector));
+    }
+    PAIMON_RETURN_NOT_OK(writer->Init(options_.GetFileSystem(), path, resources.writer_builder));
     return std::unique_ptr<SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>(
         std::move(writer));
+}
+
+Result<std::unique_ptr<ManagedBlobReferenceCollector>>
+KeyValueDataFileWriterFactory::CreateBlobReferenceCollector(
+    const std::string& data_file_path) const {
+    std::vector<std::string> inline_field_names = options_.GetBlobInlineFields();
+    std::set<std::string> inline_fields(inline_field_names.begin(), inline_field_names.end());
+    std::vector<std::string> managed_fields =
+        BlobUtils::ManagedBlobFieldNames(write_schema_, inline_fields);
+    if (managed_fields.empty()) {
+        return std::unique_ptr<ManagedBlobReferenceCollector>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<ManagedBlobReferenceCollector> collector,
+        ManagedBlobReferenceCollector::Create(options_.GetFileSystem(), data_file_path,
+                                              write_schema_, managed_fields));
+    return collector;
 }
 
 }  // namespace paimon

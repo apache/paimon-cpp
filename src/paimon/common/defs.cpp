@@ -42,6 +42,7 @@ const char Options::TARGET_FILE_SIZE[] = "target-file-size";
 const char Options::TARGET_FILE_ROW_NUM[] = "target-file-row-num";
 const char Options::BLOB_TARGET_FILE_SIZE[] = "blob.target-file-size";
 const char Options::BLOB_SPLIT_BY_FILE_SIZE[] = "blob.split-by-file-size";
+const char Options::BLOB_COPY_BUFFER_SIZE[] = "blob.copy-buffer-size";
 const char Options::PAGE_SIZE[] = "page-size";
 const char Options::PARTITION_DEFAULT_NAME[] = "partition.default-name";
 const char Options::FILE_COMPRESSION[] = "file.compression";
@@ -108,6 +109,9 @@ const char Options::ROW_TRACKING_ENABLED[] = "row-tracking.enabled";
 const char Options::ROW_TRACKING_PARTITION_GROUP_ON_COMMIT[] =
     "row-tracking.partition-group-on-commit";
 const char Options::DATA_EVOLUTION_ENABLED[] = "data-evolution.enabled";
+const char Options::DATA_EVOLUTION_COMPACTION_REWRITE_ROW_IDS[] =
+    "data-evolution.compaction.rewrite-row-ids";
+const char Options::PK_CLUSTERING_OVERRIDE[] = "pk-clustering-override";
 const char Options::PARTITION_GENERATE_LEGACY_NAME[] = "partition.legacy-name";
 const char Options::MAP_STORAGE_LAYOUT[] = "map.storage-layout";
 const char Options::MAP_SHARED_SHREDDING_MAX_COLUMNS[] = "map.shared-shredding.max-columns";
@@ -130,6 +134,7 @@ const char Options::VARIANT_SHREDDING_ADAPTIVE_RETENTION_RATIO[] =
 const char Options::BLOB_AS_DESCRIPTOR[] = "blob-as-descriptor";
 const char Options::BLOB_FIELD[] = "blob-field";
 const char Options::BLOB_DESCRIPTOR_FIELD[] = "blob-descriptor-field";
+const char Options::BLOB_DESCRIPTOR_SOURCE_TABLE[] = "blob-descriptor.source-table";
 const char Options::FALLBACK_BLOB_DESCRIPTOR_FIELD[] = "blob.stored-descriptor-fields";
 const char Options::BLOB_VIEW_FIELD[] = "blob-view-field";
 const char Options::BLOB_VIEW_RESOLVE_ENABLED[] = "blob-view.resolve.enabled";

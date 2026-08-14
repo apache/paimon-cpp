@@ -17,11 +17,14 @@
  * under the License.
  */
 #include <algorithm>
+#include <set>
 #include <tuple>
+#include <utility>
 
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/append/append_compact_coordinator.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
@@ -2945,6 +2948,625 @@ TEST_P(DataEvolutionTableTest, TestLimitPushDownDisabledByRowRangeIndex) {
     ASSERT_EQ(limited.splits.size(), 2);
     ASSERT_OK_AND_ASSIGN(std::vector<int32_t> values, CollectF0Values(limited.rows));
     ASSERT_EQ(values, (std::vector<int32_t>{3, 101, 102}));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAcrossEvolvedFieldGroups) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // Two evolved field groups (row id ranges [0, 1] and [2, 3]), each made of a full-column
+    // file and a newer partial f2 file over the exact same rows.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4}));
+
+    // The coordinator merges the four contiguous files into one full-column file.
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 4);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    const std::shared_ptr<DataFileMeta>& compacted_file = compact_increment.CompactAfter()[0];
+    // Row ids and the merged sequence number range of the inputs are preserved, so the rewrite
+    // does not disturb row tracking metadata.
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id, compacted_file->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+    ASSERT_EQ(compacted_file->row_count, 4);
+    ASSERT_EQ(compacted_file->min_sequence_number, 1);
+    ASSERT_EQ(compacted_file->max_sequence_number, 4);
+    ASSERT_TRUE(compacted_file->file_source.has_value());
+    ASSERT_EQ(compacted_file->file_source.value(), FileSource::Compact());
+    ASSERT_EQ(compacted_file->write_cols, std::nullopt);
+    // Java's contract for data-evolution compact messages: total buckets stay unset.
+    ASSERT_EQ(message_impl->TotalBuckets(), std::nullopt);
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // The merged rows keep the newest f2 values and their row ids. The read now serves from
+    // the single compacted file.
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "a0", "y0", 0],
+        [2, "a1", "y1", 1],
+        [3, "a0", "y0", 2],
+        [4, "a1", "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+
+    // The compacted file carries the merged sequence range, so every row now reads the group
+    // maximum sequence number (4), where rows 0-1 read 2 before the compaction.
+    auto expected_sequence_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_,
+                            SpecialFields::SequenceNumber().field_}),
+            R"([
+        [1, 0, 4],
+        [2, 1, 4],
+        [3, 2, 4],
+        [4, 3, 4]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(
+        ScanAndRead(table_path, {"f0", "_ROW_ID", "_SEQUENCE_NUMBER"}, expected_sequence_array));
+
+    // A second coordinator run finds a single file and plans nothing.
+    ASSERT_OK_AND_ASSIGN(messages, AppendCompactCoordinator::Run(
+                                       table_path, compact_options,
+                                       /*partitions=*/{}, dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_TRUE(messages.empty());
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactRejectsDeletionVectorTables) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    // Deletion vectors are keyed by the row range group's anchor file; without the DV
+    // migration of Java's DataEvolutionCompactDeletionVectorRewriter the coordinator keeps
+    // rejecting such tables instead of dropping the deletes.
+    ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::Run(table_path, options, /*partitions=*/{},
+                                                      dir_->GetFileSystem(), GetDefaultPool())
+                            .status(),
+                        "does not support deletion vectors");
+
+    // Nor can the rejection be slipped past by overriding deletion vectors off — the rewrite
+    // neither reads nor migrates the deletion files, so the immutable-option guard fires
+    // first.
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::DELETION_VECTORS_ENABLED] = "false";
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool())
+            .status(),
+        "immutable table options");
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactRejectsImmutableOptionOverrides) {
+    // Turning data evolution off at the compaction entry point would route the table into
+    // the plain append rewrite, which reorders row ids; the override is rejected before any
+    // scanning. The same guard covers the other path-deciding and layout options, checked
+    // here against the same table.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    const std::vector<std::pair<std::string, std::string>> overrides = {
+        {Options::DATA_EVOLUTION_ENABLED, "false"},
+        {Options::ROW_TRACKING_ENABLED, "false"},
+        {Options::BUCKET, "2"},
+        {Options::BLOB_FIELD, "f0"},
+    };
+    for (const auto& [key, value] : overrides) {
+        SCOPED_TRACE(key);
+        std::map<std::string, std::string> compact_options = options;
+        compact_options[key] = value;
+        ASSERT_NOK_WITH_MSG(
+            AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                          dir_->GetFileSystem(), GetDefaultPool())
+                .status(),
+            "immutable table options");
+    }
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactRejectsLegacyRewriteRowIdsOption) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    // The legacy row-id rewriting mode was removed in Java; the coordinator honors the same
+    // contract instead of silently ignoring the option.
+    std::map<std::string, std::string> compact_options = options;
+    compact_options.emplace("data-evolution.compaction.rewrite-row-ids", "true");
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool())
+            .status(),
+        "no longer supported");
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAcrossEvolvedFieldGroupsWithPartitions) {
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // One evolved field group per partition, each made of a full-column file and a newer
+    // partial f2 file over the same rows.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                  /*partition=*/{{"f1", "2024"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4},
+                                  /*partition=*/{{"f1", "2025"}}));
+
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    // Bins never span partitions: one task per partition, each merging the two files of its
+    // field group.
+    ASSERT_EQ(messages.size(), 2);
+    std::set<int64_t> compacted_first_row_ids;
+    for (const auto& message : messages) {
+        auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        ASSERT_TRUE(message_impl);
+        const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+        ASSERT_EQ(compact_increment.CompactBefore().size(), 2);
+        ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+        ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id,
+                             compact_increment.CompactAfter()[0]->NonNullFirstRowId());
+        compacted_first_row_ids.insert(compacted_first_row_id);
+    }
+    ASSERT_EQ(compacted_first_row_ids, (std::set<int64_t>{0, 2}));
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // Split order across partitions does not follow row ids, so each partition is verified
+    // through its own partition predicate.
+    auto read_type =
+        arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_});
+    auto expected_2024 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "2024", "y0", 0],
+        [2, "2024", "y1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2024,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2024", 4))));
+    auto expected_2025 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [3, "2025", "y0", 2],
+        [4, "2025", "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2025,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2025", 4))));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactWithPartitionFilter) {
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                  /*partition=*/{{"f1", "2024"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4},
+                                  /*partition=*/{{"f1", "2025"}}));
+
+    // Only the selected partition is planned; the other partition's field group stays as it
+    // is and keeps serving reads from its original files.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         AppendCompactCoordinator::Run(table_path, compact_options,
+                                                       /*partitions=*/{{{"f1", "2024"}}},
+                                                       dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 2);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id,
+                         compact_increment.CompactAfter()[0]->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // Split order across partitions does not follow row ids, so each partition is verified
+    // through its own partition predicate: the compacted 2024 rows and the untouched 2025
+    // rows read back unchanged.
+    auto read_type =
+        arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_});
+    auto expected_2024 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "2024", "y0", 0],
+        [2, "2024", "y1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2024,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2024", 4))));
+    auto expected_2025 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [3, "2025", "y0", 2],
+        [4, "2025", "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2025,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2025", 4))));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAcrossSchemaEvolution) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // Schema 0: two full-row commits, row ids [0, 1] and [2, 3], sequence numbers 1 and 2.
+    for (const std::string& rows_json : {std::string(R"([[1, "a0", "x0"], [2, "a1", "x1"]])"),
+                                         std::string(R"([[3, "a2", "x2"], [4, "a3", "x3"]])")}) {
+        auto schema0_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), rows_json)
+                .ValueOrDie());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema0_msgs,
+                             WriteArray(table_path, {"f0", "f1", "f2"}, schema0_array));
+        ASSERT_OK(Commit(table_path, schema0_msgs));
+    }
+
+    // Evolve the schema: change f0 INT -> BIGINT (keeps field id 0, a type change) and add
+    // f3 INT with the fresh field id 3.
+    arrow::FieldVector evolved_fields = {
+        arrow::field("f0", arrow::int64()),
+        arrow::field("f1", arrow::utf8()),
+        arrow::field("f2", arrow::utf8()),
+        arrow::field("f3", arrow::int32()),
+    };
+    ASSERT_OK(TestHelper::WriteNextSchema(
+        dir_->GetFileSystem(), table_path,
+        {DataField(0, evolved_fields[0]), DataField(1, evolved_fields[1]),
+         DataField(2, evolved_fields[2]), DataField(3, evolved_fields[3])},
+        /*highest_field_id=*/3, options));
+
+    // Schema 1: two more full rows, row ids [4, 5], sequence number 3 (rows [2, 3] from the
+    // second schema-0 commit above stay untouched and keep their added f3 as NULL).
+    auto schema1_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(evolved_fields), R"([
+        [5, "a4", "x4", 50],
+        [6, "a5", "x5", 60]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema1_msgs,
+                         WriteArray(table_path, {"f0", "f1", "f2", "f3"}, schema1_array));
+    ASSERT_OK(Commit(table_path, schema1_msgs));
+
+    // A schema-1 partial write fills the added f3 for the first schema-0 rows: the [0, 1]
+    // field group now merges files written under different schema ids, sequence number 4.
+    auto f3_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({evolved_fields[3]}), R"([
+        [100],
+        [200]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> f3_msgs,
+                         WriteArray(table_path, {"f3"}, f3_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, f3_msgs);
+    ASSERT_OK(Commit(table_path, f3_msgs));
+
+    // Pre-compaction read through the latest schema: f0 is cast to BIGINT everywhere, the
+    // added f3 is NULL for the untouched schema-0 rows [2, 3] and filled through the
+    // cross-schema field group for rows [0, 1].
+    auto read_type =
+        arrow::struct_({evolved_fields[0], evolved_fields[1], evolved_fields[2], evolved_fields[3],
+                        SpecialFields::RowId().field_, SpecialFields::SequenceNumber().field_});
+    std::vector<std::string> read_names = {"f0", "f1", "f2", "f3", "_ROW_ID", "_SEQUENCE_NUMBER"};
+    auto expected_before = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "a0", "x0", 100, 0, 4],
+        [2, "a1", "x1", 200, 1, 4],
+        [3, "a2", "x2", null, 2, 2],
+        [4, "a3", "x3", null, 3, 2],
+        [5, "a4", "x4", 50, 4, 3],
+        [6, "a5", "x5", 60, 5, 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_before));
+
+    // The coordinator merges all four files — schema-0, schema-1 and the cross-schema
+    // partial — into one file written with the latest schema.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 4);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    const std::shared_ptr<DataFileMeta>& compacted_file = compact_increment.CompactAfter()[0];
+    // The rewritten file holds every column of the latest schema and carries its schema id;
+    // row ids and the merged sequence range of the inputs are preserved.
+    ASSERT_EQ(compacted_file->schema_id, 1);
+    ASSERT_EQ(compacted_file->write_cols, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id, compacted_file->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+    ASSERT_EQ(compacted_file->row_count, 6);
+    ASSERT_EQ(compacted_file->min_sequence_number, 1);
+    ASSERT_EQ(compacted_file->max_sequence_number, 4);
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // After the rewrite the merged values survive: the cast f0, the NULL-filled f3 and the
+    // cross-schema f3 fill are now materialized in the compacted file, and every row reads
+    // the group's maximum sequence number.
+    auto expected_after = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "a0", "x0", 100, 0, 4],
+        [2, "a1", "x1", 200, 1, 4],
+        [3, "a2", "x2", null, 2, 4],
+        [4, "a3", "x3", null, 3, 4],
+        [5, "a4", "x4", 50, 4, 4],
+        [6, "a5", "x5", 60, 5, 4]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_after));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAfterDropColumn) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // Schema 0: two full rows, row ids [0, 1], sequence number 1.
+    auto schema0_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a0", "x0"],
+        [2, "a1", "x1"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema0_msgs,
+                         WriteArray(table_path, {"f0", "f1", "f2"}, schema0_array));
+    ASSERT_OK(Commit(table_path, schema0_msgs));
+
+    // Drop f2. The surviving fields keep their ids, and the highest field id stays 2 so a
+    // later added column cannot recycle the dropped id.
+    ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path,
+                                          {DataField(0, fields_[0]), DataField(1, fields_[1])},
+                                          /*highest_field_id=*/2, options));
+
+    // Schema 1: two more rows without f2, row ids [2, 3], sequence number 2.
+    arrow::FieldVector remaining_fields = {fields_[0], fields_[1]};
+    auto schema1_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(remaining_fields), R"([
+        [3, "a2"],
+        [4, "a3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema1_msgs,
+                         WriteArray(table_path, {"f0", "f1"}, schema1_array));
+    ASSERT_OK(Commit(table_path, schema1_msgs));
+
+    auto read_type =
+        arrow::struct_({remaining_fields[0], remaining_fields[1], SpecialFields::RowId().field_});
+    std::vector<std::string> read_names = {"f0", "f1", "_ROW_ID"};
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "a0", 0],
+        [2, "a1", 1],
+        [3, "a2", 2],
+        [4, "a3", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_array));
+
+    // The rewrite reads the schema-0 file with the dropped column projected away and writes
+    // the latest two-column schema.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 2);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    const std::shared_ptr<DataFileMeta>& compacted_file = compact_increment.CompactAfter()[0];
+    ASSERT_EQ(compacted_file->schema_id, 1);
+    ASSERT_EQ(compacted_file->write_cols, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id, compacted_file->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+    ASSERT_EQ(compacted_file->row_count, 4);
+
+    ASSERT_OK(Commit(table_path, messages));
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestStaleCompactMessagePreservesConcurrentPartialUpdate) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // One evolved field group over rows [0, 1]: a full-column file and a newer partial f2
+    // file ("y0"/"y1").
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    // Plan and execute the compaction but hold its commit message back, so the commit below
+    // races it with a stale view of the files.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+
+    // A concurrent partial update lands on the same rows after the compaction has read its
+    // input.
+    auto concurrent_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields_[2]}), R"([
+        ["z0"],
+        ["z1"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> concurrent_msgs,
+                         WriteArray(table_path, {"f2"}, concurrent_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, concurrent_msgs);
+    ASSERT_OK(Commit(table_path, concurrent_msgs));
+
+    // The stale compact message still commits: its before-files are still live, and the
+    // rewritten file keeps the input group's sequence range, so the newer update stays on
+    // top instead of being swallowed. Mirrors Java's
+    // testCompactPreservesConcurrentPartialUpdateWithinCandidateRange.
+    ASSERT_OK(Commit(table_path, messages));
+
+    // f2 serves from the concurrent update (newest sequence), the other columns from the
+    // compacted file, and row ids are unchanged.
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "a0", "z0", 0],
+        [2, "a1", "z1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestSmallFileCompactConflictsWithConcurrentPartialUpdate) {
+    // Mirrors Java's testSmallFileCompactConflictsWithConcurrentPartialUpdate: merging the
+    // groups [0, 0] and [1, 1] into one [0, 1] file moves the field group boundary, so a
+    // concurrent partial update aligned with the OLD boundary must conflict — committing the
+    // stale compact would leave the update's file misaligned with its new group.
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    for (const std::string& row_json :
+         {std::string(R"([[10, "a0", "b0"]])"), std::string(R"([[11, "a1", "b1"]])")}) {
+        auto row_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), row_json)
+                .ValueOrDie());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> row_msgs,
+                             WriteArray(table_path, {"f0", "f1", "f2"}, row_array));
+        ASSERT_OK(Commit(table_path, row_msgs));
+    }
+
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+
+    // The concurrent update lands on row 0 only, aligned with the pre-compaction boundary.
+    auto concurrent_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields_[2]}), R"([
+        ["upd0"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> concurrent_msgs,
+                         WriteArray(table_path, {"f2"}, concurrent_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, concurrent_msgs);
+    ASSERT_OK(Commit(table_path, concurrent_msgs));
+
+    // The compact-kind commit always runs the row range alignment check on data-evolution
+    // tables, so the stale message is rejected and the table keeps serving the update.
+    ASSERT_NOK_WITH_MSG(Commit(table_path, messages),
+                        "'COMPACT' operations have encountered conflicts");
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [10, "a0", "upd0", 0],
+        [11, "a1", "b1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactKeepsConcurrentAppendForNextSmallFileMerge) {
+    // Mirrors Java's testCompactKeepsConcurrentAppendForNextSmallFileMerge: an append outside
+    // the task's row id range neither conflicts with nor is consumed by the stale compact
+    // message; the next coordinator round merges it with the compacted file.
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    for (const std::string& row_json :
+         {std::string(R"([[10, "a0", "b0"]])"), std::string(R"([[11, "a1", "b1"]])")}) {
+        auto row_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), row_json)
+                .ValueOrDie());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> row_msgs,
+                             WriteArray(table_path, {"f0", "f1", "f2"}, row_array));
+        ASSERT_OK(Commit(table_path, row_msgs));
+    }
+
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+
+    // The concurrent append takes the next row id range [2, 2], outside the task's range.
+    auto append_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [12, "a2", "b2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> append_msgs,
+                         WriteArray(table_path, {"f0", "f1", "f2"}, append_array));
+    ASSERT_OK(Commit(table_path, append_msgs));
+
+    // The stale compact message still commits: the appended range does not overlap the
+    // rewritten one.
+    ASSERT_OK(Commit(table_path, messages));
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [10, "a0", "b0", 0],
+        [11, "a1", "b1", 1],
+        [12, "a2", "b2", 2]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+
+    // The next round packs the compacted file [0, 1] and the appended file [2, 2] — adjacent
+    // ranges — into one task and merges them.
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> next_messages,
+        AppendCompactCoordinator::Run(table_path, compact_options,
+                                      /*partitions=*/{}, dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(next_messages.size(), 1);
+    auto next_message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(next_messages[0]);
+    ASSERT_TRUE(next_message_impl);
+    const CompactIncrement& next_increment = next_message_impl->GetCompactIncrement();
+    ASSERT_EQ(next_increment.CompactBefore().size(), 2);
+    ASSERT_EQ(next_increment.CompactAfter().size(), 1);
+    ASSERT_OK_AND_ASSIGN(int64_t next_first_row_id,
+                         next_increment.CompactAfter()[0]->NonNullFirstRowId());
+    ASSERT_EQ(next_first_row_id, 0);
+    ASSERT_EQ(next_increment.CompactAfter()[0]->row_count, 3);
+    ASSERT_OK(Commit(table_path, next_messages));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
 }
 
 std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionTableTest() {
