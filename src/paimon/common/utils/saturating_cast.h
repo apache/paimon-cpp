@@ -19,21 +19,22 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <type_traits>
 
 namespace paimon {
 
-/// Converts a double to a signed integral type with the saturation policy docs/code-style.md
-/// requires (the one Java applies and NumericPrimitiveCastExecutor::JavaFloatingToIntegerCast
-/// implements in core/): NaN converts to 0 and an out-of-range value saturates at the bounds
-/// of TargetType. A bare static_cast of an unrepresentable double is undefined behavior and
-/// diverges across architectures (x86 cvttsd2si yields the "integer indefinite" value, aarch64
-/// fcvtzs saturates), so doubles that are not provably in range must go through this helper.
+/// Converts a double to int32_t or int64_t with Java's float-to-int or float-to-long saturation
+/// policy: NaN converts to 0 and an out-of-range value saturates at the bounds of TargetType.
+/// Narrower Java integer conversions require a subsequent narrowing step and are not supported by
+/// this helper. A bare static_cast of an unrepresentable double is undefined behavior and diverges
+/// across architectures (x86 cvttsd2si yields the "integer indefinite" value, while aarch64 fcvtzs
+/// saturates), so doubles that are not provably in range must go through this helper.
 template <typename TargetType>
 inline TargetType SaturatingDoubleToInteger(double value) {
-    static_assert(std::is_integral_v<TargetType> && std::is_signed_v<TargetType>,
-                  "TargetType must be a signed integral type");
+    static_assert(std::is_same_v<TargetType, int32_t> || std::is_same_v<TargetType, int64_t>,
+                  "TargetType must be int32_t or int64_t");
     if (std::isnan(value)) {
         return 0;
     }

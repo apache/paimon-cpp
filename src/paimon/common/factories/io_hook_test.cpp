@@ -71,7 +71,7 @@ TEST(IOHookTest, TestThrowExceptionMode) {
 // Regression test for the data race on IOHook's mode: Reset()/Clear() run on one
 // thread while other threads call Try() concurrently. Under a ThreadSanitizer build
 // this deterministically reports the unsynchronized mode access; functionally it must
-// never crash and every Try() must return either OK or the injected IOError.
+// never crash and every Try() must return OK.
 TEST(IOHookTest, TestConcurrentResetAndTry) {
     auto hook = IOHook::GetInstance();
 
@@ -79,11 +79,11 @@ TEST(IOHookTest, TestConcurrentResetAndTry) {
     constexpr int32_t kTryIterations = 50000;
     constexpr int32_t kNumWorkers = 4;
 
-    std::atomic<bool> unexpected_status{false};
+    std::atomic<bool> observed_error{false};
 
     std::thread reset_thread([hook]() {
         for (int32_t i = 0; i < kResetIterations; i++) {
-            hook->Reset(i, IOHook::Mode::RETURN_ERROR);
+            hook->Reset(INT64_MAX, IOHook::Mode::RETURN_ERROR);
             hook->Clear();
         }
     });
@@ -91,13 +91,13 @@ TEST(IOHookTest, TestConcurrentResetAndTry) {
     std::vector<std::thread> workers;
     workers.reserve(kNumWorkers);
     for (int32_t t = 0; t < kNumWorkers; t++) {
-        workers.emplace_back([hook, &unexpected_status]() {
+        workers.emplace_back([hook, &observed_error]() {
             for (int32_t i = 0; i < kTryIterations; i++) {
                 Status status = hook->Try("concurrent_path");
-                // Only RETURN_ERROR mode is armed here, so Try() may only return OK or
-                // IOError; anything else means the mode was read as garbage.
-                if (!status.ok() && !status.IsIOError()) {
-                    unexpected_status.store(true, std::memory_order_relaxed);
+                // Reset() arms an unreachable position, while Clear() uses SILENT mode,
+                // so both complete states return OK. An IOError exposes a torn state.
+                if (!status.ok()) {
+                    observed_error.store(true, std::memory_order_relaxed);
                 }
             }
         });
@@ -108,7 +108,7 @@ TEST(IOHookTest, TestConcurrentResetAndTry) {
         worker.join();
     }
 
-    ASSERT_FALSE(unexpected_status.load(std::memory_order_relaxed));
+    ASSERT_FALSE(observed_error.load(std::memory_order_relaxed));
     // Leave the process-wide singleton in its default SILENT state for later tests.
     hook->Clear();
 }

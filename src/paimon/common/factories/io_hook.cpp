@@ -19,6 +19,8 @@
 #include "paimon/common/factories/io_hook.h"
 
 #include <atomic>
+#include <mutex>
+#include <shared_mutex>
 #include <stdexcept>
 
 #include "fmt/format.h"
@@ -29,18 +31,19 @@ namespace paimon {
 class IOHook::Impl {
  public:
     Status Try(const std::string& path) {
-        if (io_count_.fetch_add(1) < pos_.load()) {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        if (io_count_.fetch_add(1) < pos_) {
             return Status::OK();
         } else {
-            switch (mode_.load(std::memory_order_relaxed)) {
+            switch (mode_) {
                 case IOHook::Mode::SILENT:
                     return Status::OK();
                 case IOHook::Mode::RETURN_ERROR:
                     return Status::IOError(fmt::format(
-                        "io hook triggered io error at position {}, path {}", pos_.load(), path));
+                        "io hook triggered io error at position {}, path {}", pos_, path));
                 case IOHook::Mode::THROW_EXCEPTION:
                     throw std::runtime_error(fmt::format(
-                        "io hook throw io exception at position {}, path {}", pos_.load(), path));
+                        "io hook throw io exception at position {}, path {}", pos_, path));
                     return Status::OK();
                 default:
                     return Status::OK();
@@ -49,14 +52,14 @@ class IOHook::Impl {
     }
 
     inline void Reset(int64_t pos, IOHook::Mode mode) {
-        // Store mode_ first: the seq_cst stores below then publish it, so a Try()
-        // that observes the reset pos_ also observes the new mode_.
-        mode_.store(mode, std::memory_order_relaxed);
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        mode_ = mode;
         pos_ = pos;
         io_count_ = 0;
     }
 
     int64_t IOCount() const {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         return io_count_.load();
     }
 
@@ -65,9 +68,10 @@ class IOHook::Impl {
     }
 
  private:
+    mutable std::shared_mutex mutex_;
     std::atomic<int64_t> io_count_ = {0};
-    std::atomic<int64_t> pos_ = {-1};
-    std::atomic<IOHook::Mode> mode_{IOHook::Mode::SILENT};
+    int64_t pos_ = -1;
+    IOHook::Mode mode_ = IOHook::Mode::SILENT;
 };
 
 IOHook::IOHook() : impl_(std::make_unique<IOHook::Impl>()) {}
