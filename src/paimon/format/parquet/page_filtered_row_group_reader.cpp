@@ -284,9 +284,9 @@ Status PageFilteredRowGroupReader::WaitForPreBuffer(
 
 Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFilteredField(
     const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-    int32_t row_group_index, int32_t field_index, std::shared_ptr<std::unordered_set<int>> column_indices,
-    const RowRanges& row_ranges, int64_t row_group_row_count,
-    ::parquet::arrow::FileReader* arrow_file_reader) {
+    int32_t row_group_index, int32_t field_index,
+    std::shared_ptr<std::unordered_set<int>> column_indices, const RowRanges& row_ranges,
+    int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader) {
     // Factory: set a direct data page read plan on every leaf (per-leaf OffsetIndex).
     // The plan lets Arrow jump over unselected page headers as well as page bodies.
     auto factory =
