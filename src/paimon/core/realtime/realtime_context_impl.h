@@ -33,6 +33,7 @@
 
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
+#include "paimon/visibility.h"
 
 struct ArrowSchema;
 
@@ -53,7 +54,7 @@ struct RealtimePartitionBucketView {
     std::shared_ptr<MemReadView> read_view;
 };
 
-class RealtimeContextImpl final : public RealtimeContext {
+class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
  public:
     static Result<std::shared_ptr<RealtimeContextImpl>> Create(
         const std::shared_ptr<MemIndexerFactory>& factory);
