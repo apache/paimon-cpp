@@ -290,6 +290,82 @@ TEST_P(WriteAndReadInteTest, TestAppendSimple) {
     ASSERT_TRUE(success);
 }
 
+TEST_P(WriteAndReadInteTest, TestAppendLateMaterializationWithoutFirstRowIdAndFallback) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet" || file_system != "local") {
+        return;
+    }
+
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("payload", arrow::utf8())};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "avro"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1048576"},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        auto helper, TestHelper::Create(test_dir_, schema, /*partition_keys=*/{},
+                                        /*primary_keys=*/{}, options,
+                                        /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([[0, "v0"], [1, "v1"], [2, "v2"],
+                                        [3, "v3"], [4, "v4"], [5, "v5"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(auto files, CurrentDataFiles(options));
+    ASSERT_FALSE(files.empty());
+    for (const auto& [bucket_path, file] : files) {
+        ASSERT_FALSE(file->first_row_id.has_value()) << bucket_path << "/" << file->file_name;
+    }
+
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, /*field_name=*/"id", FieldType::INT, Literal(2));
+    ASSERT_TRUE(predicate);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, InnerScan(options));
+
+    arrow::FieldVector expected_fields = fields;
+    expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    arrow::Result<std::shared_ptr<arrow::Array>> expected_array_result =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(expected_fields), R"([[0, 3, "v3"], [0, 4, "v4"], [0, 5, "v5"]])");
+    ASSERT_TRUE(expected_array_result.ok()) << expected_array_result.status().ToString();
+    std::shared_ptr<arrow::Array> expected_array = std::move(expected_array_result).ValueOrDie();
+    std::shared_ptr<arrow::ChunkedArray> expected =
+        std::make_shared<arrow::ChunkedArray>(expected_array);
+
+    auto read_and_check = [&](int32_t max_match_rows) {
+        std::map<std::string, std::string> read_options = options;
+        read_options[Options::READ_LATE_MATERIALIZATION_ENABLED] = "true";
+        read_options[Options::READ_LATE_MATERIALIZATION_MAX_MATCH_ROWS] =
+            std::to_string(max_match_rows);
+        ReadContextBuilder read_context_builder(PathUtil::JoinPath(test_dir_, "foo.db/bar"));
+        read_context_builder.SetOptions(read_options)
+            .SetPredicate(predicate)
+            .EnablePredicateFilter(true);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                             table_read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+    };
+
+    // Three rows match. A larger bound exercises late materialization; a bound of one forces the
+    // probe to abort and the split to be read again through the normal predicate-filtered path.
+    read_and_check(/*max_match_rows=*/10);
+    read_and_check(/*max_match_rows=*/1);
+}
+
 TEST_P(WriteAndReadInteTest, TestPKSimple) {
     arrow::FieldVector fields = {
         arrow::field("pk", arrow::utf8()),
