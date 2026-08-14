@@ -75,53 +75,6 @@ class PAIMON_EXPORT MemReadView {
     virtual std::optional<Range> GetOffsetRange() const = 0;
 };
 
-/// Outermost query reader that pins a `MemReadView`.
-class PAIMON_EXPORT RealtimeReader final : public BatchReader {
- public:
-    /// Creates a reader that delegates reads to `reader` and pins `read_view` for its lifetime.
-    static Result<std::unique_ptr<RealtimeReader>> Create(std::shared_ptr<MemReadView> read_view,
-                                                          std::unique_ptr<BatchReader> reader) {
-        if (!read_view) {
-            return Status::Invalid("real-time reader view is null");
-        }
-        if (!reader) {
-            return Status::Invalid("real-time inner reader is null");
-        }
-        return std::unique_ptr<RealtimeReader>(
-            new RealtimeReader(std::move(read_view), std::move(reader)));
-    }
-
-    /// Delegates batch reads to the wrapped plugin reader.
-    Result<ReadBatch> NextBatch() override {
-        return reader_->NextBatch();
-    }
-
-    /// Delegates bitmap batch reads to the wrapped plugin reader.
-    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
-        return reader_->NextBatchWithBitmap();
-    }
-
-    /// Returns metrics from the wrapped plugin reader.
-    std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        return reader_->GetReaderMetrics();
-    }
-
-    /// Closes the delegated reader and releases the pinned read view.
-    void Close() override {
-        reader_->Close();
-        read_view_.reset();
-    }
-
- private:
-    RealtimeReader(std::shared_ptr<MemReadView> read_view, std::unique_ptr<BatchReader> reader)
-        : read_view_(std::move(read_view)), reader_(std::move(reader)) {}
-
-    // Keep the view before the delegated reader so reverse member destruction closes the reader
-    // before releasing the data it references.
-    std::shared_ptr<MemReadView> read_view_;
-    std::unique_ptr<BatchReader> reader_;
-};
-
 /// Parameters used by a `MemIndexer` to create readers for a query.
 struct PAIMON_EXPORT MemQueryContext {
     /// Requested output fields before the mandatory leading `_VALUE_KIND` field is added.

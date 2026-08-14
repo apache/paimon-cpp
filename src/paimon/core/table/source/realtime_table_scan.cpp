@@ -124,7 +124,8 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
     std::vector<std::string> pinned_tickets;
     ScopeGuard ticket_guard([this, &pinned_tickets]() {
         for (const std::string& ticket : pinned_tickets) {
-            realtime_context_->ReleaseReadView(ticket);
+            Status status = realtime_context_->ReleaseReadView(ticket);
+            (void)status;
         }
     });
     auto create_realtime_split =
@@ -168,7 +169,7 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
 }
 
 RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
-                                     const std::shared_ptr<RealtimeContext>& realtime_context,
+                                     const std::shared_ptr<RealtimeContextImpl>& realtime_context,
                                      const std::shared_ptr<FileStorePathFactory>& path_factory,
                                      const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                      const std::shared_ptr<FileSystem>& file_system,

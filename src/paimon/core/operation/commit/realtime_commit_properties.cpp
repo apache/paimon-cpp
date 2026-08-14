@@ -148,7 +148,7 @@ class OffsetsJson : public Jsonizable<OffsetsJson> {
 void RealtimeCommitProperties::Sort(std::vector<RealtimeCommitProgress>* commits) {
     std::stable_sort(commits->begin(), commits->end(),
                      [](const RealtimeCommitProgress& lhs, const RealtimeCommitProgress& rhs) {
-                         if (!(lhs.partition_bucket == rhs.partition_bucket)) {
+                         if (lhs.partition_bucket != rhs.partition_bucket) {
                              return lhs.partition_bucket < rhs.partition_bucket;
                          }
                          return lhs.offset_range.from < rhs.offset_range.from;

@@ -35,6 +35,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/append/append_only_writer.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/macros.h"
 #include "paimon/realtime/realtime_context.h"
@@ -52,8 +53,10 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     if (!realtime_context) {
         return Status::Invalid("real-time context is null");
     }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context));
     PAIMON_ASSIGN_OR_RAISE(RealtimeMemIndexerState indexer_state,
-                           realtime_context->GetOrCreateMemIndexer(
+                           realtime_context_impl->GetOrCreateMemIndexer(
                                partition, bucket, std::move(write_schema), options, memory_pool));
     return std::shared_ptr<RealtimeAppendOnlyWriter>(
         new RealtimeAppendOnlyWriter(indexer_state.indexer, file_writer, input_schema,

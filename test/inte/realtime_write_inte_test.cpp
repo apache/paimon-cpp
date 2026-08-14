@@ -43,6 +43,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -368,8 +369,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
 
     Result<uint64_t> GetRealtimeMemoryUsage(
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                               RealtimeContextImpl::Cast(realtime_context));
         PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimePartitionBucketView> views,
-                               realtime_context->AcquireReadViews());
+                               realtime_context_impl->AcquireReadViews());
         uint64_t memory_usage = 0;
         for (const RealtimePartitionBucketView& view : views) {
             memory_usage += view.indexer->GetMemoryUsage();
@@ -536,13 +539,15 @@ TEST_F(RealtimeWriteInteTest, TestReadMemoryBeforePrepareCommit) {
                         "requires a real-time context");
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(rows, actual_rows);
-    ASSERT_NOK_WITH_MSG(realtime_context->ResolveReadView(realtime_split->OpaqueTicket()),
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                         RealtimeContextImpl::Cast(realtime_context));
+    ASSERT_NOK_WITH_MSG(realtime_context_impl->ResolveReadView(realtime_split->OpaqueTicket()),
                         "ticket does not exist or has expired");
     ASSERT_OK(writer->Close());
 }
 
 TEST_F(RealtimeWriteInteTest, TestReadFailsAfterRealtimeSplitTicketExpires) {
-    options_[Options::REALTIME_READ_VIEW_TTL_MILLIS] = "10";
+    options_[Options::REALTIME_READ_VIEW_TTL] = "10 ms";
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
@@ -942,7 +947,9 @@ TEST_F(RealtimeWriteInteTest, TestReaderPinsMemoryAcrossRefresh) {
                          TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                          table_read->CreateReader(plan->Splits()));
-    ASSERT_NOK_WITH_MSG(realtime_context->ResolveReadView(realtime_split->OpaqueTicket()),
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                         RealtimeContextImpl::Cast(realtime_context));
+    ASSERT_NOK_WITH_MSG(realtime_context_impl->ResolveReadView(realtime_split->OpaqueTicket()),
                         "ticket does not exist or has expired");
     ASSERT_OK_AND_ASSIGN(uint64_t memory_usage_before_refresh,
                          GetRealtimeMemoryUsage(realtime_context));

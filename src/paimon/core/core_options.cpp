@@ -803,11 +803,11 @@ struct CoreOptions::Impl {
         std::string scan_timestamp_str;
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_TIMESTAMP, &scan_timestamp_str));
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_TIMESTAMP_MILLIS, &scan_timestamp_millis));
-        PAIMON_RETURN_NOT_OK(
-            parser.Parse(Options::REALTIME_READ_VIEW_TTL_MILLIS, &realtime_read_view_ttl_millis));
+        PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
+                                                      &realtime_read_view_ttl_millis));
         if (realtime_read_view_ttl_millis <= 0) {
             return Status::Invalid(
-                fmt::format("{} must be positive", Options::REALTIME_READ_VIEW_TTL_MILLIS));
+                fmt::format("{} must be positive", Options::REALTIME_READ_VIEW_TTL));
         }
         if (scan_timestamp_millis != std::nullopt && !scan_timestamp_str.empty()) {
             return Status::Invalid(

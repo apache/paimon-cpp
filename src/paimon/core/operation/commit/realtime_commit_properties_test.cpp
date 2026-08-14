@@ -169,6 +169,8 @@ TEST_F(RealtimeCommitPropertiesTest, PartitionBucketAndOffsetsDirectory) {
     RealtimePartitionBucket expected_partition_bucket({{"dt", "a/b"}, {"region", "cn"}}, 3);
     ASSERT_EQ(expected_partition_bucket,
               RealtimePartitionBucket({{"dt", "a/b"}, {"region", "cn"}}, /*bucket=*/3));
+    ASSERT_NE(expected_partition_bucket,
+              RealtimePartitionBucket({{"dt", "a/b"}, {"region", "cn"}}, /*bucket=*/4));
     ASSERT_EQ("/table/metadata", RealtimeCommitProperties::OffsetsDirectory("/table", "main"));
     ASSERT_EQ("/table/branch/branch-dev/metadata",
               RealtimeCommitProperties::OffsetsDirectory("/table", "dev"));

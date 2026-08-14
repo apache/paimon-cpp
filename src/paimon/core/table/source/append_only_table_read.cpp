@@ -33,6 +33,8 @@
 #include "paimon/core/operation/data_evolution_split_read.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_reader.h"
 #include "paimon/core/table/source/append_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/realtime/mem_indexer.h"
@@ -74,13 +76,15 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
     if (!realtime_context) {
         return Status::Invalid("reading a real-time split requires a real-time context");
     }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context));
     PAIMON_ASSIGN_OR_RAISE(RealtimePartitionBucketView memory,
-                           realtime_context->ResolveReadView(realtime_split->OpaqueTicket()));
+                           realtime_context_impl->ResolveReadView(realtime_split->OpaqueTicket()));
     std::vector<std::unique_ptr<BatchReader>> readers;
     readers.reserve(realtime_split->DiskSplits().size() + 1);
     const RealtimePartitionBucket expected_partition_bucket(realtime_split->Partition(),
                                                             realtime_split->Bucket());
-    if (!(memory.partition_bucket == expected_partition_bucket)) {
+    if (memory.partition_bucket != expected_partition_bucket) {
         return Status::Invalid("real-time read-view ticket belongs to another partition-bucket");
     }
     const std::optional<Range> memory_range = memory.read_view->GetOffsetRange();
@@ -114,7 +118,7 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
                                RealtimeReader::Create(memory.read_view, std::move(memory_reader)));
         readers.push_back(std::move(realtime_reader));
     }
-    PAIMON_RETURN_NOT_OK(realtime_context->ReleaseReadView(realtime_split->OpaqueTicket()));
+    PAIMON_RETURN_NOT_OK(realtime_context_impl->ReleaseReadView(realtime_split->OpaqueTicket()));
     return std::make_unique<ConcatBatchReader>(std::move(readers), GetMemoryPool());
 }
 

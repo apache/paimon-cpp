@@ -17,8 +17,6 @@
  * under the License.
  */
 
-#include "paimon/realtime/realtime_context.h"
-
 #include <chrono>
 #include <map>
 #include <memory>
@@ -31,6 +29,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/realtime/mem_indexer.h"
 #include "paimon/testing/utils/testharness.h"
@@ -43,19 +42,6 @@ class TestingReadView : public MemReadView {
     std::optional<Range> GetOffsetRange() const override {
         return std::nullopt;
     }
-};
-
-class TestingBatchReader : public BatchReader {
- public:
-    Result<ReadBatch> NextBatch() override {
-        return MakeEofBatch();
-    }
-
-    std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        return nullptr;
-    }
-
-    void Close() override {}
 };
 
 class TestingMemIndexer : public MemIndexer {
@@ -128,19 +114,16 @@ std::unique_ptr<ArrowSchema> MakeWriteSchema() {
     return c_schema;
 }
 
-TEST(RealtimeReaderTest, TestRejectsIncompleteReader) {
-    ASSERT_NOK_WITH_MSG(
-        RealtimeReader::Create(/*read_view=*/nullptr, std::make_unique<TestingBatchReader>()),
-        "view is null");
-    ASSERT_NOK_WITH_MSG(RealtimeReader::Create(std::make_shared<TestingReadView>(),
-                                               /*reader=*/nullptr),
-                        "inner reader is null");
+Result<std::shared_ptr<RealtimeContextImpl>> CreateContext(
+    const std::shared_ptr<MemIndexerFactory>& factory) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContext> context,
+                           RealtimeContext::Create(factory));
+    return RealtimeContextImpl::Cast(context);
 }
 
 TEST(RealtimeContextTest, TestReusesIndexerAndCapturesRegisteredViews) {
     auto factory = std::make_shared<TestingMemIndexerFactory>();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context,
-                         RealtimeContext::Create(factory));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
 
     ASSERT_OK_AND_ASSIGN(RealtimeMemIndexerState first_state,
@@ -179,8 +162,7 @@ TEST(RealtimeContextTest, TestReusesIndexerAndCapturesRegisteredViews) {
 
 TEST(RealtimeContextTest, TestCommittedProgressIsMonotonicAndSelective) {
     auto factory = std::make_shared<TestingMemIndexerFactory>();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context,
-                         RealtimeContext::Create(factory));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     const std::map<std::string, std::string> partition = {{"dt", "2026-08-02"}};
 
@@ -223,8 +205,7 @@ TEST(RealtimeContextTest, TestCommittedProgressIsMonotonicAndSelective) {
 
 TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
     auto factory = std::make_shared<TestingMemIndexerFactory>();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context,
-                         RealtimeContext::Create(factory));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     const std::map<std::string, std::string> partition = {{"dt", "2026-08-02"}};
 
@@ -257,8 +238,7 @@ TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
 
 TEST(RealtimeContextTest, TestPinsResolvesAndReleasesReadViewTicket) {
     auto factory = std::make_shared<TestingMemIndexerFactory>();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context,
-                         RealtimeContext::Create(factory));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     ASSERT_OK(context->GetOrCreateMemIndexer(/*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                              GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
@@ -282,8 +262,7 @@ TEST(RealtimeContextTest, TestPinsResolvesAndReleasesReadViewTicket) {
 
 TEST(RealtimeContextTest, TestExpiresAbandonedReadViewTicket) {
     auto factory = std::make_shared<TestingMemIndexerFactory>();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context,
-                         RealtimeContext::Create(factory));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     ASSERT_OK(context->GetOrCreateMemIndexer(/*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                              GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,

@@ -48,6 +48,7 @@
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/operation/restore_files.h"
 #include "paimon/core/realtime/realtime_append_only_writer.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
@@ -109,8 +110,10 @@ Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
         RealtimeOffsetMap committed_offsets,
         RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),
                                               options_.GetFileSystem()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context_));
     PAIMON_RETURN_NOT_OK(
-        realtime_context_->AdvanceCommittedProgress(snapshot_id, committed_offsets));
+        realtime_context_impl->AdvanceCommittedProgress(snapshot_id, committed_offsets));
     return Status::OK();
 }
 

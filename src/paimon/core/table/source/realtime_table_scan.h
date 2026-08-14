@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-#include "paimon/realtime/realtime_context.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/result.h"
 #include "paimon/table/source/table_scan.h"
 
@@ -39,7 +39,7 @@ class SnapshotManager;
 class RealtimeTableScan : public TableScan {
  public:
     RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
-                      const std::shared_ptr<RealtimeContext>& realtime_context,
+                      const std::shared_ptr<RealtimeContextImpl>& realtime_context,
                       const std::shared_ptr<FileStorePathFactory>& path_factory,
                       const std::shared_ptr<SnapshotManager>& snapshot_manager,
                       const std::shared_ptr<FileSystem>& file_system,
@@ -67,7 +67,7 @@ class RealtimeTableScan : public TableScan {
         const std::optional<int64_t>& snapshot_id) const;
 
     std::unique_ptr<TableScan> disk_scan_;
-    std::shared_ptr<RealtimeContext> realtime_context_;
+    std::shared_ptr<RealtimeContextImpl> realtime_context_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<SnapshotManager> snapshot_manager_;
     std::shared_ptr<FileSystem> file_system_;

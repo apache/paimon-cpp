@@ -36,6 +36,7 @@
 #include "paimon/core/operation/key_value_file_store_write.h"
 #include "paimon/core/options/merge_engine.h"
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -145,7 +146,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap realtime_committed_offsets,
                                        RealtimeCommitProperties::ReadOffsets(
                                            latest_snapshot, options.GetFileSystem()));
-                PAIMON_RETURN_NOT_OK(ctx->GetRealtimeContext()->AdvanceCommittedProgress(
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                                       RealtimeContextImpl::Cast(ctx->GetRealtimeContext()));
+                PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
                     latest_snapshot->Id(), realtime_committed_offsets));
             }
         }

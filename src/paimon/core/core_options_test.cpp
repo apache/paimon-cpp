@@ -798,10 +798,10 @@ TEST(CoreOptionsTest, TestScanTimestampMillis) {
 
 TEST(CoreOptionsTest, TestRealtimeReadViewTtlMillis) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
-                         CoreOptions::FromMap({{Options::REALTIME_READ_VIEW_TTL_MILLIS, "1234"}}));
+                         CoreOptions::FromMap({{Options::REALTIME_READ_VIEW_TTL, "1234 ms"}}));
     ASSERT_EQ(1234, core_options.GetRealtimeReadViewTtlMillis());
-    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::REALTIME_READ_VIEW_TTL_MILLIS, "0"}}),
-                        "realtime.read-view-ttl-millis must be positive");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::REALTIME_READ_VIEW_TTL, "0 ms"}}),
+                        "realtime.read-view-ttl must be positive");
 }
 
 TEST(CoreOptionsTest, TestScanTimestampMillisExplicitMode) {
