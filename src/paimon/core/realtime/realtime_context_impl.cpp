@@ -38,7 +38,6 @@
 #include "paimon/arrow/abi.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/macros.h"
-#include "paimon/realtime/arrow_mem_indexer_factory.h"
 #include "paimon/realtime/mem_indexer.h"
 #include "paimon/status.h"
 
@@ -340,15 +339,6 @@ void RealtimeContextImpl::CleanupReadViews() {
             return;
         }
     }
-}
-
-Result<std::shared_ptr<RealtimeContext>> RealtimeContext::Create() {
-    return Create(std::make_shared<ArrowMemIndexerFactory>());
-}
-
-Result<std::shared_ptr<RealtimeContext>> RealtimeContext::Create(
-    const std::shared_ptr<MemIndexerFactory>& factory) {
-    return RealtimeContextImpl::Create(factory);
 }
 
 Result<std::shared_ptr<RealtimeContextImpl>> RealtimeContextImpl::Cast(

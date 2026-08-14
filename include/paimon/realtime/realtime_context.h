@@ -82,7 +82,7 @@ class PAIMON_EXPORT RealtimeContext {
     static Result<std::shared_ptr<RealtimeContext>> Create(
         const std::shared_ptr<MemIndexerFactory>& factory);
 
-    virtual ~RealtimeContext() = default;
+    virtual ~RealtimeContext();
 
  protected:
     RealtimeContext() = default;
