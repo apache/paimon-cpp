@@ -36,7 +36,6 @@ namespace paimon {
 Decimal ColumnarRow::GetDecimal(int32_t pos, int32_t precision, int32_t scale) const {
     using ArrayType = typename arrow::TypeTraits<arrow::Decimal128Type>::ArrayType;
     auto array = checked_cast<const ArrayType*>(array_vec_[pos]);
-    assert(array);
     arrow::Decimal128 decimal(array->GetValue(row_id_));
     return Decimal(
         precision, scale,
@@ -48,7 +47,6 @@ Decimal ColumnarRow::GetDecimal(int32_t pos, int32_t precision, int32_t scale) c
 Timestamp ColumnarRow::GetTimestamp(int32_t pos, int32_t precision) const {
     using ArrayType = typename arrow::TypeTraits<arrow::TimestampType>::ArrayType;
     auto array = checked_cast<const ArrayType*>(array_vec_[pos]);
-    assert(array);
     int64_t data = array->Value(row_id_);
     auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(array->type());
     // for orc format, data is saved as nano, therefore, Timestamp convert should consider precision
@@ -61,7 +59,6 @@ Timestamp ColumnarRow::GetTimestamp(int32_t pos, int32_t precision) const {
 
 std::shared_ptr<InternalRow> ColumnarRow::GetRow(int32_t pos, int32_t num_fields) const {
     auto struct_array = checked_cast<const arrow::StructArray*>(array_vec_[pos]);
-    assert(struct_array);
     // NOTE: For performance, the returned nested row does NOT hold shared ownership of the parent
     // StructArray. Callers must ensure the parent ColumnarRow (or its underlying RecordBatch)
     // outlives the returned row to avoid dangling pointers.
@@ -70,7 +67,6 @@ std::shared_ptr<InternalRow> ColumnarRow::GetRow(int32_t pos, int32_t num_fields
 
 std::shared_ptr<InternalArray> ColumnarRow::GetArray(int32_t pos) const {
     auto list_array = checked_cast<const arrow::ListArray*>(array_vec_[pos]);
-    assert(list_array);
     int32_t offset = list_array->value_offset(row_id_);
     int32_t length = list_array->value_length(row_id_);
     return std::make_shared<ColumnarArray>(list_array->values().get(), pool_, offset, length);
@@ -78,7 +74,6 @@ std::shared_ptr<InternalArray> ColumnarRow::GetArray(int32_t pos) const {
 
 std::shared_ptr<InternalMap> ColumnarRow::GetMap(int32_t pos) const {
     auto map_array = checked_cast<const arrow::MapArray*>(array_vec_[pos]);
-    assert(map_array);
     int32_t offset = map_array->value_offset(row_id_);
     int32_t length = map_array->value_length(row_id_);
     return std::make_shared<ColumnarMap>(map_array->keys(), map_array->items(), pool_, offset,

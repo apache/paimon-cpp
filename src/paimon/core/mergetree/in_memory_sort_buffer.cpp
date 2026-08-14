@@ -147,27 +147,23 @@ Result<int64_t> InMemorySortBuffer::EstimateMemoryUse(const std::shared_ptr<arro
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY: {
             auto binary_array = checked_cast<const arrow::BinaryArray*>(array.get());
-            assert(binary_array);
             int64_t value_length = binary_array->total_values_length();
             int64_t offset_length = array->length() * sizeof(int32_t);
             return null_bits_size_in_bytes + value_length + offset_length;
         }
         case arrow::Type::type::LIST: {
             auto list_array = checked_cast<const arrow::ListArray*>(array.get());
-            assert(list_array);
             PAIMON_ASSIGN_OR_RAISE(int64_t value_mem, EstimateMemoryUse(list_array->values()));
             return null_bits_size_in_bytes + value_mem;
         }
         case arrow::Type::type::MAP: {
             auto map_array = checked_cast<const arrow::MapArray*>(array.get());
-            assert(map_array);
             PAIMON_ASSIGN_OR_RAISE(int64_t key_mem, EstimateMemoryUse(map_array->keys()));
             PAIMON_ASSIGN_OR_RAISE(int64_t item_mem, EstimateMemoryUse(map_array->items()));
             return null_bits_size_in_bytes + key_mem + item_mem;
         }
         case arrow::Type::type::STRUCT: {
             auto struct_array = checked_cast<const arrow::StructArray*>(array.get());
-            assert(struct_array);
             int64_t struct_mem = 0;
             for (const auto& field : struct_array->fields()) {
                 PAIMON_ASSIGN_OR_RAISE(int64_t field_mem, EstimateMemoryUse(field));

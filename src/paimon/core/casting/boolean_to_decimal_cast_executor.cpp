@@ -47,7 +47,6 @@ Result<Literal> BooleanToDecimalCastExecutor::Cast(
     assert(literal.GetType() == FieldType::BOOLEAN);
     PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*target_type));
     auto* decimal_type = checked_cast<arrow::DecimalType*>(target_type.get());
-    assert(decimal_type);
     if (literal.IsNull()) {
         return Literal(FieldType::DECIMAL);
     }
@@ -71,9 +70,7 @@ Result<std::shared_ptr<arrow::Array>> BooleanToDecimalCastExecutor::Cast(
     arrow::MemoryPool* pool) const {
     PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*target_type));
     auto* boolean_array = checked_cast<arrow::BooleanArray*>(array.get());
-    assert(boolean_array);
     auto* decimal_type = checked_cast<arrow::DecimalType*>(target_type.get());
-    assert(decimal_type);
     auto decimal_builder = std::make_shared<arrow::Decimal128Builder>(target_type, pool);
     for (int64_t i = 0; i < boolean_array->length(); ++i) {
         if (boolean_array->IsNull(i)) {

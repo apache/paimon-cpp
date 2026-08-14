@@ -64,7 +64,6 @@ Result<std::shared_ptr<arrow::Array>> StringToBooleanCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     auto* string_array = checked_cast<arrow::StringArray*>(array.get());
-    assert(string_array);
     auto bool_builder = std::make_shared<arrow::BooleanBuilder>(pool);
     for (int64_t i = 0; i < string_array->length(); ++i) {
         if (string_array->IsNull(i)) {

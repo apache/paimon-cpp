@@ -156,7 +156,6 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
         }
         case arrow::Type::type::TIMESTAMP: {
             auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(input_type);
-            assert(timestamp_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             return FieldsComparator::FieldComparatorFunc(
                 [field_idx, precision](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
@@ -167,7 +166,6 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
         }
         case arrow::Type::type::DECIMAL128: {
             auto* decimal_type = checked_cast<arrow::Decimal128Type*>(input_type.get());
-            assert(decimal_type);
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
             return FieldsComparator::FieldComparatorFunc(

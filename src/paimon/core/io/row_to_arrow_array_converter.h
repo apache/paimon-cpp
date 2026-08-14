@@ -208,34 +208,29 @@ Status RowToArrowArrayConverter<T, R>::Accumulate(const arrow::Array* array, int
             break;
         case arrow::Type::type::STRING: {
             auto string_array = checked_cast<const arrow::StringArray*>(array);
-            assert(string_array);
             // accumulate the bytes buffer size of binary
             UpdateAccumulatedVec(string_array->value_data()->size(), idx);
             break;
         }
         case arrow::Type::type::BINARY: {
             auto binary_array = checked_cast<const arrow::BinaryArray*>(array);
-            assert(binary_array);
             // accumulate the bytes buffer size of binary
             UpdateAccumulatedVec(binary_array->value_data()->size(), idx);
             break;
         }
         case arrow::Type::type::LIST: {
             auto list_array = checked_cast<const arrow::ListArray*>(array);
-            assert(list_array);
             PAIMON_RETURN_NOT_OK(Accumulate(list_array->values().get(), idx));
             break;
         }
         case arrow::Type::type::MAP: {
             auto map_array = checked_cast<const arrow::MapArray*>(array);
-            assert(map_array);
             PAIMON_RETURN_NOT_OK(Accumulate(map_array->keys().get(), idx));
             PAIMON_RETURN_NOT_OK(Accumulate(map_array->items().get(), idx));
             break;
         }
         case arrow::Type::type::STRUCT: {
             auto struct_array = checked_cast<const arrow::StructArray*>(array);
-            assert(struct_array);
             for (const auto& field : struct_array->fields()) {
                 PAIMON_RETURN_NOT_OK(Accumulate(field.get(), idx));
             }

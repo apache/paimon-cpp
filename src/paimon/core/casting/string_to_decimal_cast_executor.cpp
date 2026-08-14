@@ -59,7 +59,6 @@ Result<Literal> StringToDecimalCastExecutor::Cast(
     assert(literal.GetType() == FieldType::STRING);
     PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*target_type));
     auto* decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
-    assert(decimal_type);
     if (literal.IsNull()) {
         return Literal(FieldType::DECIMAL);
     }
@@ -83,7 +82,6 @@ Result<std::shared_ptr<arrow::Array>> StringToDecimalCastExecutor::Cast(
     arrow::MemoryPool* pool) const {
     PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*target_type));
     auto* string_array = checked_cast<arrow::StringArray*>(array.get());
-    assert(string_array);
     auto* decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
     auto decimal_builder = std::make_shared<arrow::Decimal128Builder>(target_type, pool);
     for (int64_t i = 0; i < string_array->length(); ++i) {

@@ -38,7 +38,6 @@ Result<std::shared_ptr<arrow::Array>> TimestampToTimestampCastExecutor::Cast(
     options.allow_time_truncate = true;
     auto src_ts_type = checked_pointer_cast<arrow::TimestampType>(array->type());
     auto target_ts_type = checked_pointer_cast<arrow::TimestampType>(target_type);
-    assert(src_ts_type && target_ts_type);
     std::shared_ptr<arrow::Array> target_array = array;
     // first, handle timezone
     if (src_ts_type->timezone() != target_ts_type->timezone()) {

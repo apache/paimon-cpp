@@ -434,7 +434,6 @@ Status FieldMappingReader::MappingFields(const std::shared_ptr<arrow::Array>& da
                                          arrow::ArrayVector* target_array,
                                          std::vector<std::string>* target_field_names) {
     auto* struct_array = checked_cast<arrow::StructArray*>(data_array.get());
-    assert(struct_array);
     assert(struct_array->fields().size() == idx_in_target_schema.size());
     for (size_t i = 0; i < idx_in_target_schema.size(); i++) {
         std::shared_ptr<arrow::Array> field_array = struct_array->field(i);

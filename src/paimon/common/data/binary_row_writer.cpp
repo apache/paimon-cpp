@@ -144,7 +144,6 @@ Result<BinaryRowWriter::FieldSetterFunc> BinaryRowWriter::CreateFieldSetter(
         }
         case arrow::Type::type::DECIMAL128: {
             auto* decimal_type = checked_cast<arrow::Decimal128Type*>(field_type.get());
-            assert(decimal_type);
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
             field_setter = [field_idx, precision, scale](const VariantType& field,

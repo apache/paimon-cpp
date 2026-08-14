@@ -190,14 +190,12 @@ Result<std::shared_ptr<arrow::Array>> PostponeBucketWriter::PrepareRowKindArray(
             arrow::MakeArrayFromScalar(*row_kind_scalar, value_array_length, arrow_pool_.get()));
         auto typed_row_kind_array =
             checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(scalar_array);
-        assert(typed_row_kind_array);
         row_kind_array_ = std::move(typed_row_kind_array);
         row_kind_array = row_kind_array_;
     } else {
         assert(row_kind_array_->length() >= value_array_length);
         row_kind_array = checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(
             row_kind_array_->Slice(0, value_array_length));
-        assert(row_kind_array);
     }
 
     if (!row_kind_vec.empty()) {

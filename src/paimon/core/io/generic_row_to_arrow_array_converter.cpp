@@ -38,7 +38,6 @@ Result<std::unique_ptr<GenericRowToArrowArrayConverter>> GenericRowToArrowArrayC
         pool, std::make_shared<arrow::StructType>(schema->fields()), &array_builder));
 
     auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
-    assert(struct_builder);
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;
     appenders.reserve(schema->num_fields());
     int32_t reserve_count = 1;

@@ -45,7 +45,6 @@ Result<std::shared_ptr<arrow::Array>> StringToTimestampCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(target_type);
-    assert(timestamp_type);
     auto target_type_no_tz = arrow::timestamp(timestamp_type->unit());
     arrow::compute::CastOptions options = arrow::compute::CastOptions::Safe();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> target_array,

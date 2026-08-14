@@ -43,7 +43,6 @@ Result<std::shared_ptr<arrow::Array>> CastingUtils::TimestampToTimestampWithTime
     const std::shared_ptr<arrow::Array>& src_array,
     const std::shared_ptr<arrow::TimestampType>& target_type, arrow::MemoryPool* pool) {
     auto src_ts_type = checked_pointer_cast<arrow::TimestampType>(src_array->type());
-    assert(src_ts_type);
     if (src_ts_type->unit() != target_type->unit()) {
         return Status::Invalid("in timezone converter, time unit of src and target type mismatch");
     }
@@ -64,7 +63,6 @@ Result<std::shared_ptr<arrow::Array>> CastingUtils::TimestampWithTimezoneToTimes
     const std::shared_ptr<arrow::Array>& src_array,
     const std::shared_ptr<arrow::TimestampType>& target_type, arrow::MemoryPool* pool) {
     auto src_ts_type = checked_pointer_cast<arrow::TimestampType>(src_array->type());
-    assert(src_ts_type);
     if (src_ts_type->unit() != target_type->unit()) {
         return Status::Invalid("in timezone converter, time unit of src and target type mismatch");
     }

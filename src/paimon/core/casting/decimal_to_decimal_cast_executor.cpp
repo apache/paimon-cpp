@@ -49,7 +49,6 @@ Result<Literal> DecimalToDecimalCastExecutor::Cast(
         return Literal(FieldType::DECIMAL);
     }
     auto* target_decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
-    assert(target_decimal_type);
     auto src_value = literal.GetValue<Decimal>();
     arrow::Decimal128 src_decimal(src_value.HighBits(), src_value.LowBits());
     auto scaled_decimal = DecimalUtils::RescaleDecimalWithOverflowCheck(
@@ -71,11 +70,8 @@ Result<std::shared_ptr<arrow::Array>> DecimalToDecimalCastExecutor::Cast(
     arrow::MemoryPool* pool) const {
     PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*target_type));
     auto* src_array = checked_cast<arrow::Decimal128Array*>(array.get());
-    assert(src_array);
     auto* src_decimal_type = checked_cast<arrow::Decimal128Type*>(array->type().get());
-    assert(src_decimal_type);
     auto* target_decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
-    assert(target_decimal_type);
     auto decimal_builder = std::make_shared<arrow::Decimal128Builder>(target_type, pool);
     for (int64_t i = 0; i < src_array->length(); ++i) {
         if (src_array->IsNull(i)) {

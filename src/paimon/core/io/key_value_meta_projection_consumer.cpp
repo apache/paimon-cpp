@@ -67,7 +67,6 @@ Result<std::unique_ptr<KeyValueMetaProjectionConsumer>> KeyValueMetaProjectionCo
         arrow_pool.get(), arrow::struct_(target_schema->fields()), &array_builder));
 
     auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
-    assert(struct_builder);
     auto* sequence_builder = struct_builder->field_builder(0);
     if (!sequence_builder || !sequence_builder->type() ||
         sequence_builder->type()->id() != arrow::Type::INT64) {

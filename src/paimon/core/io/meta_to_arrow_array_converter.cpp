@@ -33,7 +33,6 @@ Result<std::unique_ptr<MetaToArrowArrayConverter>> MetaToArrowArrayConverter::Cr
         arrow_pool.get(), arrow::struct_(struct_type->fields()), &array_builder));
 
     auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
-    assert(struct_builder);
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;
     appenders.reserve(struct_type->num_fields());
     // first is the root struct array

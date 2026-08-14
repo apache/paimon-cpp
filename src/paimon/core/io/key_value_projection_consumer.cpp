@@ -50,7 +50,6 @@ Result<std::unique_ptr<KeyValueProjectionConsumer>> KeyValueProjectionConsumer::
         &array_builder));
 
     auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
-    assert(struct_builder);
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;
     appenders.reserve(target_to_src_mapping.size());
     // first is the root struct array

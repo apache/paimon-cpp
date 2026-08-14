@@ -45,7 +45,6 @@ Result<std::shared_ptr<arrow::Array>> DateToTimestampCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     auto target_ts_type = checked_pointer_cast<arrow::TimestampType>(target_type);
-    assert(target_ts_type);
     arrow::compute::CastOptions options = arrow::compute::CastOptions::Safe();
 
     auto target_ts_type_no_tz = arrow::timestamp(target_ts_type->unit());

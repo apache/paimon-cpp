@@ -50,7 +50,6 @@ template <typename SrcType>
 Result<Literal> NumericPrimitiveToDecimalCastExecutor::Cast(
     const Literal& literal, const std::shared_ptr<arrow::DataType>& target_type) {
     auto* decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
-    assert(decimal_type);
     if (literal.IsNull()) {
         return Literal(FieldType::DECIMAL);
     }
@@ -114,7 +113,6 @@ Result<std::shared_ptr<arrow::Array>> NumericPrimitiveToDecimalCastExecutor::Cas
     arrow::MemoryPool* pool) {
     using SrcValueType = typename arrow::NumericArray<SrcType>::value_type;
     auto* typed_array = checked_cast<arrow::NumericArray<SrcType>*>(array.get());
-    assert(typed_array);
     auto* decimal_type = checked_cast<arrow::Decimal128Type*>(target_type.get());
     auto decimal_builder = std::make_shared<arrow::Decimal128Builder>(target_type, pool);
     for (int64_t i = 0; i < typed_array->length(); ++i) {

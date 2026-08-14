@@ -53,7 +53,6 @@ Result<std::shared_ptr<arrow::Array>> TimestampToNumericPrimitiveCastExecutor::C
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(array->type());
-    assert(timestamp_type);
     assert(target_type->id() == arrow::Type::type::INT32 ||
            target_type->id() == arrow::Type::type::INT64);
     auto timestamp_to_timestamp_cast_executor =

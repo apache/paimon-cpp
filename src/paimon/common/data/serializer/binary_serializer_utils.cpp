@@ -154,7 +154,6 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
         }
         case arrow::Type::type::TIMESTAMP: {
             auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
-            assert(timestamp_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             if (getter->IsNullAt(pos)) {
                 // compatible with Java Paimon
@@ -170,7 +169,6 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
         }
         case arrow::Type::type::DECIMAL128: {
             auto* decimal_type = checked_cast<arrow::Decimal128Type*>(type.get());
-            assert(decimal_type);
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
             if (getter->IsNullAt(pos)) {

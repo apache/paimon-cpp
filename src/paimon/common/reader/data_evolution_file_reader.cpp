@@ -79,7 +79,6 @@ Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithB
             return Status::Invalid("array for single reader length mismatch others");
         }
         auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
-        assert(struct_array);
         array_for_each_reader.push_back(struct_array);
     }
     int32_t read_field_count = read_schema_->num_fields();

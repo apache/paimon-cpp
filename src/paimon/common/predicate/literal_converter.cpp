@@ -267,7 +267,6 @@ std::vector<Literal> LiteralConverter::GetLiteralFromTimestampArray(const arrow:
     using ArrayType = typename arrow::TypeTraits<arrow::TimestampType>::ArrayType;
     const auto& array_(checked_cast<const ArrayType&>(array));
     auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(array_.type());
-    assert(timestamp_type);
     DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type);
     std::vector<Literal> literals;
     literals.reserve(array_.length());

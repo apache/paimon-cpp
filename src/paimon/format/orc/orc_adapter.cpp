@@ -656,7 +656,6 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedTimestampBuilder(
     const auto* not_null = typed_batch->notNull.data();
     auto is_null = [has_nulls, not_null](int64_t index) { return has_nulls && !not_null[index]; };
     auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
-    assert(timestamp_type);
     int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
     // TODO(lisizhuo.lsz): check nano overflow in arrow
     if (precision == Timestamp::MIN_PRECISION) {
@@ -720,7 +719,6 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedDecimal128Builder(
     auto builder = std::make_shared<arrow::Decimal128Builder>(type, pool);
     const bool has_nulls = column_vector_batch->hasNulls;
     auto decimal_type = checked_cast<arrow::Decimal128Type*>(type.get());
-    assert(decimal_type);
     if (decimal_type->precision() == 0 || decimal_type->precision() > 18) {
         auto typed_batch = checked_cast<const ::orc::Decimal128VectorBatch*>(column_vector_batch);
         for (size_t i = 0; i < typed_batch->numElements; i++) {
@@ -1221,7 +1219,6 @@ arrow::Status WriteStructBatch(const arrow::Array& array,
                                ::orc::ColumnVectorBatch* column_vector_batch) {
     std::shared_ptr<arrow::Array> array_ = arrow::MakeArray(array.data());
     auto* struct_array = checked_cast<arrow::StructArray*>(array_.get());
-    assert(struct_array);
     auto batch = checked_cast<::orc::StructVectorBatch*>(column_vector_batch);
     std::size_t size = array.type()->fields().size();
     int64_t arrow_length = array.length();

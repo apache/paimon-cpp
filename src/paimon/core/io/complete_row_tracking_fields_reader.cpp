@@ -94,7 +94,6 @@ CompleteRowTrackingFieldsBatchReader::NextBatchWithBitmap() {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> src_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
     auto src_struct_array = checked_pointer_cast<arrow::StructArray>(src_array);
-    assert(src_struct_array);
 
     // complete row id array
     std::shared_ptr<arrow::Array> row_id_array;
@@ -166,7 +165,6 @@ Status CompleteRowTrackingFieldsBatchReader::ConvertRowTrackingField(
             special_array, arrow::MakeArrayFromScalar(*scalar, array_length, arrow_pool_.get()));
         auto typed_special_array =
             checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(special_array);
-        assert(typed_special_array);
         if (convert_func) {
             auto raw_value_ptr = const_cast<int64_t*>(typed_special_array->raw_values());
             assert(raw_value_ptr);

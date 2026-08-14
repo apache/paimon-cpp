@@ -103,8 +103,6 @@ class PAIMON_EXPORT LiteralConverter {
         const arrow::DictionaryArray& dict_array, const FieldType& literal_type, bool own_data) {
         auto* dictionary = checked_cast<DictArrayType*>(dict_array.dictionary().get());
         auto* indices = checked_cast<IndicesArrayType*>(dict_array.indices().get());
-        assert(dictionary);
-        assert(indices);
         std::vector<Literal> literals;
         literals.reserve(dict_array.length());
         for (int64_t i = 0; i < dict_array.length(); ++i) {

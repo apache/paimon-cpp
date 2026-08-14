@@ -306,7 +306,6 @@ ParquetStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fi
             result_stats.push_back(ColumnStats::CreateNestedColumnStats(nested_type, std::nullopt));
         } else {
             auto primitive_node = checked_pointer_cast<::parquet::schema::PrimitiveNode>(node);
-            assert(primitive_node != nullptr);
             auto iter = merged_stats.find(node->name());
             const std::shared_ptr<::parquet::Statistics>& parquet_stats =
                 iter == merged_stats.end() ? nullptr : iter->second;

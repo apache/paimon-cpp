@@ -44,7 +44,6 @@ class ColumnarUtils {
     static ValueType GetGenericValue(const arrow::Array* array, int32_t pos) {
         using ArrayType = typename arrow::TypeTraits<DataType>::ArrayType;
         const auto* typed_array = checked_cast<const ArrayType*>(array);
-        assert(typed_array);
         return typed_array->Value(pos);
     }
 
@@ -53,43 +52,34 @@ class ColumnarUtils {
         bool is_dict = (type_id == arrow::Type::type::DICTIONARY);
         if (!is_dict) {
             const auto* typed_array = checked_cast<const arrow::BinaryArray*>(array);
-            assert(typed_array);
             return typed_array->GetView(pos);
         } else {
             const auto* typed_array = checked_cast<const arrow::DictionaryArray*>(array);
-            assert(typed_array);
             auto dict_type = checked_pointer_cast<arrow::DictionaryType>(array->type());
-            assert(dict_type);
             auto value_type_id = dict_type->value_type()->id();
             auto index_type_id = dict_type->index_type()->id();
             int64_t dict_index = -1;
             if (index_type_id == arrow::Type::type::INT8) {
                 auto indices = checked_cast<arrow::Int8Array*>(typed_array->indices().get());
-                assert(indices);
                 dict_index = indices->Value(pos);
             } else if (index_type_id == arrow::Type::type::INT16) {
                 auto indices = checked_cast<arrow::Int16Array*>(typed_array->indices().get());
-                assert(indices);
                 dict_index = indices->Value(pos);
             } else if (index_type_id == arrow::Type::type::INT32) {
                 auto indices = checked_cast<arrow::Int32Array*>(typed_array->indices().get());
-                assert(indices);
                 dict_index = indices->Value(pos);
             } else if (index_type_id == arrow::Type::type::INT64) {
                 auto indices = checked_cast<arrow::Int64Array*>(typed_array->indices().get());
-                assert(indices);
                 dict_index = indices->Value(pos);
             }
             assert(dict_index >= 0);
             if (value_type_id == arrow::Type::type::STRING) {
                 auto dictionary =
                     checked_cast<arrow::StringArray*>(typed_array->dictionary().get());
-                assert(dictionary);
                 return dictionary->GetView(dict_index);
             } else if (value_type_id == arrow::Type::type::LARGE_STRING) {
                 auto dictionary =
                     checked_cast<arrow::LargeStringArray*>(typed_array->dictionary().get());
-                assert(dictionary);
                 return dictionary->GetView(dict_index);
             }
             assert(false);
