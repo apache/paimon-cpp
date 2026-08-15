@@ -35,6 +35,17 @@
 
 namespace paimon {
 
+class Metrics;
+
+/// Metric names for the read-ahead cache.
+class PAIMON_EXPORT ReadAheadCacheMetrics {
+ public:
+    static inline const char READ_HITS[] = "read-ahead-cache.read.hits";
+    static inline const char READ_HIT_BYTES[] = "read-ahead-cache.read.hit-bytes";
+    static inline const char READ_MISSES[] = "read-ahead-cache.read.misses";
+    static inline const char READ_MISS_BYTES[] = "read-ahead-cache.read.miss-bytes";
+};
+
 /// PrefetchCacheMode
 /// Cache prefetch switch modes.
 /// Controls whether to enable cache prefetching under different circumstances, such as queries with
@@ -167,6 +178,16 @@ class PAIMON_EXPORT ReadAheadCache {
     /// @return The byte slice containing the requested data. If the data is not yet cached
     /// (cache miss), the returned `ByteSlice` will have a null buffer (`buffer == nullptr`)
     Result<ByteSlice> Read(const ByteRange& range);
+
+    /// Start fetching the first batch of pending ranges immediately.
+    /// Init() only registers the ranges; without Warmup() the first fetch starts
+    /// when the first Read() arrives, racing the caller's own miss fetch.
+    void Warmup();
+
+    /// Collect hit/miss counters of Read() calls into the given metrics as counters
+    /// named after `ReadAheadCacheMetrics`. Only reads issued through Read() are
+    /// counted; prefetch fetches dispatched by the cache itself are not.
+    void CollectMetrics(const std::shared_ptr<Metrics>& metrics) const;
 
     /// Reset the cache to its initial state, clearing all cached data and configuration.
     ///

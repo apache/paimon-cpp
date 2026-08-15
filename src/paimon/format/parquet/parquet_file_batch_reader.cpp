@@ -635,6 +635,10 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> ParquetFileBatchReader::GenRe
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetFileBatchReader::GenReadRanges")
 }
 
+Result<std::vector<std::pair<uint64_t, uint64_t>>> ParquetFileBatchReader::PreBufferRange() {
+    return reader_->GetPreBufferRanges();
+}
+
 Result<::parquet::ReaderProperties> ParquetFileBatchReader::CreateReaderProperties(
     const std::shared_ptr<arrow::MemoryPool>& pool,
     const std::map<std::string, std::string>& options) {

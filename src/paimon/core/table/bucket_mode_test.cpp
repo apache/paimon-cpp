@@ -50,13 +50,23 @@ TEST(BucketModeTest, TestResolveBucketMode) {
     std::shared_ptr<TableSchema> append_schema = CreateTableSchema(/*primary_keys=*/{});
     std::shared_ptr<TableSchema> pk_schema = CreateTableSchema(/*primary_keys=*/{"f0"});
 
+    // Postpone bucket only applies to primary key tables.
     EXPECT_EQ(BucketMode::POSTPONE_MODE,
+              ResolveBucketMode(BucketModeDefine::POSTPONE_BUCKET, pk_schema));
+    EXPECT_EQ(BucketMode::HASH_FIXED,
               ResolveBucketMode(BucketModeDefine::POSTPONE_BUCKET, append_schema));
+
     EXPECT_EQ(BucketMode::BUCKET_UNAWARE, ResolveBucketMode(-1, append_schema));
     EXPECT_EQ(BucketMode::HASH_DYNAMIC, ResolveBucketMode(-1, pk_schema));
-    EXPECT_EQ(BucketMode::BUCKET_UNAWARE,
+
+    // UNAWARE_BUCKET is a bucket id, not a bucket number, so it does not mean unaware mode here.
+    EXPECT_EQ(BucketMode::HASH_FIXED,
               ResolveBucketMode(BucketModeDefine::UNAWARE_BUCKET, pk_schema));
+    EXPECT_EQ(BucketMode::HASH_FIXED,
+              ResolveBucketMode(BucketModeDefine::UNAWARE_BUCKET, append_schema));
+
     EXPECT_EQ(BucketMode::HASH_FIXED, ResolveBucketMode(4, append_schema));
+    EXPECT_EQ(BucketMode::HASH_FIXED, ResolveBucketMode(4, pk_schema));
 }
 
 }  // namespace paimon::test

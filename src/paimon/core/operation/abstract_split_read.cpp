@@ -139,6 +139,15 @@ Result<std::unique_ptr<ReaderBuilder>> AbstractSplitRead::PrepareReaderBuilder(
                            file_format->CreateReaderBuilder(options_.GetReadBatchSize()));
     reader_builder->WithMemoryPool(pool_);
     reader_builder->WithCache(options_.GetCache());
+    // The shared read-ahead cache prefetches unconditionally in ALWAYS mode; the
+    // reader-level prebuffer merges its own ranges at different cut points, never
+    // hits the cache entries and re-fetches every byte — keep one prefetch layer.
+    // Other cache modes depend on the per-file predicate/bitmap, which is not known
+    // here, so the reader keeps its own prebuffer there.
+    if (context_->EnablePrefetch() &&
+        context_->GetPrefetchCacheMode() == PrefetchCacheMode::ALWAYS) {
+        reader_builder->WithPreBufferEnabled(false);
+    }
     return reader_builder;
 }
 

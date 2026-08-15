@@ -381,11 +381,16 @@ Status FileReaderWrapper::PrepareForReadingLazy(
 
 std::vector<::arrow::io::ReadRange> FileReaderWrapper::CollectPreBufferRanges(
     const std::vector<int32_t>& column_indices) {
+    return DoCollectPreBufferRanges(column_indices, /*skip_read_range_excluded=*/true);
+}
+
+std::vector<::arrow::io::ReadRange> FileReaderWrapper::DoCollectPreBufferRanges(
+    const std::vector<int32_t>& column_indices, bool skip_read_range_excluded) {
     std::vector<::arrow::io::ReadRange> ranges;
     auto file_metadata = file_reader_->parquet_reader()->metadata();
 
     for (const auto& trg : target_row_groups_) {
-        if (trg.IsExcludedByReadRange()) continue;
+        if (skip_read_range_excluded && trg.IsExcludedByReadRange()) continue;
 
         if (trg.IsPartiallyMatched()) {
             // Page-filtered RGs: only matching page byte ranges.
@@ -409,6 +414,22 @@ std::vector<::arrow::io::ReadRange> FileReaderWrapper::CollectPreBufferRanges(
         }
     }
     return ranges;
+}
+
+Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBufferRanges() {
+    try {
+        std::vector<::arrow::io::ReadRange> ranges =
+            DoCollectPreBufferRanges(target_column_indices_,
+                                     /*skip_read_range_excluded=*/false);
+        std::vector<std::pair<uint64_t, uint64_t>> pre_buffer_ranges;
+        pre_buffer_ranges.reserve(ranges.size());
+        for (const auto& range : ranges) {
+            pre_buffer_ranges.emplace_back(static_cast<uint64_t>(range.offset),
+                                           static_cast<uint64_t>(range.length));
+        }
+        return pre_buffer_ranges;
+    }
+    PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::GetPreBufferRanges")
 }
 
 void FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges) {

@@ -18,12 +18,15 @@
 
 #include "paimon/format/parquet/parquet_file_batch_reader.h"
 
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
@@ -37,6 +40,8 @@
 #include "arrow/ipc/api.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/io/cache_input_stream.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -59,7 +64,9 @@
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
+#include "paimon/utils/read_ahead_cache.h"
 #include "paimon/utils/roaring_bitmap32.h"
+#include "parquet/file_reader.h"
 #include "parquet/properties.h"
 
 namespace paimon {
@@ -1470,6 +1477,181 @@ TEST_F(ParquetFileBatchReaderTest, TestRowMappingSetReadSchemaTwice) {
         paimon::test::ReadResultCollector::CollectResultOneBatch(parquet_batch_reader.get()));
     ASSERT_EQ(parquet_batch_reader->GetPreviousBatchFileRowId(0).value(), 3);
     ASSERT_EQ(parquet_batch_reader->GetPreviousBatchFileRowId(2).value(), 5);
+}
+
+// The shared prefetch cache is initialized from a single sub-reader's PreBufferRange(),
+// so the returned byte ranges must cover the column chunks of all target row groups,
+// including those excluded by read-range dispatch.
+TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeCoversDispatchExcludedRowGroups) {
+    arrow::FieldVector fields = {arrow::field("c0", arrow::int32()),
+                                 arrow::field("c1", arrow::int32())};
+    arrow::Int32Builder c0_builder;
+    arrow::Int32Builder c1_builder;
+    ASSERT_TRUE(c0_builder.Reserve(20).ok());
+    ASSERT_TRUE(c1_builder.Reserve(20).ok());
+    for (int32_t i = 0; i < 20; ++i) {
+        c0_builder.UnsafeAppend(i);
+        c1_builder.UnsafeAppend(i % 4);
+    }
+    auto c0_array = c0_builder.Finish().ValueOrDie();
+    auto c1_array = c1_builder.Finish().ValueOrDie();
+    auto src_array = arrow::StructArray::Make({c0_array, c1_array}, fields).ValueOrDie();
+    auto arrow_schema = arrow::schema(fields);
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/10,
+               /*enable_dictionary=*/true, /*max_row_group_length=*/10);
+
+    auto parquet_batch_reader = PrepareParquetFileBatchReader(
+        file_path_, arrow_schema, /*predicate=*/nullptr, std::nullopt, batch_size_);
+
+    bool need_prefetch = false;
+    ASSERT_OK_AND_ASSIGN(auto row_group_ranges,
+                         parquet_batch_reader->GenReadRanges(&need_prefetch));
+    ASSERT_EQ(2u, row_group_ranges.size());
+
+    // Simulate prefetch dispatch: this sub-reader owns only the first row group.
+    ASSERT_OK(parquet_batch_reader->SetReadRanges({row_group_ranges[0]}));
+
+    ASSERT_OK_AND_ASSIGN(auto pre_buffer_ranges, parquet_batch_reader->PreBufferRange());
+
+    // Expected: column chunk ranges of every row group, including the dispatch-excluded one.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path_));
+    ASSERT_OK_AND_ASSIGN(int64_t file_length, in->Length());
+    auto adapter = std::make_shared<ArrowInputStreamAdapter>(std::move(in), file_length, pool_);
+    auto parquet_reader = ::parquet::ParquetFileReader::Open(adapter);
+    ASSERT_TRUE(parquet_reader);
+    auto file_metadata = parquet_reader->metadata();
+    ASSERT_EQ(2, file_metadata->num_row_groups());
+
+    std::vector<std::pair<uint64_t, uint64_t>> expected_ranges;
+    for (int32_t rg = 0; rg < file_metadata->num_row_groups(); ++rg) {
+        auto rg_metadata = file_metadata->RowGroup(rg);
+        for (int32_t col = 0; col < rg_metadata->num_columns(); ++col) {
+            auto col_chunk = rg_metadata->ColumnChunk(col);
+            int64_t offset = col_chunk->data_page_offset();
+            if (col_chunk->has_dictionary_page() && col_chunk->dictionary_page_offset() > 0 &&
+                offset > col_chunk->dictionary_page_offset()) {
+                offset = col_chunk->dictionary_page_offset();
+            }
+            expected_ranges.emplace_back(static_cast<uint64_t>(offset),
+                                         static_cast<uint64_t>(col_chunk->total_compressed_size()));
+        }
+    }
+    ASSERT_EQ(4u, expected_ranges.size());
+
+    std::vector<std::pair<uint64_t, uint64_t>> actual_ranges = pre_buffer_ranges;
+    std::sort(expected_ranges.begin(), expected_ranges.end());
+    std::sort(actual_ranges.begin(), actual_ranges.end());
+    ASSERT_EQ(expected_ranges, actual_ranges);
+}
+
+// A page-index partially-matched row group should contribute page-level byte ranges
+// that are strictly smaller than its full column chunk.
+TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeWithPageFilteredRowGroup) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
+    auto src_array = MakeSequentialIntData(12);
+    auto arrow_schema = arrow::schema(fields);
+    // One row per page, three row groups of four rows each.
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/4, /*max_page_size=*/1);
+
+    // Only rows 10 and 11 of RowGroup 2 match, making it partially matched; RowGroups 0
+    // and 1 are excluded by the predicate entirely.
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::INT, Literal(10));
+    auto parquet_batch_reader = PrepareParquetFileBatchReader(file_path_, arrow_schema, predicate,
+                                                              std::nullopt, batch_size_,
+                                                              /*enable_page_level_filter=*/true);
+
+    ASSERT_OK_AND_ASSIGN(auto pre_buffer_ranges, parquet_batch_reader->PreBufferRange());
+    ASSERT_FALSE(pre_buffer_ranges.empty());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path_));
+    ASSERT_OK_AND_ASSIGN(int64_t file_length, in->Length());
+    auto adapter = std::make_shared<ArrowInputStreamAdapter>(std::move(in), file_length, pool_);
+    auto parquet_reader = ::parquet::ParquetFileReader::Open(adapter);
+    ASSERT_TRUE(parquet_reader);
+    auto col_chunk = parquet_reader->metadata()->RowGroup(2)->ColumnChunk(0);
+    uint64_t chunk_offset = static_cast<uint64_t>(col_chunk->data_page_offset());
+    uint64_t chunk_end = chunk_offset + static_cast<uint64_t>(col_chunk->total_compressed_size());
+
+    uint64_t filtered_total = 0;
+    for (const auto& range : pre_buffer_ranges) {
+        ASSERT_GE(range.first, chunk_offset);
+        ASSERT_LE(range.first + range.second, chunk_end);
+        filtered_total += range.second;
+    }
+    ASSERT_LT(filtered_total, chunk_end - chunk_offset);
+}
+
+// End-to-end: PreBufferRange() feeds the shared ReadAheadCache through CacheInputStream,
+// and data reads are served from the cache.
+TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
+    auto src_array = MakeSequentialIntData(20);
+    auto arrow_schema = arrow::schema(fields);
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/10,
+               /*enable_dictionary=*/true, /*max_row_group_length=*/10);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> cache_stream, fs_->Open(file_path_));
+    auto cache = std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> reader_stream, fs_->Open(file_path_));
+    auto cache_input_stream = std::make_shared<CacheInputStream>(std::move(reader_stream), cache);
+
+    std::map<std::string, std::string> options;
+    ParquetReaderBuilder builder(options, batch_size_);
+    builder.WithMemoryPool(GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> base_reader,
+                         builder.Build(cache_input_stream));
+    auto parquet_batch_reader = dynamic_cast<ParquetFileBatchReader*>(base_reader.get());
+    ASSERT_TRUE(parquet_batch_reader);
+    std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
+    ASSERT_TRUE(arrow::ExportSchema(*arrow_schema, c_schema.get()).ok());
+    ASSERT_OK(
+        parquet_batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr, std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(auto pre_buffer_ranges, parquet_batch_reader->PreBufferRange());
+    ASSERT_FALSE(pre_buffer_ranges.empty());
+    std::vector<ByteRange> byte_ranges;
+    byte_ranges.reserve(pre_buffer_ranges.size());
+    for (const auto& range : pre_buffer_ranges) {
+        byte_ranges.emplace_back(range.first, range.second);
+    }
+    ASSERT_OK(cache->Init(std::move(byte_ranges)));
+    // Dispatch the prefetch immediately so every pre-buffered range is covered
+    // before the reads below consume them.
+    cache->Warmup();
+
+    // Baseline before draining: the Build() phase may have issued reads that no
+    // prefetch range can cover (e.g. footer parsing when no metadata cache is
+    // configured). Only the data-consumption reads below must be miss-free.
+    auto baseline_metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(baseline_metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t baseline_misses,
+                         baseline_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_OK_AND_ASSIGN(uint64_t baseline_miss_bytes,
+                         baseline_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
+
+    // Drain the file through the cache-backed stream.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader));
+    ASSERT_EQ(20, result->length());
+
+    // The cache metrics must show that the data reads were served by the cache:
+    // at least one hit, and no additional miss falling back to the wrapped stream.
+    auto cache_metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(cache_metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t hits,
+                         cache_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_GT(hits, 0u);
+    ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
+                         cache_metrics->GetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES));
+    ASSERT_GT(hit_bytes, 0u);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses,
+                         cache_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, baseline_misses);
+    ASSERT_OK_AND_ASSIGN(uint64_t miss_bytes,
+                         cache_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
+    ASSERT_EQ(miss_bytes, baseline_miss_bytes);
 }
 
 }  // namespace paimon::parquet::test

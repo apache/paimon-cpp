@@ -147,6 +147,13 @@ class FileReaderWrapper {
     std::shared_ptr<::parquet::RowGroupPageIndexReader> GetRowGroupPageIndexReader(
         int32_t row_group_index);
 
+    /// Compute the (offset, length) byte ranges required by the current target row groups
+    /// and columns. Unlike the arrow-internal PreBuffer path, this covers row groups that
+    /// are excluded by read-range dispatch as well, because the shared prefetch cache must
+    /// serve data consumed by all sub-readers. Relies only on file metadata, so it is safe
+    /// to call before the lazy reader initialization.
+    Result<std::vector<std::pair<uint64_t, uint64_t>>> GetPreBufferRanges();
+
  private:
     FileReaderWrapper(std::unique_ptr<::parquet::arrow::FileReader>&& file_reader,
                       const std::vector<std::pair<uint64_t, uint64_t>>& all_row_group_ranges,
@@ -165,9 +172,17 @@ class FileReaderWrapper {
     /// Read next batch from the fully-matched batch_reader_. Returns nullptr when exhausted.
     Result<std::shared_ptr<arrow::RecordBatch>> NextFullyMatched();
 
-    /// Collect all byte ranges that need pre-buffering (page-filtered + fully-matched).
+    /// Collect all byte ranges that need pre-buffering (page-filtered + fully-matched),
+    /// skipping row groups excluded by ApplyReadRanges.
     std::vector<::arrow::io::ReadRange> CollectPreBufferRanges(
         const std::vector<int32_t>& column_indices);
+
+    /// Core byte-range collection shared by CollectPreBufferRanges and GetPreBufferRanges.
+    /// When skip_read_range_excluded is true, row groups excluded by ApplyReadRanges are
+    /// skipped (arrow-internal PreBuffer for this reader); when false, they are included
+    /// (shared prefetch cache covering all sub-readers).
+    std::vector<::arrow::io::ReadRange> DoCollectPreBufferRanges(
+        const std::vector<int32_t>& column_indices, bool skip_read_range_excluded);
 
     /// Dispatch a single PreBufferRanges call with merged ranges.
     void DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges);

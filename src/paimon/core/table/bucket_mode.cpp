@@ -24,15 +24,13 @@
 namespace paimon {
 
 BucketMode ResolveBucketMode(int32_t bucket, const std::shared_ptr<TableSchema>& table_schema) {
-    if (bucket == BucketModeDefine::POSTPONE_BUCKET) {
+    bool has_primary_keys = !table_schema->PrimaryKeys().empty();
+    // Postpone bucket is only valid for primary key tables.
+    if (has_primary_keys && bucket == BucketModeDefine::POSTPONE_BUCKET) {
         return BucketMode::POSTPONE_MODE;
     }
     if (bucket == -1) {
-        return table_schema->PrimaryKeys().empty() ? BucketMode::BUCKET_UNAWARE
-                                                   : BucketMode::HASH_DYNAMIC;
-    }
-    if (bucket == BucketModeDefine::UNAWARE_BUCKET) {
-        return BucketMode::BUCKET_UNAWARE;
+        return has_primary_keys ? BucketMode::HASH_DYNAMIC : BucketMode::BUCKET_UNAWARE;
     }
     return BucketMode::HASH_FIXED;
 }

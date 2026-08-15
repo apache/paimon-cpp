@@ -59,6 +59,11 @@ class ParquetReaderBuilder : public ReaderBuilder {
         return this;
     }
 
+    ReaderBuilder* WithPreBufferEnabled(bool enabled) override {
+        pre_buffer_enabled_ = enabled;
+        return this;
+    }
+
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
         try {
@@ -78,7 +83,19 @@ class ParquetReaderBuilder : public ReaderBuilder {
                 std::move(unique_input_stream));
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<::parquet::FileMetaData> file_metadata,
                                    GetCachedParquetMetadata(input_stream, file_uri, arrow_pool));
-            return ParquetFileBatchReader::Create(std::move(input_stream), options_, batch_size_,
+            // A caller that prefetches through the shared read-ahead cache disables
+            // the reader's own prebuffer: two independent prefetch layers merge the
+            // same ranges at different cut points, never hit each other and fetch
+            // every byte twice.
+            const std::map<std::string, std::string>* reader_options = &options_;
+            std::map<std::string, std::string> options_no_pre_buffer;
+            if (!pre_buffer_enabled_) {
+                options_no_pre_buffer = options_;
+                options_no_pre_buffer[PARQUET_READ_ENABLE_PRE_BUFFER] = "false";
+                reader_options = &options_no_pre_buffer;
+            }
+            return ParquetFileBatchReader::Create(std::move(input_stream), *reader_options,
+                                                  batch_size_,
                                                   std::move(file_metadata),
                                                   std::move(storage_read_bytes), arrow_pool);
         }
@@ -162,6 +179,7 @@ class ParquetReaderBuilder : public ReaderBuilder {
     std::shared_ptr<MemoryPool> pool_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
+    bool pre_buffer_enabled_{true};
 };
 
 }  // namespace paimon::parquet

@@ -332,6 +332,11 @@ void PrefetchFileBatchReaderImpl::Workloop() {
             auto s = cache_->Init(std::move(ranges));
             if (!s.ok()) {
                 SetReadStatus(s);
+            } else {
+                // Init() only registers the ranges, so without this the first
+                // cache fetch races the readers' first reads instead of running
+                // ahead of them.
+                cache_->Warmup();
             }
         } else {
             SetReadStatus(read_ranges.status());
@@ -622,7 +627,15 @@ Status PrefetchFileBatchReaderImpl::SeekToRow(uint64_t row_number) {
 }
 
 std::shared_ptr<Metrics> PrefetchFileBatchReaderImpl::GetReaderMetrics() const {
-    return MetricsImpl::CollectReadMetrics(readers_);
+    auto res_metrics = MetricsImpl::CollectReadMetrics(readers_);
+    if (cache_) {
+        // The shared read-ahead cache serves reads of all sub-readers, so its
+        // hit/miss counters are file-level and merge into the reader metrics.
+        auto cache_metrics = std::make_shared<MetricsImpl>();
+        cache_->CollectMetrics(cache_metrics);
+        res_metrics->Merge(cache_metrics);
+    }
+    return res_metrics;
 }
 
 Result<std::unique_ptr<::ArrowSchema>> PrefetchFileBatchReaderImpl::GetFileSchema() const {

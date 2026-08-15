@@ -23,12 +23,15 @@
 #include "paimon/utils/read_ahead_cache.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <cstring>
 #include <future>
 #include <shared_mutex>
 
 #include "paimon/common/utils/byte_range_combiner.h"
 #include "paimon/common/utils/math.h"
+#include "paimon/metrics.h"
 
 namespace paimon {
 
@@ -55,10 +58,21 @@ CacheConfig::CacheConfig(uint64_t buffer_size_limit, uint64_t range_size_limit,
       pre_buffer_limit_(pre_buffer_limit) {}
 
 CacheConfig::CacheConfig()
-    : CacheConfig(/*buffer_size_limit=*/512 * 1024 * 1024,
-                  /*range_size_limit=*/16 * 1024 * 1024,
+    // Aligned with the reader's request granularity and with realistic data
+    // file sizes:
+    // - range_size_limit matches the parquet reader's 32 MiB request blocks
+    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
+    //   below the request size, so a request can never be served from one piece.
+    // - buffer_size_limit must hold at least one full data file, or FIFO
+    //   eviction drops prefetched data before the readers consume it.
+    // - pre_buffer_limit must exceed the LARGEST single read a reader issues
+    //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
+    //   only dispatched up to this window, so a request reaching past it can
+    //   never be served and falls back to a second fetch of the same bytes.
+    : CacheConfig(/*buffer_size_limit=*/1024 * 1024 * 1024,
+                  /*range_size_limit=*/32 * 1024 * 1024,
                   /*hole_size_limit=*/8 * 1024,
-                  /*pre_buffer_limit=*/128 * 1024 * 1024) {}
+                  /*pre_buffer_limit=*/256 * 1024 * 1024) {}
 
 class ReadAheadCache::Impl {
  public:
@@ -69,10 +83,20 @@ class ReadAheadCache::Impl {
     Status Init(std::vector<ByteRange>&& ranges);
     Result<ByteSlice> Read(const ByteRange& range);
     void Reset();
+    void Warmup();
+    void CollectMetrics(const std::shared_ptr<Metrics>& metrics) const;
 
  private:
     std::vector<RangeCacheEntry> MakeCacheEntries(const std::vector<ByteRange>& ranges) const;
     void PreBuffer(uint64_t offset);
+    void CountHit(uint64_t size) {
+        hits_.fetch_add(1, std::memory_order_relaxed);
+        hit_bytes_.fetch_add(size, std::memory_order_relaxed);
+    }
+    void CountMiss(uint64_t size) {
+        misses_.fetch_add(1, std::memory_order_relaxed);
+        miss_bytes_.fetch_add(size, std::memory_order_relaxed);
+    }
 
     /// Cache the given ranges in the background.
     ///
@@ -89,6 +113,12 @@ class ReadAheadCache::Impl {
     std::vector<std::atomic<bool>> is_cached_;
     std::vector<ByteRange> pending_ranges_;
     bool is_initialized_ = false;
+    // Hit/miss statistics of Read() calls, aggregated over all streams sharing
+    // this cache.
+    std::atomic<uint64_t> hits_{0};
+    std::atomic<uint64_t> hit_bytes_{0};
+    std::atomic<uint64_t> misses_{0};
+    std::atomic<uint64_t> miss_bytes_{0};
 };
 
 void ReadAheadCache::Impl::Cache(std::vector<ByteRange> ranges) {
@@ -193,6 +223,31 @@ void ReadAheadCache::Impl::Reset() {
     is_cached_.clear();
     pending_ranges_.clear();
     is_initialized_ = false;
+    hits_.store(0, std::memory_order_relaxed);
+    hit_bytes_.store(0, std::memory_order_relaxed);
+    misses_.store(0, std::memory_order_relaxed);
+    miss_bytes_.store(0, std::memory_order_relaxed);
+}
+
+void ReadAheadCache::Impl::CollectMetrics(const std::shared_ptr<Metrics>& metrics) const {
+    if (!metrics) {
+        return;
+    }
+    metrics->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES,
+                        hit_bytes_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::READ_MISSES,
+                        misses_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES,
+                        miss_bytes_.load(std::memory_order_relaxed));
+}
+
+void ReadAheadCache::Impl::Warmup() {
+    // Init() only registers the pending ranges; without this the first fetch
+    // starts when the first Read() arrives, racing the reader's own miss fetch.
+    if (!pending_ranges_.empty()) {
+        PreBuffer(pending_ranges_.front().offset);
+    }
 }
 
 Result<ByteSlice> ReadAheadCache::Impl::Read(const ByteRange& range) {
@@ -201,19 +256,67 @@ Result<ByteSlice> ReadAheadCache::Impl::Read(const ByteRange& range) {
     }
     PreBuffer(range.offset);
     ByteSlice result{};
+    std::vector<RangeCacheEntry> covering;
     {
         std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+        // Find the entry holding the start of the range: the first entry whose
+        // end is beyond range.offset (entries are disjoint and sorted by offset).
         auto it = std::lower_bound(entries_.begin(), entries_.end(), range.offset,
                                    [](const RangeCacheEntry& e, uint64_t offset) {
                                        return e.range.offset + e.range.length <= offset;
                                    });
-        if (it != entries_.end() && it->range.Contains(range)) {
+        if (it == entries_.end() || it->range.offset > range.offset) {
+            CountMiss(range.length);
+            return result;
+        }
+        if (it->range.Contains(range)) {
             PAIMON_RETURN_NOT_OK(it->future.get());
-            result = ByteSlice{it->buffer, range.offset - it->range.offset, range.length};
+            CountHit(range.length);
+            return ByteSlice{it->buffer, range.offset - it->range.offset, range.length};
+        }
+        // The request spans several adjacent entries (a column chunk larger than
+        // one coalesced range): collect the contiguous run and check it covers
+        // the whole request. Entries exist from the moment their fetch is
+        // SUBMITTED, so a reader racing the prefetch waits for the in-flight
+        // fetch instead of issuing a second one for the same bytes.
+        uint64_t covered_end = it->range.offset + it->range.length;
+        covering.push_back(*it);
+        auto next = std::next(it);
+        while (covered_end < range.offset + range.length && next != entries_.end() &&
+               next->range.offset == covered_end) {
+            covered_end = next->range.offset + next->range.length;
+            covering.push_back(*next);
+            ++next;
+        }
+        if (covered_end < range.offset + range.length) {
+            CountMiss(range.length);
             return result;
         }
     }
-    return result;
+    // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
+    // async reads complete, and holding rw_mutex_ would block Cache()/eviction.
+    for (const auto& entry : covering) {
+        PAIMON_RETURN_NOT_OK(entry.future.get());
+    }
+    if (covering.size() == 1) {
+        CountHit(range.length);
+        return ByteSlice{covering.front().buffer, range.offset - covering.front().range.offset,
+                         range.length};
+    }
+    // The zero-copy slice cannot span buffers: assemble the requested window.
+    auto assembled = std::make_shared<Bytes>(range.length, memory_pool_.get());
+    size_t pos = 0;
+    for (const auto& entry : covering) {
+        const uint64_t entry_end = entry.range.offset + entry.range.length;
+        const uint64_t copy_begin = std::max(range.offset, entry.range.offset);
+        const uint64_t copy_end = std::min(range.offset + range.length, entry_end);
+        const size_t copy_len = static_cast<size_t>(copy_end - copy_begin);
+        std::memcpy(assembled->data() + pos,
+                    entry.buffer->data() + (copy_begin - entry.range.offset), copy_len);
+        pos += copy_len;
+    }
+    CountHit(range.length);
+    return ByteSlice{std::move(assembled), 0, range.length};
 }
 
 std::vector<RangeCacheEntry> ReadAheadCache::Impl::MakeCacheEntries(
@@ -251,6 +354,14 @@ Result<ByteSlice> ReadAheadCache::Read(const ByteRange& range) {
 
 void ReadAheadCache::Reset() {
     return impl_->Reset();
+}
+
+void ReadAheadCache::Warmup() {
+    impl_->Warmup();
+}
+
+void ReadAheadCache::CollectMetrics(const std::shared_ptr<Metrics>& metrics) const {
+    impl_->CollectMetrics(metrics);
 }
 
 }  // namespace paimon

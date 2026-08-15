@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/testing/utils/testharness.h"
@@ -154,6 +155,34 @@ TEST(TestReadAheadCache, TestCacheEviction) {
     // The first range should now be a cache miss (buffer is nullptr)
     auto miss = cache.Read({0, 5});
     ASSERT_FALSE(miss.value().buffer);
+}
+
+// Test that Read() hits and misses are recorded in the cache metrics.
+TEST(TestReadAheadCache, TestMetrics) {
+    CacheConfig config(/*buffer_size_limit=*/256 * 1024 * 1024, /*range_size_limit=*/10,
+                       /*hole_size_limit=*/2, /*pre_buffer_limit=*/128 * 1024 * 1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}});
+    auto& cache = *env.cache;
+
+    ByteSlice slice;
+    ASSERT_OK_AND_ASSIGN(slice, cache.Read({0, 5}));
+    ASSERT_TRUE(slice.buffer);
+    // Out of any cached range: a miss.
+    ASSERT_FALSE(cache.Read({20, 3}).value().buffer);
+
+    auto metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_EQ(hits, 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES));
+    ASSERT_EQ(hit_bytes, 5u);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t miss_bytes,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
+    ASSERT_EQ(miss_bytes, 3u);
 }
 
 }  // namespace paimon::test
