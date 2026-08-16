@@ -80,18 +80,18 @@ PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
         payload_metas_by_level[source_meta.DataLevel()].push_back(std::move(source_meta));
     }
 
-    std::vector<PkSortedIndexGroup> groups;
+    std::vector<std::shared_ptr<PkSortedIndexGroup>> groups;
     std::set<int32_t> covered_levels;
     for (const auto& level_payloads : payloads_by_level) {
         int32_t level = level_payloads.first;
-        std::optional<PkSortedIndexGroup> group;
+        std::shared_ptr<PkSortedIndexGroup> group;
         if (level_payloads.second.size() == 1) {
             group = PkSortedIndexGroup::Create(field_id, index_type, sources_by_level[level],
                                                level_payloads.second[0],
                                                payload_metas_by_level[level][0]);
         }
-        if (group != std::nullopt) {
-            groups.push_back(std::move(group).value());
+        if (group != nullptr) {
+            groups.push_back(std::move(group));
             covered_levels.insert(level);
         } else {
             rejected.insert(rejected.end(), level_payloads.second.begin(),

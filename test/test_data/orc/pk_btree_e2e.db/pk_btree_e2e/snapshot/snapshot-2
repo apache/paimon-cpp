@@ -1,0 +1,18 @@
+{
+  "version" : 3,
+  "uuid" : "64f64df3-ede4-4526-a23d-a296ea5032a8",
+  "id" : 2,
+  "schemaId" : 0,
+  "baseManifestList" : "manifest-list-7ae0c232-87bb-4974-b8b1-7a5d9dec3e21-0",
+  "baseManifestListSize" : 1113,
+  "deltaManifestList" : "manifest-list-7ae0c232-87bb-4974-b8b1-7a5d9dec3e21-1",
+  "deltaManifestListSize" : 1115,
+  "indexManifest" : "index-manifest-9dbada10-b497-4ef7-bf69-a3bdb5959a21-0",
+  "commitUser" : "7b20f907-0770-439f-9f92-b2488a32aaf8",
+  "commitIdentifier" : 9223372036854775807,
+  "commitKind" : "COMPACT",
+  "timeMillis" : 1786866469362,
+  "totalRecordCount" : 2000,
+  "deltaRecordCount" : 0,
+  "nextRowId" : 0
+}

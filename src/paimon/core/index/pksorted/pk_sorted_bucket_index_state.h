@@ -44,7 +44,7 @@ class PkSortedBucketIndexState {
         const std::vector<std::shared_ptr<DataFileMeta>>& active_data_files,
         const std::vector<std::shared_ptr<IndexFileMeta>>& active_payloads);
 
-    const std::vector<PkSortedIndexGroup>& Groups() const {
+    const std::vector<std::shared_ptr<PkSortedIndexGroup>>& Groups() const {
         return groups_;
     }
 
@@ -61,7 +61,7 @@ class PkSortedBucketIndexState {
     }
 
  private:
-    PkSortedBucketIndexState(std::vector<PkSortedIndexGroup> groups,
+    PkSortedBucketIndexState(std::vector<std::shared_ptr<PkSortedIndexGroup>> groups,
                              std::vector<PrimaryKeyIndexSourceFile> covered_source_files,
                              std::vector<PrimaryKeyIndexSourceFile> uncovered_source_files,
                              std::vector<std::shared_ptr<IndexFileMeta>> rejected_payloads)
@@ -70,7 +70,7 @@ class PkSortedBucketIndexState {
           uncovered_source_files_(std::move(uncovered_source_files)),
           rejected_payloads_(std::move(rejected_payloads)) {}
 
-    std::vector<PkSortedIndexGroup> groups_;
+    std::vector<std::shared_ptr<PkSortedIndexGroup>> groups_;
     std::vector<PrimaryKeyIndexSourceFile> covered_source_files_;
     std::vector<PrimaryKeyIndexSourceFile> uncovered_source_files_;
     std::vector<std::shared_ptr<IndexFileMeta>> rejected_payloads_;

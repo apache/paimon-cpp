@@ -32,6 +32,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
+#include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/index/pksorted/pk_sorted_bucket_index_state.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
@@ -45,25 +46,8 @@ namespace paimon {
 namespace {
 using BucketKey = std::pair<BinaryRow, int32_t>;
 
-enum class QueryOperation {
-    IS_NOT_NULL,
-    IS_NULL,
-    EQUAL,
-    NOT_EQUAL,
-    LESS_THAN,
-    LESS_OR_EQUAL,
-    GREATER_THAN,
-    GREATER_OR_EQUAL,
-    IN,
-    NOT_IN,
-    STARTS_WITH,
-    ENDS_WITH,
-    CONTAINS,
-    LIKE,
-};
-
 struct QueryKey {
-    QueryOperation operation;
+    Function::Type operation;
     std::vector<Literal> literals;
 
     bool operator==(const QueryKey& other) const {
@@ -211,84 +195,84 @@ class FileLocalGroupReader : public GlobalIndexReader {
         : shared_reader_(std::move(shared_reader)), source_index_(source_index) {}
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override {
-        return Query({QueryOperation::IS_NOT_NULL, {}},
+        return Query({Function::Type::IS_NOT_NULL, {}},
                      [](GlobalIndexReader* reader) { return reader->VisitIsNotNull(); });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNull() override {
-        return Query({QueryOperation::IS_NULL, {}},
+        return Query({Function::Type::IS_NULL, {}},
                      [](GlobalIndexReader* reader) { return reader->VisitIsNull(); });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitEqual(const Literal& literal) override {
-        return Query({QueryOperation::EQUAL, {literal}},
+        return Query({Function::Type::EQUAL, {literal}},
                      [&literal](GlobalIndexReader* reader) { return reader->VisitEqual(literal); });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitNotEqual(const Literal& literal) override {
-        return Query({QueryOperation::NOT_EQUAL, {literal}}, [&literal](GlobalIndexReader* reader) {
+        return Query({Function::Type::NOT_EQUAL, {literal}}, [&literal](GlobalIndexReader* reader) {
             return reader->VisitNotEqual(literal);
         });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitLessThan(const Literal& literal) override {
-        return Query({QueryOperation::LESS_THAN, {literal}}, [&literal](GlobalIndexReader* reader) {
+        return Query({Function::Type::LESS_THAN, {literal}}, [&literal](GlobalIndexReader* reader) {
             return reader->VisitLessThan(literal);
         });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitLessOrEqual(const Literal& literal) override {
         return Query(
-            {QueryOperation::LESS_OR_EQUAL, {literal}},
+            {Function::Type::LESS_OR_EQUAL, {literal}},
             [&literal](GlobalIndexReader* reader) { return reader->VisitLessOrEqual(literal); });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterThan(const Literal& literal) override {
         return Query(
-            {QueryOperation::GREATER_THAN, {literal}},
+            {Function::Type::GREATER_THAN, {literal}},
             [&literal](GlobalIndexReader* reader) { return reader->VisitGreaterThan(literal); });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitGreaterOrEqual(
         const Literal& literal) override {
         return Query(
-            {QueryOperation::GREATER_OR_EQUAL, {literal}},
+            {Function::Type::GREATER_OR_EQUAL, {literal}},
             [&literal](GlobalIndexReader* reader) { return reader->VisitGreaterOrEqual(literal); });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIn(
         const std::vector<Literal>& literals) override {
-        return Query({QueryOperation::IN, literals},
+        return Query({Function::Type::IN, literals},
                      [&literals](GlobalIndexReader* reader) { return reader->VisitIn(literals); });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitNotIn(
         const std::vector<Literal>& literals) override {
-        return Query({QueryOperation::NOT_IN, literals}, [&literals](GlobalIndexReader* reader) {
+        return Query({Function::Type::NOT_IN, literals}, [&literals](GlobalIndexReader* reader) {
             return reader->VisitNotIn(literals);
         });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitStartsWith(const Literal& prefix) override {
-        return Query({QueryOperation::STARTS_WITH, {prefix}}, [&prefix](GlobalIndexReader* reader) {
+        return Query({Function::Type::STARTS_WITH, {prefix}}, [&prefix](GlobalIndexReader* reader) {
             return reader->VisitStartsWith(prefix);
         });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitEndsWith(const Literal& suffix) override {
-        return Query({QueryOperation::ENDS_WITH, {suffix}}, [&suffix](GlobalIndexReader* reader) {
+        return Query({Function::Type::ENDS_WITH, {suffix}}, [&suffix](GlobalIndexReader* reader) {
             return reader->VisitEndsWith(suffix);
         });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitContains(const Literal& literal) override {
-        return Query({QueryOperation::CONTAINS, {literal}}, [&literal](GlobalIndexReader* reader) {
+        return Query({Function::Type::CONTAINS, {literal}}, [&literal](GlobalIndexReader* reader) {
             return reader->VisitContains(literal);
         });
     }
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitLike(const Literal& literal) override {
-        return Query({QueryOperation::LIKE, {literal}},
+        return Query({Function::Type::LIKE, {literal}},
                      [&literal](GlobalIndexReader* reader) { return reader->VisitLike(literal); });
     }
 
@@ -354,13 +338,8 @@ Result<PrimaryKeySortedIndexScan::Plan> PrimaryKeySortedIndexScan::CreatePlan(
         payloads_by_bucket[BucketKey(entry.partition, entry.bucket)].push_back(payload);
     }
 
-    std::vector<PrimaryKeyIndexDefinition> scalar_definitions;
-    for (const PrimaryKeyIndexDefinition& definition : definitions) {
-        if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE ||
-            definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BITMAP) {
-            scalar_definitions.push_back(definition);
-        }
-    }
+    std::vector<PrimaryKeyIndexDefinition> scalar_definitions =
+        PrimaryKeyIndexDefinitions::ScalarDefinitions(definitions);
 
     std::unordered_map<BucketKey, std::vector<std::shared_ptr<DataFileMeta>>> data_files_by_bucket;
     for (const std::shared_ptr<DataSplitImpl>& split : data_splits) {
@@ -414,14 +393,13 @@ Result<PrimaryKeySortedIndexScan::Plan> PrimaryKeySortedIndexScan::CreatePlan(
             PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
                 definition.FieldId(), definition.IndexType(), bucket_entry.second,
                 definition_payloads);
-            for (const PkSortedIndexGroup& group : state.Groups()) {
-                auto shared_group = std::make_shared<PkSortedIndexGroup>(group);
-                for (const PrimaryKeyIndexSourceFile& source_file : group.SourceFiles()) {
+            for (const std::shared_ptr<PkSortedIndexGroup>& group : state.Groups()) {
+                for (const PrimaryKeyIndexSourceFile& source_file : group->SourceFiles()) {
                     if (active_source_files.count({source_file.file_name, source_file.row_count}) ==
                         0) {
                         continue;
                     }
-                    groups_by_source[source_file.file_name][definition.FieldId()] = shared_group;
+                    groups_by_source[source_file.file_name][definition.FieldId()] = group;
                 }
             }
         }
@@ -452,11 +430,9 @@ Result<PrimaryKeySortedIndexScan::EvaluatedPlan> PrimaryKeySortedIndexScan::Eval
     const std::vector<PrimaryKeyIndexDefinition>& definitions,
     const ReaderFactory& reader_factory) {
     std::map<int32_t, PrimaryKeyIndexDefinition> definitions_by_field;
-    for (const PrimaryKeyIndexDefinition& definition : definitions) {
-        if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE ||
-            definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BITMAP) {
-            definitions_by_field.emplace(definition.FieldId(), definition);
-        }
+    for (const PrimaryKeyIndexDefinition& definition :
+         PrimaryKeyIndexDefinitions::ScalarDefinitions(definitions)) {
+        definitions_by_field.emplace(definition.FieldId(), definition);
     }
 
     std::unordered_map<const PkSortedIndexGroup*, std::shared_ptr<SharedGroupReader>>

@@ -105,11 +105,11 @@ TEST_F(PkSortedBucketIndexStateTest, BuildsGroupWhenPayloadMatchesLevelSources) 
     PkSortedBucketIndexState state =
         PkSortedBucketIndexState::FromActiveDataFiles(7, "btree", data_files, {payload});
     ASSERT_EQ(1, state.Groups().size());
-    const PkSortedIndexGroup& group = state.Groups()[0];
-    ASSERT_EQ(5, group.DataLevel());
-    ASSERT_EQ(300, group.TotalSourceRowCount());
-    ASSERT_EQ(expected_sources, group.SourceFiles());
-    ASSERT_EQ(payload, group.Payload());
+    const std::shared_ptr<PkSortedIndexGroup>& group = state.Groups()[0];
+    ASSERT_EQ(5, group->DataLevel());
+    ASSERT_EQ(300, group->TotalSourceRowCount());
+    ASSERT_EQ(expected_sources, group->SourceFiles());
+    ASSERT_EQ(payload, group->Payload());
     ASSERT_EQ(expected_sources, state.CoveredSourceFiles());
     ASSERT_TRUE(state.UncoveredSourceFiles().empty());
     ASSERT_TRUE(state.RejectedPayloads().empty());
@@ -222,7 +222,7 @@ TEST_F(PkSortedBucketIndexStateTest, WrongCandidateDoesNotMaskValidPayload) {
     PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
         7, "btree", data_files, {valid_payload, wrong_payload});
     ASSERT_EQ(1, state.Groups().size());
-    ASSERT_EQ(valid_payload, state.Groups()[0].Payload());
+    ASSERT_EQ(valid_payload, state.Groups()[0]->Payload());
     ASSERT_EQ(1, state.RejectedPayloads().size());
     ASSERT_EQ(wrong_payload, state.RejectedPayloads()[0]);
     ASSERT_TRUE(state.UncoveredSourceFiles().empty());
@@ -290,8 +290,8 @@ TEST_F(PkSortedBucketIndexStateTest, KeepsValidLevelAndLeavesBrokenLevelUncovere
     PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
         7, "btree", data_files, {valid_payload, broken_payload});
     ASSERT_EQ(1, state.Groups().size());
-    ASSERT_EQ(4, state.Groups()[0].DataLevel());
-    ASSERT_EQ(valid_payload, state.Groups()[0].Payload());
+    ASSERT_EQ(4, state.Groups()[0]->DataLevel());
+    ASSERT_EQ(valid_payload, state.Groups()[0]->Payload());
     std::vector<PrimaryKeyIndexSourceFile> expected_covered = {{"c", 50}};
     ASSERT_EQ(expected_covered, state.CoveredSourceFiles());
     std::vector<PrimaryKeyIndexSourceFile> expected_uncovered = {{"a", 100}, {"b", 200}};

@@ -43,7 +43,7 @@ Result<std::shared_ptr<DataSplitImpl>> ToSingleFileSplit(
     builder.WithSnapshot(source->SnapshotId())
         .WithTotalBuckets(source->TotalBuckets())
         .IsStreaming(false)
-        .RawConvertible(source->RawConvertible());
+        .RawConvertible(false);
     if (!source->DeletionFiles().empty()) {
         builder.WithDataDeletionFiles({source->DeletionFiles()[file.FileIndex()]});
     }

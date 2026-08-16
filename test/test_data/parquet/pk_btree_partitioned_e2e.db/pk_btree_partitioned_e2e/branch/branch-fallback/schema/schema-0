@@ -1,0 +1,36 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "pt",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 2,
+    "name" : "score",
+    "type" : "INT"
+  }, {
+    "id" : 3,
+    "name" : "tag",
+    "type" : "STRING"
+  } ],
+  "highestFieldId" : 3,
+  "partitionKeys" : [ "pt" ],
+  "primaryKeys" : [ "pt", "id" ],
+  "options" : {
+    "bucket" : "2",
+    "compaction.force-rewrite-all-files" : "true",
+    "target-file-size" : "8 kb",
+    "write-only" : "true",
+    "num-sorted-run.compaction-trigger" : "10000",
+    "deletion-vectors.merge-on-read" : "false",
+    "pk-btree.index.columns" : "score",
+    "file.format" : "parquet",
+    "deletion-vectors.enabled" : "true"
+  },
+  "timeMillis" : 1786866468700
+}

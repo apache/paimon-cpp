@@ -23,22 +23,22 @@
 #include <utility>
 
 namespace paimon {
-std::optional<PkSortedIndexGroup> PkSortedIndexGroup::Create(
+std::shared_ptr<PkSortedIndexGroup> PkSortedIndexGroup::Create(
     int32_t field_id, const std::string& index_type,
     const std::vector<PrimaryKeyIndexSourceFile>& expected_sources,
     const std::shared_ptr<IndexFileMeta>& payload,
     const PrimaryKeyIndexSourceMeta& payload_source_meta) {
     if (payload == nullptr || expected_sources.empty()) {
-        return std::nullopt;
+        return nullptr;
     }
     int64_t source_row_count = 0;
     std::set<std::string> source_names;
     for (const PrimaryKeyIndexSourceFile& source_file : expected_sources) {
         if (!source_names.insert(source_file.file_name).second) {
-            return std::nullopt;
+            return nullptr;
         }
         if (__builtin_add_overflow(source_row_count, source_file.row_count, &source_row_count)) {
-            return std::nullopt;
+            return nullptr;
         }
     }
 
@@ -48,10 +48,10 @@ std::optional<PkSortedIndexGroup> PkSortedIndexGroup::Create(
         meta.value().index_field_id != field_id || meta.value().row_range_start != 0 ||
         meta.value().row_range_end != source_row_count - 1 ||
         payload->RowCount() != source_row_count) {
-        return std::nullopt;
+        return nullptr;
     }
-    return PkSortedIndexGroup(payload_source_meta.DataLevel(), expected_sources, payload,
-                              source_row_count);
+    return std::shared_ptr<PkSortedIndexGroup>(new PkSortedIndexGroup(
+        payload_source_meta.DataLevel(), expected_sources, payload, source_row_count));
 }
 
 }  // namespace paimon

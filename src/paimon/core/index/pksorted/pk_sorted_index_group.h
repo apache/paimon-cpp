@@ -21,7 +21,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,9 +39,9 @@ namespace paimon {
 /// source row count sum. Anything else must be treated as uncovered.
 class PkSortedIndexGroup {
  public:
-    /// Validates one payload against the expected level sources; returns `std::nullopt`
-    /// when any coverage condition fails.
-    static std::optional<PkSortedIndexGroup> Create(
+    /// Validates one payload against the expected level sources; returns null when any
+    /// coverage condition fails.
+    static std::shared_ptr<PkSortedIndexGroup> Create(
         int32_t field_id, const std::string& index_type,
         const std::vector<PrimaryKeyIndexSourceFile>& expected_sources,
         const std::shared_ptr<IndexFileMeta>& payload,

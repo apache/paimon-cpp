@@ -45,6 +45,10 @@ class PrimaryKeyIndexDefinitions {
     /// @return The scalar (BTree / Bitmap) definitions usable by batch scans.
     std::vector<PrimaryKeyIndexDefinition> ScalarDefinitions() const;
 
+    /// Filters an arbitrary definition list to the scalar families usable by batch scans.
+    static std::vector<PrimaryKeyIndexDefinition> ScalarDefinitions(
+        const std::vector<PrimaryKeyIndexDefinition>& definitions);
+
  private:
     explicit PrimaryKeyIndexDefinitions(std::vector<PrimaryKeyIndexDefinition> definitions)
         : definitions_(std::move(definitions)) {}

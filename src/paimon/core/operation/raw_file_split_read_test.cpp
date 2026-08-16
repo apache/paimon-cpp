@@ -30,6 +30,7 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/internal_read_context.h"
@@ -504,6 +505,22 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
         ASSERT_OK_AND_ASSIGN(bool match_result,
                              split_read->Match(data_split, /*force_keep_delete=*/false));
         ASSERT_FALSE(match_result);
+    }
+    {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(
+            create_data_split(/*is_streaming=*/false, /*raw_convertible=*/false));
+        auto indexed_split = std::make_shared<IndexedSplitImpl>(
+            data_split, std::vector<Range>{Range(0, 0)}, std::vector<float>{0.5F});
+        ASSERT_NOK_WITH_MSG(split_read->CreateReader(indexed_split),
+                            "Primary-key reads do not support scored indexed splits yet");
+    }
+    {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(
+            create_data_split(/*is_streaming=*/false, /*raw_convertible=*/false));
+        auto indexed_split =
+            std::make_shared<IndexedSplitImpl>(data_split, std::vector<Range>{Range(0, 1)});
+        ASSERT_NOK_WITH_MSG(split_read->CreateReader(indexed_split),
+                            "Invalid file-local row range [0, 1]");
     }
     {
         ASSERT_NOK(split_read->Match(nullptr, /*force_keep_delete=*/false));

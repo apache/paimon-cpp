@@ -210,8 +210,13 @@ Result<PrimaryKeyIndexDefinitions> PrimaryKeyIndexDefinitions::Create(const Tabl
 }
 
 std::vector<PrimaryKeyIndexDefinition> PrimaryKeyIndexDefinitions::ScalarDefinitions() const {
+    return ScalarDefinitions(definitions_);
+}
+
+std::vector<PrimaryKeyIndexDefinition> PrimaryKeyIndexDefinitions::ScalarDefinitions(
+    const std::vector<PrimaryKeyIndexDefinition>& definitions) {
     std::vector<PrimaryKeyIndexDefinition> scalar_definitions;
-    for (const PrimaryKeyIndexDefinition& definition : definitions_) {
+    for (const PrimaryKeyIndexDefinition& definition : definitions) {
         if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE ||
             definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BITMAP) {
             scalar_definitions.push_back(definition);

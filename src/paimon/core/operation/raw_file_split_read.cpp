@@ -55,6 +55,30 @@ class DataFilePathFactory;
 class Executor;
 class Predicate;
 
+namespace {
+
+Status ValidateFileLocalRowRanges(const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+                                  const std::optional<std::vector<Range>>& local_row_ranges) {
+    if (local_row_ranges == std::nullopt) {
+        return Status::OK();
+    }
+    if (data_files.size() != 1) {
+        return Status::Invalid("file-local row ranges require exactly one data file");
+    }
+    const auto& file = data_files.front();
+    for (const Range& range : local_row_ranges.value()) {
+        if (range.from < 0 || range.to < range.from || range.to >= file->row_count ||
+            range.to >= std::numeric_limits<int32_t>::max()) {
+            return Status::Invalid(
+                fmt::format("Invalid file-local row range [{}, {}] for file {} with {} rows.",
+                            range.from, range.to, file->file_name, file->row_count));
+        }
+    }
+    return Status::OK();
+}
+
+}  // namespace
+
 RawFileSplitRead::RawFileSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
                                    const std::shared_ptr<InternalReadContext>& context,
                                    const std::shared_ptr<MemoryPool>& memory_pool,
@@ -69,6 +93,12 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     const std::shared_ptr<Split>& split) {
     if (auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
         PAIMON_RETURN_NOT_OK(indexed_split->Validate());
+        if (!indexed_split->Scores().empty()) {
+            // TODO(wangyong9999): Propagate indexed scores through the primary-key
+            // physical-position read path.
+            return Status::NotImplemented(
+                "Primary-key reads do not support scored indexed splits yet.");
+        }
         const std::shared_ptr<DataSplit>& inner_split = indexed_split->GetDataSplit();
         auto inner_split_impl = std::dynamic_pointer_cast<DataSplitImpl>(inner_split);
         if (!inner_split_impl) {
@@ -87,13 +117,14 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
         return Status::Invalid("cannot cast split to data_split in RawFileSplitRead");
     }
     return CreateReader(data_split->Partition(), data_split->Bucket(), data_split->DataFiles(),
-                        data_split->DeletionFiles());
+                        data_split->DeletionFiles(), /*local_row_ranges=*/std::nullopt);
 }
 
 Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     const BinaryRow& partition, int32_t bucket,
     const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& local_row_ranges) {
+    PAIMON_RETURN_NOT_OK(ValidateFileLocalRowRanges(data_files, local_row_ranges));
     const auto& predicate = context_->GetPredicate();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            path_factory_->CreateDataFilePathFactory(partition, bucket));
@@ -110,14 +141,6 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader), predicate));
     return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), pool_);
-}
-
-Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
-    const BinaryRow& partition, int32_t bucket,
-    const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-    const std::vector<std::optional<DeletionFile>>& deletion_files) {
-    return CreateReader(partition, bucket, data_files, deletion_files,
-                        /*local_row_ranges=*/std::nullopt);
 }
 
 Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
@@ -184,12 +207,6 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
     if (ranges != std::nullopt) {
         RoaringBitmap32 ranges_bitmap;
         for (const Range& range : ranges.value()) {
-            if (range.from < 0 || range.to < range.from ||
-                range.to >= std::numeric_limits<int32_t>::max()) {
-                return Status::Invalid(
-                    fmt::format("Invalid file-local row range [{}, {}] for file {}.", range.from,
-                                range.to, file->file_name));
-            }
             ranges_bitmap.AddRange(static_cast<int32_t>(range.from),
                                    static_cast<int32_t>(range.to + 1));
         }

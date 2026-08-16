@@ -43,6 +43,8 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexFile::Build(
     const std::shared_ptr<arrow::Array>& sorted_values, std::vector<int64_t> sorted_ordinals,
     const std::shared_ptr<GlobalIndexFileWriter>& file_writer, bool is_external_path,
     const std::shared_ptr<MemoryPool>& pool) {
+    // TODO(wangyong9999): Replace the all-in-memory sorted values and ordinals with an
+    // external sort buffer and feed the index writer in bounded batches.
     PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexSourceMeta source_meta,
                            PrimaryKeyIndexSourceMeta::Create(data_level, source_files));
     int64_t source_row_count = 0;
@@ -103,7 +105,8 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexFile::Build(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> source_meta_bytes, source_meta.Serialize(pool));
     std::optional<std::string> external_path;
     if (is_external_path) {
-        external_path = io_meta.file_path;
+        PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(io_meta.file_path));
+        external_path = path.ToString();
     }
     return std::make_shared<IndexFileMeta>(
         index_type, PathUtil::GetName(io_meta.file_path), io_meta.file_size, source_row_count,
