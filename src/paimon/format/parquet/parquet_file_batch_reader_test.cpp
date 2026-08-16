@@ -41,6 +41,7 @@
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/defs.h"
@@ -995,7 +996,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapRowGroupPushDown) {
     auto arrow_type = arrow::struct_(fields);
     arrow::StructBuilder struct_builder(arrow_type, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::Int32Builder>()});
-    auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
+    auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
     int32_t length = 1024;
     for (int32_t i = 0; i < length; ++i) {
         ASSERT_TRUE(struct_builder.Append().ok());
@@ -1052,7 +1053,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapPagePushDown) {
     auto arrow_type = arrow::struct_(fields);
     arrow::StructBuilder struct_builder(arrow_type, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::Int32Builder>()});
-    auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
+    auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
     int32_t length = 1024;
     for (int32_t i = 0; i < length; ++i) {
         ASSERT_TRUE(struct_builder.Append().ok());

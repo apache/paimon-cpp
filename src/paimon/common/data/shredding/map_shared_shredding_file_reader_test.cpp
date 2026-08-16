@@ -34,6 +34,7 @@
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
 #include "paimon/common/fs/external_path_provider.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/append/append_only_writer.h"
 #include "paimon/core/compact/noop_compact_manager.h"
 #include "paimon/core/core_options.h"
@@ -111,8 +112,7 @@ class MapSharedShreddingFileReaderTest : public ::testing::Test {
                 continue;
             }
             EXPECT_OK_AND_ASSIGN(auto meta, MapSharedShreddingUtils::DeserializeMetadata(metadata));
-            auto physical_type =
-                arrow::internal::checked_pointer_cast<arrow::StructType>(field->type());
+            auto physical_type = checked_pointer_cast<arrow::StructType>(field->type());
             std::shared_ptr<arrow::Field> item_field;
             for (const auto& child : physical_type->fields()) {
                 if (child->name() != MapSharedShreddingDefine::kFieldMapping &&
@@ -122,7 +122,7 @@ class MapSharedShreddingFileReaderTest : public ::testing::Test {
                 }
             }
             EXPECT_TRUE(item_field);
-            auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(arrow::map(
+            auto map_type = checked_pointer_cast<arrow::MapType>(arrow::map(
                 arrow::utf8(), arrow::field("value", item_field->type(), item_field->nullable())));
             std::shared_ptr<arrow::Field> logical_map_field = field->WithType(map_type);
             if (selected_keys_str.has_value()) {
@@ -334,7 +334,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjection) {
 }
 
 TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionFromDefaultMap) {
-    auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(
+    auto map_type = checked_pointer_cast<arrow::MapType>(
         arrow::map(arrow::utf8(), arrow::field("value", arrow::int64())));
     auto file_schema =
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("tags", map_type)});

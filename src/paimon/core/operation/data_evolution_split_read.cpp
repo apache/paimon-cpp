@@ -46,6 +46,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/range_helper.h"
@@ -340,20 +341,20 @@ Result<std::unordered_set<BlobViewStruct>> DataEvolutionSplitRead::ExtractBlobVi
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-        if (struct_array == nullptr) {
+        if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(
                 "invalid array in ExtractBlobViewStructs, batch array is not a StructArray.");
         }
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
 
         for (int32_t field_idx = 0; field_idx < struct_array->num_fields(); ++field_idx) {
-            auto binary_array =
-                std::dynamic_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(field_idx));
-            if (binary_array == nullptr) {
+            auto field_array = struct_array->field(field_idx);
+            if (!field_array || field_array->type_id() != arrow::Type::LARGE_BINARY) {
                 return Status::Invalid(
                     "invalid array in ExtractBlobViewStructs, blob view column is not a "
                     "LargeBinaryArray.");
             }
+            auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(field_array);
             for (int64_t row = 0; row < binary_array->length(); ++row) {
                 if (binary_array->IsNull(row)) {
                     continue;

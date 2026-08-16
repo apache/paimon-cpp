@@ -40,6 +40,7 @@
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/restore_files.h"
@@ -96,7 +97,7 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
         auto struct_type = arrow::struct_(fields);
         arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                             {std::make_shared<arrow::StringBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(string_builder->Append(value));
 

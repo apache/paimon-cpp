@@ -29,6 +29,7 @@
 #include "fmt/ranges.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -315,7 +316,7 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
     if (!latest_schema) {
         return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
     }
-    return std::static_pointer_cast<Schema>(*latest_schema);
+    return checked_pointer_cast<Schema>(*latest_schema);
 }
 
 Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& identifier) const {

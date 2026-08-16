@@ -30,6 +30,7 @@
 #include "arrow/memory_pool.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/format/avro/avro_file_batch_reader.h"
 #include "paimon/format/file_format.h"
@@ -86,9 +87,9 @@ class AvroFormatWriterTest : public ::testing::Test {
             data_type, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int32Builder>(),
              std::make_shared<arrow::BooleanBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
-        auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
+        auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
         for (int32_t i = 0 + offset; i < record_batch_size + offset; ++i) {
             EXPECT_TRUE(struct_builder.Append().ok());
             EXPECT_TRUE(string_builder->Append("str_" + std::to_string(i)).ok());
@@ -126,15 +127,12 @@ class AvroFormatWriterTest : public ::testing::Test {
 
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ::paimon::test::ReadResultCollector::CollectResult(file_reader.get()));
-        const auto& struct_array =
-            std::static_pointer_cast<arrow::StructArray>(result_array->chunk(0));
-        const auto& string_array =
-            std::static_pointer_cast<arrow::StringArray>(struct_array->field(0));
+        const auto& struct_array = checked_pointer_cast<arrow::StructArray>(result_array->chunk(0));
+        const auto& string_array = checked_pointer_cast<arrow::StringArray>(struct_array->field(0));
         ASSERT_TRUE(string_array);
-        const auto& int_array = std::static_pointer_cast<arrow::Int32Array>(struct_array->field(1));
+        const auto& int_array = checked_pointer_cast<arrow::Int32Array>(struct_array->field(1));
         ASSERT_TRUE(int_array);
-        const auto& bool_array =
-            std::static_pointer_cast<arrow::BooleanArray>(struct_array->field(2));
+        const auto& bool_array = checked_pointer_cast<arrow::BooleanArray>(struct_array->field(2));
         ASSERT_TRUE(bool_array);
         ASSERT_EQ(string_array->null_count(), 0);
         ASSERT_EQ(int_array->null_count(), (row_count - 1) / 3 + 1);

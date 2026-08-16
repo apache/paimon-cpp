@@ -51,6 +51,7 @@
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
@@ -394,8 +395,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
                 child_arrays.push_back(col);
                 continue;
             }
-            const auto& binary_array =
-                arrow::internal::checked_cast<const arrow::LargeBinaryArray&>(*col);
+            const auto& binary_array = checked_cast<const arrow::LargeBinaryArray&>(*col);
             arrow::LargeBinaryBuilder builder;
             for (int64_t i = 0; i < binary_array.length(); ++i) {
                 if (binary_array.IsNull(i)) {
@@ -444,8 +444,8 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
     /// `field_name`, so that a subsequent table write observes a missing file.
     Status DeleteDescriptorTarget(const std::shared_ptr<arrow::StructArray>& desc_array,
                                   const std::string& field_name, int64_t row) const {
-        const auto& blob_col = arrow::internal::checked_cast<const arrow::LargeBinaryArray&>(
-            *desc_array->GetFieldByName(field_name));
+        const auto& blob_col =
+            checked_cast<const arrow::LargeBinaryArray&>(*desc_array->GetFieldByName(field_name));
         std::string_view descriptor_bytes = blob_col.GetView(row);
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<BlobDescriptor> descriptor,
@@ -1178,7 +1178,7 @@ std::shared_ptr<arrow::StructArray> MakeBlobUpdateArray(
     auto struct_type = arrow::struct_({blob_field});
     arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::LargeBinaryBuilder>()});
-    auto blob_builder = static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+    auto blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
     for (const auto& row : rows) {
         EXPECT_TRUE(struct_builder.Append().ok());
         if (!row) {
@@ -1724,9 +1724,9 @@ TEST_P(BlobTableInteTest, TestBlobValueEqualToPlaceholderSentinelBytes) {
         struct_type, arrow::default_memory_pool(),
         {std::make_shared<arrow::Int32Builder>(), std::make_shared<arrow::StringBuilder>(),
          std::make_shared<arrow::LargeBinaryBuilder>()});
-    auto f0_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
-    auto f1_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(1));
-    auto b0_builder = static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(2));
+    auto f0_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
+    auto f1_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(1));
+    auto b0_builder = checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(2));
     ASSERT_TRUE(struct_builder.Append().ok());
     ASSERT_TRUE(f0_builder->Append(1).ok());
     ASSERT_TRUE(f1_builder->Append("a").ok());

@@ -30,6 +30,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/macros.h"
 
@@ -218,11 +219,11 @@ class ArrowMemIndexer::QueryBatchReader : public BatchReader {
             std::shared_ptr<arrow::Array> projected,
             NestedProjectionUtils::AlignArrayToReadType(
                 stored.data, arrow::struct_(read_schema_->fields()), arrow_pool_.get()));
-        std::shared_ptr<arrow::StructArray> projected_struct =
-            std::dynamic_pointer_cast<arrow::StructArray>(projected);
-        if (!projected_struct) {
+        if (!projected || projected->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid("memory query projection did not produce a StructArray");
         }
+        std::shared_ptr<arrow::StructArray> projected_struct =
+            checked_pointer_cast<arrow::StructArray>(projected);
         return projected_struct;
     }
 
@@ -256,11 +257,11 @@ Status ArrowMemIndexer::Write(RealtimeWriteBatch&& write_batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::Array> data,
         arrow::ImportArray(write_batch.batch->GetData(), arrow::struct_(write_schema_->fields())));
-    std::shared_ptr<arrow::StructArray> struct_array =
-        std::dynamic_pointer_cast<arrow::StructArray>(data);
-    if (!struct_array) {
+    if (!data || data->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("real-time write data is not a StructArray");
     }
+    std::shared_ptr<arrow::StructArray> struct_array =
+        checked_pointer_cast<arrow::StructArray>(data);
 
     std::lock_guard<std::mutex> lock(mutex_);
     if (building_range_ && write_batch.offset_range.from != building_range_->to + 1) {

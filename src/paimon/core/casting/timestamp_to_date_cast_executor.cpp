@@ -25,6 +25,7 @@
 
 #include "arrow/compute/cast.h"
 #include "arrow/type.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/casting/casting_utils.h"
@@ -46,7 +47,7 @@ Result<std::shared_ptr<arrow::Array>> TimestampToDateCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     auto target_array = array;
-    auto src_ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(array->type());
+    auto src_ts_type = checked_pointer_cast<arrow::TimestampType>(array->type());
     if (!src_ts_type->timezone().empty()) {
         auto target_type_no_tz = std::make_shared<arrow::TimestampType>(src_ts_type->unit());
         PAIMON_ASSIGN_OR_RAISE(target_array, CastingUtils::TimestampWithTimezoneToTimestamp(

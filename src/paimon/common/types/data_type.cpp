@@ -23,13 +23,13 @@
 #include <stdexcept>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/array_type.h"
 #include "paimon/common/types/map_type.h"
 #include "paimon/common/types/row_type.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/decimal_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
@@ -115,14 +115,13 @@ std::string DataType::DataTypeToString(const std::shared_ptr<arrow::DataType>& t
                 throw std::invalid_argument(status.ToString());
             }
             const uint64_t precision = static_cast<uint64_t>(
-                arrow::internal::checked_pointer_cast<arrow::Decimal128Type>(type)->precision());
-            const uint64_t scale = static_cast<uint64_t>(
-                arrow::internal::checked_pointer_cast<arrow::Decimal128Type>(type)->scale());
+                checked_pointer_cast<arrow::Decimal128Type>(type)->precision());
+            const uint64_t scale =
+                static_cast<uint64_t>(checked_pointer_cast<arrow::Decimal128Type>(type)->scale());
             return fmt::format("DECIMAL({}, {})", precision, scale);
         }
         case arrow::Type::type::TIMESTAMP: {
-            const auto& timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(type);
+            const auto& timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
             return TimestampToString(timestamp_type);
         }
         case arrow::Type::type::STRUCT: {

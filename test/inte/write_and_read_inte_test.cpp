@@ -34,6 +34,7 @@
 #include "paimon/commit_context.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -472,18 +473,16 @@ TEST_P(WriteAndReadInteTest, TestSchemaEvolutionAddFieldInsideListAndMap) {
     int32_t next_id = schema_v0->HighestFieldId();
 
     auto items_field = fields_v0[1].ArrowField();
-    auto items_list = arrow::internal::checked_pointer_cast<arrow::ListType>(items_field->type());
-    auto items_struct =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(items_list->value_type());
+    auto items_list = checked_pointer_cast<arrow::ListType>(items_field->type());
+    auto items_struct = checked_pointer_cast<arrow::StructType>(items_list->value_type());
     auto c_field = DataField::ConvertDataFieldToArrowField(
         DataField(++next_id, arrow::field("c", arrow::int32())));
     auto new_items_type = arrow::list(items_list->value_field()->WithType(
         arrow::struct_({items_struct->field(0), items_struct->field(1), c_field})));
 
     auto props_field = fields_v0[2].ArrowField();
-    auto props_map = arrow::internal::checked_pointer_cast<arrow::MapType>(props_field->type());
-    auto props_value =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(props_map->item_type());
+    auto props_map = checked_pointer_cast<arrow::MapType>(props_field->type());
+    auto props_value = checked_pointer_cast<arrow::StructType>(props_map->item_type());
     auto m2_field = DataField::ConvertDataFieldToArrowField(
         DataField(++next_id, arrow::field("m2", arrow::int32())));
     auto new_props_type = arrow::map(
@@ -3132,9 +3131,8 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingStructValueSchemaEvolutionRea
     };
 
     auto tag_field = fields_v0[1].ArrowField();
-    auto tag_map = arrow::internal::checked_pointer_cast<arrow::MapType>(tag_field->type());
-    auto tag_value_struct =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(tag_map->item_type());
+    auto tag_map = checked_pointer_cast<arrow::MapType>(tag_field->type());
+    auto tag_value_struct = checked_pointer_cast<arrow::StructType>(tag_map->item_type());
 
     // Simulate alter table changing the shared-shredding MAP value struct field type.
     auto changed_tag_value_type =
@@ -3151,8 +3149,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingStructValueSchemaEvolutionRea
         "PruneDataType nested item type mismatch inside map: read string vs data int64");
 
     auto profile_field = fields_v0[2].ArrowField();
-    auto profile_struct =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(profile_field->type());
+    auto profile_struct = checked_pointer_cast<arrow::StructType>(profile_field->type());
 
     // Simulate alter table renaming a nested field inside a STRUCT column.
     std::vector<DataField> fields_with_renamed_profile_child = fields_v0;

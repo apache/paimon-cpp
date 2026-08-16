@@ -23,6 +23,7 @@
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_defs.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -83,7 +84,7 @@ Status VariantTypeUtils::ValidateVariantShape(const std::shared_ptr<arrow::Field
         return Status::Invalid(fmt::format("Variant field '{}' must be a struct, but got {}",
                                            field->name(), type->ToString()));
     }
-    const auto& struct_type = std::static_pointer_cast<arrow::StructType>(type);
+    const auto& struct_type = checked_pointer_cast<arrow::StructType>(type);
     if (struct_type->num_fields() != 2) {
         return Status::Invalid(
             fmt::format("Variant field '{}' must be a struct<value: binary, metadata: binary>, "

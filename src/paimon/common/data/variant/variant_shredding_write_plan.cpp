@@ -22,11 +22,11 @@
 #include <utility>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_shredding_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_type_json_parser.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "rapidjson/document.h"
 
 namespace paimon {
@@ -39,8 +39,7 @@ Result<std::shared_ptr<arrow::Field>> ReplacePlannedFields(
     const std::shared_ptr<arrow::Field>& field,
     const std::map<std::vector<int32_t>, std::shared_ptr<arrow::DataType>>& paths, size_t depth,
     std::vector<VariantShreddingWritePlan::PlannedColumn>* columns) {
-    const auto& struct_type =
-        arrow::internal::checked_cast<const arrow::StructType&>(*field->type());
+    const auto& struct_type = checked_cast<const arrow::StructType&>(*field->type());
     arrow::FieldVector new_fields = struct_type.fields();
     bool changed = false;
     auto it = paths.begin();
@@ -119,10 +118,8 @@ Status CollectPlannedColumns(const std::shared_ptr<arrow::Field>& logical_field,
             "variant shredding physical type of field '{}' differs outside a Variant column",
             logical_field->name()));
     }
-    const auto& logical_type =
-        arrow::internal::checked_cast<const arrow::StructType&>(*logical_field->type());
-    const auto& physical_type =
-        arrow::internal::checked_cast<const arrow::StructType&>(*physical_field->type());
+    const auto& logical_type = checked_cast<const arrow::StructType&>(*logical_field->type());
+    const auto& physical_type = checked_cast<const arrow::StructType&>(*physical_field->type());
     if (logical_type.num_fields() != physical_type.num_fields()) {
         return Status::Invalid(
             fmt::format("variant shredding physical struct '{}' has a different field count",

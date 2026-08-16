@@ -28,6 +28,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
 
 namespace paimon {
@@ -92,8 +93,7 @@ CompleteRowTrackingFieldsBatchReader::NextBatchWithBitmap() {
     auto& [c_array, c_schema] = read_batch;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> src_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
-    auto src_struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(src_array);
-    assert(src_struct_array);
+    auto src_struct_array = checked_pointer_cast<arrow::StructArray>(src_array);
 
     // complete row id array
     std::shared_ptr<arrow::Array> row_id_array;
@@ -164,9 +164,7 @@ Status CompleteRowTrackingFieldsBatchReader::ConvertRowTrackingField(
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             special_array, arrow::MakeArrayFromScalar(*scalar, array_length, arrow_pool_.get()));
         auto typed_special_array =
-            arrow::internal::checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(
-                special_array);
-        assert(typed_special_array);
+            checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(special_array);
         if (convert_func) {
             auto raw_value_ptr = const_cast<int64_t*>(typed_special_array->raw_values());
             assert(raw_value_ptr);
@@ -178,8 +176,7 @@ Status CompleteRowTrackingFieldsBatchReader::ConvertRowTrackingField(
     } else if (special_array->null_count() > 0) {
         // condition3: special field exist, has null
         auto typed_special_array =
-            arrow::internal::checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(
-                special_array);
+            checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(special_array);
         auto raw_value_ptr = const_cast<int64_t*>(typed_special_array->raw_values());
         // row id = first_row_id_ + previous_batch_first_row_number + idx in batch
         // sequence number = init_value

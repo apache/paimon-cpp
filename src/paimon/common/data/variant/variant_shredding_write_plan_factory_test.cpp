@@ -30,6 +30,7 @@
 #include "paimon/common/data/variant/variant_shredding_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/variant_test_data.h"
@@ -64,7 +65,7 @@ class VariantShreddingWritePlanFactoryTest : public ::testing::Test {
         if (field == nullptr || field->type()->id() != arrow::Type::STRUCT) {
             return nullptr;
         }
-        return std::static_pointer_cast<arrow::StructType>(field->type())
+        return checked_pointer_cast<arrow::StructType>(field->type())
             ->GetFieldByName("typed_value")
             ->type();
     }
@@ -346,7 +347,7 @@ TEST_F(VariantShreddingWritePlanFactoryTest, AdaptiveInferenceWithNestedVariant)
             *converter->GetPhysicalSchema()->GetFieldByName("nested")->type());
         const auto& physical_variant = static_cast<const arrow::StructType&>(
             *physical_nested.GetFieldByName("payload")->type());
-        return std::static_pointer_cast<arrow::StructType>(
+        return checked_pointer_cast<arrow::StructType>(
             physical_variant.GetFieldByName("typed_value")->type());
     };
 

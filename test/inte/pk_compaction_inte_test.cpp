@@ -33,6 +33,7 @@
 #include "paimon/commit_context.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -3542,7 +3543,7 @@ TEST_F(PkCompactionInteTest, AggHllAndThetaSketches) {
             }
             children[column + 1] = builder.Finish().ValueOrDie();
         }
-        return std::static_pointer_cast<arrow::Array>(
+        return checked_pointer_cast<arrow::Array>(
             arrow::StructArray::Make(children, fields).ValueOrDie());
     };
 
@@ -3567,10 +3568,10 @@ TEST_F(PkCompactionInteTest, AggHllAndThetaSketches) {
     std::map<std::string, std::pair<double, double>> estimates;
     ScanAllRows(table_path, [&estimates](const std::shared_ptr<arrow::ChunkedArray>& result) {
         for (const std::shared_ptr<arrow::Array>& chunk : result->chunks()) {
-            auto rows = std::static_pointer_cast<arrow::StructArray>(chunk);
-            auto keys = std::static_pointer_cast<arrow::StringArray>(rows->field(1));
-            auto hll_column = std::static_pointer_cast<arrow::BinaryArray>(rows->field(2));
-            auto theta_column = std::static_pointer_cast<arrow::BinaryArray>(rows->field(3));
+            auto rows = checked_pointer_cast<arrow::StructArray>(chunk);
+            auto keys = checked_pointer_cast<arrow::StringArray>(rows->field(1));
+            auto hll_column = checked_pointer_cast<arrow::BinaryArray>(rows->field(2));
+            auto theta_column = checked_pointer_cast<arrow::BinaryArray>(rows->field(3));
             for (int64_t i = 0; i < rows->length(); ++i) {
                 ASSERT_FALSE(hll_column->IsNull(i));
                 ASSERT_FALSE(theta_column->IsNull(i));

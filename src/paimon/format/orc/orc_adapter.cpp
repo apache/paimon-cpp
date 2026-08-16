@@ -47,7 +47,6 @@
 #include "arrow/type_fwd.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/bitmap_ops.h"
-#include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
 #include "arrow/util/key_value_metadata.h"
 #include "arrow/util/range.h"
@@ -58,6 +57,7 @@
 #include "orc/Type.hh"
 #include "orc/Vector.hh"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/data/timestamp.h"
 
@@ -414,9 +414,8 @@ class UnPooledMapBuilder : public EmptyBuilder {
     }
 
     std::shared_ptr<arrow::DataType> type() const override {
-        auto map_type = arrow::internal::checked_cast<arrow::MapType*>(type_.get());
-        auto list_type =
-            arrow::internal::checked_pointer_cast<arrow::ListType>(list_builder_->type());
+        auto map_type = checked_cast<arrow::MapType*>(type_.get());
+        auto list_type = checked_pointer_cast<arrow::ListType>(list_builder_->type());
         return std::make_shared<arrow::MapType>(arrow::field("entries", list_type->value_type()),
                                                 map_type->keys_sorted());
     }
@@ -656,8 +655,7 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedTimestampBuilder(
     const bool has_nulls = typed_batch->hasNulls;
     const auto* not_null = typed_batch->notNull.data();
     auto is_null = [has_nulls, not_null](int64_t index) { return has_nulls && !not_null[index]; };
-    auto timestamp_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(type);
-    assert(timestamp_type);
+    auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
     int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
     // TODO(lisizhuo.lsz): check nano overflow in arrow
     if (precision == Timestamp::MIN_PRECISION) {
@@ -720,11 +718,9 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedDecimal128Builder(
     arrow::MemoryPool* pool) {
     auto builder = std::make_shared<arrow::Decimal128Builder>(type, pool);
     const bool has_nulls = column_vector_batch->hasNulls;
-    auto decimal_type = arrow::internal::checked_cast<arrow::Decimal128Type*>(type.get());
-    assert(decimal_type);
+    auto decimal_type = checked_cast<arrow::Decimal128Type*>(type.get());
     if (decimal_type->precision() == 0 || decimal_type->precision() > 18) {
-        auto typed_batch =
-            arrow::internal::checked_cast<const ::orc::Decimal128VectorBatch*>(column_vector_batch);
+        auto typed_batch = checked_cast<const ::orc::Decimal128VectorBatch*>(column_vector_batch);
         for (size_t i = 0; i < typed_batch->numElements; i++) {
             if (!has_nulls || typed_batch->notNull[i]) {
                 int64_t high_bits = typed_batch->values[i].getHighBits();
@@ -736,8 +732,7 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedDecimal128Builder(
             }
         }
     } else {
-        auto typed_batch =
-            arrow::internal::checked_cast<const ::orc::Decimal64VectorBatch*>(column_vector_batch);
+        auto typed_batch = checked_cast<const ::orc::Decimal64VectorBatch*>(column_vector_batch);
         for (size_t i = 0; i < typed_batch->numElements; i++) {
             if (!has_nulls || typed_batch->notNull[i]) {
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -807,7 +802,7 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedListBuilder(
     using OffsetType = arrow::ListType::offset_type;
     auto typed_batch = dynamic_cast<::orc::ListVectorBatch*>(column_vector_batch);
     assert(typed_batch);
-    auto list_type = arrow::internal::checked_cast<arrow::ListType*>(type.get());
+    auto list_type = checked_cast<arrow::ListType*>(type.get());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<arrow::ArrayBuilder> elements_builder,
         MakeArrowBuilder(list_type->value_type(), typed_batch->elements.get(), pool));
@@ -830,7 +825,7 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedStructBuilder(
     arrow::MemoryPool* pool) {
     auto typed_batch = dynamic_cast<::orc::StructVectorBatch*>(column_vector_batch);
     assert(typed_batch);
-    auto struct_type = arrow::internal::checked_cast<arrow::StructType*>(type.get());
+    auto struct_type = checked_cast<arrow::StructType*>(type.get());
     std::vector<std::shared_ptr<arrow::ArrayBuilder>> children_builders;
     children_builders.reserve(typed_batch->fields.size());
     for (size_t i = 0; i < typed_batch->fields.size(); i++) {
@@ -851,7 +846,7 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedMapBuilder(
     using OffsetType = arrow::ListType::offset_type;
     auto typed_batch = dynamic_cast<::orc::MapVectorBatch*>(column_vector_batch);
     assert(typed_batch);
-    auto map_type = arrow::internal::checked_cast<arrow::MapType*>(type.get());
+    auto map_type = checked_cast<arrow::MapType*>(type.get());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayBuilder> key_builder,
                            MakeArrowBuilder(map_type->key_type(), typed_batch->keys.get(), pool));
     PAIMON_ASSIGN_OR_RAISE(
@@ -959,7 +954,7 @@ arrow::Result<std::shared_ptr<arrow::Array>> NormalizeArray(
     arrow::Type::type kind = array->type_id();
     switch (kind) {
         case arrow::Type::type::STRUCT: {
-            auto struct_array = arrow::internal::checked_cast<arrow::StructArray*>(array.get());
+            auto struct_array = checked_cast<arrow::StructArray*>(array.get());
             const std::shared_ptr<arrow::Buffer> bitmap = struct_array->null_bitmap();
             std::shared_ptr<arrow::DataType> struct_type = struct_array->type();
             std::size_t size = struct_type->fields().size();
@@ -1002,14 +997,14 @@ arrow::Result<std::shared_ptr<arrow::Array>> NormalizeArray(
                 struct_array->null_count(), struct_array->offset());
         }
         case arrow::Type::type::LIST: {
-            auto list_array = arrow::internal::checked_cast<arrow::ListArray*>(array.get());
+            auto list_array = checked_cast<arrow::ListArray*>(array.get());
             ARROW_ASSIGN_OR_RAISE(auto value_array, NormalizeArray(list_array->values()));
             return std::make_shared<arrow::ListArray>(
                 list_array->type(), list_array->length(), list_array->value_offsets(), value_array,
                 list_array->null_bitmap(), list_array->null_count(), list_array->offset());
         }
         case arrow::Type::type::MAP: {
-            auto map_array = arrow::internal::checked_cast<arrow::MapArray*>(array.get());
+            auto map_array = checked_cast<arrow::MapArray*>(array.get());
             ARROW_ASSIGN_OR_RAISE(auto key_array, NormalizeArray(map_array->keys()));
             ARROW_ASSIGN_OR_RAISE(auto item_array, NormalizeArray(map_array->items()));
             return std::make_shared<arrow::MapArray>(
@@ -1168,8 +1163,8 @@ arrow::Status ShallowCopyGenericBatch(const arrow::Array& array,
                                       ::orc::ColumnVectorBatch* column_vector_batch) {
     using ArrayType = typename arrow::TypeTraits<DataType>::ArrayType;
     using value_type = typename ArrayType::value_type;
-    const auto& array_(arrow::internal::checked_cast<const ArrayType&>(array));
-    auto batch = arrow::internal::checked_cast<BatchType*>(column_vector_batch);
+    const auto& array_(checked_cast<const ArrayType&>(array));
+    auto batch = checked_cast<BatchType*>(column_vector_batch);
     if (array.null_count()) {
         batch->hasNulls = true;
     }
@@ -1191,8 +1186,8 @@ template <class DataType, class BatchType>
 arrow::Status WriteGenericBatch(const arrow::Array& array,
                                 ::orc::ColumnVectorBatch* column_vector_batch) {
     using ArrayType = typename arrow::TypeTraits<DataType>::ArrayType;
-    const auto& array_(arrow::internal::checked_cast<const ArrayType&>(array));
-    auto batch = arrow::internal::checked_cast<BatchType*>(column_vector_batch);
+    const auto& array_(checked_cast<const ArrayType&>(array));
+    auto batch = checked_cast<BatchType*>(column_vector_batch);
     if (array.null_count()) {
         batch->hasNulls = true;
     }
@@ -1206,12 +1201,12 @@ template <class DataType>
 arrow::Status WriteTimestampBatch(const arrow::Array& array,
                                   ::orc::ColumnVectorBatch* column_vector_batch) {
     using ArrayType = typename arrow::TypeTraits<DataType>::ArrayType;
-    const auto& array_(arrow::internal::checked_cast<const ArrayType&>(array));
-    auto batch = arrow::internal::checked_cast<::orc::TimestampVectorBatch*>(column_vector_batch);
+    const auto& array_(checked_cast<const ArrayType&>(array));
+    auto batch = checked_cast<::orc::TimestampVectorBatch*>(column_vector_batch);
     if (array.null_count()) {
         batch->hasNulls = true;
     }
-    auto timestamp_type = arrow::internal::checked_pointer_cast<DataType>(array.type());
+    auto timestamp_type = checked_pointer_cast<DataType>(array.type());
     auto time_type = DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type);
     TimestampAppender<DataType> appender{time_type, array_, batch,
                                          /*orc_offset=*/0, 0};
@@ -1223,9 +1218,8 @@ arrow::Status WriteTimestampBatch(const arrow::Array& array,
 arrow::Status WriteStructBatch(const arrow::Array& array,
                                ::orc::ColumnVectorBatch* column_vector_batch) {
     std::shared_ptr<arrow::Array> array_ = arrow::MakeArray(array.data());
-    auto* struct_array = arrow::internal::checked_cast<arrow::StructArray*>(array_.get());
-    assert(struct_array);
-    auto batch = arrow::internal::checked_cast<::orc::StructVectorBatch*>(column_vector_batch);
+    auto* struct_array = checked_cast<arrow::StructArray*>(array_.get());
+    auto batch = checked_cast<::orc::StructVectorBatch*>(column_vector_batch);
     std::size_t size = array.type()->fields().size();
     int64_t arrow_length = array.length();
     batch->numElements = arrow_length;
@@ -1250,8 +1244,8 @@ arrow::Status WriteStructBatch(const arrow::Array& array,
 template <class ArrayType>
 arrow::Status WriteListBatch(const arrow::Array& array,
                              ::orc::ColumnVectorBatch* column_vector_batch) {
-    const auto& list_array(arrow::internal::checked_cast<const ArrayType&>(array));
-    auto batch = arrow::internal::checked_cast<::orc::ListVectorBatch*>(column_vector_batch);
+    const auto& list_array(checked_cast<const ArrayType&>(array));
+    auto batch = checked_cast<::orc::ListVectorBatch*>(column_vector_batch);
     ::orc::ColumnVectorBatch* element_batch = (batch->elements).get();
     int64_t arrow_length = array.length();
     batch->numElements = arrow_length;
@@ -1282,8 +1276,8 @@ arrow::Status WriteListBatch(const arrow::Array& array,
 
 arrow::Status WriteMapBatch(const arrow::Array& array,
                             ::orc::ColumnVectorBatch* column_vector_batch) {
-    const auto& map_array(arrow::internal::checked_cast<const arrow::MapArray&>(array));
-    auto batch = arrow::internal::checked_cast<::orc::MapVectorBatch*>(column_vector_batch);
+    const auto& map_array(checked_cast<const arrow::MapArray&>(array));
+    auto batch = checked_cast<::orc::MapVectorBatch*>(column_vector_batch);
     ::orc::ColumnVectorBatch* key_batch = (batch->keys).get();
     ::orc::ColumnVectorBatch* element_batch = (batch->elements).get();
     std::shared_ptr<arrow::Array> key_array = map_array.keys();
@@ -1357,8 +1351,7 @@ arrow::Status WriteBatch(const arrow::Array& array, ::orc::ColumnVectorBatch* co
             return WriteTimestampBatch<arrow::TimestampType>(array, column_vector_batch);
         case arrow::Type::type::DECIMAL128: {
             int32_t precision =
-                arrow::internal::checked_cast<arrow::Decimal128Type*>(array.type().get())
-                    ->precision();
+                checked_cast<arrow::Decimal128Type*>(array.type().get())->precision();
             if (precision > 18 || precision == 0) {
                 return WriteGenericBatch<arrow::Decimal128Type, ::orc::Decimal128VectorBatch>(
                     array, column_vector_batch);
@@ -1415,31 +1408,28 @@ arrow::Result<std::unique_ptr<::orc::Type>> GetOrcType(const arrow::DataType& ty
         case arrow::Type::type::DATE32:
             return ::orc::createPrimitiveType(::orc::TypeKind::DATE);
         case arrow::Type::type::TIMESTAMP: {
-            const auto& timestamp_type =
-                arrow::internal::checked_cast<const arrow::TimestampType&>(type);
+            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(type);
             if (timestamp_type.timezone().empty()) {
                 return ::orc::createPrimitiveType(::orc::TypeKind::TIMESTAMP);
             }
             return ::orc::createPrimitiveType(::orc::TypeKind::TIMESTAMP_INSTANT);
         }
         case arrow::Type::type::DECIMAL128: {
-            const auto precision = static_cast<uint64_t>(
-                arrow::internal::checked_cast<const arrow::Decimal128Type&>(type).precision());
-            const auto scale = static_cast<uint64_t>(
-                arrow::internal::checked_cast<const arrow::Decimal128Type&>(type).scale());
+            const auto precision =
+                static_cast<uint64_t>(checked_cast<const arrow::Decimal128Type&>(type).precision());
+            const auto scale =
+                static_cast<uint64_t>(checked_cast<const arrow::Decimal128Type&>(type).scale());
             return ::orc::createDecimalType(precision, scale);
         }
         case arrow::Type::type::LIST: {
-            const auto& value_field =
-                arrow::internal::checked_cast<const arrow::BaseListType&>(type).value_field();
+            const auto& value_field = checked_cast<const arrow::BaseListType&>(type).value_field();
             ARROW_ASSIGN_OR_RAISE(auto orc_subtype, paimon::orc::GetOrcType(*value_field->type()));
             SetAttributes(value_field, orc_subtype.get());
             return ::orc::createListType(std::move(orc_subtype));
         }
         case arrow::Type::type::STRUCT: {
             std::unique_ptr<::orc::Type> out_type = ::orc::createStructType();
-            arrow::FieldVector arrow_fields =
-                arrow::internal::checked_cast<const arrow::StructType&>(type).fields();
+            arrow::FieldVector arrow_fields = checked_cast<const arrow::StructType&>(type).fields();
             for (auto& arrow_field : arrow_fields) {
                 std::string field_name = arrow_field->name();
                 ARROW_ASSIGN_OR_RAISE(auto orc_subtype, GetOrcType(*arrow_field->type()));
@@ -1449,10 +1439,8 @@ arrow::Result<std::unique_ptr<::orc::Type>> GetOrcType(const arrow::DataType& ty
             return out_type;
         }
         case arrow::Type::type::MAP: {
-            const auto& key_field =
-                arrow::internal::checked_cast<const arrow::MapType&>(type).key_field();
-            const auto& item_field =
-                arrow::internal::checked_cast<const arrow::MapType&>(type).item_field();
+            const auto& key_field = checked_cast<const arrow::MapType&>(type).key_field();
+            const auto& item_field = checked_cast<const arrow::MapType&>(type).item_field();
             ARROW_ASSIGN_OR_RAISE(auto key_orc_type, GetOrcType(*key_field->type()));
             ARROW_ASSIGN_OR_RAISE(auto item_orc_type, GetOrcType(*item_field->type()));
             SetAttributes(key_field, key_orc_type.get());

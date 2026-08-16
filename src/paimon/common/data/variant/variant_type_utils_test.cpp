@@ -22,6 +22,7 @@
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/variant/variant_defs.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -35,7 +36,7 @@ TEST(VariantTypeUtilsTest, ToArrowFieldAndDetection) {
     ASSERT_TRUE(VariantTypeUtils::IsVariantMetadata(field->metadata()));
     ASSERT_OK(VariantTypeUtils::ValidateVariantShape(field));
 
-    auto struct_type = std::static_pointer_cast<arrow::StructType>(field->type());
+    auto struct_type = checked_pointer_cast<arrow::StructType>(field->type());
     ASSERT_EQ(struct_type->num_fields(), 2);
     ASSERT_EQ(struct_type->field(0)->name(), VariantDefs::kValueFieldName);
     ASSERT_EQ(struct_type->field(0)->type()->id(), arrow::Type::BINARY);

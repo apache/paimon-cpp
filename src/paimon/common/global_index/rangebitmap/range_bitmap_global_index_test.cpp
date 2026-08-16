@@ -30,6 +30,7 @@
 #include "paimon/common/file_index/rangebitmap/range_bitmap_file_index.h"
 #include "paimon/common/global_index/wrap/file_index_writer_wrapper.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -237,7 +238,7 @@ TEST_F(RangeBitmapGlobalIndexTest, TestHighCardinality) {
     arrow::StructBuilder struct_builder(arrow::struct_({arrow::field("f0", type)}),
                                         arrow::default_memory_pool(),
                                         {std::make_shared<arrow::Int32Builder>()});
-    auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
+    auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
 
     for (int32_t i = 0; i < 100000; i++) {
         ASSERT_TRUE(struct_builder.Append().ok());

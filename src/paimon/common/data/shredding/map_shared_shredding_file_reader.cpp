@@ -31,6 +31,7 @@
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 
@@ -61,8 +62,8 @@ void CollectPhysicalColumns(
             continue;
         }
         if (sub_field->name() == MapSharedShreddingDefine::kOverflow) {
-            *overflow_array = arrow::internal::checked_pointer_cast<arrow::MapArray>(
-                physical_struct_array->field(i));
+            *overflow_array =
+                checked_pointer_cast<arrow::MapArray>(physical_struct_array->field(i));
             continue;
         }
         (*physical_column_name_to_array)[sub_field->name()] = physical_struct_array->field(i);
@@ -76,8 +77,7 @@ class FullMapReadPlan : public MapFieldReadPlan {
                     std::vector<std::pair<std::string, int32_t>>&& selected_key_ids)
         : MapFieldReadPlan(logical_field, physical_read_field),
           selected_key_ids_(std::move(selected_key_ids)),
-          logical_map_type_(
-              arrow::internal::checked_pointer_cast<arrow::MapType>(logical_field->type())) {}
+          logical_map_type_(checked_pointer_cast<arrow::MapType>(logical_field->type())) {}
 
     Result<std::shared_ptr<arrow::Array>> Materialize(
         const std::shared_ptr<arrow::Array>& physical_array,
@@ -135,8 +135,7 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateMapRead
                                            logical_map_field->name(),
                                            logical_map_field->type()->ToString()));
     }
-    auto logical_map_type =
-        arrow::internal::checked_pointer_cast<arrow::MapType>(logical_map_field->type());
+    auto logical_map_type = checked_pointer_cast<arrow::MapType>(logical_map_field->type());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
                            NestedProjectionUtils::GetMapSelectedKeys(logical_map_field));
     if (selected_keys.empty()) {
@@ -176,8 +175,7 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateSharedS
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::string> selected_keys,
         NestedProjectionUtils::ValidateMapSharedShreddingAccessField(selected_keys_field));
-    auto selected_keys_type =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(selected_keys_field->type());
+    auto selected_keys_type = checked_pointer_cast<arrow::StructType>(selected_keys_field->type());
     const auto& value_field = selected_keys_type->field(0);
 
     std::set<int32_t> selected_physical_column_ids;
@@ -262,12 +260,12 @@ Result<std::unique_ptr<::ArrowSchema>> MapSharedShreddingFileReader::GetFileSche
 
 Result<std::shared_ptr<arrow::Field>> MapSharedShreddingFileReader::ToLogicalMapField(
     const std::shared_ptr<arrow::Field>& physical_field) {
-    auto physical_type =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(physical_field->type());
-    if (!physical_type) {
+    if (!physical_field || !physical_field->type() ||
+        physical_field->type()->id() != arrow::Type::STRUCT) {
         return Status::Invalid(fmt::format("shared-shredding field {} is not a physical struct",
-                                           physical_field->name()));
+                                           physical_field ? physical_field->name() : "<null>"));
     }
+    auto physical_type = checked_pointer_cast<arrow::StructType>(physical_field->type());
     std::shared_ptr<arrow::DataType> value_type;
     bool value_nullable = true;
     for (const auto& child : physical_type->fields()) {
@@ -334,10 +332,10 @@ Result<BatchReader::ReadBatchWithBitmap> MapSharedShreddingFileReader::NextBatch
     auto& [c_array, c_schema] = batch;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
-    auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(arrow_array);
-    if (!struct_array) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("cannot cast batch to StructArray in MapSharedShreddingFileReader");
     }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
 
     arrow::ArrayVector resolved_arrays = struct_array->fields();
     arrow::FieldVector resolved_fields = struct_array->struct_type()->fields();
@@ -364,25 +362,25 @@ Result<BatchReader::ReadBatchWithBitmap> MapSharedShreddingFileReader::NextBatch
 
 Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
     const std::shared_ptr<arrow::Array>& physical_array, arrow::MemoryPool* arrow_pool) const {
-    auto physical_struct_array =
-        arrow::internal::checked_pointer_cast<arrow::StructArray>(physical_array);
-    if (!physical_struct_array) {
+    if (!physical_array || physical_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid(fmt::format("cannot cast physical shredding field {} to StructArray",
                                            LogicalField()->name()));
     }
+    auto physical_struct_array = checked_pointer_cast<arrow::StructArray>(physical_array);
     const std::string& shredding_field_name = LogicalField()->name();
 
-    auto field_mapping_array = arrow::internal::checked_pointer_cast<arrow::ListArray>(
-        physical_struct_array->GetFieldByName(MapSharedShreddingDefine::kFieldMapping));
-    if (!field_mapping_array) {
+    auto field_mapping =
+        physical_struct_array->GetFieldByName(MapSharedShreddingDefine::kFieldMapping);
+    if (!field_mapping || field_mapping->type_id() != arrow::Type::LIST) {
         return Status::Invalid(
             fmt::format("cannot find __field_mapping for field {}", shredding_field_name));
     }
-    auto field_mapping_values =
-        arrow::internal::checked_pointer_cast<arrow::Int32Array>(field_mapping_array->values());
-    if (!field_mapping_values) {
+    auto field_mapping_array = checked_pointer_cast<arrow::ListArray>(field_mapping);
+    auto mapping_values = field_mapping_array->values();
+    if (!mapping_values || mapping_values->type_id() != arrow::Type::INT32) {
         return Status::Invalid("__field_mapping values is not an Int32Array");
     }
+    auto field_mapping_values = checked_pointer_cast<arrow::Int32Array>(mapping_values);
 
     std::map<std::string, std::shared_ptr<arrow::Array>> physical_column_name_to_array;
     std::shared_ptr<arrow::MapArray> overflow_array;
@@ -399,11 +397,14 @@ Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
     std::shared_ptr<arrow::Int32Array> overflow_keys;
     std::shared_ptr<arrow::Array> overflow_items;
     if (overflow_array) {
-        overflow_keys =
-            arrow::internal::checked_pointer_cast<arrow::Int32Array>(overflow_array->keys());
+        auto overflow_key_array = overflow_array->keys();
+        if (!overflow_key_array || overflow_key_array->type_id() != arrow::Type::INT32) {
+            return Status::Invalid("__overflow map keys is not an Int32Array");
+        }
+        overflow_keys = checked_pointer_cast<arrow::Int32Array>(overflow_key_array);
         overflow_items = overflow_array->items();
-        if (!overflow_keys || !overflow_items) {
-            return Status::Invalid("__overflow map has invalid key or item array");
+        if (!overflow_items) {
+            return Status::Invalid("__overflow map item array is null");
         }
         if (overflow_items->type_id() == arrow::Type::DICTIONARY) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -415,16 +416,19 @@ Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
 
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> map_builder_base,
                                       arrow::MakeBuilder(logical_map_type_, arrow_pool));
-    auto* map_builder = dynamic_cast<arrow::MapBuilder*>(map_builder_base.get());
-    if (!map_builder) {
+    if (!map_builder_base || !map_builder_base->type() ||
+        map_builder_base->type()->id() != arrow::Type::MAP) {
         return Status::Invalid(
             fmt::format("cannot create MapBuilder for field {}", shredding_field_name));
     }
-    auto* key_builder = dynamic_cast<arrow::StringBuilder*>(map_builder->key_builder());
-    if (!key_builder) {
+    auto* map_builder = checked_cast<arrow::MapBuilder*>(map_builder_base.get());
+    auto* key_builder_base = map_builder->key_builder();
+    if (!key_builder_base || !key_builder_base->type() ||
+        key_builder_base->type()->id() != arrow::Type::STRING) {
         return Status::Invalid(fmt::format("map key builder is not a StringBuilder for field {}",
                                            shredding_field_name));
     }
+    auto* key_builder = checked_cast<arrow::StringBuilder*>(key_builder_base);
     arrow::ArrayBuilder* item_builder = map_builder->item_builder();
     if (!item_builder) {
         return Status::Invalid(
@@ -501,26 +505,25 @@ Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
 
 Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
     const std::shared_ptr<arrow::Array>& physical_array, arrow::MemoryPool* arrow_pool) const {
-    auto physical_struct_array =
-        arrow::internal::checked_pointer_cast<arrow::StructArray>(physical_array);
-    if (!physical_struct_array) {
+    if (!physical_array || physical_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid(fmt::format("cannot cast physical shredding field {} to StructArray",
                                            LogicalField()->name()));
     }
-    auto selected_keys_type =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(LogicalField()->type());
+    auto physical_struct_array = checked_pointer_cast<arrow::StructArray>(physical_array);
+    auto selected_keys_type = checked_pointer_cast<arrow::StructType>(LogicalField()->type());
 
-    auto field_mapping_array = arrow::internal::checked_pointer_cast<arrow::ListArray>(
-        physical_struct_array->GetFieldByName(MapSharedShreddingDefine::kFieldMapping));
-    if (!field_mapping_array) {
+    auto field_mapping =
+        physical_struct_array->GetFieldByName(MapSharedShreddingDefine::kFieldMapping);
+    if (!field_mapping || field_mapping->type_id() != arrow::Type::LIST) {
         return Status::Invalid(
             fmt::format("cannot find __field_mapping for field {}", LogicalField()->name()));
     }
-    auto field_mapping_values =
-        arrow::internal::checked_pointer_cast<arrow::Int32Array>(field_mapping_array->values());
-    if (!field_mapping_values) {
+    auto field_mapping_array = checked_pointer_cast<arrow::ListArray>(field_mapping);
+    auto mapping_values = field_mapping_array->values();
+    if (!mapping_values || mapping_values->type_id() != arrow::Type::INT32) {
         return Status::Invalid("__field_mapping values is not an Int32Array");
     }
+    auto field_mapping_values = checked_pointer_cast<arrow::Int32Array>(mapping_values);
 
     std::shared_ptr<arrow::DataType> value_type = selected_keys_type->field(0)->type();
     std::map<std::string, std::shared_ptr<arrow::Array>> physical_column_name_to_array;
@@ -538,11 +541,14 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
     std::shared_ptr<arrow::Int32Array> overflow_keys;
     std::shared_ptr<arrow::Array> overflow_items;
     if (overflow_array) {
-        overflow_keys =
-            arrow::internal::checked_pointer_cast<arrow::Int32Array>(overflow_array->keys());
+        auto overflow_key_array = overflow_array->keys();
+        if (!overflow_key_array || overflow_key_array->type_id() != arrow::Type::INT32) {
+            return Status::Invalid("__overflow map keys is not an Int32Array");
+        }
+        overflow_keys = checked_pointer_cast<arrow::Int32Array>(overflow_key_array);
         overflow_items = overflow_array->items();
-        if (!overflow_keys || !overflow_items) {
-            return Status::Invalid("__overflow map has invalid key or item array");
+        if (!overflow_items) {
+            return Status::Invalid("__overflow map item array is null");
         }
         if (overflow_items->type_id() == arrow::Type::DICTIONARY) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -555,11 +561,12 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
     std::unique_ptr<arrow::ArrayBuilder> access_builder_base;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(access_builder_base,
                                       arrow::MakeBuilder(LogicalField()->type(), arrow_pool));
-    auto* access_builder = dynamic_cast<arrow::StructBuilder*>(access_builder_base.get());
-    if (!access_builder) {
+    if (!access_builder_base || !access_builder_base->type() ||
+        access_builder_base->type()->id() != arrow::Type::STRUCT) {
         return Status::Invalid(
             fmt::format("selected-key MAP field {} is not a STRUCT", LogicalField()->name()));
     }
+    auto* access_builder = checked_cast<arrow::StructBuilder*>(access_builder_base.get());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->Reserve(physical_struct_array->length()));
 
     for (int64_t row = 0; row < physical_struct_array->length(); ++row) {
@@ -631,17 +638,15 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
 
 Result<std::shared_ptr<arrow::Array>> DefaultSelectedKeysReadPlan::Materialize(
     const std::shared_ptr<arrow::Array>& physical_array, arrow::MemoryPool* arrow_pool) const {
-    auto map_array = arrow::internal::checked_pointer_cast<arrow::MapArray>(physical_array);
-    if (!map_array) {
+    if (!physical_array || physical_array->type_id() != arrow::Type::MAP) {
         return Status::Invalid(
             fmt::format("cannot cast default-layout selected-key field {} to "
                         "MapArray",
                         LogicalField()->name()));
     }
-    auto selected_keys_type =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(LogicalField()->type());
-    auto physical_map_type =
-        arrow::internal::checked_pointer_cast<arrow::MapType>(PhysicalReadField()->type());
+    auto map_array = checked_pointer_cast<arrow::MapArray>(physical_array);
+    auto selected_keys_type = checked_pointer_cast<arrow::StructType>(LogicalField()->type());
+    auto physical_map_type = checked_pointer_cast<arrow::MapType>(PhysicalReadField()->type());
 
     std::shared_ptr<arrow::Array> items = map_array->items();
     if (items->type_id() == arrow::Type::DICTIONARY) {
@@ -653,11 +658,12 @@ Result<std::shared_ptr<arrow::Array>> DefaultSelectedKeysReadPlan::Materialize(
     std::unique_ptr<arrow::ArrayBuilder> access_builder_base;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(access_builder_base,
                                       arrow::MakeBuilder(LogicalField()->type(), arrow_pool));
-    auto* access_builder = dynamic_cast<arrow::StructBuilder*>(access_builder_base.get());
-    if (!access_builder) {
+    if (!access_builder_base || !access_builder_base->type() ||
+        access_builder_base->type()->id() != arrow::Type::STRUCT) {
         return Status::Invalid(
             fmt::format("selected-key MAP field {} is not a STRUCT", LogicalField()->name()));
     }
+    auto* access_builder = checked_cast<arrow::StructBuilder*>(access_builder_base.get());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->Reserve(map_array->length()));
 
     for (int64_t row = 0; row < map_array->length(); ++row) {

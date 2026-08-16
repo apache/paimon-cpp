@@ -28,6 +28,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -60,7 +61,7 @@ TEST(MapSharedShreddingAccessBuilderTest, BuildSelectedKeysField) {
     ASSERT_EQ(field->type()->id(), arrow::Type::STRUCT);
     ASSERT_FALSE(field->nullable());
 
-    auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(field->type());
+    auto struct_type = checked_pointer_cast<arrow::StructType>(field->type());
     ASSERT_EQ(struct_type->num_fields(), 2);
     ASSERT_EQ(struct_type->field(0)->name(), "age");
     ASSERT_EQ(struct_type->field(1)->name(), "score");

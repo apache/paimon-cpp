@@ -24,6 +24,7 @@
 
 #include "arrow/api.h"
 #include "paimon/common/types/data_type.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/rapidjson_util.h"
 
 namespace paimon {
@@ -43,7 +44,7 @@ class ArrayType : public DataType {
             rapidjson::StringRef("type"),
             RapidJsonUtil::SerializeValue(WithNullable(std::string(TYPE)), allocator).Move(),
             *allocator);
-        auto type = arrow::internal::checked_cast<arrow::ListType*>(type_.get());
+        auto type = checked_cast<arrow::ListType*>(type_.get());
         auto value_field = type->value_field();
 
         // The element metadata is load-bearing: it is what marks an extension type such as

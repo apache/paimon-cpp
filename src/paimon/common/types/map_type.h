@@ -24,6 +24,7 @@
 
 #include "arrow/api.h"
 #include "paimon/common/types/data_type.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/rapidjson_util.h"
 
 namespace paimon {
@@ -50,7 +51,7 @@ class MapType : public DataType {
             rapidjson::StringRef("type"),
             RapidJsonUtil::SerializeValue(WithNullable(std::string(TYPE)), allocator).Move(),
             *allocator);
-        auto type = arrow::internal::checked_cast<arrow::MapType*>(type_.get());
+        auto type = checked_cast<arrow::MapType*>(type_.get());
         auto key_field = type->key_field();
         // The key and value metadata is load-bearing: it is what marks an extension type such as
         // VARIANT.

@@ -30,7 +30,6 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "arrow/scalar.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/metrics/metrics_impl.h"
@@ -39,6 +38,7 @@
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_path_factory.h"
@@ -157,11 +157,10 @@ Result<std::shared_ptr<arrow::StructArray>> PostponeBucketWriter::CheckAndCastVa
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(value_array, value_type_));
-    auto value_struct_array =
-        arrow::internal::checked_pointer_cast<arrow::StructArray>(arrow_array);
-    if (value_struct_array == nullptr) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("invalid RecordBatch: cannot cast to StructArray");
     }
+    auto value_struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
     return value_struct_array;
 }
 
@@ -190,17 +189,13 @@ Result<std::shared_ptr<arrow::Array>> PostponeBucketWriter::PrepareRowKindArray(
             std::shared_ptr<arrow::Array> scalar_array,
             arrow::MakeArrayFromScalar(*row_kind_scalar, value_array_length, arrow_pool_.get()));
         auto typed_row_kind_array =
-            arrow::internal::checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(
-                scalar_array);
-        assert(typed_row_kind_array);
+            checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(scalar_array);
         row_kind_array_ = std::move(typed_row_kind_array);
         row_kind_array = row_kind_array_;
     } else {
         assert(row_kind_array_->length() >= value_array_length);
-        row_kind_array =
-            arrow::internal::checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(
-                row_kind_array_->Slice(0, value_array_length));
-        assert(row_kind_array);
+        row_kind_array = checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(
+            row_kind_array_->Slice(0, value_array_length));
     }
 
     if (!row_kind_vec.empty()) {

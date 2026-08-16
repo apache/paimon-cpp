@@ -27,6 +27,7 @@
 #include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/data/blob.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
@@ -164,7 +165,7 @@ TEST_F(BlobUtilsTest, SeparateBlobArray) {
             .ValueOrDie();
 
     std::shared_ptr<arrow::StructArray> struct_array =
-        std::static_pointer_cast<arrow::StructArray>(raw_struct_array);
+        checked_pointer_cast<arrow::StructArray>(raw_struct_array);
 
     ASSERT_OK_AND_ASSIGN(auto separated,
                          BlobUtils::SeparateBlobArray(struct_array, /*inline_fields=*/{}));
@@ -217,7 +218,7 @@ TEST_F(BlobUtilsTest, SeparateBlobArrayWithPartialInline) {
     auto raw_struct_array =
         arrow::StructArray::Make({int_array, blob_array_1, blob_array_2}, schema->fields())
             .ValueOrDie();
-    auto struct_array = std::static_pointer_cast<arrow::StructArray>(raw_struct_array);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(raw_struct_array);
 
     // f2_blob_1 is inline, f3_blob_2 goes to blob
     ASSERT_OK_AND_ASSIGN(auto separated, BlobUtils::SeparateBlobArray(

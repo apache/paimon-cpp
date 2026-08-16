@@ -27,8 +27,8 @@
 
 #include "arrow/api.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/format/avro/avro_utils.h"
 #include "paimon/result.h"
@@ -94,8 +94,7 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
 
     switch (avro_node->type()) {
         case ::avro::AVRO_BOOL: {
-            const auto& bool_array =
-                arrow::internal::checked_cast<const arrow::BooleanArray&>(array);
+            const auto& bool_array = checked_cast<const arrow::BooleanArray&>(array);
             encoder->encodeBool(bool_array.Value(row_index));
             return Status::OK();
         }
@@ -104,27 +103,23 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
             // AVRO_INT can represent: int8, int16, int32, date (days since epoch)
             switch (array.type()->id()) {
                 case arrow::Type::INT8: {
-                    const auto& int8_array =
-                        arrow::internal::checked_cast<const arrow::Int8Array&>(array);
+                    const auto& int8_array = checked_cast<const arrow::Int8Array&>(array);
                     encoder->encodeInt(int8_array.Value(row_index));
                     return Status::OK();
                 }
                 case arrow::Type::INT16: {
-                    const auto& int16_array =
-                        arrow::internal::checked_cast<const arrow::Int16Array&>(array);
+                    const auto& int16_array = checked_cast<const arrow::Int16Array&>(array);
                     encoder->encodeInt(int16_array.Value(row_index));
                     return Status::OK();
                 }
 
                 case arrow::Type::INT32: {
-                    const auto& int32_array =
-                        arrow::internal::checked_cast<const arrow::Int32Array&>(array);
+                    const auto& int32_array = checked_cast<const arrow::Int32Array&>(array);
                     encoder->encodeInt(int32_array.Value(row_index));
                     return Status::OK();
                 }
                 case arrow::Type::DATE32: {
-                    const auto& date_array =
-                        arrow::internal::checked_cast<const arrow::Date32Array&>(array);
+                    const auto& date_array = checked_cast<const arrow::Date32Array&>(array);
                     encoder->encodeInt(date_array.Value(row_index));
                     return Status::OK();
                 }
@@ -140,18 +135,15 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
             // AVRO_LONG can represent: int64, timestamp
             switch (array.type()->id()) {
                 case arrow::Type::INT64: {
-                    const auto& int64_array =
-                        arrow::internal::checked_cast<const arrow::Int64Array&>(array);
+                    const auto& int64_array = checked_cast<const arrow::Int64Array&>(array);
                     encoder->encodeLong(int64_array.Value(row_index));
                     return Status::OK();
                 }
                 case arrow::Type::TIMESTAMP: {
-                    const auto& timestamp_array =
-                        arrow::internal::checked_cast<const arrow::TimestampArray&>(array);
+                    const auto& timestamp_array = checked_cast<const arrow::TimestampArray&>(array);
                     int64_t timestamp = timestamp_array.Value(row_index);
 
-                    auto ts_type =
-                        arrow::internal::checked_pointer_cast<arrow::TimestampType>(array.type());
+                    auto ts_type = checked_pointer_cast<arrow::TimestampType>(array.type());
                     arrow::TimeUnit::type unit = ts_type->unit();
                     const auto& logical_type = avro_node->logicalType().type();
 
@@ -190,22 +182,19 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
         }
 
         case ::avro::AVRO_FLOAT: {
-            const auto& float_array =
-                arrow::internal::checked_cast<const arrow::FloatArray&>(array);
+            const auto& float_array = checked_cast<const arrow::FloatArray&>(array);
             encoder->encodeFloat(float_array.Value(row_index));
             return Status::OK();
         }
 
         case ::avro::AVRO_DOUBLE: {
-            const auto& double_array =
-                arrow::internal::checked_cast<const arrow::DoubleArray&>(array);
+            const auto& double_array = checked_cast<const arrow::DoubleArray&>(array);
             encoder->encodeDouble(double_array.Value(row_index));
             return Status::OK();
         }
 
         case ::avro::AVRO_STRING: {
-            const auto& string_array =
-                arrow::internal::checked_cast<const arrow::StringArray&>(array);
+            const auto& string_array = checked_cast<const arrow::StringArray&>(array);
             std::string_view value = string_array.GetView(row_index);
             encoder->encodeString(std::string(value));
             return Status::OK();
@@ -214,8 +203,7 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
         case ::avro::AVRO_BYTES: {
             // Handle DECIMAL
             if (avro_node->logicalType().type() == ::avro::LogicalType::DECIMAL) {
-                const auto& decimal_array =
-                    arrow::internal::checked_cast<const arrow::Decimal128Array&>(array);
+                const auto& decimal_array = checked_cast<const arrow::Decimal128Array&>(array);
                 std::string_view decimal_value = decimal_array.GetView(row_index);
                 ctx->assign(decimal_value.begin(), decimal_value.end());
                 // Arrow Decimal128 bytes are in little-endian order, Avro requires big-endian
@@ -227,13 +215,12 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
             // Handle regular BYTES (binary or large_binary)
             if (array.type()->id() == arrow::Type::LARGE_BINARY) {
                 const auto& large_binary_array =
-                    arrow::internal::checked_cast<const arrow::LargeBinaryArray&>(array);
+                    checked_cast<const arrow::LargeBinaryArray&>(array);
                 std::string_view value = large_binary_array.GetView(row_index);
                 encoder->encodeBytes(reinterpret_cast<const uint8_t*>(value.data()), value.size());
                 return Status::OK();
             }
-            const auto& binary_array =
-                arrow::internal::checked_cast<const arrow::BinaryArray&>(array);
+            const auto& binary_array = checked_cast<const arrow::BinaryArray&>(array);
             std::string_view value = binary_array.GetView(row_index);
             encoder->encodeBytes(reinterpret_cast<const uint8_t*>(value.data()), value.size());
             return Status::OK();
@@ -245,8 +232,7 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
                                                    array.type()->ToString()));
             }
 
-            const auto& struct_array =
-                arrow::internal::checked_cast<const arrow::StructArray&>(array);
+            const auto& struct_array = checked_cast<const arrow::StructArray&>(array);
             const size_t num_fields = avro_node->leaves();
 
             if (PAIMON_UNLIKELY(struct_array.num_fields() != static_cast<int>(num_fields))) {
@@ -270,8 +256,7 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
 
             // Handle ListArray
             if (array.type()->id() == arrow::Type::LIST) {
-                const auto& list_array =
-                    arrow::internal::checked_cast<const arrow::ListArray&>(array);
+                const auto& list_array = checked_cast<const arrow::ListArray&>(array);
 
                 const auto start = list_array.value_offset(row_index);
                 const auto end = list_array.value_offset(row_index + 1);
@@ -300,8 +285,7 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
                                     AvroUtils::ToString(element_node)));
                 }
 
-                const auto& map_array =
-                    arrow::internal::checked_cast<const arrow::MapArray&>(array);
+                const auto& map_array = checked_cast<const arrow::MapArray&>(array);
 
                 const auto start = map_array.value_offset(row_index);
                 const auto end = map_array.value_offset(row_index + 1);
@@ -337,7 +321,7 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
                 return Status::Invalid(
                     fmt::format("AVRO_MAP expects MapArray, got {}", array.type()->ToString()));
             }
-            const auto& map_array = arrow::internal::checked_cast<const arrow::MapArray&>(array);
+            const auto& map_array = checked_cast<const arrow::MapArray&>(array);
 
             const auto start = map_array.value_offset(row_index);
             const auto end = map_array.value_offset(row_index + 1);
@@ -354,8 +338,7 @@ Status AvroDirectEncoder::EncodeArrowToAvro(const ::avro::NodePtr& avro_node,
                     return Status::Invalid(fmt::format("AVRO_MAP keys must be StringArray, got {}",
                                                        keys->type()->ToString()));
                 }
-                const auto& string_array =
-                    arrow::internal::checked_cast<const arrow::StringArray&>(*keys);
+                const auto& string_array = checked_cast<const arrow::StringArray&>(*keys);
 
                 for (int64_t i = start; i < end; ++i) {
                     encoder->startItem();

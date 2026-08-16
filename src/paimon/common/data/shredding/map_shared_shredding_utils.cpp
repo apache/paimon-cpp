@@ -30,6 +30,7 @@
 #include "paimon/common/compression/block_decompressor.h"
 #include "paimon/common/data/shredding/map_shared_shredding_batch_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/options/map_storage_layout.h"
@@ -60,7 +61,7 @@ bool MapSharedShreddingUtils::IsShreddingKeyMap(
     if (arrow_type->id() != arrow::Type::MAP) {
         return false;
     }
-    auto map_type = std::static_pointer_cast<arrow::MapType>(arrow_type);
+    auto map_type = checked_pointer_cast<arrow::MapType>(arrow_type);
     return map_type->key_type()->id() == arrow::Type::STRING;
 }
 
@@ -131,7 +132,7 @@ Result<std::shared_ptr<arrow::Schema>> MapSharedShreddingUtils::LogicalToPhysica
                     fmt::format("Field '{}' is expected to be MAP type, but got '{}'.",
                                 field->name(), field->type()->name()));
             }
-            auto map_type = std::static_pointer_cast<arrow::MapType>(field->type());
+            auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
             auto value_type = map_type->item_type();
             bool value_nullable = map_type->item_field()->nullable();
             auto physical_type = BuildPhysicalStructType(value_type, it->second, value_nullable);

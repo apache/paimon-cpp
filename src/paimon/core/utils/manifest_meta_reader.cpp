@@ -32,9 +32,9 @@
 #include "arrow/c/bridge.h"
 #include "arrow/compute/cast.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -68,18 +68,19 @@ Result<BatchReader::ReadBatch> ManifestMetaReader::NextBatch() {
 Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
     const std::shared_ptr<arrow::Array>& src_array,
     const std::shared_ptr<arrow::DataType>& target_type, arrow::MemoryPool* pool) {
+    if (!src_array || !target_type) {
+        return Status::Invalid("Align array with schema failed, array or target type is null");
+    }
     const auto src_kind = src_array->type()->id();
     switch (src_kind) {
         case arrow::Type::type::LIST: {
-            auto list_src_array =
-                arrow::internal::checked_pointer_cast<arrow::ListArray>(src_array);
-            auto list_target_type =
-                arrow::internal::checked_pointer_cast<arrow::ListType>(target_type);
-            if (!list_target_type) {
+            auto list_src_array = checked_pointer_cast<arrow::ListArray>(src_array);
+            if (target_type->id() != arrow::Type::LIST) {
                 return Status::Invalid(
                     "Complete non exist field failed, target type cannot cast to a list data "
                     "type");
             }
+            auto list_target_type = checked_pointer_cast<arrow::ListType>(target_type);
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> converted,
                                    AlignArrayWithSchema(list_src_array->values(),
                                                         list_target_type->value_type(), pool));
@@ -90,14 +91,13 @@ Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
                 list_src_array->offset());
         }
         case arrow::Type::type::MAP: {
-            auto map_src_array = arrow::internal::checked_pointer_cast<arrow::MapArray>(src_array);
-            auto map_target_type =
-                arrow::internal::checked_pointer_cast<arrow::MapType>(target_type);
-            if (!map_target_type) {
+            auto map_src_array = checked_pointer_cast<arrow::MapArray>(src_array);
+            if (target_type->id() != arrow::Type::MAP) {
                 return Status::Invalid(
                     "Complete non exist field failed, target type cannot cast to a map data "
                     "type");
             }
+            auto map_target_type = checked_pointer_cast<arrow::MapType>(target_type);
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<arrow::Array> key_converted,
                 AlignArrayWithSchema(map_src_array->keys(), map_target_type->key_type(), pool));
@@ -112,15 +112,13 @@ Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
                 map_src_array->null_count(), map_src_array->offset());
         }
         case arrow::Type::type::STRUCT: {
-            auto struct_src_array =
-                arrow::internal::checked_pointer_cast<arrow::StructArray>(src_array);
-            auto struct_target_type =
-                arrow::internal::checked_pointer_cast<arrow::StructType>(target_type);
-            if (!struct_target_type) {
+            auto struct_src_array = checked_pointer_cast<arrow::StructArray>(src_array);
+            if (target_type->id() != arrow::Type::STRUCT) {
                 return Status::Invalid(
                     "Complete non exist field failed, target type cannot cast to a struct data "
                     "type");
             }
+            auto struct_target_type = checked_pointer_cast<arrow::StructType>(target_type);
             std::vector<std::string> field_names;
             arrow::ArrayVector converted_array;
             field_names.reserve(target_type->num_fields());
@@ -156,8 +154,7 @@ Result<std::shared_ptr<arrow::Array>> ManifestMetaReader::AlignArrayWithSchema(
             if (src_kind != target_type->id()) {
                 arrow::compute::CastOptions cast_options;
                 cast_options.allow_int_overflow = false;
-                auto int32_array =
-                    arrow::internal::checked_pointer_cast<arrow::Int32Array>(src_array);
+                auto int32_array = checked_pointer_cast<arrow::Int32Array>(src_array);
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                     std::shared_ptr<arrow::Array> result,
                     arrow::compute::Cast(*int32_array, target_type, cast_options));

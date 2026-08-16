@@ -36,6 +36,7 @@
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 
@@ -119,49 +120,49 @@ Status DataGenerator::AppendValue(const BinaryRow& row, int32_t field_id,
     switch (type_id) {
         case arrow::Type::type::BOOL: {
             auto builder =
-                static_cast<arrow::BooleanBuilder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::BooleanBuilder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetBoolean(field_id)));
             break;
         }
         case arrow::Type::type::INT8: {
             auto builder =
-                static_cast<arrow::Int8Builder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::Int8Builder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetByte(field_id)));
             break;
         }
         case arrow::Type::type::INT16: {
             auto builder =
-                static_cast<arrow::Int16Builder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::Int16Builder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetShort(field_id)));
             break;
         }
         case arrow::Type::type::INT32: {
             auto builder =
-                static_cast<arrow::Int32Builder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::Int32Builder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetInt(field_id)));
             break;
         }
         case arrow::Type::type::INT64: {
             auto builder =
-                static_cast<arrow::Int64Builder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::Int64Builder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetLong(field_id)));
             break;
         }
         case arrow::Type::type::FLOAT: {
             auto builder =
-                static_cast<arrow::FloatBuilder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::FloatBuilder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetFloat(field_id)));
             break;
         }
         case arrow::Type::type::DOUBLE: {
             auto builder =
-                static_cast<arrow::DoubleBuilder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::DoubleBuilder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetDouble(field_id)));
             break;
         }
         case arrow::Type::type::STRING: {
             auto builder =
-                static_cast<arrow::StringBuilder*>(struct_builder->field_builder(field_id));
+                checked_cast<arrow::StringBuilder*>(struct_builder->field_builder(field_id));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.GetString(field_id).ToString()));
             break;
         }

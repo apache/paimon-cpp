@@ -23,10 +23,10 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/generic_array.h"
 #include "paimon/common/data/generic_map.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/mergetree/compact/aggregate/field_aggregate_utils.h"
 #include "paimon/status.h"
 
@@ -84,7 +84,7 @@ VariantType MakeMap(std::vector<MapEntry> entries,
         std::make_shared<GenericArray>(std::move(keys), std::move(key_holders));
     std::shared_ptr<InternalArray> value_array =
         std::make_shared<GenericArray>(std::move(values), std::move(value_holders));
-    return std::static_pointer_cast<InternalMap>(
+    return checked_pointer_cast<InternalMap>(
         std::make_shared<GenericMap>(std::move(key_array), std::move(value_array)));
 }
 
@@ -98,8 +98,7 @@ Result<std::unique_ptr<FieldMergeMapAgg>> FieldMergeMapAgg::Create(
             fmt::format("invalid field type {} for field '{}' of {}, supposed to be map",
                         field_type->ToString(), field_name, NAME));
     }
-    std::shared_ptr<arrow::MapType> map_type =
-        arrow::internal::checked_pointer_cast<arrow::MapType>(field_type);
+    std::shared_ptr<arrow::MapType> map_type = checked_pointer_cast<arrow::MapType>(field_type);
     return std::unique_ptr<FieldMergeMapAgg>(
         new FieldMergeMapAgg(field_type, map_type->key_type(), map_type->item_type(), pool));
 }

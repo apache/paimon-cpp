@@ -22,6 +22,7 @@
 
 #include "arrow/api.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/result.h"
 
 namespace paimon::test {
@@ -38,8 +39,7 @@ class DictArrayConverter {
         switch (kind) {
             case arrow::Type::type::STRUCT: {
                 // convert array
-                auto struct_array =
-                    arrow::internal::checked_pointer_cast<arrow::StructArray>(array);
+                auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
                 arrow::ArrayVector new_children;
                 std::size_t size = struct_array->fields().size();
                 for (size_t i = 0; i < size; i++) {
@@ -65,7 +65,7 @@ class DictArrayConverter {
                                                             struct_array->null_bitmap());
             }
             case arrow::Type::type::LIST: {
-                auto list_array = arrow::internal::checked_pointer_cast<arrow::ListArray>(array);
+                auto list_array = checked_pointer_cast<arrow::ListArray>(array);
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> value_array,
                                        ConvertDictArray(list_array->values(), pool));
                 return std::make_shared<arrow::ListArray>(
@@ -74,13 +74,12 @@ class DictArrayConverter {
                     list_array->null_count(), list_array->offset());
             }
             case arrow::Type::type::MAP: {
-                auto map_array = arrow::internal::checked_pointer_cast<arrow::MapArray>(array);
+                auto map_array = checked_pointer_cast<arrow::MapArray>(array);
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> key_array,
                                        ConvertDictArray(map_array->keys(), pool));
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> item_array,
                                        ConvertDictArray(map_array->items(), pool));
-                auto map_type =
-                    arrow::internal::checked_pointer_cast<arrow::MapType>(map_array->type());
+                auto map_type = checked_pointer_cast<arrow::MapType>(map_array->type());
                 auto new_map_type = std::make_shared<arrow::MapType>(
                     key_array->type(), item_array->type(), map_type->keys_sorted());
                 return std::make_shared<arrow::MapArray>(
@@ -89,10 +88,8 @@ class DictArrayConverter {
                     map_array->offset());
             }
             case arrow::Type::type::DICTIONARY: {
-                auto dict_array =
-                    arrow::internal::checked_pointer_cast<arrow::DictionaryArray>(array);
-                auto dict_type = arrow::internal::checked_pointer_cast<arrow::DictionaryType>(
-                    dict_array->type());
+                auto dict_array = checked_pointer_cast<arrow::DictionaryArray>(array);
+                auto dict_type = checked_pointer_cast<arrow::DictionaryType>(dict_array->type());
                 auto value_type_id = dict_type->value_type()->id();
                 if (value_type_id == arrow::Type::type::STRING) {
                     return ConvertDictionaryArrayToStringArray<arrow::StringArray>(dict_array,

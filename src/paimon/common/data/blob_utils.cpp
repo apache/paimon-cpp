@@ -32,6 +32,7 @@
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 namespace arrow {
 class Array;
@@ -62,7 +63,7 @@ Result<BlobUtils::SeparatedStructArrays> BlobUtils::SeparateBlobArray(
     const std::shared_ptr<arrow::StructArray>& struct_array,
     const std::set<std::string>& inline_fields) {
     std::shared_ptr<arrow::StructType> old_type =
-        std::static_pointer_cast<arrow::StructType>(struct_array->type());
+        checked_pointer_cast<arrow::StructType>(struct_array->type());
     const auto& old_fields = old_type->fields();
     const auto& old_arrays = struct_array->fields();
 
@@ -146,12 +147,11 @@ Status BlobUtils::ValidateBlobInlineFields(const std::shared_ptr<arrow::StructAr
         if (!field_array) {
             continue;
         }
-        const auto* binary_array =
-            arrow::internal::checked_cast<const arrow::LargeBinaryArray*>(field_array.get());
-        if (!binary_array) {
+        if (field_array->type_id() != arrow::Type::LARGE_BINARY) {
             return Status::Invalid(
                 fmt::format("cannot cast array for field {} to LargeBinaryArray", field_name));
         }
+        const auto* binary_array = checked_cast<const arrow::LargeBinaryArray*>(field_array.get());
         for (int64_t row = 0; row < binary_array->length(); ++row) {
             if (binary_array->IsNull(row)) {
                 continue;

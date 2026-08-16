@@ -28,10 +28,10 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_defs.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -53,7 +53,7 @@ Result<std::shared_ptr<arrow::DataType>> VariantShreddingSchemaImpl(
     }
     switch (data_type->id()) {
         case arrow::Type::LIST: {
-            const auto& list_type = std::static_pointer_cast<arrow::ListType>(data_type);
+            const auto& list_type = checked_pointer_cast<arrow::ListType>(data_type);
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> element_type,
                                    VariantShreddingSchemaImpl(list_type->value_type(),
                                                               /*is_top_level=*/false,
@@ -68,7 +68,7 @@ Result<std::shared_ptr<arrow::DataType>> VariantShreddingSchemaImpl(
             // The field name level is always non-nullable: Variant null values are represented in
             // the "value" column as "00", and missing values are represented by setting both
             // "value" and "typed_value" to null.
-            const auto& struct_type = std::static_pointer_cast<arrow::StructType>(data_type);
+            const auto& struct_type = checked_pointer_cast<arrow::StructType>(data_type);
             arrow::FieldVector shredded_fields;
             for (const auto& field : struct_type->fields()) {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> field_type,
@@ -120,7 +120,7 @@ Result<std::shared_ptr<VariantSchema>> BuildVariantSchemaImpl(
     if (type->id() != arrow::Type::STRUCT) {
         return InvalidVariantShreddingSchema(type);
     }
-    const auto& struct_type = std::static_pointer_cast<arrow::StructType>(type);
+    const auto& struct_type = checked_pointer_cast<arrow::StructType>(type);
     // The struct must not be empty or contain duplicate field names. The latter is enforced in
     // the loop below.
     if (struct_type->num_fields() == 0) {
@@ -140,8 +140,7 @@ Result<std::shared_ptr<VariantSchema>> BuildVariantSchemaImpl(
             schema->typed_idx = i;
             switch (field_type->id()) {
                 case arrow::Type::STRUCT: {
-                    const auto& object_type =
-                        std::static_pointer_cast<arrow::StructType>(field_type);
+                    const auto& object_type = checked_pointer_cast<arrow::StructType>(field_type);
                     schema->has_object_schema = true;
                     schema->object_schema.reserve(object_type->num_fields());
                     for (int32_t index = 0; index < object_type->num_fields(); ++index) {
@@ -160,7 +159,7 @@ Result<std::shared_ptr<VariantSchema>> BuildVariantSchemaImpl(
                     break;
                 }
                 case arrow::Type::LIST: {
-                    const auto& list_type = std::static_pointer_cast<arrow::ListType>(field_type);
+                    const auto& list_type = checked_pointer_cast<arrow::ListType>(field_type);
                     PAIMON_ASSIGN_OR_RAISE(
                         schema->array_schema,
                         BuildVariantSchemaImpl(list_type->value_type(), /*top_level=*/false));
@@ -208,7 +207,7 @@ Result<std::shared_ptr<VariantSchema>> BuildVariantSchemaImpl(
                     break;
                 case arrow::Type::DECIMAL128: {
                     const auto& decimal_type =
-                        std::static_pointer_cast<arrow::Decimal128Type>(field_type);
+                        checked_pointer_cast<arrow::Decimal128Type>(field_type);
                     schema->scalar_schema =
                         VariantSchema::ScalarType{VariantSchema::ScalarKind::kDecimal,
                                                   decimal_type->precision(), decimal_type->scale()};
@@ -216,7 +215,7 @@ Result<std::shared_ptr<VariantSchema>> BuildVariantSchemaImpl(
                 }
                 case arrow::Type::TIMESTAMP: {
                     const auto& timestamp_type =
-                        std::static_pointer_cast<arrow::TimestampType>(field_type);
+                        checked_pointer_cast<arrow::TimestampType>(field_type);
                     // The variant binary stores timestamps as microseconds since the epoch; a
                     // typed_value column of any other precision would misinterpret the values.
                     if (timestamp_type->unit() != arrow::TimeUnit::MICRO) {
@@ -305,7 +304,7 @@ bool VariantShreddingUtils::IsShreddedFileType(
     if (!file_variant_type || file_variant_type->id() != arrow::Type::STRUCT) {
         return false;
     }
-    const auto& struct_type = std::static_pointer_cast<arrow::StructType>(file_variant_type);
+    const auto& struct_type = checked_pointer_cast<arrow::StructType>(file_variant_type);
     return struct_type->GetFieldByName(VariantDefs::kTypedValueFieldName) != nullptr;
 }
 
@@ -314,7 +313,7 @@ bool VariantShreddingUtils::IsUntypedPhysicalVariantType(
     if (!file_variant_type || file_variant_type->id() != arrow::Type::STRUCT) {
         return false;
     }
-    const auto& struct_type = std::static_pointer_cast<arrow::StructType>(file_variant_type);
+    const auto& struct_type = checked_pointer_cast<arrow::StructType>(file_variant_type);
     if (struct_type->num_fields() != 2) {
         return false;
     }

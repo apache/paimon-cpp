@@ -22,10 +22,10 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/generic_array.h"
 #include "paimon/common/data/internal_array.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/mergetree/compact/aggregate/field_aggregate_utils.h"
 #include "paimon/status.h"
@@ -78,8 +78,7 @@ Result<std::unique_ptr<FieldCollectAgg>> FieldCollectAgg::Create(
             fmt::format("invalid field type {} for field '{}' of {}, supposed to be array",
                         field_type->ToString(), field_name, NAME));
     }
-    std::shared_ptr<arrow::ListType> list_type =
-        arrow::internal::checked_pointer_cast<arrow::ListType>(field_type);
+    std::shared_ptr<arrow::ListType> list_type = checked_pointer_cast<arrow::ListType>(field_type);
     PAIMON_ASSIGN_OR_RAISE(bool distinct, options.FieldCollectAggDistinct(field_name));
     return std::unique_ptr<FieldCollectAgg>(
         new FieldCollectAgg(field_type, list_type->value_type(), distinct, pool));
@@ -125,7 +124,7 @@ Result<VariantType> FieldCollectAgg::AggImpl(const VariantType& accumulator,
     if (input_array) {
         holders.push_back(input_array);
     }
-    return VariantType(std::static_pointer_cast<InternalArray>(
+    return VariantType(checked_pointer_cast<InternalArray>(
         std::make_shared<GenericArray>(std::move(values), std::move(holders))));
 }
 
@@ -163,7 +162,7 @@ Result<VariantType> FieldCollectAgg::Retract(const VariantType& accumulator,
             result_values.push_back(std::move(candidate));
         }
     }
-    return VariantType(std::static_pointer_cast<InternalArray>(std::make_shared<GenericArray>(
+    return VariantType(checked_pointer_cast<InternalArray>(std::make_shared<GenericArray>(
         std::move(result_values),
         std::vector<std::shared_ptr<InternalArray>>{accumulator_array, retract_array})));
 }

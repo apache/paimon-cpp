@@ -23,12 +23,12 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/generic_array.h"
 #include "paimon/common/data/internal_row.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/mergetree/compact/aggregate/field_aggregate_utils.h"
 #include "paimon/defs.h"
@@ -104,15 +104,14 @@ Result<std::unique_ptr<FieldNestedUpdateAgg>> FieldNestedUpdateAgg::Create(
             fmt::format("invalid field type {} for field '{}' of {}, supposed to be array<struct>",
                         field_type->ToString(), field_name, NAME));
     }
-    std::shared_ptr<arrow::ListType> list_type =
-        arrow::internal::checked_pointer_cast<arrow::ListType>(field_type);
+    std::shared_ptr<arrow::ListType> list_type = checked_pointer_cast<arrow::ListType>(field_type);
     if (list_type->value_type()->id() != arrow::Type::STRUCT) {
         return Status::Invalid(
             fmt::format("invalid field type {} for field '{}' of {}, supposed to be array<struct>",
                         field_type->ToString(), field_name, NAME));
     }
     std::shared_ptr<arrow::StructType> row_type =
-        arrow::internal::checked_pointer_cast<arrow::StructType>(list_type->value_type());
+        checked_pointer_cast<arrow::StructType>(list_type->value_type());
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> key_names,
                            options.FieldNestedUpdateAggNestedKey(field_name));
@@ -220,7 +219,7 @@ Result<VariantType> FieldNestedUpdateAgg::AggImpl(const VariantType& accumulator
         }
         holders.push_back(input);
         return VariantType(
-            std::static_pointer_cast<InternalArray>(MakeRows(std::move(rows), std::move(holders))));
+            checked_pointer_cast<InternalArray>(MakeRows(std::move(rows), std::move(holders))));
     }
 
     std::vector<std::shared_ptr<InternalRow>> rows;
@@ -265,7 +264,7 @@ Result<VariantType> FieldNestedUpdateAgg::AggImpl(const VariantType& accumulator
     }
     holders.push_back(input);
     return VariantType(
-        std::static_pointer_cast<InternalArray>(MakeRows(std::move(rows), std::move(holders))));
+        checked_pointer_cast<InternalArray>(MakeRows(std::move(rows), std::move(holders))));
 }
 
 Result<VariantType> FieldNestedUpdateAgg::Retract(const VariantType& accumulator,
@@ -295,7 +294,7 @@ Result<VariantType> FieldNestedUpdateAgg::Retract(const VariantType& accumulator
                 }
             }
         }
-        return VariantType(std::static_pointer_cast<InternalArray>(
+        return VariantType(checked_pointer_cast<InternalArray>(
             MakeRows(std::move(rows), std::vector<std::shared_ptr<InternalArray>>{acc, retract})));
     }
 
@@ -341,7 +340,7 @@ Result<VariantType> FieldNestedUpdateAgg::Retract(const VariantType& accumulator
             }
         }
     }
-    return VariantType(std::static_pointer_cast<InternalArray>(
+    return VariantType(checked_pointer_cast<InternalArray>(
         MakeRows(std::move(rows), std::vector<std::shared_ptr<InternalArray>>{acc, retract})));
 }
 

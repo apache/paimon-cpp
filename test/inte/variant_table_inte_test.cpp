@@ -33,6 +33,7 @@
 #include "paimon/common/data/variant/variant_shredding_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/factories/io_hook.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -93,20 +94,18 @@ class VariantTableInteTest : public ::testing::Test {
                       const std::vector<const char*>& expected_jsons) {
         ASSERT_OK_AND_ASSIGN(auto result, helper->ReadResult(splits));
         ASSERT_EQ(result->num_chunks(), 1);
-        auto result_struct = std::static_pointer_cast<arrow::StructArray>(result->chunk(0));
+        auto result_struct = checked_pointer_cast<arrow::StructArray>(result->chunk(0));
         ASSERT_EQ(result_struct->length(), static_cast<int64_t>(expected_jsons.size()));
-        auto struct_type = std::static_pointer_cast<arrow::StructType>(result_struct->type());
+        auto struct_type = checked_pointer_cast<arrow::StructType>(result_struct->type());
         int32_t id_index = struct_type->GetFieldIndex("id");
         int32_t variant_index = struct_type->GetFieldIndex("v");
         ASSERT_GE(id_index, 0);
         ASSERT_GE(variant_index, 0);
-        auto id_column =
-            std::static_pointer_cast<arrow::Int32Array>(result_struct->field(id_index));
+        auto id_column = checked_pointer_cast<arrow::Int32Array>(result_struct->field(id_index));
         auto variant_column =
-            std::static_pointer_cast<arrow::StructArray>(result_struct->field(variant_index));
-        auto value_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
-        auto metadata_column =
-            std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
+            checked_pointer_cast<arrow::StructArray>(result_struct->field(variant_index));
+        auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
+        auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
         for (size_t i = 0; i < expected_jsons.size(); ++i) {
             SCOPED_TRACE("row " + std::to_string(i));
             ASSERT_EQ(id_column->Value(i), expected_ids[i]);
@@ -151,7 +150,7 @@ class VariantTableInteTest : public ::testing::Test {
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_read_schema.get()).ok());
         ASSERT_OK_AND_ASSIGN(auto result, helper->ReadResult(splits, std::move(c_read_schema)));
         ASSERT_EQ(result->num_chunks(), 1);
-        *result_struct = std::static_pointer_cast<arrow::StructArray>(result->chunk(0));
+        *result_struct = checked_pointer_cast<arrow::StructArray>(result->chunk(0));
     }
 
     Result<std::shared_ptr<arrow::Schema>> ReadDataFileSchema(
@@ -441,18 +440,18 @@ TEST_F(VariantTableInteTest, TestAdaptiveInferenceWithMultipleVariantFields) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result, helper->ReadResult(splits));
     std::map<int32_t, std::string> actual;
     for (const std::shared_ptr<arrow::Array>& chunk : result->chunks()) {
-        auto rows = std::static_pointer_cast<arrow::StructArray>(chunk);
-        auto row_type = std::static_pointer_cast<arrow::StructType>(rows->type());
+        auto rows = checked_pointer_cast<arrow::StructArray>(chunk);
+        auto row_type = checked_pointer_cast<arrow::StructType>(rows->type());
         auto ids =
-            std::static_pointer_cast<arrow::Int32Array>(rows->field(row_type->GetFieldIndex("id")));
-        auto left = std::static_pointer_cast<arrow::StructArray>(
+            checked_pointer_cast<arrow::Int32Array>(rows->field(row_type->GetFieldIndex("id")));
+        auto left = checked_pointer_cast<arrow::StructArray>(
             rows->field(row_type->GetFieldIndex("left_payload")));
-        auto right = std::static_pointer_cast<arrow::StructArray>(
+        auto right = checked_pointer_cast<arrow::StructArray>(
             rows->field(row_type->GetFieldIndex("right_payload")));
-        auto left_values = std::static_pointer_cast<arrow::BinaryArray>(left->field(0));
-        auto left_metadata = std::static_pointer_cast<arrow::BinaryArray>(left->field(1));
-        auto right_values = std::static_pointer_cast<arrow::BinaryArray>(right->field(0));
-        auto right_metadata = std::static_pointer_cast<arrow::BinaryArray>(right->field(1));
+        auto left_values = checked_pointer_cast<arrow::BinaryArray>(left->field(0));
+        auto left_metadata = checked_pointer_cast<arrow::BinaryArray>(left->field(1));
+        auto right_values = checked_pointer_cast<arrow::BinaryArray>(right->field(0));
+        auto right_metadata = checked_pointer_cast<arrow::BinaryArray>(right->field(1));
         for (int64_t i = 0; i < rows->length(); ++i) {
             ASSERT_OK_AND_ASSIGN(
                 std::shared_ptr<GenericVariant> left_variant,
@@ -555,7 +554,7 @@ TEST_F(VariantTableInteTest, TestAdaptiveInferenceWithNestedVariant) {
                              ReadDataFileSchema(data_split->BucketPath(), files[i], options));
         std::shared_ptr<arrow::Field> file_nested = file_schema->GetFieldByName("nested");
         ASSERT_NE(file_nested, nullptr);
-        auto file_nested_type = std::static_pointer_cast<arrow::StructType>(file_nested->type());
+        auto file_nested_type = checked_pointer_cast<arrow::StructType>(file_nested->type());
         std::shared_ptr<arrow::Field> file_variant = file_nested_type->GetFieldByName("payload");
         ASSERT_NE(file_variant, nullptr);
         ASSERT_TRUE(file_variant->type()->Equals(*expected_types[i]))
@@ -566,19 +565,19 @@ TEST_F(VariantTableInteTest, TestAdaptiveInferenceWithNestedVariant) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result, helper->ReadResult(splits));
     std::map<int32_t, std::string> actual;
     for (const std::shared_ptr<arrow::Array>& chunk : result->chunks()) {
-        auto rows = std::static_pointer_cast<arrow::StructArray>(chunk);
-        auto row_type = std::static_pointer_cast<arrow::StructType>(rows->type());
+        auto rows = checked_pointer_cast<arrow::StructArray>(chunk);
+        auto row_type = checked_pointer_cast<arrow::StructType>(rows->type());
         auto ids =
-            std::static_pointer_cast<arrow::Int32Array>(rows->field(row_type->GetFieldIndex("id")));
-        auto nested = std::static_pointer_cast<arrow::StructArray>(
+            checked_pointer_cast<arrow::Int32Array>(rows->field(row_type->GetFieldIndex("id")));
+        auto nested = checked_pointer_cast<arrow::StructArray>(
             rows->field(row_type->GetFieldIndex("nested")));
-        auto nested_type = std::static_pointer_cast<arrow::StructType>(nested->type());
-        auto label_column = std::static_pointer_cast<arrow::StringArray>(
+        auto nested_type = checked_pointer_cast<arrow::StructType>(nested->type());
+        auto label_column = checked_pointer_cast<arrow::StringArray>(
             nested->field(nested_type->GetFieldIndex("label")));
-        auto variant = std::static_pointer_cast<arrow::StructArray>(
+        auto variant = checked_pointer_cast<arrow::StructArray>(
             nested->field(nested_type->GetFieldIndex("payload")));
-        auto value_column = std::static_pointer_cast<arrow::BinaryArray>(variant->field(0));
-        auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(variant->field(1));
+        auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant->field(0));
+        auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(variant->field(1));
         for (int64_t i = 0; i < rows->length(); ++i) {
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> value,
                                  GenericVariant::Create(value_column->GetView(i),
@@ -647,8 +646,8 @@ TEST_F(VariantTableInteTest, TestVariantAccessRead) {
     std::shared_ptr<arrow::StructArray> result_struct;
     ReadWithSchema(helper.get(), splits, read_schema, &result_struct);
     ASSERT_EQ(result_struct->length(), 3);
-    auto struct_type = std::static_pointer_cast<arrow::StructType>(result_struct->type());
-    auto v_column = std::static_pointer_cast<arrow::StructArray>(
+    auto struct_type = checked_pointer_cast<arrow::StructType>(result_struct->type());
+    auto v_column = checked_pointer_cast<arrow::StructArray>(
         result_struct->field(struct_type->GetFieldIndex("v")));
     const auto& age = static_cast<const arrow::Int64Array&>(*v_column->field(0));
     const auto& other = static_cast<const arrow::StringArray&>(*v_column->field(1));
@@ -709,8 +708,8 @@ TEST_F(VariantTableInteTest, TestNestedRowVariantAccessRead) {
     std::shared_ptr<arrow::StructArray> result_struct;
     ReadWithSchema(helper.get(), splits, read_schema, &result_struct);
 
-    auto struct_type = std::static_pointer_cast<arrow::StructType>(result_struct->type());
-    auto s_column = std::static_pointer_cast<arrow::StructArray>(
+    auto struct_type = checked_pointer_cast<arrow::StructType>(result_struct->type());
+    auto s_column = checked_pointer_cast<arrow::StructArray>(
         result_struct->field(struct_type->GetFieldIndex("s")));
     const auto& nv = static_cast<const arrow::StructArray&>(*s_column->field(0));
     const auto& age = static_cast<const arrow::Int64Array&>(*nv.field(0));
@@ -771,7 +770,7 @@ TEST_F(VariantTableInteTest, TestArrayVariantAccessRead) {
     std::shared_ptr<arrow::StructArray> result_struct;
     ReadWithSchema(helper.get(), splits, read_schema, &result_struct);
 
-    auto struct_type = std::static_pointer_cast<arrow::StructType>(result_struct->type());
+    auto struct_type = checked_pointer_cast<arrow::StructType>(result_struct->type());
     const auto& list = static_cast<const arrow::ListArray&>(
         *result_struct->field(struct_type->GetFieldIndex("arr")));
     ASSERT_EQ(list.length(), 3);

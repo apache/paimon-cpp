@@ -25,6 +25,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
@@ -671,7 +672,7 @@ TEST_F(BitmapIndexTest, TestHighCardinalityForWriteAndRead) {
         arrow::StructBuilder struct_builder(arrow::struct_({arrow::field("f0", type)}),
                                             arrow::default_memory_pool(),
                                             {std::make_shared<arrow::StringBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
 
         for (int32_t i = 0; i < 100000; i++) {
             EXPECT_TRUE(struct_builder.Append().ok());

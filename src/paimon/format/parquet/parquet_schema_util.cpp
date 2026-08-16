@@ -25,7 +25,7 @@
 #include "arrow/result.h"
 #include "arrow/status.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "parquet/schema.h"
 #include "parquet/types.h"
@@ -38,7 +38,6 @@ namespace paimon::parquet {
 
 using ::arrow::Result;
 using ::arrow::Status;
-using ::arrow::internal::checked_cast;
 
 Result<std::shared_ptr<ArrowType>> MakeArrowDecimal(const ::parquet::LogicalType& logical_type) {
     const auto& decimal = checked_cast<const ::parquet::DecimalLogicalType&>(logical_type);

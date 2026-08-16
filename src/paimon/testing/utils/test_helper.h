@@ -37,6 +37,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/operation/append_only_file_store_write.h"
 #include "paimon/core/operation/file_store_commit_impl.h"
@@ -187,7 +188,7 @@ class TestHelper {
         arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                             {std::make_shared<arrow::LargeBinaryBuilder>()});
         auto blob_builder =
-            static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+            checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
         PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool);
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -253,8 +254,7 @@ class TestHelper {
         assert(child_array->null_count() == 0);
         assert(child_array->type_id() == arrow::Type::type::LARGE_BINARY);
 
-        const auto& blob_array =
-            arrow::internal::checked_cast<const arrow::LargeBinaryArray&>(*child_array);
+        const auto& blob_array = checked_cast<const arrow::LargeBinaryArray&>(*child_array);
         for (int64_t i = 0; i < blob_array.length(); ++i) {
             std::string_view descriptor = blob_array.GetView(i);
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Blob> blob,

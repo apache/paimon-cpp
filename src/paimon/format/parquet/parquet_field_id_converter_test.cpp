@@ -26,6 +26,7 @@
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -91,16 +92,16 @@ class ParquetFieldIdConverterTest : public ::testing::Test {
 
         auto type_id = field->type()->id();
         if (type_id == arrow::Type::STRUCT) {
-            auto struct_type = std::static_pointer_cast<arrow::StructType>(field->type());
+            auto struct_type = checked_pointer_cast<arrow::StructType>(field->type());
             for (const auto& child : struct_type->fields()) {
                 PrintFieldMetadataRecursive(child, indent + 1, convert_type, field_infos);
             }
         } else if (type_id == arrow::Type::LIST) {
-            auto list_type = std::static_pointer_cast<arrow::ListType>(field->type());
+            auto list_type = checked_pointer_cast<arrow::ListType>(field->type());
             PrintFieldMetadataRecursive(list_type->value_field(), indent + 1, convert_type,
                                         field_infos);
         } else if (type_id == arrow::Type::MAP) {
-            auto map_type = std::static_pointer_cast<arrow::MapType>(field->type());
+            auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
             PrintFieldMetadataRecursive(map_type->key_field(), indent + 1, convert_type,
                                         field_infos);
             PrintFieldMetadataRecursive(map_type->item_field(), indent + 1, convert_type,

@@ -44,6 +44,7 @@
 #include "paimon/common/data/shredding/map_shredding_defs.h"
 #include "paimon/common/fs/external_path_provider.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/compact/compact_deletion_file.h"
 #include "paimon/core/compact/compact_result.h"
 #include "paimon/core/compact/noop_compact_manager.h"
@@ -220,7 +221,7 @@ class AppendOnlyWriterTest : public testing::Test {
         auto struct_type = arrow::struct_(fields);
         arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                             {std::make_shared<arrow::StringBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
         for (const auto& value : values) {
             EXPECT_TRUE(struct_builder.Append().ok());
             EXPECT_TRUE(string_builder->Append(value).ok());
@@ -425,7 +426,7 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndClose) {
     auto struct_type = arrow::struct_(fields);
     arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::StringBuilder>()});
-    auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+    auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
     for (size_t j = 0; j < 100; j++) {
         ASSERT_TRUE(struct_builder.Append().ok());
         ASSERT_TRUE(string_builder->Append(std::to_string(j)).ok());
@@ -470,7 +471,7 @@ TEST_F(AppendOnlyWriterTest, TestInvalidRowKind) {
     auto struct_type = arrow::struct_(fields);
     arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::StringBuilder>()});
-    auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+    auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
     ASSERT_TRUE(struct_builder.Append().ok());
     ASSERT_TRUE(string_builder->Append("row0").ok());
     std::shared_ptr<arrow::Array> array;

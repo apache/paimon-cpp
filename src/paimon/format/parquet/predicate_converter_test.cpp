@@ -32,6 +32,16 @@
 
 namespace paimon::parquet::test {
 
+namespace {
+
+// Use an explicit int64_t literal for BIGINT predicates. On macOS arm64, `long` and
+// `int64_t` are distinct types, so `Literal(5l)` may instantiate `Literal<long>`.
+Literal BigIntLiteral(int64_t value) {
+    return Literal(value);
+}
+
+}  // namespace
+
 TEST(PredicateConverterTest, TestSimple) {
     // "struct<f0:bigint,f1:double,f2:string,f3:int,f4:tinyint,f5:decimal(6,2),f6:date,f7:timestamp>";
     {
@@ -50,7 +60,7 @@ TEST(PredicateConverterTest, TestSimple) {
     }
     {
         auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0",
-                                                 FieldType::BIGINT, Literal(5l));
+                                                 FieldType::BIGINT, BigIntLiteral(5));
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(f0 == 5)", expression.ToString());
@@ -71,21 +81,21 @@ TEST(PredicateConverterTest, TestSimple) {
     }
     {
         auto predicate = PredicateBuilder::NotEqual(/*field_index=*/0, /*field_name=*/"f0",
-                                                    FieldType::BIGINT, Literal(5l));
+                                                    FieldType::BIGINT, BigIntLiteral(5));
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(f0 != 5)", expression.ToString());
     }
     {
         auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"f0",
-                                                       FieldType::BIGINT, Literal(5l));
+                                                       FieldType::BIGINT, BigIntLiteral(5));
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(f0 > 5)", expression.ToString());
     }
     {
         auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"f0",
-                                                          FieldType::BIGINT, Literal(5l));
+                                                          FieldType::BIGINT, BigIntLiteral(5));
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(f0 >= 5)", expression.ToString());
@@ -100,14 +110,14 @@ TEST(PredicateConverterTest, TestSimple) {
     }
     {
         auto predicate = PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"f0",
-                                                    FieldType::BIGINT, Literal(5l));
+                                                    FieldType::BIGINT, BigIntLiteral(5));
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(f0 < 5)", expression.ToString());
     }
     {
         auto predicate = PredicateBuilder::LessOrEqual(/*field_index=*/0, /*field_name=*/"f0",
-                                                       FieldType::BIGINT, Literal(5l));
+                                                       FieldType::BIGINT, BigIntLiteral(5));
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(f0 <= 5)", expression.ToString());
@@ -115,7 +125,7 @@ TEST(PredicateConverterTest, TestSimple) {
     {
         auto predicate =
             PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                 {Literal(1l), Literal(3l), Literal(5l)});
+                                 {BigIntLiteral(1), BigIntLiteral(3), BigIntLiteral(5)});
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(((f0 == 1) or (f0 == 3)) or (f0 == 5))", expression.ToString());
@@ -123,7 +133,7 @@ TEST(PredicateConverterTest, TestSimple) {
     {
         auto predicate =
             PredicateBuilder::NotIn(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                    {Literal(1l), Literal(3l), Literal(5l)});
+                                    {BigIntLiteral(1), BigIntLiteral(3), BigIntLiteral(5)});
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("(((f0 != 1) and (f0 != 3)) and (f0 != 5))", expression.ToString());
@@ -320,7 +330,7 @@ TEST(PredicateConverterTest, TestCompound) {
             auto predicate,
             PredicateBuilder::And({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        BigIntLiteral(3)),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.0))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -349,7 +359,7 @@ TEST(PredicateConverterTest, TestCompound) {
             auto predicate,
             PredicateBuilder::Or({
                 PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
+                                        BigIntLiteral(3)),
                 PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::FLOAT,
                                         Literal(static_cast<float>(5.0))),
                 PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
@@ -370,7 +380,7 @@ TEST(PredicateConverterTest, TestCompound) {
                      {PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",
                                               FieldType::BOOLEAN, Literal(true)),
                       PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"f0",
-                                                 FieldType::BIGINT, Literal(3l))})
+                                                 FieldType::BIGINT, BigIntLiteral(3))})
                      .value(),
                  PredicateBuilder::And(
                      {PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",

@@ -31,7 +31,6 @@
 #include <utility>
 
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
 #include "paimon/common/data/blob_utils.h"
@@ -39,6 +38,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/common/utils/string_utils.h"
@@ -70,7 +70,7 @@ bool ContainsBlobField(const std::shared_ptr<arrow::Field>& field) {
     } else if (type->id() == arrow::Type::LIST) {
         return ContainsBlobField(type->fields().front());
     } else if (type->id() == arrow::Type::MAP) {
-        const auto& map_type = arrow::internal::checked_cast<const arrow::MapType&>(*type);
+        const auto& map_type = checked_cast<const arrow::MapType&>(*type);
         return ContainsBlobField(map_type.key_field()) || ContainsBlobField(map_type.item_field());
     }
     return false;
@@ -612,7 +612,7 @@ Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
                             "but its type is not MAP<STRING NOT NULL, T>.",
                             field_name));
         }
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(field_type);
+        auto map_type = checked_pointer_cast<arrow::MapType>(field_type);
         if (map_type->key_field()->nullable()) {
             return Status::Invalid(
                 fmt::format("Column '{}' is configured with map.storage-layout=shared-shredding "

@@ -25,6 +25,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/file_index/bsi/bit_slice_index_roaring_bitmap.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/data/timestamp.h"
@@ -131,7 +132,7 @@ Result<BitSliceIndexBitmapFileIndex::ValueMapperType> BitSliceIndexBitmapFileInd
                     return GetValueFromLiteral<int64_t>(literal);
                 });
         case FieldType::TIMESTAMP: {
-            auto ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(arrow_type);
+            auto ts_type = checked_pointer_cast<arrow::TimestampType>(arrow_type);
             int64_t precision = DateTimeUtils::GetPrecisionFromType(ts_type);
             assert(precision >= 0);
             return BitSliceIndexBitmapFileIndex::ValueMapperType(

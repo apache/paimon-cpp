@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/generic_variant.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
@@ -35,6 +34,7 @@
 #include "paimon/common/data/variant/variant_shredding_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -67,7 +67,7 @@ class FullVariantColumnReadPlan : public ShreddingColumnReadPlan {
             return Status::Invalid(fmt::format("cannot cast shredded variant field {} to a struct",
                                                physical_field_->name()));
         }
-        auto physical_struct = std::static_pointer_cast<arrow::StructArray>(physical);
+        auto physical_struct = checked_pointer_cast<arrow::StructArray>(physical);
         return VariantReassembler::AssembleVariantArray(physical_struct, schema_, pool_, pool);
     }
 
@@ -296,10 +296,9 @@ Result<bool> BuildNestedVariantPlan(const std::shared_ptr<arrow::Field>& read_fi
     for (int32_t i = 0; i < read_type.num_fields(); ++i) {
         const std::shared_ptr<arrow::Field>& read_child = read_type.field(i);
         std::shared_ptr<arrow::Field> file_child =
-            in_repeated_subtree
-                ? file_type.field(i)
-                : arrow::internal::checked_cast<const arrow::StructType&>(file_type).GetFieldByName(
-                      read_child->name());
+            in_repeated_subtree ? file_type.field(i)
+                                : checked_cast<const arrow::StructType&>(file_type).GetFieldByName(
+                                      read_child->name());
         if (file_child == nullptr) {
             // The nested column is absent in the file (schema evolution); it is filled with
             // nulls downstream.
@@ -405,7 +404,7 @@ class VariantAccessColumnReadPlan : public ShreddingColumnReadPlan {
         std::unique_ptr<arrow::ArrayBuilder> builder;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(pool, logical_field_->type(), &builder));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Reserve(physical_struct.length()));
-        auto* struct_builder = static_cast<arrow::StructBuilder*>(builder.get());
+        auto* struct_builder = checked_cast<arrow::StructBuilder*>(builder.get());
         for (int64_t row = 0; row < physical_struct.length(); ++row) {
             if (physical_struct.IsNull(row)) {
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder->AppendNull());

@@ -25,6 +25,7 @@
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -101,21 +102,20 @@ Result<std::unique_ptr<KeyValueRecordReader::Iterator>> SpillReader::NextBatch()
     if (!sequence_number_col) {
         return Status::Invalid("cannot find _SEQUENCE_NUMBER column in spill file");
     }
-    sequence_number_array_ =
-        std::dynamic_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(sequence_number_col);
-    if (!sequence_number_array_) {
+    if (sequence_number_col->type_id() != arrow::Type::INT64) {
         return Status::Invalid("cannot cast _SEQUENCE_NUMBER column to int64 arrow array");
     }
+    sequence_number_array_ =
+        checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(sequence_number_col);
 
     auto value_kind_col = record_batch->GetColumnByName(SpecialFields::ValueKind().Name());
     if (!value_kind_col) {
         return Status::Invalid("cannot find _VALUE_KIND column in spill file");
     }
-    row_kind_array_ =
-        std::dynamic_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(value_kind_col);
-    if (!row_kind_array_) {
+    if (value_kind_col->type_id() != arrow::Type::INT8) {
         return Status::Invalid("cannot cast _VALUE_KIND column to int8 arrow array");
     }
+    row_kind_array_ = checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(value_kind_col);
 
     arrow::ArrayVector key_fields;
     key_fields.reserve(key_schema_->num_fields());

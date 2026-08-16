@@ -31,6 +31,7 @@
 #include "paimon/common/data/generic_map.h"
 #include "paimon/common/data/generic_row.h"
 #include "paimon/common/data/serializer/binary_serializer_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
@@ -40,7 +41,7 @@ namespace {
 
 VariantType IntArray(std::vector<VariantType> values) {
     return VariantType(
-        std::static_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(values))));
+        checked_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(values))));
 }
 
 std::vector<int32_t> Values(const VariantType& value) {
@@ -111,14 +112,14 @@ Result<std::unique_ptr<FieldCollectAgg>> MakeDistinctAgg(
 
 VariantType Array(std::vector<VariantType> values) {
     return VariantType(
-        std::static_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(values))));
+        checked_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(values))));
 }
 
 VariantType IntStringRow(int32_t id, std::string_view name) {
     std::shared_ptr<GenericRow> row = std::make_shared<GenericRow>(2);
     row->SetField(0, id);
     row->SetField(1, name);
-    return VariantType(std::static_pointer_cast<InternalRow>(row));
+    return VariantType(checked_pointer_cast<InternalRow>(row));
 }
 
 VariantType IntStringMap(std::vector<std::pair<int32_t, std::string_view>> entries) {
@@ -128,7 +129,7 @@ VariantType IntStringMap(std::vector<std::pair<int32_t, std::string_view>> entri
         keys.emplace_back(entry.first);
         values.emplace_back(entry.second);
     }
-    return VariantType(std::static_pointer_cast<InternalMap>(
+    return VariantType(checked_pointer_cast<InternalMap>(
         std::make_shared<GenericMap>(std::make_shared<GenericArray>(std::move(keys)),
                                      std::make_shared<GenericArray>(std::move(values)))));
 }

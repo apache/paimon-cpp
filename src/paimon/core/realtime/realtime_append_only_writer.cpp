@@ -32,6 +32,7 @@
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/append/append_only_writer.h"
 #include "paimon/core/utils/commit_increment.h"
@@ -130,11 +131,11 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> imported,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        std::shared_ptr<arrow::StructArray> struct_array =
-            std::dynamic_pointer_cast<arrow::StructArray>(imported);
-        if (!struct_array) {
+        if (!imported || imported->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid("mem indexer commit reader returned a non-StructArray");
         }
+        std::shared_ptr<arrow::StructArray> struct_array =
+            checked_pointer_cast<arrow::StructArray>(imported);
         std::shared_ptr<arrow::Array> value_kind =
             struct_array->GetFieldByName(SpecialFields::ValueKind().Name());
         if (!value_kind || value_kind->type_id() != arrow::Type::INT8) {
@@ -142,7 +143,7 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
                 "mem indexer commit reader must return an INT8 _VALUE_KIND field");
         }
         std::shared_ptr<arrow::Int8Array> row_kinds =
-            std::static_pointer_cast<arrow::Int8Array>(value_kind);
+            checked_pointer_cast<arrow::Int8Array>(value_kind);
         for (int64_t i = 0; i < row_kinds->length(); ++i) {
             if (row_kinds->IsNull(i) ||
                 row_kinds->Value(i) != static_cast<int8_t>(RecordBatch::RowKind::INSERT)) {

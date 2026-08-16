@@ -23,6 +23,7 @@
 #include <new>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/factories/factory.h"
 
 namespace paimon::test {
@@ -68,8 +69,8 @@ TEST_F(FactoryCreatorTest, RegisterAndCreateFactory) {
     ASSERT_NE(created_factory1, nullptr);
     ASSERT_NE(created_factory2, nullptr);
 
-    EXPECT_EQ(static_cast<MockFactory*>(created_factory1)->GetName(), "Factory1");
-    EXPECT_EQ(static_cast<MockFactory*>(created_factory2)->GetName(), "Factory2");
+    EXPECT_EQ(checked_cast<MockFactory*>(created_factory1)->GetName(), "Factory1");
+    EXPECT_EQ(checked_cast<MockFactory*>(created_factory2)->GetName(), "Factory2");
 }
 
 TEST_F(FactoryCreatorTest, GetRegisteredType) {

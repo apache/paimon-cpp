@@ -24,6 +24,7 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/data/timestamp.h"
@@ -70,7 +71,7 @@ Result<FastHash::HashFunction> FastHash::GetHashFunction(
                 return GetLongHash(bits);
             });
         case FieldType::TIMESTAMP: {
-            auto ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(arrow_type);
+            auto ts_type = checked_pointer_cast<arrow::TimestampType>(arrow_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(ts_type);
             assert(precision >= 0);
             return HashFunction([precision](const Literal& literal) -> int64_t {

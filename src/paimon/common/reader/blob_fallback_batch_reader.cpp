@@ -33,6 +33,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -168,10 +169,10 @@ Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t wa
             if (selected_array->length() == 0) {
                 continue;
             }
-            auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(selected_array);
-            if (struct_array == nullptr) {
+            if (!selected_array || selected_array->type_id() != arrow::Type::STRUCT) {
                 return Status::Invalid("Blob fallback expects file readers to emit struct arrays.");
             }
+            auto struct_array = checked_pointer_cast<arrow::StructArray>(selected_array);
             cursor.pending.push_back(std::move(struct_array));
         }
     }
@@ -188,12 +189,12 @@ Result<std::vector<bool>> BlobFallbackBatchReader::ComputePlaceholderFlags(
             std::fill(flags.begin() + pos, flags.begin() + pos + chunk.length, true);
         } else {
             std::shared_ptr<arrow::Array> blob_col = chunk.array->field(blob_field_idx_);
-            auto binary_col = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(blob_col);
-            if (binary_col == nullptr) {
+            if (!blob_col || blob_col->type_id() != arrow::Type::LARGE_BINARY) {
                 return Status::Invalid(fmt::format(
                     "Blob fallback expects the blob column to be large binary, but got {}",
-                    blob_col->type()->ToString()));
+                    blob_col ? blob_col->type()->ToString() : "null"));
             }
+            auto binary_col = checked_pointer_cast<arrow::LargeBinaryArray>(blob_col);
             for (int64_t k = 0; k < chunk.length; k++) {
                 int64_t idx = chunk.offset + k;
                 if (binary_col->IsNull(idx)) {

@@ -21,6 +21,7 @@
 
 #include <memory>
 
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/casting/casting_utils.h"
 
@@ -35,9 +36,8 @@ Result<std::shared_ptr<arrow::Array>> TimestampToTimestampCastExecutor::Cast(
     arrow::MemoryPool* pool) const {
     arrow::compute::CastOptions options = arrow::compute::CastOptions::Safe();
     options.allow_time_truncate = true;
-    auto src_ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(array->type());
-    auto target_ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(target_type);
-    assert(src_ts_type && target_ts_type);
+    auto src_ts_type = checked_pointer_cast<arrow::TimestampType>(array->type());
+    auto target_ts_type = checked_pointer_cast<arrow::TimestampType>(target_type);
     std::shared_ptr<arrow::Array> target_array = array;
     // first, handle timezone
     if (src_ts_type->timezone() != target_ts_type->timezone()) {

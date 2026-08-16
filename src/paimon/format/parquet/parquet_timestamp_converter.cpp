@@ -25,6 +25,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/casting/timestamp_to_timestamp_cast_executor.h"
 
@@ -34,8 +35,7 @@ Result<std::shared_ptr<arrow::DataType>> ParquetTimestampConverter::AdjustTimezo
     arrow::Type::type type = src_data_type->id();
     switch (type) {
         case arrow::Type::type::STRUCT: {
-            auto* src_struct_type =
-                arrow::internal::checked_cast<arrow::StructType*>(src_data_type.get());
+            auto* src_struct_type = checked_cast<arrow::StructType*>(src_data_type.get());
             arrow::FieldVector new_fields;
             new_fields.reserve(src_struct_type->num_fields());
             for (int32_t i = 0; i < src_struct_type->num_fields(); ++i) {
@@ -46,8 +46,7 @@ Result<std::shared_ptr<arrow::DataType>> ParquetTimestampConverter::AdjustTimezo
             return arrow::struct_(new_fields);
         }
         case arrow::Type::type::MAP: {
-            auto* src_map_type =
-                arrow::internal::checked_cast<arrow::MapType*>(src_data_type.get());
+            auto* src_map_type = checked_cast<arrow::MapType*>(src_data_type.get());
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> key_type,
                                    AdjustTimezone(src_map_type->key_type()));
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> item_type,
@@ -57,15 +56,13 @@ Result<std::shared_ptr<arrow::DataType>> ParquetTimestampConverter::AdjustTimezo
                 src_map_type->item_field()->WithType(item_type));
         }
         case arrow::Type::type::LIST: {
-            auto* src_list_type =
-                arrow::internal::checked_cast<arrow::ListType*>(src_data_type.get());
+            auto* src_list_type = checked_cast<arrow::ListType*>(src_data_type.get());
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> value_type,
                                    AdjustTimezone(src_list_type->value_type()));
             return arrow::list(src_list_type->value_field()->WithType(value_type));
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto* src_ts_type =
-                arrow::internal::checked_cast<arrow::TimestampType*>(src_data_type.get());
+            auto* src_ts_type = checked_cast<arrow::TimestampType*>(src_data_type.get());
             if (!src_ts_type->timezone().empty()) {
                 return arrow::timestamp(src_ts_type->unit(), DateTimeUtils::GetLocalTimezoneName());
             }
@@ -86,10 +83,8 @@ Result<bool> ParquetTimestampConverter::NeedCastArrayForTimestamp(
     }
     switch (type) {
         case arrow::Type::type::STRUCT: {
-            auto* src_struct_type =
-                arrow::internal::checked_cast<arrow::StructType*>(src_data_type.get());
-            auto* target_struct_type =
-                arrow::internal::checked_cast<arrow::StructType*>(target_data_type.get());
+            auto* src_struct_type = checked_cast<arrow::StructType*>(src_data_type.get());
+            auto* target_struct_type = checked_cast<arrow::StructType*>(target_data_type.get());
             if (src_struct_type->num_fields() != target_struct_type->num_fields()) {
                 return Status::Invalid(
                     fmt::format("src type {} and target type {} number of fields mismatch",
@@ -106,10 +101,8 @@ Result<bool> ParquetTimestampConverter::NeedCastArrayForTimestamp(
             return false;
         }
         case arrow::Type::type::MAP: {
-            auto* src_map_type =
-                arrow::internal::checked_cast<arrow::MapType*>(src_data_type.get());
-            auto* target_map_type =
-                arrow::internal::checked_cast<arrow::MapType*>(target_data_type.get());
+            auto* src_map_type = checked_cast<arrow::MapType*>(src_data_type.get());
+            auto* target_map_type = checked_cast<arrow::MapType*>(target_data_type.get());
             PAIMON_ASSIGN_OR_RAISE(
                 bool need_cast,
                 NeedCastArrayForTimestamp(src_map_type->key_type(), target_map_type->key_type()));
@@ -122,20 +115,16 @@ Result<bool> ParquetTimestampConverter::NeedCastArrayForTimestamp(
             return need_cast;
         }
         case arrow::Type::type::LIST: {
-            auto* src_list_type =
-                arrow::internal::checked_cast<arrow::ListType*>(src_data_type.get());
-            auto* target_list_type =
-                arrow::internal::checked_cast<arrow::ListType*>(target_data_type.get());
+            auto* src_list_type = checked_cast<arrow::ListType*>(src_data_type.get());
+            auto* target_list_type = checked_cast<arrow::ListType*>(target_data_type.get());
             PAIMON_ASSIGN_OR_RAISE(bool need_cast,
                                    NeedCastArrayForTimestamp(src_list_type->value_type(),
                                                              target_list_type->value_type()));
             return need_cast;
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto* src_ts_type =
-                arrow::internal::checked_cast<arrow::TimestampType*>(src_data_type.get());
-            auto* target_ts_type =
-                arrow::internal::checked_cast<arrow::TimestampType*>(target_data_type.get());
+            auto* src_ts_type = checked_cast<arrow::TimestampType*>(src_data_type.get());
+            auto* target_ts_type = checked_cast<arrow::TimestampType*>(target_data_type.get());
             if (src_ts_type->unit() != target_ts_type->unit() ||
                 src_ts_type->timezone() != target_ts_type->timezone()) {
                 return true;
@@ -154,7 +143,7 @@ Result<std::shared_ptr<arrow::Array>> ParquetTimestampConverter::CastArrayForTim
     arrow::Type::type type = array->type()->id();
     switch (type) {
         case arrow::Type::type::STRUCT: {
-            auto* struct_array = arrow::internal::checked_cast<arrow::StructArray*>(array.get());
+            auto* struct_array = checked_cast<arrow::StructArray*>(array.get());
             arrow::ArrayVector target_sub_arrays;
             std::vector<std::string> target_names;
             target_sub_arrays.reserve(struct_array->num_fields());
@@ -175,8 +164,8 @@ Result<std::shared_ptr<arrow::Array>> ParquetTimestampConverter::CastArrayForTim
             return new_array;
         }
         case arrow::Type::type::MAP: {
-            auto* map_array = arrow::internal::checked_cast<arrow::MapArray*>(array.get());
-            auto* map_type = arrow::internal::checked_cast<arrow::MapType*>(target_data_type.get());
+            auto* map_array = checked_cast<arrow::MapArray*>(array.get());
+            auto* map_type = checked_cast<arrow::MapType*>(target_data_type.get());
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<arrow::Array> key_array,
                 CastArrayForTimestamp(map_array->keys(), map_type->key_type(), arrow_pool));
@@ -189,9 +178,8 @@ Result<std::shared_ptr<arrow::Array>> ParquetTimestampConverter::CastArrayForTim
                 map_array->null_count(), map_array->offset());
         }
         case arrow::Type::type::LIST: {
-            auto* list_array = arrow::internal::checked_cast<arrow::ListArray*>(array.get());
-            auto* list_type =
-                arrow::internal::checked_cast<arrow::ListType*>(target_data_type.get());
+            auto* list_array = checked_cast<arrow::ListArray*>(array.get());
+            auto* list_type = checked_cast<arrow::ListType*>(target_data_type.get());
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<arrow::Array> value_array,
                 CastArrayForTimestamp(list_array->values(), list_type->value_type(), arrow_pool));
@@ -201,11 +189,9 @@ Result<std::shared_ptr<arrow::Array>> ParquetTimestampConverter::CastArrayForTim
                 list_array->offset());
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto* ts_array = arrow::internal::checked_cast<arrow::TimestampArray*>(array.get());
-            auto* src_type =
-                arrow::internal::checked_cast<arrow::TimestampType*>(ts_array->type().get());
-            auto* ts_target_type =
-                arrow::internal::checked_cast<arrow::TimestampType*>(target_data_type.get());
+            auto* ts_array = checked_cast<arrow::TimestampArray*>(array.get());
+            auto* src_type = checked_cast<arrow::TimestampType*>(ts_array->type().get());
+            auto* ts_target_type = checked_cast<arrow::TimestampType*>(target_data_type.get());
             if (src_type->unit() == arrow::TimeUnit::type::MILLI &&
                 ts_target_type->unit() == arrow::TimeUnit::type::SECOND) {
                 // parquet writer do not support second, and it cast second to milli.

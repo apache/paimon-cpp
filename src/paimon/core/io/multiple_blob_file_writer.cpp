@@ -29,6 +29,7 @@
 #include "arrow/c/helpers.h"
 #include "arrow/type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/macros.h"
 
@@ -55,11 +56,11 @@ Status MultipleBlobFileWriter::Write(::ArrowArray* record) {
     std::shared_ptr<arrow::DataType> data_type = arrow::struct_(blob_schema_->fields());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(record, data_type));
-    std::shared_ptr<arrow::StructArray> struct_array =
-        std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-    if (!struct_array) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("MultipleBlobFileWriter: input is not a StructArray");
     }
+    std::shared_ptr<arrow::StructArray> struct_array =
+        checked_pointer_cast<arrow::StructArray>(arrow_array);
 
     // TODO(xinyu.lxy): support write parallel
     // For each blob field, extract the column and write row by row to its dedicated writer
