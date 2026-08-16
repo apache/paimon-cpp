@@ -158,6 +158,9 @@ Status PrefetchFileBatchReaderImpl::SetReadSchema(
     ::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
     const std::optional<RoaringBitmap32>& selection_bitmap) {
     PAIMON_RETURN_NOT_OK(CleanUp());
+    if (cache_) {
+        cache_->Reset();
+    }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(read_schema));
     for (const auto& reader : readers_) {
@@ -172,6 +175,9 @@ Status PrefetchFileBatchReaderImpl::SetReadSchema(
 
 Status PrefetchFileBatchReaderImpl::RefreshReadRanges() {
     PAIMON_RETURN_NOT_OK(CleanUp());
+    if (cache_) {
+        cache_->Reset();
+    }
     return RefreshReadRangesAfterCleanUp();
 }
 
@@ -294,9 +300,6 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
         reader_is_working_[i] = false;
     }
     is_shutdown_ = false;
-    if (cache_) {
-        cache_->Reset();
-    }
     SetReadStatus(Status::OK());
     return Status::OK();
 }
@@ -689,6 +692,10 @@ Result<std::pair<uint64_t, uint64_t>> PrefetchFileBatchReaderImpl::EofRange() co
 }
 
 void PrefetchFileBatchReaderImpl::Close() {
+    // CleanUp() no longer resets the read-ahead cache: ConcatBatchReader closes file readers as
+    // soon as they reach EOF, and the cache hit/miss counters must remain readable through
+    // GetReaderMetrics() after that. The cache is reset only when the reader is reused via
+    // SetReadSchema()/RefreshReadRanges().
     (void)CleanUp();
     for (const auto& reader : readers_) {
         reader->Close();

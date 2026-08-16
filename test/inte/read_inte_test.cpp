@@ -83,6 +83,7 @@
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/read_ahead_cache.h"
 #include "paimon/write_context.h"
 
 namespace paimon::test {
@@ -543,6 +544,61 @@ TEST_P(ReadInteTest, TestReadWithLimits) {
         ASSERT_OK_AND_ASSIGN(uint64_t latency,
                              read_metrics->GetCounter("orc.read.inclusive.latency.us"));
         ASSERT_GT(latency, 0);
+    }
+}
+
+TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
+    auto param = GetParam();
+    std::string path =
+        paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
+    ReadContextBuilder context_builder(path);
+    context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
+    context_builder.EnablePrefetch(param.enable_prefetch)
+        .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+        .SetPrefetchCacheMode(param.cache_mode);
+
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+
+    std::vector<std::string> file_list;
+    if (param.file_format == "orc") {
+        file_list = {"data-db2b44c0-0d73-449d-82a0-4075bd2cb6e3-0.orc",
+                     "data-b913a160-a4d1-4084-af2a-18333c35668e-0.orc"};
+    } else if (param.file_format == "parquet") {
+        file_list = {"data-b446f78a-2cfb-4b3b-add8-31295d24a277-0.parquet",
+                     "data-fd72a479-53ae-42f7-aec0-e982ee555928-0.parquet"};
+    }
+
+    DataSplitsSimple input_data_splits = {{paimon::test::GetDataDir() + "/" + param.file_format +
+                                               "/append_09.db/append_09/f1=20/"
+                                               "bucket-0",
+                                           BinaryRowGenerator::GenerateRow({20}, pool_.get()),
+                                           file_list}};
+
+    auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/3);
+    ASSERT_EQ(data_splits.size(), 1);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_TRUE(result_array);
+    ASSERT_EQ(result_array->length(), 2);
+
+    // Verify the read-ahead cache metrics are surfaced through the reader chain. The prefetch
+    // reader merges the cache counters into its reader metrics only when a cache is created,
+    // so the counters must be present and effective exactly in that case.
+    auto read_metrics = batch_reader->GetReaderMetrics();
+    ASSERT_TRUE(read_metrics);
+    if (param.enable_prefetch && param.cache_mode != PrefetchCacheMode::NEVER) {
+        ASSERT_OK_AND_ASSIGN(uint64_t hits,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+        ASSERT_GT(hits, 0u);
+        ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES));
+        ASSERT_GT(hit_bytes, 0u);
+        ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+        ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
+    } else {
+        ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+        ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
     }
 }
 
