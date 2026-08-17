@@ -39,6 +39,7 @@
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/core/options/compress_options.h"
+#include "paimon/executor.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -105,7 +106,10 @@ Result<std::shared_ptr<GlobalIndexWriter>> BTreeGlobalIndexer::CreateWriter(
 Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
     ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
     const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool) const {
-    return CreateReader(arrow_schema, file_reader, files, pool, /*executor=*/nullptr);
+    // Preserve the compatibility overload's existing private executor. Scan paths which can
+    // safely share an executor use the overload below.
+    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
+    return CreateReader(arrow_schema, file_reader, files, pool, executor);
 }
 
 Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(

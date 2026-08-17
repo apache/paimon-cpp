@@ -24,9 +24,7 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <thread>
 
-#include "fmt/format.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/table/source/plan_impl.h"
@@ -35,29 +33,10 @@
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/snapshot_manager.h"
-#include "paimon/executor.h"
+#include "paimon/logging.h"
 #include "paimon/predicate/predicate_utils.h"
 
 namespace paimon {
-namespace {
-Result<std::shared_ptr<Executor>> CreateGlobalIndexExecutor(const CoreOptions& core_options) {
-    uint32_t thread_num = std::thread::hardware_concurrency();
-    std::optional<int32_t> configured_thread_num = core_options.GetGlobalIndexThreadNum();
-    if (configured_thread_num) {
-        if (configured_thread_num.value() <= 0) {
-            return Status::Invalid(fmt::format("invalid global index thread number {}",
-                                               configured_thread_num.value()));
-        }
-        thread_num = static_cast<uint32_t>(configured_thread_num.value());
-    } else if (thread_num == 0) {
-        thread_num = 1;
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor, CreateDefaultExecutor(thread_num));
-    return executor;
-}
-
-}  // namespace
-
 Result<std::unique_ptr<PrimaryKeyIndexBatchScan>> PrimaryKeyIndexBatchScan::Create(
     const std::shared_ptr<SnapshotReader>& snapshot_reader,
     std::unique_ptr<DataTableBatchScan>&& batch_scan,
@@ -109,6 +88,11 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
         snapshot_reader_->GetSnapshotManager();
     Result<Snapshot> snapshot_result = snapshot_manager->LoadSnapshot(snapshot_id);
     if (!snapshot_result.ok()) {
+        static auto logger = Logger::GetLogger("PrimaryKeyIndexBatchScan");
+        PAIMON_LOG_WARN(logger,
+                        "Failed to load snapshot %ld for primary-key sorted-index planning; "
+                        "falling back to the unindexed data plan: %s",
+                        snapshot_id, snapshot_result.status().ToString().c_str());
         return data_plan;
     }
 
@@ -138,12 +122,10 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
     if (!has_index_group) {
         return data_plan;
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor,
-                           CreateGlobalIndexExecutor(core_options_));
     PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
         PrimaryKeySortedIndexScan::MakeReaderFactory(
             core_options_.GetFileSystem(), std::make_shared<IndexFilePathFactories>(path_factory_),
-            table_schema_, pool_, executor);
+            table_schema_, pool_);
     PAIMON_ASSIGN_OR_RAISE(
         PrimaryKeySortedIndexScan::EvaluatedPlan evaluated_plan,
         PrimaryKeySortedIndexScan::Evaluate(index_plan, table_schema_, predicate,

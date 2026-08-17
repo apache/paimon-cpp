@@ -41,8 +41,6 @@
 #include "paimon/result.h"
 
 namespace paimon {
-class Executor;
-
 /// Plans and evaluates source-backed primary-key scalar index groups in file-local
 /// row-position space.
 ///
@@ -175,14 +173,13 @@ class PrimaryKeySortedIndexScan {
                                           const std::vector<PrimaryKeyIndexDefinition>& definitions,
                                           const ReaderFactory& reader_factory);
 
-    /// Creates the default reader factory which opens BTree payloads through the table's
-    /// index directory layout. Non-BTree families resolve to a null reader and therefore
-    /// keep normal scan semantics.
+    /// Creates the default reader factory which opens the single BTree payload of each validated
+    /// group through the table's index directory layout. Non-BTree families resolve to a null
+    /// reader and therefore keep normal scan semantics.
     static ReaderFactory MakeReaderFactory(
         const std::shared_ptr<FileSystem>& file_system,
         const std::shared_ptr<IndexFilePathFactories>& path_factories,
-        const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool,
-        const std::shared_ptr<Executor>& executor);
+        const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool);
 };
 
 }  // namespace paimon

@@ -40,6 +40,7 @@
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
 #include "paimon/global_index/io/global_index_file_reader.h"
+#include "paimon/logging.h"
 #include "paimon/predicate/predicate_utils.h"
 
 namespace paimon {
@@ -475,6 +476,11 @@ Result<PrimaryKeySortedIndexScan::EvaluatedPlan> PrimaryKeySortedIndexScan::Eval
             files.emplace_back(file, result.value());
         } else {
             // Evaluation failures degrade to a normal scan for this file only.
+            static auto logger = Logger::GetLogger("PrimaryKeySortedIndexScan");
+            PAIMON_LOG_WARN(logger,
+                            "Failed to evaluate primary-key sorted index for data file %s; "
+                            "falling back to a normal scan for this file: %s",
+                            file.DataFile()->file_name.c_str(), result.status().ToString().c_str());
             files.emplace_back(file, nullptr);
         }
     }
@@ -500,10 +506,9 @@ class FsGlobalIndexFileReader : public GlobalIndexFileReader {
 PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFactory(
     const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<IndexFilePathFactories>& path_factories,
-    const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool,
-    const std::shared_ptr<Executor>& executor) {
+    const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<MemoryPool>& pool) {
     auto file_reader = std::make_shared<FsGlobalIndexFileReader>(file_system);
-    return [path_factories, table_schema, pool, file_reader, executor](
+    return [path_factories, table_schema, pool, file_reader](
                const FilePlan& file, const PrimaryKeyIndexDefinition& definition,
                const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
         if (definition.GetFamily() != PrimaryKeyIndexDefinition::Family::BTREE) {
@@ -537,7 +542,8 @@ PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFa
         ArrowSchema c_arrow_schema;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
         ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
-        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool, executor);
+        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool,
+                                     /*executor=*/nullptr);
     };
 }
 
