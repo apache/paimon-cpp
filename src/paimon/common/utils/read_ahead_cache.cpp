@@ -63,8 +63,7 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
         const uint64_t copy_begin = std::max(range.offset, entry.range.offset);
         const uint64_t copy_end = std::min(range.offset + range.length, entry_end);
         const size_t copy_len = static_cast<size_t>(copy_end - copy_begin);
-        std::memcpy(dest + pos, entry.buffer->data() + (copy_begin - entry.range.offset),
-                    copy_len);
+        std::memcpy(dest + pos, entry.buffer->data() + (copy_begin - entry.range.offset), copy_len);
         pos += copy_len;
     }
 }

@@ -66,8 +66,7 @@ TestCacheEnv CreateTestFileAndCache(const std::string& filename, const std::stri
 
 // Assert that reading the range is a cache hit filling the destination with
 // the expected content.
-void AssertReadEquals(ReadAheadCache& cache, const ByteRange& range,
-                      const std::string& expected) {
+void AssertReadEquals(ReadAheadCache& cache, const ByteRange& range, const std::string& expected) {
     std::string dest(std::max<size_t>(range.length, 1), 'X');
     bool hit = false;
     ASSERT_OK_AND_ASSIGN(hit, cache.Read(range, dest.data()));
@@ -139,8 +138,7 @@ TEST(TestReadAheadCache, TestMultiSegmentContiguousHit) {
     ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
                          metrics->GetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES));
     ASSERT_EQ(hit_bytes, 30u);
-    ASSERT_OK_AND_ASSIGN(uint64_t misses,
-                         metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
     ASSERT_EQ(misses, 1u);
     ASSERT_OK_AND_ASSIGN(uint64_t miss_bytes,
                          metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
@@ -373,8 +371,8 @@ TEST(TestReadAheadCache, TestEvictionOnBatchInsert) {
     CacheConfig config(/*buffer_size_limit=*/6, /*range_size_limit=*/10,
                        /*hole_size_limit=*/0, /*pre_buffer_limit=*/8);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
-    auto env = CreateTestFileAndCache("data_file", content, config,
-                                      {{0, 3}, {5, 3}, {10, 4}, {15, 4}});
+    auto env =
+        CreateTestFileAndCache("data_file", content, config, {{0, 3}, {5, 3}, {10, 4}, {15, 4}});
     auto& cache = *env.cache;
 
     // First batch: reading {0,3} prefetches {0,3} and {5,3} (6 bytes fit the
