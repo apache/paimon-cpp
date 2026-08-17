@@ -83,6 +83,7 @@ class ReadAheadCache::Impl {
     Status Init(std::vector<ByteRange>&& ranges);
     Result<ByteSlice> Read(const ByteRange& range);
     void Reset();
+    void ReleaseBuffers();
     void Warmup();
     void CollectMetrics(const std::shared_ptr<Metrics>& metrics) const;
 
@@ -215,6 +216,14 @@ ReadAheadCache::Impl::~Impl() {
 }
 
 void ReadAheadCache::Impl::Reset() {
+    ReleaseBuffers();
+    hits_.store(0, std::memory_order_relaxed);
+    hit_bytes_.store(0, std::memory_order_relaxed);
+    misses_.store(0, std::memory_order_relaxed);
+    miss_bytes_.store(0, std::memory_order_relaxed);
+}
+
+void ReadAheadCache::Impl::ReleaseBuffers() {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
     for (auto& entry : entries_) {
         entry.future.wait();
@@ -223,10 +232,8 @@ void ReadAheadCache::Impl::Reset() {
     is_cached_.clear();
     pending_ranges_.clear();
     is_initialized_ = false;
-    hits_.store(0, std::memory_order_relaxed);
-    hit_bytes_.store(0, std::memory_order_relaxed);
-    misses_.store(0, std::memory_order_relaxed);
-    miss_bytes_.store(0, std::memory_order_relaxed);
+    // The hit/miss counters are deliberately kept: a reader closed at EOF must
+    // still be able to report them through CollectMetrics().
 }
 
 void ReadAheadCache::Impl::CollectMetrics(const std::shared_ptr<Metrics>& metrics) const {
@@ -354,6 +361,10 @@ Result<ByteSlice> ReadAheadCache::Read(const ByteRange& range) {
 
 void ReadAheadCache::Reset() {
     return impl_->Reset();
+}
+
+void ReadAheadCache::ReleaseBuffers() {
+    return impl_->ReleaseBuffers();
 }
 
 void ReadAheadCache::Warmup() {

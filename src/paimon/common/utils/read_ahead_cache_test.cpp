@@ -185,4 +185,42 @@ TEST(TestReadAheadCache, TestMetrics) {
     ASSERT_EQ(miss_bytes, 3u);
 }
 
+// Test that ReleaseBuffers() drops the cached data but keeps the hit/miss counters
+// readable, while Reset() zeroes them as well.
+TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
+    CacheConfig config(/*buffer_size_limit=*/256 * 1024 * 1024, /*range_size_limit=*/10,
+                       /*hole_size_limit=*/2, /*pre_buffer_limit=*/128 * 1024 * 1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});
+    auto& cache = *env.cache;
+
+    ByteSlice slice;
+    ASSERT_OK_AND_ASSIGN(slice, cache.Read({0, 5}));
+    ASSERT_TRUE(slice.buffer);
+
+    cache.ReleaseBuffers();
+
+    // The previously cached range is gone: the read now misses.
+    ASSERT_FALSE(cache.Read({0, 5}).value().buffer);
+
+    auto metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_EQ(hits, 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES));
+    ASSERT_EQ(hit_bytes, 5u);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 1u);
+
+    // Reset() clears the counters too.
+    cache.Reset();
+    auto reset_metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(reset_metrics);
+    ASSERT_OK_AND_ASSIGN(hits, reset_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_EQ(hits, 0u);
+    ASSERT_OK_AND_ASSIGN(misses, reset_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 0u);
+}
+
 }  // namespace paimon::test

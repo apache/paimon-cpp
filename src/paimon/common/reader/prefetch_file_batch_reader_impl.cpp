@@ -697,6 +697,12 @@ void PrefetchFileBatchReaderImpl::Close() {
     // GetReaderMetrics() after that. The cache is reset only when the reader is reused via
     // SetReadSchema()/RefreshReadRanges().
     (void)CleanUp();
+    if (cache_) {
+        // Free the prefetched buffers of this file right away (ConcatBatchReader keeps
+        // closed file readers alive until the whole scan finishes), but keep the
+        // counters for GetReaderMetrics().
+        cache_->ReleaseBuffers();
+    }
     for (const auto& reader : readers_) {
         reader->Close();
     }

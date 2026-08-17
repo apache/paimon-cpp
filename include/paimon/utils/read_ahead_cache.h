@@ -196,6 +196,14 @@ class PAIMON_EXPORT ReadAheadCache {
     /// After calling Reset, the cache can be safely re-initialized with new ranges.
     void Reset();
 
+    /// Release all cached buffers and pending ranges while keeping the hit/miss
+    /// counters intact.
+    ///
+    /// Unlike Reset(), the counters recorded by Read() remain readable through
+    /// CollectMetrics() afterwards, so this is safe to call when the owning reader
+    /// is closed while its metrics are still being aggregated.
+    void ReleaseBuffers();
+
  private:
     class Impl;
     std::unique_ptr<Impl> impl_;
