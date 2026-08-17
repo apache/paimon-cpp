@@ -285,10 +285,8 @@ void ReadAheadCache::Impl::CollectMetrics(const std::shared_ptr<Metrics>& metric
                         misses_.load(std::memory_order_relaxed));
     metrics->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES,
                         miss_bytes_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::IO_COUNT,
-                        io_count_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::IO_BYTES,
-                        io_bytes_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::IO_COUNT, io_count_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::IO_BYTES, io_bytes_.load(std::memory_order_relaxed));
 }
 
 void ReadAheadCache::Impl::Warmup() {
