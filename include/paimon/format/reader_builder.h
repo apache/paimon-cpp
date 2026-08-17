@@ -41,15 +41,6 @@ class PAIMON_EXPORT ReaderBuilder {
         return this;
     }
 
-    /// Enable or disable the format-level prebuffer for the readers this builder
-    /// creates. A caller that prefetches the data itself (e.g. a shared read-ahead
-    /// cache) disables it so that two independent prefetch layers do not fetch the
-    /// same bytes twice. Default: leave the format default untouched.
-    virtual ReaderBuilder* WithPreBufferEnabled(bool enabled) {
-        (void)enabled;
-        return this;
-    }
-
     /// Build a file batch reader based on the created `InputStream`.
     virtual Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const = 0;

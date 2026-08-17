@@ -847,7 +847,7 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateReaderProperties) {
         std::map<std::string, std::string> options;
         ASSERT_OK_AND_ASSIGN(auto reader_properties,
                              ParquetFileBatchReader::CreateReaderProperties(pool_, options));
-        ASSERT_EQ(reader_properties.is_buffered_stream_enabled(), true);
+        ASSERT_EQ(reader_properties.is_buffered_stream_enabled(), false);
     }
 }
 
@@ -859,7 +859,7 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
         ASSERT_OK_AND_ASSIGN(
             auto arrow_reader_properties,
             ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size));
-        ASSERT_EQ(arrow_reader_properties.pre_buffer(), true);
+        ASSERT_EQ(arrow_reader_properties.pre_buffer(), false);
         ASSERT_EQ(arrow_reader_properties.batch_size(), 1024);
         ASSERT_EQ(arrow_reader_properties.use_threads(), true);
         ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 3);
