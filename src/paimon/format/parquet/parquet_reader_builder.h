@@ -95,8 +95,7 @@ class ParquetReaderBuilder : public ReaderBuilder {
                 reader_options = &options_no_pre_buffer;
             }
             return ParquetFileBatchReader::Create(std::move(input_stream), *reader_options,
-                                                  batch_size_,
-                                                  std::move(file_metadata),
+                                                  batch_size_, std::move(file_metadata),
                                                   std::move(storage_read_bytes), arrow_pool);
         }
         PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetReaderBuilder::Build")
