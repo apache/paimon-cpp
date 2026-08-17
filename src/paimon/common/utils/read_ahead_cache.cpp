@@ -62,7 +62,7 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
         const uint64_t entry_end = entry.range.offset + entry.range.length;
         const uint64_t copy_begin = std::max(range.offset, entry.range.offset);
         const uint64_t copy_end = std::min(range.offset + range.length, entry_end);
-        const size_t copy_len = static_cast<size_t>(copy_end - copy_begin);
+        const auto copy_len = static_cast<size_t>(copy_end - copy_begin);
         std::memcpy(dest + pos, entry.buffer->data() + (copy_begin - entry.range.offset), copy_len);
         pos += copy_len;
     }
@@ -108,7 +108,7 @@ class ReadAheadCache::Impl {
     void CollectMetrics(const std::shared_ptr<Metrics>& metrics) const;
 
  private:
-    std::vector<RangeCacheEntry> MakeCacheEntries(const std::vector<ByteRange>& ranges) const;
+    std::vector<RangeCacheEntry> MakeCacheEntries(const std::vector<ByteRange>& ranges);
     /// Find the entries fully covering the given range under the read lock.
     /// Returns an empty vector on miss. Entries are copied (shared buffers)
     /// so the caller may use them after releasing the lock.
@@ -138,12 +138,18 @@ class ReadAheadCache::Impl {
     std::vector<std::atomic<bool>> is_cached_;
     std::vector<ByteRange> pending_ranges_;
     bool is_initialized_ = false;
-    // Hit/miss statistics of Read() calls, aggregated over all streams sharing
-    // this cache.
+    // Statistics of the Read() requests issued to the cache, aggregated over
+    // all streams sharing this cache.
+    std::atomic<uint64_t> read_count_{0};
+    std::atomic<uint64_t> read_bytes_{0};
     std::atomic<uint64_t> hits_{0};
     std::atomic<uint64_t> hit_bytes_{0};
     std::atomic<uint64_t> misses_{0};
     std::atomic<uint64_t> miss_bytes_{0};
+    // Prefetch IO statistics: how many requests and bytes were actually issued
+    // to the underlying stream.
+    std::atomic<uint64_t> io_count_{0};
+    std::atomic<uint64_t> io_bytes_{0};
 };
 
 void ReadAheadCache::Impl::Cache(std::vector<ByteRange> ranges) {
@@ -241,10 +247,14 @@ ReadAheadCache::Impl::~Impl() {
 
 void ReadAheadCache::Impl::Reset() {
     ReleaseBuffers();
+    read_count_.store(0, std::memory_order_relaxed);
+    read_bytes_.store(0, std::memory_order_relaxed);
     hits_.store(0, std::memory_order_relaxed);
     hit_bytes_.store(0, std::memory_order_relaxed);
     misses_.store(0, std::memory_order_relaxed);
     miss_bytes_.store(0, std::memory_order_relaxed);
+    io_count_.store(0, std::memory_order_relaxed);
+    io_bytes_.store(0, std::memory_order_relaxed);
 }
 
 void ReadAheadCache::Impl::ReleaseBuffers() {
@@ -256,7 +266,7 @@ void ReadAheadCache::Impl::ReleaseBuffers() {
     is_cached_.clear();
     pending_ranges_.clear();
     is_initialized_ = false;
-    // The hit/miss counters are deliberately kept: a reader closed at EOF must
+    // The read/io counters are deliberately kept: a reader closed at EOF must
     // still be able to report them through CollectMetrics().
 }
 
@@ -264,6 +274,10 @@ void ReadAheadCache::Impl::CollectMetrics(const std::shared_ptr<Metrics>& metric
     if (!metrics) {
         return;
     }
+    metrics->SetCounter(ReadAheadCacheMetrics::READ_COUNT,
+                        read_count_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::READ_BYTES,
+                        read_bytes_.load(std::memory_order_relaxed));
     metrics->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.load(std::memory_order_relaxed));
     metrics->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES,
                         hit_bytes_.load(std::memory_order_relaxed));
@@ -271,6 +285,10 @@ void ReadAheadCache::Impl::CollectMetrics(const std::shared_ptr<Metrics>& metric
                         misses_.load(std::memory_order_relaxed));
     metrics->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES,
                         miss_bytes_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::IO_COUNT,
+                        io_count_.load(std::memory_order_relaxed));
+    metrics->SetCounter(ReadAheadCacheMetrics::IO_BYTES,
+                        io_bytes_.load(std::memory_order_relaxed));
 }
 
 void ReadAheadCache::Impl::Warmup() {
@@ -321,6 +339,8 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     if (range.length == 0) {
         return true;
     }
+    read_count_.fetch_add(1, std::memory_order_relaxed);
+    read_bytes_.fetch_add(range.length, std::memory_order_relaxed);
     PreBuffer(range.offset);
     std::vector<RangeCacheEntry> covering = FindCoveringEntries(range);
     if (covering.empty()) {
@@ -339,7 +359,7 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
 }
 
 std::vector<RangeCacheEntry> ReadAheadCache::Impl::MakeCacheEntries(
-    const std::vector<ByteRange>& ranges) const {
+    const std::vector<ByteRange>& ranges) {
     std::vector<RangeCacheEntry> new_entries;
     new_entries.reserve(ranges.size());
     for (const auto& range : ranges) {
@@ -351,6 +371,8 @@ std::vector<RangeCacheEntry> ReadAheadCache::Impl::MakeCacheEntries(
         stream_->ReadAsync(
             buffer->data(), read_size, read_offset,
             [promise, buffer](Status status) mutable { promise->set_value(status); });
+        io_count_.fetch_add(1, std::memory_order_relaxed);
+        io_bytes_.fetch_add(range.length, std::memory_order_relaxed);
         new_entries.emplace_back(range, std::move(buffer), std::move(future));
     }
     return new_entries;

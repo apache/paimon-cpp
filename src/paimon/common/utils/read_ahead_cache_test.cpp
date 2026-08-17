@@ -188,6 +188,13 @@ TEST(TestReadAheadCache, TestMetrics) {
 
     auto metrics = std::make_shared<MetricsImpl>();
     cache.CollectMetrics(metrics);
+    // Both Read() requests are counted, regardless of hit or miss.
+    ASSERT_OK_AND_ASSIGN(uint64_t read_count,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
+    ASSERT_EQ(read_count, 2u);
+    ASSERT_OK_AND_ASSIGN(uint64_t read_bytes,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_BYTES));
+    ASSERT_EQ(read_bytes, 8u);
     ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
     ASSERT_EQ(hits, 1u);
     ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
@@ -198,6 +205,12 @@ TEST(TestReadAheadCache, TestMetrics) {
     ASSERT_OK_AND_ASSIGN(uint64_t miss_bytes,
                          metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
     ASSERT_EQ(miss_bytes, 3u);
+    // The hit prefetches both pending ranges in one window: two IO requests
+    // for 10 bytes in total; the miss issues no further fetch.
+    ASSERT_OK_AND_ASSIGN(uint64_t io_count, metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_EQ(io_count, 2u);
+    ASSERT_OK_AND_ASSIGN(uint64_t io_bytes, metrics->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+    ASSERT_EQ(io_bytes, 10u);
 }
 
 // Test that ReleaseBuffers() drops the cached data but keeps the hit/miss counters
@@ -218,6 +231,13 @@ TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
 
     auto metrics = std::make_shared<MetricsImpl>();
     cache.CollectMetrics(metrics);
+    // The read counters survive ReleaseBuffers() as well.
+    ASSERT_OK_AND_ASSIGN(uint64_t read_count,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
+    ASSERT_EQ(read_count, 2u);
+    ASSERT_OK_AND_ASSIGN(uint64_t read_bytes,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_BYTES));
+    ASSERT_EQ(read_bytes, 10u);
     ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
     ASSERT_EQ(hits, 1u);
     ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
@@ -225,15 +245,26 @@ TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
     ASSERT_EQ(hit_bytes, 5u);
     ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
     ASSERT_EQ(misses, 1u);
+    // The io counters survive ReleaseBuffers() as well.
+    ASSERT_OK_AND_ASSIGN(uint64_t io_count, metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_EQ(io_count, 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t io_bytes, metrics->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+    ASSERT_EQ(io_bytes, 5u);
 
     // Reset() clears the counters too.
     cache.Reset();
     auto reset_metrics = std::make_shared<MetricsImpl>();
     cache.CollectMetrics(reset_metrics);
+    ASSERT_OK_AND_ASSIGN(read_count, reset_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
+    ASSERT_EQ(read_count, 0u);
     ASSERT_OK_AND_ASSIGN(hits, reset_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
     ASSERT_EQ(hits, 0u);
     ASSERT_OK_AND_ASSIGN(misses, reset_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
     ASSERT_EQ(misses, 0u);
+    ASSERT_OK_AND_ASSIGN(io_count, reset_metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_EQ(io_count, 0u);
+    ASSERT_OK_AND_ASSIGN(io_bytes, reset_metrics->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+    ASSERT_EQ(io_bytes, 0u);
 }
 
 // Test that a failed prefetch surfaces as an error Status from Read(), not as

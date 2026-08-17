@@ -588,6 +588,12 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     auto read_metrics = batch_reader->GetReaderMetrics();
     ASSERT_TRUE(read_metrics);
     if (param.enable_prefetch && param.cache_mode != PrefetchCacheMode::NEVER) {
+        ASSERT_OK_AND_ASSIGN(uint64_t read_count,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
+        ASSERT_GT(read_count, 0u);
+        ASSERT_OK_AND_ASSIGN(uint64_t read_bytes,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::READ_BYTES));
+        ASSERT_GT(read_bytes, 0u);
         ASSERT_OK_AND_ASSIGN(uint64_t hits,
                              read_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
         ASSERT_GT(hits, 0u);
@@ -596,9 +602,18 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
         ASSERT_GT(hit_bytes, 0u);
         ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
         ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
+        // Serving hits requires prefetch IOs issued to the underlying stream.
+        ASSERT_OK_AND_ASSIGN(uint64_t io_count,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+        ASSERT_GT(io_count, 0u);
+        ASSERT_OK_AND_ASSIGN(uint64_t io_bytes,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
+        ASSERT_GT(io_bytes, 0u);
     } else {
+        ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
         ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
         ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+        ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
     }
 }
 

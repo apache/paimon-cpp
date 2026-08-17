@@ -39,10 +39,18 @@ class Metrics;
 /// Metric names for the read-ahead cache.
 class PAIMON_EXPORT ReadAheadCacheMetrics {
  public:
+    /// Number of non-zero-sized Read() requests issued to the cache.
+    static inline const char READ_COUNT[] = "read-ahead-cache.read.count";
+    /// Total bytes requested by the Read() requests issued to the cache.
+    static inline const char READ_BYTES[] = "read-ahead-cache.read.bytes";
     static inline const char READ_HITS[] = "read-ahead-cache.read.hits";
     static inline const char READ_HIT_BYTES[] = "read-ahead-cache.read.hit-bytes";
     static inline const char READ_MISSES[] = "read-ahead-cache.read.misses";
     static inline const char READ_MISS_BYTES[] = "read-ahead-cache.read.miss-bytes";
+    /// Number of prefetch IO requests actually issued to the underlying stream.
+    static inline const char IO_COUNT[] = "read-ahead-cache.io.count";
+    /// Total bytes requested by the prefetch IOs issued to the underlying stream.
+    static inline const char IO_BYTES[] = "read-ahead-cache.io.bytes";
 };
 
 /// PrefetchCacheMode
@@ -181,9 +189,11 @@ class PAIMON_EXPORT ReadAheadCache {
     /// when the first Read() arrives, racing the caller's own miss fetch.
     void Warmup();
 
-    /// Collect hit/miss counters of Read() calls into the given metrics as counters
-    /// named after `ReadAheadCacheMetrics`. Only reads issued through Read() are
-    /// counted; prefetch fetches dispatched by the cache itself are not.
+    /// Collect hit/miss counters of Read() calls and the prefetch IO
+    /// counters into the given metrics as counters named after
+    /// `ReadAheadCacheMetrics`. Only reads issued through Read() are counted
+    /// as hits/misses; prefetch fetches dispatched by the cache itself are
+    /// counted in the fetch counters instead.
     void CollectMetrics(const std::shared_ptr<Metrics>& metrics) const;
 
     /// Reset the cache to its initial state, clearing all cached data and configuration.
