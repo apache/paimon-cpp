@@ -486,6 +486,89 @@ TEST_P(WriteAndReadInteTest, TestAppendVectorWithPredicate) {
     ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
 }
 
+// TODO(jinli.zjw): move to a single file for a file index inte test
+TEST_P(WriteAndReadInteTest, TestAppendWithExternalBitmapAndRangeBitmapIndexes) {
+    arrow::FieldVector fields = {arrow::field("name", arrow::utf8()),
+                                 arrow::field("score", arrow::int32())};
+    auto [file_format, file_system] = GetParam();
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "avro"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1MB"},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system},
+        {"file-index.bitmap.columns", "name"},
+        {"file-index.range-bitmap.columns", "score"},
+        {"file-index.range-bitmap.score.chunk-size", "1KB"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+
+    auto schema = arrow::schema(fields);
+    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(test_dir_, schema, /*partition_keys=*/{},
+                                                         /*primary_keys=*/{}, options,
+                                                         /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+            ["Alice", 10],
+            ["Bob", 20],
+            ["Alice", 30],
+            ["Lucy", 40]
+        ])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(auto data_files, CurrentDataFiles(options));
+    ASSERT_EQ(1, data_files.size());
+    const auto& [bucket_path, data_file] = data_files[0];
+    ASSERT_FALSE(data_file->embedded_index);
+    ASSERT_EQ(1, data_file->extra_files.size());
+    ASSERT_TRUE(data_file->extra_files[0]);
+    ASSERT_EQ(data_file->file_name + ".index", data_file->extra_files[0].value());
+    std::string index_path = PathUtil::JoinPath(bucket_path, data_file->extra_files[0].value());
+    ASSERT_OK_AND_ASSIGN(bool index_exists, dir_->GetFileSystem()->Exists(index_path));
+    ASSERT_TRUE(index_exists);
+
+    std::string indexed_name = "Alice";
+    auto name_predicate = PredicateBuilder::Equal(
+        /*field_index=*/0, /*field_name=*/"name", FieldType::STRING,
+        Literal(FieldType::STRING, indexed_name.data(), indexed_name.size()));
+    auto score_predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/1, /*field_name=*/"score", FieldType::INT, Literal(20));
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({name_predicate, score_predicate}));
+
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.SetOptions(options)
+        .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString())
+        .SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
+    ASSERT_EQ(1, plan->Splits().size());
+
+    // Keep precise post-read filtering disabled. The exact result therefore verifies that the
+    // bitmap and range-bitmap indexes produced by the write path are consumed by the read path.
+    ReadContextBuilder read_context_builder(table_path);
+    read_context_builder.SetOptions(options).SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    arrow::FieldVector fields_with_row_kind = fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    auto expected_result = arrow::ipc::internal::json::ArrayFromJSON(
+        arrow::struct_(fields_with_row_kind), R"([[0, "Alice", 30]])");
+    ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
+    auto expected = std::make_shared<arrow::ChunkedArray>(expected_result.ValueOrDie());
+    ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+}
+
 TEST_P(WriteAndReadInteTest, TestPKSimple) {
     arrow::FieldVector fields = {
         arrow::field("pk", arrow::utf8()),
