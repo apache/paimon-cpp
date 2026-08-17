@@ -27,7 +27,6 @@
 #include <vector>
 
 #include "paimon/fs/file_system.h"
-#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -143,13 +142,6 @@ struct PAIMON_EXPORT ByteRange {
     }
 };
 
-/// A byte slice with buffer, offset and length.
-struct PAIMON_EXPORT ByteSlice {
-    std::shared_ptr<Bytes> buffer = nullptr;
-    uint64_t offset = 0;
-    uint64_t length = 0;
-};
-
 /// A read cache designed to hide IO latencies when reading.
 /// Prefetching strategy: When a range is read, the cache will prefetch up to
 /// `pre_buffer_range_count` additional adjacent ranges ahead of the requested offset. This helps
@@ -173,11 +165,16 @@ class PAIMON_EXPORT ReadAheadCache {
     /// on the cache configuration.
     Status Init(std::vector<ByteRange>&& ranges);
 
-    /// Read a range previously provided to Init().
+    /// Read a range previously provided to Init(), copying the cached data
+    /// directly into the given destination buffer.
+    ///
+    /// Multi-segment hits are copied into `dest` segment by segment, without
+    /// an intermediate assembled buffer.
     /// @param range The byte range to read.
-    /// @return The byte slice containing the requested data. If the data is not yet cached
-    /// (cache miss), the returned `ByteSlice` will have a null buffer (`buffer == nullptr`)
-    Result<ByteSlice> Read(const ByteRange& range);
+    /// @param dest Destination buffer with at least `range.length` bytes.
+    /// @return true if the range was served from the cache and `dest` was
+    /// filled; false on cache miss (`dest` is left untouched).
+    Result<bool> Read(const ByteRange& range, char* dest);
 
     /// Start fetching the first batch of pending ranges immediately.
     /// Init() only registers the ranges; without Warmup() the first fetch starts

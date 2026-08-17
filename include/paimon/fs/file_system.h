@@ -155,7 +155,8 @@ class PAIMON_EXPORT BasicFileStatus {
     }
 
     /// Get the path of this file or directory.
-    std::string GetPath() const {
+    /// @note The returned reference is valid as long as this object is alive.
+    const std::string& GetPath() const {
         return path_;
     }
 
@@ -203,7 +204,8 @@ class PAIMON_EXPORT FileStatus {
     }
 
     /// Get the path of this file or directory.
-    std::string GetPath() const {
+    /// @note The returned reference is valid as long as this object is alive.
+    const std::string& GetPath() const {
         return path_;
     }
 

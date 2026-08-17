@@ -31,6 +31,7 @@
 
 #include "paimon/common/utils/byte_range_combiner.h"
 #include "paimon/common/utils/math.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/metrics.h"
 
 namespace paimon {
@@ -49,6 +50,26 @@ struct RangeCacheEntry {
         return left.range.offset < right.range.offset;
     }
 };
+
+namespace {
+
+// Copy the requested window out of the covering entries into dest. The
+// entries must fully cover the range and their futures must be resolved.
+void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const ByteRange& range,
+                          char* dest) {
+    size_t pos = 0;
+    for (const auto& entry : covering) {
+        const uint64_t entry_end = entry.range.offset + entry.range.length;
+        const uint64_t copy_begin = std::max(range.offset, entry.range.offset);
+        const uint64_t copy_end = std::min(range.offset + range.length, entry_end);
+        const size_t copy_len = static_cast<size_t>(copy_end - copy_begin);
+        std::memcpy(dest + pos, entry.buffer->data() + (copy_begin - entry.range.offset),
+                    copy_len);
+        pos += copy_len;
+    }
+}
+
+}  // namespace
 
 CacheConfig::CacheConfig(uint64_t buffer_size_limit, uint64_t range_size_limit,
                          uint64_t hole_size_limit, uint64_t pre_buffer_limit)
@@ -81,7 +102,7 @@ class ReadAheadCache::Impl {
     ~Impl();
 
     Status Init(std::vector<ByteRange>&& ranges);
-    Result<ByteSlice> Read(const ByteRange& range);
+    Result<bool> Read(const ByteRange& range, char* dest);
     void Reset();
     void ReleaseBuffers();
     void Warmup();
@@ -89,6 +110,10 @@ class ReadAheadCache::Impl {
 
  private:
     std::vector<RangeCacheEntry> MakeCacheEntries(const std::vector<ByteRange>& ranges) const;
+    /// Find the entries fully covering the given range under the read lock.
+    /// Returns an empty vector on miss. Entries are copied (shared buffers)
+    /// so the caller may use them after releasing the lock.
+    std::vector<RangeCacheEntry> FindCoveringEntries(const ByteRange& range);
     void PreBuffer(uint64_t offset);
     void CountHit(uint64_t size) {
         hits_.fetch_add(1, std::memory_order_relaxed);
@@ -257,73 +282,61 @@ void ReadAheadCache::Impl::Warmup() {
     }
 }
 
-Result<ByteSlice> ReadAheadCache::Impl::Read(const ByteRange& range) {
+std::vector<RangeCacheEntry> ReadAheadCache::Impl::FindCoveringEntries(const ByteRange& range) {
+    std::vector<RangeCacheEntry> covering;
+    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
+    // Find the entry holding the start of the range: the first entry whose
+    // end is beyond range.offset (entries are disjoint and sorted by offset).
+    auto it = std::lower_bound(entries_.begin(), entries_.end(), range.offset,
+                               [](const RangeCacheEntry& e, uint64_t offset) {
+                                   return e.range.offset + e.range.length <= offset;
+                               });
+    if (it == entries_.end() || it->range.offset > range.offset) {
+        return covering;
+    }
+    if (it->range.Contains(range)) {
+        covering.push_back(*it);
+        return covering;
+    }
+    // The request spans several adjacent entries (a column chunk larger than
+    // one coalesced range): collect the contiguous run and check it covers
+    // the whole request. Entries exist from the moment their fetch is
+    // SUBMITTED, so a reader racing the prefetch waits for the in-flight
+    // fetch instead of issuing a second one for the same bytes.
+    uint64_t covered_end = it->range.offset + it->range.length;
+    covering.push_back(*it);
+    auto next = std::next(it);
+    while (covered_end < range.offset + range.length && next != entries_.end() &&
+           next->range.offset == covered_end) {
+        covered_end = next->range.offset + next->range.length;
+        covering.push_back(*next);
+        ++next;
+    }
+    if (covered_end < range.offset + range.length) {
+        covering.clear();
+    }
+    return covering;
+}
+
+Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     if (range.length == 0) {
-        return ByteSlice{std::make_shared<Bytes>(0, memory_pool_.get()), 0, 0};
+        return true;
     }
     PreBuffer(range.offset);
-    ByteSlice result{};
-    std::vector<RangeCacheEntry> covering;
-    {
-        std::shared_lock<std::shared_mutex> lock(rw_mutex_);
-        // Find the entry holding the start of the range: the first entry whose
-        // end is beyond range.offset (entries are disjoint and sorted by offset).
-        auto it = std::lower_bound(entries_.begin(), entries_.end(), range.offset,
-                                   [](const RangeCacheEntry& e, uint64_t offset) {
-                                       return e.range.offset + e.range.length <= offset;
-                                   });
-        if (it == entries_.end() || it->range.offset > range.offset) {
-            CountMiss(range.length);
-            return result;
-        }
-        if (it->range.Contains(range)) {
-            PAIMON_RETURN_NOT_OK(it->future.get());
-            CountHit(range.length);
-            return ByteSlice{it->buffer, range.offset - it->range.offset, range.length};
-        }
-        // The request spans several adjacent entries (a column chunk larger than
-        // one coalesced range): collect the contiguous run and check it covers
-        // the whole request. Entries exist from the moment their fetch is
-        // SUBMITTED, so a reader racing the prefetch waits for the in-flight
-        // fetch instead of issuing a second one for the same bytes.
-        uint64_t covered_end = it->range.offset + it->range.length;
-        covering.push_back(*it);
-        auto next = std::next(it);
-        while (covered_end < range.offset + range.length && next != entries_.end() &&
-               next->range.offset == covered_end) {
-            covered_end = next->range.offset + next->range.length;
-            covering.push_back(*next);
-            ++next;
-        }
-        if (covered_end < range.offset + range.length) {
-            CountMiss(range.length);
-            return result;
-        }
+    std::vector<RangeCacheEntry> covering = FindCoveringEntries(range);
+    if (covering.empty()) {
+        CountMiss(range.length);
+        return false;
     }
     // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
     // async reads complete, and holding rw_mutex_ would block Cache()/eviction.
     for (const auto& entry : covering) {
         PAIMON_RETURN_NOT_OK(entry.future.get());
     }
-    if (covering.size() == 1) {
-        CountHit(range.length);
-        return ByteSlice{covering.front().buffer, range.offset - covering.front().range.offset,
-                         range.length};
-    }
-    // The zero-copy slice cannot span buffers: assemble the requested window.
-    auto assembled = std::make_shared<Bytes>(range.length, memory_pool_.get());
-    size_t pos = 0;
-    for (const auto& entry : covering) {
-        const uint64_t entry_end = entry.range.offset + entry.range.length;
-        const uint64_t copy_begin = std::max(range.offset, entry.range.offset);
-        const uint64_t copy_end = std::min(range.offset + range.length, entry_end);
-        const size_t copy_len = static_cast<size_t>(copy_end - copy_begin);
-        std::memcpy(assembled->data() + pos,
-                    entry.buffer->data() + (copy_begin - entry.range.offset), copy_len);
-        pos += copy_len;
-    }
+    // The data copy runs OUTSIDE the lock for the same reason.
+    CopyRangeFromEntries(covering, range, dest);
     CountHit(range.length);
-    return ByteSlice{std::move(assembled), 0, range.length};
+    return true;
 }
 
 std::vector<RangeCacheEntry> ReadAheadCache::Impl::MakeCacheEntries(
@@ -355,8 +368,8 @@ Status ReadAheadCache::Init(std::vector<ByteRange>&& ranges) {
     return impl_->Init(std::move(ranges));
 }
 
-Result<ByteSlice> ReadAheadCache::Read(const ByteRange& range) {
-    return impl_->Read(range);
+Result<bool> ReadAheadCache::Read(const ByteRange& range, char* dest) {
+    return impl_->Read(range, dest);
 }
 
 void ReadAheadCache::Reset() {
