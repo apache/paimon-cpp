@@ -3789,16 +3789,15 @@ TEST_P(ReadInteTest, TestSpecificFs) {
         Status Delete(const std::string& path, bool recursive = true) const override {
             return fs_->Delete(path, recursive);
         }
-        Result<std::unique_ptr<FileStatus>> GetFileStatus(const std::string& path) const override {
+        Result<FileStatus> GetFileStatus(const std::string& path) const override {
             return fs_->GetFileStatus(path);
         }
         Status ListDir(const std::string& directory,
-                       std::vector<std::unique_ptr<BasicFileStatus>>* status_list) const override {
+                       std::vector<BasicFileStatus>* status_list) const override {
             return fs_->ListDir(directory, status_list);
         }
-        Status ListFileStatus(
-            const std::string& path,
-            std::vector<std::unique_ptr<FileStatus>>* status_list) const override {
+        Status ListFileStatus(const std::string& path,
+                              std::vector<FileStatus>* status_list) const override {
             return fs_->ListFileStatus(path, status_list);
         }
         Result<bool> Exists(const std::string& path) const override {

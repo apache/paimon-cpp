@@ -196,7 +196,7 @@ TEST_P(PostponeBucketWriterTest, TestSimple) {
     // check data file exist and read ok
     std::string expected_data_file_name = "data-" + uuid + "-0." + file_format;
     std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(expected_data_file_path));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -214,7 +214,7 @@ TEST_P(PostponeBucketWriterTest, TestSimple) {
     ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/4,
+        expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/4,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Lucy")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*key_stats=*/
@@ -274,7 +274,7 @@ TEST_P(PostponeBucketWriterTest, TestNestedType) {
     // check data file exist and read ok
     std::string expected_data_file_name = "data-" + uuid + "-0." + file_format;
     std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(expected_data_file_path));
 
     arrow::FieldVector write_fields = {arrow::field("_SEQUENCE_NUMBER", arrow::int64()),
@@ -296,7 +296,7 @@ TEST_P(PostponeBucketWriterTest, TestNestedType) {
     ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/4,
+        expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/4,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Lucy")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*key_stats=*/
@@ -353,9 +353,9 @@ TEST_F(PostponeBucketWriterTest, TestSharedShreddingMap) {
 
     std::string data_file_name = "data-" + uuid + "-0." + file_format;
     std::string data_file_path = dir->Str() + "/" + data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(data_file_path));
-    ASSERT_GT(data_file_status->GetLen(), 0);
+    ASSERT_GT(data_file_status.GetLen(), 0);
 
     arrow::FieldVector write_fields = {arrow::field("_SEQUENCE_NUMBER", arrow::int64()),
                                        arrow::field("_VALUE_KIND", arrow::int8())};
@@ -439,7 +439,7 @@ TEST_P(PostponeBucketWriterTest, TestWriteMultiBatch) {
     // check data file exist and read ok
     std::string expected_data_file_name = "data-" + uuid + "-0." + file_format;
     std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(expected_data_file_path));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -462,7 +462,7 @@ TEST_P(PostponeBucketWriterTest, TestWriteMultiBatch) {
     ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/9,
+        expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/9,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("David")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Tom")}, pool_.get()),
         /*key_stats=*/
@@ -581,10 +581,10 @@ TEST_P(PostponeBucketWriterTest, TestMultiplePrepareCommit) {
 
     std::string expected_data_file_dir = dir->Str() + "/";
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<FileStatus> data_file_status1,
+        FileStatus data_file_status1,
         options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name1));
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<FileStatus> data_file_status2,
+        FileStatus data_file_status2,
         options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name2));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array1;
@@ -612,7 +612,7 @@ TEST_P(PostponeBucketWriterTest, TestMultiplePrepareCommit) {
     ASSERT_TRUE(commit_increment1.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment1.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta1 = std::make_shared<DataFileMeta>(
-        expected_data_file_name1, /*file_size=*/data_file_status1->GetLen(), /*row_count=*/3,
+        expected_data_file_name1, /*file_size=*/data_file_status1.GetLen(), /*row_count=*/3,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("David")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Alex")}, pool_.get()),
         /*key_stats=*/
@@ -632,7 +632,7 @@ TEST_P(PostponeBucketWriterTest, TestMultiplePrepareCommit) {
     ASSERT_TRUE(commit_increment2.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment2.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta2 = std::make_shared<DataFileMeta>(
-        expected_data_file_name2, /*file_size=*/data_file_status2->GetLen(), /*row_count=*/2,
+        expected_data_file_name2, /*file_size=*/data_file_status2.GetLen(), /*row_count=*/2,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Judy")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Tom")}, pool_.get()),
         /*key_stats=*/

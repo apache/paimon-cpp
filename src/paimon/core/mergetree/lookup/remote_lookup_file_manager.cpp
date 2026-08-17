@@ -53,9 +53,9 @@ Result<std::shared_ptr<DataFileMeta>> RemoteLookupFileManager::GenRemoteLookupFi
     std::string local_file_path = lookup_file->LocalFile();
 
     // Get the file size from the local file system
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> local_file_status,
+    PAIMON_ASSIGN_OR_RAISE(FileStatus local_file_status,
                            file_system_->GetFileStatus(local_file_path));
-    int64_t length = local_file_status->GetLen();
+    int64_t length = local_file_status.GetLen();
 
     std::string remote_sst_name = lookup_levels->NewRemoteSst(file, length);
     std::string remote_sst_path = RemoteSstPath(file, remote_sst_name);

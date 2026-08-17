@@ -216,7 +216,7 @@ TEST(LookupFileTest, TestLookupFileCacheLifecycle) {
     ASSERT_EQ(cache->GetCurrentWeight(), 0);
     // d.sst should be deleted
     ASSERT_FALSE(fs->Exists(path_d).value());
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     ASSERT_OK(fs->ListDir(tmp_dir->Str(), &file_status_list));
     ASSERT_TRUE(file_status_list.empty());
     ASSERT_EQ(call_back_files,

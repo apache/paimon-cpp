@@ -54,8 +54,9 @@ class FakeLazyFileWriter : public GlobalIndexFileWriter {
     }
 
     Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        PAIMON_ASSIGN_OR_RAISE(auto file_status, fs_->GetFileStatus(base_path_ + "/" + file_name));
-        return file_status->GetLen();
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status,
+                               fs_->GetFileStatus(base_path_ + "/" + file_name));
+        return file_status.GetLen();
     }
 
     std::string ToPath(const std::string& file_name) const override {

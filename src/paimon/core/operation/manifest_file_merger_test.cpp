@@ -113,13 +113,13 @@ class ManifestFileMergerTest : public testing::Test {
     }
 
     std::set<std::string> ListManifestFiles() const {
-        std::vector<std::unique_ptr<FileStatus>> file_statuses;
+        std::vector<FileStatus> file_statuses;
         EXPECT_OK(file_system_->ListFileStatus(
             FileStorePathFactory::ManifestPath(path_factory_->RootPath()), &file_statuses));
         std::set<std::string> files;
         for (const auto& status : file_statuses) {
-            if (!status->IsDir()) {
-                files.insert(status->GetPath());
+            if (!status.IsDir()) {
+                files.insert(status.GetPath());
             }
         }
         return files;

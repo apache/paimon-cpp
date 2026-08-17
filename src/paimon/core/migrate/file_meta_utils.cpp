@@ -83,11 +83,9 @@ Result<std::shared_ptr<DataFileMeta>> ConstructFileMeta(
                            stats_extractor->ExtractWithFileInfo(fs, dst_file_path, memory_pool));
     PAIMON_ASSIGN_OR_RAISE(SimpleStats simple_stats,
                            SimpleStatsConverter::ToBinary(stats.first, memory_pool.get()));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status,
-                           fs->GetFileStatus(dst_file_path));
-    assert(file_status);
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs->GetFileStatus(dst_file_path));
     return DataFileMeta::ForAppend(
-        new_file_name, file_status->GetLen(), stats.second.GetRowCount(), simple_stats,
+        new_file_name, file_status.GetLen(), stats.second.GetRowCount(), simple_stats,
         /*min_sequence_number=*/0, /*max_sequence_number=*/0, schema_id, /*extra_files=*/{},
         /*embedded_index=*/nullptr, FileSource::Append(), /*value_stats_cols=*/std::nullopt,
         /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);

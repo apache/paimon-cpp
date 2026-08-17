@@ -97,12 +97,12 @@ class WriteBufferTest : public ::testing::Test {
 
     Result<int64_t> GetOnlySpillFileSize() const {
         PAIMON_ASSIGN_OR_RAISE(std::string spill_dir, io_manager_->GetSpillDir());
-        std::vector<std::unique_ptr<FileStatus>> spill_files;
+        std::vector<FileStatus> spill_files;
         PAIMON_RETURN_NOT_OK(tmp_dir_->GetFileSystem()->ListFileStatus(spill_dir, &spill_files));
-        if (spill_files.size() != 1 || spill_files[0]->IsDir()) {
+        if (spill_files.size() != 1 || spill_files[0].IsDir()) {
             return Status::Invalid("expected exactly one spill file");
         }
-        return spill_files[0]->GetLen();
+        return spill_files[0].GetLen();
     }
 
     Result<ReaderResult> ReadReaderResult(KeyValueRecordReader* reader) const {

@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/fs/file_system.h"
 #include "paimon/macros.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -35,7 +36,6 @@
 namespace paimon {
 
 class IOHook;
-class LocalFileStatus;
 
 class LocalFile {
  public:
@@ -52,7 +52,7 @@ class LocalFile {
     const std::string& GetPath() const;
     std::unique_ptr<LocalFile> GetParentFile() const;
     Result<bool> Mkdir() const;
-    Result<std::unique_ptr<LocalFileStatus>> GetFileStatus() const;
+    Result<FileStatus> GetFileStatus() const;
     Result<int64_t> Length() const;
     Result<int64_t> LastModifiedTimeMs() const;
     Status OpenFile(bool is_read_file);

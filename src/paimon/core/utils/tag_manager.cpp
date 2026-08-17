@@ -65,14 +65,14 @@ Result<std::vector<std::string>> TagManager::ListTagNames() const {
         return tag_names;
     }
 
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListDir(tag_dir, &file_status_list));
     std::string tag_prefix = TAG_PREFIX;
     for (const auto& file_status : file_status_list) {
-        if (file_status->IsDir()) {
+        if (file_status.IsDir()) {
             continue;
         }
-        std::string file_name = PathUtil::GetName(file_status->GetPath());
+        std::string file_name = PathUtil::GetName(file_status.GetPath());
         if (StringUtils::StartsWith(file_name, tag_prefix, /*start_pos=*/0)) {
             tag_names.push_back(file_name.substr(tag_prefix.length()));
         }

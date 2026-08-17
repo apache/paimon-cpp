@@ -49,14 +49,13 @@ class JindoFileSystem : public FileSystem {
     Status Rename(const std::string& src, const std::string& dst) const override;
     Status Delete(const std::string& path, bool recursive = true) const override;
 
-    Result<std::unique_ptr<FileStatus>> GetFileStatus(const std::string& path) const override;
+    Result<FileStatus> GetFileStatus(const std::string& path) const override;
 
     Status ListDir(const std::string& directory,
-                   std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const override;
+                   std::vector<BasicFileStatus>* file_status_list) const override;
 
-    Status ListFileStatus(
-        const std::string& path,
-        std::vector<std::unique_ptr<FileStatus>>* file_status_list) const override;
+    Status ListFileStatus(const std::string& path,
+                          std::vector<FileStatus>* file_status_list) const override;
 
     Result<bool> Exists(const std::string& path) const override;
 

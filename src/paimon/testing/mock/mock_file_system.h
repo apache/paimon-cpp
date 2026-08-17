@@ -79,25 +79,6 @@ class MockOutputStream : public OutputStream {
     }
 };
 
-class MockFileStatus : public FileStatus {
- public:
-    MockFileStatus() = default;
-    ~MockFileStatus() override = default;
-
-    std::string GetPath() const override {
-        return "";
-    }
-    int64_t GetLen() const override {
-        return 0;
-    }
-    int64_t GetModificationTime() const override {
-        return 0;
-    }
-    bool IsDir() const override {
-        return false;
-    }
-};
-
 class MockFileSystem : public FileSystem {
  public:
     MockFileSystem() = default;
@@ -121,15 +102,15 @@ class MockFileSystem : public FileSystem {
     Status Delete(const std::string& path, bool recursive = true) const override {
         return Status::OK();
     }
-    Result<std::unique_ptr<FileStatus>> GetFileStatus(const std::string& path) const override {
-        return std::make_unique<MockFileStatus>();
+    Result<FileStatus> GetFileStatus(const std::string& path) const override {
+        return FileStatus(/*path=*/"", /*length=*/0, /*is_dir=*/false, /*modification_time=*/0);
     }
     Status ListDir(const std::string& directory,
-                   std::vector<std::unique_ptr<BasicFileStatus>>* status_list) const override {
+                   std::vector<BasicFileStatus>* status_list) const override {
         return Status::OK();
     }
     Status ListFileStatus(const std::string& path,
-                          std::vector<std::unique_ptr<FileStatus>>* status_list) const override {
+                          std::vector<FileStatus>* status_list) const override {
         return Status::OK();
     }
     Result<bool> Exists(const std::string& path) const override {

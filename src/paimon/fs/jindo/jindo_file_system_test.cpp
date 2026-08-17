@@ -143,14 +143,14 @@ TEST(JindoFileSystemPaginationTest, TestListDirAcrossOssPageBoundary) {
     auto fs_factory = std::make_shared<JindoFileSystemFactory>();
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileSystem> fs, fs_factory->Create(test_dir, options));
 
-    std::vector<std::unique_ptr<BasicFileStatus>> file_statuses;
+    std::vector<BasicFileStatus> file_statuses;
     ASSERT_OK(fs->ListDir(test_dir, &file_statuses));
     ASSERT_EQ(file_statuses.size(), kFileCount);
 
     std::unordered_set<std::string> actual_paths;
-    for (const std::unique_ptr<BasicFileStatus>& file_status : file_statuses) {
-        ASSERT_TRUE(actual_paths.insert(file_status->GetPath()).second)
-            << "duplicate path: " << file_status->GetPath();
+    for (const BasicFileStatus& file_status : file_statuses) {
+        ASSERT_TRUE(actual_paths.insert(file_status.GetPath()).second)
+            << "duplicate path: " << file_status.GetPath();
     }
     for (int32_t i = 0; i < kFileCount; ++i) {
         std::string index = std::to_string(i);

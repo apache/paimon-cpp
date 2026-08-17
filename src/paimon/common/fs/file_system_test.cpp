@@ -113,19 +113,19 @@ class FileSystemTest : public ::testing::Test, public ::testing::WithParamInterf
         return new_path;
     }
 
-    void CheckFileStatus(const std::vector<std::unique_ptr<FileStatus>>& actual_statuses,
+    void CheckFileStatus(const std::vector<FileStatus>& actual_statuses,
                          const std::set<std::string>& expected_files,
                          const std::set<std::string>& expected_dirs) const {
         ASSERT_EQ(actual_statuses.size(), expected_files.size() + expected_dirs.size());
         std::set<std::string> actual_files;
         std::set<std::string> actual_dirs;
         for (const auto& file_status : actual_statuses) {
-            if (file_status->IsDir()) {
-                actual_dirs.insert(RemoveLastSlashInPath(file_status->GetPath()));
+            if (file_status.IsDir()) {
+                actual_dirs.insert(RemoveLastSlashInPath(file_status.GetPath()));
             } else {
-                actual_files.insert(file_status->GetPath());
-                ASSERT_GT(file_status->GetLen(), 0);
-                int64_t modification_time = file_status->GetModificationTime();
+                actual_files.insert(file_status.GetPath());
+                ASSERT_GT(file_status.GetLen(), 0);
+                int64_t modification_time = file_status.GetModificationTime();
                 ASSERT_GT(modification_time, 10000000000L);     // MIN_VALID_FILE_MODIFICATION_MS
                 ASSERT_LT(modification_time, 10000000000000L);  // MAX_VALID_FILE_MODIFICATION_MS
             }
@@ -138,17 +138,17 @@ class FileSystemTest : public ::testing::Test, public ::testing::WithParamInterf
         ASSERT_EQ(actual_dirs, normalized_expected_dirs);
     }
 
-    void CheckBasicFileStatus(const std::vector<std::unique_ptr<BasicFileStatus>>& actual_statuses,
+    void CheckBasicFileStatus(const std::vector<BasicFileStatus>& actual_statuses,
                               const std::set<std::string>& expected_files,
                               const std::set<std::string>& expected_dirs) const {
         ASSERT_EQ(actual_statuses.size(), expected_files.size() + expected_dirs.size());
         std::set<std::string> actual_files;
         std::set<std::string> actual_dirs;
         for (const auto& file_status : actual_statuses) {
-            if (file_status->IsDir()) {
-                actual_dirs.insert(RemoveLastSlashInPath(file_status->GetPath()));
+            if (file_status.IsDir()) {
+                actual_dirs.insert(RemoveLastSlashInPath(file_status.GetPath()));
             } else {
-                actual_files.insert(file_status->GetPath());
+                actual_files.insert(file_status.GetPath());
             }
         }
         std::set<std::string> normalized_expected_dirs;
@@ -354,11 +354,11 @@ TEST_P(FileSystemTest, TestWriteEmptyFile) {
     ASSERT_OK(out_stream->Close());
 
     // get file status
-    ASSERT_OK_AND_ASSIGN(auto st, fs_->GetFileStatus(file_path));
-    ASSERT_EQ(st->GetPath(), file_path);
-    ASSERT_FALSE(st->IsDir());
-    ASSERT_EQ(st->GetLen(), 0);
-    auto modification_time = st->GetModificationTime();
+    ASSERT_OK_AND_ASSIGN(FileStatus st, fs_->GetFileStatus(file_path));
+    ASSERT_EQ(st.GetPath(), file_path);
+    ASSERT_FALSE(st.IsDir());
+    ASSERT_EQ(st.GetLen(), 0);
+    int64_t modification_time = st.GetModificationTime();
     ASSERT_GT(modification_time, 10000000000L);
     ASSERT_LT(modification_time, 10000000000000L);
 
@@ -1202,10 +1202,10 @@ TEST_P(FileSystemTest, TestGetFileStatus1) {
         ASSERT_OK(fs_->Mkdirs(dir_path));
         ASSERT_OK_AND_ASSIGN(bool is_exist, fs_->Exists(dir_path));
         ASSERT_TRUE(is_exist);
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> st, fs_->GetFileStatus(dir_path));
-        ASSERT_EQ(RemoveLastSlashInPath(st->GetPath()), RemoveLastSlashInPath(dir_path));
-        ASSERT_TRUE(st->IsDir());
-        auto modification_time = st->GetModificationTime();
+        ASSERT_OK_AND_ASSIGN(FileStatus st, fs_->GetFileStatus(dir_path));
+        ASSERT_EQ(RemoveLastSlashInPath(st.GetPath()), RemoveLastSlashInPath(dir_path));
+        ASSERT_TRUE(st.IsDir());
+        auto modification_time = st.GetModificationTime();
         ASSERT_GT(modification_time, 10000000000L);
         ASSERT_LT(modification_time, 10000000000000L);
 
@@ -1216,9 +1216,9 @@ TEST_P(FileSystemTest, TestGetFileStatus1) {
 
         // check meta in dir
         ASSERT_OK_AND_ASSIGN(st, fs_->GetFileStatus(dir_path));
-        ASSERT_EQ(RemoveLastSlashInPath(st->GetPath()), RemoveLastSlashInPath(dir_path));
-        ASSERT_TRUE(st->IsDir());
-        modification_time = st->GetModificationTime();
+        ASSERT_EQ(RemoveLastSlashInPath(st.GetPath()), RemoveLastSlashInPath(dir_path));
+        ASSERT_TRUE(st.IsDir());
+        modification_time = st.GetModificationTime();
         ASSERT_GT(modification_time, 10000000000L);
         ASSERT_LT(modification_time, 10000000000000L);
     }
@@ -1237,11 +1237,11 @@ TEST_P(FileSystemTest, TestGetFileStatus1) {
         ASSERT_OK_AND_ASSIGN(bool is_exist, fs_->Exists(file_path));
         ASSERT_TRUE(is_exist);
 
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> st, fs_->GetFileStatus(file_path));
-        ASSERT_EQ(st->GetPath(), file_path);
-        ASSERT_FALSE(st->IsDir());
-        ASSERT_EQ(st->GetLen(), content.size());
-        auto modification_time = st->GetModificationTime();
+        ASSERT_OK_AND_ASSIGN(FileStatus st, fs_->GetFileStatus(file_path));
+        ASSERT_EQ(st.GetPath(), file_path);
+        ASSERT_FALSE(st.IsDir());
+        ASSERT_EQ(st.GetLen(), content.size());
+        auto modification_time = st.GetModificationTime();
         ASSERT_GT(modification_time, 10000000000L);
         ASSERT_LT(modification_time, 10000000000000L);
     }
@@ -1259,31 +1259,29 @@ TEST_P(FileSystemTest, TestGetFileStatus2) {
     {
         // input is a dir, with a trailing '/'
         std::string dir_name = test_path + "/";
-        std::vector<std::unique_ptr<FileStatus>> status_list;
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> file_status, fs_->GetFileStatus(dir_name));
+        std::vector<FileStatus> status_list;
+        ASSERT_OK_AND_ASSIGN(FileStatus file_status, fs_->GetFileStatus(dir_name));
         status_list.emplace_back(std::move(file_status));
         CheckFileStatus(status_list, /*expected_files=*/{}, /*expected_dirs=*/{dir_name});
     }
     {
         // input is a dir, without a trailing '/'
-        std::vector<std::unique_ptr<FileStatus>> status_list;
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> file_status,
-                             fs_->GetFileStatus(test_path));
+        std::vector<FileStatus> status_list;
+        ASSERT_OK_AND_ASSIGN(FileStatus file_status, fs_->GetFileStatus(test_path));
         status_list.emplace_back(std::move(file_status));
         CheckFileStatus(status_list, /*expected_files=*/{}, /*expected_dirs=*/{test_path});
     }
     {
         // input is a file
-        std::vector<std::unique_ptr<FileStatus>> status_list;
+        std::vector<FileStatus> status_list;
         std::string file_name = PathUtil::JoinPath(test_path, "README");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> file_status,
-                             fs_->GetFileStatus(file_name));
+        ASSERT_OK_AND_ASSIGN(FileStatus file_status, fs_->GetFileStatus(file_name));
         status_list.emplace_back(std::move(file_status));
         CheckFileStatus(status_list, /*expected_files=*/{file_name}, /*expected_dirs=*/{});
     }
     {
         // input is not exist
-        std::vector<std::unique_ptr<FileStatus>> status_list;
+        std::vector<FileStatus> status_list;
         ASSERT_NOK(fs_->GetFileStatus(PathUtil::JoinPath(test_path, "NOT_EXIST")));
     }
 }
@@ -1291,7 +1289,7 @@ TEST_P(FileSystemTest, TestGetFileStatus2) {
 TEST_P(FileSystemTest, TestInvalidListFileStatus) {
     {
         // list non exist dir will return ok
-        std::vector<std::unique_ptr<FileStatus>> file_status_list;
+        std::vector<FileStatus> file_status_list;
         ASSERT_OK(fs_->ListFileStatus(test_root_ + "/non-exist/", &file_status_list));
         ASSERT_TRUE(file_status_list.empty());
     }
@@ -1301,11 +1299,11 @@ TEST_P(FileSystemTest, TestInvalidListFileStatus) {
         ASSERT_OK(fs_->WriteFile(file_path, "hello", /*overwrite=*/false));
         ASSERT_OK_AND_ASSIGN(bool is_exist, fs_->Exists(file_path));
         ASSERT_TRUE(is_exist);
-        std::vector<std::unique_ptr<FileStatus>> file_status_list;
+        std::vector<FileStatus> file_status_list;
         ASSERT_OK(fs_->ListFileStatus(file_path, &file_status_list));
-        ASSERT_EQ(file_status_list[0]->GetPath(), file_path);
-        ASSERT_EQ(file_status_list[0]->GetLen(), 5);
-        ASSERT_FALSE(file_status_list[0]->IsDir());
+        ASSERT_EQ(file_status_list[0].GetPath(), file_path);
+        ASSERT_EQ(file_status_list[0].GetLen(), 5);
+        ASSERT_FALSE(file_status_list[0].IsDir());
     }
 }
 
@@ -1315,7 +1313,7 @@ TEST_P(FileSystemTest, TestListFileStatus1) {
     ASSERT_OK_AND_ASSIGN(bool is_exist, fs_->Exists(file_path));
     ASSERT_TRUE(is_exist);
 
-    std::vector<std::unique_ptr<FileStatus>> file_status_list;
+    std::vector<FileStatus> file_status_list;
     ASSERT_OK(fs_->ListFileStatus(test_root_, &file_status_list));
     ASSERT_EQ(file_status_list.size(), 1);
     std::set<std::string> expected_dirs = {test_root_ + "/file_dir1/"};
@@ -1336,13 +1334,13 @@ TEST_P(FileSystemTest, TestListFileStatus1) {
     ASSERT_OK_AND_ASSIGN(is_exist, fs_->Exists(file_path2));
     ASSERT_TRUE(is_exist);
 
-    std::vector<std::unique_ptr<FileStatus>> file_status_list2;
+    std::vector<FileStatus> file_status_list2;
     ASSERT_OK(fs_->ListFileStatus(test_root_, &file_status_list2));
     ASSERT_EQ(file_status_list2.size(), 2);
     expected_dirs = {test_root_ + "/file_dir1/", dir_path2};
     CheckFileStatus(file_status_list2, /*expected_files=*/{}, expected_dirs);
 
-    std::vector<std::unique_ptr<FileStatus>> file_status_list3;
+    std::vector<FileStatus> file_status_list3;
     ASSERT_OK(fs_->ListFileStatus(test_root_ + "/file_dir1/", &file_status_list3));
     ASSERT_EQ(file_status_list3.size(), 3);
     expected_dirs = {dir_path3};
@@ -1360,25 +1358,25 @@ TEST_P(FileSystemTest, TestListFileStatus2) {
         PathUtil::JoinPath(test_path, "snapshot")};
     {
         // input is a dir, with a trailing '/'
-        std::vector<std::unique_ptr<FileStatus>> status_list;
+        std::vector<FileStatus> status_list;
         ASSERT_OK(fs_->ListFileStatus(test_path + "/", &status_list));
         CheckFileStatus(status_list, expected_files, expected_dirs);
     }
     {
         // input is a dir, without a trailing '/'
-        std::vector<std::unique_ptr<FileStatus>> status_list;
+        std::vector<FileStatus> status_list;
         ASSERT_OK(fs_->ListFileStatus(test_path, &status_list));
         CheckFileStatus(status_list, expected_files, expected_dirs);
     }
     {
         // input is a file
-        std::vector<std::unique_ptr<FileStatus>> status_list;
+        std::vector<FileStatus> status_list;
         ASSERT_OK(fs_->ListFileStatus(PathUtil::JoinPath(test_path, "README"), &status_list));
         CheckFileStatus(status_list, expected_files, /*expected_dirs=*/{});
     }
     {
         // input is not exist
-        std::vector<std::unique_ptr<FileStatus>> status_list;
+        std::vector<FileStatus> status_list;
         ASSERT_OK(fs_->ListFileStatus(PathUtil::JoinPath(test_path, "NOT_EXIST"), &status_list));
         CheckFileStatus(status_list, /*expected_files=*/{}, /*expected_dirs=*/{});
     }
@@ -1391,7 +1389,7 @@ TEST_P(FileSystemTest, TestListDir1) {
     ASSERT_TRUE(is_exist);
 
     auto dir_path1 = test_root_ + "/file_dir1/";
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     ASSERT_OK(fs_->ListDir(test_root_, &file_status_list));
     ASSERT_EQ(file_status_list.size(), 1);
     std::set<std::string> expected_dirs = {dir_path1};
@@ -1407,13 +1405,13 @@ TEST_P(FileSystemTest, TestListDir1) {
     ASSERT_OK_AND_ASSIGN(is_exist, fs_->Exists(dir_path3));
     ASSERT_TRUE(is_exist);
 
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list2;
+    std::vector<BasicFileStatus> file_status_list2;
     ASSERT_OK(fs_->ListDir(test_root_, &file_status_list2));
     ASSERT_EQ(file_status_list2.size(), 2);
     expected_dirs = {dir_path1, dir_path2};
     CheckBasicFileStatus(file_status_list2, std::set<std::string>(), expected_dirs);
 
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list3;
+    std::vector<BasicFileStatus> file_status_list3;
     ASSERT_OK(fs_->ListDir(dir_path1, &file_status_list3));
     ASSERT_EQ(file_status_list3.size(), 2);
     std::set<std::string> expected_files = {file_path};
@@ -1421,12 +1419,12 @@ TEST_P(FileSystemTest, TestListDir1) {
     CheckBasicFileStatus(file_status_list3, expected_files, expected_dirs);
 
     // list non exist dir will return ok
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list4;
+    std::vector<BasicFileStatus> file_status_list4;
     ASSERT_OK(fs_->ListDir(test_root_ + "/non-exist/", &file_status_list4));
     ASSERT_TRUE(file_status_list4.empty());
 
     // list invalid path, a data file path
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list5;
+    std::vector<BasicFileStatus> file_status_list5;
     ASSERT_NOK_WITH_MSG(fs_->ListDir(file_path, &file_status_list5), "is not a directory");
 }
 
@@ -1440,26 +1438,26 @@ TEST_P(FileSystemTest, TestListDir2) {
         PathUtil::JoinPath(test_path, "snapshot")};
     {
         // input is a dir, with a trailing '/'
-        std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+        std::vector<BasicFileStatus> status_list;
         ASSERT_OK(fs_->ListDir(test_path + "/", &status_list));
         CheckBasicFileStatus(status_list, expected_files, expected_dirs);
     }
     {
         // input is a dir, without a trailing '/'
-        std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+        std::vector<BasicFileStatus> status_list;
         ASSERT_OK(fs_->ListDir(test_path, &status_list));
         CheckBasicFileStatus(status_list, expected_files, expected_dirs);
     }
     {
         // input is a file
-        std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+        std::vector<BasicFileStatus> status_list;
         ASSERT_NOK_WITH_MSG(fs_->ListDir(PathUtil::JoinPath(test_path, "README"), &status_list),
                             "file " + PathUtil::JoinPath(test_path, "README") +
                                 " already exists and is not a directory");
     }
     {
         // input is not exist
-        std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+        std::vector<BasicFileStatus> status_list;
         ASSERT_OK(fs_->ListDir(PathUtil::JoinPath(test_path, "NOT_EXIST"), &status_list));
         CheckBasicFileStatus(status_list, /*expected_files=*/{},
                              /*expected_dirs=*/{});

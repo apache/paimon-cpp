@@ -444,7 +444,7 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndClose) {
     ASSERT_OK(writer->Close());
 
     auto file_system = std::make_shared<LocalFileSystem>();
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     ASSERT_OK(file_system->ListDir(dir->Str(), &file_status_list));
     ASSERT_TRUE(file_status_list.empty());
 }
@@ -489,7 +489,7 @@ TEST_F(AppendOnlyWriterTest, TestInvalidRowKind) {
     ASSERT_OK(writer->Close());
 
     auto file_system = std::make_shared<LocalFileSystem>();
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     ASSERT_OK(file_system->ListDir(dir->Str(), &file_status_list));
     ASSERT_TRUE(file_status_list.empty());
 }

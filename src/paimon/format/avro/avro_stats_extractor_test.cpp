@@ -70,7 +70,7 @@ class AvroStatsExtractorTest : public ::testing::Test {
         ASSERT_OK(writer->Finish());
 
         ASSERT_OK_AND_ASSIGN(auto file_status, fs->GetFileStatus(file_path));
-        ASSERT_GT(file_status->GetLen(), 0);
+        ASSERT_GT(file_status.GetLen(), 0);
     }
 
  private:

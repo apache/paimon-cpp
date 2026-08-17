@@ -256,7 +256,7 @@ TEST_P(MergeTreeWriterTest, TestSimple) {
     // check data file exist and read ok
     std::string expected_data_file_name = "data-" + uuid + "-0.orc";
     std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(expected_data_file_path));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -273,7 +273,7 @@ TEST_P(MergeTreeWriterTest, TestSimple) {
     ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/3,
+        expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/3,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
         /*key_stats=*/
@@ -336,7 +336,7 @@ TEST_P(MergeTreeWriterTest, TestWriteMultiBatch) {
     // check data file exist and read ok
     std::string expected_data_file_name = "data-" + uuid + "-0.orc";
     std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(expected_data_file_path));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -354,7 +354,7 @@ TEST_P(MergeTreeWriterTest, TestWriteMultiBatch) {
     ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/4,
+        expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/4,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Skye")}, pool_.get()),
         /*key_stats=*/
@@ -440,7 +440,7 @@ TEST_P(MergeTreeWriterTest, TestSharedShreddingMapDataFileMetaInfo) {
 
     std::string expected_data_file_name = "data-" + uuid + "-0.orc";
     std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(expected_data_file_path));
 
     std::map<std::string, int32_t> column_to_k = {{"tags", 3}};
@@ -466,7 +466,7 @@ TEST_P(MergeTreeWriterTest, TestSharedShreddingMapDataFileMetaInfo) {
                              expected_shredding_meta);
 
     auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/2,
+        expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/2,
         /*min_key=*/BinaryRowGenerator::GenerateRow({1}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({2}, pool_.get()),
         /*key_stats=*/
@@ -625,7 +625,7 @@ TEST_P(MergeTreeWriterTest, TestWriteWithDeleteRow) {
     // check data file exist and read ok
     std::string expected_data_file_name = "data-" + uuid + "-0.orc";
     std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                          options.GetFileSystem()->GetFileStatus(expected_data_file_path));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -642,7 +642,7 @@ TEST_P(MergeTreeWriterTest, TestWriteWithDeleteRow) {
     ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-        expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/3,
+        expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/3,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
         /*key_stats=*/
@@ -721,10 +721,10 @@ TEST_P(MergeTreeWriterTest, TestMultiplePrepareCommit) {
 
     std::string expected_data_file_dir = dir->Str() + "/";
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<FileStatus> data_file_status1,
+        FileStatus data_file_status1,
         options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name1));
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<FileStatus> data_file_status2,
+        FileStatus data_file_status2,
         options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name2));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array1;
@@ -753,7 +753,7 @@ TEST_P(MergeTreeWriterTest, TestMultiplePrepareCommit) {
     ASSERT_EQ(1, commit_increment1.GetNewFilesIncrement().NewFiles().size());
     ASSERT_EQ(1, commit_increment2.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta1 = std::make_shared<DataFileMeta>(
-        expected_data_file_name1, /*file_size=*/data_file_status1->GetLen(), /*row_count=*/3,
+        expected_data_file_name1, /*file_size=*/data_file_status1.GetLen(), /*row_count=*/3,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
         /*key_stats=*/
@@ -772,7 +772,7 @@ TEST_P(MergeTreeWriterTest, TestMultiplePrepareCommit) {
         /*write_cols=*/std::nullopt);
 
     auto expected_data_file_meta2 = std::make_shared<DataFileMeta>(
-        expected_data_file_name2, /*file_size=*/data_file_status2->GetLen(), /*row_count=*/3,
+        expected_data_file_name2, /*file_size=*/data_file_status2.GetLen(), /*row_count=*/3,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Skye")}, pool_.get()),
         /*key_stats=*/
@@ -945,10 +945,10 @@ TEST_P(MergeTreeWriterTest, TestAutoFlush) {
 
     std::string expected_data_file_dir = dir->Str() + "/";
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<FileStatus> data_file_status1,
+        FileStatus data_file_status1,
         options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name1));
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<FileStatus> data_file_status2,
+        FileStatus data_file_status2,
         options.GetFileSystem()->GetFileStatus(expected_data_file_dir + expected_data_file_name2));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array1;
@@ -975,7 +975,7 @@ TEST_P(MergeTreeWriterTest, TestAutoFlush) {
     ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
     ASSERT_EQ(2, commit_increment.GetNewFilesIncrement().NewFiles().size());
     auto expected_data_file_meta1 = std::make_shared<DataFileMeta>(
-        expected_data_file_name1, /*file_size=*/data_file_status1->GetLen(), /*row_count=*/3,
+        expected_data_file_name1, /*file_size=*/data_file_status1.GetLen(), /*row_count=*/3,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
         /*key_stats=*/
@@ -994,7 +994,7 @@ TEST_P(MergeTreeWriterTest, TestAutoFlush) {
         /*write_cols=*/std::nullopt);
 
     auto expected_data_file_meta2 = std::make_shared<DataFileMeta>(
-        expected_data_file_name2, /*file_size=*/data_file_status2->GetLen(), /*row_count=*/3,
+        expected_data_file_name2, /*file_size=*/data_file_status2.GetLen(), /*row_count=*/3,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
         /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Skye")}, pool_.get()),
         /*key_stats=*/
@@ -1103,12 +1103,12 @@ TEST_P(MergeTreeWriterTest, TestBulkData) {
     for (size_t i = 0; i < batch_size; ++i) {
         std::string expected_data_file_name = "data-" + uuid + "-" + std::to_string(i) + ".orc";
         // check data file exist and read ok
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> data_file_status,
+        ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
                              options.GetFileSystem()->GetFileStatus(expected_data_file_dir +
                                                                     expected_data_file_name));
         // check data file meta
         auto expected_data_file_meta = std::make_shared<DataFileMeta>(
-            expected_data_file_name, /*file_size=*/data_file_status->GetLen(), /*row_count=*/3,
+            expected_data_file_name, /*file_size=*/data_file_status.GetLen(), /*row_count=*/3,
             /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice")}, pool_.get()),
             /*max_key=*/BinaryRowGenerator::GenerateRow({std::string("Paul")}, pool_.get()),
             /*key_stats=*/

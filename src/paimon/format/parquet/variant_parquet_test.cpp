@@ -378,7 +378,7 @@ class VariantParquetTest : public ::testing::Test {
     void OpenFile(std::unique_ptr<FileBatchReader>* file_reader,
                   std::shared_ptr<arrow::Schema>* file_schema) {
         ASSERT_OK_AND_ASSIGN(auto input_stream, fs_->Open(file_path_));
-        auto length = fs_->GetFileStatus(file_path_).value()->GetLen();
+        auto length = fs_->GetFileStatus(file_path_).value().GetLen();
         auto in_stream =
             std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, arrow_pool_);
         std::map<std::string, std::string> options = {};
@@ -565,7 +565,7 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
     }
 
     ASSERT_OK_AND_ASSIGN(auto input_stream, fs_->Open(file_path_));
-    auto length = fs_->GetFileStatus(file_path_).value()->GetLen();
+    auto length = fs_->GetFileStatus(file_path_).value().GetLen();
     auto in_stream =
         std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, arrow_pool_);
     std::map<std::string, std::string> options = {};

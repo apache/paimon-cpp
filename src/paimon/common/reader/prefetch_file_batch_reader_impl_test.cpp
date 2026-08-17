@@ -206,7 +206,7 @@ class PrefetchFileBatchReaderImplTest : public ::testing::Test,
         EXPECT_OK_AND_ASSIGN(
             std::unique_ptr<PrefetchFileBatchReaderImpl> reader,
             PrefetchFileBatchReaderImpl::Create(
-                data_file_path, data_file_status->GetLen(), reader_builder.get(), local_fs_,
+                data_file_path, data_file_status.GetLen(), reader_builder.get(), local_fs_,
                 prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
                 /*enable_adaptive_prefetch_strategy=*/false, executor,
                 /*initialize_read_ranges=*/false, cache_mode, CacheConfig(), GetDefaultPool()));
