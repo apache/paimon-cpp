@@ -25,6 +25,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
@@ -64,21 +65,27 @@ class SingleFileWriter : public FileWriter<T, R> {
     class AbortExecutor {
      public:
         AbortExecutor(const std::shared_ptr<FileSystem>& fs, const std::string& path)
-            : fs_(fs), path_(path), logger_(Logger::GetLogger("AbortExecutor")) {}
+            : paths_({{fs, path}}), logger_(Logger::GetLogger("AbortExecutor")) {}
+
+        void Add(const std::shared_ptr<FileSystem>& fs, const std::string& path) {
+            paths_.emplace_back(fs, path);
+        }
 
         void Abort() {
-            if (fs_) {
-                auto status = fs_->Delete(path_);
+            for (const auto& [fs, path] : paths_) {
+                if (!fs) {
+                    continue;
+                }
+                auto status = fs->Delete(path);
                 if (!status.ok()) {
-                    PAIMON_LOG_WARN(logger_, "Exception occurs when deleting %s: %s", path_.c_str(),
+                    PAIMON_LOG_WARN(logger_, "Exception occurs when deleting %s: %s", path.c_str(),
                                     status.ToString().c_str());
                 }
             }
         }
 
      private:
-        std::shared_ptr<FileSystem> fs_;
-        std::string path_;
+        std::vector<std::pair<std::shared_ptr<FileSystem>, std::string>> paths_;
         std::shared_ptr<Logger> logger_;
     };
 
@@ -129,6 +136,11 @@ class SingleFileWriter : public FileWriter<T, R> {
     /// Hook called after Flush() and before Finish() during Close().
     /// Subclasses can override to update per-field metadata before the file is finalized.
     virtual Status BeforeFinish() {
+        return Status::OK();
+    }
+
+    /// Hook called after the data file is closed and before its completion callback is published.
+    virtual Status BeforeCompletion() {
         return Status::OK();
     }
 
@@ -239,6 +251,7 @@ Status SingleFileWriter<T, R>::Close() {
     // guard still removes the file on a callback error, while a repeated Close() does not publish
     // the same file again.
     closed_ = true;
+    PAIMON_RETURN_NOT_OK(BeforeCompletion());
     if (completion_callback_) {
         PAIMON_RETURN_NOT_OK(completion_callback_());
     }

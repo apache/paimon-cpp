@@ -54,12 +54,20 @@ void MemorySegmentOutputStream::WriteString(const std::string& str) {
 }
 
 void MemorySegmentOutputStream::Write(const char* data, uint32_t size) {
-    auto bytes = std::make_shared<Bytes>(size, pool_.get());
-    if (size != 0) {
-        memcpy(bytes->data(), data, size);
+    uint32_t remaining_size = size;
+    while (remaining_size > 0) {
+        int32_t remaining_in_segment = segment_size_ - position_in_segment_;
+        if (remaining_in_segment == 0) {
+            Advance();
+            remaining_in_segment = segment_size_;
+        }
+        int32_t to_write = static_cast<int32_t>(
+            std::min<uint32_t>(remaining_size, static_cast<uint32_t>(remaining_in_segment)));
+        std::memcpy(current_segment_.MutableData() + position_in_segment_, data, to_write);
+        data += to_write;
+        remaining_size -= to_write;
+        position_in_segment_ += to_write;
     }
-    auto segment = MemorySegment::Wrap(bytes);
-    Write(segment, 0, segment.Size());
 }
 
 void MemorySegmentOutputStream::Write(const MemorySegment& segment, int32_t offset, int32_t len) {

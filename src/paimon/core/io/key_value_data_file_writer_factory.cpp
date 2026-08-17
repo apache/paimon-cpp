@@ -24,6 +24,7 @@
 
 #include "arrow/c/helpers.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/io/data_file_index_writer.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/key_value_data_file_writer.h"
 #include "paimon/format/file_format.h"
@@ -60,6 +61,11 @@ KeyValueDataFileWriterFactory::CreateWriter() const {
         options_.GetWriteFileCompression(level_), std::move(converter), schema_id_, level_,
         file_source_, primary_keys_, resources.stats_extractor, write_schema_,
         path_factory_->IsExternalPath(), pool_);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
+                           CreateFileIndexWriter(write_schema_, path_factory_));
+    if (file_index_writer) {
+        writer->SetFileIndexWriter(std::move(file_index_writer), write_schema_);
+    }
     PAIMON_RETURN_NOT_OK(
         writer->Init(options_.GetFileSystem(), path_factory_->NewPath(), resources.writer_builder));
     return std::unique_ptr<SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>(

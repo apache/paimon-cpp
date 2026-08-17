@@ -24,17 +24,20 @@
 #include "paimon/common/file_index/bloomfilter/bloom_filter_file_index.h"
 #include "paimon/common/file_index/bsi/bit_slice_index_bitmap_file_index.h"
 #include "paimon/common/file_index/empty/empty_file_index_reader.h"
+#include "paimon/common/io/byte_array_output_stream.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
 class FileIndexFormatTest : public ::testing::Test {
  public:
     void SetUp() override {
@@ -54,6 +57,24 @@ class FileIndexFormatTest : public ::testing::Test {
  private:
     std::shared_ptr<MemoryPool> pool_;
 };
+
+TEST_F(FileIndexFormatTest, TestWriteEmptyIndexGoldenBytes) {
+    // the expected bytes are generated from Java Paimon
+    std::vector<char> expected = {0,   5,   78,  78, -48, 26, 53, -82, 0, 0, 0, 1, 0, 0, 0,   47,
+                                  0,   0,   0,   1,  0,   2,  99, 49,  0, 0, 0, 1, 0, 5, 101, 109,
+                                  112, 116, 121, -1, -1,  -1, -1, 0,   0, 0, 0, 0, 0, 0, 0};
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["c1"]["empty"] = nullptr;
+    auto output = std::make_shared<ByteArrayOutputStream>(
+        MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+
+    ASSERT_OK_AND_ASSIGN(auto writer, FileIndexFormat::CreateWriter(output, pool_));
+    ASSERT_OK(writer->WriteColumnIndexes(indexes));
+    ASSERT_OK(writer->Close());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> actual, output->Finish());
+
+    ASSERT_EQ(expected, std::vector<char>(actual->data(), actual->data() + actual->size()));
+}
 
 TEST_F(FileIndexFormatTest, TestCreateEmptyFileIndexReader) {
     auto schema = arrow::schema({arrow::field("c1", arrow::utf8())});

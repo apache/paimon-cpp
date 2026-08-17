@@ -100,6 +100,7 @@ const char Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_SEQUENCE_GROUP[] =
 const char Options::SCAN_FALLBACK_BRANCH[] = "scan.fallback-branch";
 const char Options::BRANCH[] = "branch";
 const char Options::FILE_INDEX_READ_ENABLED[] = "file-index.read.enabled";
+const char Options::FILE_INDEX_IN_MANIFEST_THRESHOLD[] = "file-index.in-manifest-threshold";
 const char Options::DATA_FILE_EXTERNAL_PATHS[] = "data-file.external-paths";
 const char Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY[] = "data-file.external-paths.strategy";
 const char Options::DATA_FILE_PREFIX[] = "data-file.prefix";

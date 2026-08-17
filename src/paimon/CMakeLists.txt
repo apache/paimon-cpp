@@ -85,6 +85,7 @@ set(PAIMON_COMMON_SRCS
     common/global_index/global_indexer_factory.cpp
     common/io/buffered_input_stream.cpp
     common/io/byte_array_input_stream.cpp
+    common/io/byte_array_output_stream.cpp
     common/io/data_input_stream.cpp
     common/io/data_output_stream.cpp
     common/io/memory_segment_output_stream.cpp
@@ -270,6 +271,8 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_meta.cpp
     core/io/data_file_meta_serializer.cpp
     core/io/data_file_path_factory.cpp
+    core/io/data_file_index_writer.cpp
+    core/io/file_index_options.cpp
     core/io/append_data_file_writer_factory.cpp
     core/io/blob_data_file_writer_factory.cpp
     core/io/data_file_writer_factory.cpp
@@ -577,6 +580,7 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/rangebitmap/range_bitmap_global_index_test.cpp
                     common/global_index/wrap/file_index_reader_wrapper_test.cpp
                     common/io/byte_array_input_stream_test.cpp
+                    common/io/byte_array_output_stream_test.cpp
                     common/io/data_input_output_stream_test.cpp
                     common/io/buffered_input_stream_test.cpp
                     common/io/memory_segment_output_stream_test.cpp
@@ -752,6 +756,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/complete_row_tracking_fields_reader_test.cpp
                     core/io/vector_file_batch_reader_test.cpp
                     core/io/data_file_meta_test.cpp
+                    core/io/data_file_index_writer_test.cpp
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp
                     core/io/rolling_blob_file_writer_test.cpp

@@ -19,6 +19,7 @@
 #include "paimon/core/io/data_file_writer.h"
 
 #include <cassert>
+#include <utility>
 
 #include "arrow/c/abi.h"
 #include "paimon/common/utils/long_counter.h"
@@ -36,7 +37,7 @@ DataFileWriter::DataFileWriter(
     const std::shared_ptr<FormatStatsExtractor>& stats_extractor, bool is_external_path,
     const std::optional<std::vector<std::string>>& write_cols,
     const std::shared_ptr<MemoryPool>& pool)
-    : SingleFileWriter(compression, converter),
+    : DataFileWriterBase(compression, std::move(converter)),
       pool_(pool),
       schema_id_(schema_id),
       is_external_path_(is_external_path),
@@ -45,25 +46,10 @@ DataFileWriter::DataFileWriter(
       stats_extractor_(stats_extractor),
       write_cols_(write_cols) {}
 
-void DataFileWriter::SetMetadataFinalizer(MetadataFinalizer finalizer) {
-    metadata_finalizer_ = std::move(finalizer);
-}
-
 Status DataFileWriter::Write(ArrowArray* batch) {
     int64_t record_count = batch->length;
-    PAIMON_RETURN_NOT_OK(SingleFileWriter::Write(batch));
+    PAIMON_RETURN_NOT_OK(WriteRecord(batch, batch));
     seq_num_counter_->Add(record_count);
-    return Status::OK();
-}
-
-Status DataFileWriter::BeforeFinish() {
-    if (metadata_finalizer_) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> updated_schema,
-                               metadata_finalizer_());
-        if (updated_schema) {
-            PAIMON_RETURN_NOT_OK(UpdateSchema(updated_schema));
-        }
-    }
     return Status::OK();
 }
 
@@ -77,11 +63,12 @@ Result<std::shared_ptr<DataFileMeta>> DataFileWriter::GetResult() {
         PAIMON_ASSIGN_OR_RAISE(Path external_path, PathUtil::ToPath(path_));
         final_path = external_path.ToString();
     }
+    const FileIndexWriteResult& file_index = GetFileIndexWriteResult();
     return DataFileMeta::ForAppend(
         PathUtil::GetName(path_), output_bytes_, RecordCount(), stats,
         seq_num_counter_->GetValue() - RecordCount(), seq_num_counter_->GetValue() - 1, schema_id_,
-        {}, /*embedded_index=*/nullptr, file_source_, /*value_stats_cols=*/std::nullopt, final_path,
-        /*first_row_id=*/std::nullopt, write_cols_);
+        file_index.extra_files, file_index.embedded_index, file_source_,
+        /*value_stats_cols=*/std::nullopt, final_path, /*first_row_id=*/std::nullopt, write_cols_);
 }
 
 Result<std::vector<std::shared_ptr<ColumnStats>>> DataFileWriter::GetFieldStats() {

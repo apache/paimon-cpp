@@ -386,6 +386,7 @@ struct CoreOptions::Impl {
     int64_t manifest_target_file_size = 8 * 1024 * 1024;
     int64_t deletion_vector_target_file_size = 2 * 1024 * 1024;
     int64_t manifest_full_compaction_file_size = 16 * 1024 * 1024;
+    int64_t file_index_in_manifest_threshold = 500;
     int64_t write_buffer_size = 256 * 1024 * 1024;
     int64_t commit_timeout = std::numeric_limits<int64_t>::max();
     int64_t commit_min_retry_wait = 10;
@@ -838,6 +839,9 @@ struct CoreOptions::Impl {
 
     // Parse index-related configurations: file index, global index.
     Status ParseIndexOptions(const ConfigParser& parser) {
+        // Parse file-index.in-manifest-threshold - max inline file index size, default 500B
+        PAIMON_RETURN_NOT_OK(parser.ParseMemorySize(Options::FILE_INDEX_IN_MANIFEST_THRESHOLD,
+                                                    &file_index_in_manifest_threshold));
         // Parse file-index.read.enabled - whether to enable reading file index, default true
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::FILE_INDEX_READ_ENABLED, &file_index_read_enabled));
@@ -1652,6 +1656,10 @@ std::string CoreOptions::GetBranch() const {
 
 bool CoreOptions::FileIndexReadEnabled() const {
     return impl_->file_index_read_enabled;
+}
+
+int64_t CoreOptions::FileIndexInManifestThreshold() const {
+    return impl_->file_index_in_manifest_threshold;
 }
 
 std::optional<std::string> CoreOptions::GetDataFileExternalPaths() const {

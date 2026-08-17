@@ -134,6 +134,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(std::nullopt, core_options.GetScanFallbackBranch());
     ASSERT_EQ("main", core_options.GetBranch());
     ASSERT_TRUE(core_options.FileIndexReadEnabled());
+    ASSERT_EQ(500, core_options.FileIndexInManifestThreshold());
     ASSERT_EQ(std::nullopt, core_options.GetDataFileExternalPaths());
     ASSERT_EQ(ExternalPathStrategy::NONE, core_options.GetExternalPathStrategy());
     ASSERT_TRUE(core_options.EnableAdaptivePrefetchStrategy());
@@ -248,6 +249,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::SCAN_FALLBACK_BRANCH, "fallback"},
         {Options::BRANCH, "rt"},
         {Options::FILE_INDEX_READ_ENABLED, "false"},
+        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "2KB"},
         {Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///tmp/index"},
         {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "round-robin"},
         {Options::FILE_COMPRESSION, "snappy"},
@@ -398,6 +400,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(core_options.GetScanFallbackBranch(), std::optional<std::string>("fallback"));
     ASSERT_EQ(core_options.GetBranch(), "rt");
     ASSERT_FALSE(core_options.FileIndexReadEnabled());
+    ASSERT_EQ(2 * 1024, core_options.FileIndexInManifestThreshold());
     ASSERT_EQ(core_options.GetDataFileExternalPaths(),
               std::optional<std::string>("FILE:///tmp/index"));
     ASSERT_EQ(core_options.GetExternalPathStrategy(), ExternalPathStrategy::ROUND_ROBIN);
