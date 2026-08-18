@@ -38,12 +38,12 @@
 #include "paimon/arrow/abi.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/macros.h"
-#include "paimon/realtime/mem_indexer.h"
+#include "paimon/realtime/realtime_store.h"
 #include "paimon/status.h"
 
 namespace paimon {
 
-RealtimeContextImpl::RealtimeContextImpl(const std::shared_ptr<MemIndexerFactory>& factory)
+RealtimeContextImpl::RealtimeContextImpl(const std::shared_ptr<RealtimeStoreFactory>& factory)
     : factory_(factory) {}
 
 RealtimeContextImpl::~RealtimeContextImpl() {
@@ -58,9 +58,9 @@ RealtimeContextImpl::~RealtimeContextImpl() {
 }
 
 Result<std::shared_ptr<RealtimeContextImpl>> RealtimeContextImpl::Create(
-    const std::shared_ptr<MemIndexerFactory>& factory) {
+    const std::shared_ptr<RealtimeStoreFactory>& factory) {
     if (!factory) {
-        return Status::Invalid("mem indexer factory is null");
+        return Status::Invalid("real-time store factory is null");
     }
     std::shared_ptr<RealtimeContextImpl> context(new RealtimeContextImpl(factory));
     PAIMON_RETURN_NOT_OK(context->Start());
@@ -77,7 +77,7 @@ Status RealtimeContextImpl::Start() {
     return Status::OK();
 }
 
-Result<RealtimeMemIndexerState> RealtimeContextImpl::GetOrCreateMemIndexer(
+Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     const std::map<std::string, std::string>& partition, int32_t bucket,
     std::unique_ptr<ArrowSchema> write_schema, const std::map<std::string, std::string>& options,
     const std::shared_ptr<MemoryPool>& memory_pool) {
@@ -93,56 +93,57 @@ Result<RealtimeMemIndexerState> RealtimeContextImpl::GetOrCreateMemIndexer(
             }
             return Status::Invalid("real-time offset has reached INT64_MAX");
         }
-        initial_offset = offset_iter->second + 1;
+        initial_offset = offset_iter->second;
     }
-    auto iter = indexers_.find(key);
-    if (iter != indexers_.end()) {
+    auto iter = stores_.find(key);
+    if (iter != stores_.end()) {
         if (write_schema) {
             ArrowSchemaRelease(write_schema.get());
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MemReadView> read_view,
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
                                iter->second->AcquireReadView());
         if (!read_view) {
-            return Status::Invalid("mem indexer returned a null read view");
+            return Status::Invalid("real-time store returned a null read view");
         }
-        const std::optional<Range> memory_range = read_view->GetOffsetRange();
+        const std::optional<OffsetRange> memory_range = read_view->GetOffsetRange();
         if (memory_range) {
-            if (memory_range->to == std::numeric_limits<int64_t>::max()) {
+            if (memory_range->end == std::numeric_limits<int64_t>::max()) {
                 return Status::Invalid("real-time offset has reached INT64_MAX");
             }
-            // A reused indexer may retain sealed-but-uncommitted rows beyond the committed
+            // A reused store may retain sealed-but-uncommitted rows beyond the committed
             // offset. Continue after all retained rows instead of restarting across a seal.
-            if (memory_range->to >= initial_offset) {
-                initial_offset = memory_range->to + 1;
+            if (memory_range->end > initial_offset) {
+                initial_offset = memory_range->end;
             }
         }
-        return RealtimeMemIndexerState{iter->second, initial_offset};
+        return RealtimeStoreState{iter->second, initial_offset};
     }
-    Result<std::shared_ptr<MemIndexer>> indexer_result =
+    Result<std::shared_ptr<RealtimeStore>> store_result =
         factory_->Create(std::move(write_schema), options, memory_pool);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MemIndexer> indexer, std::move(indexer_result));
-    indexers_.emplace(key, indexer);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeStore> store, std::move(store_result));
+    stores_.emplace(key, store);
     if (offset_iter != committed_offsets_.end()) {
         reclaimed_offsets_.emplace(key, offset_iter->second);
     }
-    return RealtimeMemIndexerState{std::move(indexer), initial_offset};
+    return RealtimeStoreState{std::move(store), initial_offset};
 }
 
 Result<std::vector<RealtimePartitionBucketView>> RealtimeContextImpl::AcquireReadViews() {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<RealtimePartitionBucketView> result;
-    result.reserve(indexers_.size());
-    for (const auto& [partition_bucket, indexer] : indexers_) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MemReadView> read_view, indexer->AcquireReadView());
+    result.reserve(stores_.size());
+    for (const auto& [partition_bucket, store] : stores_) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
+                               store->AcquireReadView());
         result.push_back(
-            RealtimePartitionBucketView{partition_bucket, indexer, std::move(read_view)});
+            RealtimePartitionBucketView{partition_bucket, store, std::move(read_view)});
     }
     return result;
 }
 
 Result<std::string> RealtimeContextImpl::PinReadView(const RealtimePartitionBucketView& view,
                                                      int64_t ttl_millis) {
-    if (!view.indexer || !view.read_view) {
+    if (!view.store || !view.read_view) {
         return Status::Invalid("cannot pin an incomplete real-time read view");
     }
     if (ttl_millis <= 0) {
@@ -224,13 +225,13 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
         return Status::Invalid("real-time committed snapshot cannot move backwards");
     }
     if (!last_refreshed_snapshot_id_ || snapshot_id > last_refreshed_snapshot_id_.value()) {
-        for (const auto& [partition_bucket, committed_offset] : committed_offsets) {
-            if (partition_bucket.bucket < 0 || committed_offset < 0) {
+        for (const auto& [partition_bucket, committed_end_offset] : committed_offsets) {
+            if (partition_bucket.bucket < 0 || committed_end_offset < 0) {
                 return Status::Invalid("invalid partition-bucket committed offset");
             }
             auto previous_iter = committed_offsets_.find(partition_bucket);
             if (previous_iter != committed_offsets_.end()) {
-                if (committed_offset < previous_iter->second) {
+                if (committed_end_offset < previous_iter->second) {
                     return Status::Invalid(
                         "real-time partition-bucket committed offset cannot move backwards");
                 }
@@ -240,29 +241,29 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
         last_refreshed_snapshot_id_ = snapshot_id;
     }
 
-    std::vector<std::tuple<RealtimePartitionBucket, std::shared_ptr<MemIndexer>, int64_t>>
+    std::vector<std::tuple<RealtimePartitionBucket, std::shared_ptr<RealtimeStore>, int64_t>>
         notifications;
     {
         std::lock_guard<std::mutex> registry_lock(mutex_);
-        for (const auto& [partition_bucket, committed_offset] : committed_offsets_) {
+        for (const auto& [partition_bucket, committed_end_offset] : committed_offsets_) {
             auto reclaimed_iter = reclaimed_offsets_.find(partition_bucket);
             if (reclaimed_iter != reclaimed_offsets_.end() &&
-                reclaimed_iter->second >= committed_offset) {
+                reclaimed_iter->second >= committed_end_offset) {
                 continue;
             }
-            auto indexer_iter = indexers_.find(partition_bucket);
-            if (indexer_iter != indexers_.end()) {
-                notifications.emplace_back(partition_bucket, indexer_iter->second,
-                                           committed_offset);
+            auto store_iter = stores_.find(partition_bucket);
+            if (store_iter != stores_.end()) {
+                notifications.emplace_back(partition_bucket, store_iter->second,
+                                           committed_end_offset);
             }
         }
     }
-    // Reclaim independent indexers on a best-effort basis, then report the first error.
+    // Reclaim independent stores on a best-effort basis, then report the first error.
     Status first_error = Status::OK();
-    for (const auto& [partition_bucket, indexer, committed_offset] : notifications) {
-        Status status = indexer->AdvanceCommittedOffset(committed_offset);
+    for (const auto& [partition_bucket, store, committed_end_offset] : notifications) {
+        Status status = store->AdvanceCommittedOffset(committed_end_offset);
         if (status.ok()) {
-            reclaimed_offsets_[partition_bucket] = committed_offset;
+            reclaimed_offsets_[partition_bucket] = committed_end_offset;
         } else if (first_error.ok()) {
             first_error = std::move(status);
         }

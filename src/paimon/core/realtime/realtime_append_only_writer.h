@@ -26,7 +26,7 @@
 #include <string>
 
 #include "paimon/core/utils/batch_writer.h"
-#include "paimon/realtime/mem_indexer.h"
+#include "paimon/realtime/realtime_store.h"
 
 struct ArrowSchema;
 
@@ -70,7 +70,7 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
     std::shared_ptr<Metrics> GetMetrics() const override;
 
  private:
-    RealtimeAppendOnlyWriter(const std::shared_ptr<MemIndexer>& mem_indexer,
+    RealtimeAppendOnlyWriter(const std::shared_ptr<RealtimeStore>& realtime_store,
                              const std::shared_ptr<AppendOnlyWriter>& file_writer,
                              const std::shared_ptr<arrow::Schema>& input_schema,
                              int64_t next_offset, const std::shared_ptr<MemoryPool>& memory_pool);
@@ -78,11 +78,11 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
 
     std::shared_ptr<MemoryPool> memory_pool_;
-    std::shared_ptr<MemIndexer> mem_indexer_;
+    std::shared_ptr<RealtimeStore> realtime_store_;
     std::shared_ptr<AppendOnlyWriter> file_writer_;
     std::shared_ptr<arrow::Schema> input_schema_;
     int64_t next_offset_;
-    std::mutex mem_indexer_mutex_;
+    std::mutex realtime_store_mutex_;
     std::mutex prepare_mutex_;
 };
 

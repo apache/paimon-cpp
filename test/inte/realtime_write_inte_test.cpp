@@ -55,8 +55,8 @@
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
-#include "paimon/realtime/mem_indexer.h"
 #include "paimon/realtime/realtime_context.h"
+#include "paimon/realtime/realtime_store.h"
 #include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
 #include "paimon/table/source/table_read.h"
@@ -375,7 +375,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
                                realtime_context_impl->AcquireReadViews());
         uint64_t memory_usage = 0;
         for (const RealtimePartitionBucketView& view : views) {
-            memory_usage += view.indexer->GetMemoryUsage();
+            memory_usage += view.store->GetMemoryUsage();
         }
         return memory_usage;
     }
@@ -466,7 +466,7 @@ TEST_F(RealtimeWriteInteTest, TestRollingFilesPreserveProgress) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_EQ(1, commits.size());
-    ASSERT_EQ(Range(0, kBatchCount * kRowsPerBatch - 1), commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(0, kBatchCount * kRowsPerBatch), commits[0].offset_range);
     std::shared_ptr<CommitMessageImpl> commit_message =
         std::dynamic_pointer_cast<CommitMessageImpl>(commits[0].commit_message);
     ASSERT_NE(nullptr, commit_message);
@@ -489,7 +489,7 @@ TEST_F(RealtimeWriteInteTest, TestCommitOrdersPreparedOffsetRanges) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_EQ(1, commits.size());
-    ASSERT_EQ(Range(0, 2), commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(0, 3), commits[0].offset_range);
 
     std::vector<Row> second_rows = MakeRows(/*first_id=*/3, /*count=*/2, /*partition=*/"p0");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_batch,
@@ -498,13 +498,13 @@ TEST_F(RealtimeWriteInteTest, TestCommitOrdersPreparedOffsetRanges) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_commits,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, second_commits.size());
-    ASSERT_EQ(Range(3, 4), second_commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(3, 5), second_commits[0].offset_range);
 
     commits.push_back(std::move(second_commits[0]));
     std::reverse(commits.begin(), commits.end());
     ASSERT_OK(Commit(commits, /*commit_identifier=*/1));
     ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets, ReadCommittedOffsets());
-    ASSERT_EQ(4, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
+    ASSERT_EQ(5, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
     ASSERT_OK(writer->Close());
 
     std::vector<Row> expected_rows = first_rows;
@@ -532,8 +532,8 @@ TEST_F(RealtimeWriteInteTest, TestReadMemoryBeforePrepareCommit) {
     ASSERT_NE(nullptr, realtime_split);
     ASSERT_EQ(RealtimeSplit::kCurrentVersion, realtime_split->Version());
     ASSERT_FALSE(realtime_split->SnapshotId().has_value());
-    ASSERT_EQ(-1, realtime_split->CommittedOffset());
-    ASSERT_EQ(9, realtime_split->MemoryUpperOffset());
+    ASSERT_EQ(0, realtime_split->CommittedEndOffset());
+    ASSERT_EQ(10, realtime_split->MemoryEndOffset());
     ASSERT_FALSE(realtime_split->OpaqueTicket().empty());
     ASSERT_NOK_WITH_MSG(ReadRows(plan, /*realtime_context=*/nullptr),
                         "requires a real-time context");
@@ -652,8 +652,8 @@ TEST_F(RealtimeWriteInteTest, TestVectorReaderFailurePreservesEarlierSplitTicket
     std::vector<std::shared_ptr<Split>> second_disk_splits = second_split->DiskSplits();
     invalid_splits[1] = std::make_shared<RealtimeSplit>(
         RealtimeSplit::kCurrentVersion + 1, second_split->SnapshotId(), second_split->Partition(),
-        second_split->Bucket(), std::move(second_disk_splits), second_split->CommittedOffset(),
-        second_split->MemoryUpperOffset(), second_split->OpaqueTicket());
+        second_split->Bucket(), std::move(second_disk_splits), second_split->CommittedEndOffset(),
+        second_split->MemoryEndOffset(), second_split->OpaqueTicket());
 
     ReadContextBuilder read_builder(table_path_);
     read_builder.SetOptions(options_)
@@ -720,7 +720,7 @@ TEST_F(RealtimeWriteInteTest, TestCloseWriterAllowsContextReuseByLaterWriter) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
                          first_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_EQ(1, commits.size());
-    ASSERT_EQ(Range(0, 2), commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(0, 3), commits[0].offset_range);
     ASSERT_OK(first_writer->Close());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> second_writer,
@@ -732,7 +732,7 @@ TEST_F(RealtimeWriteInteTest, TestCloseWriterAllowsContextReuseByLaterWriter) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_commits,
                          second_writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, second_commits.size());
-    ASSERT_EQ(Range(3, 4), second_commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(3, 5), second_commits[0].offset_range);
 
     commits.push_back(std::move(second_commits[0]));
     ASSERT_OK(Commit(commits, /*commit_identifier=*/1));
@@ -757,7 +757,7 @@ TEST_F(RealtimeWriteInteTest, TestReadCommittedDiskAndBuildingMemory) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_EQ(1, disk_commits.size());
-    ASSERT_EQ(Range(0, 2), disk_commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(0, 3), disk_commits[0].offset_range);
 
     std::vector<Row> memory_rows = MakeRows(/*first_id=*/3, /*count=*/2, /*partition=*/"p0");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
@@ -1042,7 +1042,7 @@ TEST_F(RealtimeWriteInteTest, TestRepeatedCommitReadAndRefresh) {
         ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
                              writer->PrepareCommitWithProgress(/*commit_identifier=*/round));
         ASSERT_EQ(1, commits.size());
-        ASSERT_EQ(Range(round * kRowsPerRound, (round + 1) * kRowsPerRound - 1),
+        ASSERT_EQ(OffsetRange(round * kRowsPerRound, (round + 1) * kRowsPerRound),
                   commits[0].offset_range);
         ASSERT_OK_AND_ASSIGN(int64_t committed_snapshot_id,
                              Commit(commits, /*commit_identifier=*/round));
@@ -1095,8 +1095,8 @@ TEST_F(RealtimeWriteInteTest, TestConcurrentWritePrepareCommitReadAndRefresh) {
         {
             std::lock_guard<std::mutex> lock(state.mutex);
             for (RealtimeCommitProgress& commit : commits) {
-                int64_t offset_from = commit.offset_range.from;
-                if (!pending_commits.emplace(offset_from, std::move(commit)).second) {
+                int64_t offset_begin = commit.offset_range.begin;
+                if (!pending_commits.emplace(offset_begin, std::move(commit)).second) {
                     error = "duplicate prepared real-time offset range";
                     break;
                 }
@@ -1191,12 +1191,12 @@ TEST_F(RealtimeWriteInteTest, TestConcurrentWritePrepareCommitReadAndRefresh) {
 
             std::vector<RealtimeCommitProgress> commits;
             commits.push_back(std::move(next_commit).value());
-            int64_t committed_offset = commits[0].offset_range.to;
+            int64_t committed_end_offset = commits[0].offset_range.end;
             Result<int64_t> commit_result = Commit(commits, commit_identifier++);
             if (state.RecordErrorIfNotOk(commit_result)) {
                 break;
             }
-            next_offset = committed_offset + 1;
+            next_offset = committed_end_offset;
             {
                 std::lock_guard<std::mutex> lock(state.mutex);
                 pending_snapshot_ids.push_back(std::move(commit_result).value());
@@ -1295,7 +1295,7 @@ TEST_F(RealtimeWriteInteTest, TestConcurrentWritePrepareCommitReadAndRefresh) {
     ASSERT_EQ(kTotalRows, static_cast<int64_t>(final_rows.size()));
     ASSERT_OK(ValidateReadPrefix(final_rows, kTotalRows));
     ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets, ReadCommittedOffsets());
-    ASSERT_EQ(kTotalRows - 1,
+    ASSERT_EQ(kTotalRows,
               committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
     ASSERT_OK_AND_ASSIGN(uint64_t memory_usage, GetRealtimeMemoryUsage(realtime_context));
     ASSERT_EQ(0, memory_usage);
@@ -1344,7 +1344,7 @@ TEST_F(RealtimeWriteInteTest, TestMultiplePartitions) {
     for (int64_t partition_index = 0; partition_index < 2; ++partition_index) {
         RealtimePartitionBucket partition_bucket({{"pt", "p" + std::to_string(partition_index)}},
                                                  /*bucket=*/0);
-        ASSERT_EQ(9, committed_offsets.at(partition_bucket));
+        ASSERT_EQ(10, committed_offsets.at(partition_bucket));
     }
     ASSERT_EQ(committed_offsets.end(),
               committed_offsets.find(RealtimePartitionBucket({{"pt", "p2"}}, /*bucket=*/0)));
@@ -1387,12 +1387,12 @@ TEST_F(RealtimeWriteInteTest, TestMultipleBucketsRestoreIndependentOffsets) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_commits,
                          second_writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(2, second_commits.size());
-    std::map<int32_t, Range> prepared_ranges;
+    std::map<int32_t, OffsetRange> prepared_ranges;
     for (const RealtimeCommitProgress& commit : second_commits) {
         prepared_ranges.emplace(commit.partition_bucket.bucket, commit.offset_range);
     }
-    ASSERT_EQ(Range(2, 2), prepared_ranges.at(0));
-    ASSERT_EQ(Range(3, 3), prepared_ranges.at(1));
+    ASSERT_EQ(OffsetRange(2, 3), prepared_ranges.at(0));
+    ASSERT_EQ(OffsetRange(3, 4), prepared_ranges.at(1));
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
     std::vector<Row> expected_rows = bucket0_disk_rows;
@@ -1409,8 +1409,8 @@ TEST_F(RealtimeWriteInteTest, TestMultipleBucketsRestoreIndependentOffsets) {
     ASSERT_OK(second_writer->Close());
     ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets, ReadCommittedOffsets());
     ASSERT_EQ(2, committed_offsets.size());
-    ASSERT_EQ(2, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
-    ASSERT_EQ(3, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/1)));
+    ASSERT_EQ(3, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
+    ASSERT_EQ(4, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/1)));
 }
 
 TEST_F(RealtimeWriteInteTest, TestRestoreOffsetFromCommittedSnapshot) {
@@ -1424,7 +1424,7 @@ TEST_F(RealtimeWriteInteTest, TestRestoreOffsetFromCommittedSnapshot) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> first_commits,
                          first_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_EQ(1, first_commits.size());
-    ASSERT_EQ(Range(0, 2), first_commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(0, 3), first_commits[0].offset_range);
     ASSERT_OK(Commit(first_commits, /*commit_identifier=*/0));
     ASSERT_OK(first_writer->Close());
 
@@ -1436,7 +1436,7 @@ TEST_F(RealtimeWriteInteTest, TestRestoreOffsetFromCommittedSnapshot) {
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_commits,
                          second_writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, second_commits.size());
-    ASSERT_EQ(Range(3, 4), second_commits[0].offset_range);
+    ASSERT_EQ(OffsetRange(3, 5), second_commits[0].offset_range);
 
     std::vector<Row> expected_rows = MakeRows(/*first_id=*/0, /*count=*/5, /*partition=*/"p0");
     FinalizeCommitAndCheck(second_writer.get(), std::move(second_commits),
@@ -1444,7 +1444,7 @@ TEST_F(RealtimeWriteInteTest, TestRestoreOffsetFromCommittedSnapshot) {
 
     RealtimePartitionBucket partition_bucket(/*partition=*/{}, /*bucket=*/0);
     ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap second_committed_offsets, ReadCommittedOffsets());
-    ASSERT_EQ(4, second_committed_offsets.at(partition_bucket));
+    ASSERT_EQ(5, second_committed_offsets.at(partition_bucket));
 }
 
 }  // namespace paimon::test

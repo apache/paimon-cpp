@@ -79,7 +79,8 @@ class PAIMON_EXPORT FileStoreCommit {
     /// orders them by partition, bucket, and offset before validating continuity. The resulting
     /// snapshot atomically publishes the data files and the updated offset map.
     ///
-    /// @param realtime_commits Commit messages and inclusive offset ranges to commit.
+    /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
+    /// commit.
     /// @param commit_identifier Identifier of the streaming commit operation.
     /// @param watermark Optional event-time watermark.
     /// @return The id of the final snapshot produced by this commit.

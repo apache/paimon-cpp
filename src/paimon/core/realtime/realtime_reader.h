@@ -24,15 +24,15 @@
 
 #include "paimon/arrow/abi.h"
 #include "paimon/reader/batch_reader.h"
-#include "paimon/realtime/mem_indexer.h"
+#include "paimon/realtime/realtime_store.h"
 #include "paimon/result.h"
 
 namespace paimon {
 
 class RealtimeReader final : public BatchReader {
  public:
-    static Result<std::unique_ptr<RealtimeReader>> Create(std::shared_ptr<MemReadView> read_view,
-                                                          std::unique_ptr<BatchReader> reader) {
+    static Result<std::unique_ptr<RealtimeReader>> Create(
+        std::shared_ptr<RealtimeReadView> read_view, std::unique_ptr<BatchReader> reader) {
         if (!read_view) {
             return Status::Invalid("real-time reader view is null");
         }
@@ -61,12 +61,12 @@ class RealtimeReader final : public BatchReader {
     }
 
  private:
-    RealtimeReader(std::shared_ptr<MemReadView> read_view, std::unique_ptr<BatchReader> reader)
+    RealtimeReader(std::shared_ptr<RealtimeReadView> read_view, std::unique_ptr<BatchReader> reader)
         : read_view_(std::move(read_view)), reader_(std::move(reader)) {}
 
     // Keep the view before the delegated reader so reverse member destruction closes the reader
     // before releasing the data it references.
-    std::shared_ptr<MemReadView> read_view_;
+    std::shared_ptr<RealtimeReadView> read_view_;
     std::unique_ptr<BatchReader> reader_;
 };
 

@@ -50,8 +50,8 @@ class RealtimeTableScan : public TableScan {
  private:
     using MemoryViewMap = std::map<RealtimePartitionBucket, RealtimePartitionBucketView>;
 
-    static int64_t GetCommittedOffset(const RealtimeOffsetMap& committed_offsets,
-                                      const RealtimePartitionBucket& partition_bucket);
+    static int64_t GetCommittedEndOffset(const RealtimeOffsetMap& committed_offsets,
+                                         const RealtimePartitionBucket& partition_bucket);
 
     bool MatchPartition(const std::map<std::string, std::string>& partition) const;
 

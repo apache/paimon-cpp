@@ -28,9 +28,9 @@
 namespace paimon::test {
 namespace {
 
-class TestingReadView : public MemReadView {
+class TestingReadView : public RealtimeReadView {
  public:
-    std::optional<Range> GetOffsetRange() const override {
+    std::optional<OffsetRange> GetOffsetRange() const override {
         return std::nullopt;
     }
 };

@@ -33,6 +33,10 @@ namespace paimon {
 
 /// Split combining committed disk splits and a ticket for one immutable memory view.
 ///
+/// `committed_end_offset` and `memory_end_offset` are exclusive bounds. Disk covers the committed
+/// prefix and memory readers return the remaining `[committed_end_offset, memory_end_offset)`
+/// range.
+///
 /// The current fields are process-independent except that `opaque_ticket` can only be resolved by
 /// the `RealtimeContext` that created it. Successful reader creation consumes the ticket; a failed
 /// creation can retry the same split until the ticket expires.
@@ -43,15 +47,15 @@ class RealtimeSplit : public Split {
 
     RealtimeSplit(int32_t version, std::optional<int64_t> snapshot_id,
                   std::map<std::string, std::string> partition, int32_t bucket,
-                  std::vector<std::shared_ptr<Split>>&& disk_splits, int64_t committed_offset,
-                  int64_t memory_upper_offset, std::string opaque_ticket)
+                  std::vector<std::shared_ptr<Split>>&& disk_splits, int64_t committed_end_offset,
+                  int64_t memory_end_offset, std::string opaque_ticket)
         : version_(version),
           snapshot_id_(std::move(snapshot_id)),
           partition_(std::move(partition)),
           bucket_(bucket),
           disk_splits_(std::move(disk_splits)),
-          committed_offset_(committed_offset),
-          memory_upper_offset_(memory_upper_offset),
+          committed_end_offset_(committed_end_offset),
+          memory_end_offset_(memory_end_offset),
           opaque_ticket_(std::move(opaque_ticket)) {}
 
     int32_t Version() const {
@@ -74,12 +78,14 @@ class RealtimeSplit : public Split {
         return disk_splits_;
     }
 
-    int64_t CommittedOffset() const {
-        return committed_offset_;
+    /// Returns the exclusive end offset covered by committed disk data.
+    int64_t CommittedEndOffset() const {
+        return committed_end_offset_;
     }
 
-    int64_t MemoryUpperOffset() const {
-        return memory_upper_offset_;
+    /// Returns the exclusive end offset captured by the memory view.
+    int64_t MemoryEndOffset() const {
+        return memory_end_offset_;
     }
 
     const std::string& OpaqueTicket() const {
@@ -92,8 +98,8 @@ class RealtimeSplit : public Split {
     std::map<std::string, std::string> partition_;
     int32_t bucket_;
     std::vector<std::shared_ptr<Split>> disk_splits_;
-    int64_t committed_offset_;
-    int64_t memory_upper_offset_;
+    int64_t committed_end_offset_;
+    int64_t memory_end_offset_;
     std::string opaque_ticket_;
 };
 

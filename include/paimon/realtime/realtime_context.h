@@ -30,7 +30,7 @@
 
 namespace paimon {
 
-class MemIndexerFactory;
+class RealtimeStoreFactory;
 
 /// Identifies one partition-bucket by its logical partition values.
 struct PAIMON_EXPORT RealtimePartitionBucket {
@@ -62,25 +62,27 @@ struct PAIMON_EXPORT RealtimePartitionBucket {
     int32_t bucket = -1;
 };
 
-/// Largest committed offset for each partition-bucket.
+/// Exclusive committed end offset for each partition-bucket.
 using RealtimeOffsetMap = std::map<RealtimePartitionBucket, int64_t>;
 
-/// Shared context that owns the `MemIndexer` instances used by a real-time writer.
+/// Framework-managed context that owns the `RealtimeStore` instances used by real-time operations.
 ///
 /// Applications share one context between `WriteContext`, `ScanContext`, and `ReadContext`. The
 /// context uses either the default Arrow implementation or an application-provided factory and
-/// keeps each created indexer available across writes, prepare-commit operations, and
-/// process-local reads.
+/// keeps each created store available across writes, prepare-commit operations, and process-local
+/// reads. `RealtimeContext` itself is not a customization interface and must not be implemented by
+/// applications. Customize real-time storage and retrieval through `RealtimeStoreFactory` and
+/// `RealtimeStore` instead.
 class PAIMON_EXPORT RealtimeContext {
  public:
-    /// Creates a context backed by Paimon's default Arrow `MemIndexer`.
+    /// Creates a context backed by Paimon's default in-memory Arrow `RealtimeStore`.
     static Result<std::shared_ptr<RealtimeContext>> Create();
 
-    /// Creates a context backed by an application-provided indexer factory.
+    /// Creates a context backed by an application-provided store factory.
     ///
-    /// @param factory Non-null factory used to create indexers on demand.
+    /// @param factory Non-null factory used to create stores on demand.
     static Result<std::shared_ptr<RealtimeContext>> Create(
-        const std::shared_ptr<MemIndexerFactory>& factory);
+        const std::shared_ptr<RealtimeStoreFactory>& factory);
 
     virtual ~RealtimeContext();
 

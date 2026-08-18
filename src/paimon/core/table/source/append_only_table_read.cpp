@@ -37,8 +37,8 @@
 #include "paimon/core/realtime/realtime_reader.h"
 #include "paimon/core/table/source/append_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
-#include "paimon/realtime/mem_indexer.h"
 #include "paimon/realtime/realtime_context.h"
+#include "paimon/realtime/realtime_store.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -129,8 +129,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
     if (memory.partition_bucket != expected_partition_bucket) {
         return Status::Invalid("real-time read-view ticket belongs to another partition-bucket");
     }
-    const std::optional<Range> memory_range = memory.read_view->GetOffsetRange();
-    if (!memory_range || memory_range->to != realtime_split->MemoryUpperOffset()) {
+    const std::optional<OffsetRange> memory_range = memory.read_view->GetOffsetRange();
+    if (!memory_range || memory_range->end != realtime_split->MemoryEndOffset()) {
         return Status::Invalid("real-time read-view ticket does not match the split offset range");
     }
 
@@ -144,11 +144,12 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportSchema(*context_->GetReadSchema(), c_read_schema.get()));
     ScopeGuard schema_guard([schema = c_read_schema.get()]() { ArrowSchemaRelease(schema); });
-    MemQueryContext query_context{c_read_schema.get(), context_->GetPredicate(),
-                                  /*enable_predicate_pushdown=*/true};
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> memory_readers,
-                           memory.indexer->CreateQueryReaders(
-                               memory.read_view, realtime_split->CommittedOffset(), query_context));
+    RealtimeQueryContext query_context{c_read_schema.get(), context_->GetPredicate(),
+                                       /*enable_predicate_pushdown=*/true};
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<std::unique_ptr<BatchReader>> memory_readers,
+        memory.store->CreateQueryReaders(memory.read_view, realtime_split->CommittedEndOffset(),
+                                         query_context));
 
     for (std::unique_ptr<BatchReader>& memory_reader : memory_readers) {
         if (context_->EnablePredicateFilter() && context_->GetPredicate()) {

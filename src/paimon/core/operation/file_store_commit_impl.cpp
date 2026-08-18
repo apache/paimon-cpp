@@ -817,7 +817,7 @@ Result<int32_t> FileStoreCommitImpl::TryOverwrite(
 
 Status FileStoreCommitImpl::Commit(
     const std::shared_ptr<ManifestCommittable>& committable, bool check_append_files,
-    bool retry_on_conflict, const std::map<RealtimePartitionBucket, Range>& realtime_ranges) {
+    bool retry_on_conflict, const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges) {
     PAIMON_LOG_INFO(logger_, "Ready to commit to table %s, number of commit messages: %zu",
                     table_name_.c_str(), committable->FileCommittables().size());
     PAIMON_ASSIGN_OR_RAISE(std::string committable_str, committable->ToString());
@@ -897,7 +897,7 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
 
     std::vector<std::shared_ptr<CommitMessage>> commit_messages;
     commit_messages.reserve(ordered_commits.size());
-    std::map<RealtimePartitionBucket, Range> realtime_ranges;
+    std::map<RealtimePartitionBucket, OffsetRange> realtime_ranges;
     for (const RealtimeCommitProgress& realtime_commit : ordered_commits) {
         if (!realtime_commit.commit_message) {
             return Status::Invalid("real-time commit message is null");
@@ -917,14 +917,14 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
         auto [range_iter, inserted] =
             realtime_ranges.emplace(realtime_commit.partition_bucket, realtime_commit.offset_range);
         if (!inserted) {
-            const Range& previous_range = range_iter->second;
-            if (previous_range.to == std::numeric_limits<int64_t>::max() ||
-                realtime_commit.offset_range.from != previous_range.to + 1) {
+            const OffsetRange& previous_range = range_iter->second;
+            if (realtime_commit.offset_range.begin != previous_range.end) {
                 return Status::Invalid(
                     fmt::format("real-time commit offsets for bucket {} are not contiguous",
                                 realtime_commit.partition_bucket.bucket));
             }
-            range_iter->second = Range(previous_range.from, realtime_commit.offset_range.to);
+            range_iter->second =
+                OffsetRange(previous_range.begin, realtime_commit.offset_range.end);
         }
         commit_messages.push_back(realtime_commit.commit_message);
     }
@@ -945,7 +945,7 @@ Result<int32_t> FileStoreCommitImpl::TryCommit(
     const std::vector<ManifestEntry>& changelog_files,
     const std::vector<IndexManifestEntry>& index_entries, int64_t identifier,
     std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties,
-    const std::map<RealtimePartitionBucket, Range>& realtime_ranges,
+    const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
     Snapshot::CommitKind commit_kind, bool detect_conflicts, bool retry_on_conflict) {
     std::shared_ptr<CommitChangesProvider> changes_provider =
         CommitChangesProvider::Provider(delta_files, changelog_files, index_entries);
@@ -956,7 +956,7 @@ Result<int32_t> FileStoreCommitImpl::TryCommit(
 Result<int32_t> FileStoreCommitImpl::TryCommit(
     const std::shared_ptr<CommitChangesProvider>& changes_provider, int64_t identifier,
     std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties,
-    const std::map<RealtimePartitionBucket, Range>& realtime_ranges,
+    const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
     Snapshot::CommitKind commit_kind, bool detect_conflicts, bool retry_on_conflict) {
     int32_t retry_count = 0;
     int64_t start_millis = DateTimeUtils::GetCurrentUTCTimeUs() / 1000;
