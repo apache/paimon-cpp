@@ -25,7 +25,7 @@
 
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/data_file_index_writer.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/single_file_writer.h"
@@ -57,7 +57,7 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
         metadata_finalizer_ = std::move(finalizer);
     }
 
-    void SetFileIndexWriter(std::unique_ptr<DataFileIndexWriter> file_index_writer,
+    void SetFileIndexWriter(std::unique_ptr<DataFileIndexWriter>&& file_index_writer,
                             const std::shared_ptr<arrow::Schema>& logical_schema) {
         file_index_writer_ = std::move(file_index_writer);
         logical_type_ = arrow::struct_(logical_schema->fields());
@@ -119,7 +119,7 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> logical_array,
                                           arrow::ImportArray(batch, logical_type_));
         std::shared_ptr<arrow::StructArray> logical_batch =
-            arrow::internal::checked_pointer_cast<arrow::StructArray>(logical_array);
+            checked_pointer_cast<arrow::StructArray>(logical_array);
         PAIMON_RETURN_NOT_OK(file_index_writer_->AddBatch(logical_batch));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*logical_batch, batch));
         return Status::OK();

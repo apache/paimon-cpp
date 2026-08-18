@@ -92,7 +92,7 @@ DataFileIndexWriter::DataFileIndexWriter(std::vector<IndexWriterEntry>&& writers
       pool_(pool) {}
 
 Status DataFileIndexWriter::AddBatch(const std::shared_ptr<arrow::StructArray>& logical_batch) {
-    for (IndexWriterEntry& entry : writers_) {
+    for (const IndexWriterEntry& entry : writers_) {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::StructArray> projected,
             arrow::StructArray::Make({logical_batch->field(entry.field_index)}, {entry.field}));
@@ -107,20 +107,22 @@ Status DataFileIndexWriter::AddBatch(const std::shared_ptr<arrow::StructArray>& 
 
 Result<std::shared_ptr<Bytes>> DataFileIndexWriter::SerializeContainer() {
     FileIndexFormat::ColumnIndexes column_indexes;
-    for (IndexWriterEntry& entry : writers_) {
+    for (const IndexWriterEntry& entry : writers_) {
         PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> serialized,
                                entry.writer->SerializedBytes());
         column_indexes[entry.column_name][entry.index_type] =
             std::shared_ptr<Bytes>(std::move(serialized));
     }
 
-    std::shared_ptr<ByteArrayOutputStream> output = std::make_shared<ByteArrayOutputStream>(
+    auto segment_output = std::make_unique<MemorySegmentOutputStream>(
         MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+    std::shared_ptr<ByteArrayOutputStream> output =
+        std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> format_writer,
                            FileIndexFormat::CreateWriter(output, pool_));
     PAIMON_RETURN_NOT_OK(format_writer->WriteColumnIndexes(column_indexes));
     PAIMON_RETURN_NOT_OK(format_writer->Close());
-    return output->Finish();
+    return output->Finish(pool_.get());
 }
 
 Result<FileIndexWriteResult> DataFileIndexWriter::Finish(const std::string& data_file_path) {

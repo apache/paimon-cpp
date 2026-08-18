@@ -52,58 +52,10 @@ class FileIndexFormatWriterImpl : public FileIndexFormat::Writer {
         if (written_) {
             return Status::Invalid("File index column indexes have already been written");
         }
-        int64_t header_length = sizeof(int64_t) + sizeof(int32_t) * 3 + sizeof(int32_t);
-        int64_t body_length = 0;
-        for (const auto& [column_name, column_indexes] : indexes) {
-            PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint16_t>(column_name.size(),
-                                                                "file index column name length"));
-            header_length +=
-                sizeof(uint16_t) + static_cast<int64_t>(column_name.size()) + sizeof(int32_t);
-            for (const auto& [index_type, bytes] : column_indexes) {
-                PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint16_t>(index_type.size(),
-                                                                    "file index type name length"));
-                header_length += sizeof(uint16_t) + static_cast<int64_t>(index_type.size()) +
-                                 sizeof(int32_t) * 2;
-                if (bytes) {
-                    PAIMON_RETURN_NOT_OK(AddChecked(bytes->size(), &body_length, "index body"));
-                }
-            }
-        }
-        PAIMON_RETURN_NOT_OK(
-            ValidateValueInRange<int32_t>(header_length, "file index header length"));
-        PAIMON_RETURN_NOT_OK(
-            ValidateValueInRange<int32_t>(indexes.size(), "file index column count"));
-        PAIMON_RETURN_NOT_OK(AddChecked(header_length, &body_length, "file index size"));
 
+        PAIMON_RETURN_NOT_OK(WriteHead(indexes));
+        // Write body.
         DataOutputStream data_output(output_stream_);
-        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int64_t>(FileIndexFormat::MAGIC));
-        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(FileIndexFormat::V_1));
-        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(static_cast<int32_t>(header_length)));
-        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(static_cast<int32_t>(indexes.size())));
-
-        int64_t body_offset = header_length;
-        for (const auto& [column_name, column_indexes] : indexes) {
-            PAIMON_RETURN_NOT_OK(data_output.WriteString(column_name));
-            PAIMON_RETURN_NOT_OK(
-                ValidateValueInRange<int32_t>(column_indexes.size(), "column index count"));
-            PAIMON_RETURN_NOT_OK(
-                data_output.WriteValue<int32_t>(static_cast<int32_t>(column_indexes.size())));
-            for (const auto& [index_type, bytes] : column_indexes) {
-                PAIMON_RETURN_NOT_OK(data_output.WriteString(index_type));
-                if (bytes == nullptr) {
-                    PAIMON_RETURN_NOT_OK(
-                        data_output.WriteValue<int32_t>(FileIndexFormat::EMPTY_INDEX_FLAG));
-                    PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(0));
-                    continue;
-                }
-                PAIMON_RETURN_NOT_OK(
-                    data_output.WriteValue<int32_t>(static_cast<int32_t>(body_offset)));
-                PAIMON_RETURN_NOT_OK(
-                    data_output.WriteValue<int32_t>(static_cast<int32_t>(bytes->size())));
-                body_offset += static_cast<int64_t>(bytes->size());
-            }
-        }
-        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(0));
         for (const auto& [column_name, column_indexes] : indexes) {
             for (const auto& [index_type, bytes] : column_indexes) {
                 if (bytes) {
@@ -125,8 +77,82 @@ class FileIndexFormatWriterImpl : public FileIndexFormat::Writer {
     }
 
  private:
+    static constexpr int32_t kRedundantLength = 0;
+
+    static Result<int32_t> CalculateHeadLength(const FileIndexFormat::ColumnIndexes& indexes) {
+        // magic(8), version(4), header length(4), and column count(4).
+        int64_t head_length = 8 + 4 + 4 + 4;
+        int64_t body_length = 0;
+        PAIMON_RETURN_NOT_OK(
+            ValidateValueInRange<int32_t>(indexes.size(), "file index column count"));
+        for (const auto& [column_name, column_indexes] : indexes) {
+            PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint16_t>(column_name.size(),
+                                                                "file index column name length"));
+            PAIMON_RETURN_NOT_OK(
+                ValidateValueInRange<int32_t>(column_indexes.size(), "column index count"));
+            // column name(2 + N) + index count(4)
+            head_length += 2 + static_cast<int64_t>(column_name.size()) + 4;
+            for (const auto& [index_type, bytes] : column_indexes) {
+                PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint16_t>(index_type.size(),
+                                                                    "file index type name length"));
+                // index type(2 + N) + body offset(4) + body length(4)
+                head_length += 2 + static_cast<int64_t>(index_type.size()) + 4 + 4;
+                if (bytes) {
+                    PAIMON_RETURN_NOT_OK(AddChecked(bytes->size(), "index body", &body_length));
+                }
+            }
+        }
+
+        head_length += 4;  // The trailing redundant-length field(4).
+        PAIMON_RETURN_NOT_OK(
+            ValidateValueInRange<int32_t>(head_length, "file index header length"));
+        int64_t container_length = head_length + body_length;
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(container_length, "file index size"));
+        return static_cast<int32_t>(head_length);
+    }
+
+    Status WriteHead(const FileIndexFormat::ColumnIndexes& indexes) {
+        PAIMON_ASSIGN_OR_RAISE(int32_t head_length, CalculateHeadLength(indexes));
+        DataOutputStream data_output(output_stream_);
+        // Write magic.
+        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int64_t>(FileIndexFormat::MAGIC));
+        // Write version.
+        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(FileIndexFormat::V_1));
+        // Write head length.
+        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(head_length));
+        // Write column count.
+        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(static_cast<int32_t>(indexes.size())));
+
+        int64_t body_offset = head_length;
+        for (const auto& [column_name, column_indexes] : indexes) {
+            // Write column name.
+            PAIMON_RETURN_NOT_OK(data_output.WriteString(column_name));
+            // Write index count for the column.
+            PAIMON_RETURN_NOT_OK(
+                data_output.WriteValue<int32_t>(static_cast<int32_t>(column_indexes.size())));
+            for (const auto& [index_type, bytes] : column_indexes) {
+                // Write index type.
+                PAIMON_RETURN_NOT_OK(data_output.WriteString(index_type));
+                // Write body offset and length.
+                if (bytes) {
+                    PAIMON_RETURN_NOT_OK(
+                        data_output.WriteValue<int32_t>(static_cast<int32_t>(body_offset)));
+                    PAIMON_RETURN_NOT_OK(
+                        data_output.WriteValue<int32_t>(static_cast<int32_t>(bytes->size())));
+                    body_offset += static_cast<int64_t>(bytes->size());
+                } else {
+                    PAIMON_RETURN_NOT_OK(
+                        data_output.WriteValue<int32_t>(FileIndexFormat::EMPTY_INDEX_FLAG));
+                    PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(0));
+                }
+            }
+        }
+        // Write redundant length for future format extensions.
+        return data_output.WriteValue<int32_t>(kRedundantLength);
+    }
+
     template <typename T>
-    static Status AddChecked(T value, int64_t* total, const char* name) {
+    static Status AddChecked(T value, const char* name, int64_t* total) {
         PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(value, name));
         *total += static_cast<int64_t>(value);
         return ValidateValueInRange<int32_t>(*total, name);

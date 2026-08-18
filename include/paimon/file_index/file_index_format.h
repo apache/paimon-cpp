@@ -92,10 +92,14 @@ class PAIMON_EXPORT FileIndexFormat {
  public:
     class Reader;
     class Writer;
+
+    /// Serialized file indexes grouped as column name -> index type -> index bytes. A null bytes
+    /// pointer represents an empty index for that column and index type.
+    /// For example, indexes["col1"]["bsi"] = <bytes>;
     using ColumnIndexes = std::map<std::string, std::map<std::string, std::shared_ptr<Bytes>>>;
+
     /// Creates a `Reader` to parse a index file (may contain multiple indexes) from the given input
     /// stream.
-    ///
     /// @param input_stream Input stream containing serialized index data.
     /// @param pool Memory pool for temporary allocations during reading.
     /// @return A unique pointer to a `Reader` on success, or an error if the stream is invalid
@@ -130,7 +134,6 @@ class FileIndexFormat::Reader {
  public:
     virtual ~Reader() = default;
     /// Reads index data for a specific column from the index file.
-    ///
     /// @param column_name Name of the column to retrieve index data for.
     /// @param arrow_schema Arrow schema that must contain a field corresponding to `column_name`.
     /// @return A vector of shared pointers to FileIndexReader objects, each corresponding to a

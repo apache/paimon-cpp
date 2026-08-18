@@ -19,7 +19,9 @@
 #include "paimon/common/io/byte_array_output_stream.h"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "paimon/common/memory/memory_segment_utils.h"
@@ -29,9 +31,10 @@
 
 namespace paimon {
 
-ByteArrayOutputStream::ByteArrayOutputStream(int32_t initial_capacity,
-                                             const std::shared_ptr<MemoryPool>& pool)
-    : pool_(pool), output_(initial_capacity, pool_) {}
+ByteArrayOutputStream::ByteArrayOutputStream(std::unique_ptr<MemorySegmentOutputStream>&& output)
+    : output_(std::move(output)) {
+    assert(output_);
+}
 
 Result<int64_t> ByteArrayOutputStream::Write(const char* buffer, int64_t size) {
     if (closed_) {
@@ -45,11 +48,10 @@ Result<int64_t> ByteArrayOutputStream::Write(const char* buffer, int64_t size) {
     while (remaining > 0) {
         uint32_t to_write = static_cast<uint32_t>(std::min<int64_t>(
             remaining, static_cast<int64_t>(std::numeric_limits<uint32_t>::max())));
-        output_.Write(buffer, to_write);
+        output_->Write(buffer, to_write);
         buffer += to_write;
         remaining -= to_write;
     }
-    position_ += size;
     return size;
 }
 
@@ -58,21 +60,20 @@ Status ByteArrayOutputStream::Close() {
     return Status::OK();
 }
 
-Result<std::shared_ptr<Bytes>> ByteArrayOutputStream::Finish() {
+Result<std::shared_ptr<Bytes>> ByteArrayOutputStream::Finish(MemoryPool* pool) {
+    assert(pool);
     PAIMON_RETURN_NOT_OK(Close());
     if (result_) {
         return result_;
     }
     // TODO(jinli.zjw): Support int64_t lengths in MemorySegmentUtils::CopyToBytes and remove this
     // limit.
-    if (position_ > std::numeric_limits<int32_t>::max()) {
-        return Status::Invalid("Byte array output stream size exceeds INT32_MAX");
-    }
-    const std::vector<MemorySegment>& segments = output_.Segments();
-    result_ = std::shared_ptr<Bytes>(new Bytes(static_cast<size_t>(position_), pool_.get()),
-                                     [pool = pool_](Bytes* bytes) { delete bytes; });
+    const int64_t size = output_->CurrentSize();
+    PAIMON_RETURN_NOT_OK(ValidateValueInRange<int32_t>(size, "byte array output stream size"));
+    const std::vector<MemorySegment>& segments = output_->Segments();
+    result_ = std::make_shared<Bytes>(static_cast<size_t>(size), pool);
     MemorySegmentUtils::CopyToBytes(segments, /*offset=*/0, result_.get(),
-                                    /*bytes_offset=*/0, static_cast<int32_t>(position_));
+                                    /*bytes_offset=*/0, static_cast<int32_t>(size));
     return result_;
 }
 

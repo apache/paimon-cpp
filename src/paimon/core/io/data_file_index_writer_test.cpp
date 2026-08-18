@@ -28,6 +28,7 @@
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/file_index_options.h"
@@ -70,7 +71,7 @@ class DataFileIndexWriterTest : public ::testing::Test {
         std::shared_ptr<arrow::Array> array =
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema_->fields()), json)
                 .ValueOrDie();
-        return std::dynamic_pointer_cast<arrow::StructArray>(array);
+        return checked_pointer_cast<arrow::StructArray>(array);
     }
 
     Result<std::unique_ptr<FileIndexFormat::Reader>> CreateReader(

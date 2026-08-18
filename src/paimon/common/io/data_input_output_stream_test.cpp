@@ -79,12 +79,8 @@ class DataInputOutputStreamTest : public ::testing::Test,
         (void)data_output_stream->WriteValue(static_cast<int64_t>(9223372036854775805));  // 8 bytes
         (void)data_output_stream->WriteValue(true);                                       // 1 byte
         std::string str1 = "This is a very very very long sentence.";
-        if constexpr (std::is_same_v<T, MemorySegmentOutputStream>) {
-            (void)data_output_stream->WriteString(str1);  // 39 bytes + 2 bytes len
-        } else {
-            (void)data_output_stream->WriteString(str1);  // 39 bytes + 2 bytes len
-        }
-        std::string str2 = "我是一个粉刷匠～";  // 24 bytes
+        (void)data_output_stream->WriteString(str1);  // 39 bytes + 2 bytes len
+        std::string str2 = "我是一个粉刷匠～";        // 24 bytes
         auto bytes = std::make_shared<Bytes>(str2, pool_.get());
         (void)data_output_stream->WriteBytes(bytes);
     }

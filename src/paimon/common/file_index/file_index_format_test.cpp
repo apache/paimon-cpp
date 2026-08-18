@@ -58,32 +58,25 @@ class FileIndexFormatTest : public ::testing::Test {
     std::shared_ptr<MemoryPool> pool_;
 };
 
-TEST_F(FileIndexFormatTest, TestWriteEmptyIndexGoldenBytes) {
+TEST_F(FileIndexFormatTest, TestWriteAndReadEmptyIndexGoldenBytes) {
     // the expected bytes are generated from Java Paimon
     std::vector<char> expected = {0,   5,   78,  78, -48, 26, 53, -82, 0, 0, 0, 1, 0, 0, 0,   47,
                                   0,   0,   0,   1,  0,   2,  99, 49,  0, 0, 0, 1, 0, 5, 101, 109,
                                   112, 116, 121, -1, -1,  -1, -1, 0,   0, 0, 0, 0, 0, 0, 0};
     FileIndexFormat::ColumnIndexes indexes;
     indexes["c1"]["empty"] = nullptr;
-    auto output = std::make_shared<ByteArrayOutputStream>(
+    auto segment_output = std::make_unique<MemorySegmentOutputStream>(
         MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+    auto output = std::make_shared<ByteArrayOutputStream>(std::move(segment_output));
 
     ASSERT_OK_AND_ASSIGN(auto writer, FileIndexFormat::CreateWriter(output, pool_));
     ASSERT_OK(writer->WriteColumnIndexes(indexes));
     ASSERT_OK(writer->Close());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> actual, output->Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> actual, output->Finish(pool_.get()));
 
     ASSERT_EQ(expected, std::vector<char>(actual->data(), actual->data() + actual->size()));
-}
-
-TEST_F(FileIndexFormatTest, TestCreateEmptyFileIndexReader) {
     auto schema = arrow::schema({arrow::field("c1", arrow::utf8())});
-    std::vector<char> index_file_bytes = {0,  5,  78, 78, -48, 26, 53,  -82, 0,   0,   0,   1,
-                                          0,  0,  0,  47, 0,   0,  0,   1,   0,   2,   99,  49,
-                                          0,  0,  0,  1,  0,   5,  101, 109, 112, 116, 121, -1,
-                                          -1, -1, -1, 0,  0,   0,  0,   0,   0,   0,   0};
-    auto input_stream =
-        std::make_shared<ByteArrayInputStream>(index_file_bytes.data(), index_file_bytes.size());
+    auto input_stream = std::make_shared<ByteArrayInputStream>(actual->data(), actual->size());
     ASSERT_OK_AND_ASSIGN(auto reader, FileIndexFormat::CreateReader(input_stream, pool_));
     ASSERT_OK_AND_ASSIGN(auto index_file_readers,
                          reader->ReadColumnIndex("c1", CreateArrowSchema(schema).get()));

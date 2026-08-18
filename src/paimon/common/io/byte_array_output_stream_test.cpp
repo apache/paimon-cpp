@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "gtest/gtest.h"
 #include "paimon/memory/bytes.h"
@@ -30,8 +31,9 @@ namespace paimon::test {
 
 TEST(ByteArrayOutputStreamTest, TestWriteAndFinish) {
     std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    auto output = std::make_unique<MemorySegmentOutputStream>(/*segment_size=*/2, pool);
     std::shared_ptr<ByteArrayOutputStream> stream =
-        std::make_shared<ByteArrayOutputStream>(/*initial_capacity=*/2, pool);
+        std::make_shared<ByteArrayOutputStream>(std::move(output));
     ASSERT_GT(pool->CurrentUsage(), 0);
     ASSERT_OK_AND_ASSIGN(int64_t first_write, stream->Write("ab", 2));
     ASSERT_EQ(2, first_write);
@@ -41,43 +43,44 @@ TEST(ByteArrayOutputStreamTest, TestWriteAndFinish) {
     ASSERT_EQ(6, position);
     ASSERT_EQ(pool->CurrentUsage(), pool->MaxMemoryUsage());
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish(pool.get()));
     ASSERT_EQ("abcdef", std::string(result->data(), result->size()));
     ASSERT_NOK_WITH_MSG(stream->Write("x", 1), "closed");
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> repeated, stream->Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> repeated, stream->Finish(pool.get()));
     ASSERT_EQ(result, repeated);
     stream.reset();
     ASSERT_EQ(6, pool->CurrentUsage());
 }
 
 TEST(ByteArrayOutputStreamTest, TestWriteValidation) {
-    std::shared_ptr<ByteArrayOutputStream> stream = std::make_shared<ByteArrayOutputStream>(
-        /*initial_capacity=*/8, GetDefaultPool());
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    auto output = std::make_unique<MemorySegmentOutputStream>(/*segment_size=*/8, pool);
+    std::shared_ptr<ByteArrayOutputStream> stream =
+        std::make_shared<ByteArrayOutputStream>(std::move(output));
     ASSERT_NOK(stream->Write(nullptr, 1));
     ASSERT_NOK(stream->Write("", -1));
     ASSERT_OK_AND_ASSIGN(int64_t written, stream->Write(nullptr, 0));
     ASSERT_EQ(0, written);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish(pool.get()));
     ASSERT_EQ(0, result->size());
 }
 
-TEST(ByteArrayOutputStreamTest, TestResultKeepsMemoryPoolAlive) {
+TEST(ByteArrayOutputStreamTest, TestCallerKeepsMemoryPoolAlive) {
     std::shared_ptr<MemoryPool> pool = GetMemoryPool();
-    std::weak_ptr<MemoryPool> weak_pool = pool;
+    auto output = std::make_unique<MemorySegmentOutputStream>(/*segment_size=*/8, pool);
     std::shared_ptr<ByteArrayOutputStream> stream =
-        std::make_shared<ByteArrayOutputStream>(/*initial_capacity=*/8, pool);
+        std::make_shared<ByteArrayOutputStream>(std::move(output));
     ASSERT_OK_AND_ASSIGN(int64_t written, stream->Write("data", 4));
     ASSERT_EQ(4, written);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish(pool.get()));
 
     stream.reset();
-    pool.reset();
-    ASSERT_FALSE(weak_pool.expired());
+    ASSERT_GT(pool->CurrentUsage(), 0);
     ASSERT_EQ("data", std::string(result->data(), result->size()));
 
     result.reset();
-    ASSERT_TRUE(weak_pool.expired());
+    ASSERT_EQ(0, pool->CurrentUsage());
 }
 
 }  // namespace paimon::test

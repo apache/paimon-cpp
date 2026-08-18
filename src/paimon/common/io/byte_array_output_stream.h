@@ -35,7 +35,8 @@ class MemoryPool;
 /// An in-memory output stream backed by segments allocated from a Paimon MemoryPool.
 class ByteArrayOutputStream : public OutputStream {
  public:
-    ByteArrayOutputStream(int32_t initial_capacity, const std::shared_ptr<MemoryPool>& pool);
+    /// Takes ownership of an initialized segmented output stream.
+    explicit ByteArrayOutputStream(std::unique_ptr<MemorySegmentOutputStream>&& output);
 
     ~ByteArrayOutputStream() override = default;
 
@@ -46,7 +47,7 @@ class ByteArrayOutputStream : public OutputStream {
     }
 
     Result<int64_t> GetPos() const override {
-        return position_;
+        return output_->CurrentSize();
     }
 
     Result<std::string> GetUri() const override {
@@ -56,13 +57,12 @@ class ByteArrayOutputStream : public OutputStream {
     Status Close() override;
 
     /// Closes the stream and returns its contents as an exactly-sized contiguous byte array.
-    Result<std::shared_ptr<Bytes>> Finish();
+    /// @note The caller must keep `pool` alive until the returned bytes are destroyed.
+    Result<std::shared_ptr<Bytes>> Finish(MemoryPool* pool);
 
  private:
-    std::shared_ptr<MemoryPool> pool_;
-    MemorySegmentOutputStream output_;
+    std::unique_ptr<MemorySegmentOutputStream> output_;
     std::shared_ptr<Bytes> result_;
-    int64_t position_ = 0;
     bool closed_ = false;
 };
 
