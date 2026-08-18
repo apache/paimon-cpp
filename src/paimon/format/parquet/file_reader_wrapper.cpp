@@ -21,7 +21,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <cstdio>
 
 #include "arrow/io/interfaces.h"
 #include "arrow/record_batch.h"
@@ -155,10 +154,6 @@ FileReaderWrapper::FileReaderWrapper(
 
 void FileReaderWrapper::WaitForPendingPreBuffer() {
     if (!prebuffered_ranges_.empty() && file_reader_) {
-        fprintf(stderr,
-                "[FileReaderWrapper] WaitForPendingPreBuffer: waiting for %zu dispatched "
-                "prebuffer ranges\n",
-                prebuffered_ranges_.size());
         // Wait for all outstanding PreBuffer async reads to complete before destruction.
         // Without this, JindoSDK async pread callbacks may fire after the underlying
         // buffers and memory pool are freed, causing use-after-free crashes.
@@ -259,10 +254,6 @@ Result<std::shared_ptr<arrow::RecordBatch>> FileReaderWrapper::NextPageFiltered(
             target_rg, target_column_indices_, row_group_page_index_reader,
             file_reader_->parquet_reader());
         bool pre_buffered = !prebuffered_ranges_.empty();
-        fprintf(stderr,
-                "[FileReaderWrapper] NextPageFiltered: rg=%d, page_ranges=%zu, "
-                "pre_buffered=%d\n",
-                rg_id, page_ranges.size(), static_cast<int>(pre_buffered));
         int64_t max_chunksize = batch_size_ > 0 ? batch_size_ : std::numeric_limits<int64_t>::max();
         PAIMON_ASSIGN_OR_RAISE(
             current_page_filtered_reader_,
@@ -453,16 +444,10 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBuff
                                      /*skip_read_range_excluded=*/false, /*start_idx=*/0);
         std::vector<std::pair<uint64_t, uint64_t>> pre_buffer_ranges;
         pre_buffer_ranges.reserve(ranges.size());
-        int64_t total_bytes = 0;
         for (const auto& range : ranges) {
             pre_buffer_ranges.emplace_back(static_cast<uint64_t>(range.offset),
                                            static_cast<uint64_t>(range.length));
-            total_bytes += range.length;
         }
-        fprintf(stderr,
-                "[FileReaderWrapper] GetPreBufferRanges: collected %zu ranges, total "
-                "bytes=%lld (includes read-range-excluded RGs)\n",
-                pre_buffer_ranges.size(), static_cast<long long>(total_bytes));
         return pre_buffer_ranges;
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::GetPreBufferRanges")
@@ -472,24 +457,10 @@ void FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ra
     const auto& cache_opts = file_reader_->properties().cache_options();
     ::arrow::io::IOContext io_ctx(pool_.get());
     auto merged_ranges = MergeOverlappingRanges(std::move(ranges));
-    int64_t total_bytes = 0;
-    for (const auto& range : merged_ranges) {
-        total_bytes += range.length;
-    }
-    fprintf(stderr,
-            "[FileReaderWrapper] DispatchPreBuffer: issuing PreBufferRanges with %zu merged "
-            "ranges, total bytes=%lld\n",
-            merged_ranges.size(), static_cast<long long>(total_bytes));
-    for (const auto& range : merged_ranges) {
-        fprintf(stderr, "[FileReaderWrapper] DispatchPreBuffer range: offset=%lld, length=%lld\n",
-                static_cast<long long>(range.offset), static_cast<long long>(range.length));
-    }
     try {
         file_reader_->parquet_reader()->PreBufferRanges(merged_ranges, io_ctx, cache_opts);
         prebuffered_ranges_ = std::move(merged_ranges);
-    } catch (const std::exception& e) {
-        fprintf(stderr, "[FileReaderWrapper] DispatchPreBuffer: PreBufferRanges threw: %s\n",
-                e.what());
+    } catch (const std::exception&) {
         prebuffered_ranges_.clear();
     }
 }
@@ -529,14 +500,6 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
 
         bool has_partially_matched = fully_matched_row_groups.size() != active_count;
 
-        fprintf(stderr,
-                "[FileReaderWrapper] PrepareForReading: active RGs=%llu, fully matched=%zu, "
-                "page filtered=%llu, excluded=%zu, arrow pre_buffer flag=%d\n",
-                static_cast<unsigned long long>(active_count), fully_matched_row_groups.size(),
-                static_cast<unsigned long long>(active_count - fully_matched_row_groups.size()),
-                target_row_groups_.size() - active_count,
-                static_cast<int>(file_reader_->properties().pre_buffer()));
-
         WaitForPendingPreBuffer();
 
         // TODO(Yonghao Fang): Neither Paimon nor Arrow manage the size and lifecycle of prebuffered
@@ -557,10 +520,6 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
         if (has_partially_matched) {
             auto all_ranges = CollectPreBufferRanges(column_indices, first_active_idx);
             DispatchPreBuffer(std::move(all_ranges));
-        } else if (active_count > 0) {
-            fprintf(stderr,
-                    "[FileReaderWrapper] PrepareForReading: no DispatchPreBuffer, relying on "
-                    "arrow-internal PreBuffer from GetRecordBatchReader\n");
         }
 
         // Reset read state to the first row group that will be read.

@@ -20,7 +20,6 @@
 #include "paimon/format/parquet/page_filtered_row_group_reader.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <limits>
 #include <optional>
 
@@ -267,34 +266,17 @@ Status PageFilteredRowGroupReader::WaitForPreBuffer(
     std::vector<int> rg_vec = {row_group_index};
     std::vector<int> col_vec(column_indices.begin(), column_indices.end());
     if (!pre_buffered) {
-        fprintf(stderr,
-                "[PageFilteredRowGroupReader] WaitForPreBuffer: rg=%d not pre-buffered "
-                "externally, issuing chunk-level PreBuffer\n",
-                row_group_index);
         ::arrow::io::IOContext io_ctx(pool.get());
         parquet_reader->PreBuffer(rg_vec, col_vec, io_ctx, cache_options);
     }
     if (!page_ranges.empty()) {
         auto status = parquet_reader->WhenBufferedRanges(page_ranges).status();
         if (!status.ok()) {
-            fprintf(stderr,
-                    "[PageFilteredRowGroupReader] WaitForPreBuffer: rg=%d range-level wait "
-                    "failed, falling back to chunk-level PreBuffer + WhenBuffered\n",
-                    row_group_index);
             ::arrow::io::IOContext io_ctx(pool.get());
             parquet_reader->PreBuffer(rg_vec, col_vec, io_ctx, cache_options);
             PAIMON_RETURN_NOT_OK_FROM_ARROW(parquet_reader->WhenBuffered(rg_vec, col_vec).status());
-        } else {
-            fprintf(stderr,
-                    "[PageFilteredRowGroupReader] WaitForPreBuffer: rg=%d waited on %zu "
-                    "page-level ranges\n",
-                    row_group_index, page_ranges.size());
         }
     } else {
-        fprintf(stderr,
-                "[PageFilteredRowGroupReader] WaitForPreBuffer: rg=%d waiting via WhenBuffered "
-                "(chunk-level)\n",
-                row_group_index);
         PAIMON_RETURN_NOT_OK_FROM_ARROW(parquet_reader->WhenBuffered(rg_vec, col_vec).status());
     }
     return Status::OK();
