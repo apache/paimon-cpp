@@ -546,6 +546,50 @@ TEST_F(RealtimeWriteInteTest, TestReadMemoryBeforePrepareCommit) {
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestPlanExcludesRowsWrittenAfterMemoryEndOffset) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    std::vector<Row> first_rows = MakeRows(/*first_id=*/0, /*count=*/10, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first_batch,
+                         MakeBatch(first_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(first_batch)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> first_plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, first_plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> first_realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(first_plan->Splits()[0]);
+    ASSERT_NE(nullptr, first_realtime_split);
+    ASSERT_EQ(10, first_realtime_split->MemoryEndOffset());
+
+    std::vector<Row> second_rows = MakeRows(/*first_id=*/10, /*count=*/5, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_batch,
+                         MakeBatch(second_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(second_batch)));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> first_actual_rows,
+                         ReadRows(first_plan, realtime_context));
+    ASSERT_EQ(first_rows, first_actual_rows);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> second_plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, second_plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> second_realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(second_plan->Splits()[0]);
+    ASSERT_NE(nullptr, second_realtime_split);
+    ASSERT_EQ(15, second_realtime_split->MemoryEndOffset());
+
+    std::vector<Row> expected_rows = first_rows;
+    expected_rows.insert(expected_rows.end(), second_rows.begin(), second_rows.end());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> second_actual_rows,
+                         ReadRows(second_plan, realtime_context));
+    ASSERT_EQ(expected_rows, second_actual_rows);
+    ASSERT_OK(writer->Close());
+}
+
 TEST_F(RealtimeWriteInteTest, TestReadFailsAfterRealtimeSplitTicketExpires) {
     options_[Options::REALTIME_READ_VIEW_TTL] = "10 ms";
     CreateTable(/*partition_keys=*/{});
