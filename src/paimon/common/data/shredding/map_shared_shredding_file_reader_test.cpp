@@ -333,6 +333,96 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjection) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
+TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesValueBuffers) {
+    ASSERT_OK_AND_ASSIGN(auto physical_array, PhysicalArray());
+    auto physical_root = checked_pointer_cast<arrow::StructArray>(physical_array);
+    auto physical_tags =
+        checked_pointer_cast<arrow::StructArray>(physical_root->GetFieldByName("tags"));
+    auto physical_column =
+        physical_tags->GetFieldByName(MapSharedShreddingDefine::PhysicalColumnName(1));
+
+    auto selected_type = arrow::struct_(
+        {arrow::field("a", arrow::int64()), arrow::field("b", arrow::int64()),
+         arrow::field("e", arrow::int64()), arrow::field("missing", arrow::int64())});
+    auto selected_field = arrow::field(
+        "tags", selected_type, /*nullable=*/true,
+        arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,b,e,missing"}));
+    ASSERT_OK_AND_ASSIGN(
+        auto field_read_plan,
+        MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(selected_field, TagsMeta()));
+    ASSERT_OK_AND_ASSIGN(auto result,
+                         field_read_plan->Materialize(physical_tags, arrow::default_memory_pool()));
+    auto result_struct = checked_pointer_cast<arrow::StructArray>(result);
+
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(selected_type, R"([
+        [10, 20, null, null],
+        [40, null, null, null],
+        null,
+        [80, null, 70, null]
+    ])")
+                        .ValueOrDie();
+    ASSERT_TRUE(expected->Equals(result)) << "Expected:\n"
+                                          << expected->ToString() << "\nActual:\n"
+                                          << result->ToString();
+    ASSERT_EQ(physical_column->data()->buffers[1], result_struct->field(1)->data()->buffers[1]);
+    ASSERT_EQ(physical_column->data()->buffers[1], result_struct->field(2)->data()->buffers[1]);
+    ASSERT_NE(physical_column->data()->buffers[0], result_struct->field(1)->data()->buffers[0]);
+    ASSERT_EQ(physical_tags->data()->buffers[0], result_struct->data()->buffers[0]);
+}
+
+TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesNestedValueBuffers) {
+    auto item_type = arrow::list(arrow::int64());
+    auto logical_schema =
+        arrow::schema({arrow::field("id", arrow::int32()),
+                       arrow::field("tags", arrow::map(arrow::utf8(), item_type))});
+    ASSERT_OK_AND_ASSIGN(auto physical_schema, MapSharedShreddingUtils::LogicalToPhysicalSchema(
+                                                   logical_schema, {{"tags", 1}}));
+    auto physical_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(physical_schema->fields()), R"([
+        [1, [[0], [1, 2], null]],
+        [2, [[1], [3, 4, 5], null]],
+        [3, null],
+        [4, [[0], null, null]]
+    ])")
+            .ValueOrDie();
+    auto physical_root = checked_pointer_cast<arrow::StructArray>(physical_array);
+    auto physical_tags =
+        checked_pointer_cast<arrow::StructArray>(physical_root->GetFieldByName("tags"));
+    auto physical_column =
+        physical_tags->GetFieldByName(MapSharedShreddingDefine::PhysicalColumnName(0));
+
+    MapSharedShreddingFieldMeta meta;
+    meta.name_to_id = {{"a", 0}, {"b", 1}};
+    meta.field_to_columns = {{0, {0}}, {1, {0}}};
+    meta.num_columns = 1;
+    meta.max_row_width = 1;
+    auto selected_type = arrow::struct_({arrow::field("b", item_type)});
+    auto selected_field =
+        arrow::field("tags", selected_type, /*nullable=*/true,
+                     arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"b"}));
+    ASSERT_OK_AND_ASSIGN(
+        auto field_read_plan,
+        MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(selected_field, meta));
+    ASSERT_OK_AND_ASSIGN(auto result,
+                         field_read_plan->Materialize(physical_tags, arrow::default_memory_pool()));
+    auto result_struct = checked_pointer_cast<arrow::StructArray>(result);
+    auto result_list = checked_pointer_cast<arrow::ListArray>(result_struct->field(0));
+
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(selected_type, R"([
+        [null],
+        [[3, 4, 5]],
+        null,
+        [null]
+    ])")
+                        .ValueOrDie();
+    ASSERT_TRUE(expected->Equals(result)) << "Expected:\n"
+                                          << expected->ToString() << "\nActual:\n"
+                                          << result->ToString();
+    ASSERT_EQ(physical_column->data()->buffers[1], result_list->data()->buffers[1]);
+    ASSERT_EQ(physical_column->data()->child_data[0]->buffers[1],
+              result_list->data()->child_data[0]->buffers[1]);
+}
+
 TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionFromDefaultMap) {
     auto map_type = checked_pointer_cast<arrow::MapType>(
         arrow::map(arrow::utf8(), arrow::field("value", arrow::int64())));
@@ -668,6 +758,66 @@ TEST_F(MapSharedShreddingFileReaderTest, TestOrcDictionaryEncodedStringValue) {
                         [2, [["a", "red"], ["c", "green"]]],
                         [3, null],
                         [4, [["a", "red"], ["c", null]]]
+                    ])"},
+                    &expected)
+                    .ok());
+    AssertChunkedArrayEquals(expected, actual);
+}
+
+TEST_F(MapSharedShreddingFileReaderTest, TestOrcDictionaryEncodedStringListValue) {
+    std::shared_ptr<arrow::Schema> logical_schema = arrow::schema({
+        arrow::field("id", arrow::int32()),
+        arrow::field("tags", arrow::map(arrow::utf8(), arrow::list(arrow::utf8()))),
+    });
+    auto options = options_;
+    std::string format = "orc";
+    options[Options::FILE_FORMAT] = format;
+    options["orc.dictionary-key-size-threshold"] = "1";
+    ASSERT_OK_AND_ASSIGN(auto table_schema,
+                         TableSchema::Create(TableSchema::FIRST_SCHEMA_ID, logical_schema,
+                                             /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    auto path_factory = CreatePathFactory(dir->Str(), format, core_options);
+    auto compact_manager = std::make_shared<NoopCompactManager>();
+    ASSERT_OK_AND_ASSIGN(
+        auto writer,
+        CreateAppendOnlyWriter(core_options, /*schema_id=*/0, logical_schema,
+                               /*write_cols=*/std::nullopt,
+                               /*max_sequence_number=*/-1, path_factory, compact_manager));
+    auto batch = CreateBatch(logical_schema, R"([
+        [1, [["a", ["red", "blue"]], ["b", ["blue"]]]],
+        [2, [["c", ["green"]], ["a", ["red", null, "blue"]], ["b", ["blue"]]]],
+        [3, null],
+        [4, [["d", ["yellow"]], ["e", ["blue"]], ["c", [null]], ["a", ["red"]]]]
+    ])");
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(auto inc, writer->PrepareCommit(/*wait_compaction=*/true));
+    ASSERT_OK(writer->Close());
+
+    std::string data_file_path =
+        path_factory->ToPath(inc.GetNewFilesIncrement().NewFiles()[0]->file_name);
+    std::map<std::string, std::string> reader_options = {{"orc.read.enable-lazy-decoding", "true"}};
+    auto reader = WrapReader(OpenFormatReader(data_file_path, format, reader_options),
+                             /*selected_keys_str=*/"a,c");
+
+    auto read_metadata = std::make_shared<arrow::KeyValueMetadata>();
+    read_metadata->Append("paimon.map.selected-keys", "a,c");
+    arrow::FieldVector read_fields = logical_schema->fields();
+    read_fields[1] = read_fields[1]->WithMetadata(read_metadata);
+    auto read_schema = ExportSchema(arrow::schema(std::move(read_fields)));
+    ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
+                                    /*selection_bitmap=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    std::shared_ptr<arrow::ChunkedArray> expected;
+    ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+                    arrow::struct_(logical_schema->fields()), {R"([
+                        [1, [["a", ["red", "blue"]]]],
+                        [2, [["a", ["red", null, "blue"]], ["c", ["green"]]]],
+                        [3, null],
+                        [4, [["a", ["red"]], ["c", [null]]]]
                     ])"},
                     &expected)
                     .ok());
