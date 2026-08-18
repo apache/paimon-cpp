@@ -26,7 +26,6 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/common/factories/io_hook.h"
 
 namespace paimon::test {
 
@@ -56,33 +55,54 @@ void RunStorm(const Worker& worker) {
     }
 }
 
+// Local to this translation unit, so nothing else in the test binary can have
+// instantiated Singleton<FirstPublicationTarget> before this test runs: the storm
+// below is guaranteed to race on the *first* publication regardless of link order,
+// --gtest_shuffle, or --gtest_filter. GetInstance() is defined in the header, so a
+// translation-unit-local type can instantiate it.
+class FirstPublicationTarget {
+ public:
+    FirstPublicationTarget() {
+        for (size_t i = 0; i < payload_.size(); ++i) {
+            payload_[i] = kMagic ^ (i * 0x9E3779B97F4A7C15ULL);
+        }
+    }
+
+    // The publication race let a reader observe the instance pointer before the
+    // constructor's stores were visible; this checks every word the ctor wrote.
+    bool IsFullyConstructed() const {
+        for (size_t i = 0; i < payload_.size(); ++i) {
+            if (payload_[i] != (kMagic ^ (i * 0x9E3779B97F4A7C15ULL))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+ private:
+    static constexpr uint64_t kMagic = 0xA5A5F00D12345678ULL;
+    std::array<uint64_t, 64> payload_{};
+};
+
 }  // namespace
 
-// Regression gate for the Singleton double-checked-locking publication race.
-// It only exercises the first construction if nothing has touched
-// Singleton<IOHook> before, so this must stay the first GetInstance() call in
-// this binary (singleton_test.cpp is the first source of common_factories_test
-// and this is its first test). A FactoryCreator storm cannot serve as the
-// gate: the REGISTER_PAIMON_FACTORY constructors in paimon_shared already
-// initialize Singleton<FactoryCreator> before main().
-TEST(SingletonTest, TestConcurrentIOHookGetInstance) {
-    std::array<IOHook*, kNumThreads> hooks{};
-    std::array<bool, kNumThreads> try_oks{};
-    RunStorm([&hooks, &try_oks](int32_t i) {
-        hooks[i] = Singleton<IOHook>::GetInstance();
-        // The default (and cleared) IOHook state is SILENT, so Try() must succeed.
-        try_oks[i] = hooks[i]->Try("singleton_storm_path").ok();
+// Regression gate for the Singleton double-checked-locking publication race: 32
+// threads race the first GetInstance() of a type local to this file, so the gate
+// cannot silently degrade into exercising only the already-published fast path.
+TEST(SingletonTest, TestConcurrentFirstPublication) {
+    std::array<FirstPublicationTarget*, kNumThreads> instances{};
+    std::array<bool, kNumThreads> fully_constructed{};
+    RunStorm([&instances, &fully_constructed](int32_t i) {
+        instances[i] = Singleton<FirstPublicationTarget>::GetInstance();
+        fully_constructed[i] = instances[i]->IsFullyConstructed();
     });
 
-    IOHook* expected = hooks[0];
+    FirstPublicationTarget* expected = instances[0];
     ASSERT_NE(expected, nullptr);
     for (int32_t i = 0; i < kNumThreads; ++i) {
-        ASSERT_EQ(expected, hooks[i]);
-        ASSERT_TRUE(try_oks[i]);
+        ASSERT_EQ(expected, instances[i]);
+        ASSERT_TRUE(fully_constructed[i]);
     }
-    ASSERT_GE(expected->IOCount(), kNumThreads);
-    // Leave the process-wide singleton in its default SILENT state for later tests.
-    expected->Clear();
 }
 
 }  // namespace paimon::test

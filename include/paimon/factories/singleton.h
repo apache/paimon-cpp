@@ -19,7 +19,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 
 #include "paimon/macros.h"
 #include "paimon/visibility.h"
@@ -55,5 +57,36 @@ class PAIMON_EXPORT Singleton : private InstPolicy {
     /// @return The single instance of object.
     static T* GetInstance();
 };
+
+template <typename T, typename InstPolicy>
+T* Singleton<T, InstPolicy>::GetInstance() {
+    static std::atomic<T*> ptr{nullptr};
+    static std::mutex mutex;
+    T* p = ptr.load(std::memory_order_acquire);
+    if (PAIMON_UNLIKELY(p == nullptr)) {
+        std::lock_guard<std::mutex> lg(mutex);
+        // Re-check under the mutex with a relaxed load; the mutex already
+        // synchronizes with the creating thread.
+        p = ptr.load(std::memory_order_relaxed);
+        if (p == nullptr) {
+            InstPolicy::Create(p);
+            ptr.store(p, std::memory_order_release);
+        }
+    }
+    return p;
+}
+
+// FactoryCreator and IOHook are instantiated exactly once in singleton.cpp, and the
+// extern declarations below suppress implicit instantiation everywhere else. The
+// file-format/file-system plugins are separate shared libraries linked with
+// -Bsymbolic, so a per-library copy of GetInstance()'s function-local static state
+// would never be interposed: factory registrations would land in a different
+// instance than lookups. Do not replace these with implicit instantiation. Types local to a single
+// translation unit (e.g. test-only types) can still instantiate Singleton<T>
+// implicitly because they cannot span library boundaries.
+class FactoryCreator;
+class IOHook;
+extern template class Singleton<FactoryCreator>;
+extern template class Singleton<IOHook>;
 
 }  // namespace paimon

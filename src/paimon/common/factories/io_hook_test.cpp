@@ -68,21 +68,27 @@ TEST(IOHookTest, TestThrowExceptionMode) {
     hook->Clear();
 }
 
-// Regression test for the data race on IOHook's mode: Reset()/Clear() run on one
-// thread while other threads call Try() concurrently. Under a ThreadSanitizer build
-// this deterministically reports the unsynchronized mode access; functionally it must
-// never crash and every Try() must return OK.
+// Regression test for torn IOHook configurations: Reset()/Clear() run on one thread
+// while other threads call Try() concurrently. A shared start barrier releases all
+// threads together, and the reset thread keeps hammering until every worker has
+// finished, so overlap is structural rather than timing-dependent. Under a
+// ThreadSanitizer build this deterministically reports any unsynchronized access;
+// functionally every Try() must return OK.
 TEST(IOHookTest, TestConcurrentResetAndTry) {
     auto hook = IOHook::GetInstance();
 
-    constexpr int32_t kResetIterations = 200000;
     constexpr int32_t kTryIterations = 50000;
     constexpr int32_t kNumWorkers = 4;
 
+    std::atomic<bool> start{false};
+    std::atomic<int32_t> workers_done{0};
     std::atomic<bool> observed_error{false};
 
-    std::thread reset_thread([hook]() {
-        for (int32_t i = 0; i < kResetIterations; i++) {
+    std::thread reset_thread([hook, &start, &workers_done]() {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        while (workers_done.load(std::memory_order_relaxed) < kNumWorkers) {
             hook->Reset(INT64_MAX, IOHook::Mode::RETURN_ERROR);
             hook->Clear();
         }
@@ -91,7 +97,10 @@ TEST(IOHookTest, TestConcurrentResetAndTry) {
     std::vector<std::thread> workers;
     workers.reserve(kNumWorkers);
     for (int32_t t = 0; t < kNumWorkers; t++) {
-        workers.emplace_back([hook, &observed_error]() {
+        workers.emplace_back([hook, &start, &workers_done, &observed_error]() {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
             for (int32_t i = 0; i < kTryIterations; i++) {
                 Status status = hook->Try("concurrent_path");
                 // Reset() arms an unreachable position, while Clear() uses SILENT mode,
@@ -100,9 +109,11 @@ TEST(IOHookTest, TestConcurrentResetAndTry) {
                     observed_error.store(true, std::memory_order_relaxed);
                 }
             }
+            workers_done.fetch_add(1, std::memory_order_relaxed);
         });
     }
 
+    start.store(true, std::memory_order_release);
     reset_thread.join();
     for (auto& worker : workers) {
         worker.join();

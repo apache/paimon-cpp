@@ -19,32 +19,14 @@
 
 #include "paimon/factories/singleton.h"
 
-#include <atomic>
-#include <mutex>
-
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/factories/factory_creator.h"
 
 namespace paimon {
 
-template <typename T, typename InstPolicy>
-T* Singleton<T, InstPolicy>::GetInstance() {
-    static std::atomic<T*> ptr{nullptr};
-    static std::mutex mutex;
-    T* p = ptr.load(std::memory_order_acquire);
-    if (PAIMON_UNLIKELY(p == nullptr)) {
-        std::lock_guard<std::mutex> lg(mutex);
-        // Re-check under the mutex with a relaxed load; the mutex already
-        // synchronizes with the creating thread.
-        p = ptr.load(std::memory_order_relaxed);
-        if (p == nullptr) {
-            InstPolicy::Create(p);
-            ptr.store(p, std::memory_order_release);
-        }
-    }
-    return p;
-}
-
+// The single definition point for the two cross-library singletons. See the
+// extern template declarations in singleton.h for why implicit instantiation
+// must stay suppressed for these types.
 template class Singleton<FactoryCreator>;
 template class Singleton<IOHook>;
 
