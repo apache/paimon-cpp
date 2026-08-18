@@ -59,6 +59,8 @@ const char Options::SCAN_SNAPSHOT_ID[] = "scan.snapshot-id";
 const char Options::SCAN_MODE[] = "scan.mode";
 const char Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[] =
     "scan.manifest-entry-cache.max-snapshots";
+const char Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[] =
+    "scan.manifest-entry.lazy-decode.enabled";
 const char Options::READ_BATCH_SIZE[] = "read.batch-size";
 const char Options::WRITE_BATCH_SIZE[] = "write.batch-size";
 const char Options::WRITE_BUFFER_SIZE[] = "write-buffer-size";

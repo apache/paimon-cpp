@@ -31,17 +31,22 @@ namespace paimon {
 class MemoryPool;
 struct DataFileMeta;
 
+Status ManifestEntrySerializer::ValidateVersion(int32_t version) {
+    if (version == VERSION_2) {
+        return Status::OK();
+    }
+    if (version == VERSION_1) {
+        return Status::Invalid(
+            fmt::format("The current version {} is not compatible with the version {}, "
+                        "please recreate the table.",
+                        VERSION_2, version));
+    }
+    return Status::Invalid(fmt::format("Unsupported version: {}", version));
+}
+
 Result<ManifestEntry> ManifestEntrySerializer::ConvertFrom(int32_t version,
                                                            const InternalRow& row) const {
-    if (version != VERSION_2) {
-        if (version == VERSION_1) {
-            return Status::Invalid(
-                fmt::format("The current version {} is not compatible with the version {}, "
-                            "please recreate the table.",
-                            GetVersion(), version));
-        }
-        return Status::Invalid("Unsupported version", std::to_string(version));
-    }
+    PAIMON_RETURN_NOT_OK(ValidateVersion(version));
     auto kind = row.GetByte(0);
     PAIMON_ASSIGN_OR_RAISE(FileKind file_kind, FileKind::FromByteValue(kind));
     auto partition_bytes = row.GetBinary(1);

@@ -108,6 +108,7 @@ class PAIMON_EXPORT CoreOptions {
     std::optional<int64_t> GetScanTimestampMillis() const;
     int64_t GetRealtimeReadViewTtlMillis() const;
     int32_t GetScanManifestEntryCacheMaxSnapshots() const;
+    bool ScanManifestEntryLazyDecodeEnabled() const;
 
     int64_t GetManifestTargetFileSize() const;
     std::shared_ptr<Cache> GetCache() const;

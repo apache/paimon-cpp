@@ -61,6 +61,15 @@ TEST_F(ManifestEntrySerializerTest, TestToFromRow) {
     }
 }
 
+TEST_F(ManifestEntrySerializerTest, TestValidateVersion) {
+    ASSERT_OK(ManifestEntrySerializer::ValidateVersion(/*version=*/2));
+    ASSERT_NOK_WITH_MSG(ManifestEntrySerializer::ValidateVersion(/*version=*/1),
+                        "The current version 2 is not compatible with the version 1, please "
+                        "recreate the table.");
+    ASSERT_NOK_WITH_MSG(ManifestEntrySerializer::ValidateVersion(/*version=*/3),
+                        "Unsupported version: 3");
+}
+
 TEST_F(ManifestEntrySerializerTest, TestNullableRecordCount) {
     std::vector<ManifestEntry> empty_entries;
     ASSERT_FALSE(ManifestEntry::NullableRecordCount(empty_entries).has_value());

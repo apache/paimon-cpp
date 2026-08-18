@@ -365,6 +365,33 @@ Status FileStoreScan::StoreSnapshotLiveManifestEntries(
 Status FileStoreScan::ReadAndMergeBucketFileEntries(
     const std::vector<ManifestFileMeta>& manifest_metas, int32_t bucket,
     std::vector<ManifestEntry>* merged_entries) const {
+    if (core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+        std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
+        futures.reserve(manifest_metas.size());
+        for (const auto& meta : manifest_metas) {
+            auto read_meta_task = [this, meta, bucket]() -> Result<std::vector<ManifestEntry>> {
+                std::vector<ManifestEntry> bucket_entries;
+                PAIMON_RETURN_NOT_OK(
+                    manifest_file_->ReadBucketEntries(meta.FileName(), bucket, &bucket_entries));
+                return bucket_entries;
+            };
+            futures.push_back(Via(executor_.get(), read_meta_task));
+        }
+
+        std::vector<ManifestEntry> bucket_entries;
+        std::vector<Result<std::vector<ManifestEntry>>> entry_lists = CollectAll(futures);
+        for (auto& entry_list : entry_lists) {
+            if (!entry_list.ok()) {
+                return entry_list.status();
+            }
+            bucket_entries.reserve(bucket_entries.size() + entry_list.value().size());
+            for (auto& entry : entry_list.value()) {
+                bucket_entries.emplace_back(std::move(entry));
+            }
+        }
+        return MergeLiveEntries(bucket_entries, merged_entries);
+    }
+
     std::vector<ManifestEntry> unmerged_entries;
     std::vector<ManifestEntry> entries;
     PAIMON_RETURN_NOT_OK(ReadFileEntries(manifest_metas, &entries, /*apply_scan_filter=*/false));

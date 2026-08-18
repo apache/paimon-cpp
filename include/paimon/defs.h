@@ -200,6 +200,10 @@ struct PAIMON_EXPORT Options {
     /// cache. Default value is 0.
     static const char SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[];
 
+    /// "scan.manifest-entry.lazy-decode.enabled" - Whether to deserialize only manifest entries
+    /// for the target bucket when rebuilding the cache. Default value is true.
+    static const char SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[];
+
     /// "read.batch-size" - Read batch size for any file format if it supports.
     /// The default value is 1024.
     static const char READ_BATCH_SIZE[];

@@ -65,6 +65,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(30, core_options.GetManifestMergeMinCount());
     ASSERT_FALSE(core_options.ManifestDeleteFileDropStats());
     ASSERT_EQ(0, core_options.GetScanManifestEntryCacheMaxSnapshots());
+    ASSERT_TRUE(core_options.ScanManifestEntryLazyDecodeEnabled());
     ASSERT_EQ(nullptr, core_options.GetCache());
     ASSERT_EQ(128 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
     ASSERT_EQ(4 * 1024 * 1024L, core_options.GetSourceSplitOpenFileCost());
@@ -217,6 +218,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::SCAN_SNAPSHOT_ID, "5"},
         {Options::SCAN_MODE, "from-snapshot-full"},
         {Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "7"},
+        {Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED, "false"},
         {Options::SNAPSHOT_NUM_RETAINED_MIN, "15"},
         {Options::SNAPSHOT_NUM_RETAINED_MAX, "30"},
         {Options::SNAPSHOT_EXPIRE_LIMIT, "20"},
@@ -353,6 +355,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.CommitDiscardDuplicateFiles());
     ASSERT_EQ(5, core_options.GetScanSnapshotId().value_or(-1));
     ASSERT_EQ(7, core_options.GetScanManifestEntryCacheMaxSnapshots());
+    ASSERT_FALSE(core_options.ScanManifestEntryLazyDecodeEnabled());
     ExpireConfig expire_config = core_options.GetExpireConfig();
     ASSERT_EQ(15, expire_config.GetSnapshotRetainMin());
     ASSERT_EQ(30, expire_config.GetSnapshotRetainMax());

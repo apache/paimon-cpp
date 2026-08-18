@@ -425,6 +425,7 @@ struct CoreOptions::Impl {
 
     int32_t manifest_merge_min_count = 30;
     int32_t scan_manifest_entry_cache_max_snapshots = 0;
+    bool scan_manifest_entry_lazy_decode_enabled = true;
     int32_t read_batch_size = 1024;
     int32_t write_batch_size = 1024;
     int32_t local_sort_max_num_file_handles = 128;
@@ -827,6 +828,8 @@ struct CoreOptions::Impl {
             return Status::Invalid(fmt::format("{} must be non-negative",
                                                Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS));
         }
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
+                                                &scan_manifest_entry_lazy_decode_enabled));
         // Parse scan.fallback-branch - fallback branch when partition not found
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_FALLBACK_BRANCH, &scan_fallback_branch));
         // Parse branch - branch name, default "main"
@@ -1164,6 +1167,10 @@ int64_t CoreOptions::GetRealtimeReadViewTtlMillis() const {
 
 int32_t CoreOptions::GetScanManifestEntryCacheMaxSnapshots() const {
     return impl_->scan_manifest_entry_cache_max_snapshots;
+}
+
+bool CoreOptions::ScanManifestEntryLazyDecodeEnabled() const {
+    return impl_->scan_manifest_entry_lazy_decode_enabled;
 }
 
 int64_t CoreOptions::GetManifestTargetFileSize() const {
