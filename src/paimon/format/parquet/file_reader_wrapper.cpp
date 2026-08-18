@@ -207,6 +207,17 @@ Status FileReaderWrapper::SeekToRow(uint64_t row_number) {
                 current_row_group_idx_ = i;
                 next_row_to_read_ = rg_start;
 
+                if (!reader_initialized_) {
+                    // PrepareForReading (first Next()) will build batch_reader_, so just
+                    // record the seeked start for it. Building batch_reader_ here would be
+                    // discarded by PrepareForReading, and the arrow GetRecordBatchReader
+                    // eagerly reads every column chunk, so building twice doubles the
+                    // requested bytes.
+                    pending_start_idx_ = i;
+                    batch_reader_.reset();
+                    return Status::OK();
+                }
+
                 // Rebuild batch_reader_ for non-page-filtered RGs at/after seek position.
                 std::vector<int32_t> fully_matched_indices;
                 for (uint64_t j = i; j < target_row_groups_.size(); j++) {
@@ -226,6 +237,12 @@ Status FileReaderWrapper::SeekToRow(uint64_t row_number) {
         }
         next_row_to_read_ = num_rows_;
         current_row_group_idx_ = target_row_groups_.size();
+        if (!reader_initialized_) {
+            // Seek past the last row group before initialization: the deferred
+            // PrepareForReading must start at EOF as well.
+            pending_start_idx_ = target_row_groups_.size();
+            batch_reader_.reset();
+        }
         return Status::OK();
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::SeekToRow")
@@ -385,20 +402,24 @@ Status FileReaderWrapper::PrepareForReadingLazy(
     target_row_groups_ = target_row_groups;
     target_column_indices_ = column_indices;
     reader_initialized_ = false;
+    pending_start_idx_.reset();
     return Status::OK();
 }
 
 std::vector<::arrow::io::ReadRange> FileReaderWrapper::CollectPreBufferRanges(
-    const std::vector<int32_t>& column_indices) {
-    return DoCollectPreBufferRanges(column_indices, /*skip_read_range_excluded=*/true);
+    const std::vector<int32_t>& column_indices, uint64_t start_idx) {
+    return DoCollectPreBufferRanges(column_indices, /*skip_read_range_excluded=*/true,
+                                    start_idx);
 }
 
 std::vector<::arrow::io::ReadRange> FileReaderWrapper::DoCollectPreBufferRanges(
-    const std::vector<int32_t>& column_indices, bool skip_read_range_excluded) {
+    const std::vector<int32_t>& column_indices, bool skip_read_range_excluded,
+    uint64_t start_idx) {
     std::vector<::arrow::io::ReadRange> ranges;
     auto file_metadata = file_reader_->parquet_reader()->metadata();
 
-    for (const auto& trg : target_row_groups_) {
+    for (uint64_t idx = start_idx; idx < target_row_groups_.size(); idx++) {
+        const auto& trg = target_row_groups_[idx];
         if (skip_read_range_excluded && trg.IsExcludedByReadRange()) continue;
 
         if (trg.IsPartiallyMatched()) {
@@ -429,7 +450,7 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBuff
     try {
         std::vector<::arrow::io::ReadRange> ranges =
             DoCollectPreBufferRanges(target_column_indices_,
-                                     /*skip_read_range_excluded=*/false);
+                                     /*skip_read_range_excluded=*/false, /*start_idx=*/0);
         std::vector<std::pair<uint64_t, uint64_t>> pre_buffer_ranges;
         pre_buffer_ranges.reserve(ranges.size());
         int64_t total_bytes = 0;
@@ -479,10 +500,24 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
         target_row_groups_ = target_row_groups;
         target_column_indices_ = column_indices;
 
+        // Find the first row group to read: skip read-range-excluded ones, and honor a
+        // seek issued while the reader was still uninitialized (SeekToRow defers reader
+        // construction to here).
+        uint64_t first_active_idx = 0;
+        while (first_active_idx < target_row_groups_.size() &&
+               target_row_groups_[first_active_idx].IsExcludedByReadRange()) {
+            first_active_idx++;
+        }
+        if (pending_start_idx_.has_value()) {
+            first_active_idx = std::max(first_active_idx, pending_start_idx_.value());
+            pending_start_idx_.reset();
+        }
+
         // Partition into fully-matched and page-filtered row groups, skipping excluded ones.
         std::vector<int32_t> fully_matched_row_groups;
         uint64_t active_count = 0;
-        for (const auto& trg : target_row_groups_) {
+        for (uint64_t i = first_active_idx; i < target_row_groups_.size(); i++) {
+            const auto& trg = target_row_groups_[i];
             if (trg.IsExcludedByReadRange()) {
                 continue;
             }
@@ -520,7 +555,7 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
         // When page-filtered RGs exist, issue a single PreBuffer covering both kinds.
         // Otherwise GetRecordBatchReader already issued PreBuffer internally.
         if (has_partially_matched) {
-            auto all_ranges = CollectPreBufferRanges(column_indices);
+            auto all_ranges = CollectPreBufferRanges(column_indices, first_active_idx);
             DispatchPreBuffer(std::move(all_ranges));
         } else if (active_count > 0) {
             fprintf(stderr,
@@ -528,12 +563,7 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
                     "arrow-internal PreBuffer from GetRecordBatchReader\n");
         }
 
-        // Reset read state. Find the first non-excluded row group.
-        uint64_t first_active_idx = 0;
-        while (first_active_idx < target_row_groups_.size() &&
-               target_row_groups_[first_active_idx].IsExcludedByReadRange()) {
-            first_active_idx++;
-        }
+        // Reset read state to the first row group that will be read.
         if (first_active_idx >= target_row_groups_.size()) {
             next_row_to_read_ = num_rows_;
         } else {
@@ -551,6 +581,8 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
 
 Status FileReaderWrapper::ApplyReadRanges(
     const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) {
+    // A read-range change invalidates any seek recorded before initialization.
+    pending_start_idx_.reset();
     if (read_ranges.empty()) {
         for (auto& trg : target_row_groups_) {
             trg.SetExcludedByReadRange(true);

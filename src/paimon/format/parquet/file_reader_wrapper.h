@@ -22,6 +22,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -63,6 +64,9 @@ class FileReaderWrapper {
 
     /// Seek to the specified row number.
     /// @param row_number The row to seek to (must be at a row group boundary).
+    /// When the reader is not yet initialized (before the first Next()), the reader
+    /// construction is deferred to PrepareForReading to avoid building a batch reader
+    /// that would be immediately discarded.
     Status SeekToRow(uint64_t row_number);
 
     /// Read the next batch of rows.
@@ -173,16 +177,19 @@ class FileReaderWrapper {
     Result<std::shared_ptr<arrow::RecordBatch>> NextFullyMatched();
 
     /// Collect all byte ranges that need pre-buffering (page-filtered + fully-matched),
-    /// skipping row groups excluded by ApplyReadRanges.
+    /// skipping row groups excluded by ApplyReadRanges and row groups before start_idx
+    /// (already skipped by a deferred seek).
     std::vector<::arrow::io::ReadRange> CollectPreBufferRanges(
-        const std::vector<int32_t>& column_indices);
+        const std::vector<int32_t>& column_indices, uint64_t start_idx);
 
     /// Core byte-range collection shared by CollectPreBufferRanges and GetPreBufferRanges.
     /// When skip_read_range_excluded is true, row groups excluded by ApplyReadRanges are
     /// skipped (arrow-internal PreBuffer for this reader); when false, they are included
-    /// (shared prefetch cache covering all sub-readers).
+    /// (shared prefetch cache covering all sub-readers). Ranges before start_idx are
+    /// never collected.
     std::vector<::arrow::io::ReadRange> DoCollectPreBufferRanges(
-        const std::vector<int32_t>& column_indices, bool skip_read_range_excluded);
+        const std::vector<int32_t>& column_indices, bool skip_read_range_excluded,
+        uint64_t start_idx);
 
     /// Dispatch a single PreBufferRanges call with merged ranges.
     void DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges);
@@ -201,6 +208,10 @@ class FileReaderWrapper {
     uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
     uint64_t current_row_group_idx_ = 0;
     bool reader_initialized_ = false;
+    // Target index recorded by SeekToRow when the reader was still uninitialized;
+    // consumed by PrepareForReading so the deferred initialization starts at the seeked
+    // position instead of rebuilding readers twice.
+    std::optional<uint64_t> pending_start_idx_;
 
     // Streaming reader for the currently-active page-filtered row group. Created lazily
     // on the first Next() call into a page-filtered RG, drained batch-by-batch, then reset

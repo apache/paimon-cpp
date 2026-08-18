@@ -18,8 +18,11 @@
 
 #include "paimon/format/parquet/file_reader_wrapper.h"
 
+#include <functional>
 #include <map>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/builder_binary.h"
@@ -51,6 +54,64 @@ class Array;
 }  // namespace arrow
 
 namespace paimon::parquet::test {
+
+// Tracks positional reads (Read at offset / ReadAsync) issued through the stream.
+class ReadTrackingInputStream : public InputStream {
+ public:
+    explicit ReadTrackingInputStream(std::shared_ptr<InputStream> input)
+        : input_(std::move(input)) {}
+
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return input_->Seek(offset, origin);
+    }
+
+    Result<int64_t> GetPos() const override {
+        return input_->GetPos();
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        return input_->Read(buffer, size);
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        RecordPositionalRead(offset, size);
+        return input_->Read(buffer, size, offset);
+    }
+
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        RecordPositionalRead(offset, size);
+        input_->ReadAsync(buffer, size, offset, std::move(callback));
+    }
+
+    Result<std::string> GetUri() const override {
+        return input_->GetUri();
+    }
+
+    Result<int64_t> Length() const override {
+        return input_->Length();
+    }
+
+    Status Close() override {
+        return input_->Close();
+    }
+
+    int64_t GetPositionalReadBytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return positional_read_bytes_;
+    }
+
+ private:
+    void RecordPositionalRead(int64_t offset, int64_t size) {
+        (void)offset;
+        std::lock_guard<std::mutex> lock(mutex_);
+        positional_read_bytes_ += size;
+    }
+
+    std::shared_ptr<InputStream> input_;
+    mutable std::mutex mutex_;
+    int64_t positional_read_bytes_ = 0;
+};
 
 class FileReaderWrapperTest : public ::testing::Test {
  public:
@@ -121,8 +182,14 @@ class FileReaderWrapperTest : public ::testing::Test {
     Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapper(
         const std::string& file_path, int64_t wrapper_batch_size = 0) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> in, fs_->Open(file_path));
+        return PrepareReaderWrapperOnStream(std::move(in), wrapper_batch_size);
+    }
+
+    Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapperOnStream(
+        std::shared_ptr<InputStream> in, int64_t wrapper_batch_size = 0) {
         PAIMON_ASSIGN_OR_RAISE(int64_t file_length, in->Length());
-        auto input_stream = std::make_unique<ArrowInputStreamAdapter>(in, file_length, arrow_pool_);
+        auto input_stream = std::make_unique<ArrowInputStreamAdapter>(std::move(in), file_length,
+                                                                      arrow_pool_);
         ::parquet::arrow::FileReaderBuilder file_reader_builder;
         ::parquet::ReaderProperties reader_properties;
         reader_properties.enable_buffered_stream();
@@ -248,6 +315,52 @@ TEST_F(FileReaderWrapperTest, Simple) {
     ASSERT_FALSE(record_batch);
     ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
     ASSERT_EQ(5500, reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+}
+
+/// The prefetch framework always issues SeekToRow right after SetReadRanges, while the
+/// wrapper is still uninitialized (before the first Next()). That seek must not build
+/// the arrow batch reader eagerly: building it once in SeekToRow and again in
+/// PrepareForReading makes the arrow reader request every column chunk twice (2x read
+/// amplification). The deferred construction must also honor the seeked start position.
+TEST_F(FileReaderWrapperTest, SeekBeforeInitIssuesNoReadsAndStartsAtSeekPosition) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "seek_before_init.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/5500);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
+    auto tracking_stream = std::make_shared<ReadTrackingInputStream>(std::move(in));
+    auto* tracking = tracking_stream.get();
+    ASSERT_OK_AND_ASSIGN(auto reader_wrapper,
+                         PrepareReaderWrapperOnStream(std::move(tracking_stream)));
+    ASSERT_EQ(6, reader_wrapper->GetNumberOfRowGroups());
+
+    // Baseline: only metadata reads happened so far (footer etc. during Open/Build).
+    int64_t baseline_read_bytes = tracking->GetPositionalReadBytes();
+
+    // Seek to the start of RG2 while still uninitialized. This must only record the
+    // position, not build a batch reader that would eagerly read column chunks.
+    ASSERT_OK(reader_wrapper->SeekToRow(2000));
+    ASSERT_EQ(2000, reader_wrapper->GetNextRowToRead());
+    ASSERT_EQ(baseline_read_bytes, tracking->GetPositionalReadBytes())
+        << "SeekToRow before initialization issued eager column chunk reads; the deferred "
+           "PrepareForReader would build a second reader and read everything twice";
+
+    // The first Next() performs the single deferred initialization at the seeked position.
+    int64_t total_rows = 0;
+    bool checked_first_batch = false;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(auto batch, reader_wrapper->Next());
+        if (!batch) {
+            break;
+        }
+        if (!checked_first_batch) {
+            ASSERT_EQ(2000, reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+            checked_first_batch = true;
+        }
+        total_rows += batch->num_rows();
+    }
+    // RG2..RG5 cover rows [2000, 5500).
+    ASSERT_EQ(3500, total_rows);
+    ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
 }
 
 /// Regression: when batch_size_ is 0 (the default) and a row group is consumed via
