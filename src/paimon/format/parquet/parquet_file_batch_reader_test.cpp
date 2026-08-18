@@ -49,6 +49,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/defs.h"
 #include "paimon/format/parquet/parquet_field_id_converter.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
@@ -64,7 +65,6 @@
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
-#include "paimon/utils/read_ahead_cache.h"
 #include "paimon/utils/roaring_bitmap32.h"
 #include "parquet/file_reader.h"
 #include "parquet/properties.h"
@@ -1571,7 +1571,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeWithPageFilteredRowGroup) {
     auto parquet_reader = ::parquet::ParquetFileReader::Open(adapter);
     ASSERT_TRUE(parquet_reader);
     auto col_chunk = parquet_reader->metadata()->RowGroup(2)->ColumnChunk(0);
-    uint64_t chunk_offset = static_cast<uint64_t>(col_chunk->data_page_offset());
+    auto chunk_offset = static_cast<uint64_t>(col_chunk->data_page_offset());
     uint64_t chunk_end = chunk_offset + static_cast<uint64_t>(col_chunk->total_compressed_size());
 
     uint64_t filtered_total = 0;
@@ -1624,8 +1624,8 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
     // Baseline before draining: the Build() phase may have issued reads that no
     // prefetch range can cover (e.g. footer parsing when no metadata cache is
     // configured). Only the data-consumption reads below must be miss-free.
-    auto baseline_metrics = std::make_shared<MetricsImpl>();
-    cache->CollectMetrics(baseline_metrics);
+    std::shared_ptr<Metrics> baseline_metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(&baseline_metrics);
     ASSERT_OK_AND_ASSIGN(uint64_t baseline_misses,
                          baseline_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
     ASSERT_OK_AND_ASSIGN(uint64_t baseline_miss_bytes,
@@ -1638,8 +1638,8 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
 
     // The cache metrics must show that the data reads were served by the cache:
     // at least one hit, and no additional miss falling back to the wrapped stream.
-    auto cache_metrics = std::make_shared<MetricsImpl>();
-    cache->CollectMetrics(cache_metrics);
+    std::shared_ptr<Metrics> cache_metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(&cache_metrics);
     ASSERT_OK_AND_ASSIGN(uint64_t hits,
                          cache_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
     ASSERT_GT(hits, 0u);

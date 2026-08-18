@@ -31,10 +31,10 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace arrow {
 class Schema;
@@ -634,8 +634,8 @@ std::shared_ptr<Metrics> PrefetchFileBatchReaderImpl::GetReaderMetrics() const {
     if (cache_) {
         // The shared read-ahead cache serves reads of all sub-readers, so its
         // hit/miss counters are file-level and merge into the reader metrics.
-        auto cache_metrics = std::make_shared<MetricsImpl>();
-        cache_->CollectMetrics(cache_metrics);
+        std::shared_ptr<Metrics> cache_metrics = std::make_shared<MetricsImpl>();
+        cache_->CollectMetrics(&cache_metrics);
         res_metrics->Merge(cache_metrics);
     }
     return res_metrics;

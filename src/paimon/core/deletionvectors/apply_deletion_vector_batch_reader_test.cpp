@@ -26,13 +26,13 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/executor.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace arrow {
 class Array;

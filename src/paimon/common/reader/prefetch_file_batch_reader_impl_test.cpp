@@ -27,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/executor.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
@@ -39,7 +40,6 @@
 #include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace paimon::test {
 

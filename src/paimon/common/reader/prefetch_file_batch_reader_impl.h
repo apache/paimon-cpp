@@ -35,12 +35,12 @@
 #include <vector>
 
 #include "arrow/c/abi.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/threadsafe_queue.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/reader/prefetch_file_batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
-#include "paimon/utils/read_ahead_cache.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
 struct ArrowSchema;

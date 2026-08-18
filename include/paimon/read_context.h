@@ -30,7 +30,7 @@
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
-#include "paimon/utils/read_ahead_cache.h"
+#include "paimon/utils/prefetch_cache_config.h"
 #include "paimon/visibility.h"
 
 namespace paimon {

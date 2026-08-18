@@ -30,6 +30,7 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/utils/prefetch_cache_config.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
@@ -51,81 +52,6 @@ class PAIMON_EXPORT ReadAheadCacheMetrics {
     static inline const char IO_COUNT[] = "read-ahead-cache.io.count";
     /// Total bytes requested by the prefetch IOs issued to the underlying stream.
     static inline const char IO_BYTES[] = "read-ahead-cache.io.bytes";
-};
-
-/// PrefetchCacheMode
-/// Cache prefetch switch modes.
-/// Controls whether to enable cache prefetching under different circumstances, such as queries with
-/// predicates or bitmap indexes.
-///
-/// - ALWAYS: Enable cache in all scenarios.
-/// - EXCLUDE_PREDICATE: Disable cache when query has predicates.
-/// - EXCLUDE_BITMAP: Disable cache when using bitmap index.
-/// - EXCLUDE_BITMAP_OR_PREDICATE: Disable cache if query has predicates or bitmap index.
-/// - NEVER: Always disable cache.
-enum class PAIMON_EXPORT PrefetchCacheMode {
-    ALWAYS = 1,
-    EXCLUDE_PREDICATE = 2,
-    EXCLUDE_BITMAP = 3,
-    EXCLUDE_BITMAP_OR_PREDICATE = 4,
-    NEVER = 5
-};
-
-/// Configuration parameters for the read-ahead cache behavior.
-///
-/// This struct controls various limits and prefetching strategies used by
-/// ReadAheadCache to balance memory usage, I/O efficiency, and latency hiding.
-class PAIMON_EXPORT CacheConfig {
- public:
-    CacheConfig();
-    CacheConfig(uint64_t buffer_size_limit, uint64_t range_size_limit, uint64_t hole_size_limit,
-                uint64_t pre_buffer_limit);
-
-    /// Returns the maximum total size (in bytes) of cached data.
-    uint64_t GetBufferSizeLimit() const {
-        return buffer_size_limit_;
-    }
-
-    /// Sets the maximum total size (in bytes) of cached data.
-    void SetBufferSizeLimit(uint64_t buffer_size_limit) {
-        buffer_size_limit_ = buffer_size_limit;
-    }
-
-    /// Returns the maximum allowed size (in bytes) for a single cached range.
-    uint64_t GetRangeSizeLimit() const {
-        return range_size_limit_;
-    }
-
-    /// Sets the maximum allowed size (in bytes) for a single cached range.
-    void SetRangeSizeLimit(uint64_t range_size_limit) {
-        range_size_limit_ = range_size_limit;
-    }
-
-    /// Returns the maximum gap size (in bytes) considered mergeable between adjacent ranges.
-    uint64_t GetHoleSizeLimit() const {
-        return hole_size_limit_;
-    }
-
-    /// Sets the maximum gap size (in bytes) considered mergeable between adjacent ranges.
-    void SetHoleSizeLimit(uint64_t hole_size_limit) {
-        hole_size_limit_ = hole_size_limit;
-    }
-
-    /// Returns the maximum size to pre-buffer ahead of the current read position.
-    uint64_t GetPreBufferLimit() const {
-        return pre_buffer_limit_;
-    }
-
-    /// Sets the maximum size to pre-buffer ahead of the current read position.
-    void SetPreBufferLimit(uint64_t pre_buffer_limit) {
-        pre_buffer_limit_ = pre_buffer_limit;
-    }
-
- private:
-    uint64_t buffer_size_limit_;
-    uint64_t range_size_limit_;
-    uint64_t hole_size_limit_;
-    uint64_t pre_buffer_limit_;
 };
 
 /// A byte range with offset and length.
@@ -194,7 +120,9 @@ class PAIMON_EXPORT ReadAheadCache {
     /// `ReadAheadCacheMetrics`. Only reads issued through Read() are counted
     /// as hits/misses; prefetch fetches dispatched by the cache itself are
     /// counted in the fetch counters instead.
-    void CollectMetrics(const std::shared_ptr<Metrics>& metrics) const;
+    /// @param metrics[out] The metrics to write the counters into. A null
+    /// pointer or a null shared pointer is a no-op.
+    void CollectMetrics(std::shared_ptr<Metrics>* metrics) const;
 
     /// Reset the cache to its initial state, clearing all cached data and configuration.
     ///

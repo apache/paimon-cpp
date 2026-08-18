@@ -20,7 +20,7 @@
 // Adapted from Apache ORC
 // https://github.com/apache/orc/blob/main/c%2B%2B/src/io/Cache.cc
 
-#include "paimon/utils/read_ahead_cache.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 
 #include <algorithm>
 #include <atomic>
@@ -105,7 +105,7 @@ class ReadAheadCache::Impl {
     void Reset();
     void ReleaseBuffers();
     void Warmup();
-    void CollectMetrics(const std::shared_ptr<Metrics>& metrics) const;
+    void CollectMetrics(std::shared_ptr<Metrics>* metrics) const;
 
  private:
     std::vector<RangeCacheEntry> MakeCacheEntries(const std::vector<ByteRange>& ranges);
@@ -270,23 +270,21 @@ void ReadAheadCache::Impl::ReleaseBuffers() {
     // still be able to report them through CollectMetrics().
 }
 
-void ReadAheadCache::Impl::CollectMetrics(const std::shared_ptr<Metrics>& metrics) const {
-    if (!metrics) {
+void ReadAheadCache::Impl::CollectMetrics(std::shared_ptr<Metrics>* metrics) const {
+    if (metrics == nullptr || !*metrics) {
         return;
     }
-    metrics->SetCounter(ReadAheadCacheMetrics::READ_COUNT,
-                        read_count_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::READ_BYTES,
-                        read_bytes_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES,
-                        hit_bytes_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::READ_MISSES,
-                        misses_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES,
-                        miss_bytes_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::IO_COUNT, io_count_.load(std::memory_order_relaxed));
-    metrics->SetCounter(ReadAheadCacheMetrics::IO_BYTES, io_bytes_.load(std::memory_order_relaxed));
+    auto& m = *metrics;
+    m->SetCounter(ReadAheadCacheMetrics::READ_COUNT, read_count_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::READ_BYTES, read_bytes_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES,
+                  hit_bytes_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISSES, misses_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES,
+                  miss_bytes_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::IO_COUNT, io_count_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::IO_BYTES, io_bytes_.load(std::memory_order_relaxed));
 }
 
 void ReadAheadCache::Impl::Warmup() {
@@ -403,7 +401,7 @@ void ReadAheadCache::Warmup() {
     impl_->Warmup();
 }
 
-void ReadAheadCache::CollectMetrics(const std::shared_ptr<Metrics>& metrics) const {
+void ReadAheadCache::CollectMetrics(std::shared_ptr<Metrics>* metrics) const {
     impl_->CollectMetrics(metrics);
 }
 

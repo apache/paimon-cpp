@@ -47,6 +47,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -83,7 +84,6 @@
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
-#include "paimon/utils/read_ahead_cache.h"
 #include "paimon/write_context.h"
 
 namespace paimon::test {

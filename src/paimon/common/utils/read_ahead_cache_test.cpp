@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/utils/read_ahead_cache.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 
 #include <fstream>
 #include <vector>
@@ -131,8 +131,8 @@ TEST(TestReadAheadCache, TestMultiSegmentContiguousHit) {
     AssertReadMiss(cache, {5, 21});
 
     // A multi-segment hit counts once with the full requested length.
-    auto metrics = std::make_shared<MetricsImpl>();
-    cache.CollectMetrics(metrics);
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&metrics);
     ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
     ASSERT_EQ(hits, 2u);
     ASSERT_OK_AND_ASSIGN(uint64_t hit_bytes,
@@ -186,8 +186,8 @@ TEST(TestReadAheadCache, TestMetrics) {
     // Out of any cached range: a miss.
     AssertReadMiss(cache, {20, 3});
 
-    auto metrics = std::make_shared<MetricsImpl>();
-    cache.CollectMetrics(metrics);
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&metrics);
     // Both Read() requests are counted, regardless of hit or miss.
     ASSERT_OK_AND_ASSIGN(uint64_t read_count,
                          metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
@@ -229,8 +229,8 @@ TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
     // The previously cached range is gone: the read now misses.
     AssertReadMiss(cache, {0, 5});
 
-    auto metrics = std::make_shared<MetricsImpl>();
-    cache.CollectMetrics(metrics);
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&metrics);
     // The read counters survive ReleaseBuffers() as well.
     ASSERT_OK_AND_ASSIGN(uint64_t read_count,
                          metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
@@ -253,8 +253,8 @@ TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
 
     // Reset() clears the counters too.
     cache.Reset();
-    auto reset_metrics = std::make_shared<MetricsImpl>();
-    cache.CollectMetrics(reset_metrics);
+    std::shared_ptr<Metrics> reset_metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&reset_metrics);
     ASSERT_OK_AND_ASSIGN(read_count, reset_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
     ASSERT_EQ(read_count, 0u);
     ASSERT_OK_AND_ASSIGN(hits, reset_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
@@ -434,13 +434,15 @@ TEST(TestReadAheadCache, TestInitCoalescesSmallHoles) {
     AssertReadEquals(cache, {4, 3}, "efg");
 }
 
-// CollectMetrics() with a null metrics object is a safe no-op.
+// CollectMetrics() with a null metrics output is a safe no-op.
 TEST(TestReadAheadCache, TestCollectMetricsWithNullMetrics) {
     CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});
     env.cache->CollectMetrics(/*metrics=*/nullptr);
+    std::shared_ptr<Metrics> null_metrics;
+    env.cache->CollectMetrics(&null_metrics);
 }
 
 }  // namespace paimon::test

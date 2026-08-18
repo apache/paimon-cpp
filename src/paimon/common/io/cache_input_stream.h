@@ -22,8 +22,8 @@
 #include <string>
 
 #include "paimon/common/utils/math.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace paimon {
 

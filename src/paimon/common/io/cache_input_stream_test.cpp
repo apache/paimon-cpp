@@ -26,6 +26,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
@@ -33,7 +34,6 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/testharness.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace paimon::test {
 

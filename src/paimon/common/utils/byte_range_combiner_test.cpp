@@ -22,8 +22,8 @@
 #include "paimon/common/utils/byte_range_combiner.h"
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/testing/utils/testharness.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace paimon::test {
 
