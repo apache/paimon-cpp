@@ -68,11 +68,6 @@ class BTreeGlobalIndexer : public GlobalIndexer {
         const std::vector<GlobalIndexIOMeta>& files,
         const std::shared_ptr<MemoryPool>& pool) const override;
 
-    Result<std::shared_ptr<GlobalIndexReader>> CreateReader(
-        ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-        const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool,
-        const std::shared_ptr<Executor>& executor) const override;
-
  private:
     BTreeGlobalIndexer(const std::shared_ptr<CacheManager>& cache_manager,
                        const std::map<std::string, std::string>& options)

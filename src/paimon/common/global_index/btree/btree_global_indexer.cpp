@@ -106,16 +106,6 @@ Result<std::shared_ptr<GlobalIndexWriter>> BTreeGlobalIndexer::CreateWriter(
 Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
     ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
     const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool) const {
-    // Preserve the compatibility overload's existing private executor. Scan paths which can
-    // safely share an executor use the overload below.
-    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
-    return CreateReader(arrow_schema, file_reader, files, pool, executor);
-}
-
-Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
-    ::ArrowSchema* arrow_schema, const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-    const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<MemoryPool>& pool,
-    const std::shared_ptr<Executor>& executor) const {
     // Get field type from arrow schema
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(arrow_schema));
@@ -135,6 +125,12 @@ Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
                             BtreeDefs::kBtreeIndexReadBufferSize, iter->second));
         }
         read_buffer_size = static_cast<int32_t>(tmp_buffer_size);
+    }
+    // UnionGlobalIndexReader evaluates one payload inline. Preserve the existing private pool only
+    // when multiple payloads can submit work.
+    std::shared_ptr<Executor> executor;
+    if (files.size() > 1) {
+        executor = CreateDefaultExecutor();
     }
     return std::make_shared<LazyFilteredBTreeReader>(read_buffer_size, files, key_type, file_reader,
                                                      cache_manager_, pool, executor);

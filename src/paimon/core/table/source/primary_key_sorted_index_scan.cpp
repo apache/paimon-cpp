@@ -542,8 +542,7 @@ PrimaryKeySortedIndexScan::ReaderFactory PrimaryKeySortedIndexScan::MakeReaderFa
         ArrowSchema c_arrow_schema;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
         ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
-        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool,
-                                     /*executor=*/nullptr);
+        return indexer->CreateReader(&c_arrow_schema, file_reader, io_metas, pool);
     };
 }
 
