@@ -400,10 +400,11 @@ class DataEvolutionTableTest : public ::testing::Test,
                        const std::shared_ptr<arrow::StructArray>& expected_array,
                        const std::shared_ptr<Predicate>& predicate = nullptr,
                        const std::vector<Range>& row_ranges = {},
-                       bool check_scan_plan_when_empty_result = true) const {
+                       bool check_scan_plan_when_empty_result = true,
+                       bool apply_predicate_to_scan = true) const {
         // scan
         ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.SetPredicate(predicate);
+        scan_context_builder.SetPredicate(apply_predicate_to_scan ? predicate : nullptr);
         if (!row_ranges.empty()) {
             auto global_index_result = BitmapGlobalIndexResult::FromRanges(row_ranges);
             scan_context_builder.SetGlobalIndexResult(global_index_result);
@@ -1880,7 +1881,7 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
                               expected_array));
     }
     {
-        // first 4 records read with data evolution, ignore index
+        // The old file's f2 index does not contain 102, but the newer file owns f2.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(102));
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
@@ -1892,51 +1893,45 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
     ])")
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
-                              expected_array, predicate));
+                              expected_array, predicate,
+                              /*row_ranges=*/{},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
     }
     {
-        // f2 has bitmap index, but data evolution scan and read ignore index
+        // The bitmap proves that neither row range group contains f2 = 103.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(103));
-        auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
-            arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        ["Lily", 2, 102, 2.1],
-        ["Alice", 4, 104, 3.1],
-        ["Bob", 6, 106, 4.1],
-        ["David", 8, 108, 5.1]
-    ])")
-                .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
-                              expected_array, predicate));
+                              /*expected_array=*/nullptr, predicate,
+                              /*row_ranges=*/{},
+                              /*check_scan_plan_when_empty_result=*/false,
+                              /*apply_predicate_to_scan=*/false));
     }
     {
-        // f2 has bitmap index, data evolution scan will ignore index => not empty plan
-        // data evolution split read will also ignore index => not empty read batch
+        // Scan planning keeps the split, but reader-side indexes skip both row range groups.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(203));
+        ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
+                              /*expected_array=*/nullptr, predicate,
+                              /*row_ranges=*/{},
+                              /*check_scan_plan_when_empty_result=*/false,
+                              /*apply_predicate_to_scan=*/false));
+    }
+    {
+        // A single-file group applies the exact bitmap row selection.
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
+                                                 FieldType::INT, Literal(202));
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        [null, null, 202, 6.1],
-        [null, null, 204, 7.1]
+        [null, null, 202, 6.1]
     ])")
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
                               expected_array, predicate,
                               /*row_ranges=*/{},
-                              /*check_scan_plan_when_empty_result=*/true));
-    }
-    {
-        // f2 has bitmap index, data evolution split read will ignore index
-        auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
-                                                 FieldType::INT, Literal(202));
-        auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
-            arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        [null, null, 202, 6.1],
-        [null, null, 204, 7.1]
-    ])")
-                .ValueOrDie());
-        ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
-                              expected_array, predicate));
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
     }
     {
         auto predicate =
@@ -1953,7 +1948,7 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
     {
         // test row id with predicate
         std::vector<Range> row_ranges = {Range(0l, 2l)};
-        // row id = {0, 1, 2}, while data evolution split read will ignore index
+        // A merged group keeps all selected row ids to preserve column alignment.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(106));
         CheckScanResult(table_path, /*predicate=*/predicate, /*row_ranges=*/row_ranges,
@@ -1967,26 +1962,179 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
                               expected_array, predicate,
-                              /*row_ranges=*/row_ranges));
+                              /*row_ranges=*/row_ranges,
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
     }
     {
         // test row id with predicate
         std::vector<Range> row_ranges = {Range(4l, 5l)};
-        // row id = {4, 5}, data evolution split read will ignore bitmap index
+        // The single-file bitmap selection is intersected with the row-id selection.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2",
                                                  FieldType::INT, Literal(204));
         CheckScanResult(table_path, /*predicate=*/predicate, /*row_ranges=*/row_ranges,
                         /*expected_first_row_ids=*/{4}, /*expected_row_counts=*/{2});
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
-        [null, null, 202, 6.1],
         [null, null, 204, 7.1]
     ])")
                 .ValueOrDie());
         ASSERT_OK(ScanAndRead(table_path, arrow::schema(arrow_data_type->fields())->field_names(),
                               expected_array, predicate,
-                              /*row_ranges=*/row_ranges));
+                              /*row_ranges=*/row_ranges,
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
     }
+}
+
+TEST_P(DataEvolutionTableTest, TestDataEvolutionPredicatePushDownBoundaries) {
+    auto file_format = FileFormat();
+    if (file_format == "avro") {
+        return;
+    }
+    std::string table_path = paimon::test::GetDataDir() + file_format +
+                             "/data_evolution_with_index.db/data_evolution_with_index";
+
+    {
+        // A file without f0 must not interpret the predicate as f0 = null.
+        auto predicate = PredicateBuilder::Equal(
+            /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+            Literal(FieldType::STRING, "Lily", 4));
+        auto read_type =
+            arrow::struct_({arrow::field("f0", arrow::utf8()), arrow::field("f2", arrow::int32())});
+        auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        ["Lily", 102],
+        ["Alice", 104],
+        ["Bob", 106],
+        ["David", 108],
+        [null, 202],
+        [null, 204]
+    ])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "f2"}, expected_array, predicate,
+                              /*row_ranges=*/{},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
+    }
+    {
+        // System fields are completed after reading and cannot be pushed into data files.
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"_ROW_ID",
+                                                 FieldType::BIGINT, Literal(99l));
+        auto read_type =
+            arrow::struct_({arrow::field("f2", arrow::int32()), SpecialFields::RowId().field_});
+        auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [102, 0],
+        [104, 1],
+        [106, 2],
+        [108, 3],
+        [202, 4],
+        [204, 5]
+    ])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f2", "_ROW_ID"}, expected_array, predicate,
+                              /*row_ranges=*/{},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
+    }
+    {
+        // Dropping a system-field conjunct must not drop a pushable data conjunct.
+        auto data_predicate = PredicateBuilder::Equal(
+            /*field_index=*/0, /*field_name=*/"f2", FieldType::INT, Literal(103));
+        auto system_predicate = PredicateBuilder::Equal(
+            /*field_index=*/1, /*field_name=*/"_ROW_ID", FieldType::BIGINT, Literal(0l));
+        ASSERT_OK_AND_ASSIGN(auto predicate,
+                             PredicateBuilder::And({data_predicate, system_predicate}));
+        ASSERT_OK(ScanAndRead(table_path, {"f2", "_ROW_ID"}, /*expected_array=*/nullptr, predicate,
+                              /*row_ranges=*/{},
+                              /*check_scan_plan_when_empty_result=*/false,
+                              /*apply_predicate_to_scan=*/false));
+    }
+    {
+        // Bitmap positions compose with row ranges without changing the physical row id.
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f2",
+                                                 FieldType::INT, Literal(204));
+        auto read_type =
+            arrow::struct_({arrow::field("f2", arrow::int32()), SpecialFields::RowId().field_});
+        auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [204, 5]
+    ])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f2", "_ROW_ID"}, expected_array, predicate,
+                              /*row_ranges=*/{Range(4l, 5l)},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
+    }
+    {
+        // The bitmap selects row id 5 while the global-index selection keeps only row id 4.
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f2",
+                                                 FieldType::INT, Literal(204));
+        ASSERT_OK(ScanAndRead(table_path, {"f2", "_ROW_ID"}, /*expected_array=*/nullptr, predicate,
+                              /*row_ranges=*/{Range(4l, 4l)},
+                              /*check_scan_plan_when_empty_result=*/false,
+                              /*apply_predicate_to_scan=*/false));
+    }
+    {
+        // The predicate keeps row ids {4, 5}; the global-index selection keeps {0, 1, 2, 3, 4}.
+        auto equal_202 = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f2",
+                                                 FieldType::INT, Literal(202));
+        auto equal_204 = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f2",
+                                                 FieldType::INT, Literal(204));
+        ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({equal_202, equal_204}));
+        auto read_type =
+            arrow::struct_({arrow::field("f2", arrow::int32()), SpecialFields::RowId().field_});
+        auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [202, 4]
+    ])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f2", "_ROW_ID"}, expected_array, predicate,
+                              /*row_ranges=*/{Range(0l, 4l)},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
+    }
+}
+
+TEST_P(DataEvolutionTableTest, TestFormatPredicatePushDownWithoutFileIndex) {
+    if (FileFormat() == "avro") {
+        return;
+    }
+
+    CreateDataEvolutionTable(
+        /*deletion_vectors_enabled=*/false, {{Options::FILE_INDEX_READ_ENABLED, "false"},
+                                             {Options::WRITE_BATCH_SIZE, "1"},
+                                             {"parquet.page.size", "1"},
+                                             {"parquet.enable-dictionary", "false"},
+                                             {"parquet.write.enable-page-index", "true"},
+                                             {"parquet.read.enable-page-index-filter", "true"},
+                                             {"orc.stripe.size", "1"},
+                                             {"orc.row.index.stride", "1"}});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    auto input = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a", "x"],
+        [2, "b", "y"],
+        [3, "c", "z"],
+        [4, "d", "w"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_messages, WriteArray(table_path, {"f0", "f1", "f2"}, input));
+    ASSERT_OK(Commit(table_path, commit_messages));
+
+    auto predicate =
+        PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT, Literal(3));
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [3, "c", "z"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2"}, expected, predicate,
+                          /*row_ranges=*/{},
+                          /*check_scan_plan_when_empty_result=*/true,
+                          /*apply_predicate_to_scan=*/true));
 }
 
 TEST_P(DataEvolutionTableTest, TestPredicate) {

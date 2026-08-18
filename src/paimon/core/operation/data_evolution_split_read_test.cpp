@@ -25,6 +25,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -37,6 +38,8 @@
 #include "paimon/executor.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -101,6 +104,30 @@ class DataEvolutionSplitReadTest : public ::testing::Test {
  private:
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
 };
+
+TEST_F(DataEvolutionSplitReadTest, TestCreatePushDownPredicate) {
+    auto f0_predicate =
+        PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT, Literal(1));
+    auto f1_predicate =
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::INT, Literal(2));
+    auto row_id_predicate = PredicateBuilder::Equal(
+        /*field_index=*/2, SpecialFields::RowId().Name(), FieldType::BIGINT, Literal(3l));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({f0_predicate, f1_predicate, row_id_predicate}));
+
+    auto read_schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("f0", arrow::int32())), SpecialFields::RowId()});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> push_down,
+                         DataEvolutionSplitRead::CreatePushDownPredicate(predicate, read_schema));
+    ASSERT_TRUE(push_down);
+    ASSERT_EQ(*push_down, *f0_predicate);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_predicate,
+                         PredicateBuilder::Or({f0_predicate, f1_predicate}));
+    ASSERT_OK_AND_ASSIGN(
+        push_down, DataEvolutionSplitRead::CreatePushDownPredicate(or_predicate, read_schema));
+    ASSERT_FALSE(push_down);
+}
 
 TEST_F(DataEvolutionSplitReadTest, TestAddSingleBlobEntry) {
     auto blob_entry =
