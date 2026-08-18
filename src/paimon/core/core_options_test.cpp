@@ -29,6 +29,7 @@
 #include "paimon/core/options/expire_config.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/realtime/realtime_store.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
@@ -54,6 +55,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ("__DEFAULT_PARTITION__", core_options.GetPartitionDefaultName());
     ASSERT_EQ(std::nullopt, core_options.GetScanSnapshotId());
     ASSERT_EQ(5 * 60 * 1000, core_options.GetRealtimeReadViewTtlMillis());
+    ASSERT_EQ(StatisticsMode::NONE, core_options.GetRealtimeStoreStatisticsMode());
     ASSERT_EQ("zstd", core_options.GetFileCompression());
     ASSERT_EQ("zstd", core_options.GetWriteFileCompression(0));
     ASSERT_EQ("zstd", core_options.GetWriteFileCompression(3));
@@ -802,6 +804,19 @@ TEST(CoreOptionsTest, TestRealtimeReadViewTtlMillis) {
     ASSERT_EQ(1234, core_options.GetRealtimeReadViewTtlMillis());
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::REALTIME_READ_VIEW_TTL, "0 ms"}}),
                         "realtime.read-view-ttl must be positive");
+}
+
+TEST(CoreOptionsTest, TestRealtimeStoreStatisticsMode) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions full_options,
+                         CoreOptions::FromMap({{Options::REALTIME_STORE_STATS_MODE, "full"}}));
+    ASSERT_EQ(StatisticsMode::FULL, full_options.GetRealtimeStoreStatisticsMode());
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions none_options,
+                         CoreOptions::FromMap({{Options::REALTIME_STORE_STATS_MODE, "none"}}));
+    ASSERT_EQ(StatisticsMode::NONE, none_options.GetRealtimeStoreStatisticsMode());
+
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::REALTIME_STORE_STATS_MODE, "invalid"}}),
+                        "realtime.store.stats-mode must be 'none' or 'full'");
 }
 
 TEST(CoreOptionsTest, TestScanTimestampMillisExplicitMode) {

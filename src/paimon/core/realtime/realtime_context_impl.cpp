@@ -79,7 +79,8 @@ Status RealtimeContextImpl::Start() {
 
 Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     const std::map<std::string, std::string>& partition, int32_t bucket,
-    std::unique_ptr<ArrowSchema> write_schema, const std::map<std::string, std::string>& options,
+    std::unique_ptr<ArrowSchema> write_schema, StatisticsMode statistics_mode,
+    const std::map<std::string, std::string>& options,
     const std::shared_ptr<MemoryPool>& memory_pool) {
     std::lock_guard<std::mutex> progress_lock(progress_mutex_);
     std::lock_guard<std::mutex> registry_lock(mutex_);
@@ -118,9 +119,9 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
         }
         return RealtimeStoreState{iter->second, initial_offset};
     }
-    Result<std::shared_ptr<RealtimeStore>> store_result =
-        factory_->Create(std::move(write_schema), options, memory_pool);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeStore> store, std::move(store_result));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<RealtimeStore> store,
+        factory_->Create(std::move(write_schema), statistics_mode, options, memory_pool));
     stores_.emplace(key, store);
     if (offset_iter != committed_offsets_.end()) {
         reclaimed_offsets_.emplace(key, offset_iter->second);
@@ -229,12 +230,19 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
             if (partition_bucket.bucket < 0 || committed_end_offset < 0) {
                 return Status::Invalid("invalid partition-bucket committed offset");
             }
-            auto previous_iter = committed_offsets_.find(partition_bucket);
-            if (previous_iter != committed_offsets_.end()) {
-                if (committed_end_offset < previous_iter->second) {
-                    return Status::Invalid(
-                        "real-time partition-bucket committed offset cannot move backwards");
-                }
+        }
+        // Reclaimed segments cannot be restored in place. A rollback therefore requires the
+        // caller to discard this context and rebuild it from the rolled-back snapshot.
+        for (const auto& [partition_bucket, previous_offset] : committed_offsets_) {
+            auto current_iter = committed_offsets.find(partition_bucket);
+            if (current_iter == committed_offsets.end()) {
+                return Status::Invalid(
+                    "real-time committed progress removed a partition-bucket; recreate "
+                    "RealtimeContext");
+            }
+            if (current_iter->second < previous_offset) {
+                return Status::Invalid(
+                    "real-time committed offset moved backwards; recreate RealtimeContext");
             }
         }
         committed_offsets_ = committed_offsets;

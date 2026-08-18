@@ -79,6 +79,10 @@ class PAIMON_EXPORT FileStoreCommit {
     /// orders them by partition, bucket, and offset before validating continuity. The resulting
     /// snapshot atomically publishes the data files and the updated offset map.
     ///
+    /// If this method returns an error, the caller may retry with the same arguments. Each call
+    /// reloads the latest committed progress and treats ranges already covered by a committed
+    /// snapshot as successfully committed.
+    ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.
     /// @param commit_identifier Identifier of the streaming commit operation.

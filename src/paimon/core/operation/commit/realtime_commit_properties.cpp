@@ -159,22 +159,69 @@ std::string RealtimeCommitProperties::OffsetsDirectory(const std::string& table_
     return PathUtil::JoinPath(BranchManager::BranchPath(table_root, branch), "metadata");
 }
 
-Result<RealtimeOffsetMap> RealtimeCommitProperties::ReadOffsets(
-    const std::optional<Snapshot>& snapshot, const std::shared_ptr<FileSystem>& file_system) {
-    if (!snapshot || !snapshot->Properties()) {
-        return RealtimeOffsetMap{};
+std::optional<std::string> RealtimeCommitProperties::GetOffsetsPath(const Snapshot& snapshot) {
+    if (!snapshot.Properties()) {
+        return std::nullopt;
     }
-    const std::map<std::string, std::string>& properties = snapshot->Properties().value();
+    const std::map<std::string, std::string>& properties = snapshot.Properties().value();
     auto iter = properties.find(kOffsetsKey);
     if (iter == properties.end()) {
+        return std::nullopt;
+    }
+    return iter->second;
+}
+
+Result<RealtimeOffsetMap> RealtimeCommitProperties::ReadOffsets(
+    const std::optional<Snapshot>& snapshot, const std::shared_ptr<FileSystem>& file_system) {
+    if (!snapshot) {
+        return RealtimeOffsetMap{};
+    }
+    std::optional<std::string> offsets_path = GetOffsetsPath(snapshot.value());
+    if (!offsets_path) {
         return RealtimeOffsetMap{};
     }
     if (file_system == nullptr) {
         return Status::Invalid("file system is null when reading real-time offsets");
     }
     std::string content;
-    PAIMON_RETURN_NOT_OK(file_system->ReadFile(iter->second, &content));
+    PAIMON_RETURN_NOT_OK(file_system->ReadFile(offsets_path.value(), &content));
     return ParseOffsets(content);
+}
+
+Result<bool> RealtimeCommitProperties::AreRangesCommitted(
+    const RealtimeOffsetMap& committed_offsets,
+    const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges) {
+    std::optional<bool> all_committed;
+    for (const auto& [partition_bucket, offset_range] : realtime_ranges) {
+        if (partition_bucket.bucket < 0) {
+            return Status::Invalid(
+                fmt::format("real-time commit bucket {} is invalid", partition_bucket.bucket));
+        }
+        if (offset_range.begin < 0 || offset_range.begin >= offset_range.end) {
+            return Status::Invalid("real-time commit offset range is invalid");
+        }
+
+        auto offset_iter = committed_offsets.find(partition_bucket);
+        int64_t committed_end_offset =
+            offset_iter == committed_offsets.end() ? 0 : offset_iter->second;
+        bool range_committed = offset_range.end <= committed_end_offset;
+        if (!range_committed && offset_range.begin < committed_end_offset) {
+            return Status::Invalid(fmt::format(
+                "real-time commit offset range partially overlaps committed offset for bucket {}",
+                partition_bucket.bucket));
+        }
+        if (!range_committed && offset_range.begin != committed_end_offset) {
+            return Status::Invalid(
+                fmt::format("real-time commit offsets for bucket {} are not contiguous",
+                            partition_bucket.bucket));
+        }
+        if (all_committed && all_committed.value() != range_committed) {
+            return Status::Invalid(
+                "real-time commit ranges are only partially covered by committed offsets");
+        }
+        all_committed = range_committed;
+    }
+    return all_committed.value_or(false);
 }
 
 Result<std::string> RealtimeCommitProperties::SerializeOffsets(const RealtimeOffsetMap& offsets) {

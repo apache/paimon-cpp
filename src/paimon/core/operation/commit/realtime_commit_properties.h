@@ -46,8 +46,19 @@ class RealtimeCommitProperties {
 
     static std::string OffsetsDirectory(const std::string& table_root, const std::string& branch);
 
+    /// Returns the offset file referenced by `snapshot`, if present.
+    static std::optional<std::string> GetOffsetsPath(const Snapshot& snapshot);
+
     static Result<RealtimeOffsetMap> ReadOffsets(const std::optional<Snapshot>& snapshot,
                                                  const std::shared_ptr<FileSystem>& file_system);
+
+    /// Returns whether all ranges are already covered by committed offsets.
+    ///
+    /// Ranges must either all immediately follow committed offsets or all be fully covered.
+    /// Mixed states, gaps, and partial overlaps are rejected.
+    static Result<bool> AreRangesCommitted(
+        const RealtimeOffsetMap& committed_offsets,
+        const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges);
 
     static Result<std::string> SerializeOffsets(const RealtimeOffsetMap& offsets);
 

@@ -48,6 +48,7 @@ namespace paimon {
 
 class ExpireConfig;
 class Cache;
+enum class StatisticsMode;
 
 class PAIMON_EXPORT CoreOptions {
  public:
@@ -107,6 +108,8 @@ class PAIMON_EXPORT CoreOptions {
     std::optional<int64_t> GetScanSnapshotId() const;
     std::optional<int64_t> GetScanTimestampMillis() const;
     int64_t GetRealtimeReadViewTtlMillis() const;
+    /// Returns the statistics mode used by real-time memory indexers.
+    StatisticsMode GetRealtimeStoreStatisticsMode() const;
     int32_t GetScanManifestEntryCacheMaxSnapshots() const;
 
     int64_t GetManifestTargetFileSize() const;

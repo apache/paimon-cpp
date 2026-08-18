@@ -28,6 +28,7 @@
 #include "paimon/realtime/realtime_store.h"
 
 namespace arrow {
+class Array;
 class MemoryPool;
 class Schema;
 class StructArray;
@@ -40,6 +41,7 @@ class MemoryPool;
 class ArrowRealtimeStore : public RealtimeStore {
  public:
     ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema,
+                       StatisticsMode statistics_mode,
                        const std::shared_ptr<MemoryPool>& memory_pool,
                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
@@ -61,10 +63,17 @@ class ArrowRealtimeStore : public RealtimeStore {
     uint64_t GetMemoryUsage() const override;
 
  private:
+    struct BatchStatistics {
+        std::shared_ptr<arrow::StructArray> min_values;
+        std::shared_ptr<arrow::StructArray> max_values;
+        std::shared_ptr<arrow::Array> null_counts;
+    };
+
     struct StoredBatch {
         std::shared_ptr<arrow::StructArray> data;
         std::vector<RecordBatch::RowKind> row_kinds;
         OffsetRange offset_range;
+        std::optional<BatchStatistics> statistics;
         uint64_t memory_usage;
     };
 
@@ -73,9 +82,13 @@ class ArrowRealtimeStore : public RealtimeStore {
     class CommitBatchReader;
     class QueryBatchReader;
 
+    Result<std::optional<BatchStatistics>> CollectStatistics(
+        const std::shared_ptr<arrow::StructArray>& data) const;
+
     std::shared_ptr<arrow::Schema> write_schema_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    StatisticsMode statistics_mode_;
     mutable std::mutex mutex_;
     std::vector<StoredBatch> building_batches_;
     std::vector<std::shared_ptr<Segment>> sealed_segments_;

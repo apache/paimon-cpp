@@ -256,6 +256,52 @@ TEST_F(RealtimeCommitPropertiesTest, SortProgress) {
     ASSERT_EQ(OffsetRange(5, 7), commits[2].offset_range);
 }
 
+TEST_F(RealtimeCommitPropertiesTest, CheckRangesCommitted) {
+    RealtimePartitionBucket bucket0({{"dt", "2"}}, /*bucket=*/0);
+    RealtimePartitionBucket bucket1({{"dt", "2"}}, /*bucket=*/1);
+    RealtimeOffsetMap committed_offsets = {{bucket0, 4}, {bucket1, 9}};
+
+    std::map<RealtimePartitionBucket, OffsetRange> pending = {{bucket0, OffsetRange(4, 6)},
+                                                              {bucket1, OffsetRange(9, 11)}};
+    ASSERT_OK_AND_ASSIGN(bool pending_committed,
+                         RealtimeCommitProperties::AreRangesCommitted(committed_offsets, pending));
+    ASSERT_FALSE(pending_committed);
+
+    std::map<RealtimePartitionBucket, OffsetRange> covered = {{bucket0, OffsetRange(0, 4)},
+                                                              {bucket1, OffsetRange(5, 8)}};
+    ASSERT_OK_AND_ASSIGN(bool covered_committed,
+                         RealtimeCommitProperties::AreRangesCommitted(committed_offsets, covered));
+    ASSERT_TRUE(covered_committed);
+
+    std::map<RealtimePartitionBucket, OffsetRange> single_bucket_covered = {
+        {bucket0, OffsetRange(0, 4)}};
+    ASSERT_OK_AND_ASSIGN(
+        bool single_bucket_covered_committed,
+        RealtimeCommitProperties::AreRangesCommitted(committed_offsets, single_bucket_covered));
+    ASSERT_TRUE(single_bucket_covered_committed);
+
+    std::map<RealtimePartitionBucket, OffsetRange> single_bucket_pending = {
+        {bucket1, OffsetRange(9, 11)}};
+    ASSERT_OK_AND_ASSIGN(
+        bool single_bucket_pending_committed,
+        RealtimeCommitProperties::AreRangesCommitted(committed_offsets, single_bucket_pending));
+    ASSERT_FALSE(single_bucket_pending_committed);
+
+    std::map<RealtimePartitionBucket, OffsetRange> partial_overlap = {{bucket0, OffsetRange(3, 5)}};
+    ASSERT_NOK_WITH_MSG(
+        RealtimeCommitProperties::AreRangesCommitted(committed_offsets, partial_overlap),
+        "partially overlaps");
+
+    std::map<RealtimePartitionBucket, OffsetRange> gap = {{bucket0, OffsetRange(5, 7)}};
+    ASSERT_NOK_WITH_MSG(RealtimeCommitProperties::AreRangesCommitted(committed_offsets, gap),
+                        "are not contiguous");
+
+    std::map<RealtimePartitionBucket, OffsetRange> mixed = {{bucket0, OffsetRange(0, 4)},
+                                                            {bucket1, OffsetRange(9, 11)}};
+    ASSERT_NOK_WITH_MSG(RealtimeCommitProperties::AreRangesCommitted(committed_offsets, mixed),
+                        "only partially covered");
+}
+
 TEST_F(RealtimeCommitPropertiesTest, BuildRejectsInvalidProgress) {
     RealtimePartitionBucket bucket0({{"dt", "2"}}, /*bucket=*/0);
     RealtimeOffsetMap committed_offsets = {{bucket0, 1}};

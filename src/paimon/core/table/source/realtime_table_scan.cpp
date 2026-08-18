@@ -19,6 +19,7 @@
 
 #include "paimon/core/table/source/realtime_table_scan.h"
 
+#include <iterator>
 #include <map>
 #include <optional>
 #include <utility>
@@ -119,7 +120,6 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
             .push_back(split);
     }
 
-    // TODO(xinyu.lxy): Support splitting one partition-bucket into multiple real-time splits.
     std::vector<std::shared_ptr<Split>> result;
     std::vector<std::string> pinned_tickets;
     ScopeGuard ticket_guard([this, &pinned_tickets]() {
@@ -151,9 +151,17 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
             result.insert(result.end(), grouped_disk_splits.begin(), grouped_disk_splits.end());
             continue;
         }
+
+        // Append tables can schedule all but the tail disk split independently. The tail split
+        // carries the immutable memory view so disk and memory are still concatenated by one
+        // RealtimeSplit without collapsing the whole partition-bucket into one scheduling unit.
+        auto tail_disk_split = std::prev(grouped_disk_splits.end());
+        result.insert(result.end(), grouped_disk_splits.begin(), tail_disk_split);
+        std::vector<std::shared_ptr<Split>> realtime_disk_splits;
+        realtime_disk_splits.push_back(std::move(*tail_disk_split));
         RealtimePartitionBucketView& memory = memory_iter->second;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Split> realtime_split,
-                               create_realtime_split(key, std::move(grouped_disk_splits), memory));
+                               create_realtime_split(key, std::move(realtime_disk_splits), memory));
         result.push_back(std::move(realtime_split));
         active_memory.erase(memory_iter);
     }

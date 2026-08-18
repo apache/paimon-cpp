@@ -929,6 +929,19 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
         commit_messages.push_back(realtime_commit.commit_message);
     }
 
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
+                           snapshot_manager_->LatestSnapshot());
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap committed_offsets,
+                           RealtimeCommitProperties::ReadOffsets(latest_snapshot, fs_));
+    PAIMON_ASSIGN_OR_RAISE(bool ranges_committed, RealtimeCommitProperties::AreRangesCommitted(
+                                                      committed_offsets, realtime_ranges));
+    if (ranges_committed) {
+        if (!latest_snapshot) {
+            return Status::Invalid("real-time commit ranges are covered without a snapshot");
+        }
+        return latest_snapshot->Id();
+    }
+
     std::shared_ptr<ManifestCommittable> committable =
         CreateManifestCommittable(identifier, commit_messages, watermark, /*properties=*/{});
     const int64_t previous_snapshot_id = last_committed_snapshot_id_;

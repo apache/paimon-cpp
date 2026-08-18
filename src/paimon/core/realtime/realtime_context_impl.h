@@ -42,6 +42,7 @@ namespace paimon {
 class RealtimeStore;
 class RealtimeReadView;
 class MemoryPool;
+enum class StatisticsMode;
 
 struct RealtimeStoreState {
     std::shared_ptr<RealtimeStore> store;
@@ -66,7 +67,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
 
     Result<RealtimeStoreState> GetOrCreateRealtimeStore(
         const std::map<std::string, std::string>& partition, int32_t bucket,
-        std::unique_ptr<::ArrowSchema> write_schema,
+        std::unique_ptr<::ArrowSchema> write_schema, StatisticsMode statistics_mode,
         const std::map<std::string, std::string>& options,
         const std::shared_ptr<MemoryPool>& memory_pool);
 
@@ -78,6 +79,8 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
 
     Status ReleaseReadView(const std::string& opaque_ticket);
 
+    // Returns an error requiring a new context if a newer snapshot moves committed progress
+    // backwards, because segments reclaimed by this context cannot be restored in place.
     Status AdvanceCommittedProgress(int64_t snapshot_id,
                                     const RealtimeOffsetMap& committed_offsets);
 

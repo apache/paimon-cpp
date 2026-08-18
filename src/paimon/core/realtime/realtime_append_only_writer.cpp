@@ -47,7 +47,7 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     std::unique_ptr<::ArrowSchema> write_schema,
     const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
-    const std::shared_ptr<arrow::Schema>& input_schema,
+    const std::shared_ptr<arrow::Schema>& input_schema, StatisticsMode statistics_mode,
     const std::map<std::string, std::string>& options,
     const std::shared_ptr<MemoryPool>& memory_pool) {
     if (!realtime_context) {
@@ -55,9 +55,10 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                            RealtimeContextImpl::Cast(realtime_context));
-    PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,
-                           realtime_context_impl->GetOrCreateRealtimeStore(
-                               partition, bucket, std::move(write_schema), options, memory_pool));
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeStoreState store_state,
+        realtime_context_impl->GetOrCreateRealtimeStore(partition, bucket, std::move(write_schema),
+                                                        statistics_mode, options, memory_pool));
     return std::shared_ptr<RealtimeAppendOnlyWriter>(new RealtimeAppendOnlyWriter(
         store_state.store, file_writer, input_schema, store_state.initial_offset, memory_pool));
 }

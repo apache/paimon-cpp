@@ -544,6 +544,10 @@ struct PAIMON_EXPORT Options {
     /// before reader creation. Default value is "5 min".
     static const char REALTIME_READ_VIEW_TTL[];
 
+    /// "realtime.store.stats-mode" - Statistics collected by the default real-time store.
+    /// Supported values are "none" and "full". Default value is "none".
+    static const char REALTIME_STORE_STATS_MODE[];
+
     /// "scan.timestamp" - Optional timestamp string used in case of "from-timestamp" scan mode,
     /// as an alternative to "scan.timestamp-millis".
     /// It will be automatically converted to timestamp in unix milliseconds, using local time zone.

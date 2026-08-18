@@ -47,7 +47,7 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
         std::unique_ptr<::ArrowSchema> write_schema,
         const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::shared_ptr<AppendOnlyWriter>& file_writer,
-        const std::shared_ptr<arrow::Schema>& input_schema,
+        const std::shared_ptr<arrow::Schema>& input_schema, StatisticsMode statistics_mode,
         const std::map<std::string, std::string>& options,
         const std::shared_ptr<MemoryPool>& memory_pool);
 

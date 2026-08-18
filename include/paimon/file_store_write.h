@@ -107,6 +107,8 @@ class PAIMON_EXPORT FileStoreWrite {
     ///
     /// The writer loads the snapshot's partition-bucket offsets and releases sealed memory that is
     /// fully covered by disk. Calling this method on a non-real-time writer returns an error.
+    /// If the snapshot moves committed progress backwards, such as after a rollback, this method
+    /// returns an error and the caller must recreate the `RealtimeContext` and writer.
     virtual Status RefreshCommittedSnapshot(int64_t snapshot_id);
 
     virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
