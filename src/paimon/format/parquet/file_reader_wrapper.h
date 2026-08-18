@@ -179,15 +179,16 @@ class FileReaderWrapper {
     /// Collect all byte ranges that need pre-buffering (page-filtered + fully-matched),
     /// skipping row groups excluded by ApplyReadRanges and row groups before start_idx
     /// (already skipped by a deferred seek).
-    std::vector<::arrow::io::ReadRange> CollectPreBufferRanges(
+    Result<std::vector<::arrow::io::ReadRange>> CollectPreBufferRanges(
         const std::vector<int32_t>& column_indices, uint64_t start_idx);
 
     /// Core byte-range collection shared by CollectPreBufferRanges and GetPreBufferRanges.
     /// When skip_read_range_excluded is true, row groups excluded by ApplyReadRanges are
     /// skipped (arrow-internal PreBuffer for this reader); when false, they are included
     /// (shared prefetch cache covering all sub-readers). Ranges before start_idx are
-    /// never collected.
-    std::vector<::arrow::io::ReadRange> DoCollectPreBufferRanges(
+    /// never collected. Metadata and page index lookups throw on malformed files or IO
+    /// failures, so the exceptions are converted to a Status here.
+    Result<std::vector<::arrow::io::ReadRange>> DoCollectPreBufferRanges(
         const std::vector<int32_t>& column_indices, bool skip_read_range_excluded,
         uint64_t start_idx);
 

@@ -397,58 +397,64 @@ Status FileReaderWrapper::PrepareForReadingLazy(
     return Status::OK();
 }
 
-std::vector<::arrow::io::ReadRange> FileReaderWrapper::CollectPreBufferRanges(
+Result<std::vector<::arrow::io::ReadRange>> FileReaderWrapper::CollectPreBufferRanges(
     const std::vector<int32_t>& column_indices, uint64_t start_idx) {
     return DoCollectPreBufferRanges(column_indices, /*skip_read_range_excluded=*/true, start_idx);
 }
 
-std::vector<::arrow::io::ReadRange> FileReaderWrapper::DoCollectPreBufferRanges(
+Result<std::vector<::arrow::io::ReadRange>> FileReaderWrapper::DoCollectPreBufferRanges(
     const std::vector<int32_t>& column_indices, bool skip_read_range_excluded, uint64_t start_idx) {
-    std::vector<::arrow::io::ReadRange> ranges;
-    auto file_metadata = file_reader_->parquet_reader()->metadata();
+    try {
+        std::vector<::arrow::io::ReadRange> ranges;
+        auto file_metadata = file_reader_->parquet_reader()->metadata();
 
-    for (uint64_t idx = start_idx; idx < target_row_groups_.size(); idx++) {
-        const auto& trg = target_row_groups_[idx];
-        if (skip_read_range_excluded && trg.IsExcludedByReadRange()) continue;
+        for (uint64_t idx = start_idx; idx < target_row_groups_.size(); idx++) {
+            const auto& trg = target_row_groups_[idx];
+            if (skip_read_range_excluded && trg.IsExcludedByReadRange()) {
+                continue;
+            }
 
-        if (trg.IsPartiallyMatched()) {
-            // Page-filtered RGs: only matching page byte ranges.
-            auto row_group_page_index_reader = GetRowGroupPageIndexReader(trg.GetRowGroupIndex());
-            auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
-                trg, column_indices, row_group_page_index_reader, file_reader_->parquet_reader());
-            ranges.insert(ranges.end(), std::make_move_iterator(page_ranges.begin()),
-                          std::make_move_iterator(page_ranges.end()));
-        } else {
-            // Fully-matched RGs: entire column chunk ranges.
-            auto rg_metadata = file_metadata->RowGroup(trg.GetRowGroupIndex());
-            for (int32_t col_idx : column_indices) {
-                auto col_chunk = rg_metadata->ColumnChunk(col_idx);
-                int64_t offset = col_chunk->data_page_offset();
-                if (col_chunk->has_dictionary_page() && col_chunk->dictionary_page_offset() > 0 &&
-                    offset > col_chunk->dictionary_page_offset()) {
-                    offset = col_chunk->dictionary_page_offset();
+            if (trg.IsPartiallyMatched()) {
+                // Page-filtered RGs: only matching page byte ranges.
+                auto row_group_page_index_reader =
+                    GetRowGroupPageIndexReader(trg.GetRowGroupIndex());
+                auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
+                    trg, column_indices, row_group_page_index_reader,
+                    file_reader_->parquet_reader());
+                ranges.insert(ranges.end(), std::make_move_iterator(page_ranges.begin()),
+                              std::make_move_iterator(page_ranges.end()));
+            } else {
+                // Fully-matched RGs: entire column chunk ranges.
+                auto rg_metadata = file_metadata->RowGroup(trg.GetRowGroupIndex());
+                for (int32_t col_idx : column_indices) {
+                    auto col_chunk = rg_metadata->ColumnChunk(col_idx);
+                    int64_t offset = col_chunk->data_page_offset();
+                    if (col_chunk->has_dictionary_page() &&
+                        col_chunk->dictionary_page_offset() > 0 &&
+                        offset > col_chunk->dictionary_page_offset()) {
+                        offset = col_chunk->dictionary_page_offset();
+                    }
+                    ranges.push_back({offset, col_chunk->total_compressed_size()});
                 }
-                ranges.push_back({offset, col_chunk->total_compressed_size()});
             }
         }
+        return ranges;
     }
-    return ranges;
+    PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::DoCollectPreBufferRanges")
 }
 
 Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBufferRanges() {
-    try {
-        std::vector<::arrow::io::ReadRange> ranges =
-            DoCollectPreBufferRanges(target_column_indices_,
-                                     /*skip_read_range_excluded=*/false, /*start_idx=*/0);
-        std::vector<std::pair<uint64_t, uint64_t>> pre_buffer_ranges;
-        pre_buffer_ranges.reserve(ranges.size());
-        for (const auto& range : ranges) {
-            pre_buffer_ranges.emplace_back(static_cast<uint64_t>(range.offset),
-                                           static_cast<uint64_t>(range.length));
-        }
-        return pre_buffer_ranges;
+    PAIMON_ASSIGN_OR_RAISE(std::vector<::arrow::io::ReadRange> ranges,
+                           DoCollectPreBufferRanges(target_column_indices_,
+                                                    /*skip_read_range_excluded=*/false,
+                                                    /*start_idx=*/0));
+    std::vector<std::pair<uint64_t, uint64_t>> pre_buffer_ranges;
+    pre_buffer_ranges.reserve(ranges.size());
+    for (const auto& range : ranges) {
+        pre_buffer_ranges.emplace_back(static_cast<uint64_t>(range.offset),
+                                       static_cast<uint64_t>(range.length));
     }
-    PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::GetPreBufferRanges")
+    return pre_buffer_ranges;
 }
 
 void FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges) {
@@ -516,7 +522,8 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
         // When page-filtered RGs exist, issue a single PreBuffer covering both kinds.
         // Otherwise GetRecordBatchReader already issued PreBuffer internally.
         if (has_partially_matched) {
-            auto all_ranges = CollectPreBufferRanges(column_indices, first_active_idx);
+            PAIMON_ASSIGN_OR_RAISE(std::vector<::arrow::io::ReadRange> all_ranges,
+                                   CollectPreBufferRanges(column_indices, first_active_idx));
             DispatchPreBuffer(std::move(all_ranges));
         }
 

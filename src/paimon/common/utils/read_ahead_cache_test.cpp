@@ -66,19 +66,19 @@ TestCacheEnv CreateTestFileAndCache(const std::string& filename, const std::stri
 
 // Assert that reading the range is a cache hit filling the destination with
 // the expected content.
-void AssertReadEquals(ReadAheadCache& cache, const ByteRange& range, const std::string& expected) {
+void AssertReadEquals(const ByteRange& range, const std::string& expected, ReadAheadCache* cache) {
     std::string dest(std::max<size_t>(range.length, 1), 'X');
     bool hit = false;
-    ASSERT_OK_AND_ASSIGN(hit, cache.Read(range, dest.data()));
+    ASSERT_OK_AND_ASSIGN(hit, cache->Read(range, dest.data()));
     ASSERT_TRUE(hit) << expected;
     EXPECT_EQ(expected, std::string_view(dest.data(), range.length));
 }
 
 // Assert that reading the range misses and leaves the destination untouched.
-void AssertReadMiss(ReadAheadCache& cache, const ByteRange& range) {
+void AssertReadMiss(const ByteRange& range, ReadAheadCache* cache) {
     std::string dest(std::max<size_t>(range.length, 1), 'X');
     bool hit = true;
-    ASSERT_OK_AND_ASSIGN(hit, cache.Read(range, dest.data()));
+    ASSERT_OK_AND_ASSIGN(hit, cache->Read(range, dest.data()));
     ASSERT_FALSE(hit);
     EXPECT_EQ(std::string(dest.size(), 'X'), dest);
 }
@@ -92,22 +92,22 @@ TEST(TestReadAheadCache, TestBasics) {
         {{1, 2}, {3, 2}, {8, 2}, {10, 4}, {14, 0}, {15, 4}, {20, 2}, {25, 0}});
     auto& cache = *env.cache;
 
-    AssertReadEquals(cache, {20, 2}, "uv");
-    AssertReadEquals(cache, {1, 2}, "bc");
-    AssertReadEquals(cache, {3, 2}, "de");
-    AssertReadEquals(cache, {8, 2}, "ij");
-    AssertReadEquals(cache, {10, 4}, "klmn");
-    AssertReadEquals(cache, {15, 4}, "pqrs");
-    AssertReadEquals(cache, {19, 3}, "tuv");
+    AssertReadEquals({20, 2}, "uv", &cache);
+    AssertReadEquals({1, 2}, "bc", &cache);
+    AssertReadEquals({3, 2}, "de", &cache);
+    AssertReadEquals({8, 2}, "ij", &cache);
+    AssertReadEquals({10, 4}, "klmn", &cache);
+    AssertReadEquals({15, 4}, "pqrs", &cache);
+    AssertReadEquals({19, 3}, "tuv", &cache);
 
     // Zero-sized reads are immediate hits touching nothing.
-    AssertReadEquals(cache, {14, 0}, "");
-    AssertReadEquals(cache, {25, 0}, "");
+    AssertReadEquals({14, 0}, "", &cache);
+    AssertReadEquals({25, 0}, "", &cache);
 
     // Non-cached ranges miss and leave the destination untouched.
-    AssertReadMiss(cache, {20, 3});
-    AssertReadMiss(cache, {0, 3});
-    AssertReadMiss(cache, {25, 2});
+    AssertReadMiss({20, 3}, &cache);
+    AssertReadMiss({0, 3}, &cache);
+    AssertReadMiss({25, 2}, &cache);
 }
 
 // Test that a read spanning several adjacent cache entries is served from the
@@ -122,13 +122,13 @@ TEST(TestReadAheadCache, TestMultiSegmentContiguousHit) {
     auto& cache = *env.cache;
 
     // Spans all three entries.
-    AssertReadEquals(cache, {5, 20}, "fghijklmnopqrstuvwxy");
+    AssertReadEquals({5, 20}, "fghijklmnopqrstuvwxy", &cache);
 
     // Spans the first two entries only, trimming both ends of the run.
-    AssertReadEquals(cache, {5, 10}, "fghijklmno");
+    AssertReadEquals({5, 10}, "fghijklmno", &cache);
 
     // Runs past the end of the last entry: no contiguous cover, a miss.
-    AssertReadMiss(cache, {5, 21});
+    AssertReadMiss({5, 21}, &cache);
 
     // A multi-segment hit counts once with the full requested length.
     std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
@@ -153,8 +153,8 @@ TEST(TestReadAheadCache, TestRepeatedReadCacheReuse) {
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {7, 5}});
     auto& cache = *env.cache;
 
-    AssertReadEquals(cache, {0, 5}, "abcde");
-    AssertReadEquals(cache, {0, 5}, "abcde");
+    AssertReadEquals({0, 5}, "abcde", &cache);
+    AssertReadEquals({0, 5}, "abcde", &cache);
 }
 
 // Test cache eviction when buffer size is limited.
@@ -165,13 +165,13 @@ TEST(TestReadAheadCache, TestCacheEviction) {
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}, {16, 5}});
     auto& cache = *env.cache;
 
-    AssertReadEquals(cache, {0, 5}, "abcde");
+    AssertReadEquals({0, 5}, "abcde", &cache);
 
     // Reading another range should evict the first one due to buffer size limit.
-    AssertReadEquals(cache, {8, 5}, "ijklm");
+    AssertReadEquals({8, 5}, "ijklm", &cache);
 
     // The first range should now be a cache miss.
-    AssertReadMiss(cache, {0, 5});
+    AssertReadMiss({0, 5}, &cache);
 }
 
 // Test that Read() hits and misses are recorded in the cache metrics.
@@ -182,9 +182,9 @@ TEST(TestReadAheadCache, TestMetrics) {
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}});
     auto& cache = *env.cache;
 
-    AssertReadEquals(cache, {0, 5}, "abcde");
+    AssertReadEquals({0, 5}, "abcde", &cache);
     // Out of any cached range: a miss.
-    AssertReadMiss(cache, {20, 3});
+    AssertReadMiss({20, 3}, &cache);
 
     std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
     cache.CollectMetrics(&metrics);
@@ -222,12 +222,12 @@ TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});
     auto& cache = *env.cache;
 
-    AssertReadEquals(cache, {0, 5}, "abcde");
+    AssertReadEquals({0, 5}, "abcde", &cache);
 
     cache.ReleaseBuffers();
 
     // The previously cached range is gone: the read now misses.
-    AssertReadMiss(cache, {0, 5});
+    AssertReadMiss({0, 5}, &cache);
 
     std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
     cache.CollectMetrics(&metrics);
@@ -282,10 +282,8 @@ TEST(TestReadAheadCache, TestPrefetchIOErrorPropagation) {
         paimon::ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(0, paimon::IOHook::Mode::RETURN_ERROR);
         std::string dest(5, 'X');
-        Result<bool> result = env.cache->Read({0, 5}, dest.data());
-        ASSERT_FALSE(result.ok());
-        EXPECT_NE(std::string::npos,
-                  result.status().ToString().find("io hook triggered io error at position"));
+        ASSERT_NOK_WITH_MSG(env.cache->Read({0, 5}, dest.data()),
+                            "io hook triggered io error at position");
     }
 
     // Several adjacent entries: the error of any segment aborts the read.
@@ -294,10 +292,8 @@ TEST(TestReadAheadCache, TestPrefetchIOErrorPropagation) {
         paimon::ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(1, paimon::IOHook::Mode::RETURN_ERROR);
         std::string dest(20, 'X');
-        Result<bool> result = env.cache->Read({0, 20}, dest.data());
-        ASSERT_FALSE(result.ok());
-        EXPECT_NE(std::string::npos,
-                  result.status().ToString().find("io hook triggered io error at position"));
+        ASSERT_NOK_WITH_MSG(env.cache->Read({0, 20}, dest.data()),
+                            "io hook triggered io error at position");
     }
 }
 
@@ -317,12 +313,12 @@ TEST(TestReadAheadCache, TestWarmupPrefetchesBeforeFirstRead) {
     // Any new IO fails: the warmed-up reads must be served without fetching.
     io_hook->Reset(0, paimon::IOHook::Mode::RETURN_ERROR);
 
-    AssertReadEquals(*env1.cache, {0, 5}, "abcde");
-    AssertReadEquals(*env1.cache, {8, 5}, "ijklm");
+    AssertReadEquals({0, 5}, "abcde", env1.cache.get());
+    AssertReadEquals({8, 5}, "ijklm", env1.cache.get());
 
     // Without Warmup() the first Read() starts the prefetch and sees the error.
     std::string dest(5, 'X');
-    ASSERT_FALSE(env2.cache->Read({0, 5}, dest.data()).ok());
+    ASSERT_NOK(env2.cache->Read({0, 5}, dest.data()));
 }
 
 // Warmup() without any pending ranges is a safe no-op.
@@ -332,7 +328,7 @@ TEST(TestReadAheadCache, TestWarmupWithEmptyRanges) {
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {});
     env.cache->Warmup();
-    AssertReadMiss(*env.cache, {0, 5});
+    AssertReadMiss({0, 5}, env.cache.get());
 }
 
 // Test that pre_buffer_limit truncates the prefetch window: only ranges within
@@ -348,17 +344,17 @@ TEST(TestReadAheadCache, TestPreBufferWindowLimit) {
     paimon::ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
     io_hook->Clear();
 
-    AssertReadEquals(cache, {0, 10}, "abcdefghij");
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
     // The second range did not fit into the window: only one prefetch IO.
     ASSERT_EQ(io_hook->IOCount(), 1);
 
-    AssertReadEquals(cache, {16, 10}, "qrstuvwxyz");
+    AssertReadEquals({16, 10}, "qrstuvwxyz", &cache);
     // The second read triggered exactly one more prefetch IO.
     ASSERT_EQ(io_hook->IOCount(), 2);
 
     // The range is cached now: re-reading it issues no IO at all.
     io_hook->Clear();
-    AssertReadEquals(cache, {16, 10}, "qrstuvwxyz");
+    AssertReadEquals({16, 10}, "qrstuvwxyz", &cache);
     ASSERT_EQ(io_hook->IOCount(), 0);
 }
 
@@ -374,7 +370,7 @@ TEST(TestReadAheadCache, TestDoubleInit) {
     ASSERT_FALSE(status.ok());
 
     // The original ranges still work.
-    AssertReadEquals(cache, {0, 5}, "abcde");
+    AssertReadEquals({0, 5}, "abcde", &cache);
 }
 
 // Test that the cache can be re-initialized after Reset() and serves the new ranges.
@@ -385,14 +381,14 @@ TEST(TestReadAheadCache, TestReinitAfterReset) {
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});
     auto& cache = *env.cache;
 
-    AssertReadEquals(cache, {0, 5}, "abcde");
+    AssertReadEquals({0, 5}, "abcde", &cache);
 
     cache.Reset();
     ASSERT_OK(cache.Init({{3, 4}}));
-    AssertReadEquals(cache, {3, 4}, "defg");
+    AssertReadEquals({3, 4}, "defg", &cache);
 
     // The old ranges are gone.
-    AssertReadMiss(cache, {20, 2});
+    AssertReadMiss({20, 2}, &cache);
 }
 
 // Test FIFO eviction when a batch of new entries is merged in: old entries are
@@ -408,17 +404,17 @@ TEST(TestReadAheadCache, TestEvictionOnBatchInsert) {
 
     // First batch: reading {0,3} prefetches {0,3} and {5,3} (6 bytes fit the
     // 8-byte window; {10,4} would exceed it).
-    AssertReadEquals(cache, {0, 3}, "abc");
+    AssertReadEquals({0, 3}, "abc", &cache);
 
     // Reading {10,4} prefetches the second batch {10,4} + {15,4} (8 bytes).
     // Together with the existing 6 bytes it exceeds the 6-byte buffer limit,
     // so both old entries are evicted and the oversized batch is kept.
-    AssertReadEquals(cache, {10, 4}, "klmn");
-    AssertReadEquals(cache, {15, 4}, "pqrs");
+    AssertReadEquals({10, 4}, "klmn", &cache);
+    AssertReadEquals({15, 4}, "pqrs", &cache);
 
     // The evicted ranges now miss.
-    AssertReadMiss(cache, {0, 3});
-    AssertReadMiss(cache, {5, 3});
+    AssertReadMiss({0, 3}, &cache);
+    AssertReadMiss({5, 3}, &cache);
 }
 
 // Test that Init() merges ranges separated by a small hole, so a read
@@ -431,7 +427,7 @@ TEST(TestReadAheadCache, TestInitCoalescesSmallHoles) {
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {6, 5}});
     auto& cache = *env.cache;
 
-    AssertReadEquals(cache, {4, 3}, "efg");
+    AssertReadEquals({4, 3}, "efg", &cache);
 }
 
 // CollectMetrics() with a null metrics output is a safe no-op.
