@@ -120,7 +120,7 @@ class PAIMON_EXPORT ReadAheadCache {
     /// `ReadAheadCacheMetrics`. Only reads issued through Read() are counted
     /// as hits/misses; prefetch fetches dispatched by the cache itself are
     /// counted in the fetch counters instead.
-    /// @param metrics[out] The metrics to write the counters into. A null
+    /// @param metrics The metrics to write the counters into. A null
     /// pointer or a null shared pointer is a no-op.
     void CollectMetrics(std::shared_ptr<Metrics>* metrics) const;
 
