@@ -188,8 +188,8 @@ class FileReaderWrapperTest : public ::testing::Test {
     Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapperOnStream(
         std::shared_ptr<InputStream> in, int64_t wrapper_batch_size = 0) {
         PAIMON_ASSIGN_OR_RAISE(int64_t file_length, in->Length());
-        auto input_stream = std::make_unique<ArrowInputStreamAdapter>(std::move(in), file_length,
-                                                                      arrow_pool_);
+        auto input_stream =
+            std::make_unique<ArrowInputStreamAdapter>(std::move(in), file_length, arrow_pool_);
         ::parquet::arrow::FileReaderBuilder file_reader_builder;
         ::parquet::ReaderProperties reader_properties;
         reader_properties.enable_buffered_stream();

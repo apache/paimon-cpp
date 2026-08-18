@@ -399,13 +399,11 @@ Status FileReaderWrapper::PrepareForReadingLazy(
 
 std::vector<::arrow::io::ReadRange> FileReaderWrapper::CollectPreBufferRanges(
     const std::vector<int32_t>& column_indices, uint64_t start_idx) {
-    return DoCollectPreBufferRanges(column_indices, /*skip_read_range_excluded=*/true,
-                                    start_idx);
+    return DoCollectPreBufferRanges(column_indices, /*skip_read_range_excluded=*/true, start_idx);
 }
 
 std::vector<::arrow::io::ReadRange> FileReaderWrapper::DoCollectPreBufferRanges(
-    const std::vector<int32_t>& column_indices, bool skip_read_range_excluded,
-    uint64_t start_idx) {
+    const std::vector<int32_t>& column_indices, bool skip_read_range_excluded, uint64_t start_idx) {
     std::vector<::arrow::io::ReadRange> ranges;
     auto file_metadata = file_reader_->parquet_reader()->metadata();
 
