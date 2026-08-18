@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <future>
 #include <shared_mutex>
@@ -201,6 +202,11 @@ Status ReadAheadCache::Impl::Init(std::vector<ByteRange>&& ranges) {
     for (auto& is_cached : is_cached_) {
         is_cached.store(false);
     }
+    for (const auto& range : pending_ranges_) {
+        fprintf(stderr, "[ReadAheadCache] init pending range: offset=%llu, length=%llu\n",
+                static_cast<unsigned long long>(range.offset),
+                static_cast<unsigned long long>(range.length));
+    }
     is_initialized_ = true;
     return Status::OK();
 }
@@ -343,6 +349,9 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     std::vector<RangeCacheEntry> covering = FindCoveringEntries(range);
     if (covering.empty()) {
         CountMiss(range.length);
+        fprintf(stderr, "[ReadAheadCache] read MISS: offset=%llu, length=%llu\n",
+                static_cast<unsigned long long>(range.offset),
+                static_cast<unsigned long long>(range.length));
         return false;
     }
     // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
@@ -353,6 +362,9 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     // The data copy runs OUTSIDE the lock for the same reason.
     CopyRangeFromEntries(covering, range, dest);
     CountHit(range.length);
+    fprintf(stderr, "[ReadAheadCache] read HIT: offset=%llu, length=%llu\n",
+            static_cast<unsigned long long>(range.offset),
+            static_cast<unsigned long long>(range.length));
     return true;
 }
 
@@ -371,6 +383,9 @@ std::vector<RangeCacheEntry> ReadAheadCache::Impl::MakeCacheEntries(
             [promise, buffer](Status status) mutable { promise->set_value(status); });
         io_count_.fetch_add(1, std::memory_order_relaxed);
         io_bytes_.fetch_add(range.length, std::memory_order_relaxed);
+        fprintf(stderr, "[ReadAheadCache] prefetch IO: offset=%llu, length=%llu\n",
+                static_cast<unsigned long long>(range.offset),
+                static_cast<unsigned long long>(range.length));
         new_entries.emplace_back(range, std::move(buffer), std::move(future));
     }
     return new_entries;

@@ -339,7 +339,7 @@ void PrefetchFileBatchReaderImpl::Workloop() {
                 // Init() only registers the ranges, so without this the first
                 // cache fetch races the readers' first reads instead of running
                 // ahead of them.
-                cache_->Warmup();
+                // cache_->Warmup();
             }
         } else {
             SetReadStatus(read_ranges.status());
