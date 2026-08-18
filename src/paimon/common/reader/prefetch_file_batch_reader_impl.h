@@ -57,6 +57,8 @@ class FileSystem;
 class Executor;
 class Predicate;
 class Metrics;
+struct PrefetchMetricsState;
+struct PrefetchIoMetricsState;
 
 class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
  public:
@@ -119,6 +121,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
+        const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
         const std::shared_ptr<MemoryPool>& pool);
 
     Status CleanUp();
@@ -178,5 +181,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     const uint32_t prefetch_queue_capacity_;
     const bool enable_adaptive_prefetch_strategy_;
     int32_t parallel_num_;
+    std::shared_ptr<PrefetchMetricsState> prefetch_metrics_;
+    std::shared_ptr<PrefetchIoMetricsState> io_metrics_;
 };
 }  // namespace paimon

@@ -47,6 +47,10 @@ class RealtimeTableScan : public TableScan {
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
 
+    std::shared_ptr<Metrics> GetMetrics() const override {
+        return disk_scan_->GetMetrics();
+    }
+
  private:
     using MemoryViewMap = std::map<RealtimePartitionBucket, RealtimePartitionBucketView>;
 

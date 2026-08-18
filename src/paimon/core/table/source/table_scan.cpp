@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
@@ -186,6 +187,10 @@ class TableScanImpl {
 Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanContext>& context);
 
 }  // namespace
+
+std::shared_ptr<Metrics> TableScan::GetMetrics() const {
+    return std::make_shared<MetricsImpl>();
+}
 
 Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {
     if (context == nullptr) {
