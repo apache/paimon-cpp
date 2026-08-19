@@ -21,6 +21,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "arrow/c/bridge.h"
@@ -300,7 +301,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyFileStoreWrite::CreateFilesReader
     auto read = std::make_unique<RawFileSplitRead>(file_store_path_factory_, internal_read_context,
                                                    pool_, compact_executor_);
 
-    return read->CreateReader(partition, bucket, files, dv_factory);
+    return read->CreateReader(partition, bucket, files, dv_factory,
+                              /*local_row_ranges=*/std::nullopt);
 }
 
 }  // namespace paimon

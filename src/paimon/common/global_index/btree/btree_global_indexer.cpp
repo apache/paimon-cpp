@@ -18,10 +18,12 @@
  */
 #include "paimon/common/global_index/btree/btree_global_indexer.h"
 
+#include <climits>
 #include <memory>
 #include <string>
 
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "paimon/common/compression/block_compression_factory.h"
 #include "paimon/common/global_index/btree/btree_file_footer.h"
 #include "paimon/common/global_index/btree/btree_global_index_writer.h"
@@ -41,6 +43,7 @@
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/utils/roaring_bitmap64.h"
+
 namespace paimon {
 Result<std::unique_ptr<BTreeGlobalIndexer>> BTreeGlobalIndexer::Create(
     const std::map<std::string, std::string>& options) {
@@ -123,10 +126,17 @@ Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
         }
         read_buffer_size = static_cast<int32_t>(tmp_buffer_size);
     }
-    // TODO(lisizhuo.lsz): Allow users to specify an executor
-    std::shared_ptr<Executor> executor = CreateDefaultExecutor();
-    return std::make_shared<LazyFilteredBTreeReader>(read_buffer_size, files, key_type, file_reader,
-                                                     cache_manager_, pool, executor);
+    // UnionGlobalIndexReader evaluates one payload inline. Preserve the existing private pool only
+    // when multiple payloads can submit work.
+    std::shared_ptr<Executor> executor;
+    if (files.size() > 1) {
+        executor = CreateDefaultExecutor();
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<LazyFilteredBTreeReader> reader,
+        LazyFilteredBTreeReader::Create(read_buffer_size, files, key_type, file_reader,
+                                        cache_manager_, pool, executor));
+    return std::shared_ptr<GlobalIndexReader>(std::move(reader));
 }
 
 }  // namespace paimon

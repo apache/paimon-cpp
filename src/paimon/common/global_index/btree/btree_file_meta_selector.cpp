@@ -19,21 +19,69 @@
 
 #include "paimon/common/global_index/btree/btree_file_meta_selector.h"
 
+#include "fmt/format.h"
 #include "paimon/common/memory/memory_slice.h"
 
 namespace paimon {
-BTreeFileMetaSelector::BTreeFileMetaSelector(const std::vector<GlobalIndexIOMeta>& files,
-                                             const std::shared_ptr<arrow::DataType>& key_type,
-                                             const std::shared_ptr<MemoryPool>& pool)
-    : key_type_(key_type),
-      pool_(pool),
-      comparator_(KeySerializer::CreateComparator(key_type, pool)) {
-    files_.reserve(files.size());
-    for (const auto& file : files) {
-        auto index_meta = BTreeIndexMeta::Deserialize(file.metadata, pool.get());
-        files_.emplace_back(file, std::move(index_meta));
+Result<std::unique_ptr<BTreeFileMetaSelector>> BTreeFileMetaSelector::Create(
+    const std::vector<GlobalIndexIOMeta>& files, const std::shared_ptr<arrow::DataType>& key_type,
+    const std::shared_ptr<MemoryPool>& pool) {
+    if (key_type == nullptr) {
+        return Status::Invalid("Cannot create a BTree file metadata selector without a key type.");
     }
+    if (pool == nullptr) {
+        return Status::Invalid(
+            "Cannot create a BTree file metadata selector without a memory pool.");
+    }
+    std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<BTreeIndexMeta>>> decoded_files;
+    decoded_files.reserve(files.size());
+    MemorySlice::SliceComparator comparator = KeySerializer::CreateComparator(key_type, pool);
+    for (const auto& file : files) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BTreeIndexMeta> index_meta,
+                               BTreeIndexMeta::Deserialize(file.metadata, pool.get()));
+        bool has_first_key = index_meta->FirstKey() != nullptr;
+        bool has_last_key = index_meta->LastKey() != nullptr;
+        if (has_first_key != has_last_key) {
+            return Status::Invalid(fmt::format(
+                "BTree index metadata for {} must contain both boundary keys or neither.",
+                file.file_path));
+        }
+        if (!has_first_key && !index_meta->HasNulls()) {
+            return Status::Invalid(
+                fmt::format("BTree index metadata for {} has no boundary keys or null values.",
+                            file.file_path));
+        }
+        if (index_meta->FirstKey() != nullptr) {
+            PAIMON_RETURN_NOT_OK(KeySerializer::ValidateSerializedKey(
+                WrapKeySlice(index_meta->FirstKey()), key_type));
+        }
+        if (index_meta->LastKey() != nullptr) {
+            PAIMON_RETURN_NOT_OK(KeySerializer::ValidateSerializedKey(
+                WrapKeySlice(index_meta->LastKey()), key_type));
+        }
+        if (index_meta->FirstKey() != nullptr && index_meta->LastKey() != nullptr) {
+            PAIMON_ASSIGN_OR_RAISE(int32_t comparison,
+                                   comparator(WrapKeySlice(index_meta->FirstKey()),
+                                              WrapKeySlice(index_meta->LastKey())));
+            if (comparison > 0) {
+                return Status::Invalid(fmt::format(
+                    "BTree index metadata for {} has a first key greater than its last key.",
+                    file.file_path));
+            }
+        }
+        decoded_files.emplace_back(file, std::move(index_meta));
+    }
+    return std::unique_ptr<BTreeFileMetaSelector>(
+        new BTreeFileMetaSelector(std::move(decoded_files), key_type, pool));
 }
+
+BTreeFileMetaSelector::BTreeFileMetaSelector(
+    std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<BTreeIndexMeta>>> files,
+    std::shared_ptr<arrow::DataType> key_type, std::shared_ptr<MemoryPool> pool)
+    : files_(std::move(files)),
+      key_type_(std::move(key_type)),
+      pool_(std::move(pool)),
+      comparator_(KeySerializer::CreateComparator(key_type_, pool_)) {}
 
 Result<std::vector<GlobalIndexIOMeta>> BTreeFileMetaSelector::VisitIsNotNull() {
     return Filter([](const BTreeIndexMeta& meta) -> Result<bool> { return !meta.OnlyNulls(); });
@@ -208,7 +256,9 @@ MemorySlice BTreeFileMetaSelector::WrapKeySlice(const std::shared_ptr<Bytes>& ke
 Result<MemorySlice> BTreeFileMetaSelector::SerializeLiteral(const Literal& literal) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes,
                            KeySerializer::SerializeKey(literal, key_type_, pool_.get()));
-    return MemorySlice::Wrap(bytes);
+    MemorySlice slice = MemorySlice::Wrap(bytes);
+    PAIMON_RETURN_NOT_OK(KeySerializer::ValidateSerializedKey(slice, key_type_));
+    return slice;
 }
 
 }  // namespace paimon

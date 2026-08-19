@@ -40,13 +40,12 @@
 namespace paimon {
 class LazyFilteredBTreeReader : public GlobalIndexReader {
  public:
-    LazyFilteredBTreeReader(std::optional<int32_t> read_buffer_size,
-                            const std::vector<GlobalIndexIOMeta>& files,
-                            const std::shared_ptr<arrow::DataType>& key_type,
-                            const std::shared_ptr<GlobalIndexFileReader>& file_reader,
-                            const std::shared_ptr<CacheManager>& cache_manager,
-                            const std::shared_ptr<MemoryPool>& pool,
-                            const std::shared_ptr<Executor>& executor);
+    static Result<std::shared_ptr<LazyFilteredBTreeReader>> Create(
+        std::optional<int32_t> read_buffer_size, const std::vector<GlobalIndexIOMeta>& files,
+        const std::shared_ptr<arrow::DataType>& key_type,
+        const std::shared_ptr<GlobalIndexFileReader>& file_reader,
+        const std::shared_ptr<CacheManager>& cache_manager, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<Executor>& executor);
 
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override;
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNull() override;
@@ -80,6 +79,13 @@ class LazyFilteredBTreeReader : public GlobalIndexReader {
     }
 
  private:
+    LazyFilteredBTreeReader(std::optional<int32_t> read_buffer_size,
+                            std::unique_ptr<BTreeFileMetaSelector> file_selector,
+                            std::shared_ptr<arrow::DataType> key_type,
+                            std::shared_ptr<GlobalIndexFileReader> file_reader,
+                            std::shared_ptr<CacheManager> cache_manager,
+                            std::shared_ptr<MemoryPool> pool, std::shared_ptr<Executor> executor);
+
     using SelectAction = std::function<Result<std::vector<GlobalIndexIOMeta>>()>;
     using ReaderAction = std::function<Result<std::shared_ptr<GlobalIndexResult>>(
         const std::shared_ptr<GlobalIndexReader>&)>;
@@ -96,7 +102,7 @@ class LazyFilteredBTreeReader : public GlobalIndexReader {
  private:
     std::optional<int32_t> read_buffer_size_;
     std::shared_ptr<MemoryPool> pool_;
-    BTreeFileMetaSelector file_selector_;
+    std::unique_ptr<BTreeFileMetaSelector> file_selector_;
     std::shared_ptr<arrow::DataType> key_type_;
     std::shared_ptr<GlobalIndexFileReader> file_reader_;
     std::shared_ptr<CacheManager> cache_manager_;

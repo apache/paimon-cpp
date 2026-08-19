@@ -27,10 +27,12 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/table/source/fallback_table_read.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -41,6 +43,41 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+class TrackingTableRead : public TableRead {
+ public:
+    explicit TrackingTableRead(const std::shared_ptr<MemoryPool>& pool) : TableRead(pool) {}
+
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const std::shared_ptr<Split>& split) override {
+        last_split_ = split;
+        return std::unique_ptr<BatchReader>();
+    }
+
+    std::shared_ptr<Split> last_split_;
+};
+}  // namespace
+
+TEST(FallbackTableReadTest, RoutesIndexedSplitToMainTable) {
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    auto main_table = std::make_unique<TrackingTableRead>(pool);
+    auto fallback_table = std::make_unique<TrackingTableRead>(pool);
+    TrackingTableRead* main_table_ptr = main_table.get();
+    TrackingTableRead* fallback_table_ptr = fallback_table.get();
+    FallbackTableRead table_read(std::move(main_table), std::move(fallback_table), pool);
+
+    DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0, /*bucket_path=*/"",
+                                   /*data_files=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> data_split,
+                         builder.IsStreaming(false).RawConvertible(true).Build());
+    std::shared_ptr<Split> indexed_split =
+        std::make_shared<IndexedSplitImpl>(data_split, std::vector<Range>());
+
+    ASSERT_OK(table_read.CreateReader(indexed_split));
+    ASSERT_EQ(indexed_split, main_table_ptr->last_split_);
+    ASSERT_EQ(nullptr, fallback_table_ptr->last_split_);
+}
+
 TEST(FallbackDataSplitTest, TestDeserialize) {
     std::string file_name = paimon::test::GetDataDir() +
                             "/parquet/append_table_with_append_pt_branch.db/"

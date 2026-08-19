@@ -208,6 +208,42 @@ TEST_F(KeySerializerTest, SerializeAndDeserializeAllTypes) {
     }
 }
 
+TEST_F(KeySerializerTest, RejectsMalformedSerializedKeys) {
+    auto wrap = [this](const std::string& value) {
+        return MemorySlice::Wrap(std::make_shared<Bytes>(value, pool_.get()));
+    };
+
+    ASSERT_NOK(KeySerializer::ValidateSerializedKey(wrap(std::string(3, '\0')), arrow::int32()));
+    ASSERT_NOK(
+        KeySerializer::DeserializeKey(wrap(std::string(3, '\0')), arrow::int32(), pool_.get()));
+
+    std::string invalid_boolean(1, static_cast<char>(2));
+    ASSERT_NOK(KeySerializer::ValidateSerializedKey(wrap(invalid_boolean), arrow::boolean()));
+
+    auto nanos_timestamp = arrow::timestamp(arrow::TimeUnit::NANO);
+    std::string unterminated_timestamp(9, '\0');
+    unterminated_timestamp[8] = static_cast<char>(0x80);
+    ASSERT_NOK(KeySerializer::ValidateSerializedKey(wrap(unterminated_timestamp), nanos_timestamp));
+
+    std::string out_of_range_timestamp(11, '\0');
+    out_of_range_timestamp[8] = static_cast<char>(0xC0);
+    out_of_range_timestamp[9] = static_cast<char>(0x84);
+    out_of_range_timestamp[10] = static_cast<char>(0x3D);
+    ASSERT_NOK(KeySerializer::ValidateSerializedKey(wrap(out_of_range_timestamp), nanos_timestamp));
+
+    auto non_compact_decimal = arrow::decimal128(25, 3);
+    ASSERT_NOK(KeySerializer::ValidateSerializedKey(wrap(""), non_compact_decimal));
+    ASSERT_NOK(
+        KeySerializer::ValidateSerializedKey(wrap(std::string(17, '\0')), non_compact_decimal));
+
+    auto narrow_decimal = arrow::decimal128(1, 0);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> out_of_range_decimal,
+                         KeySerializer::SerializeKey(Literal(Decimal::FromUnscaledLong(10, 1, 0)),
+                                                     narrow_decimal, pool_.get()));
+    ASSERT_NOK(KeySerializer::ValidateSerializedKey(MemorySlice::Wrap(out_of_range_decimal),
+                                                    narrow_decimal));
+}
+
 TEST_F(KeySerializerTest, CreateComparator) {
     // INT comparator
     {

@@ -34,9 +34,9 @@ namespace paimon {
 /// Selects candidate BTree index files based on filter predicates.
 class BTreeFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOMeta>> {
  public:
-    BTreeFileMetaSelector(const std::vector<GlobalIndexIOMeta>& files,
-                          const std::shared_ptr<arrow::DataType>& key_type,
-                          const std::shared_ptr<MemoryPool>& pool);
+    static Result<std::unique_ptr<BTreeFileMetaSelector>> Create(
+        const std::vector<GlobalIndexIOMeta>& files,
+        const std::shared_ptr<arrow::DataType>& key_type, const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::vector<GlobalIndexIOMeta>> VisitIsNotNull() override;
     Result<std::vector<GlobalIndexIOMeta>> VisitIsNull() override;
@@ -55,6 +55,10 @@ class BTreeFileMetaSelector : public FunctionVisitor<std::vector<GlobalIndexIOMe
     Result<std::vector<GlobalIndexIOMeta>> VisitLike(const Literal& literal) override;
 
  private:
+    BTreeFileMetaSelector(
+        std::vector<std::pair<GlobalIndexIOMeta, std::shared_ptr<BTreeIndexMeta>>> files,
+        std::shared_ptr<arrow::DataType> key_type, std::shared_ptr<MemoryPool> pool);
+
     using MetaPredicate = std::function<Result<bool>(const BTreeIndexMeta&)>;
 
     Result<std::vector<GlobalIndexIOMeta>> Filter(const MetaPredicate& predicate) const;

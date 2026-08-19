@@ -19,19 +19,122 @@
 
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
 
+#include <set>
+#include <utility>
+
 #include "fmt/format.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/predicate/leaf_predicate.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/predicate_utils.h"
 
 namespace paimon {
+namespace {
+void FlattenChildren(const std::shared_ptr<CompoundPredicate>& compound_predicate,
+                     std::vector<std::shared_ptr<Predicate>>* flattened) {
+    for (const std::shared_ptr<Predicate>& child : compound_predicate->Children()) {
+        auto compound_child = std::dynamic_pointer_cast<CompoundPredicate>(child);
+        if (compound_child != nullptr && compound_child->GetFunction().GetType() ==
+                                             compound_predicate->GetFunction().GetType()) {
+            FlattenChildren(compound_child, flattened);
+        } else {
+            flattened->push_back(child);
+        }
+    }
+}
+
+/// A predicate is null-rejecting when it cannot match a row whose tested field is null.
+/// Under SQL three-valued logic every comparison and match predicate rejects null; only
+/// IS NULL accepts it, and IS NOT NULL is the predicate being pruned.
+bool IsNullRejecting(const std::shared_ptr<Predicate>& predicate) {
+    auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate);
+    if (leaf_predicate == nullptr) {
+        return false;
+    }
+    switch (leaf_predicate->GetFunction().GetType()) {
+        case Function::Type::EQUAL:
+        case Function::Type::NOT_EQUAL:
+        case Function::Type::GREATER_THAN:
+        case Function::Type::GREATER_OR_EQUAL:
+        case Function::Type::LESS_THAN:
+        case Function::Type::LESS_OR_EQUAL:
+        case Function::Type::IN:
+        case Function::Type::NOT_IN:
+        case Function::Type::STARTS_WITH:
+        case Function::Type::ENDS_WITH:
+        case Function::Type::CONTAINS:
+        case Function::Type::LIKE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsIsNotNull(const std::shared_ptr<Predicate>& predicate) {
+    auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate);
+    return leaf_predicate != nullptr &&
+           leaf_predicate->GetFunction().GetType() == Function::Type::IS_NOT_NULL;
+}
+}  // namespace
+
 Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexEvaluatorImpl::Evaluate(
     const std::shared_ptr<Predicate>& predicate) {
     std::shared_ptr<GlobalIndexResult> compound_result;
     if (predicate) {
-        PAIMON_ASSIGN_OR_RAISE(compound_result, EvaluatePredicate(predicate));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> normalized_predicate,
+                               NormalizePredicate(predicate));
+        PAIMON_ASSIGN_OR_RAISE(compound_result, EvaluatePredicate(normalized_predicate));
     }
     return compound_result;
+}
+
+Result<std::shared_ptr<Predicate>> GlobalIndexEvaluatorImpl::NormalizePredicate(
+    const std::shared_ptr<Predicate>& predicate) {
+    auto compound_predicate = std::dynamic_pointer_cast<CompoundPredicate>(predicate);
+    if (compound_predicate == nullptr) {
+        return predicate;
+    }
+    std::vector<std::shared_ptr<Predicate>> children;
+    FlattenChildren(compound_predicate, &children);
+
+    bool is_and = compound_predicate->GetFunction().GetType() == Function::Type::AND;
+    if (is_and) {
+        std::set<std::string> constrained_fields;
+        for (const std::shared_ptr<Predicate>& child : children) {
+            auto leaf = std::dynamic_pointer_cast<LeafPredicate>(child);
+            if (leaf != nullptr && IsNullRejecting(child)) {
+                constrained_fields.insert(leaf->FieldName());
+            }
+        }
+        if (!constrained_fields.empty()) {
+            std::vector<std::shared_ptr<Predicate>> pruned;
+            pruned.reserve(children.size());
+            for (const std::shared_ptr<Predicate>& child : children) {
+                auto leaf = std::dynamic_pointer_cast<LeafPredicate>(child);
+                if (leaf != nullptr && IsIsNotNull(child) &&
+                    constrained_fields.count(leaf->FieldName()) > 0) {
+                    continue;
+                }
+                pruned.push_back(child);
+            }
+            children = std::move(pruned);
+        }
+    }
+
+    std::vector<std::shared_ptr<Predicate>> normalized_children;
+    normalized_children.reserve(children.size());
+    for (const std::shared_ptr<Predicate>& child : children) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> normalized_child,
+                               NormalizePredicate(child));
+        normalized_children.push_back(std::move(normalized_child));
+    }
+    if (normalized_children.size() == 1) {
+        return normalized_children[0];
+    }
+    if (is_and) {
+        return PredicateBuilder::And(normalized_children);
+    }
+    return PredicateBuilder::Or(normalized_children);
 }
 
 Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexEvaluatorImpl::GetIndexReaders(

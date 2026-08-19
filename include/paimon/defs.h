@@ -522,6 +522,18 @@ struct PAIMON_EXPORT Options {
     /// "global-index.external-path" - Global index root directory, if not set, the global index
     /// files will be stored under the index directory.
     static const char GLOBAL_INDEX_EXTERNAL_PATH[];
+    /// "pk-btree.index.columns" - Comma-separated columns indexed by primary-key BTree indexes.
+    /// No default value.
+    static const char PK_BTREE_INDEX_COLUMNS[];
+    /// "pk-bitmap.index.columns" - Comma-separated columns indexed by primary-key Bitmap indexes.
+    /// No default value.
+    static const char PK_BITMAP_INDEX_COLUMNS[];
+    /// "pk-vector.index.columns" - Comma-separated VECTOR columns indexed by primary-key vector
+    /// indexes. No default value.
+    static const char PK_VECTOR_INDEX_COLUMNS[];
+    /// "pk-full-text.index.columns" - Comma-separated character columns indexed by primary-key
+    /// full-text indexes. No default value.
+    static const char PK_FULL_TEXT_INDEX_COLUMNS[];
     /// "aggregation.remove-record-on-delete" - Whether to remove the whole row in aggregation
     /// engine when delete records are received. Default value is "false".
     static const char AGGREGATION_REMOVE_RECORD_ON_DELETE[];

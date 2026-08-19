@@ -783,7 +783,8 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        auto meta = BTreeIndexMeta::Deserialize(meta_bytes, pool_.get());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
+                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());
@@ -808,7 +809,8 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        auto meta = BTreeIndexMeta::Deserialize(meta_bytes, pool_.get());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
+                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());
@@ -833,7 +835,8 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        auto meta = BTreeIndexMeta::Deserialize(meta_bytes, pool_.get());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
+                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());
@@ -848,7 +851,8 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        auto meta = BTreeIndexMeta::Deserialize(meta_bytes, pool_.get());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
+                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->FirstKey());
@@ -870,7 +874,8 @@ TEST_F(BTreeCompatibilityTest, MetaDeserialization) {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
 
-        auto meta = BTreeIndexMeta::Deserialize(meta_bytes, pool_.get());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
+                             BTreeIndexMeta::Deserialize(meta_bytes, pool_.get()));
         ASSERT_TRUE(meta);
 
         ASSERT_TRUE(meta->HasNulls());

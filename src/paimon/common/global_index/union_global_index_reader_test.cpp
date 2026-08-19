@@ -220,6 +220,10 @@ class DeferAfterFirstExecutor : public Executor {
         return 1;
     }
 
+    uint32_t SubmissionCount() const {
+        return submission_count_;
+    }
+
     void RunPendingTasks() {
         while (!pending_tasks_.empty()) {
             std::function<void()> task = std::move(pending_tasks_.front());
@@ -265,13 +269,15 @@ class UnionGlobalIndexReaderTest : public ::testing::Test {
 TEST_F(UnionGlobalIndexReaderTest, TestSingleReaderUnion) {
     auto reader = std::make_shared<FakeReader>();
     reader->SetDefaultResult({1, 2, 3});
+    auto executor = std::make_shared<DeferAfterFirstExecutor>();
 
     std::vector<std::shared_ptr<GlobalIndexReader>> readers = {reader};
-    UnionGlobalIndexReader union_reader(std::move(readers), nullptr);
+    UnionGlobalIndexReader union_reader(std::move(readers), executor);
 
     ASSERT_OK_AND_ASSIGN(auto result, union_reader.VisitIsNotNull());
     CheckResult(result, {1, 2, 3});
     ASSERT_EQ(reader->InvocationCount(), 1);
+    ASSERT_EQ(executor->SubmissionCount(), 0);
 }
 
 TEST_F(UnionGlobalIndexReaderTest, TestMultipleReadersUnionSequential) {

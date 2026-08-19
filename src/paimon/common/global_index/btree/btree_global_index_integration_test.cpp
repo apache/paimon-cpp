@@ -16,6 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include <cstdint>
+#include <functional>
+
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
@@ -487,8 +490,8 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteEmptyStringKeyMetadata) {
     ASSERT_OK_AND_ASSIGN(auto metas, writer->Finish());
     ASSERT_EQ(metas.size(), 1);
 
-    std::shared_ptr<BTreeIndexMeta> meta =
-        BTreeIndexMeta::Deserialize(metas[0].metadata, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
+                         BTreeIndexMeta::Deserialize(metas[0].metadata, pool_.get()));
     ASSERT_TRUE(meta->FirstKey());
     ASSERT_EQ(meta->FirstKey()->size(), 0);
     ASSERT_TRUE(meta->LastKey());

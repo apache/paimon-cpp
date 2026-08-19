@@ -87,99 +87,111 @@ class BTreeFileMetaSelectorTest : public ::testing::Test {
 };
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitLessThan) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // minKey < 8: file1(1), file4(1)
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitLessThan(Literal(8)));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitLessThan(Literal(8)));
     CheckResult(result, {"file1", "file4"});
 
     // minKey < 15: file1(1), file4(1)  (file2 minKey=15, not < 15)
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitLessThan(Literal(15)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitLessThan(Literal(15)));
     CheckResult(result, {"file1", "file4"});
 
     // minKey < 1: no file has minKey < 1
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitLessThan(Literal(1)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitLessThan(Literal(1)));
     ASSERT_TRUE(result.empty());
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitLessOrEqual) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // minKey <= 20: file1(1), file2(15), file4(1), file5(19)
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitLessOrEqual(Literal(20)));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitLessOrEqual(Literal(20)));
     CheckResult(result, {"file1", "file2", "file4", "file5"});
 
     // minKey <= 15: file1(1), file2(15), file4(1)
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitLessOrEqual(Literal(15)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitLessOrEqual(Literal(15)));
     CheckResult(result, {"file1", "file2", "file4"});
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitGreaterThan) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // maxKey > 20: file3(30), file5(25)
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitGreaterThan(Literal(20)));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitGreaterThan(Literal(20)));
     CheckResult(result, {"file3", "file5"});
 
     // maxKey > 30: no file
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitGreaterThan(Literal(30)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitGreaterThan(Literal(30)));
     ASSERT_TRUE(result.empty());
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitGreaterOrEqual) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // maxKey >= 5: all non-null files (file1..file5)
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitGreaterOrEqual(Literal(5)));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitGreaterOrEqual(Literal(5)));
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5"});
 
     // maxKey >= 20: file2(20), file3(30), file5(25)
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitGreaterOrEqual(Literal(20)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitGreaterOrEqual(Literal(20)));
     CheckResult(result, {"file2", "file3", "file5"});
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitEqual) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // 22 in [21,30] and [19,25]
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitEqual(Literal(22)));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitEqual(Literal(22)));
     CheckResult(result, {"file3", "file5"});
 
     // 30 in [21,30] only
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitEqual(Literal(30)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitEqual(Literal(30)));
     CheckResult(result, {"file3"});
 
     // 100 out of all ranges
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitEqual(Literal(100)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitEqual(Literal(100)));
     ASSERT_TRUE(result.empty());
+
+    // A mismatched literal must fail before the fixed-width comparator reads it.
+    ASSERT_NOK(selector->VisitEqual(Literal(static_cast<int8_t>(1))));
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitNotEqual) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // NotEqual cannot prune any file, returns all
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitNotEqual(Literal(22)));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitNotEqual(Literal(22)));
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5", "file6"});
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitIsNull) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // has_nulls: file1, file3, file5, file6
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitIsNull());
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitIsNull());
     CheckResult(result, {"file1", "file3", "file5", "file6"});
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitIsNotNull) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // !onlyNulls: file1..file5 (file6 is only-nulls)
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitIsNotNull());
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitIsNotNull());
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5"});
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitIn) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // IN(1, 2, 3, 26, 27, 28):
     //   1 in [1,10]=file1, [1,5]=file4
@@ -188,42 +200,44 @@ TEST_F(BTreeFileMetaSelectorTest, TestVisitIn) {
     //   26 in [21,30]=file3
     //   27 in [21,30]=file3
     //   28 in [21,30]=file3
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitIn({Literal(1), Literal(2), Literal(3),
-                                                        Literal(26), Literal(27), Literal(28)}));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitIn({Literal(1), Literal(2), Literal(3),
+                                                         Literal(26), Literal(27), Literal(28)}));
     CheckResult(result, {"file1", "file3", "file4"});
 
     // IN(100): no match
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitIn({Literal(100)}));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitIn({Literal(100)}));
     ASSERT_TRUE(result.empty());
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestVisitNotIn) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // NotIn cannot prune any file
     ASSERT_OK_AND_ASSIGN(auto result,
-                         selector.VisitNotIn({Literal(1), Literal(7), Literal(19), Literal(30)}));
+                         selector->VisitNotIn({Literal(1), Literal(7), Literal(19), Literal(30)}));
     CheckResult(result, {"file1", "file2", "file3", "file4", "file5", "file6"});
 }
 
 TEST_F(BTreeFileMetaSelectorTest, TestOnlyNullsFileExcludedFromRangeQueries) {
-    BTreeFileMetaSelector selector(files_, key_type_, pool_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files_, key_type_, pool_));
 
     // file6 is only-nulls, should be excluded from all range/equality queries
-    ASSERT_OK_AND_ASSIGN(auto result, selector.VisitEqual(Literal(1)));
+    ASSERT_OK_AND_ASSIGN(auto result, selector->VisitEqual(Literal(1)));
     auto names = FileNames(result);
     ASSERT_EQ(names.count("file6"), 0u);
 
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitLessThan(Literal(100)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitLessThan(Literal(100)));
     names = FileNames(result);
     ASSERT_EQ(names.count("file6"), 0u);
 
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitGreaterThan(Literal(0)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitGreaterThan(Literal(0)));
     names = FileNames(result);
     ASSERT_EQ(names.count("file6"), 0u);
 
     // But IsNull should include file6
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitIsNull());
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitIsNull());
     names = FileNames(result);
     ASSERT_EQ(names.count("file6"), 1u);
 }
@@ -249,22 +263,57 @@ TEST_F(BTreeFileMetaSelectorTest, TestEmptyStringKeyDoesNotCrash) {
         GlobalIndexIOMeta("file_nulls", 1, null_meta->Serialize(pool.get())),
     };
 
-    BTreeFileMetaSelector selector(files, key_type, pool);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeFileMetaSelector> selector,
+                         BTreeFileMetaSelector::Create(files, key_type, pool));
 
     ASSERT_OK_AND_ASSIGN(std::vector<GlobalIndexIOMeta> result,
-                         selector.VisitEqual(Literal(FieldType::STRING, "www.example.com", 15)));
+                         selector->VisitEqual(Literal(FieldType::STRING, "www.example.com", 15)));
     CheckResult(result, {"file_empty", "file_normal"});
 
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitLessThan(Literal(FieldType::STRING, "bbb.com", 7)));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitLessThan(Literal(FieldType::STRING, "bbb.com", 7)));
     CheckResult(result, {"file_empty", "file_normal"});
 
     ASSERT_OK_AND_ASSIGN(
-        result, selector.VisitGreaterThan(Literal(FieldType::STRING, "www.example.com", 15)));
+        result, selector->VisitGreaterThan(Literal(FieldType::STRING, "www.example.com", 15)));
     CheckResult(result, {"file_normal"});
 
-    ASSERT_OK_AND_ASSIGN(result, selector.VisitIn({Literal(FieldType::STRING, "", 0),
-                                                   Literal(FieldType::STRING, "zzz.com", 7)}));
+    ASSERT_OK_AND_ASSIGN(result, selector->VisitIn({Literal(FieldType::STRING, "", 0),
+                                                    Literal(FieldType::STRING, "zzz.com", 7)}));
     CheckResult(result, {"file_empty", "file_normal"});
+}
+
+TEST_F(BTreeFileMetaSelectorTest, RejectsMalformedFileMetadata) {
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    std::vector<GlobalIndexIOMeta> files = {GlobalIndexIOMeta("missing", 1, /*metadata=*/nullptr)};
+    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+
+    auto truncated = std::make_shared<Bytes>(std::string(4, '\0'), pool.get());
+    files = {GlobalIndexIOMeta("truncated", 1, truncated)};
+    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+
+    auto short_key = std::make_shared<Bytes>(std::string(1, '\0'), pool.get());
+    auto invalid_key_meta = std::make_shared<BTreeIndexMeta>(short_key, short_key, false);
+    files = {GlobalIndexIOMeta("invalid-key", 1, invalid_key_meta->Serialize(pool.get()))};
+    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+
+    auto reversed_meta = std::make_shared<BTreeIndexMeta>(SerializeInt(10), SerializeInt(1), false);
+    files = {GlobalIndexIOMeta("reversed-range", 1, reversed_meta->Serialize(pool.get()))};
+    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+
+    auto only_first_meta =
+        std::make_shared<BTreeIndexMeta>(SerializeInt(1), /*last_key=*/nullptr, false);
+    files = {GlobalIndexIOMeta("only-first-key", 1, only_first_meta->Serialize(pool.get()))};
+    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+
+    auto only_last_meta =
+        std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, SerializeInt(1), false);
+    files = {GlobalIndexIOMeta("only-last-key", 1, only_last_meta->Serialize(pool.get()))};
+    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
+
+    auto empty_nonnull_meta =
+        std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, /*last_key=*/nullptr, false);
+    files = {GlobalIndexIOMeta("empty-nonnull", 1, empty_nonnull_meta->Serialize(pool.get()))};
+    ASSERT_NOK(BTreeFileMetaSelector::Create(files, arrow::int32(), pool));
 }
 
 }  // namespace paimon::test
