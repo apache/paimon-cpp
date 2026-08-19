@@ -130,7 +130,8 @@ class PredicatePushdownTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(auto batch_reader, ParquetFileBatchReader::Create(
                                                     std::move(in_stream), options, batch_size_,
                                                     /*file_metadata=*/nullptr,
-                                                    /*storage_read_bytes=*/nullptr, arrow_pool_));
+                                                    /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                                    /*hints=*/std::nullopt));
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());
         ASSERT_TRUE(arrow_status.ok());

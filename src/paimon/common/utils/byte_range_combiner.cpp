@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <limits>
 
 #include "fmt/format.h"
 
@@ -37,6 +38,20 @@ Result<std::vector<ByteRange>> ByteRangeCombiner::CoalesceByteRanges(
     }
     if (ranges.empty()) {
         return ranges;
+    }
+
+    // Reject ranges that exceed the int64 bound before any offset + length arithmetic
+    // below. Such ranges can originate from corrupt file metadata (e.g. negative signed
+    // values cast to uint64_t) and would otherwise wrap around or make the splitting
+    // loop run until memory is exhausted.
+    constexpr auto kMaxRangeValue = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    for (const auto& range : ranges) {
+        if (range.offset > kMaxRangeValue || range.length > kMaxRangeValue ||
+            range.offset + range.length > kMaxRangeValue) {
+            return Status::Invalid(
+                fmt::format("byte range (offset={}, length={}) exceeds the int64 bound",
+                            range.offset, range.length));
+        }
     }
 
     std::vector<ByteRange> adjusted_ranges;

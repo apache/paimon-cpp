@@ -55,6 +55,7 @@
 #include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/format/parquet/parquet_format_writer.h"
 #include "paimon/format/parquet/parquet_reader_builder.h"
+#include "paimon/format/read_hints.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
@@ -232,7 +233,8 @@ class ParquetFileBatchReaderTest : public ::testing::Test,
         EXPECT_OK_AND_ASSIGN(auto parquet_batch_reader,
                              ParquetFileBatchReader::Create(
                                  std::move(in_stream), options, batch_size,
-                                 /*file_metadata=*/nullptr, std::move(storage_read_bytes), pool_));
+                                 /*file_metadata=*/nullptr, std::move(storage_read_bytes), pool_,
+                                 /*hints=*/std::nullopt));
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());
         EXPECT_TRUE(arrow_status.ok());
@@ -399,7 +401,8 @@ TEST_F(ParquetFileBatchReaderTest, TestSetReadSchema) {
     ASSERT_OK_AND_ASSIGN(auto parquet_batch_reader,
                          ParquetFileBatchReader::Create(std::move(in_stream), options, batch_size_,
                                                         /*file_metadata=*/nullptr,
-                                                        /*storage_read_bytes=*/nullptr, pool_));
+                                                        /*storage_read_bytes=*/nullptr, pool_,
+                                                        /*hints=*/std::nullopt));
     // test GetFileSchema()
     ASSERT_OK_AND_ASSIGN(auto c_file_schema, parquet_batch_reader->GetFileSchema());
     auto arrow_file_schema = arrow::ImportSchema(c_file_schema.get()).ValueOrDie();
@@ -845,8 +848,9 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateReaderProperties) {
     {
         // test default options
         std::map<std::string, std::string> options;
-        ASSERT_OK_AND_ASSIGN(auto reader_properties,
-                             ParquetFileBatchReader::CreateReaderProperties(pool_, options));
+        ASSERT_OK_AND_ASSIGN(auto reader_properties, ParquetFileBatchReader::CreateReaderProperties(
+                                                         pool_, options,
+                                                         /*hints=*/std::nullopt));
         ASSERT_EQ(reader_properties.is_buffered_stream_enabled(), true);
     }
 }
@@ -858,7 +862,8 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
         int32_t batch_size = 1024;
         ASSERT_OK_AND_ASSIGN(
             auto arrow_reader_properties,
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size));
+            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size,
+                                                                /*hints=*/std::nullopt));
         ASSERT_EQ(arrow_reader_properties.pre_buffer(), true);
         ASSERT_EQ(arrow_reader_properties.batch_size(), 1024);
         ASSERT_EQ(arrow_reader_properties.use_threads(), true);
@@ -872,7 +877,8 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
         int32_t batch_size = 1024;
         ASSERT_OK_AND_ASSIGN(
             auto arrow_reader_properties,
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size));
+            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size,
+                                                                /*hints=*/std::nullopt));
         ASSERT_EQ(arrow_reader_properties.use_threads(), false);
     }
     {
@@ -880,7 +886,8 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
         int32_t batch_size = 1024;
         ASSERT_OK_AND_ASSIGN(
             auto arrow_reader_properties,
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size));
+            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size,
+                                                                /*hints=*/std::nullopt));
         ASSERT_EQ(arrow_reader_properties.use_threads(), true);
         ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 6);
     }
@@ -893,7 +900,8 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
         };
         ASSERT_OK_AND_ASSIGN(
             auto arrow_reader_properties,
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, 1024));
+            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, 1024,
+                                                                /*hints=*/std::nullopt));
         const auto& cache_options = arrow_reader_properties.cache_options();
         ASSERT_TRUE(cache_options.lazy);
         ASSERT_EQ(cache_options.prefetch_limit, 2);
@@ -905,7 +913,8 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
             {PARQUET_READ_CACHE_OPTION_HOLE_SIZE_LIMIT, "-1"},
         };
         ASSERT_NOK_WITH_MSG(
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, 1024),
+            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, 1024,
+                                                                /*hints=*/std::nullopt),
             "parquet.read.cache-option.hole-size-limit must be non-negative");
     }
     {
@@ -914,9 +923,76 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
             {PARQUET_READ_CACHE_OPTION_RANGE_SIZE_LIMIT, "1048576"},
         };
         ASSERT_NOK_WITH_MSG(
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, 1024),
+            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, 1024,
+                                                                /*hints=*/std::nullopt),
             "parquet.read.cache-option.range-size-limit must be greater than "
             "parquet.read.cache-option.hole-size-limit");
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
+    const int32_t batch_size = 1024;
+    // When both framework prefetch and the shared read-ahead cache are active, parquet's own
+    // pre-buffering must be disabled even if the option explicitly enables it (runtime state
+    // takes precedence over the option).
+    {
+        std::map<std::string, std::string> options = {{PARQUET_READ_ENABLE_PRE_BUFFER, "true"}};
+        ReadHints hints;
+        hints.prefetch_enabled = true;
+        hints.read_ahead_cache_enabled = true;
+        ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
+                                                   pool_, options, batch_size, hints));
+        ASSERT_EQ(arrow_props.pre_buffer(), false);
+        ASSERT_OK_AND_ASSIGN(auto reader_props,
+                             ParquetFileBatchReader::CreateReaderProperties(pool_, options, hints));
+        ASSERT_EQ(reader_props.is_buffered_stream_enabled(), false);
+    }
+    // Only prefetch enabled (cache disabled): fall back to the option, which defaults to true.
+    {
+        std::map<std::string, std::string> options;
+        ReadHints hints;
+        hints.prefetch_enabled = true;
+        hints.read_ahead_cache_enabled = false;
+        ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
+                                                   pool_, options, batch_size, hints));
+        ASSERT_EQ(arrow_props.pre_buffer(), true);
+    }
+    // Only cache enabled (prefetch disabled): fall back to the option, which defaults to true.
+    {
+        std::map<std::string, std::string> options;
+        ReadHints hints;
+        hints.prefetch_enabled = false;
+        hints.read_ahead_cache_enabled = true;
+        ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
+                                                   pool_, options, batch_size, hints));
+        ASSERT_EQ(arrow_props.pre_buffer(), true);
+    }
+    // Neither active and the option explicitly disabled: honor the option.
+    {
+        std::map<std::string, std::string> options = {{PARQUET_READ_ENABLE_PRE_BUFFER, "false"}};
+        ReadHints hints;
+        ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
+                                                   pool_, options, batch_size, hints));
+        ASSERT_EQ(arrow_props.pre_buffer(), false);
+        ASSERT_OK_AND_ASSIGN(auto reader_props,
+                             ParquetFileBatchReader::CreateReaderProperties(pool_, options, hints));
+        ASSERT_EQ(reader_props.is_buffered_stream_enabled(), false);
+    }
+    // Neither active and no option: default to enabled.
+    {
+        std::map<std::string, std::string> options;
+        ReadHints hints;
+        ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
+                                                   pool_, options, batch_size, hints));
+        ASSERT_EQ(arrow_props.pre_buffer(), true);
+    }
+    // No hints provided at all (builder used without WithReadHints): fall back to the option.
+    {
+        std::map<std::string, std::string> options = {{PARQUET_READ_ENABLE_PRE_BUFFER, "false"}};
+        ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
+                                                   pool_, options, batch_size,
+                                                   /*hints=*/std::nullopt));
+        ASSERT_EQ(arrow_props.pre_buffer(), false);
     }
 }
 

@@ -44,6 +44,7 @@
 #include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/format/parquet/row_ranges.h"
 #include "paimon/format/parquet/target_row_group.h"
+#include "paimon/format/read_hints.h"
 #include "paimon/logging.h"
 #include "paimon/reader/prefetch_file_batch_reader.h"
 #include "paimon/result.h"
@@ -76,11 +77,11 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
         const std::map<std::string, std::string>& options, int32_t batch_size,
         std::shared_ptr<::parquet::FileMetaData> file_metadata,
         std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes,
-        const std::shared_ptr<arrow::MemoryPool>& pool);
+        const std::shared_ptr<arrow::MemoryPool>& pool, const std::optional<ReadHints>& hints);
 
     static Result<::parquet::ReaderProperties> CreateReaderProperties(
         const std::shared_ptr<arrow::MemoryPool>& pool,
-        const std::map<std::string, std::string>& options);
+        const std::map<std::string, std::string>& options, const std::optional<ReadHints>& hints);
 
     // For timestamp type, we return the schema stored in file, e.g., second in parquet file will
     // store as milli.
@@ -164,7 +165,8 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
 
     static Result<::parquet::ArrowReaderProperties> CreateArrowReaderProperties(
         const std::shared_ptr<arrow::MemoryPool>& pool,
-        const std::map<std::string, std::string>& options, int32_t batch_size);
+        const std::map<std::string, std::string>& options, int32_t batch_size,
+        const std::optional<ReadHints>& hints);
 
     static void FlattenSchema(const std::shared_ptr<arrow::DataType>& type, int32_t* index,
                               std::vector<int32_t>* index_vector) {

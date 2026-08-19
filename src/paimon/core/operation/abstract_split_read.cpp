@@ -139,6 +139,13 @@ Result<std::unique_ptr<ReaderBuilder>> AbstractSplitRead::PrepareReaderBuilder(
                            file_format->CreateReaderBuilder(options_.GetReadBatchSize()));
     reader_builder->WithMemoryPool(pool_);
     reader_builder->WithCache(options_.GetCache());
+    // Propagate the framework runtime read state so each format can adapt its own
+    // behavior (e.g. parquet disabling its pre-buffer when the shared read-ahead cache
+    // takes over prefetching), instead of mutating format options here.
+    ReadHints read_hints;
+    read_hints.prefetch_enabled = context_->EnablePrefetch();
+    read_hints.read_ahead_cache_enabled = context_->ReadAheadCacheEnabled();
+    reader_builder->WithReadHints(read_hints);
     return reader_builder;
 }
 
@@ -154,7 +161,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReade
                 context_->GetPrefetchMaxParallelNum(), options_.GetReadBatchSize(),
                 context_->GetPrefetchBatchCount(), options_.EnableAdaptivePrefetchStrategy(),
                 executor_,
-                /*initialize_read_ranges=*/false, context_->GetPrefetchCacheMode(),
+                /*initialize_read_ranges=*/false, context_->ReadAheadCacheEnabled(),
                 context_->GetCacheConfig(), pool_));
         return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
     } else {

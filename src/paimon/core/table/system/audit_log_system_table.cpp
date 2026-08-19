@@ -440,7 +440,7 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
         .SetPrefetchMaxParallelNum(context->GetPrefetchMaxParallelNum())
         .EnableMultiThreadRowToBatch(context->EnableMultiThreadRowToBatch())
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
-        .SetPrefetchCacheMode(context->GetPrefetchCacheMode())
+        .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
         .WithCache(context->GetCache());
 

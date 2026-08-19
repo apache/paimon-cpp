@@ -21,12 +21,14 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <limits>
 
 #include "arrow/io/interfaces.h"
 #include "arrow/record_batch.h"
 #include "arrow/util/range.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/format/parquet/column_index_filter.h"
 #include "paimon/format/parquet/page_filtered_row_group_reader.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
@@ -451,6 +453,15 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBuff
     std::vector<std::pair<uint64_t, uint64_t>> pre_buffer_ranges;
     pre_buffer_ranges.reserve(ranges.size());
     for (const auto& range : ranges) {
+        // Ranges come from signed parquet metadata; a corrupt footer may hold negative or
+        // overflowing values. Validate before converting to uint64_t, since downstream
+        // range coalescing does unchecked offset + length arithmetic on them.
+        PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(range.offset, "pre-buffer range offset"));
+        PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(range.length, "pre-buffer range length"));
+        if (range.offset > std::numeric_limits<int64_t>::max() - range.length) {
+            return Status::Invalid(fmt::format("pre-buffer range overflows: offset={}, length={}",
+                                               range.offset, range.length));
+        }
         pre_buffer_ranges.emplace_back(static_cast<uint64_t>(range.offset),
                                        static_cast<uint64_t>(range.length));
     }

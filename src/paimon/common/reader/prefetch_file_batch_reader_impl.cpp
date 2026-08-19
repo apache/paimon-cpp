@@ -60,7 +60,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     const std::shared_ptr<FileSystem>& fs, uint32_t prefetch_max_parallel_num, int32_t batch_size,
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
-    PrefetchCacheMode prefetch_cache_mode, const CacheConfig& cache_config,
+    bool read_ahead_cache_enabled, const CacheConfig& cache_config,
     const std::shared_ptr<MemoryPool>& pool) {
     if (prefetch_max_parallel_num == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0.");
@@ -82,7 +82,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     }
 
     std::shared_ptr<ReadAheadCache> cache;
-    if (prefetch_cache_mode != PrefetchCacheMode::NEVER) {
+    if (read_ahead_cache_enabled) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                                fs->Open(FileStatus(data_file_path, data_file_size)));
         cache = std::make_shared<ReadAheadCache>(input_stream, cache_config, pool);
@@ -119,9 +119,9 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     }
     uint32_t prefetch_queue_capacity = prefetch_batch_count / readers.size();
 
-    auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(new PrefetchFileBatchReaderImpl(
-        readers, batch_size, prefetch_queue_capacity, enable_adaptive_prefetch_strategy, executor,
-        cache, prefetch_cache_mode));
+    auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(
+        new PrefetchFileBatchReaderImpl(readers, batch_size, prefetch_queue_capacity,
+                                        enable_adaptive_prefetch_strategy, executor, cache));
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read
         // ranges, and set read schema will always be called before read.
@@ -133,13 +133,11 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
     const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
     uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
-    PrefetchCacheMode cache_mode)
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache)
     : readers_(std::move(readers)),
       batch_size_(batch_size),
       executor_(executor),
       cache_(cache),
-      cache_mode_(cache_mode),
       prefetch_queue_capacity_(prefetch_queue_capacity),
       enable_adaptive_prefetch_strategy_(enable_adaptive_prefetch_strategy) {
     for (size_t i = 0; i < readers_.size(); i++) {
@@ -304,28 +302,10 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
     return Status::OK();
 }
 
-bool PrefetchFileBatchReaderImpl::NeedInitCache() const {
-    switch (cache_mode_) {
-        case PrefetchCacheMode::NEVER:
-            return false;
-        case PrefetchCacheMode::EXCLUDE_PREDICATE:
-            return predicate_ == nullptr;
-        case PrefetchCacheMode::EXCLUDE_BITMAP:
-            return selection_bitmap_ == std::nullopt;
-        case PrefetchCacheMode::EXCLUDE_BITMAP_OR_PREDICATE:
-            return predicate_ == nullptr && selection_bitmap_ == std::nullopt;
-        case PrefetchCacheMode::ALWAYS:
-            return true;
-        default:
-            assert(false);
-            return true;
-    }
-}
-
 void PrefetchFileBatchReaderImpl::Workloop() {
     std::vector<std::future<void>> futures;
     futures.resize(readers_.size());
-    if (cache_ && NeedInitCache()) {
+    if (cache_) {
         auto read_ranges = readers_[0]->PreBufferRange();
         if (read_ranges.ok()) {
             std::vector<ByteRange> ranges;

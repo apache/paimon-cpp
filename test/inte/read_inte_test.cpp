@@ -92,7 +92,7 @@ struct TestParam {
     bool enable_prefetch;
     std::string enable_adaptive_prefetch_strategy;
     std::string file_format;
-    PrefetchCacheMode cache_mode;
+    bool read_ahead_cache_enabled;
 };
 
 // read_inte_test.cpp test mainly for raw file split read (pk+dv & append only)
@@ -355,19 +355,16 @@ Result<int64_t> CountDataFiles(const std::vector<std::shared_ptr<Split>>& splits
 
 std::vector<TestParam> PrepareTestParam() {
     std::vector<TestParam> values = {
-        TestParam{false, "false", "parquet", PrefetchCacheMode::ALWAYS},
-        TestParam{true, "true", "parquet", PrefetchCacheMode::ALWAYS},
-        TestParam{true, "false", "parquet", PrefetchCacheMode::ALWAYS},
-        TestParam{true, "false", "parquet", PrefetchCacheMode::NEVER},
-        TestParam{true, "false", "parquet", PrefetchCacheMode::EXCLUDE_BITMAP_OR_PREDICATE}};
+        TestParam{false, "false", "parquet", /*read_ahead_cache_enabled=*/true},
+        TestParam{true, "true", "parquet", /*read_ahead_cache_enabled=*/true},
+        TestParam{true, "false", "parquet", /*read_ahead_cache_enabled=*/true},
+        TestParam{true, "false", "parquet", /*read_ahead_cache_enabled=*/false}};
 
 #ifdef PAIMON_ENABLE_ORC
-    values.push_back(TestParam{false, "false", "orc", PrefetchCacheMode::ALWAYS});
-    values.push_back(TestParam{true, "true", "orc", PrefetchCacheMode::ALWAYS});
-    values.push_back(TestParam{true, "false", "orc", PrefetchCacheMode::ALWAYS});
-    values.push_back(TestParam{true, "false", "orc", PrefetchCacheMode::NEVER});
-    values.push_back(
-        TestParam{true, "false", "orc", PrefetchCacheMode::EXCLUDE_BITMAP_OR_PREDICATE});
+    values.push_back(TestParam{false, "false", "orc", /*read_ahead_cache_enabled=*/true});
+    values.push_back(TestParam{true, "true", "orc", /*read_ahead_cache_enabled=*/true});
+    values.push_back(TestParam{true, "false", "orc", /*read_ahead_cache_enabled=*/true});
+    values.push_back(TestParam{true, "false", "orc", /*read_ahead_cache_enabled=*/false});
 #endif
     return values;
 }
@@ -391,7 +388,7 @@ TEST_P(ReadInteTest, TestAppendSimple) {
         context_builder.EnablePrefetch(param.enable_prefetch)
             .AddOption("test.enable-adaptive-prefetch-strategy", "false")
             .AddOption("orc.read.enable-metrics", "true");
-        context_builder.SetPrefetchCacheMode(param.cache_mode);
+        context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
 
         if (specific_table_schema) {
             context_builder.SetTableSchema(specific_table_schema.value());
@@ -497,7 +494,7 @@ TEST_P(ReadInteTest, TestReadWithLimits) {
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption(Options::READ_BATCH_SIZE, "1");
     context_builder.EnablePrefetch(param.enable_prefetch)
-        .SetPrefetchCacheMode(param.cache_mode)
+        .SetReadAheadCacheEnabled(param.read_ahead_cache_enabled)
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy)
         .AddOption("orc.read.enable-metrics", "true")
@@ -555,7 +552,7 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-        .SetPrefetchCacheMode(param.cache_mode);
+        .SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
@@ -587,7 +584,7 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     // so the counters must be present and effective exactly in that case.
     auto read_metrics = batch_reader->GetReaderMetrics();
     ASSERT_TRUE(read_metrics);
-    if (param.enable_prefetch && param.cache_mode != PrefetchCacheMode::NEVER) {
+    if (param.enable_prefetch && param.read_ahead_cache_enabled) {
         ASSERT_OK_AND_ASSIGN(uint64_t read_count,
                              read_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
         ASSERT_GT(read_count, 0u);
@@ -628,7 +625,7 @@ TEST_P(ReadInteTest, TestReadOnlyPartitionField) {
     ReadContextBuilder context_builder(path);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
     context_builder.SetReadFieldNames({"dt"});
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("test.enable-adaptive-prefetch-strategy",
@@ -1950,7 +1947,7 @@ TEST_P(ReadInteTest, TestAppendReadWithMultipleBuckets) {
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2")
         .AddOption("test.enable-adaptive-prefetch-strategy",
@@ -2030,7 +2027,7 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicate) {
 
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .SetPredicate(predicate)
         .EnablePredicateFilter(true)
@@ -2132,7 +2129,7 @@ TEST_P(ReadInteTest, TestAppendReadWithComplexTypePredicate) {
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_complex_data.db/append_complex_data";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f6", "f2", "f4", "f3", "f5"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -2205,7 +2202,7 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateOnlyPushdown) {
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
 
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2")
@@ -2281,7 +2278,7 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateAllFiltered) {
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
 
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2")
@@ -2368,7 +2365,7 @@ TEST_P(ReadInteTest, TestAppendReadIOException) {
         ReadContextBuilder context_builder(paimon::test::GetDataDir() + "/" + param.file_format +
                                            "/append_09.db/append_09/");
         context_builder.SetReadFieldNames({"f3", "f0", "f1"});
-        context_builder.SetPrefetchCacheMode(param.cache_mode);
+        context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
         context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
             .AddOption("read.batch-size", "2")
             .EnablePrefetch(param.enable_prefetch)
@@ -2413,7 +2410,7 @@ TEST_P(ReadInteTest, TestPkTableWithDeletionVectorSimple) {
     ReadContextBuilder context_builder(path);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy);
@@ -2459,7 +2456,7 @@ TEST_P(ReadInteTest, TestPkTableWithDeletionVector) {
 
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format + "/pk_09.db/pk_09";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2")
         .EnablePrefetch(param.enable_prefetch)
@@ -2525,7 +2522,7 @@ TEST_P(ReadInteTest, TestPkTableWithSnapshot6) {
                                                    FieldType::DOUBLE, Literal(15.0));
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format + "/pk_09.db/pk_09";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
     context_builder.SetPredicate(predicate);
@@ -2610,7 +2607,7 @@ TEST_P(ReadInteTest, TestPkTableWithSnapshot8) {
 
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format + "/pk_09.db/pk_09";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f0", "f3", "f1"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -2688,7 +2685,7 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolution) {
                                               DataField(8, arrow::field("e", arrow::int32()))};
 
         ReadContextBuilder context_builder(path);
-        context_builder.SetPrefetchCacheMode(param.cache_mode);
+        context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
         context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
             .AddOption("read.batch-size", "2");
         context_builder.EnablePrefetch(param.enable_prefetch)
@@ -2784,13 +2781,13 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateFilter) {
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_table_with_alter_table.db/append_table_with_alter_table/";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"a", "k", "key1", "d", "key0", "c"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
     context_builder.SetPredicate(predicate);
     context_builder.EnablePredicateFilter(true);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy);
@@ -2863,7 +2860,7 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateOnlyPushDown)
                        "/append_table_with_alter_table.db/"
                        "append_table_with_alter_table/";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"a", "k", "key1", "d", "key0", "c"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -2936,7 +2933,7 @@ TEST_P(ReadInteTest, TestPkReadSnapshot5WithSchemaEvolution) {
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/pk_table_with_alter_table.db/pk_table_with_alter_table/";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -3021,7 +3018,7 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolution) {
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/pk_table_with_alter_table.db/pk_table_with_alter_table/";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -3109,7 +3106,7 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateOnlyPush
     context_builder.SetReadFieldNames({{"key1", "k", "key_2", "c", "d", "a", "key0", "e"}});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetPredicate(predicate);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy",
@@ -3188,7 +3185,7 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateFilter) 
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({equal, less_than}));
 
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -3280,7 +3277,7 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithBuildInFieldId) {
     }
 
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key0", "key1", "k", "c", "d", "a", "e"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -3343,7 +3340,7 @@ TEST_P(ReadInteTest, TestAppendReadNestedType) {
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_complex_build_in_fieldid.db/append_complex_build_in_fieldid/";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
     context_builder.EnablePrefetch(param.enable_prefetch)
@@ -3398,7 +3395,7 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithCast) {
                        "/append_table_alter_table_with_cast.db/"
                        "append_table_alter_table_with_cast/";
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f4", "key0", "key1", "f3", "f1", "f2", "f0", "f6"});
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
@@ -3481,7 +3478,7 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithCastWithPredicatePushD
                        "append_table_alter_table_with_cast/";
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"f4", "key0", "key1", "f3", "f1", "f2", "f0", "f6"});
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
         .AddOption("read.batch-size", "2");
     context_builder.SetPredicate(predicate);
@@ -3559,7 +3556,7 @@ TEST_P(ReadInteTest, TestReadWithPKFallBackBranch) {
         };
 
         ReadContextBuilder context_builder(path);
-        context_builder.SetPrefetchCacheMode(param.cache_mode);
+        context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
         context_builder.EnablePrefetch(param.enable_prefetch)
             .AddOption(Options::FILE_FORMAT, param.file_format)
             .AddOption("test.enable-adaptive-prefetch-strategy",
@@ -3616,7 +3613,7 @@ TEST_P(ReadInteTest, TestReadWithAppendFallBackBranch) {
 
     ReadContextBuilder context_builder(path);
     context_builder.EnablePrefetch(param.enable_prefetch);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
@@ -3658,7 +3655,7 @@ TEST_P(ReadInteTest, TestFallBackBranchStreamRead) {
                                           DataField(1, arrow::field("name", arrow::utf8())),
                                           DataField(2, arrow::field("amount", arrow::int32()))};
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy);
@@ -3703,7 +3700,7 @@ TEST_P(ReadInteTest, TestReadWithPKRtBranch) {
         };
 
         ReadContextBuilder context_builder(path);
-        context_builder.SetPrefetchCacheMode(param.cache_mode);
+        context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
         context_builder.EnablePrefetch(param.enable_prefetch)
             .AddOption("test.enable-adaptive-prefetch-strategy",
                        param.enable_adaptive_prefetch_strategy)
@@ -3760,7 +3757,7 @@ TEST_P(ReadInteTest, TestReadWithAppendPtBranch) {
         };
 
         ReadContextBuilder context_builder(path);
-        context_builder.SetPrefetchCacheMode(param.cache_mode);
+        context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
         context_builder.EnablePrefetch(param.enable_prefetch)
             .AddOption("test.enable-adaptive-prefetch-strategy",
                        param.enable_adaptive_prefetch_strategy)
@@ -3891,7 +3888,7 @@ TEST_P(ReadInteTest, TestSpecificFs) {
     auto countable_fs =
         std::make_shared<CountableFileSystem>(std::make_shared<LocalFileSystem>(), &io_count);
     ReadContextBuilder context_builder(path);
-    context_builder.SetPrefetchCacheMode(param.cache_mode);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy", "false")

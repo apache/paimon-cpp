@@ -207,7 +207,8 @@ class PageFilteredRowGroupReaderTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(auto batch_reader, ParquetFileBatchReader::Create(
                                                     std::move(in_stream), options, batch_size,
                                                     /*file_metadata=*/nullptr,
-                                                    /*storage_read_bytes=*/nullptr, arrow_pool_));
+                                                    /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                                    /*hints=*/std::nullopt));
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
         ASSERT_OK(batch_reader->SetReadSchema(c_schema.get(), predicate,
@@ -235,7 +236,8 @@ class PageFilteredRowGroupReaderTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(
             auto batch_reader,
             ParquetFileBatchReader::Create(std::move(in_stream), options, batch_size, nullptr,
-                                           /*storage_read_bytes=*/nullptr, arrow_pool_));
+                                           /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                           /*hints=*/std::nullopt));
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
         ASSERT_OK(batch_reader->SetReadSchema(c_schema.get(), predicate, bitmap));
@@ -2120,7 +2122,8 @@ TEST_F(PageFilteredRowGroupReaderTest, BitmapInvalidStrategyTest) {
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, ParquetFileBatchReader::Create(
                                                 std::move(in_stream), options, 1024, nullptr,
-                                                /*storage_read_bytes=*/nullptr, arrow_pool_));
+                                                /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                                /*hints=*/std::nullopt));
 
     auto read_schema = arrow::schema({arrow::field("val", arrow::int32())});
     auto c_schema = std::make_unique<ArrowSchema>();

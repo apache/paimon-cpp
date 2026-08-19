@@ -18,7 +18,9 @@
 
 #include "paimon/format/parquet/file_reader_wrapper.h"
 
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <string>
@@ -680,6 +682,220 @@ TEST_F(FileReaderWrapperTest, PrepareForReading) {
     ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
     ASSERT_EQ(std::numeric_limits<uint64_t>::max(),
               reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+}
+
+namespace {
+
+// A minimal Thrift compact-protocol walker, just enough to locate and corrupt one
+// i64 field inside a Parquet footer. Only the field types that may appear in an
+// unencrypted footer are supported; anything else makes the walk fail.
+class CompactThriftFooter {
+ public:
+    CompactThriftFooter(std::string* data, size_t pos) : data_(data), pos_(pos) {}
+
+    size_t pos() const {
+        return pos_;
+    }
+
+    // Advance to the struct field with the given id, checking it has the expected
+    // type, and leave the cursor at the start of its value.
+    bool SeekField(int32_t target_id, uint8_t target_type) {
+        int32_t field_id = 0;
+        while (true) {
+            uint8_t type = 0;
+            if (!NextField(&field_id, &type)) return false;
+            if (field_id == 0) return false;  // STOP without finding the field
+            if (field_id == target_id) return type == target_type;
+            if (!SkipValue(type)) return false;
+        }
+    }
+
+    // Enter the body of the first element of the list at the cursor; the element
+    // must be a struct.
+    bool EnterFirstListElement() {
+        uint64_t header = 0;
+        if (!ReadByte(&header)) return false;
+        uint64_t size = (header >> 4) & 0x0F;
+        if ((header & 0x0F) != kStruct) return false;
+        if (size == 15 && !ReadVarint(&size)) return false;
+        return size > 0;  // Cursor is now at the first element's struct body.
+    }
+
+    static constexpr uint8_t kI64 = 6;
+    static constexpr uint8_t kList = 9;
+    static constexpr uint8_t kStruct = 12;
+
+ private:
+    static constexpr uint8_t kBoolTrue = 1;
+    static constexpr uint8_t kBoolFalse = 2;
+    static constexpr uint8_t kByte = 3;
+    static constexpr uint8_t kI16 = 4;
+    static constexpr uint8_t kI32 = 5;
+    static constexpr uint8_t kDouble = 7;
+    static constexpr uint8_t kBinary = 8;
+    static constexpr uint8_t kSet = 10;
+    static constexpr uint8_t kMap = 11;
+
+    bool ReadByte(uint64_t* out) {
+        if (pos_ >= data_->size()) return false;
+        *out = static_cast<uint8_t>((*data_)[pos_++]);
+        return true;
+    }
+
+    bool ReadVarint(uint64_t* out) {
+        *out = 0;
+        for (int shift = 0; shift < 64; shift += 7) {
+            uint64_t byte = 0;
+            if (!ReadByte(&byte)) return false;
+            *out |= (byte & 0x7F) << shift;
+            if ((byte & 0x80) == 0) return true;
+        }
+        return false;  // Varints longer than 10 bytes are malformed.
+    }
+
+    bool NextField(int32_t* field_id, uint8_t* type) {
+        uint64_t header = 0;
+        if (!ReadByte(&header)) return false;
+        if (header == 0) {
+            *field_id = 0;  // STOP
+            return true;
+        }
+        *type = header & 0x0F;
+        uint64_t delta = (header >> 4) & 0x0F;
+        if (delta != 0) {
+            *field_id += static_cast<int32_t>(delta);
+            return true;
+        }
+        uint64_t zigzag = 0;
+        if (!ReadVarint(&zigzag)) return false;
+        *field_id = static_cast<int32_t>((zigzag >> 1) ^ -(zigzag & 1));
+        return true;
+    }
+
+    bool SkipValue(uint8_t type) {
+        switch (type) {
+            case kBoolTrue:
+            case kBoolFalse:
+                return true;  // The value is encoded in the field header itself.
+            case kByte: {
+                uint64_t unused = 0;
+                return ReadByte(&unused);
+            }
+            case kI16:
+            case kI32:
+            case kI64: {
+                uint64_t unused = 0;
+                return ReadVarint(&unused);
+            }
+            case kDouble:
+                if (pos_ + 8 > data_->size()) return false;
+                pos_ += 8;
+                return true;
+            case kBinary: {
+                uint64_t length = 0;
+                if (!ReadVarint(&length)) return false;
+                if (pos_ + length > data_->size()) return false;
+                pos_ += length;
+                return true;
+            }
+            case kList:
+            case kSet:
+                return SkipCollection();
+            case kMap: {
+                uint64_t size = 0;
+                if (!ReadVarint(&size)) return false;
+                if (size == 0) return true;
+                uint64_t kv_types = 0;
+                if (!ReadByte(&kv_types)) return false;
+                for (uint64_t i = 0; i < size; ++i) {
+                    if (!SkipValue((kv_types >> 4) & 0x0F)) return false;
+                    if (!SkipValue(kv_types & 0x0F)) return false;
+                }
+                return true;
+            }
+            case kStruct: {
+                int32_t field_id = 0;
+                while (true) {
+                    uint8_t field_type = 0;
+                    if (!NextField(&field_id, &field_type)) return false;
+                    if (field_id == 0) return true;  // STOP
+                    if (!SkipValue(field_type)) return false;
+                }
+            }
+            default:
+                return false;
+        }
+    }
+
+    bool SkipCollection() {
+        uint64_t header = 0;
+        if (!ReadByte(&header)) return false;
+        uint64_t size = (header >> 4) & 0x0F;
+        uint8_t elem_type = header & 0x0F;
+        if (size == 15 && !ReadVarint(&size)) return false;
+        for (uint64_t i = 0; i < size; ++i) {
+            if (elem_type == kBoolTrue || elem_type == kBoolFalse) {
+                uint64_t unused = 0;
+                if (!ReadByte(&unused)) return false;
+                continue;
+            }
+            if (!SkipValue(elem_type)) return false;
+        }
+        return true;
+    }
+
+    std::string* data_;
+    size_t pos_;
+};
+
+}  // namespace
+
+// A corrupt footer may carry negative column chunk offsets. GetPreBufferRanges must
+// reject them instead of casting them into huge uint64_t ranges that would blow up
+// the downstream range coalescing.
+TEST_F(FileReaderWrapperTest, GetPreBufferRangesRejectsNegativeMetadataOffset) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "test.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/100);
+
+    std::ifstream file(file_path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+    ASSERT_GT(content.size(), size_t{12});
+
+    // Footer layout: [thrift FileMetaData][footer length (4-byte LE)]["PAR1"].
+    size_t tail = content.size();
+    ASSERT_EQ("PAR1", content.substr(tail - 4));
+    uint32_t footer_length = static_cast<uint8_t>(content[tail - 8]) |
+                             (static_cast<uint8_t>(content[tail - 7]) << 8) |
+                             (static_cast<uint8_t>(content[tail - 6]) << 16) |
+                             (static_cast<uint8_t>(content[tail - 5]) << 24);
+    ASSERT_LT(static_cast<uint64_t>(footer_length) + 8, content.size());
+    size_t footer_start = tail - 8 - footer_length;
+
+    // Walk to FileMetaData.row_groups[0].columns[0].meta_data.data_page_offset and
+    // flip the sign of its zigzag varint (positive -> negative, byte length kept).
+    CompactThriftFooter footer(&content, footer_start);
+    ASSERT_TRUE(footer.SeekField(/*FileMetaData.row_groups=*/4, CompactThriftFooter::kList));
+    ASSERT_TRUE(footer.EnterFirstListElement());
+    ASSERT_TRUE(footer.SeekField(/*RowGroup.columns=*/1, CompactThriftFooter::kList));
+    ASSERT_TRUE(footer.EnterFirstListElement());
+    ASSERT_TRUE(footer.SeekField(/*ColumnChunk.meta_data=*/3, CompactThriftFooter::kStruct));
+    ASSERT_TRUE(footer.SeekField(/*ColumnMetaData.data_page_offset=*/9, CompactThriftFooter::kI64));
+    size_t offset_pos = footer.pos();
+    ASSERT_EQ(0, content[offset_pos] & 0x01);  // Positive value: even zigzag encoding.
+    content[offset_pos] |= 0x01;               // Now decodes to a negative offset.
+
+    std::string corrupt_path = PathUtil::JoinPath(dir_->Str(), "corrupt.parquet");
+    std::ofstream corrupt_file(corrupt_path, std::ios::binary);
+    corrupt_file.write(content.data(), static_cast<std::streamsize>(content.size()));
+    corrupt_file.close();
+
+    ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(corrupt_path));
+    ASSERT_OK(reader_wrapper->PrepareForReadingLazy(
+        {TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/false,
+                        /*ranges=*/RowRanges())},
+        /*column_indices=*/{0, 1, 2}));
+    ASSERT_NOK_WITH_MSG(reader_wrapper->GetPreBufferRanges(), "pre-buffer range offset");
 }
 
 }  // namespace paimon::parquet::test
