@@ -108,6 +108,10 @@ class PAIMON_EXPORT FileIndexFormat {
         const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool);
 
     /// Creates a `Writer` which serializes a complete V1 file index container.
+    ///
+    /// @param output_stream Destination stream for serialized index data.
+    /// @param pool Memory pool for writer-side allocations.
+    /// @return A unique pointer to a `Writer` on success.
     static Result<std::unique_ptr<Writer>> CreateWriter(
         const std::shared_ptr<OutputStream>& output_stream,
         const std::shared_ptr<MemoryPool>& pool);
@@ -126,6 +130,7 @@ class FileIndexFormat::Writer {
     /// Writes all column indexes. This is a terminal, one-shot operation.
     virtual Status WriteColumnIndexes(const FileIndexFormat::ColumnIndexes& indexes) = 0;
 
+    /// Flushes and closes the output stream supplied to `CreateWriter()`.
     virtual Status Close() = 0;
 };
 

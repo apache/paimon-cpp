@@ -54,6 +54,8 @@ class FileIndexOptions {
     }
 
  private:
+    FileIndexOptions() = default;
+
     std::vector<FileIndexDefinition> definitions_;
     int64_t in_manifest_threshold_ = 0;
 };

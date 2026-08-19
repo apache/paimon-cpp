@@ -75,8 +75,7 @@ Status KeyValueDataFileWriter::Write(KeyValueBatch batch) {
     // update delete row count
     delete_row_count_ += batch.delete_row_count;
 
-    ::ArrowArray* logical_batch = batch.batch.get();
-    return WriteRecord(std::move(batch), logical_batch);
+    return WriteRecordWithFileIndex(std::move(batch));
 }
 
 Result<std::shared_ptr<DataFileMeta>> KeyValueDataFileWriter::GetResult() {

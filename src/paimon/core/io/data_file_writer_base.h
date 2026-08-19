@@ -21,6 +21,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "arrow/c/bridge.h"
@@ -32,11 +33,9 @@
 #include "paimon/result.h"
 #include "paimon/status.h"
 
-namespace arrow {
-class Schema;
-}  // namespace arrow
-
 namespace paimon {
+
+struct KeyValueBatch;
 
 /// Common lifecycle for data file writers which may finalize schema metadata and publish a
 /// file-level index. Concrete writers remain responsible for their record-specific state and
@@ -84,8 +83,10 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
                        std::function<Status(Record, ::ArrowArray*)> converter)
         : Base(compression, std::move(converter)) {}
 
-    Status WriteRecord(Record record, ::ArrowArray* logical_batch) {
-        PAIMON_RETURN_NOT_OK(AddFileIndexBatch(logical_batch));
+    /// Extracts the pre-conversion Arrow batch from record for file index construction, then
+    /// passes record to the underlying data file writer, which may convert it to a physical schema.
+    Status WriteRecordWithFileIndex(Record record) {
+        PAIMON_RETURN_NOT_OK(AddFileIndexBatch(GetFileIndexBatch(record)));
         return Base::Write(std::move(record));
     }
 
@@ -112,6 +113,16 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
     }
 
  private:
+    static ::ArrowArray* GetFileIndexBatch(Record& record) {
+        if constexpr (std::is_same_v<Record, ::ArrowArray*>) {
+            return record;
+        } else {
+            static_assert(std::is_same_v<Record, KeyValueBatch>,
+                          "Unsupported data file record type");
+            return record.batch.get();
+        }
+    }
+
     Status AddFileIndexBatch(::ArrowArray* batch) {
         if (!file_index_writer_) {
             return Status::OK();

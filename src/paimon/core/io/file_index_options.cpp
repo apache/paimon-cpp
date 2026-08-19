@@ -19,6 +19,7 @@
 
 #include "paimon/core/io/file_index_options.h"
 
+#include <cstddef>
 #include <set>
 #include <utility>
 
@@ -33,6 +34,8 @@ namespace {
 
 constexpr char kFileIndexPrefix[] = "file-index.";
 constexpr char kColumnsSuffix[] = ".columns";
+constexpr size_t kFileIndexPrefixLength = sizeof(kFileIndexPrefix) - 1;
+constexpr size_t kColumnsSuffixLength = sizeof(kColumnsSuffix) - 1;
 
 }  // namespace
 
@@ -47,20 +50,24 @@ Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& op
             !StringUtils::EndsWith(key, kColumnsSuffix)) {
             continue;
         }
-        const size_t index_type_length =
-            key.size() - std::string(kFileIndexPrefix).size() - std::string(kColumnsSuffix).size();
-        const std::string index_type =
-            key.substr(std::string(kFileIndexPrefix).size(), index_type_length);
+        if (key.size() < kFileIndexPrefixLength + kColumnsSuffixLength) {
+            return Status::Invalid(fmt::format("Invalid file index option {}", key));
+        }
+        const size_t index_type_length = key.size() - kFileIndexPrefixLength - kColumnsSuffixLength;
+        const std::string index_type = key.substr(kFileIndexPrefixLength, index_type_length);
         if (index_type.empty()) {
             return Status::Invalid(fmt::format("Invalid file index option {}", key));
         }
+        // TODO(jinli.zjw): Align malformed list option parsing (for example, "f1,f2,,") with Java.
+        // Update this together with ConfigParser::ParseList to keep option parsing consistent.
         for (std::string column_name : StringUtils::Split(value, ",", /*ignore_empty=*/false)) {
             StringUtils::Trim(&column_name);
             if (column_name.empty()) {
                 return Status::Invalid(
                     fmt::format("Wrong option in {}, should not have empty column", key));
             }
-            if (column_name.find('[') != std::string::npos) {
+            if (column_name.find('[') != std::string::npos &&
+                StringUtils::EndsWith(column_name, "]")) {
                 return Status::NotImplemented(
                     "Writing file indexes for nested map columns is not supported");
             }
@@ -76,8 +83,8 @@ Result<FileIndexOptions> FileIndexOptions::FromCoreOptions(const CoreOptions& op
             key == Options::FILE_INDEX_IN_MANIFEST_THRESHOLD) {
             continue;
         }
-        std::vector<std::string> parts = StringUtils::Split(
-            key.substr(std::string(kFileIndexPrefix).size()), ".", /*ignore_empty=*/false);
+        std::vector<std::string> parts =
+            StringUtils::Split(key.substr(kFileIndexPrefixLength), ".", /*ignore_empty=*/false);
         if (parts.size() != 3) {
             continue;
         }

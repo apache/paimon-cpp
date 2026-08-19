@@ -757,6 +757,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/vector_file_batch_reader_test.cpp
                     core/io/data_file_meta_test.cpp
                     core/io/data_file_index_writer_test.cpp
+                    core/io/file_index_options_test.cpp
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp
                     core/io/rolling_blob_file_writer_test.cpp

@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,6 +27,7 @@
 
 #include "paimon/core/io/file_index_options.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 
 namespace arrow {
 class Field;
@@ -57,6 +59,10 @@ class DataFileIndexWriter {
 
     Status AddBatch(const std::shared_ptr<arrow::StructArray>& logical_batch);
 
+    /// Finalizes and publishes all configured indexes. This is a terminal, one-shot operation.
+    ///
+    /// @param data_file_path Path of the data file associated with these indexes.
+    /// @return Embedded index bytes or the external index file name.
     Result<FileIndexWriteResult> Finish(const std::string& data_file_path);
 
     void Abort();
@@ -88,6 +94,7 @@ class DataFileIndexWriter {
     std::shared_ptr<DataFilePathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
     std::optional<std::string> external_index_path_;
+    bool finished_ = false;
 };
 
 }  // namespace paimon

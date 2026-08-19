@@ -28,6 +28,7 @@
 #include "fmt/format.h"
 #include "paimon/common/io/byte_array_output_stream.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -54,6 +55,10 @@ Result<std::unique_ptr<DataFileIndexWriter>> DataFileIndexWriter::Create(
     std::vector<IndexWriterEntry> writers;
     writers.reserve(options.Definitions().size());
     for (const FileIndexDefinition& definition : options.Definitions()) {
+        if (SpecialFields::IsSystemField(definition.column_name)) {
+            return Status::Invalid(
+                fmt::format("File index column '{}' is a system field", definition.column_name));
+        }
         int32_t field_index = logical_schema->GetFieldIndex(definition.column_name);
         if (field_index < 0) {
             return Status::Invalid(
@@ -92,6 +97,9 @@ DataFileIndexWriter::DataFileIndexWriter(std::vector<IndexWriterEntry>&& writers
       pool_(pool) {}
 
 Status DataFileIndexWriter::AddBatch(const std::shared_ptr<arrow::StructArray>& logical_batch) {
+    if (finished_) {
+        return Status::Invalid("Data file index writer has already finished");
+    }
     for (const IndexWriterEntry& entry : writers_) {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::StructArray> projected,
@@ -108,10 +116,8 @@ Status DataFileIndexWriter::AddBatch(const std::shared_ptr<arrow::StructArray>& 
 Result<std::shared_ptr<Bytes>> DataFileIndexWriter::SerializeContainer() {
     FileIndexFormat::ColumnIndexes column_indexes;
     for (const IndexWriterEntry& entry : writers_) {
-        PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> serialized,
+        PAIMON_ASSIGN_OR_RAISE(column_indexes[entry.column_name][entry.index_type],
                                entry.writer->SerializedBytes());
-        column_indexes[entry.column_name][entry.index_type] =
-            std::shared_ptr<Bytes>(std::move(serialized));
     }
 
     auto segment_output = std::make_unique<MemorySegmentOutputStream>(
@@ -126,6 +132,10 @@ Result<std::shared_ptr<Bytes>> DataFileIndexWriter::SerializeContainer() {
 }
 
 Result<FileIndexWriteResult> DataFileIndexWriter::Finish(const std::string& data_file_path) {
+    if (finished_) {
+        return Status::Invalid("Data file index writer has already finished");
+    }
+    finished_ = true;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes, SerializeContainer());
     if (static_cast<int64_t>(bytes->size()) <= in_manifest_threshold_) {
         return FileIndexWriteResult{bytes, {}};
@@ -141,7 +151,9 @@ Status DataFileIndexWriter::WriteExternal(const std::string& path,
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output,
                            file_system_->Create(path, /*overwrite=*/false));
     ScopeGuard guard([this, &output]() {
-        [[maybe_unused]] Status _ = output->Close();
+        if (output) {
+            [[maybe_unused]] Status _ = output->Close();
+        }
         Abort();
     });
     PAIMON_ASSIGN_OR_RAISE(int64_t written,
@@ -151,8 +163,9 @@ Status DataFileIndexWriter::WriteExternal(const std::string& path,
                                            path, bytes->size(), written));
     }
     PAIMON_RETURN_NOT_OK(output->Flush());
-    PAIMON_RETURN_NOT_OK(output->Close());
+    Status close_status = output->Close();
     output.reset();
+    PAIMON_RETURN_NOT_OK(close_status);
     guard.Release();
     return Status::OK();
 }

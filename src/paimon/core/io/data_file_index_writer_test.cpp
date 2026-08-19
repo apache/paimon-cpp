@@ -19,6 +19,7 @@
 
 #include "paimon/core/io/data_file_index_writer.h"
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -27,6 +28,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
@@ -39,9 +41,54 @@
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+struct CloseFailingState {
+    int32_t close_count = 0;
+    int32_t delete_count = 0;
+};
+
+class CloseFailingOutputStream : public MockOutputStream {
+ public:
+    explicit CloseFailingOutputStream(const std::shared_ptr<CloseFailingState>& state)
+        : state_(state) {}
+
+    Result<int64_t> Write(const char*, int64_t size) override {
+        return size;
+    }
+
+    Status Close() override {
+        ++state_->close_count;
+        return Status::IOError("close failed");
+    }
+
+ private:
+    std::shared_ptr<CloseFailingState> state_;
+};
+
+class CloseFailingFileSystem : public MockFileSystem {
+ public:
+    explicit CloseFailingFileSystem(const std::shared_ptr<CloseFailingState>& state)
+        : state_(state) {}
+
+    Result<std::unique_ptr<OutputStream>> Create(const std::string&, bool) const override {
+        return std::unique_ptr<OutputStream>(new CloseFailingOutputStream(state_));
+    }
+
+    Status Delete(const std::string&, bool = true) const override {
+        ++state_->delete_count;
+        return Status::OK();
+    }
+
+ private:
+    std::shared_ptr<CloseFailingState> state_;
+};
+
+}  // namespace
 
 class DataFileIndexWriterTest : public ::testing::Test {
  public:
@@ -58,10 +105,8 @@ class DataFileIndexWriterTest : public ::testing::Test {
 
     Result<std::unique_ptr<DataFileIndexWriter>> CreateWriter(
         const std::map<std::string, std::string>& index_options) const {
-        std::map<std::string, std::string> options = {{"file-system", "local"}};
-        options.insert(index_options.begin(), index_options.end());
         PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                               CoreOptions::FromMap(options, file_system_));
+                               CoreOptions::FromMap(index_options, file_system_));
         PAIMON_ASSIGN_OR_RAISE(FileIndexOptions parsed,
                                FileIndexOptions::FromCoreOptions(core_options));
         return DataFileIndexWriter::Create(schema_, parsed, file_system_, path_factory_, pool_);
@@ -157,6 +202,52 @@ TEST_F(DataFileIndexWriterTest, TestUnavailableWriterFailsCreation) {
                         "File index type 'unknown' is not registered");
     ASSERT_NOK_WITH_MSG(CreateWriter({{"file-index.bloom-filter.columns", "f0"}}),
                         "do not support index writer in bloom filter");
+}
+
+TEST_F(DataFileIndexWriterTest, TestRejectSystemFieldIndex) {
+    std::shared_ptr<arrow::Schema> key_value_schema =
+        SpecialFields::CompleteSequenceAndValueKindField(schema_);
+    for (const std::string& field_name :
+         {SpecialFields::SequenceNumber().Name(), SpecialFields::ValueKind().Name()}) {
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions core_options,
+            CoreOptions::FromMap({{"file-index.bitmap.columns", field_name}}, file_system_));
+        ASSERT_OK_AND_ASSIGN(FileIndexOptions options,
+                             FileIndexOptions::FromCoreOptions(core_options));
+        ASSERT_NOK_WITH_MSG(DataFileIndexWriter::Create(key_value_schema, options, file_system_,
+                                                        path_factory_, pool_),
+                            "is a system field");
+    }
+}
+
+TEST_F(DataFileIndexWriterTest, TestFinishIsOneShot) {
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         CreateWriter({{"file-index.bitmap.columns", "f0"},
+                                       {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}}));
+    ASSERT_OK(writer->AddBatch(CreateBatch(R"([{"f0": 1, "f1": 10}])")));
+    ASSERT_OK(writer->Finish("unused.orc"));
+
+    ASSERT_NOK_WITH_MSG(writer->Finish("unused.orc"), "already finished");
+    ASSERT_NOK_WITH_MSG(writer->AddBatch(CreateBatch(R"([{"f0": 2, "f1": 20}])")),
+                        "already finished");
+}
+
+TEST_F(DataFileIndexWriterTest, TestCloseFailureClosesExternalStreamOnce) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                         CoreOptions::FromMap({{"file-index.bitmap.columns", "f0"},
+                                               {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"}},
+                                              file_system_));
+    ASSERT_OK_AND_ASSIGN(FileIndexOptions options, FileIndexOptions::FromCoreOptions(core_options));
+    auto state = std::make_shared<CloseFailingState>();
+    auto close_failing_file_system = std::make_shared<CloseFailingFileSystem>(state);
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         DataFileIndexWriter::Create(schema_, options, close_failing_file_system,
+                                                     path_factory_, pool_));
+    ASSERT_OK(writer->AddBatch(CreateBatch(R"([{"f0": 1, "f1": 10}])")));
+
+    ASSERT_NOK_WITH_MSG(writer->Finish(path_factory_->NewPath()), "close failed");
+    ASSERT_EQ(1, state->close_count);
+    ASSERT_EQ(1, state->delete_count);
 }
 
 }  // namespace paimon::test

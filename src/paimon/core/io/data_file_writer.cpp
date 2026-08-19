@@ -48,7 +48,7 @@ DataFileWriter::DataFileWriter(
 
 Status DataFileWriter::Write(ArrowArray* batch) {
     int64_t record_count = batch->length;
-    PAIMON_RETURN_NOT_OK(WriteRecord(batch, batch));
+    PAIMON_RETURN_NOT_OK(WriteRecordWithFileIndex(batch));
     seq_num_counter_->Add(record_count);
     return Status::OK();
 }
