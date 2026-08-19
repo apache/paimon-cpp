@@ -147,13 +147,13 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
 
     void CheckFileCount(const std::string& root_path, const std::vector<std::string>& subdirs,
                         int32_t expect_file_count) const {
-        std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+        std::vector<BasicFileStatus> status_list;
         for (const auto& dir : subdirs) {
             ASSERT_OK(file_system_->ListDir(PathUtil::JoinPath(root_path, dir), &status_list));
         }
         int32_t file_count = 0;
         for (const auto& file_status : status_list) {
-            if (!file_status->IsDir()) {
+            if (!file_status.IsDir()) {
                 file_count++;
             }
         }
@@ -2537,12 +2537,12 @@ TEST_P(WriteInteTest, TestWriteWithFieldId) {
     ASSERT_OK(CommitMessages(table_path, commit_messages, /*ignore_empty_commit=*/false));
 
     // check data file has field id meta
-    std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+    std::vector<BasicFileStatus> status_list;
     ASSERT_OK(file_system_->ListDir(table_path + "/bucket-0/", &status_list));
     std::vector<std::string> files;
     for (const auto& file_status : status_list) {
-        if (!file_status->IsDir()) {
-            files.emplace_back(file_status->GetPath());
+        if (!file_status.IsDir()) {
+            files.emplace_back(file_status.GetPath());
         }
     }
     ASSERT_EQ(files.size(), 1);

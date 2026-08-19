@@ -72,7 +72,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion12) {
                             "orc/pk_btree_source_meta.db/pk_btree_source_meta/"
                             "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
 
     std::vector<char> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -106,7 +106,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion11) {
         "orc/append_with_global_index_with_partition.db/append_with_global_index_with_partition/"
         "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
 
     std::vector<char> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -150,7 +150,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion10) {
                             "pk_dv_index_with_commit_message_version10/"
                             "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
 
     std::vector<char> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -214,7 +214,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion9) {
         "orc/pk_dv_index_not_in_data_no_external.db/pk_dv_index_not_in_data_no_external/"
         "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
 
     std::vector<char> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -279,7 +279,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion9WithExternalPathForIndex) {
         "orc/pk_dv_index_in_data_with_external.db/pk_dv_index_in_data_with_external/"
         "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
 
     std::vector<char> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -347,7 +347,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion8) {
                             "/orc/append_table_with_first_row_id.db/append_table_with_first_row_id/"
                             "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
 
     std::vector<uint8_t> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -415,7 +415,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion7) {
                             "/orc/pk_table_with_total_buckets.db/pk_table_with_total_buckets/"
                             "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
     ASSERT_OK(in_stream->Read(reinterpret_cast<char*>(buffer.data()), buffer.size()));
@@ -487,7 +487,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion6) {
                             "/orc/append_10_external_path.db/append_10_external_path/"
                             "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
     ASSERT_OK(in_stream->Read(reinterpret_cast<char*>(buffer.data()), buffer.size()));
@@ -532,7 +532,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion5) {
                             "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/"
                             "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
     ASSERT_OK(in_stream->Read(reinterpret_cast<char*>(buffer.data()), buffer.size()));
@@ -632,7 +632,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion4) {
     std::string data_path = paimon::test::GetDataDir() +
                             "/orc/append_10.db/append_10/commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -722,7 +722,7 @@ TEST(CommitMessageTest, TestCompatibleWithJavaPaimon10WithStatsDenseStore) {
         "/orc/append_10_stats_dense_store.db/append_10_stats_dense_store/commit_messages/"
         "commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -804,7 +804,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon1) {
     std::string data_path = paimon::test::GetDataDir() +
                             "/orc/append_09.db/append_09/commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -892,7 +892,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon2) {
     std::string data_path = paimon::test::GetDataDir() +
                             "/orc/append_09.db/append_09/commit_messages/commit_messages-02";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -962,7 +962,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon3) {
     std::string data_path = paimon::test::GetDataDir() +
                             "/orc/append_09.db/append_09/commit_messages/commit_messages-03";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -1013,7 +1013,7 @@ TEST(CommitMessageTest, TestPkTableCompatibleWithJavaPaimon09) {
         paimon::test::GetDataDir() +
         "/orc/pk_09_with_dv.db/pk_09_with_dv/commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -1089,7 +1089,7 @@ TEST(CommitMessageTest, TestInvalidMessages) {
     std::string data_path = paimon::test::GetDataDir() +
                             "/orc/append_09.db/append_09/commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -1107,7 +1107,7 @@ TEST(CommitMessageTest, TestCompatibleWithComplexDataType) {
     std::string data_path = paimon::test::GetDataDir() +
                             "/orc/append_09.db/append_09/commit_messages/commit_messages_complex";
     auto file_system = std::make_shared<LocalFileSystem>();
-    auto buffer_length = file_system->GetFileStatus(data_path).value()->GetLen();
+    auto buffer_length = file_system->GetFileStatus(data_path).value().GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     ASSERT_OK_AND_ASSIGN(auto in_stream, file_system->Open(data_path));
@@ -1235,11 +1235,11 @@ TEST(CommitMessageTest, TestSerialize) {
     ASSERT_EQ(serialized_commit_message, reserialized_commit_message);
 
     auto fs = std::make_shared<LocalFileSystem>();
-    std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+    std::vector<BasicFileStatus> status_list;
     ASSERT_OK(fs->ListDir(root_path + "/f0=true/f3=1/bucket-0/", &status_list));
     int32_t file_nums = 0;
     for (const auto& file_status : status_list) {
-        if (!file_status->IsDir()) {
+        if (!file_status.IsDir()) {
             file_nums++;
         }
     }

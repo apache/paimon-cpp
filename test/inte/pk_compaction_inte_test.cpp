@@ -830,7 +830,7 @@ TEST_F(PkCompactionInteTest, CompactWithExternalPath) {
     {
         auto filesystem = external_dir->GetFileSystem();
         auto bucket_dir = external_path + "/f1=10/bucket-0/";
-        std::vector<std::unique_ptr<BasicFileStatus>> file_statuses;
+        std::vector<BasicFileStatus> file_statuses;
         ASSERT_OK(filesystem->ListDir(bucket_dir, &file_statuses));
         ASSERT_FALSE(file_statuses.empty())
             << "External path directory should contain compact output files";

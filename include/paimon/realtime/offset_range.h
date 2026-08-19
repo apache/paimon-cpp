@@ -19,18 +19,38 @@
 
 #pragma once
 
-#include "paimon/realtime/mem_indexer.h"
+#include <cstdint>
+
+#include "paimon/visibility.h"
 
 namespace paimon {
 
-/// Factory for Paimon's default Arrow-backed `MemIndexer`.
-class PAIMON_EXPORT ArrowMemIndexerFactory : public MemIndexerFactory {
- public:
-    /// Creates an Arrow-backed indexer for one partition and bucket.
-    Result<std::shared_ptr<MemIndexer>> Create(
-        std::unique_ptr<::ArrowSchema> write_schema,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<MemoryPool>& memory_pool) override;
+/// A left-closed, right-open offset range `[begin, end)`.
+struct PAIMON_EXPORT OffsetRange {
+    OffsetRange(int64_t begin, int64_t end) : begin(begin), end(end) {}
+
+    /// Returns the number of offsets covered by this range.
+    int64_t Count() const {
+        return end - begin;
+    }
+
+    /// Returns whether this range contains no offsets.
+    bool Empty() const {
+        return begin == end;
+    }
+
+    bool operator==(const OffsetRange& other) const {
+        return begin == other.begin && end == other.end;
+    }
+
+    bool operator!=(const OffsetRange& other) const {
+        return !(*this == other);
+    }
+
+    /// Inclusive first offset.
+    int64_t begin;
+    /// Exclusive end offset.
+    int64_t end;
 };
 
 }  // namespace paimon

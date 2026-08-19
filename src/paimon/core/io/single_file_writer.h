@@ -232,8 +232,8 @@ Status SingleFileWriter<T, R>::Close() {
         std::shared_ptr<OutputStream> out = std::move(out_);
         PAIMON_RETURN_NOT_OK(out->Close());
     } else {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status, fs_->GetFileStatus(path_));
-        output_bytes_ = file_status->GetLen();
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(path_));
+        output_bytes_ = file_status.GetLen();
     }
     // Completing the format writer and stream is terminal even if publication fails. The scope
     // guard still removes the file on a callback error, while a repeated Close() does not publish

@@ -203,7 +203,7 @@ class ParquetFileBatchReaderTest : public ::testing::Test,
         const std::optional<RoaringBitmap32>& selection_bitmap, int32_t batch_size,
         bool enable_page_level_filter = false) const {
         EXPECT_OK_AND_ASSIGN(auto input_stream, fs_->Open(file_name));
-        auto length = fs_->GetFileStatus(file_name).value()->GetLen();
+        auto length = fs_->GetFileStatus(file_name).value().GetLen();
         auto in_stream =
             std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, pool_);
         auto storage_read_bytes = in_stream->StorageReadBytes();
@@ -385,7 +385,7 @@ TEST_F(ParquetFileBatchReaderTest, TestSetReadSchema) {
                             "parquet/parquet_append_table.db/parquet_append_table/bucket-0/"
                             "data-9ea62f34-1dca-49c1-bf7a-d37303d8fb76-0.parquet";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_name));
-    auto length = fs_->GetFileStatus(file_name).value()->GetLen();
+    auto length = fs_->GetFileStatus(file_name).value().GetLen();
     auto in_stream =
         std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, pool_);
     std::map<std::string, std::string> options;

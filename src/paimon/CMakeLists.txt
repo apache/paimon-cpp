@@ -371,10 +371,11 @@ set(PAIMON_CORE_SRCS
     core/manifest/snapshot_live_manifest_entries.cpp
     core/operation/write_context.cpp
     core/operation/write_restore.cpp
-    core/realtime/arrow_mem_indexer.cpp
-    core/realtime/arrow_mem_indexer_factory.cpp
+    core/realtime/arrow_realtime_store.cpp
+    core/realtime/arrow_realtime_store_factory.cpp
     core/realtime/realtime_append_only_writer.cpp
     core/realtime/realtime_context.cpp
+    core/realtime/realtime_context_impl.cpp
     core/postpone/postpone_bucket_writer.cpp
     core/schema/arrow_schema_validator.cpp
     core/schema/schema_manager.cpp
@@ -765,8 +766,9 @@ if(PAIMON_BUILD_TESTS)
                     core/manifest/index_manifest_entry_serializer_test.cpp
                     core/manifest/index_manifest_file_handler_test.cpp
                     core/memory/writer_memory_manager_test.cpp
-                    core/realtime/arrow_mem_indexer_test.cpp
+                    core/realtime/arrow_realtime_store_test.cpp
                     core/realtime/realtime_context_test.cpp
+                    core/realtime/realtime_reader_test.cpp
                     core/mergetree/levels_test.cpp
                     core/mergetree/lookup_file_test.cpp
                     core/mergetree/lookup_levels_test.cpp

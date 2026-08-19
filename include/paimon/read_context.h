@@ -38,6 +38,7 @@ class Executor;
 class MemoryPool;
 class Predicate;
 class FileSystem;
+class RealtimeContext;
 
 /// `ReadContext` is some configuration for read operations.
 ///
@@ -57,6 +58,7 @@ class PAIMON_EXPORT ReadContext {
                 const std::shared_ptr<Executor>& executor,
                 const std::shared_ptr<FileSystem>& specific_file_system,
                 const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
+                const std::shared_ptr<RealtimeContext>& realtime_context,
                 const std::map<std::string, std::string>& options,
                 PrefetchCacheMode prefetch_cache_mode, const CacheConfig& cache_config,
                 const std::shared_ptr<Cache>& cache);
@@ -121,6 +123,11 @@ class PAIMON_EXPORT ReadContext {
         return specific_file_system_;
     }
 
+    /// Returns the context used to resolve process-local real-time split tickets.
+    std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
+        return realtime_context_;
+    }
+
     PrefetchCacheMode GetPrefetchCacheMode() const {
         return prefetch_cache_mode_;
     }
@@ -166,6 +173,7 @@ class PAIMON_EXPORT ReadContext {
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
+    std::shared_ptr<RealtimeContext> realtime_context_;
     std::map<std::string, std::string> options_;
     PrefetchCacheMode prefetch_cache_mode_;
     CacheConfig cache_config_;
@@ -362,6 +370,12 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, the default system executor will be used.
     ReadContextBuilder& WithExecutor(const std::shared_ptr<Executor>& executor);
+
+    /// Sets the shared context used to resolve process-local real-time split tickets.
+    /// @param realtime_context Context shared with the scan that created the real-time splits.
+    /// @return Reference to this builder for method chaining.
+    ReadContextBuilder& WithRealtimeContext(
+        const std::shared_ptr<RealtimeContext>& realtime_context);
 
     /// Set the table schema as a string to avoid schema loading I/O operations.
     ///

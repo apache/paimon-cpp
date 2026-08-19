@@ -135,7 +135,7 @@ TEST(OrcInputOutputStreamTest, TestSimple) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, file_system->Open(file_name));
     ASSERT_OK_AND_ASSIGN(auto in_stream,
                          OrcInputStreamImpl::Create(input_stream, DEFAULT_NATURAL_READ_SIZE));
-    auto length = file_system->GetFileStatus(file_name).value()->GetLen();
+    auto length = file_system->GetFileStatus(file_name).value().GetLen();
     ASSERT_EQ(in_stream->getName(), normalized_file_name);
     ASSERT_EQ(in_stream->getLength(), length);
     ASSERT_EQ(in_stream->getNaturalReadSize(), 1024 * 1024);

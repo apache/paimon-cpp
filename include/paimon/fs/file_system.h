@@ -135,57 +135,75 @@ class PAIMON_EXPORT OutputStream : public Stream {
     virtual Result<std::string> GetUri() const = 0;
 };
 
-/// Basic file status information interface.
+/// Basic file status information.
 ///
 /// This class provides fundamental file system metadata for files and directories. It serves as a
-/// lightweight interface for basic file operations that only require path information and directory
-/// status.
+/// lightweight value type for basic file operations that only require path information and
+/// directory status. It can be copied and stored cheaply.
 class PAIMON_EXPORT BasicFileStatus {
  public:
     BasicFileStatus() = default;
-    virtual ~BasicFileStatus() = default;
+
+    /// Create a basic file status from caller-supplied metadata.
+    /// @param path The path of the file or directory.
+    /// @param is_dir Whether the path represents a directory.
+    BasicFileStatus(std::string path, bool is_dir) : path_(std::move(path)), is_dir_(is_dir) {}
 
     /// Check if this entry represents a directory.
-    virtual bool IsDir() const = 0;
+    bool IsDir() const {
+        return is_dir_;
+    }
 
     /// Get the path of this file or directory.
-    virtual std::string GetPath() const = 0;
+    std::string GetPath() const {
+        return path_;
+    }
+
+ private:
+    std::string path_;
+    bool is_dir_ = false;
 };
 
-/// Extended file status information.
+/// File status information.
 ///
-/// This class extends BasicFileStatus to provide comprehensive file system metadata including file
-/// size, modification time, and other attributes. It's used for operations that require detailed
-/// file information.
+/// This class provides comprehensive file system metadata including file path, size, directory
+/// flag, and modification time. It is a concrete value type that can be copied and stored cheaply.
 class PAIMON_EXPORT FileStatus {
  public:
-    FileStatus() = default;
-    virtual ~FileStatus() = default;
-
     /// Sentinel returned by `GetModificationTime()` when the modification time is not known.
     static constexpr int64_t kUnknownModificationTime = -1;
+
+    static constexpr int64_t kNoSize = -1;
+
+    FileStatus() = default;
 
     /// Create a file status from caller-supplied metadata.
     /// @param path The path of the file or directory.
     /// @param length The size of the file in bytes. It may be negative only when the size is
     ///               unknown.
     /// @param is_dir Whether the path represents a directory. Defaults to false.
-    FileStatus(std::string path, int64_t length, bool is_dir = false)
-        : path_(std::move(path)), length_(length), is_dir_(is_dir) {}
+    /// @param modification_time The last modification time in milliseconds since the epoch
+    ///                          (UTC January 1, 1970). Defaults to `kUnknownModificationTime`.
+    FileStatus(std::string path, int64_t length, bool is_dir = false,
+               int64_t modification_time = kUnknownModificationTime)
+        : path_(std::move(path)),
+          length_(length),
+          is_dir_(is_dir),
+          modification_time_(modification_time) {}
 
     /// Get the size of the file in bytes.
     /// @note For directories, this method is undefined behavior.
-    virtual int64_t GetLen() const {
+    int64_t GetLen() const {
         return length_;
     }
 
     /// Check if this entry represents a directory.
-    virtual bool IsDir() const {
+    bool IsDir() const {
         return is_dir_;
     }
 
     /// Get the path of this file or directory.
-    virtual std::string GetPath() const {
+    std::string GetPath() const {
         return path_;
     }
 
@@ -193,14 +211,15 @@ class PAIMON_EXPORT FileStatus {
     ///
     /// @return A long value representing the time the file was last modified, measured in
     /// milliseconds since the epoch (UTC January 1, 1970).
-    virtual int64_t GetModificationTime() const {
-        return kUnknownModificationTime;
+    int64_t GetModificationTime() const {
+        return modification_time_;
     }
 
  private:
     std::string path_;
-    int64_t length_ = -1;
+    int64_t length_ = kNoSize;
     bool is_dir_ = false;
+    int64_t modification_time_ = kUnknownModificationTime;
 };
 
 /// Abstract file system interface.
@@ -263,25 +282,23 @@ class PAIMON_EXPORT FileSystem {
     virtual Status Delete(const std::string& path, bool recursive = true) const = 0;
     /// Get detailed status information for a file or directory.
     /// @param path The file or directory path to query.
-    /// @return Result containing a unique pointer to `FileStatus` on success, or error status on
+    /// @return Result containing a `FileStatus` on success, or error status on
     ///         failure (e.g., path not found, permission denied).
-    virtual Result<std::unique_ptr<FileStatus>> GetFileStatus(const std::string& path) const = 0;
+    virtual Result<FileStatus> GetFileStatus(const std::string& path) const = 0;
 
     /// List files of a directory (basic information only).
     /// @param directory The directory path to list.
     /// @param[out] file_status_list Output vector to store `BasicFileStatus` objects.
     /// @return Status indicating success (OK) or failure with error information.
-    virtual Status ListDir(
-        const std::string& directory,
-        std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const = 0;
+    virtual Status ListDir(const std::string& directory,
+                           std::vector<BasicFileStatus>* file_status_list) const = 0;
 
     /// List file status with detailed information.
     /// @param path The file or directory path to list.
     /// @param[out] file_status_list Output vector to store `FileStatus` objects.
     /// @return Status indicating success (OK) or failure with error information.
-    virtual Status ListFileStatus(
-        const std::string& path,
-        std::vector<std::unique_ptr<FileStatus>>* file_status_list) const = 0;
+    virtual Status ListFileStatus(const std::string& path,
+                                  std::vector<FileStatus>* file_status_list) const = 0;
 
     /// Check if a file or directory exists.
     /// @param path The file or directory path to check.

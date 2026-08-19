@@ -86,12 +86,11 @@ class PAIMON_EXPORT ObjectStoreFileSystem : public FileSystem {
 
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override;
     Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override;
-    Result<std::unique_ptr<FileStatus>> GetFileStatus(const std::string& path) const override;
+    Result<FileStatus> GetFileStatus(const std::string& path) const override;
     Status ListDir(const std::string& directory,
-                   std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const override;
-    Status ListFileStatus(
-        const std::string& path,
-        std::vector<std::unique_ptr<FileStatus>>* file_status_list) const override;
+                   std::vector<BasicFileStatus>* file_status_list) const override;
+    Status ListFileStatus(const std::string& path,
+                          std::vector<FileStatus>* file_status_list) const override;
     Result<bool> Exists(const std::string& path) const override;
 
     Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
@@ -108,9 +107,8 @@ class PAIMON_EXPORT ObjectStoreFileSystem : public FileSystem {
 
  private:
     Result<bool> DirectoryExists(const ObjectStorePath& path) const;
-    Status ListDirectory(const ObjectStorePath& path,
-                         std::vector<std::unique_ptr<BasicFileStatus>>* basic_statuses,
-                         std::vector<std::unique_ptr<FileStatus>>* statuses) const;
+    Status ListDirectory(const ObjectStorePath& path, std::vector<BasicFileStatus>* basic_statuses,
+                         std::vector<FileStatus>* statuses) const;
     Status ReadOnlyStatus() const;
 
     std::string scheme_;

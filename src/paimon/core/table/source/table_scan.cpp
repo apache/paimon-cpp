@@ -41,6 +41,7 @@
 #include "paimon/core/operation/data_evolution_file_store_scan.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/operation/key_value_file_store_scan.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
@@ -336,10 +337,12 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
     auto batch_scan = std::make_unique<DataTableBatchScan>(
         /*pk_table=*/pk_table, core_options, snapshot_reader, read_optimized, context->GetLimit());
     if (context->GetRealtimeContext()) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context,
+                               RealtimeContextImpl::Cast(context->GetRealtimeContext()));
         return std::make_unique<RealtimeTableScan>(
-            std::move(batch_scan), context->GetRealtimeContext(), path_factory,
+            std::move(batch_scan), realtime_context, path_factory,
             snapshot_reader->GetSnapshotManager(), core_options.GetFileSystem(),
-            context->GetScanFilters());
+            context->GetScanFilters(), core_options.GetRealtimeReadViewTtlMillis());
     }
     if (core_options.DataEvolutionEnabled()) {
         return std::make_unique<DataEvolutionBatchScan>(

@@ -217,12 +217,12 @@ Result<std::string> FileSystemCatalog::NewDataTablePath(const std::string& wareh
 }
 
 Result<std::vector<std::string>> FileSystemCatalog::ListDatabases() const {
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListDir(warehouse_, &file_status_list));
     std::vector<std::string> db_names;
     for (const auto& file_status : file_status_list) {
-        if (file_status->IsDir()) {
-            std::string name = PathUtil::GetName(file_status->GetPath());
+        if (file_status.IsDir()) {
+            std::string name = PathUtil::GetName(file_status.GetPath());
             if (StringUtils::EndsWith(name, DB_SUFFIX)) {
                 db_names.push_back(name.substr(0, name.length() - std::strlen(DB_SUFFIX)));
             }
@@ -236,12 +236,12 @@ Result<std::vector<std::string>> FileSystemCatalog::ListTables(const std::string
         return GlobalSystemTableLoader::GetSupportedTableNames(catalog_options_);
     }
     std::string database_path = NewDatabasePath(warehouse_, db_name);
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListDir(database_path, &file_status_list));
     std::vector<std::string> table_names;
     for (const auto& file_status : file_status_list) {
-        if (file_status->IsDir()) {
-            std::string table_path = file_status->GetPath();
+        if (file_status.IsDir()) {
+            std::string table_path = file_status.GetPath();
             PAIMON_ASSIGN_OR_RAISE(bool table_exist, TableExistsInFileSystem(table_path));
             if (table_exist) {
                 table_names.push_back(PathUtil::GetName(table_path));

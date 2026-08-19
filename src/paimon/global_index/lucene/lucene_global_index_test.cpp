@@ -89,7 +89,7 @@ class LuceneGlobalIndexTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(auto result_metas, global_writer->Finish());
 
         // check tmp dir
-        std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+        std::vector<BasicFileStatus> file_status_list;
         EXPECT_OK(fs_->ListDir(tmp_dir, &file_status_list));
         EXPECT_EQ(file_status_list.size(), 1);
 

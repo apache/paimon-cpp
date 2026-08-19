@@ -46,8 +46,8 @@ class IndexFile {
     }
 
     virtual Result<int64_t> FileSize(const std::string& file) const {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status, fs_->GetFileStatus(file));
-        return file_status->GetLen();
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(file));
+        return file_status.GetLen();
     }
 
     virtual void Delete(const std::shared_ptr<IndexFileMeta>& file) const {

@@ -115,9 +115,8 @@ Result<int64_t> SpillWriter::GetFileSize() const {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(int64_t file_size, arrow_output_stream_adapter_->Tell());
         return file_size;
     }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status,
-                           fs_->GetFileStatus(channel_id_.GetPath()));
-    return file_status->GetLen();
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(channel_id_.GetPath()));
+    return file_status.GetLen();
 }
 
 const FileIOChannel::ID& SpillWriter::GetChannelId() const {

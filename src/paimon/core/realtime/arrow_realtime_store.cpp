@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/core/realtime/arrow_mem_indexer.h"
+#include "paimon/core/realtime/arrow_realtime_store.h"
 
 #include <algorithm>
 #include <limits>
@@ -55,12 +55,12 @@ uint64_t GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data) {
 
 }  // namespace
 
-class ArrowMemIndexer::Segment : public RealtimeSegmentHandle {
+class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
  public:
-    Segment(const Range& offset_range, std::vector<StoredBatch>&& batches)
+    Segment(const OffsetRange& offset_range, std::vector<StoredBatch>&& batches)
         : offset_range_(offset_range), batches_(std::move(batches)) {}
 
-    Range GetOffsetRange() const override {
+    OffsetRange GetOffsetRange() const override {
         return offset_range_;
     }
 
@@ -77,20 +77,20 @@ class ArrowMemIndexer::Segment : public RealtimeSegmentHandle {
     }
 
  private:
-    Range offset_range_;
+    OffsetRange offset_range_;
     std::vector<StoredBatch> batches_;
 };
 
-class ArrowMemIndexer::ReadView : public MemReadView {
+class ArrowRealtimeStore::ReadView : public RealtimeReadView {
  public:
     explicit ReadView(std::vector<StoredBatch>&& batches) : batches_(std::move(batches)) {
         if (!batches_.empty()) {
             offset_range_ =
-                Range(batches_.front().offset_range.from, batches_.back().offset_range.to);
+                OffsetRange(batches_.front().offset_range.begin, batches_.back().offset_range.end);
         }
     }
 
-    std::optional<Range> GetOffsetRange() const override {
+    std::optional<OffsetRange> GetOffsetRange() const override {
         return offset_range_;
     }
 
@@ -100,10 +100,10 @@ class ArrowMemIndexer::ReadView : public MemReadView {
 
  private:
     std::vector<StoredBatch> batches_;
-    std::optional<Range> offset_range_;
+    std::optional<OffsetRange> offset_range_;
 };
 
-class ArrowMemIndexer::CommitBatchReader : public BatchReader {
+class ArrowRealtimeStore::CommitBatchReader : public BatchReader {
  public:
     CommitBatchReader(const std::shared_ptr<Segment>& segment,
                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
@@ -161,36 +161,35 @@ class ArrowMemIndexer::CommitBatchReader : public BatchReader {
     size_t next_batch_ = 0;
 };
 
-class ArrowMemIndexer::QueryBatchReader : public BatchReader {
+class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
  public:
-    QueryBatchReader(const std::shared_ptr<ReadView>& view, int64_t offset_lower_exclusive,
+    QueryBatchReader(const ReadView* view, int64_t offset_begin,
                      const std::shared_ptr<arrow::Schema>& read_schema,
                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
         : view_(view),
-          offset_lower_exclusive_(offset_lower_exclusive),
+          offset_begin_(offset_begin),
           read_schema_(read_schema),
           arrow_pool_(arrow_pool),
           metrics_(std::make_shared<MetricsImpl>()) {}
 
     Result<ReadBatch> NextBatch() override {
         return Status::Invalid(
-            "paimon inner reader ArrowMemIndexer::QueryBatchReader should use "
+            "paimon inner reader ArrowRealtimeStore::QueryBatchReader should use "
             "NextBatchWithBitmap");
     }
 
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
         // TODO(xinyu.lxy): Memory query reads return complete stored write batches and
         // intentionally ignore the configured read batch size.
-        if (offset_lower_exclusive_ == std::numeric_limits<int64_t>::max()) {
+        if (offset_begin_ == std::numeric_limits<int64_t>::max()) {
             return MakeEofBatchWithBitmap();
         }
         while (view_ && next_batch_ < view_->GetBatches().size()) {
             const StoredBatch& stored = view_->GetBatches()[next_batch_++];
-            if (stored.offset_range.to <= offset_lower_exclusive_) {
+            if (stored.offset_range.end <= offset_begin_) {
                 continue;
             }
-            int64_t begin =
-                std::max<int64_t>(0, offset_lower_exclusive_ + 1 - stored.offset_range.from);
+            int64_t begin = std::max<int64_t>(0, offset_begin_ - stored.offset_range.begin);
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> output, BuildOutput(stored));
             RoaringBitmap32 candidate_rows;
             candidate_rows.AddRange(static_cast<int32_t>(begin),
@@ -210,7 +209,7 @@ class ArrowMemIndexer::QueryBatchReader : public BatchReader {
     }
 
     void Close() override {
-        view_.reset();
+        view_ = nullptr;
     }
 
  private:
@@ -228,24 +227,27 @@ class ArrowMemIndexer::QueryBatchReader : public BatchReader {
     }
 
  private:
-    std::shared_ptr<ReadView> view_;
-    int64_t offset_lower_exclusive_;
+    const ReadView* view_;
+    int64_t offset_begin_;
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<Metrics> metrics_;
     size_t next_batch_ = 0;
 };
 
-ArrowMemIndexer::ArrowMemIndexer(const std::shared_ptr<arrow::Schema>& write_schema,
-                                 const std::shared_ptr<MemoryPool>& memory_pool,
-                                 const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+ArrowRealtimeStore::ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema,
+                                       const std::shared_ptr<MemoryPool>& memory_pool,
+                                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : write_schema_(write_schema), memory_pool_(memory_pool), arrow_pool_(arrow_pool) {}
 
-Status ArrowMemIndexer::Write(RealtimeWriteBatch&& write_batch) {
+Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
     if (!write_batch.batch) {
         return Status::Invalid("real-time write batch is null");
     }
     int64_t row_count = write_batch.batch->GetData()->length;
+    if (write_batch.offset_range.begin < 0 || write_batch.offset_range.Empty()) {
+        return Status::Invalid("real-time offset range is invalid");
+    }
     if (write_batch.offset_range.Count() != row_count) {
         return Status::Invalid("real-time offset range does not match batch row count");
     }
@@ -264,7 +266,7 @@ Status ArrowMemIndexer::Write(RealtimeWriteBatch&& write_batch) {
         checked_pointer_cast<arrow::StructArray>(data);
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (building_range_ && write_batch.offset_range.from != building_range_->to + 1) {
+    if (building_range_ && write_batch.offset_range.begin != building_range_->end) {
         return Status::Invalid("real-time offset ranges must be contiguous");
     }
     uint64_t memory_usage = GetArrayMemoryUsage(struct_array->data());
@@ -275,12 +277,12 @@ Status ArrowMemIndexer::Write(RealtimeWriteBatch&& write_batch) {
     if (!building_range_) {
         building_range_ = write_batch.offset_range;
     } else {
-        building_range_ = Range(building_range_->from, write_batch.offset_range.to);
+        building_range_ = OffsetRange(building_range_->begin, write_batch.offset_range.end);
     }
     return Status::OK();
 }
 
-Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> ArrowMemIndexer::SealForCommit() {
+Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> ArrowRealtimeStore::SealForCommit() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (building_batches_.empty()) {
         return std::optional<std::shared_ptr<RealtimeSegmentHandle>>();
@@ -293,18 +295,18 @@ Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> ArrowMemIndexer::S
     return std::optional<std::shared_ptr<RealtimeSegmentHandle>>(std::move(segment));
 }
 
-Result<std::vector<std::unique_ptr<BatchReader>>> ArrowMemIndexer::CreateCommitReaders(
+Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateCommitReaders(
     const std::shared_ptr<RealtimeSegmentHandle>& segment) {
     std::shared_ptr<Segment> arrow_segment = std::dynamic_pointer_cast<Segment>(segment);
     if (!arrow_segment) {
-        return Status::Invalid("segment was not created by the Arrow mem indexer");
+        return Status::Invalid("segment was not created by the Arrow real-time store");
     }
     std::vector<std::unique_ptr<BatchReader>> readers;
     readers.push_back(std::make_unique<CommitBatchReader>(arrow_segment, arrow_pool_));
     return readers;
 }
 
-Result<std::shared_ptr<MemReadView>> ArrowMemIndexer::AcquireReadView() {
+Result<std::shared_ptr<RealtimeReadView>> ArrowRealtimeStore::AcquireReadView() {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<StoredBatch> batches;
     for (const std::shared_ptr<Segment>& segment : sealed_segments_) {
@@ -312,15 +314,15 @@ Result<std::shared_ptr<MemReadView>> ArrowMemIndexer::AcquireReadView() {
         batches.insert(batches.end(), segment_batches.begin(), segment_batches.end());
     }
     batches.insert(batches.end(), building_batches_.begin(), building_batches_.end());
-    return std::shared_ptr<MemReadView>(new ReadView(std::move(batches)));
+    return std::shared_ptr<RealtimeReadView>(new ReadView(std::move(batches)));
 }
 
-Result<std::vector<std::unique_ptr<BatchReader>>> ArrowMemIndexer::CreateQueryReaders(
-    const std::shared_ptr<MemReadView>& view, int64_t offset_lower_exclusive,
-    const MemQueryContext& context) {
+Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQueryReaders(
+    const std::shared_ptr<RealtimeReadView>& view, int64_t offset_begin,
+    const RealtimeQueryContext& context) {
     std::shared_ptr<ReadView> arrow_view = std::dynamic_pointer_cast<ReadView>(view);
     if (!arrow_view) {
-        return Status::Invalid("read view was not created by the Arrow mem indexer");
+        return Status::Invalid("read view was not created by the Arrow real-time store");
     }
     if (context.read_schema == nullptr || context.read_schema->release == nullptr) {
         return Status::Invalid("mem query read schema is null");
@@ -328,33 +330,33 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowMemIndexer::CreateQueryRe
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> read_schema,
                                       arrow::ImportSchema(context.read_schema));
     // TODO(xinyu.lxy): Support predicate pushdown after adding batch statistics or index metadata.
-    // The default Arrow indexer currently ignores context.predicate and
+    // The default Arrow store currently ignores context.predicate and
     // context.enable_predicate_pushdown, and returns all offset-matching rows as candidates.
     std::vector<std::unique_ptr<BatchReader>> readers;
-    if (arrow_view->GetOffsetRange() && arrow_view->GetOffsetRange()->to > offset_lower_exclusive) {
+    if (arrow_view->GetOffsetRange() && arrow_view->GetOffsetRange()->end > offset_begin) {
         std::unique_ptr<BatchReader> reader = std::make_unique<QueryBatchReader>(
-            arrow_view, offset_lower_exclusive, read_schema, arrow_pool_);
-        readers.push_back(
-            std::make_unique<CompleteRowKindBatchReader>(std::move(reader), memory_pool_));
+            arrow_view.get(), offset_begin, read_schema, arrow_pool_);
+        reader = std::make_unique<CompleteRowKindBatchReader>(std::move(reader), memory_pool_);
+        readers.push_back(std::move(reader));
     }
     return readers;
 }
 
-Status ArrowMemIndexer::AdvanceCommittedOffset(int64_t committed_offset) {
+Status ArrowRealtimeStore::AdvanceCommittedOffset(int64_t committed_end_offset) {
     std::lock_guard<std::mutex> lock(mutex_);
     // TODO(xinyu.lxy): Consider deferring segment destruction to a reclamation queue. Existing
     // read views may pin reclaimed batches, so the last query releasing a view can otherwise pay
     // the full buffer destruction cost and observe higher tail latency.
     sealed_segments_.erase(
         std::remove_if(sealed_segments_.begin(), sealed_segments_.end(),
-                       [committed_offset](const std::shared_ptr<Segment>& segment) {
-                           return segment->GetOffsetRange().to <= committed_offset;
+                       [committed_end_offset](const std::shared_ptr<Segment>& segment) {
+                           return segment->GetOffsetRange().end <= committed_end_offset;
                        }),
         sealed_segments_.end());
     return Status::OK();
 }
 
-uint64_t ArrowMemIndexer::GetMemoryUsage() const {
+uint64_t ArrowRealtimeStore::GetMemoryUsage() const {
     std::lock_guard<std::mutex> lock(mutex_);
     uint64_t result = building_memory_usage_;
     for (const std::shared_ptr<Segment>& segment : sealed_segments_) {

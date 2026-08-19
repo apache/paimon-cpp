@@ -43,49 +43,6 @@ std::string NormalizeDirectoryPrefix(const std::string& key) {
     return key + "/";
 }
 
-class ObjectStoreBasicFileStatus : public BasicFileStatus {
- public:
-    ObjectStoreBasicFileStatus(std::string path, bool is_dir)
-        : path_(std::move(path)), is_dir_(is_dir) {}
-    bool IsDir() const override {
-        return is_dir_;
-    }
-    std::string GetPath() const override {
-        return path_;
-    }
-
- private:
-    std::string path_;
-    bool is_dir_;
-};
-
-class ObjectStoreFileStatus : public FileStatus {
- public:
-    ObjectStoreFileStatus(std::string path, int64_t size, int64_t modification_time, bool is_dir)
-        : path_(std::move(path)),
-          size_(size),
-          modification_time_(modification_time),
-          is_dir_(is_dir) {}
-    int64_t GetLen() const override {
-        return size_;
-    }
-    bool IsDir() const override {
-        return is_dir_;
-    }
-    std::string GetPath() const override {
-        return path_;
-    }
-    int64_t GetModificationTime() const override {
-        return modification_time_;
-    }
-
- private:
-    std::string path_;
-    int64_t size_;
-    int64_t modification_time_;
-    bool is_dir_;
-};
-
 class ObjectStoreInputStream : public InputStream {
  public:
     ObjectStoreInputStream(std::shared_ptr<ObjectStoreClient> client,
@@ -401,15 +358,13 @@ Result<std::unique_ptr<InputStream>> ObjectStoreFileSystem::Open(
                                                     ToUri(object_path), file_size);
 }
 
-Result<std::unique_ptr<FileStatus>> ObjectStoreFileSystem::GetFileStatus(
-    const std::string& path) const {
+Result<FileStatus> ObjectStoreFileSystem::GetFileStatus(const std::string& path) const {
     PAIMON_ASSIGN_OR_RAISE(ObjectStorePath object_path, ParsePath(path));
     if (!object_path.key.empty()) {
         Result<ObjectMetadata> metadata = client_->HeadObject(object_path);
         if (metadata.ok()) {
-            return std::make_unique<ObjectStoreFileStatus>(
-                ToUri(object_path), metadata.value().size, metadata.value().modification_time,
-                false);
+            return FileStatus(ToUri(object_path), metadata.value().size, /*is_dir=*/false,
+                              metadata.value().modification_time);
         }
         if (!metadata.status().IsNotExist()) {
             return metadata.status();
@@ -419,12 +374,12 @@ Result<std::unique_ptr<FileStatus>> ObjectStoreFileSystem::GetFileStatus(
     if (!exists) {
         return Status::NotExist(fmt::format("{} does not exist", path));
     }
-    return std::make_unique<ObjectStoreFileStatus>(ToUri(object_path, true), 0, 0, true);
+    return FileStatus(ToUri(object_path, true), 0, /*is_dir=*/true);
 }
 
-Status ObjectStoreFileSystem::ListDirectory(
-    const ObjectStorePath& path, std::vector<std::unique_ptr<BasicFileStatus>>* basic_statuses,
-    std::vector<std::unique_ptr<FileStatus>>* statuses) const {
+Status ObjectStoreFileSystem::ListDirectory(const ObjectStorePath& path,
+                                            std::vector<BasicFileStatus>* basic_statuses,
+                                            std::vector<FileStatus>* statuses) const {
     if (basic_statuses == nullptr && statuses == nullptr) {
         return Status::Invalid("a destination status list is required");
     }
@@ -443,21 +398,18 @@ Status ObjectStoreFileSystem::ListDirectory(
             }
             ObjectStorePath child{path.bucket, object.key};
             if (basic_statuses) {
-                basic_statuses->push_back(
-                    std::make_unique<ObjectStoreBasicFileStatus>(ToUri(child), false));
+                basic_statuses->emplace_back(ToUri(child), /*is_dir=*/false);
             } else {
-                statuses->push_back(std::make_unique<ObjectStoreFileStatus>(
-                    ToUri(child), object.size, object.modification_time, false));
+                statuses->emplace_back(ToUri(child), object.size, /*is_dir=*/false,
+                                       object.modification_time);
             }
         }
         for (const auto& prefix : result.common_prefixes) {
             ObjectStorePath child{path.bucket, prefix};
             if (basic_statuses) {
-                basic_statuses->push_back(
-                    std::make_unique<ObjectStoreBasicFileStatus>(ToUri(child, true), true));
+                basic_statuses->emplace_back(ToUri(child, true), /*is_dir=*/true);
             } else {
-                statuses->push_back(
-                    std::make_unique<ObjectStoreFileStatus>(ToUri(child, true), 0, 0, true));
+                statuses->emplace_back(ToUri(child, true), 0, /*is_dir=*/true);
             }
         }
         token = result.continuation_token;
@@ -468,9 +420,8 @@ Status ObjectStoreFileSystem::ListDirectory(
     return Status::OK();
 }
 
-Status ObjectStoreFileSystem::ListDir(
-    const std::string& directory,
-    std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const {
+Status ObjectStoreFileSystem::ListDir(const std::string& directory,
+                                      std::vector<BasicFileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(ObjectStorePath path, ParsePath(directory));
     if (!path.key.empty() && path.key.back() != '/') {
         Result<ObjectMetadata> metadata = client_->HeadObject(path);
@@ -484,15 +435,14 @@ Status ObjectStoreFileSystem::ListDir(
     return ListDirectory(path, file_status_list, nullptr);
 }
 
-Status ObjectStoreFileSystem::ListFileStatus(
-    const std::string& path, std::vector<std::unique_ptr<FileStatus>>* file_status_list) const {
+Status ObjectStoreFileSystem::ListFileStatus(const std::string& path,
+                                             std::vector<FileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(ObjectStorePath object_path, ParsePath(path));
     if (!object_path.key.empty() && object_path.key.back() != '/') {
         Result<ObjectMetadata> metadata = client_->HeadObject(object_path);
         if (metadata.ok()) {
-            file_status_list->push_back(
-                std::make_unique<ObjectStoreFileStatus>(ToUri(object_path), metadata.value().size,
-                                                        metadata.value().modification_time, false));
+            file_status_list->emplace_back(ToUri(object_path), metadata.value().size,
+                                           /*is_dir=*/false, metadata.value().modification_time);
             return Status::OK();
         }
         if (!metadata.status().IsNotExist()) {

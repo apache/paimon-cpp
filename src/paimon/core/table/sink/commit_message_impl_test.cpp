@@ -38,9 +38,8 @@ TEST(CommitMessageImplTest, TestToString) {
                             "/orc/append_10_external_path.db/append_10_external_path/"
                             "commit_messages/commit_messages-01";
     auto file_system = std::make_shared<LocalFileSystem>();
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> file_status,
-                         file_system->GetFileStatus(data_path));
-    auto buffer_length = file_status->GetLen();
+    ASSERT_OK_AND_ASSIGN(FileStatus file_status, file_system->GetFileStatus(data_path));
+    auto buffer_length = file_status.GetLen();
     std::vector<uint8_t> buffer(buffer_length, 0);
 
     auto in_stream = file_system->Open(data_path).value_or(nullptr);

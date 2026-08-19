@@ -59,14 +59,14 @@ Result<std::vector<std::string>> ConsumerManager::ListConsumers() const {
         return consumers;
     }
 
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListDir(consumer_dir, &file_status_list));
     std::string prefix = kConsumerPrefix;
     for (const auto& file_status : file_status_list) {
-        if (file_status->IsDir()) {
+        if (file_status.IsDir()) {
             continue;
         }
-        std::string file_name = PathUtil::GetName(file_status->GetPath());
+        std::string file_name = PathUtil::GetName(file_status.GetPath());
         if (StringUtils::StartsWith(file_name, prefix, /*start_pos=*/0)) {
             consumers.push_back(file_name.substr(prefix.length()));
         }

@@ -54,8 +54,8 @@ Result<std::unique_ptr<SpillReader>> SpillReader::Create(
 Status SpillReader::Open(const FileIOChannel::ID& channel_id) {
     const std::string& file_path = channel_id.GetPath();
     PAIMON_ASSIGN_OR_RAISE(in_stream_, fs_->Open(file_path));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status, fs_->GetFileStatus(file_path));
-    int64_t file_len = file_status->GetLen();
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(file_path));
+    int64_t file_len = file_status.GetLen();
     arrow_input_stream_adapter_ =
         std::make_shared<ArrowInputStreamAdapter>(in_stream_, file_len, arrow_pool_);
     auto ipc_read_options = arrow::ipc::IpcReadOptions::Defaults();

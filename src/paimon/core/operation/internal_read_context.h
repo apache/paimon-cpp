@@ -37,6 +37,7 @@ namespace paimon {
 class Executor;
 class MemoryPool;
 class Predicate;
+class RealtimeContext;
 
 // internal read context, contains ReadContext, CoreOptions and TableSchema
 class InternalReadContext {
@@ -90,6 +91,9 @@ class InternalReadContext {
     }
     std::shared_ptr<Executor> GetExecutor() const {
         return read_context_->GetExecutor();
+    }
+    std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
+        return read_context_->GetRealtimeContext();
     }
 
     PrefetchCacheMode GetPrefetchCacheMode() const {

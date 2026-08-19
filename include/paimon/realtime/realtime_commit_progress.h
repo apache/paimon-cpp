@@ -22,24 +22,24 @@
 #include <memory>
 
 #include "paimon/commit_message.h"
+#include "paimon/realtime/offset_range.h"
 #include "paimon/realtime/realtime_context.h"
-#include "paimon/utils/range.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
 
 /// A real-time commit message and its partition-bucket offset progress.
 ///
-/// Offsets are scoped to one partition and bucket. `offset_range` is inclusive and covers all
-/// rows represented by `commit_message`. The progress fields are not embedded in
+/// Offsets are scoped to one partition and bucket. `offset_range` is left-closed and right-open
+/// and covers all rows represented by `commit_message`. The progress fields are not embedded in
 /// `CommitMessage` serialization.
 struct PAIMON_EXPORT RealtimeCommitProgress {
     /// Paimon commit message generated from one sealed segment.
     std::shared_ptr<CommitMessage> commit_message;
     /// Partition-bucket containing the sealed segment.
     RealtimePartitionBucket partition_bucket;
-    /// Inclusive offset range represented by the commit message.
-    Range offset_range;
+    /// Left-closed, right-open offset range represented by the commit message.
+    OffsetRange offset_range;
 };
 
 }  // namespace paimon

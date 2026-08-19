@@ -55,7 +55,7 @@ class RealtimeCommitProperties {
     static Result<std::map<std::string, std::string>> Build(
         const std::map<std::string, std::string>& properties,
         const std::optional<Snapshot>& latest_snapshot,
-        const std::map<RealtimePartitionBucket, Range>& realtime_ranges,
+        const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
         const std::shared_ptr<FileSystem>& file_system, const std::string& table_root,
         const std::string& branch);
 

@@ -71,9 +71,8 @@ class OrphanFilesCleanerImpl : public OrphanFilesCleaner {
 
  private:
     Result<std::set<std::string>> ListPaimonFileDirs() const;
-    std::vector<std::unique_ptr<FileStatus>> TryBestListingDirs(const std::string& path) const;
-    std::vector<std::unique_ptr<BasicFileStatus>> MinimalTryBestListingDirs(
-        const std::string& path) const;
+    std::vector<FileStatus> TryBestListingDirs(const std::string& path) const;
+    std::vector<BasicFileStatus> MinimalTryBestListingDirs(const std::string& path) const;
     std::set<std::string> ListFileDirs(const std::string& path, int32_t max_level) const;
     Result<std::set<std::string>> GetUsedFiles() const;
     Result<std::set<std::string>> GetUsedFilesBySnapshot(const Snapshot& snapshot) const;

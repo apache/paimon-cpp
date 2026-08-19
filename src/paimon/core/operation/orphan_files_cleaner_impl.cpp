@@ -98,7 +98,7 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::Clean() {
             "OrphanFilesCleaner do not support cleaning table with branch");
     }
     PAIMON_ASSIGN_OR_RAISE(std::set<std::string> all_dirs, ListPaimonFileDirs());
-    std::vector<std::future<std::vector<std::unique_ptr<FileStatus>>>> file_statuses_futures;
+    std::vector<std::future<std::vector<FileStatus>>> file_statuses_futures;
     ScopeGuard file_statuses_guard(
         [&file_statuses_futures]() { CollectAll(file_statuses_futures); });
     for (const auto& dir : all_dirs) {
@@ -115,23 +115,23 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::Clean() {
     uint64_t file_statuses_duration = duration.Reset();
     for (const auto& file_statuses : CollectAll(file_statuses_futures)) {
         for (const auto& file_status : file_statuses) {
-            if (file_status->IsDir()) {
+            if (file_status.IsDir()) {
                 continue;
             }
-            std::string path = file_status->GetPath();
+            std::string path = file_status.GetPath();
             std::string file_name = PathUtil::GetName(path);
             if (!SupportToClean(file_name)) {
                 continue;
             }
-            if (file_status->GetModificationTime() < older_than_ms_ &&
+            if (file_status.GetModificationTime() < older_than_ms_ &&
                 !used_file_names.count(file_name)) {
                 if (should_be_retained_ && should_be_retained_(file_name)) {
                     continue;
                 }
-                if (file_status->GetModificationTime() <= MIN_VALID_FILE_MODIFICATION_MS) {
+                if (file_status.GetModificationTime() <= MIN_VALID_FILE_MODIFICATION_MS) {
                     return Status::Invalid(
                         fmt::format("file '{}' modification '{}' is not in millisecond", path,
-                                    file_status->GetModificationTime()));
+                                    file_status.GetModificationTime()));
                 }
                 need_to_deletes.insert(path);
                 futures.push_back(Via(executor_.get(), [this, path]() {
@@ -188,7 +188,7 @@ std::set<std::string> OrphanFilesCleanerImpl::ListFileDirs(const std::string& pa
     queue.push(path);
     std::set<std::string> results;
     for (int32_t current_level = 0; current_level <= max_level; current_level++) {
-        std::vector<std::future<std::vector<std::unique_ptr<BasicFileStatus>>>> futures;
+        std::vector<std::future<std::vector<BasicFileStatus>>> futures;
         while (!queue.empty()) {
             auto current_path = queue.front();
             futures.push_back(Via(executor_.get(), [this, current_path] {
@@ -198,15 +198,15 @@ std::set<std::string> OrphanFilesCleanerImpl::ListFileDirs(const std::string& pa
         }
         for (const auto& dirs : CollectAll(futures)) {
             for (const auto& dir : dirs) {
-                const auto& dir_name = PathUtil::GetName(dir->GetPath());
+                const auto& dir_name = PathUtil::GetName(dir.GetPath());
                 if (current_level == max_level) {
                     if (StringUtils::StartsWith(
                             dir_name, std::string(FileStorePathFactory::BUCKET_PATH_PREFIX))) {
-                        results.insert(dir->GetPath());
+                        results.insert(dir.GetPath());
                     }
                 } else {
                     if (dir_name.find("=") != std::string::npos) {
-                        queue.push(dir->GetPath());
+                        queue.push(dir.GetPath());
                     }
                 }
             }
@@ -215,13 +215,12 @@ std::set<std::string> OrphanFilesCleanerImpl::ListFileDirs(const std::string& pa
     return results;
 }
 
-std::vector<std::unique_ptr<FileStatus>> OrphanFilesCleanerImpl::TryBestListingDirs(
-    const std::string& path) const {
+std::vector<FileStatus> OrphanFilesCleanerImpl::TryBestListingDirs(const std::string& path) const {
     Result<bool> is_exist = fs_->Exists(path);
     if (!is_exist.ok()) {
         return {};
     }
-    std::vector<std::unique_ptr<FileStatus>> file_statuses;
+    std::vector<FileStatus> file_statuses;
     auto status = fs_->ListFileStatus(path, &file_statuses);
     if (!status.ok()) {
         return {};
@@ -229,13 +228,13 @@ std::vector<std::unique_ptr<FileStatus>> OrphanFilesCleanerImpl::TryBestListingD
     return file_statuses;
 }
 
-std::vector<std::unique_ptr<BasicFileStatus>> OrphanFilesCleanerImpl::MinimalTryBestListingDirs(
+std::vector<BasicFileStatus> OrphanFilesCleanerImpl::MinimalTryBestListingDirs(
     const std::string& path) const {
     Result<bool> is_exist = fs_->Exists(path);
     if (!is_exist.ok()) {
         return {};
     }
-    std::vector<std::unique_ptr<BasicFileStatus>> file_statuses;
+    std::vector<BasicFileStatus> file_statuses;
     auto status = fs_->ListDir(path, &file_statuses);
     if (!status.ok()) {
         return {};

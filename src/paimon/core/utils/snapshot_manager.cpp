@@ -177,14 +177,14 @@ Result<std::optional<int64_t>> SnapshotManager::FindByListFiles(
 Result<std::set<std::string>> SnapshotManager::TryGetNonSnapshotFiles(int64_t older_than_ms) const {
     std::set<std::string> non_snapshot_files;
 
-    std::vector<std::unique_ptr<FileStatus>> file_status_list;
+    std::vector<FileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListFileStatus(SnapshotDirectory(), &file_status_list));
     for (const auto& file_status : file_status_list) {
-        std::string file_name = PathUtil::GetName(file_status->GetPath());
+        std::string file_name = PathUtil::GetName(file_status.GetPath());
         if (!StringUtils::StartsWith(file_name, std::string(SNAPSHOT_PREFIX)) &&
             file_name != std::string(EARLIEST) && file_name != std::string(LATEST)) {
-            if (file_status->GetModificationTime() < older_than_ms) {
-                non_snapshot_files.insert(file_status->GetPath());
+            if (file_status.GetModificationTime() < older_than_ms) {
+                non_snapshot_files.insert(file_status.GetPath());
             }
         }
     }
@@ -239,11 +239,11 @@ Status SnapshotManager::CommitHint(int64_t snapshot_id, const std::string& file_
 
 Result<std::vector<Snapshot>> SnapshotManager::GetAllSnapshots() const {
     std::vector<Snapshot> snapshots;
-    std::vector<std::unique_ptr<BasicFileStatus>> file_statuses;
+    std::vector<BasicFileStatus> file_statuses;
     PAIMON_RETURN_NOT_OK(FileUtils::ListVersionedFileStatus(fs_, SnapshotDirectory(),
                                                             SNAPSHOT_PREFIX, &file_statuses));
     for (const auto& file_status : file_statuses) {
-        auto snapshot_path = file_status->GetPath();
+        auto snapshot_path = file_status.GetPath();
         PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, Snapshot::FromPath(fs_, snapshot_path));
         snapshots.push_back(snapshot);
     }

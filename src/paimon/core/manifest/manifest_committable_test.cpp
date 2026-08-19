@@ -34,7 +34,7 @@ class ManifestCommittableTest : public testing::Test {
     std::vector<std::shared_ptr<CommitMessage>> GetCommitMessages(const std::string& path,
                                                                   int32_t version) const {
         auto file_system = std::make_shared<LocalFileSystem>();
-        auto buffer_length = file_system->GetFileStatus(path).value()->GetLen();
+        auto buffer_length = file_system->GetFileStatus(path).value().GetLen();
         std::vector<uint8_t> buffer(buffer_length, 0);
 
         EXPECT_OK_AND_ASSIGN(auto in_stream, file_system->Open(path));

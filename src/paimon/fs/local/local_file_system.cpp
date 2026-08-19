@@ -28,7 +28,6 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
-#include "paimon/fs/local/local_file_status.h"
 
 namespace paimon {
 
@@ -99,7 +98,7 @@ Status LocalFileSystem::MkdirsInternal(std::unique_ptr<LocalFile>&& file) const 
     return Status::OK();
 }
 
-Result<std::unique_ptr<FileStatus>> LocalFileSystem::GetFileStatus(const std::string& path) const {
+Result<FileStatus> LocalFileSystem::GetFileStatus(const std::string& path) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LocalFile> file, LocalFile::Create(path));
     PAIMON_ASSIGN_OR_RAISE(bool is_exist, file->Exists());
     if (is_exist) {
@@ -112,9 +111,8 @@ Result<std::unique_ptr<FileStatus>> LocalFileSystem::GetFileStatus(const std::st
     }
 }
 
-Status LocalFileSystem::ListDir(
-    const std::string& directory,
-    std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const {
+Status LocalFileSystem::ListDir(const std::string& directory,
+                                std::vector<BasicFileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LocalFile> file, LocalFile::Create(directory));
     PAIMON_ASSIGN_OR_RAISE(bool is_exist, file->Exists());
     if (!is_exist) {
@@ -129,21 +127,20 @@ Status LocalFileSystem::ListDir(
         PAIMON_RETURN_NOT_OK(file->List(&file_list));
         file_status_list->reserve(file_status_list->size() + file_list.size());
         for (const auto& f : file_list) {
-            Result<std::unique_ptr<FileStatus>> file_status =
-                GetFileStatus(PathUtil::JoinPath(directory, f));
+            Result<FileStatus> file_status = GetFileStatus(PathUtil::JoinPath(directory, f));
             if (!file_status.ok() && !file_status.status().IsNotExist()) {
                 return file_status.status();
             } else if (file_status.ok()) {
-                file_status_list->emplace_back(std::make_unique<LocalBasicFileStatus>(
-                    file_status.value()->GetPath(), file_status.value()->IsDir()));
+                file_status_list->emplace_back(file_status.value().GetPath(),
+                                               file_status.value().IsDir());
             }
         }
         return Status::OK();
     }
 }
 
-Status LocalFileSystem::ListFileStatus(
-    const std::string& path, std::vector<std::unique_ptr<FileStatus>>* file_status_list) const {
+Status LocalFileSystem::ListFileStatus(const std::string& path,
+                                       std::vector<FileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LocalFile> file, LocalFile::Create(path));
     PAIMON_ASSIGN_OR_RAISE(bool is_exist, file->Exists());
     if (!is_exist) {
@@ -151,15 +148,14 @@ Status LocalFileSystem::ListFileStatus(
     }
     PAIMON_ASSIGN_OR_RAISE(bool is_file, file->IsFile());
     if (is_file) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status, file->GetFileStatus());
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, file->GetFileStatus());
         file_status_list->emplace_back(std::move(file_status));
     } else {
         std::vector<std::string> file_list;
         PAIMON_RETURN_NOT_OK(file->List(&file_list));
         file_status_list->reserve(file_status_list->size() + file_list.size());
         for (const auto& f : file_list) {
-            Result<std::unique_ptr<FileStatus>> file_status =
-                GetFileStatus(PathUtil::JoinPath(path, f));
+            Result<FileStatus> file_status = GetFileStatus(PathUtil::JoinPath(path, f));
             if (!file_status.ok() && !file_status.status().IsNotExist()) {
                 return file_status.status();
             } else if (file_status.ok()) {

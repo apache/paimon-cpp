@@ -291,7 +291,7 @@ TEST_F(RemoteLookupFileManagerTest, TryToDownloadLargeFileAcrossMultipleBuffers)
 
     // Verify the downloaded file has the correct size
     ASSERT_OK_AND_ASSIGN(auto local_status, fs_->GetFileStatus(local_file_path));
-    ASSERT_EQ(local_status->GetLen(), file_size);
+    ASSERT_EQ(local_status.GetLen(), file_size);
 
     // Verify the downloaded file content matches the original
     {

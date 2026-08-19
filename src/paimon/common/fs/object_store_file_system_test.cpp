@@ -103,11 +103,11 @@ TEST(ObjectStoreFileSystemTest, TestObjectWinsOverPrefix) {
     client->objects_["foo/bar"] = "child";
     ObjectStoreFileSystem fs("s3", client);
     ASSERT_OK_AND_ASSIGN(auto status, fs.GetFileStatus("s3://bucket/foo"));
-    ASSERT_FALSE(status->IsDir());
-    std::vector<std::unique_ptr<FileStatus>> statuses;
+    ASSERT_FALSE(status.IsDir());
+    std::vector<FileStatus> statuses;
     ASSERT_OK(fs.ListFileStatus("s3://bucket/foo", &statuses));
     ASSERT_EQ(statuses.size(), 1);
-    ASSERT_FALSE(statuses[0]->IsDir());
+    ASSERT_FALSE(statuses[0].IsDir());
 }
 
 TEST(ObjectStoreFileSystemTest, TestHeadErrorIsNotMasked) {
@@ -132,11 +132,11 @@ TEST(ObjectStoreFileSystemTest, TestPaginationAndDirectoryMarker) {
     client->pages_[""] = first;
     client->pages_["next"] = second;
     ObjectStoreFileSystem fs("s3", client);
-    std::vector<std::unique_ptr<FileStatus>> statuses;
+    std::vector<FileStatus> statuses;
     ASSERT_OK(fs.ListFileStatus("s3://bucket/dir/", &statuses));
     ASSERT_EQ(statuses.size(), 2);
-    ASSERT_EQ(statuses[0]->GetPath(), "s3://bucket/dir/a");
-    ASSERT_TRUE(statuses[1]->IsDir());
+    ASSERT_EQ(statuses[0].GetPath(), "s3://bucket/dir/a");
+    ASSERT_TRUE(statuses[1].IsDir());
 }
 
 TEST(ObjectStoreFileSystemTest, TestTruncatedPageRequiresContinuationToken) {
@@ -146,7 +146,7 @@ TEST(ObjectStoreFileSystemTest, TestTruncatedPageRequiresContinuationToken) {
     page.is_truncated = true;
     client->pages_[""] = page;
     ObjectStoreFileSystem fs("s3", client);
-    std::vector<std::unique_ptr<FileStatus>> statuses;
+    std::vector<FileStatus> statuses;
     ASSERT_TRUE(fs.ListFileStatus("s3://bucket/dir/", &statuses).IsIOError());
     ASSERT_TRUE(statuses.empty());
 }
@@ -172,8 +172,8 @@ TEST(ObjectStoreFileSystemTest, TestPathWithLeadingSlashes) {
     auto client = std::make_shared<MockObjectStoreClient>();
     client->objects_["file"] = "data";
     ObjectStoreFileSystem fs("s3", client);
-    ASSERT_OK_AND_ASSIGN(auto status, fs.GetFileStatus("s3://bucket///file"));
-    ASSERT_EQ(status->GetPath(), "s3://bucket/file");
+    ASSERT_OK_AND_ASSIGN(FileStatus status, fs.GetFileStatus("s3://bucket///file"));
+    ASSERT_EQ(status.GetPath(), "s3://bucket/file");
 }
 
 TEST(ObjectStoreInputStreamTest, TestBoundsCloseAndSeekOverflow) {

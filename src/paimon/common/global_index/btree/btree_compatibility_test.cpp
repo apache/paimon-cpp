@@ -115,8 +115,8 @@ class BTreeCompatibilityTest : public ::testing::Test {
         const std::shared_ptr<arrow::DataType>& arrow_type) const {
         auto meta_str = ReadFileAsString(meta_path);
         std::shared_ptr<Bytes> meta_bytes = Bytes::AllocateBytes(meta_str, pool_.get());
-        PAIMON_ASSIGN_OR_RAISE(auto file_status, fs_->GetFileStatus(bin_path));
-        auto file_size = file_status->GetLen();
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(bin_path));
+        auto file_size = file_status.GetLen();
 
         GlobalIndexIOMeta io_meta(bin_path, file_size, meta_bytes);
         std::vector<GlobalIndexIOMeta> metas = {io_meta};

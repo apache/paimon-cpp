@@ -17,24 +17,20 @@
  * under the License.
  */
 
-#include "paimon/realtime/realtime_context.h"
+#pragma once
 
-#include <memory>
-
-#include "paimon/core/realtime/realtime_context_impl.h"
-#include "paimon/realtime/arrow_realtime_store_factory.h"
+#include "paimon/realtime/realtime_store.h"
 
 namespace paimon {
 
-RealtimeContext::~RealtimeContext() = default;
-
-Result<std::shared_ptr<RealtimeContext>> RealtimeContext::Create() {
-    return Create(std::make_shared<ArrowRealtimeStoreFactory>());
-}
-
-Result<std::shared_ptr<RealtimeContext>> RealtimeContext::Create(
-    const std::shared_ptr<RealtimeStoreFactory>& factory) {
-    return RealtimeContextImpl::Create(factory);
-}
+/// Factory for Paimon's default Arrow-backed `RealtimeStore`.
+class PAIMON_EXPORT ArrowRealtimeStoreFactory : public RealtimeStoreFactory {
+ public:
+    /// Creates an Arrow-backed store for one partition and bucket.
+    Result<std::shared_ptr<RealtimeStore>> Create(
+        std::unique_ptr<::ArrowSchema> write_schema,
+        const std::map<std::string, std::string>& options,
+        const std::shared_ptr<MemoryPool>& memory_pool) override;
+};
 
 }  // namespace paimon

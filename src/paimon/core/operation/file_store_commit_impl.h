@@ -149,7 +149,7 @@ class FileStoreCommitImpl : public FileStoreCommit {
  private:
     Status Commit(const std::shared_ptr<ManifestCommittable>& manifest_committable,
                   bool check_append_files, bool retry_on_conflict,
-                  const std::map<RealtimePartitionBucket, Range>& realtime_ranges);
+                  const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges);
 
     Result<int32_t> TryOverwrite(const std::vector<std::map<std::string, std::string>>& partition,
                                  const std::vector<ManifestEntry>& changes,
@@ -190,14 +190,14 @@ class FileStoreCommitImpl : public FileStoreCommit {
                               const std::vector<IndexManifestEntry>& index_entries,
                               int64_t identifier, std::optional<int64_t> watermark,
                               const std::map<std::string, std::string>& properties,
-                              const std::map<RealtimePartitionBucket, Range>& realtime_ranges,
+                              const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
                               Snapshot::CommitKind commit_kind, bool detect_conflicts,
                               bool retry_on_conflict);
 
     Result<int32_t> TryCommit(const std::shared_ptr<CommitChangesProvider>& changes_provider,
                               int64_t identifier, std::optional<int64_t> watermark,
                               const std::map<std::string, std::string>& properties,
-                              const std::map<RealtimePartitionBucket, Range>& realtime_ranges,
+                              const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
                               Snapshot::CommitKind commit_kind, bool detect_conflicts,
                               bool retry_on_conflict);
 

@@ -72,19 +72,18 @@ class CountingFileSystem : public FileSystem {
         return local_.Delete(path, recursive);
     }
 
-    Result<std::unique_ptr<FileStatus>> GetFileStatus(const std::string& path) const override {
+    Result<FileStatus> GetFileStatus(const std::string& path) const override {
         ++get_file_status_count;
         return local_.GetFileStatus(path);
     }
 
     Status ListDir(const std::string& directory,
-                   std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const override {
+                   std::vector<BasicFileStatus>* file_status_list) const override {
         return local_.ListDir(directory, file_status_list);
     }
 
-    Status ListFileStatus(
-        const std::string& path,
-        std::vector<std::unique_ptr<FileStatus>>* file_status_list) const override {
+    Status ListFileStatus(const std::string& path,
+                          std::vector<FileStatus>* file_status_list) const override {
         return local_.ListFileStatus(path, file_status_list);
     }
 

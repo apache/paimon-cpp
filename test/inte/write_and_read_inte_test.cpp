@@ -582,11 +582,11 @@ TEST_P(WriteAndReadInteTest, TestAppendExternalPath) {
         auto get_file_list_in_external_path = [&](const UniqueTestDirectory* external_dir) {
             auto fs = external_dir->GetFileSystem();
             auto bucket_dir = external_dir->Str() + "/f1=10/bucket-0/";
-            std::vector<std::unique_ptr<BasicFileStatus>> all_file_status;
+            std::vector<BasicFileStatus> all_file_status;
             ASSERT_OK(fs->ListDir(bucket_dir, &all_file_status));
             ASSERT_FALSE(all_file_status.empty());
             for (const auto& file_status : all_file_status) {
-                ASSERT_TRUE(PathUtil::GetName(file_status->GetPath()).find("test-data-") !=
+                ASSERT_TRUE(PathUtil::GetName(file_status.GetPath()).find("test-data-") !=
                             std::string::npos);
             }
         };
@@ -676,7 +676,7 @@ TEST_P(WriteAndReadInteTest, TestAppendExternalPathAndNoneExternalPathStrategy) 
     // check external path does not have any data file
     {
         auto fs = external_dir->GetFileSystem();
-        std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+        std::vector<BasicFileStatus> file_status_list;
         ASSERT_OK(fs->ListDir(external_test_dir, &file_status_list));
         ASSERT_TRUE(file_status_list.empty());
     }
