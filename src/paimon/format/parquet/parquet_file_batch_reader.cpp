@@ -646,7 +646,7 @@ Result<::parquet::ReaderProperties> ParquetFileBatchReader::CreateReaderProperti
     // TODO(jinli.zjw): set more ReaderProperties (compare with java)
     PAIMON_ASSIGN_OR_RAISE(
         bool enable_pre_buffer,
-        OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, false));
+        OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, true));
     if (enable_pre_buffer) {
         reader_properties.enable_buffered_stream();
     } else {
@@ -667,7 +667,7 @@ Result<::parquet::ArrowReaderProperties> ParquetFileBatchReader::CreateArrowRead
     // TODO(jinli.zjw): set more ArrowReaderProperties (compare with java)
     PAIMON_ASSIGN_OR_RAISE(
         bool enable_pre_buffer,
-        OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, false));
+        OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, true));
     arrow_reader_props.set_pre_buffer(enable_pre_buffer);
     arrow_reader_props.set_batch_size(static_cast<int64_t>(batch_size));
     if (executor_thread_count != 0) {
