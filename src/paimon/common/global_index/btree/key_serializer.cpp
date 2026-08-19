@@ -22,15 +22,107 @@
 #include "fmt/format.h"
 #include "paimon/common/memory/memory_slice_input.h"
 #include "paimon/common/memory/memory_slice_output.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/preconditions.h"
+#include "paimon/common/utils/var_length_int_utils.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/status.h"
 namespace paimon {
+namespace {
+
+Status ValidateExactLength(const MemorySlice& slice, const std::shared_ptr<arrow::DataType>& type,
+                           int32_t expected_length) {
+    if (slice.Length() != expected_length) {
+        return Status::Invalid(
+            fmt::format("Invalid serialized {} key length: expected {}, but found {}.",
+                        type->ToString(), expected_length, slice.Length()));
+    }
+    return Status::OK();
+}
+
+Status ValidateNonCompactTimestamp(const MemorySlice& slice) {
+    constexpr int32_t kMillisLength = sizeof(int64_t);
+    constexpr int32_t kMinimumLength = kMillisLength + 1;
+    // nano-of-millisecond is at most 999,999, which uses no more than three varint bytes.
+    constexpr int32_t kMaximumNanosLength = 3;
+    constexpr int32_t kMaximumLength = kMillisLength + kMaximumNanosLength;
+    if (slice.Length() < kMinimumLength || slice.Length() > kMaximumLength) {
+        return Status::Invalid(fmt::format(
+            "Invalid serialized timestamp key length: expected between {} and {}, but found {}.",
+            kMinimumLength, kMaximumLength, slice.Length()));
+    }
+
+    int32_t terminal_position = -1;
+    for (int32_t position = kMillisLength; position < slice.Length(); ++position) {
+        auto byte = static_cast<uint8_t>(slice.Data()[position]);
+        if ((byte & 0x80) == 0) {
+            terminal_position = position;
+            break;
+        }
+    }
+    if (terminal_position == -1) {
+        return Status::Invalid("Serialized timestamp key contains an unterminated nanos varint.");
+    }
+    if (terminal_position != slice.Length() - 1) {
+        return Status::Invalid("Serialized timestamp key contains trailing bytes.");
+    }
+
+    int32_t offset = kMillisLength;
+    PAIMON_ASSIGN_OR_RAISE(int32_t nanos, VarLengthIntUtils::DecodeInt(slice.Data(), &offset));
+    if (nanos > 999999) {
+        return Status::Invalid(
+            fmt::format("Serialized timestamp key has invalid nanos value {}.", nanos));
+    }
+    return Status::OK();
+}
+
+Status ValidateNonCompactDecimal(const MemorySlice& slice) {
+    constexpr int32_t kMaximumLength = sizeof(Decimal::int128_t);
+    if (slice.Length() < 1 || slice.Length() > kMaximumLength) {
+        return Status::Invalid(fmt::format(
+            "Invalid serialized decimal key length: expected between 1 and {}, but found {}.",
+            kMaximumLength, slice.Length()));
+    }
+    if (slice.Length() == 1) {
+        return Status::OK();
+    }
+
+    auto first = static_cast<uint8_t>(slice.Data()[0]);
+    auto second = static_cast<uint8_t>(slice.Data()[1]);
+    if ((first == 0 && (second & 0x80) == 0) || (first == 0xFF && (second & 0x80) != 0)) {
+        return Status::Invalid("Serialized decimal key contains redundant sign-extension bytes.");
+    }
+    return Status::OK();
+}
+
+Status ValidateDecimal(const MemorySlice& slice,
+                       const std::shared_ptr<arrow::Decimal128Type>& type) {
+    arrow::Decimal128 value;
+    if (Decimal::IsCompact(type->precision())) {
+        PAIMON_RETURN_NOT_OK(ValidateExactLength(slice, type, sizeof(int64_t)));
+        value = arrow::Decimal128(slice.ReadLong(0));
+    } else {
+        PAIMON_RETURN_NOT_OK(ValidateNonCompactDecimal(slice));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            arrow::Decimal128 decoded,
+            arrow::Decimal128::FromBigEndian(reinterpret_cast<const uint8_t*>(slice.Data()),
+                                             slice.Length()));
+        value = decoded;
+    }
+    if (!value.FitsInPrecision(type->precision())) {
+        return Status::Invalid(
+            fmt::format("Serialized decimal key does not fit precision {}.", type->precision()));
+    }
+    return Status::OK();
+}
+
+}  // namespace
+
 Result<std::shared_ptr<Bytes>> KeySerializer::SerializeKey(
     const Literal& literal, const std::shared_ptr<arrow::DataType>& type, MemoryPool* pool) {
     if (literal.IsNull()) {
@@ -139,6 +231,7 @@ Result<std::shared_ptr<Bytes>> KeySerializer::SerializeKey(
 Result<Literal> KeySerializer::DeserializeKey(const MemorySlice& slice,
                                               const std::shared_ptr<arrow::DataType>& type,
                                               MemoryPool* pool) {
+    PAIMON_RETURN_NOT_OK(ValidateSerializedKey(slice, type));
     switch (type->id()) {
         case arrow::Type::type::BOOL:
             return Literal(slice.ReadByte(0) == 1 ? true : false);
@@ -193,6 +286,51 @@ Result<Literal> KeySerializer::DeserializeKey(const MemorySlice& slice,
         default:
             return Status::Invalid(fmt::format(
                 "Not support deserialize {} type in BTreeGlobalIndex", type->ToString()));
+    }
+}
+
+Status KeySerializer::ValidateSerializedKey(const MemorySlice& slice,
+                                            const std::shared_ptr<arrow::DataType>& type) {
+    if (type == nullptr) {
+        return Status::Invalid("Cannot validate a serialized BTree key without a key type.");
+    }
+    switch (type->id()) {
+        case arrow::Type::type::BOOL: {
+            PAIMON_RETURN_NOT_OK(ValidateExactLength(slice, type, sizeof(int8_t)));
+            auto value = static_cast<uint8_t>(slice.Data()[0]);
+            if (value > 1) {
+                return Status::Invalid(
+                    fmt::format("Invalid serialized boolean key value {}.", value));
+            }
+            return Status::OK();
+        }
+        case arrow::Type::type::INT8:
+            return ValidateExactLength(slice, type, sizeof(int8_t));
+        case arrow::Type::type::INT16:
+            return ValidateExactLength(slice, type, sizeof(int16_t));
+        case arrow::Type::type::INT32:
+        case arrow::Type::type::DATE32:
+        case arrow::Type::type::FLOAT:
+            return ValidateExactLength(slice, type, sizeof(int32_t));
+        case arrow::Type::type::INT64:
+        case arrow::Type::type::DOUBLE:
+            return ValidateExactLength(slice, type, sizeof(int64_t));
+        case arrow::Type::type::STRING:
+            return Status::OK();
+        case arrow::Type::type::TIMESTAMP: {
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
+            if (Timestamp::IsCompact(DateTimeUtils::GetPrecisionFromType(timestamp_type))) {
+                return ValidateExactLength(slice, type, sizeof(int64_t));
+            }
+            return ValidateNonCompactTimestamp(slice);
+        }
+        case arrow::Type::type::DECIMAL128: {
+            auto decimal_type = checked_pointer_cast<arrow::Decimal128Type>(type);
+            return ValidateDecimal(slice, decimal_type);
+        }
+        default:
+            return Status::Invalid(fmt::format(
+                "Not support validate serialized {} type in BTreeGlobalIndex", type->ToString()));
     }
 }
 

@@ -38,35 +38,47 @@
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
-LazyFilteredBTreeReader::LazyFilteredBTreeReader(
+Result<std::shared_ptr<LazyFilteredBTreeReader>> LazyFilteredBTreeReader::Create(
     std::optional<int32_t> read_buffer_size, const std::vector<GlobalIndexIOMeta>& files,
     const std::shared_ptr<arrow::DataType>& key_type,
     const std::shared_ptr<GlobalIndexFileReader>& file_reader,
     const std::shared_ptr<CacheManager>& cache_manager, const std::shared_ptr<MemoryPool>& pool,
-    const std::shared_ptr<Executor>& executor)
+    const std::shared_ptr<Executor>& executor) {
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BTreeFileMetaSelector> file_selector,
+                           BTreeFileMetaSelector::Create(files, key_type, pool));
+    return std::shared_ptr<LazyFilteredBTreeReader>(
+        new LazyFilteredBTreeReader(read_buffer_size, std::move(file_selector), key_type,
+                                    file_reader, cache_manager, pool, executor));
+}
+
+LazyFilteredBTreeReader::LazyFilteredBTreeReader(
+    std::optional<int32_t> read_buffer_size, std::unique_ptr<BTreeFileMetaSelector> file_selector,
+    std::shared_ptr<arrow::DataType> key_type, std::shared_ptr<GlobalIndexFileReader> file_reader,
+    std::shared_ptr<CacheManager> cache_manager, std::shared_ptr<MemoryPool> pool,
+    std::shared_ptr<Executor> executor)
     : read_buffer_size_(read_buffer_size),
-      pool_(pool),
-      file_selector_(files, key_type, pool),
-      key_type_(key_type),
-      file_reader_(file_reader),
-      cache_manager_(cache_manager),
-      executor_(executor) {}
+      pool_(std::move(pool)),
+      file_selector_(std::move(file_selector)),
+      key_type_(std::move(key_type)),
+      file_reader_(std::move(file_reader)),
+      cache_manager_(std::move(cache_manager)),
+      executor_(std::move(executor)) {}
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitIsNotNull() {
     return DispatchVisit(
-        [this]() { return file_selector_.VisitIsNotNull(); },
+        [this]() { return file_selector_->VisitIsNotNull(); },
         [](const std::shared_ptr<GlobalIndexReader>& reader) { return reader->VisitIsNotNull(); });
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitIsNull() {
     return DispatchVisit(
-        [this]() { return file_selector_.VisitIsNull(); },
+        [this]() { return file_selector_->VisitIsNull(); },
         [](const std::shared_ptr<GlobalIndexReader>& reader) { return reader->VisitIsNull(); });
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitEqual(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitEqual(literal); },
+    return DispatchVisit([this, &literal]() { return file_selector_->VisitEqual(literal); },
                          [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitEqual(literal);
                          });
@@ -74,7 +86,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitEqual(
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitNotEqual(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitNotEqual(literal); },
+    return DispatchVisit([this, &literal]() { return file_selector_->VisitNotEqual(literal); },
                          [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitNotEqual(literal);
                          });
@@ -82,7 +94,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitNotEqua
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitLessThan(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitLessThan(literal); },
+    return DispatchVisit([this, &literal]() { return file_selector_->VisitLessThan(literal); },
                          [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitLessThan(literal);
                          });
@@ -90,7 +102,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitLessTha
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitLessOrEqual(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitLessOrEqual(literal); },
+    return DispatchVisit([this, &literal]() { return file_selector_->VisitLessOrEqual(literal); },
                          [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitLessOrEqual(literal);
                          });
@@ -98,7 +110,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitLessOrE
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitGreaterThan(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitGreaterThan(literal); },
+    return DispatchVisit([this, &literal]() { return file_selector_->VisitGreaterThan(literal); },
                          [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitGreaterThan(literal);
                          });
@@ -106,15 +118,16 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitGreater
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitGreaterOrEqual(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitGreaterOrEqual(literal); },
-                         [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
-                             return reader->VisitGreaterOrEqual(literal);
-                         });
+    return DispatchVisit(
+        [this, &literal]() { return file_selector_->VisitGreaterOrEqual(literal); },
+        [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
+            return reader->VisitGreaterOrEqual(literal);
+        });
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitIn(
     const std::vector<Literal>& literals) {
-    return DispatchVisit([this, &literals]() { return file_selector_.VisitIn(literals); },
+    return DispatchVisit([this, &literals]() { return file_selector_->VisitIn(literals); },
                          [&literals](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitIn(literals);
                          });
@@ -122,7 +135,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitIn(
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitNotIn(
     const std::vector<Literal>& literals) {
-    return DispatchVisit([this, &literals]() { return file_selector_.VisitNotIn(literals); },
+    return DispatchVisit([this, &literals]() { return file_selector_->VisitNotIn(literals); },
                          [&literals](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitNotIn(literals);
                          });
@@ -130,7 +143,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitNotIn(
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitStartsWith(
     const Literal& prefix) {
-    return DispatchVisit([this, &prefix]() { return file_selector_.VisitStartsWith(prefix); },
+    return DispatchVisit([this, &prefix]() { return file_selector_->VisitStartsWith(prefix); },
                          [&prefix](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitStartsWith(prefix);
                          });
@@ -138,7 +151,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitStartsW
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitEndsWith(
     const Literal& suffix) {
-    return DispatchVisit([this, &suffix]() { return file_selector_.VisitEndsWith(suffix); },
+    return DispatchVisit([this, &suffix]() { return file_selector_->VisitEndsWith(suffix); },
                          [&suffix](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitEndsWith(suffix);
                          });
@@ -146,7 +159,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitEndsWit
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitContains(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitContains(literal); },
+    return DispatchVisit([this, &literal]() { return file_selector_->VisitContains(literal); },
                          [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitContains(literal);
                          });
@@ -154,7 +167,7 @@ Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitContain
 
 Result<std::shared_ptr<GlobalIndexResult>> LazyFilteredBTreeReader::VisitLike(
     const Literal& literal) {
-    return DispatchVisit([this, &literal]() { return file_selector_.VisitLike(literal); },
+    return DispatchVisit([this, &literal]() { return file_selector_->VisitLike(literal); },
                          [&literal](const std::shared_ptr<GlobalIndexReader>& reader) {
                              return reader->VisitLike(literal);
                          });
@@ -214,7 +227,8 @@ Result<std::shared_ptr<GlobalIndexReader>> LazyFilteredBTreeReader::CreateSingle
     auto comparator = KeySerializer::CreateComparator(key_type_, pool_);
 
     // Get min/max key slices from meta data (keep as slices; Create() will deserialize)
-    auto index_meta = BTreeIndexMeta::Deserialize(meta.metadata, pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BTreeIndexMeta> index_meta,
+                           BTreeIndexMeta::Deserialize(meta.metadata, pool_.get()));
     std::optional<MemorySlice> min_key_slice;
     std::optional<MemorySlice> max_key_slice;
     if (index_meta->FirstKey()) {

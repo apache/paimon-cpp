@@ -24,6 +24,7 @@
 
 #include "paimon/common/memory/memory_slice_input.h"
 #include "paimon/memory/bytes.h"
+#include "paimon/result.h"
 
 namespace paimon {
 /// Index metadata for each BTree index file.
@@ -31,8 +32,8 @@ namespace paimon {
 /// Empty serialized keys are valid, so null boundary keys are encoded separately with flags.
 class BTreeIndexMeta {
  public:
-    static std::shared_ptr<BTreeIndexMeta> Deserialize(const std::shared_ptr<Bytes>& meta,
-                                                       paimon::MemoryPool* pool);
+    static Result<std::shared_ptr<BTreeIndexMeta>> Deserialize(const std::shared_ptr<Bytes>& meta,
+                                                               paimon::MemoryPool* pool);
     std::shared_ptr<Bytes> Serialize(paimon::MemoryPool* pool) const;
 
  public:

@@ -156,7 +156,14 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
 
 Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
                                      bool force_keep_delete) const {
-    auto split_impl = dynamic_cast<DataSplitImpl*>(split.get());
+    bool is_indexed = false;
+    std::shared_ptr<Split> data_split = split;
+    if (auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
+        PAIMON_RETURN_NOT_OK(indexed_split->Validate());
+        data_split = indexed_split->GetDataSplit();
+        is_indexed = true;
+    }
+    auto split_impl = dynamic_cast<DataSplitImpl*>(data_split.get());
     if (split_impl == nullptr) {
         return Status::Invalid("unexpected error, split cast to impl failed");
     }
@@ -164,14 +171,16 @@ Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
         // for append table, always return true
         return true;
     }
-    bool matched = !force_keep_delete && !split_impl->IsStreaming() && split_impl->RawConvertible();
+    bool matched = !force_keep_delete && !split_impl->IsStreaming() &&
+                   (is_indexed || split_impl->RawConvertible());
     if (matched) {
         // for legacy version, we are not sure if there are delete rows, but in order to be
         // compatible with the query acceleration of the OLAP engine, we have generated raw
         // files.
         // Here, for the sake of correctness, we still need to perform drop delete filtering.
         for (const auto& file : split_impl->DataFiles()) {
-            if (file->delete_row_count == std::nullopt) {
+            if (file == nullptr || file->delete_row_count == std::nullopt ||
+                file->delete_row_count.value() != 0) {
                 return false;
             }
         }

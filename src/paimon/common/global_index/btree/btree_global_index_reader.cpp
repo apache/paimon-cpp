@@ -291,6 +291,8 @@ Result<RoaringBitmap64> BTreeGlobalIndexReader::RangeQuery(const std::optional<L
                            KeySerializer::SerializeKey(to.value(), key_type_, pool_.get()));
     MemorySlice from_slice = MemorySlice::Wrap(from_bytes);
     MemorySlice to_slice = MemorySlice::Wrap(to_bytes);
+    PAIMON_RETURN_NOT_OK(KeySerializer::ValidateSerializedKey(from_slice, key_type_));
+    PAIMON_RETURN_NOT_OK(KeySerializer::ValidateSerializedKey(to_slice, key_type_));
 
     // Determine if we can skip lower/upper bound checks using cached serialized min/max keys.
     // When from == min_key_, all entries are >= from, so skip lower bound comparison.

@@ -132,8 +132,11 @@ Result<std::shared_ptr<GlobalIndexReader>> BTreeGlobalIndexer::CreateReader(
     if (files.size() > 1) {
         executor = CreateDefaultExecutor();
     }
-    return std::make_shared<LazyFilteredBTreeReader>(read_buffer_size, files, key_type, file_reader,
-                                                     cache_manager_, pool, executor);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<LazyFilteredBTreeReader> reader,
+        LazyFilteredBTreeReader::Create(read_buffer_size, files, key_type, file_reader,
+                                        cache_manager_, pool, executor));
+    return std::shared_ptr<GlobalIndexReader>(std::move(reader));
 }
 
 }  // namespace paimon

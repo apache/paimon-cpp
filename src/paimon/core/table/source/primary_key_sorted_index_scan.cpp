@@ -19,6 +19,7 @@
 
 #include "paimon/core/table/source/primary_key_sorted_index_scan.h"
 
+#include <algorithm>
 #include <cassert>
 #include <set>
 #include <unordered_map>
@@ -320,6 +321,14 @@ Result<size_t> FindSourceIndex(const PkSortedIndexGroup& group, const DataFileMe
     return Status::Invalid(fmt::format(
         "Data file {} is not covered by its sorted-index source group.", data_file.file_name));
 }
+
+bool SupportsIndexedRawRead(const DataSplitImpl& split) {
+    return std::all_of(split.DataFiles().begin(), split.DataFiles().end(),
+                       [](const std::shared_ptr<DataFileMeta>& file) {
+                           return file != nullptr && file->delete_row_count.has_value() &&
+                                  file->delete_row_count.value() == 0;
+                       });
+}
 }  // namespace
 
 Result<PrimaryKeySortedIndexScan::Plan> PrimaryKeySortedIndexScan::CreatePlan(
@@ -410,10 +419,15 @@ Result<PrimaryKeySortedIndexScan::Plan> PrimaryKeySortedIndexScan::CreatePlan(
     std::vector<FilePlan> files;
     for (const std::shared_ptr<DataSplitImpl>& split : data_splits) {
         auto bucket_groups = groups_by_bucket.find(BucketKey(split->Partition(), split->Bucket()));
+        // Legacy metadata may omit delete_row_count even when the split generator marks a split
+        // raw-convertible. Keep the entire original split so that the normal read path can merge
+        // DELETE rows with records from the other files in the split.
+        const bool supports_indexed_raw_read = SupportsIndexedRawRead(*split);
         for (size_t file_index = 0; file_index < split->DataFiles().size(); file_index++) {
             const std::shared_ptr<DataFileMeta>& data_file = split->DataFiles()[file_index];
             std::map<int32_t, std::shared_ptr<PkSortedIndexGroup>> groups;
-            if (bucket_groups != groups_by_bucket.end() && data_file != nullptr) {
+            if (supports_indexed_raw_read && bucket_groups != groups_by_bucket.end() &&
+                data_file != nullptr) {
                 auto source_groups = bucket_groups->second.find(data_file->file_name);
                 if (source_groups != bucket_groups->second.end()) {
                     groups = source_groups->second;

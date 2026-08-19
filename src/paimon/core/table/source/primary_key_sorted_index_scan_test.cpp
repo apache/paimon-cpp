@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,8 @@
 #include "arrow/api.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/common/global_index/btree/btree_index_meta.h"
+#include "paimon/common/global_index/btree/key_serializer.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
@@ -206,15 +209,16 @@ class PrimaryKeySortedIndexScanTest : public ::testing::Test {
     }
 
     std::shared_ptr<DataFileMeta> MakeDataFile(const std::string& name, int64_t row_count,
-                                               int32_t level, const FileSource& file_source) {
+                                               int32_t level, const FileSource& file_source,
+                                               std::optional<int64_t> delete_row_count = 0) {
         return std::make_shared<DataFileMeta>(
             name, /*file_size=*/1024, row_count,
             /*min_key=*/BinaryRow::EmptyRow(), /*max_key=*/BinaryRow::EmptyRow(),
             /*key_stats=*/SimpleStats::EmptyStats(), /*value_stats=*/SimpleStats::EmptyStats(),
             /*min_sequence_number=*/0, /*max_sequence_number=*/row_count, /*schema_id=*/0, level,
             /*extra_files=*/std::vector<std::optional<std::string>>(),
-            /*creation_time=*/Timestamp(1721643142456LL, 0),
-            /*delete_row_count=*/0, /*embedded_index=*/nullptr, file_source,
+            /*creation_time=*/Timestamp(1721643142456LL, 0), delete_row_count,
+            /*embedded_index=*/nullptr, file_source,
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
     }
@@ -494,6 +498,41 @@ TEST_F(PrimaryKeySortedIndexScanTest, NonRawConvertibleSplitPreserved) {
     ASSERT_EQ(splits[0].get(), split.get());
 }
 
+TEST_F(PrimaryKeySortedIndexScanTest, UnknownDeleteCountPreservesOriginalSplit) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload, BuildPayload());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact(), std::nullopt),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::Plan plan,
+                         PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, {split}, definitions_,
+                                                               MakeEntries(payload)));
+    ASSERT_TRUE(plan.Files()[0].Groups().empty());
+    ASSERT_TRUE(plan.Files()[1].Groups().empty());
+
+    for (int64_t value : {10, 11}) {
+        SCOPED_TRACE(value == 10 ? "non-empty index result" : "empty index result");
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                             PlanEvaluateConvert({split}, MakeEntries(payload), PriceEqual(value),
+                                                 PayloadReaderFactory()));
+        ASSERT_EQ(splits.size(), 1);
+        ASSERT_EQ(splits[0], split);
+    }
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, NonzeroDeleteCountPreservesOriginalSplit) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload, BuildPayload());
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact(), 1),
+                   MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<Split>> splits,
+        PlanEvaluateConvert({split}, MakeEntries(payload), PriceEqual(10), PayloadReaderFactory()));
+    ASSERT_EQ(splits.size(), 1);
+    ASSERT_EQ(splits[0], split);
+}
+
 TEST_F(PrimaryKeySortedIndexScanTest, InvalidRowRangePayloadFallsBack) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload, BuildPayload());
     // Rebuild the payload metadata with a row range end beyond the source rows: the group
@@ -513,6 +552,50 @@ TEST_F(PrimaryKeySortedIndexScanTest, InvalidRowRangePayloadFallsBack) {
                                              PayloadReaderFactory()));
     ASSERT_EQ(1, splits.size());
     ASSERT_EQ(split, splits[0]);
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, MalformedBTreeMetadataFallsBack) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload, BuildPayload());
+    const GlobalIndexMeta& meta = payload->GetGlobalIndexMeta().value();
+    auto short_key = std::make_shared<Bytes>(std::string(1, '\0'), pool_.get());
+    auto invalid_key_meta = std::make_shared<BTreeIndexMeta>(short_key, short_key, false);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> first_key,
+                         KeySerializer::SerializeKey(Literal(static_cast<int64_t>(10)),
+                                                     arrow::int64(), pool_.get()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> last_key,
+        KeySerializer::SerializeKey(Literal(static_cast<int64_t>(1)), arrow::int64(), pool_.get()));
+    auto reversed_meta = std::make_shared<BTreeIndexMeta>(first_key, last_key, false);
+    auto only_first_meta = std::make_shared<BTreeIndexMeta>(first_key, /*last_key=*/nullptr, false);
+    auto only_last_meta = std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, last_key, false);
+    auto empty_nonnull_meta =
+        std::make_shared<BTreeIndexMeta>(/*first_key=*/nullptr, /*last_key=*/nullptr, false);
+    std::vector<std::shared_ptr<Bytes>> malformed_metadata = {
+        nullptr,
+        std::make_shared<Bytes>(std::string(4, '\0'), pool_.get()),
+        invalid_key_meta->Serialize(pool_.get()),
+        reversed_meta->Serialize(pool_.get()),
+        only_first_meta->Serialize(pool_.get()),
+        only_last_meta->Serialize(pool_.get()),
+        empty_nonnull_meta->Serialize(pool_.get())};
+    for (const std::shared_ptr<Bytes>& index_meta : malformed_metadata) {
+        SCOPED_TRACE(index_meta == nullptr ? "missing metadata"
+                                           : fmt::format("metadata size {}", index_meta->size()));
+        auto broken_payload = std::make_shared<IndexFileMeta>(
+            payload->IndexType(), payload->FileName(), payload->FileSize(), payload->RowCount(),
+            std::nullopt, std::nullopt,
+            GlobalIndexMeta(meta.row_range_start, meta.row_range_end, meta.index_field_id,
+                            meta.extra_field_ids, index_meta, meta.source_meta));
+        std::shared_ptr<DataSplitImpl> split =
+            MakeSplit({MakeDataFile("a.parquet", kFileARows, 5, FileSource::Compact()),
+                       MakeDataFile("b.parquet", kFileBRows, 5, FileSource::Compact())},
+                      /*raw_convertible=*/true);
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                             PlanEvaluateConvert({split}, MakeEntries(broken_payload),
+                                                 PriceEqual(10), PayloadReaderFactory()));
+        ASSERT_EQ(splits.size(), 1);
+        ASSERT_EQ(splits[0], split);
+    }
 }
 
 TEST_F(PrimaryKeySortedIndexScanTest, OutOfRangePositionsFailAllCoveredFiles) {

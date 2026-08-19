@@ -88,13 +88,25 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
         // of the inner split's raw-convertible marker, matching Java's dedicated provider.
         const std::shared_ptr<DataSplit>& inner_split = indexed_split->GetDataSplit();
         if (!force_keep_delete_) {
+            bool has_raw_reader = false;
             for (const auto& read : split_reads_) {
                 if (dynamic_cast<RawFileSplitRead*>(read.get()) != nullptr) {
-                    return read->CreateReader(indexed_split);
+                    has_raw_reader = true;
+                    PAIMON_ASSIGN_OR_RAISE(bool matched,
+                                           read->Match(indexed_split, /*force_keep_delete=*/false));
+                    if (matched) {
+                        return read->CreateReader(indexed_split);
+                    }
+                    // A manually supplied or deserialized indexed split can still reference
+                    // legacy files. Preserve merge semantics when raw-read safety is uncertain.
+                    dispatch_split = inner_split;
+                    break;
                 }
             }
-            return Status::Invalid(
-                "create reader failed, primary-key indexed split has no raw reader.");
+            if (!has_raw_reader) {
+                return Status::Invalid(
+                    "create reader failed, primary-key indexed split has no raw reader.");
+            }
         } else {
             // Keeping delete rows is incompatible with physical-position pruning. Reading the
             // inner split through the normal merge path preserves correctness.
