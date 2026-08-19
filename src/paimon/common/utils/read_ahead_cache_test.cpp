@@ -19,7 +19,10 @@
 
 #include "paimon/common/utils/read_ahead_cache.h"
 
+#include <chrono>
 #include <fstream>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -82,6 +85,73 @@ void AssertReadMiss(const ByteRange& range, ReadAheadCache* cache) {
     ASSERT_FALSE(hit);
     EXPECT_EQ(std::string(dest.size(), 'X'), dest);
 }
+
+// An InputStream wrapper that holds ReadAsync callbacks until ReleaseAll() is
+// called, letting tests observe the cache while prefetch IOs are in flight.
+class GatedAsyncInputStream : public InputStream {
+ public:
+    explicit GatedAsyncInputStream(std::shared_ptr<InputStream> inner) : inner_(std::move(inner)) {}
+
+    Status Close() override {
+        return inner_->Close();
+    }
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return inner_->Seek(offset, origin);
+    }
+    Result<int64_t> GetPos() const override {
+        return inner_->GetPos();
+    }
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        return inner_->Read(buffer, size);
+    }
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        return inner_->Read(buffer, size, offset);
+    }
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        async_read_count_++;
+        pending_.push_back({buffer, size, offset, std::move(callback)});
+    }
+    Result<std::string> GetUri() const override {
+        return inner_->GetUri();
+    }
+    Result<int64_t> Length() const override {
+        return inner_->Length();
+    }
+
+    int AsyncReadCount() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return async_read_count_;
+    }
+
+    /// Complete all held fetches against the underlying stream.
+    void ReleaseAll() {
+        std::vector<PendingRead> taken;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            taken = std::move(pending_);
+            pending_.clear();
+        }
+        for (auto& read : taken) {
+            Result<int64_t> res = inner_->Read(read.buffer, read.size, read.offset);
+            read.callback(res.ok() ? Status::OK() : res.status());
+        }
+    }
+
+ private:
+    struct PendingRead {
+        char* buffer;
+        int64_t size;
+        int64_t offset;
+        std::function<void(Status)> callback;
+    };
+
+    std::shared_ptr<InputStream> inner_;
+    std::mutex mutex_;
+    std::vector<PendingRead> pending_;
+    int async_read_count_ = 0;
+};
 
 TEST(TestReadAheadCache, TestBasics) {
     CacheConfig config(/*buffer_size_limit=*/256 * 1024 * 1024, /*range_size_limit=*/10,
@@ -329,6 +399,58 @@ TEST(TestReadAheadCache, TestWarmupWithEmptyRanges) {
     auto env = CreateTestFileAndCache("data_file", content, config, {});
     env.cache->Warmup();
     AssertReadMiss({0, 5}, env.cache.get());
+}
+
+// A reader racing an in-flight prefetch must find the published entry and wait
+// on its future instead of missing and re-fetching the same bytes: entries are
+// published under the lock before their fetch is dispatched.
+TEST(TestReadAheadCache, TestInFlightEntryServesRacingReader) {
+    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+                       /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::string path = dir->Str() + "/data_file";
+    std::ofstream file(path, std::ios::binary);
+    ASSERT_TRUE(file.is_open());
+    file.write(content.data(), content.size());
+    ASSERT_FALSE(file.fail());
+    file.close();
+    ASSERT_OK_AND_ASSIGN(auto fs, FileSystemFactory::Get("local", path, {}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs->Open(path));
+    auto gated = std::make_shared<GatedAsyncInputStream>(std::move(in));
+
+    ReadAheadCache cache(gated, config, GetDefaultPool());
+    ASSERT_OK(cache.Init({{0, 5}}));
+    cache.Warmup();
+
+    // The prefetch entry is published, but its fetch is still held.
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+
+    // A racing reader blocks on the in-flight entry's future and is served
+    // from it once the fetch completes, without triggering a second fetch.
+    std::thread reader([&cache, &gated]() {
+        std::string dest(5, 'X');
+        Result<bool> res = cache.Read({0, 5}, dest.data());
+        EXPECT_TRUE(res.ok());
+        if (res.ok()) {
+            EXPECT_TRUE(res.value());
+        }
+        EXPECT_EQ("abcde", std::string_view(dest.data(), 5));
+        EXPECT_EQ(gated->AsyncReadCount(), 1);
+    });
+    // Give the reader time to block on the in-flight entry's future before
+    // completing the fetch.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    gated->ReleaseAll();
+    reader.join();
+
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 0u);
+    ASSERT_OK_AND_ASSIGN(uint64_t io_count, metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_EQ(io_count, 1u);
 }
 
 // Test that pre_buffer_limit truncates the prefetch window: only ranges within
