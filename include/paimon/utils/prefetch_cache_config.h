@@ -53,18 +53,7 @@ enum class PAIMON_EXPORT PrefetchCacheMode {
 class PAIMON_EXPORT CacheConfig {
  public:
     CacheConfig();
-    CacheConfig(uint64_t buffer_size_limit, uint64_t range_size_limit, uint64_t hole_size_limit,
-                uint64_t pre_buffer_limit);
-
-    /// Returns the maximum total size (in bytes) of cached data.
-    uint64_t GetBufferSizeLimit() const {
-        return buffer_size_limit_;
-    }
-
-    /// Sets the maximum total size (in bytes) of cached data.
-    void SetBufferSizeLimit(uint64_t buffer_size_limit) {
-        buffer_size_limit_ = buffer_size_limit;
-    }
+    CacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit, uint64_t pre_buffer_limit);
 
     /// Returns the maximum allowed size (in bytes) for a single cached range.
     uint64_t GetRangeSizeLimit() const {
@@ -97,7 +86,6 @@ class PAIMON_EXPORT CacheConfig {
     }
 
  private:
-    uint64_t buffer_size_limit_;
     uint64_t range_size_limit_;
     uint64_t hole_size_limit_;
     uint64_t pre_buffer_limit_;

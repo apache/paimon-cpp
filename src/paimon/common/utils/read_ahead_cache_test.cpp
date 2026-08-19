@@ -154,7 +154,7 @@ class GatedAsyncInputStream : public InputStream {
 };
 
 TEST(TestReadAheadCache, TestBasics) {
-    CacheConfig config(/*buffer_size_limit=*/256 * 1024 * 1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/128 * 1024 * 1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache(
@@ -183,7 +183,7 @@ TEST(TestReadAheadCache, TestBasics) {
 // Test that a read spanning several adjacent cache entries is served from the
 // contiguous run of entries and counted as a single hit.
 TEST(TestReadAheadCache, TestMultiSegmentContiguousHit) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     // A single 25-byte range exceeds range_size_limit, so Init() coalesces it
@@ -217,7 +217,7 @@ TEST(TestReadAheadCache, TestMultiSegmentContiguousHit) {
 
 // Test repeated reads to the same range to ensure cache reuse.
 TEST(TestReadAheadCache, TestRepeatedReadCacheReuse) {
-    CacheConfig config(/*buffer_size_limit=*/64, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/64);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {7, 5}});
@@ -227,26 +227,26 @@ TEST(TestReadAheadCache, TestRepeatedReadCacheReuse) {
     AssertReadEquals({0, 5}, "abcde", &cache);
 }
 
-// Test cache eviction when buffer size is limited.
-TEST(TestReadAheadCache, TestCacheEviction) {
-    CacheConfig config(/*buffer_size_limit=*/10, /*range_size_limit=*/5,
-                       /*hole_size_limit=*/2, /*pre_buffer_limit=*/10);
+// The cache never evicts: every prefetched range stays cached until
+// ReleaseBuffers()/Reset(), regardless of how much data accumulates.
+TEST(TestReadAheadCache, TestNoEvictionKeepsAllRanges) {
+    CacheConfig config(/*range_size_limit=*/5, /*hole_size_limit=*/2,
+                       /*pre_buffer_limit=*/10);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}, {16, 5}});
     auto& cache = *env.cache;
 
     AssertReadEquals({0, 5}, "abcde", &cache);
 
-    // Reading another range should evict the first one due to buffer size limit.
+    // Reading further ranges keeps the earlier ones cached.
     AssertReadEquals({8, 5}, "ijklm", &cache);
-
-    // The first range should now be a cache miss.
-    AssertReadMiss({0, 5}, &cache);
+    AssertReadEquals({16, 5}, "qrstu", &cache);
+    AssertReadEquals({0, 5}, "abcde", &cache);
 }
 
 // Test that Read() hits and misses are recorded in the cache metrics.
 TEST(TestReadAheadCache, TestMetrics) {
-    CacheConfig config(/*buffer_size_limit=*/256 * 1024 * 1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/128 * 1024 * 1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}});
@@ -286,7 +286,7 @@ TEST(TestReadAheadCache, TestMetrics) {
 // Test that ReleaseBuffers() drops the cached data but keeps the hit/miss counters
 // readable, while Reset() zeroes them as well.
 TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
-    CacheConfig config(/*buffer_size_limit=*/256 * 1024 * 1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/128 * 1024 * 1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});
@@ -341,7 +341,7 @@ TEST(TestReadAheadCache, TestReleaseBuffersKeepsMetrics) {
 // a miss: the entry exists from the moment its fetch is submitted and its
 // future carries the IO error.
 TEST(TestReadAheadCache, TestPrefetchIOErrorPropagation) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto io_hook = paimon::IOHook::GetInstance();
@@ -371,7 +371,7 @@ TEST(TestReadAheadCache, TestPrefetchIOErrorPropagation) {
 // issues no further IO, while without Warmup() the first Read() triggers the
 // prefetch itself.
 TEST(TestReadAheadCache, TestWarmupPrefetchesBeforeFirstRead) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env1 = CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}});
@@ -393,7 +393,7 @@ TEST(TestReadAheadCache, TestWarmupPrefetchesBeforeFirstRead) {
 
 // Warmup() without any pending ranges is a safe no-op.
 TEST(TestReadAheadCache, TestWarmupWithEmptyRanges) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {});
@@ -405,7 +405,7 @@ TEST(TestReadAheadCache, TestWarmupWithEmptyRanges) {
 // on its future instead of missing and re-fetching the same bytes: entries are
 // published under the lock before their fetch is dispatched.
 TEST(TestReadAheadCache, TestInFlightEntryServesRacingReader) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto dir = UniqueTestDirectory::Create();
@@ -456,7 +456,7 @@ TEST(TestReadAheadCache, TestInFlightEntryServesRacingReader) {
 // Test that pre_buffer_limit truncates the prefetch window: only ranges within
 // the window are fetched at once, later reads fetch the remaining batches.
 TEST(TestReadAheadCache, TestPreBufferWindowLimit) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/0, /*pre_buffer_limit=*/10);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 10}, {16, 10}});
@@ -482,7 +482,7 @@ TEST(TestReadAheadCache, TestPreBufferWindowLimit) {
 
 // Test that Init() rejects a second call until the cache is reset.
 TEST(TestReadAheadCache, TestDoubleInit) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});
@@ -497,7 +497,7 @@ TEST(TestReadAheadCache, TestDoubleInit) {
 
 // Test that the cache can be re-initialized after Reset() and serves the new ranges.
 TEST(TestReadAheadCache, TestReinitAfterReset) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});
@@ -513,36 +513,10 @@ TEST(TestReadAheadCache, TestReinitAfterReset) {
     AssertReadMiss({20, 2}, &cache);
 }
 
-// Test FIFO eviction when a batch of new entries is merged in: old entries are
-// dropped until the budget fits, and an oversized new batch is kept anyway
-// after evicting everything.
-TEST(TestReadAheadCache, TestEvictionOnBatchInsert) {
-    CacheConfig config(/*buffer_size_limit=*/6, /*range_size_limit=*/10,
-                       /*hole_size_limit=*/0, /*pre_buffer_limit=*/8);
-    std::string content = "abcdefghijklmnopqrstuvwxyz";
-    auto env =
-        CreateTestFileAndCache("data_file", content, config, {{0, 3}, {5, 3}, {10, 4}, {15, 4}});
-    auto& cache = *env.cache;
-
-    // First batch: reading {0,3} prefetches {0,3} and {5,3} (6 bytes fit the
-    // 8-byte window; {10,4} would exceed it).
-    AssertReadEquals({0, 3}, "abc", &cache);
-
-    // Reading {10,4} prefetches the second batch {10,4} + {15,4} (8 bytes).
-    // Together with the existing 6 bytes it exceeds the 6-byte buffer limit,
-    // so both old entries are evicted and the oversized batch is kept.
-    AssertReadEquals({10, 4}, "klmn", &cache);
-    AssertReadEquals({15, 4}, "pqrs", &cache);
-
-    // The evicted ranges now miss.
-    AssertReadMiss({0, 3}, &cache);
-    AssertReadMiss({5, 3}, &cache);
-}
-
 // Test that Init() merges ranges separated by a small hole, so a read
 // spanning the hole is served by the single coalesced entry.
 TEST(TestReadAheadCache, TestInitCoalescesSmallHoles) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/1024,
+    CacheConfig config(/*range_size_limit=*/1024,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     // Byte 5 sits in a 1-byte hole, within hole_size_limit: one entry {0,11}.
@@ -554,7 +528,7 @@ TEST(TestReadAheadCache, TestInitCoalescesSmallHoles) {
 
 // CollectMetrics() with a null metrics output is a safe no-op.
 TEST(TestReadAheadCache, TestCollectMetricsWithNullMetrics) {
-    CacheConfig config(/*buffer_size_limit=*/1024, /*range_size_limit=*/10,
+    CacheConfig config(/*range_size_limit=*/10,
                        /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     auto env = CreateTestFileAndCache("data_file", content, config, {{0, 5}});

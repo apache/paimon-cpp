@@ -60,7 +60,7 @@ class CacheInputStreamTest : public ::testing::Test {
 
     std::shared_ptr<ReadAheadCache> CreateCache(std::vector<ByteRange> ranges) {
         auto stream = OpenFile();
-        CacheConfig config(/*buffer_size_limit=*/1024 * 1024, /*range_size_limit=*/1024,
+        CacheConfig config(/*range_size_limit=*/1024,
                            /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
         auto cache = std::make_shared<ReadAheadCache>(std::move(stream), config, pool_);
         EXPECT_OK(cache->Init(std::move(ranges)));
@@ -204,7 +204,7 @@ TEST_F(CacheInputStreamTest, TestReadAsyncCacheReadError) {
         ASSERT_OK_AND_ASSIGN(auto fs, FileSystemFactory::Get("local", file_path_, {}));
         ASSERT_OK_AND_ASSIGN(auto cache_stream, fs->Open(file_path_));
         ASSERT_OK_AND_ASSIGN(auto underlying, fs->Open(file_path_));
-        CacheConfig config(/*buffer_size_limit=*/1024 * 1024, /*range_size_limit=*/1024,
+        CacheConfig config(/*range_size_limit=*/1024,
                            /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
         auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config, pool_);
         ASSERT_OK(cache->Init(std::vector<ByteRange>{{0, 10}}));

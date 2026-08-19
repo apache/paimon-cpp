@@ -53,8 +53,7 @@ struct RangeCacheEntry {
 
 // Everything needed to dispatch the prefetch IO of an entry AFTER the entry
 // has been published into entries_: the promise resolves the entry's future
-// and the buffer capture keeps the destination alive even if the entry is
-// evicted before the IO completes.
+// and the buffer capture keeps the destination alive for the async IO.
 struct PendingFetch {
     ByteRange range;
     std::shared_ptr<Bytes> buffer;
@@ -80,10 +79,9 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
 
 }  // namespace
 
-CacheConfig::CacheConfig(uint64_t buffer_size_limit, uint64_t range_size_limit,
-                         uint64_t hole_size_limit, uint64_t pre_buffer_limit)
-    : buffer_size_limit_(buffer_size_limit),
-      range_size_limit_(range_size_limit),
+CacheConfig::CacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit,
+                         uint64_t pre_buffer_limit)
+    : range_size_limit_(range_size_limit),
       hole_size_limit_(hole_size_limit),
       pre_buffer_limit_(pre_buffer_limit) {}
 
@@ -93,14 +91,11 @@ CacheConfig::CacheConfig()
     // - range_size_limit matches the parquet reader's 32 MiB request blocks
     //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
     //   below the request size, so a request can never be served from one piece.
-    // - buffer_size_limit must hold at least one full data file, or FIFO
-    //   eviction drops prefetched data before the readers consume it.
     // - pre_buffer_limit must exceed the LARGEST single read a reader issues
     //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
     //   only dispatched up to this window, so a request reaching past it can
     //   never be served and falls back to a second fetch of the same bytes.
-    : CacheConfig(/*buffer_size_limit=*/1024 * 1024 * 1024,
-                  /*range_size_limit=*/32 * 1024 * 1024,
+    : CacheConfig(/*range_size_limit=*/32 * 1024 * 1024,
                   /*hole_size_limit=*/8 * 1024,
                   /*pre_buffer_limit=*/256 * 1024 * 1024) {}
 
@@ -188,23 +183,9 @@ void ReadAheadCache::Impl::Cache(std::vector<size_t> pending_indices) {
             new_entries.emplace_back(range, std::move(buffer), std::move(future));
         }
         if (!new_entries.empty()) {
-            // Add new entries, themselves ordered by offset
-            size_t new_entries_size = 0;
-            for (const auto& e : new_entries) {
-                new_entries_size += e.range.length;
-            }
-
-            size_t total_size = 0;
-            for (const auto& e : entries_) {
-                total_size += e.range.length;
-            }
-            size_t limit = config_.GetBufferSizeLimit();
-            while (!entries_.empty() && total_size + new_entries_size > limit) {
-                auto iter = entries_.begin();
-                total_size -= entries_.front().range.length;
-                entries_.erase(iter);
-            }
-
+            // Entries are never evicted: the cache holds every published
+            // range until ReleaseBuffers()/Reset(), so an in-flight fetch
+            // always keeps its entry and thus its future reachable.
             std::vector<RangeCacheEntry> merged(entries_.size() + new_entries.size());
             std::merge(entries_.begin(), entries_.end(), new_entries.begin(), new_entries.end(),
                        merged.begin());
@@ -285,6 +266,9 @@ void ReadAheadCache::Impl::Reset() {
 
 void ReadAheadCache::Impl::ReleaseBuffers() {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+    // Entries are never evicted, so waiting on entries_ covers every
+    // dispatched fetch: no async callback can outlive the stream or the
+    // memory pool its buffer belongs to.
     for (auto& entry : entries_) {
         entry.future.wait();
     }
@@ -370,7 +354,7 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
         return false;
     }
     // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
-    // async reads complete, and holding rw_mutex_ would block Cache()/eviction.
+    // async reads complete, and holding rw_mutex_ would block Cache().
     for (const auto& entry : covering) {
         PAIMON_RETURN_NOT_OK(entry.future.get());
     }

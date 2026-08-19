@@ -82,9 +82,9 @@ struct PAIMON_EXPORT ByteRange {
 /// hide I/O latency for sequential access. Example: If you read range [0, 100), and
 /// pre_buffer_range_count=2, the next two configured ranges will also be prefetched.
 ///
-/// Eviction policy: The cache uses a simple FIFO eviction policy based on total cached byte size.
-/// When adding new ranges would exceed `buffer_size_limit`, the oldest cached ranges are evicted
-/// first until there is enough space for the new data.
+/// The cache never evicts: every published range stays cached until
+/// ReleaseBuffers() or Reset(). It is meant to hold the prefetched ranges of
+/// a single data file, whose size is bounded by the reader's scan scope.
 class PAIMON_EXPORT ReadAheadCache {
  public:
     /// Construct a read cache with given options

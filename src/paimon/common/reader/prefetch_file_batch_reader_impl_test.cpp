@@ -563,7 +563,6 @@ TEST_F(PrefetchFileBatchReaderImplTest, WorkloopSetReadStatusWhenCacheInitFailed
     int32_t prefetch_max_parallel_num = 1;
     MockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size);
     CacheConfig invalid_cache_config(
-        /*buffer_size_limit=*/512 * 1024,
         /*range_size_limit=*/4 * 1024,
         /*hole_size_limit=*/8 * 1024,
         /*pre_buffer_limit=*/128 * 1024);

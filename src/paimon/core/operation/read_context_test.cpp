@@ -59,8 +59,8 @@ TEST(ReadContextTest, TestSetContent) {
     ReadContextBuilder builder("table_root_path");
     std::shared_ptr<MemoryPool> memory_pool = GetDefaultPool();
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
-    CacheConfig cache_config(/*buffer_size_limit=*/1024, /*range_size_limit=*/512,
-                             /*hole_size_limit=*/128, /*pre_buffer_limit=*/2048);
+    CacheConfig cache_config(/*range_size_limit=*/512, /*hole_size_limit=*/128,
+                             /*pre_buffer_limit=*/2048);
 
     builder.AddOption("key", "value");
     builder.SetReadFieldNames({"f1", "f2"});
@@ -105,7 +105,6 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_TRUE(ctx->GetSpecificTableSchema().has_value());
     ASSERT_EQ("table-schema-json", ctx->GetSpecificTableSchema().value());
     ASSERT_EQ("rt", ctx->GetBranch());
-    ASSERT_EQ(1024U, ctx->GetCacheConfig().GetBufferSizeLimit());
     ASSERT_EQ(512U, ctx->GetCacheConfig().GetRangeSizeLimit());
     ASSERT_EQ(128U, ctx->GetCacheConfig().GetHoleSizeLimit());
     ASSERT_EQ(2048U, ctx->GetCacheConfig().GetPreBufferLimit());
