@@ -26,8 +26,6 @@
 #include <vector>
 
 #include "arrow/c/bridge.h"
-#include "arrow/util/bit_util.h"
-#include "arrow/util/bitmap_ops.h"
 #include "arrow/util/key_value_metadata.h"
 #include "fmt/format.h"
 #include "paimon/common/reader/reader_utils.h"
@@ -623,8 +621,7 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
             }
             const std::shared_ptr<arrow::Array>& physical_column_array =
                 physical_column_iter->second;
-            if (physical_column_array->offset() == 0 &&
-                arrow::internal::may_have_validity_bitmap(physical_column_array->type_id())) {
+            if (physical_column_array->offset() == 0) {
                 PAIMON_ASSIGN_OR_RAISE(
                     std::shared_ptr<arrow::Array> masked_array,
                     MaskSinglePhysicalColumn(physical_struct_array, field_mapping_array,
@@ -633,6 +630,8 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
                                              LogicalField()->name(), arrow_pool));
                 selected_key_arrays.push_back(std::move(masked_array));
                 continue;
+            } else {
+                return Status::Invalid("paimon only supports arrays with zero offset");
             }
         }
 
@@ -707,10 +706,7 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
         if (physical_struct_array->offset() == 0) {
             parent_validity = physical_struct_array->null_bitmap();
         } else {
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                parent_validity,
-                arrow::internal::CopyBitmap(arrow_pool, physical_struct_array->null_bitmap_data(),
-                                            physical_struct_array->offset(), row_count));
+            return Status::Invalid("paimon only supports arrays with zero offset");
         }
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(

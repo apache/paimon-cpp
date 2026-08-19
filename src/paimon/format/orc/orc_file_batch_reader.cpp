@@ -238,8 +238,7 @@ Status OrcFileBatchReader::CollectTargetColumnIds(const ::orc::Type* src_type,
             }
             break;
         }
-        case ::orc::TypeKind::LIST:
-        case ::orc::TypeKind::MAP: {
+        default: {
             // Partial field recall inside list/map types is unsupported, so the target must match
             // the complete source subtree. Include the container and every descendant because all
             // of their streams are recalled by the ORC reader.
@@ -248,14 +247,6 @@ Status OrcFileBatchReader::CollectTargetColumnIds(const ::orc::Type* src_type,
                                                    src_type->toString(), target_type->toString()));
             }
             CollectAllColumnIds(src_type, target_column_ids);
-            break;
-        }
-        default: {
-            if (src_type->toString() != target_type->toString()) {
-                return Status::Invalid(fmt::format("type mismatch: src {} vs target {}",
-                                                   src_type->toString(), target_type->toString()));
-            }
-            target_column_ids->push_back(src_type->getColumnId());
             break;
         }
     }
