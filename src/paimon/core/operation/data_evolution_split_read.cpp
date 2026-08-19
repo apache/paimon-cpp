@@ -483,8 +483,14 @@ Result<bool> DataEvolutionSplitRead::SkipByFileIndex(
         }
         std::vector<DataField> written_fields;
         if (file->write_cols) {
-            PAIMON_ASSIGN_OR_RAISE(written_fields,
-                                   data_schema->GetFields(file->write_cols.value()));
+            std::vector<std::string> data_write_cols;
+            data_write_cols.reserve(file->write_cols->size());
+            for (const auto& write_col : file->write_cols.value()) {
+                if (!SpecialFields::IsSystemField(write_col)) {
+                    data_write_cols.push_back(write_col);
+                }
+            }
+            PAIMON_ASSIGN_OR_RAISE(written_fields, data_schema->GetFields(data_write_cols));
         } else {
             written_fields = data_schema->Fields();
         }
