@@ -402,6 +402,36 @@ class RealtimeWriteInteTest : public ::testing::Test {
         return CollectedReadResult{std::move(reader), std::move(result)};
     }
 
+    void ReadPlanWithSchemaAndCheck(const std::shared_ptr<Plan>& plan,
+                                    const std::shared_ptr<RealtimeContext>& realtime_context,
+                                    const std::shared_ptr<arrow::Schema>& read_schema,
+                                    const std::string& expected_json) const {
+        std::unique_ptr<ArrowSchema> c_read_schema = std::make_unique<ArrowSchema>();
+        ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_read_schema.get()).ok());
+        ReadContextBuilder read_builder(table_path_);
+        read_builder.SetOptions(options_)
+            .SetReadSchema(std::move(c_read_schema))
+            .WithRealtimeContext(realtime_context)
+            .WithMemoryPool(pool_);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             table_read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(reader.get()));
+
+        arrow::FieldVector result_fields = {arrow::field("_VALUE_KIND", arrow::int8())};
+        result_fields.insert(result_fields.end(), read_schema->fields().begin(),
+                             read_schema->fields().end());
+        std::shared_ptr<arrow::Array> expected =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), expected_json)
+                .ValueOrDie();
+        ASSERT_NE(nullptr, result);
+        ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
+            << result->ToString();
+    }
+
     Result<std::vector<Row>> ReadRows(
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan,
@@ -1520,6 +1550,56 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadAfterColumnRename) {
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result.data))
         << result.data->ToString();
     ASSERT_OK(second_writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestUnionReadWithNestedStructProjection) {
+    std::shared_ptr<arrow::DataType> address_type =
+        arrow::struct_({arrow::field("city", arrow::utf8()), arrow::field("zip", arrow::int64())});
+    std::shared_ptr<arrow::DataType> profile_type = arrow::struct_(
+        {arrow::field("name", arrow::utf8()), arrow::field("address", address_type)});
+    fields_ = {arrow::field("id", arrow::int64()), arrow::field("profile", profile_type),
+               arrow::field("pt", arrow::utf8())};
+    schema_ = arrow::schema(fields_);
+    CreateTable(/*partition_keys=*/{});
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
+                         MakeUnpartitionedBatchFromJson(R"([
+                             [0, ["disk-0", ["hangzhou", 310000]], "p0"],
+                             [1, ["disk-1", ["shanghai", 200000]], "p0"]
+                         ])"));
+    ASSERT_OK(writer->Write(std::move(disk_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id, Commit(disk_commits, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeUnpartitionedBatchFromJson(R"([
+                             [2, ["memory-2", ["beijing", 100000]], "p0"],
+                             [3, ["memory-3", ["shenzhen", 518000]], "p0"]
+                         ])"));
+    ASSERT_OK(writer->Write(std::move(memory_batch)));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    std::shared_ptr<arrow::DataType> projected_address_type =
+        arrow::struct_({arrow::field("city", arrow::utf8())});
+    std::shared_ptr<arrow::DataType> projected_profile_type =
+        arrow::struct_({arrow::field("address", projected_address_type)});
+    std::shared_ptr<arrow::Schema> projected_schema = arrow::schema(
+        {arrow::field("id", arrow::int64()), arrow::field("profile", projected_profile_type),
+         arrow::field("pt", arrow::utf8())});
+    ReadPlanWithSchemaAndCheck(plan, realtime_context, projected_schema, R"([
+        [0, 0, [["hangzhou"]], "p0"],
+        [0, 1, [["shanghai"]], "p0"],
+        [0, 2, [["beijing"]], "p0"],
+        [0, 3, [["shenzhen"]], "p0"]
+    ])");
+    ASSERT_OK(writer->Close());
 }
 
 TEST_F(RealtimeWriteInteTest, TestRefreshCommittedSnapshotReclaimsMemory) {
