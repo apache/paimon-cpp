@@ -23,12 +23,13 @@
 #include <vector>
 
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/vector_type.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/decimal_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/result.h"
@@ -41,6 +42,7 @@ namespace paimon {
 
 bool ArrowSchemaValidator::IsNestedType(const std::shared_ptr<arrow::DataType>& data_type) {
     return (data_type->id() == arrow::Type::MAP || data_type->id() == arrow::Type::LIST ||
+            data_type->id() == arrow::Type::FIXED_SIZE_LIST ||
             data_type->id() == arrow::Type::STRUCT);
 }
 
@@ -123,10 +125,17 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
         case arrow::Type::type::TIMESTAMP:
             return Status::OK();
         case arrow::Type::type::LIST: {
-            const auto& value_field =
-                arrow::internal::checked_cast<arrow::BaseListType*>(type.get())->value_field();
+            const auto& value_field = checked_cast<arrow::BaseListType*>(type.get())->value_field();
             PAIMON_RETURN_NOT_OK(ValidateDataTypeWithFieldId(
                 value_field->type(), value_field->metadata(), /*allow_blob=*/false, field_id_set));
+            break;
+        }
+        case arrow::Type::type::FIXED_SIZE_LIST: {
+            const auto& vector_type = checked_cast<const arrow::FixedSizeListType&>(*type);
+            if (vector_type.list_size() < 1 ||
+                !VectorType::IsValidElementType(vector_type.value_type())) {
+                return Status::Invalid("Invalid VECTOR type: ", type->ToString());
+            }
             break;
         }
         case arrow::Type::type::STRUCT: {
@@ -135,8 +144,7 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
                 // paimon field ids 0/1 which must not join the global field id uniqueness check.
                 break;
             }
-            arrow::FieldVector sub_fields =
-                arrow::internal::checked_cast<arrow::StructType*>(type.get())->fields();
+            arrow::FieldVector sub_fields = checked_cast<arrow::StructType*>(type.get())->fields();
             for (const auto& sub_field : sub_fields) {
                 PAIMON_ASSIGN_OR_RAISE(DataField data_field,
                                        DataField::ConvertArrowFieldToDataField(sub_field));
@@ -152,10 +160,8 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
             break;
         }
         case arrow::Type::type::MAP: {
-            const auto& key_field =
-                arrow::internal::checked_cast<arrow::MapType*>(type.get())->key_field();
-            const auto& item_field =
-                arrow::internal::checked_cast<arrow::MapType*>(type.get())->item_field();
+            const auto& key_field = checked_cast<arrow::MapType*>(type.get())->key_field();
+            const auto& item_field = checked_cast<arrow::MapType*>(type.get())->item_field();
             PAIMON_RETURN_NOT_OK(ValidateDataTypeWithFieldId(
                 key_field->type(), key_field->metadata(), /*allow_blob=*/false, field_id_set));
             PAIMON_RETURN_NOT_OK(ValidateDataTypeWithFieldId(
@@ -203,9 +209,20 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
             break;
         case arrow::Type::type::LIST: {
             const auto& value_field =
-                arrow::internal::checked_cast<const arrow::BaseListType&>(*field->type())
-                    .value_field();
+                checked_cast<const arrow::BaseListType&>(*field->type()).value_field();
             PAIMON_RETURN_NOT_OK(ValidateField(value_field, /*allow_blob=*/false));
+            break;
+        }
+        case arrow::Type::type::FIXED_SIZE_LIST: {
+            const auto& vector_type = checked_cast<const arrow::FixedSizeListType&>(*field->type());
+            if (vector_type.list_size() < 1) {
+                return Status::Invalid("Vector length must be positive, but was ",
+                                       vector_type.list_size());
+            }
+            if (!VectorType::IsValidElementType(vector_type.value_type())) {
+                return Status::Invalid("Invalid element type for vector: ",
+                                       vector_type.value_type()->ToString());
+            }
             break;
         }
         case arrow::Type::type::STRUCT: {
@@ -220,17 +237,16 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
                 break;
             }
             arrow::FieldVector arrow_fields =
-                arrow::internal::checked_cast<const arrow::StructType&>(*field->type()).fields();
+                checked_cast<const arrow::StructType&>(*field->type()).fields();
             for (const auto& sub_field : arrow_fields) {
                 PAIMON_RETURN_NOT_OK(ValidateField(sub_field, /*allow_blob=*/false));
             }
             break;
         }
         case arrow::Type::type::MAP: {
-            const auto& key_field =
-                arrow::internal::checked_cast<const arrow::MapType&>(*field->type()).key_field();
+            const auto& key_field = checked_cast<const arrow::MapType&>(*field->type()).key_field();
             const auto& item_field =
-                arrow::internal::checked_cast<const arrow::MapType&>(*field->type()).item_field();
+                checked_cast<const arrow::MapType&>(*field->type()).item_field();
             PAIMON_RETURN_NOT_OK(ValidateField(key_field, /*allow_blob=*/false));
             PAIMON_RETURN_NOT_OK(ValidateField(item_field, /*allow_blob=*/false));
             break;
@@ -256,16 +272,14 @@ bool ArrowSchemaValidator::ContainTimestampWithTimezone(const arrow::DataType& t
     const auto kind = type.id();
     switch (kind) {
         case arrow::Type::type::LIST: {
-            const auto& value_field =
-                arrow::internal::checked_cast<const arrow::ListType&>(type).value_field();
+            const auto& value_field = checked_cast<const arrow::ListType&>(type).value_field();
             if (ContainTimestampWithTimezone(*value_field->type())) {
                 return true;
             }
             break;
         }
         case arrow::Type::type::STRUCT: {
-            arrow::FieldVector arrow_fields =
-                arrow::internal::checked_cast<const arrow::StructType&>(type).fields();
+            arrow::FieldVector arrow_fields = checked_cast<const arrow::StructType&>(type).fields();
             for (const auto& sub_field : arrow_fields) {
                 if (ContainTimestampWithTimezone(*sub_field->type())) {
                     return true;
@@ -274,10 +288,8 @@ bool ArrowSchemaValidator::ContainTimestampWithTimezone(const arrow::DataType& t
             break;
         }
         case arrow::Type::type::MAP: {
-            const auto& key_field =
-                arrow::internal::checked_cast<const arrow::MapType&>(type).key_field();
-            const auto& item_field =
-                arrow::internal::checked_cast<const arrow::MapType&>(type).item_field();
+            const auto& key_field = checked_cast<const arrow::MapType&>(type).key_field();
+            const auto& item_field = checked_cast<const arrow::MapType&>(type).item_field();
             if (ContainTimestampWithTimezone(*key_field->type())) {
                 return true;
             }
@@ -287,7 +299,7 @@ bool ArrowSchemaValidator::ContainTimestampWithTimezone(const arrow::DataType& t
             break;
         }
         case arrow::Type::type::TIMESTAMP: {
-            const auto& ts_type = arrow::internal::checked_cast<const arrow::TimestampType&>(type);
+            const auto& ts_type = checked_cast<const arrow::TimestampType&>(type);
             if (!ts_type.timezone().empty()) {
                 return true;
             }

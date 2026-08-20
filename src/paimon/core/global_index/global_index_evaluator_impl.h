@@ -46,6 +46,11 @@ class GlobalIndexEvaluatorImpl : public GlobalIndexEvaluator {
     Result<std::shared_ptr<GlobalIndexResult>> Evaluate(
         const std::shared_ptr<Predicate>& predicate) override;
 
+    /// Applies Java-compatible compound flattening and removes redundant IS NOT NULL
+    /// predicates from AND expressions.
+    static Result<std::shared_ptr<Predicate>> NormalizePredicate(
+        const std::shared_ptr<Predicate>& predicate);
+
  private:
     Result<std::shared_ptr<GlobalIndexResult>> EvaluatePredicate(
         const std::shared_ptr<Predicate>& predicate);

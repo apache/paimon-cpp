@@ -24,6 +24,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -47,6 +48,56 @@ TEST(DataTypeJsonParserTest, ParseTypeArrayTypeSuccess) {
     ASSERT_NE(field, nullptr);
 }
 
+TEST(DataTypeJsonParserTest, ParseVectorTypeSuccess) {
+    const char* json = R"({
+        "type": "VECTOR NOT NULL",
+        "element": "FLOAT",
+        "length": 3
+    })";
+    rapidjson::Document doc;
+    doc.Parse(json);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> field,
+                         DataTypeJsonParser::ParseType("embedding", doc));
+    ASSERT_FALSE(field->nullable());
+    ASSERT_EQ(field->type()->id(), arrow::Type::FIXED_SIZE_LIST);
+    auto vector_type = checked_pointer_cast<arrow::FixedSizeListType>(field->type());
+    ASSERT_EQ(vector_type->list_size(), 3);
+    ASSERT_TRUE(vector_type->value_type()->Equals(arrow::float32()));
+
+    rapidjson::Document sql_doc;
+    rapidjson::Value sql_value("VECTOR<BIGINT NOT NULL, 5>", sql_doc.GetAllocator());
+    ASSERT_OK_AND_ASSIGN(field, DataTypeJsonParser::ParseType("embedding", sql_value));
+    vector_type = checked_pointer_cast<arrow::FixedSizeListType>(field->type());
+    ASSERT_TRUE(field->nullable());
+    ASSERT_EQ(vector_type->list_size(), 5);
+    ASSERT_FALSE(vector_type->value_field()->nullable());
+    ASSERT_TRUE(vector_type->value_type()->Equals(arrow::int64()));
+}
+
+TEST(DataTypeJsonParserTest, ParseVectorTypeFailure) {
+    for (const char* json : {
+             R"({"type":"VECTOR","element":"FLOAT","length":0})",
+             R"({"type":"VECTOR","element":"STRING","length":3})",
+             R"({"type":"VECTOR","element":"FLOAT"})",
+             R"({"type":"VECTOR","element":"FLOAT","length":"3"})",
+         }) {
+        rapidjson::Document doc;
+        doc.Parse(json);
+        ASSERT_NOK(DataTypeJsonParser::ParseType("embedding", doc));
+    }
+
+    rapidjson::Document sql_doc;
+    rapidjson::Value sql_value("VECTOR<STRING, 3>", sql_doc.GetAllocator());
+    ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("embedding", sql_value),
+                        "Invalid element type for vector");
+    sql_value.SetString("VECTOR<DOUBLE, 3>", sql_doc.GetAllocator());
+    ASSERT_OK(DataTypeJsonParser::ParseType("embedding", sql_value));
+    sql_value.SetString("VECTOR<FLOAT, 999999999999999999999999>", sql_doc.GetAllocator());
+    ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("embedding", sql_value),
+                        "Vector length must be between 1 and 2147483647");
+}
+
 TEST(DataTypeJsonParserTest, ParseTypeMapTypeSuccess) {
     const std::string name = "map_field";
     const char* json = R"({
@@ -60,7 +111,7 @@ TEST(DataTypeJsonParserTest, ParseTypeMapTypeSuccess) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> field,
                          DataTypeJsonParser::ParseType(name, doc));
     ASSERT_NE(field, nullptr);
-    auto map_type = std::static_pointer_cast<arrow::MapType>(field->type());
+    auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
     ASSERT_FALSE(map_type->key_field()->nullable());
 }
 

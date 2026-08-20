@@ -25,8 +25,8 @@
 #include "arrow/api.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/defs.h"
@@ -102,14 +102,13 @@ Result<std::unique_ptr<ColumnStats>> AvroStatsExtractor::FetchColumnStatistics(
         case arrow::Type::type::DATE32:
             return ColumnStats::CreateDateColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::type::TIMESTAMP: {
-            auto ts_type = arrow::internal::checked_pointer_cast<::arrow::TimestampType>(type);
+            auto ts_type = checked_pointer_cast<::arrow::TimestampType>(type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(ts_type);
             return ColumnStats::CreateTimestampColumnStats(std::nullopt, std::nullopt, std::nullopt,
                                                            precision);
         }
         case arrow::Type::type::DECIMAL128: {
-            auto decimal_type =
-                arrow::internal::checked_pointer_cast<::arrow::Decimal128Type>(type);
+            auto decimal_type = checked_pointer_cast<::arrow::Decimal128Type>(type);
             int32_t precision = decimal_type->precision();
             int32_t scale = decimal_type->scale();
             return ColumnStats::CreateDecimalColumnStats(std::nullopt, std::nullopt, std::nullopt,

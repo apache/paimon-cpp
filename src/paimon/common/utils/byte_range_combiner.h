@@ -23,8 +23,8 @@
 
 #include <vector>
 
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/result.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace paimon {
 

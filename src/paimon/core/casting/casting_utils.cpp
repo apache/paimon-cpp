@@ -20,6 +20,8 @@
 
 #include <memory>
 
+#include "paimon/common/utils/checked_cast.h"
+
 namespace paimon {
 Result<std::shared_ptr<arrow::Array>> CastingUtils::Cast(
     const std::shared_ptr<arrow::Array>& src_array,
@@ -40,9 +42,7 @@ Result<std::shared_ptr<arrow::Array>> CastingUtils::Cast(
 Result<std::shared_ptr<arrow::Array>> CastingUtils::TimestampToTimestampWithTimezone(
     const std::shared_ptr<arrow::Array>& src_array,
     const std::shared_ptr<arrow::TimestampType>& target_type, arrow::MemoryPool* pool) {
-    auto src_ts_type =
-        arrow::internal::checked_pointer_cast<arrow::TimestampType>(src_array->type());
-    assert(src_ts_type);
+    auto src_ts_type = checked_pointer_cast<arrow::TimestampType>(src_array->type());
     if (src_ts_type->unit() != target_type->unit()) {
         return Status::Invalid("in timezone converter, time unit of src and target type mismatch");
     }
@@ -62,9 +62,7 @@ Result<std::shared_ptr<arrow::Array>> CastingUtils::TimestampToTimestampWithTime
 Result<std::shared_ptr<arrow::Array>> CastingUtils::TimestampWithTimezoneToTimestamp(
     const std::shared_ptr<arrow::Array>& src_array,
     const std::shared_ptr<arrow::TimestampType>& target_type, arrow::MemoryPool* pool) {
-    auto src_ts_type =
-        arrow::internal::checked_pointer_cast<arrow::TimestampType>(src_array->type());
-    assert(src_ts_type);
+    auto src_ts_type = checked_pointer_cast<arrow::TimestampType>(src_array->type());
     if (src_ts_type->unit() != target_type->unit()) {
         return Status::Invalid("in timezone converter, time unit of src and target type mismatch");
     }

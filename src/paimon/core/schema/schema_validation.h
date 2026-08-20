@@ -75,6 +75,8 @@ class SchemaValidation {
 
     static Status ValidateMapStorageLayout(const TableSchema& schema, const CoreOptions& options);
 
+    static Status ValidateVectorFields(const TableSchema& schema, const CoreOptions& options);
+
     static bool IsComplexType(const std::shared_ptr<arrow::Field>& field);
 };
 

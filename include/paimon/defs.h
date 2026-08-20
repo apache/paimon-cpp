@@ -50,6 +50,8 @@ enum class FieldType {
     STRUCT = 15,
     BLOB = 16,
     VARIANT = 17,
+    /// Fixed-length dense vector represented by Arrow FixedSizeList.
+    VECTOR = 18,
     UNKNOWN = 128,
 };
 
@@ -522,6 +524,18 @@ struct PAIMON_EXPORT Options {
     /// "global-index.external-path" - Global index root directory, if not set, the global index
     /// files will be stored under the index directory.
     static const char GLOBAL_INDEX_EXTERNAL_PATH[];
+    /// "pk-btree.index.columns" - Comma-separated columns indexed by primary-key BTree indexes.
+    /// No default value.
+    static const char PK_BTREE_INDEX_COLUMNS[];
+    /// "pk-bitmap.index.columns" - Comma-separated columns indexed by primary-key Bitmap indexes.
+    /// No default value.
+    static const char PK_BITMAP_INDEX_COLUMNS[];
+    /// "pk-vector.index.columns" - Comma-separated VECTOR columns indexed by primary-key vector
+    /// indexes. No default value.
+    static const char PK_VECTOR_INDEX_COLUMNS[];
+    /// "pk-full-text.index.columns" - Comma-separated character columns indexed by primary-key
+    /// full-text indexes. No default value.
+    static const char PK_FULL_TEXT_INDEX_COLUMNS[];
     /// "aggregation.remove-record-on-delete" - Whether to remove the whole row in aggregation
     /// engine when delete records are received. Default value is "false".
     static const char AGGREGATION_REMOVE_RECORD_ON_DELETE[];
@@ -539,6 +553,10 @@ struct PAIMON_EXPORT Options {
     /// For streaming sources, starts from the first snapshot at or after the timestamp.
     /// "scan.timestamp" can be used as an alternative string input for the same mode.
     static const char SCAN_TIMESTAMP_MILLIS[];
+
+    /// "realtime.read-view-ttl" - Lifetime of a real-time memory view pinned by scan planning
+    /// before reader creation. Default value is "5 min".
+    static const char REALTIME_READ_VIEW_TTL[];
 
     /// "scan.timestamp" - Optional timestamp string used in case of "from-timestamp" scan mode,
     /// as an alternative to "scan.timestamp-millis".

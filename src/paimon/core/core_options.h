@@ -106,6 +106,7 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetSourceSplitOpenFileCost() const;
     std::optional<int64_t> GetScanSnapshotId() const;
     std::optional<int64_t> GetScanTimestampMillis() const;
+    int64_t GetRealtimeReadViewTtlMillis() const;
     int32_t GetScanManifestEntryCacheMaxSnapshots() const;
 
     int64_t GetManifestTargetFileSize() const;

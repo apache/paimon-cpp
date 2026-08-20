@@ -26,10 +26,10 @@
 #include "arrow/array/builder_base.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/abi.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/data/internal_row.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/key_value.h"
 #include "paimon/status.h"
 
@@ -49,9 +49,7 @@ Result<std::unique_ptr<KeyValueProjectionConsumer>> KeyValueProjectionConsumer::
         arrow_pool.get(), std::make_shared<arrow::StructType>(target_schema->fields()),
         &array_builder));
 
-    auto struct_builder =
-        arrow::internal::checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
-    assert(struct_builder);
+    auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;
     appenders.reserve(target_to_src_mapping.size());
     // first is the root struct array
@@ -75,19 +73,22 @@ Result<BatchReader::ReadBatch> KeyValueProjectionConsumer::NextBatch(
     for (int32_t i = 0; i < static_cast<int32_t>(target_to_src_mapping_.size()); i++) {
         for (const auto& row : key_value_vec) {
             if (target_to_src_mapping_[i] == kSequenceNumberProjection) {
-                auto* builder =
-                    dynamic_cast<arrow::Int64Builder*>(array_builder_->field_builder(i));
-                if (builder == nullptr) {
+                auto* field_builder = array_builder_->field_builder(i);
+                if (!field_builder || !field_builder->type() ||
+                    field_builder->type()->id() != arrow::Type::INT64) {
                     return Status::Invalid("cannot append sequence number to non-int64 field");
                 }
+                auto* builder = checked_cast<arrow::Int64Builder*>(field_builder);
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.sequence_number));
                 continue;
             }
             if (target_to_src_mapping_[i] == kValueKindProjection) {
-                auto* builder = dynamic_cast<arrow::Int8Builder*>(array_builder_->field_builder(i));
-                if (builder == nullptr) {
+                auto* field_builder = array_builder_->field_builder(i);
+                if (!field_builder || !field_builder->type() ||
+                    field_builder->type()->id() != arrow::Type::INT8) {
                     return Status::Invalid("cannot append value kind to non-int8 field");
                 }
+                auto* builder = checked_cast<arrow::Int8Builder*>(field_builder);
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(row.value_kind->ToByteValue()));
                 continue;
             }

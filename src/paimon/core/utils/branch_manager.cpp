@@ -37,14 +37,14 @@ Result<std::vector<std::string>> BranchManager::ListBranches(const std::shared_p
         return branches;
     }
 
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs->ListDir(branch_dir, &file_status_list));
     std::string branch_prefix = BRANCH_PREFIX;
     for (const auto& file_status : file_status_list) {
-        if (!file_status->IsDir()) {
+        if (!file_status.IsDir()) {
             continue;
         }
-        std::string dir_name = PathUtil::GetName(file_status->GetPath());
+        std::string dir_name = PathUtil::GetName(file_status.GetPath());
         if (StringUtils::StartsWith(dir_name, branch_prefix, /*start_pos=*/0)) {
             branches.push_back(dir_name.substr(branch_prefix.length()));
         }

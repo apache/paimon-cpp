@@ -30,7 +30,7 @@
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
-#include "paimon/utils/read_ahead_cache.h"
+#include "paimon/utils/prefetch_cache_config.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
@@ -38,6 +38,7 @@ class Executor;
 class MemoryPool;
 class Predicate;
 class FileSystem;
+class RealtimeContext;
 
 /// `ReadContext` is some configuration for read operations.
 ///
@@ -57,9 +58,9 @@ class PAIMON_EXPORT ReadContext {
                 const std::shared_ptr<Executor>& executor,
                 const std::shared_ptr<FileSystem>& specific_file_system,
                 const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-                const std::map<std::string, std::string>& options,
-                PrefetchCacheMode prefetch_cache_mode, const CacheConfig& cache_config,
-                const std::shared_ptr<Cache>& cache);
+                const std::shared_ptr<RealtimeContext>& realtime_context,
+                const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
+                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache);
     ~ReadContext();
 
     const std::string& GetPath() const {
@@ -121,8 +122,13 @@ class PAIMON_EXPORT ReadContext {
         return specific_file_system_;
     }
 
-    PrefetchCacheMode GetPrefetchCacheMode() const {
-        return prefetch_cache_mode_;
+    /// Returns the context used to resolve process-local real-time split tickets.
+    std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
+        return realtime_context_;
+    }
+
+    bool ReadAheadCacheEnabled() const {
+        return read_ahead_cache_enabled_;
     }
 
     const CacheConfig& GetCacheConfig() const {
@@ -166,8 +172,9 @@ class PAIMON_EXPORT ReadContext {
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
     std::map<std::string, std::string> fs_scheme_to_identifier_map_;
+    std::shared_ptr<RealtimeContext> realtime_context_;
     std::map<std::string, std::string> options_;
-    PrefetchCacheMode prefetch_cache_mode_;
+    bool read_ahead_cache_enabled_;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
     // Owns schema resources and releases ArrowSchema::release in destructor.
@@ -299,13 +306,13 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& EnablePrefetch(bool enabled);
 
-    /// Set prefetch cache mode for read operations.
+    /// Enable or disable the read-ahead cache for read operations.
     ///
-    /// A prefetch cache is used to prebuffer data ranges before they are needed,
+    /// A read-ahead cache is used to prebuffer data ranges before they are needed,
     /// which can improve read performance by reducing redundant I/O operations.
-    /// @param mode (default: PrefetchCacheMode::ALWAYS)
+    /// @param enabled Whether to enable the read-ahead cache (default: true)
     /// @return Reference to this builder for method chaining.
-    ReadContextBuilder& SetPrefetchCacheMode(PrefetchCacheMode mode);
+    ReadContextBuilder& SetReadAheadCacheEnabled(bool enabled);
 
     /// Set the cache configuration for prefetch read operations.
     ///
@@ -362,6 +369,12 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     /// @note If not set, the default system executor will be used.
     ReadContextBuilder& WithExecutor(const std::shared_ptr<Executor>& executor);
+
+    /// Sets the shared context used to resolve process-local real-time split tickets.
+    /// @param realtime_context Context shared with the scan that created the real-time splits.
+    /// @return Reference to this builder for method chaining.
+    ReadContextBuilder& WithRealtimeContext(
+        const std::shared_ptr<RealtimeContext>& realtime_context);
 
     /// Set the table schema as a string to avoid schema loading I/O operations.
     ///

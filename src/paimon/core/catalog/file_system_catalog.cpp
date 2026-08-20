@@ -29,6 +29,7 @@
 #include "fmt/ranges.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -216,12 +217,12 @@ Result<std::string> FileSystemCatalog::NewDataTablePath(const std::string& wareh
 }
 
 Result<std::vector<std::string>> FileSystemCatalog::ListDatabases() const {
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListDir(warehouse_, &file_status_list));
     std::vector<std::string> db_names;
     for (const auto& file_status : file_status_list) {
-        if (file_status->IsDir()) {
-            std::string name = PathUtil::GetName(file_status->GetPath());
+        if (file_status.IsDir()) {
+            std::string name = PathUtil::GetName(file_status.GetPath());
             if (StringUtils::EndsWith(name, DB_SUFFIX)) {
                 db_names.push_back(name.substr(0, name.length() - std::strlen(DB_SUFFIX)));
             }
@@ -235,12 +236,12 @@ Result<std::vector<std::string>> FileSystemCatalog::ListTables(const std::string
         return GlobalSystemTableLoader::GetSupportedTableNames(catalog_options_);
     }
     std::string database_path = NewDatabasePath(warehouse_, db_name);
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListDir(database_path, &file_status_list));
     std::vector<std::string> table_names;
     for (const auto& file_status : file_status_list) {
-        if (file_status->IsDir()) {
-            std::string table_path = file_status->GetPath();
+        if (file_status.IsDir()) {
+            std::string table_path = file_status.GetPath();
             PAIMON_ASSIGN_OR_RAISE(bool table_exist, TableExistsInFileSystem(table_path));
             if (table_exist) {
                 table_names.push_back(PathUtil::GetName(table_path));
@@ -315,7 +316,7 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
     if (!latest_schema) {
         return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
     }
-    return std::static_pointer_cast<Schema>(*latest_schema);
+    return checked_pointer_cast<Schema>(*latest_schema);
 }
 
 Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& identifier) const {

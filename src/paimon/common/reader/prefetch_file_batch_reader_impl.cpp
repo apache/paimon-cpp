@@ -31,10 +31,10 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace arrow {
 class Schema;
@@ -60,7 +60,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     const std::shared_ptr<FileSystem>& fs, uint32_t prefetch_max_parallel_num, int32_t batch_size,
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
-    PrefetchCacheMode prefetch_cache_mode, const CacheConfig& cache_config,
+    bool read_ahead_cache_enabled, const CacheConfig& cache_config,
     const std::shared_ptr<MemoryPool>& pool) {
     if (prefetch_max_parallel_num == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0.");
@@ -82,7 +82,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     }
 
     std::shared_ptr<ReadAheadCache> cache;
-    if (prefetch_cache_mode != PrefetchCacheMode::NEVER) {
+    if (read_ahead_cache_enabled) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                                fs->Open(FileStatus(data_file_path, data_file_size)));
         cache = std::make_shared<ReadAheadCache>(input_stream, cache_config, pool);
@@ -119,9 +119,9 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     }
     uint32_t prefetch_queue_capacity = prefetch_batch_count / readers.size();
 
-    auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(new PrefetchFileBatchReaderImpl(
-        readers, batch_size, prefetch_queue_capacity, enable_adaptive_prefetch_strategy, executor,
-        cache, prefetch_cache_mode));
+    auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(
+        new PrefetchFileBatchReaderImpl(readers, batch_size, prefetch_queue_capacity,
+                                        enable_adaptive_prefetch_strategy, executor, cache));
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read
         // ranges, and set read schema will always be called before read.
@@ -133,13 +133,11 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
     const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
     uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
-    PrefetchCacheMode cache_mode)
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache)
     : readers_(std::move(readers)),
       batch_size_(batch_size),
       executor_(executor),
       cache_(cache),
-      cache_mode_(cache_mode),
       prefetch_queue_capacity_(prefetch_queue_capacity),
       enable_adaptive_prefetch_strategy_(enable_adaptive_prefetch_strategy) {
     for (size_t i = 0; i < readers_.size(); i++) {
@@ -158,6 +156,9 @@ Status PrefetchFileBatchReaderImpl::SetReadSchema(
     ::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
     const std::optional<RoaringBitmap32>& selection_bitmap) {
     PAIMON_RETURN_NOT_OK(CleanUp());
+    if (cache_) {
+        cache_->Reset();
+    }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(read_schema));
     for (const auto& reader : readers_) {
@@ -172,6 +173,9 @@ Status PrefetchFileBatchReaderImpl::SetReadSchema(
 
 Status PrefetchFileBatchReaderImpl::RefreshReadRanges() {
     PAIMON_RETURN_NOT_OK(CleanUp());
+    if (cache_) {
+        cache_->Reset();
+    }
     return RefreshReadRangesAfterCleanUp();
 }
 
@@ -294,35 +298,14 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
         reader_is_working_[i] = false;
     }
     is_shutdown_ = false;
-    if (cache_) {
-        cache_->Reset();
-    }
     SetReadStatus(Status::OK());
     return Status::OK();
-}
-
-bool PrefetchFileBatchReaderImpl::NeedInitCache() const {
-    switch (cache_mode_) {
-        case PrefetchCacheMode::NEVER:
-            return false;
-        case PrefetchCacheMode::EXCLUDE_PREDICATE:
-            return predicate_ == nullptr;
-        case PrefetchCacheMode::EXCLUDE_BITMAP:
-            return selection_bitmap_ == std::nullopt;
-        case PrefetchCacheMode::EXCLUDE_BITMAP_OR_PREDICATE:
-            return predicate_ == nullptr && selection_bitmap_ == std::nullopt;
-        case PrefetchCacheMode::ALWAYS:
-            return true;
-        default:
-            assert(false);
-            return true;
-    }
 }
 
 void PrefetchFileBatchReaderImpl::Workloop() {
     std::vector<std::future<void>> futures;
     futures.resize(readers_.size());
-    if (cache_ && NeedInitCache()) {
+    if (cache_) {
         auto read_ranges = readers_[0]->PreBufferRange();
         if (read_ranges.ok()) {
             std::vector<ByteRange> ranges;
@@ -332,6 +315,11 @@ void PrefetchFileBatchReaderImpl::Workloop() {
             auto s = cache_->Init(std::move(ranges));
             if (!s.ok()) {
                 SetReadStatus(s);
+            } else {
+                // Init() only registers the ranges, so without this the first
+                // cache fetch races the readers' first reads instead of running
+                // ahead of them.
+                cache_->Warmup();
             }
         } else {
             SetReadStatus(read_ranges.status());
@@ -622,7 +610,15 @@ Status PrefetchFileBatchReaderImpl::SeekToRow(uint64_t row_number) {
 }
 
 std::shared_ptr<Metrics> PrefetchFileBatchReaderImpl::GetReaderMetrics() const {
-    return MetricsImpl::CollectReadMetrics(readers_);
+    auto res_metrics = MetricsImpl::CollectReadMetrics(readers_);
+    if (cache_) {
+        // The shared read-ahead cache serves reads of all sub-readers, so its
+        // hit/miss counters are file-level and merge into the reader metrics.
+        std::shared_ptr<Metrics> cache_metrics = std::make_shared<MetricsImpl>();
+        cache_->CollectMetrics(&cache_metrics);
+        res_metrics->Merge(cache_metrics);
+    }
+    return res_metrics;
 }
 
 Result<std::unique_ptr<::ArrowSchema>> PrefetchFileBatchReaderImpl::GetFileSchema() const {
@@ -676,7 +672,17 @@ Result<std::pair<uint64_t, uint64_t>> PrefetchFileBatchReaderImpl::EofRange() co
 }
 
 void PrefetchFileBatchReaderImpl::Close() {
+    // CleanUp() no longer resets the read-ahead cache: ConcatBatchReader closes file readers as
+    // soon as they reach EOF, and the cache hit/miss counters must remain readable through
+    // GetReaderMetrics() after that. The cache is reset only when the reader is reused via
+    // SetReadSchema()/RefreshReadRanges().
     (void)CleanUp();
+    if (cache_) {
+        // Free the prefetched buffers of this file right away (ConcatBatchReader keeps
+        // closed file readers alive until the whole scan finishes), but keep the
+        // counters for GetReaderMetrics().
+        cache_->ReleaseBuffers();
+    }
     for (const auto& reader : readers_) {
         reader->Close();
     }

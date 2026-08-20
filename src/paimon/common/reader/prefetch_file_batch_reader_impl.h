@@ -35,12 +35,12 @@
 #include <vector>
 
 #include "arrow/c/abi.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/threadsafe_queue.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/reader/prefetch_file_batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
-#include "paimon/utils/read_ahead_cache.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
 struct ArrowSchema;
@@ -60,8 +60,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         const ReaderBuilder* reader_builder, const std::shared_ptr<FileSystem>& fs,
         uint32_t prefetch_max_parallel_num, int32_t batch_size, uint32_t prefetch_batch_count,
         bool enable_adaptive_prefetch_strategy, const std::shared_ptr<Executor>& executor,
-        bool initialize_read_ranges, PrefetchCacheMode prefetch_cache_mode,
-        const CacheConfig& cache_config, const std::shared_ptr<MemoryPool>& pool);
+        bool initialize_read_ranges, bool read_ahead_cache_enabled, const CacheConfig& cache_config,
+        const std::shared_ptr<MemoryPool>& pool);
 
     ~PrefetchFileBatchReaderImpl() override;
 
@@ -113,8 +113,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     PrefetchFileBatchReaderImpl(
         const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
-        const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
-        PrefetchCacheMode cache_mode);
+        const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache);
 
     Status CleanUp();
     void Workloop();
@@ -143,7 +142,6 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
                                 const std::pair<uint64_t, uint64_t>& read_range) const;
     Status HandleReadResult(size_t reader_idx, const std::pair<uint64_t, uint64_t>& read_range,
                             FileBatchReader::ReadBatchWithBitmap&& read_batch_with_bitmap);
-    bool NeedInitCache() const;
 
  private:
     std::vector<std::shared_ptr<PrefetchFileBatchReader>> readers_;
@@ -162,7 +160,6 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     std::condition_variable cv_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<ReadAheadCache> cache_;
-    PrefetchCacheMode cache_mode_;
 
     mutable std::shared_mutex rw_mutex_;
     std::unique_ptr<std::thread> background_thread_;

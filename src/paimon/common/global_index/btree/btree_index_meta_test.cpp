@@ -19,9 +19,14 @@
 
 #include "paimon/common/global_index/btree/btree_index_meta.h"
 
+#include <cstddef>
+#include <string>
+#include <vector>
+
 #include "gtest/gtest.h"
 #include "paimon/common/memory/memory_slice_output.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 class BTreeIndexMetaTest : public ::testing::Test {
@@ -48,6 +53,28 @@ class BTreeIndexMetaTest : public ::testing::Test {
         return output.ToSlice().CopyBytes(pool_.get());
     }
 
+    std::shared_ptr<Bytes> MetadataBytes(int32_t first_key_length, const std::string& first_key,
+                                         int32_t last_key_length, const std::string& last_key,
+                                         int8_t has_nulls,
+                                         const std::vector<int8_t>& suffix = {}) const {
+        MemorySliceOutput output(
+            static_cast<int32_t>(first_key.size() + last_key.size() + suffix.size() + 9),
+            pool_.get());
+        output.WriteValue(first_key_length);
+        if (!first_key.empty()) {
+            output.WriteBytes(std::make_shared<Bytes>(first_key, pool_.get()));
+        }
+        output.WriteValue(last_key_length);
+        if (!last_key.empty()) {
+            output.WriteBytes(std::make_shared<Bytes>(last_key, pool_.get()));
+        }
+        output.WriteValue(has_nulls);
+        for (int8_t byte : suffix) {
+            output.WriteValue(byte);
+        }
+        return output.ToSlice().CopyBytes(pool_.get());
+    }
+
     std::shared_ptr<MemoryPool> pool_;
 };
 
@@ -62,7 +89,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeNormalKeys) {
     ASSERT_GT(serialized->size(), 0u);
 
     // Deserialize
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized);
 
     // Verify first_key
@@ -88,7 +116,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeEmptyFirstKey) {
     auto serialized = meta->Serialize(pool_.get());
     ASSERT_EQ(serialized->size(), 11 + last_key->size());
 
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized->FirstKey());
     ASSERT_EQ(deserialized->FirstKey()->size(), 0);
     ASSERT_TRUE(deserialized->LastKey());
@@ -105,7 +134,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeEmptyFirstAndLastKeysWithNulls) {
     auto serialized = meta->Serialize(pool_.get());
     ASSERT_EQ(serialized->size(), 11);
 
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized->FirstKey());
     ASSERT_EQ(deserialized->FirstKey()->size(), 0);
     ASSERT_TRUE(deserialized->LastKey());
@@ -120,7 +150,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeOnlyNulls) {
     auto serialized = meta->Serialize(pool_.get());
     ASSERT_EQ(serialized->size(), 11);
 
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized);
     ASSERT_FALSE(deserialized->FirstKey());
     ASSERT_FALSE(deserialized->LastKey());
@@ -132,7 +163,8 @@ TEST_F(BTreeIndexMetaTest, DeserializeLegacyOnlyNulls) {
     auto empty_key = std::make_shared<Bytes>(0, pool_.get());
     auto serialized = LegacyMetaBytes(empty_key, empty_key, true);
 
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_FALSE(deserialized->FirstKey());
     ASSERT_FALSE(deserialized->LastKey());
     ASSERT_TRUE(deserialized->HasNulls());
@@ -144,7 +176,8 @@ TEST_F(BTreeIndexMetaTest, DeserializeLegacyEmptyFirstKey) {
     auto last_key = std::make_shared<Bytes>("last_key_data", pool_.get());
     auto serialized = LegacyMetaBytes(empty_key, last_key, false);
 
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized->FirstKey());
     ASSERT_EQ(deserialized->FirstKey()->size(), 0);
     ASSERT_TRUE(deserialized->LastKey());
@@ -158,13 +191,60 @@ TEST_F(BTreeIndexMetaTest, DeserializeLegacyEmptyFirstAndLastKeysWithoutNulls) {
     auto empty_key = std::make_shared<Bytes>(0, pool_.get());
     auto serialized = LegacyMetaBytes(empty_key, empty_key, false);
 
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized->FirstKey());
     ASSERT_EQ(deserialized->FirstKey()->size(), 0);
     ASSERT_TRUE(deserialized->LastKey());
     ASSERT_EQ(deserialized->LastKey()->size(), 0);
     ASSERT_FALSE(deserialized->HasNulls());
     ASSERT_FALSE(deserialized->OnlyNulls());
+}
+
+TEST_F(BTreeIndexMetaTest, DeserializeRejectsNullAndTruncatedMetadata) {
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(nullptr, pool_.get()));
+    for (size_t size = 0; size < 9; size++) {
+        auto truncated = std::make_shared<Bytes>(std::string(size, '\0'), pool_.get());
+        ASSERT_NOK(BTreeIndexMeta::Deserialize(truncated, pool_.get()));
+    }
+}
+
+TEST_F(BTreeIndexMetaTest, DeserializeRejectsInvalidKeyLengths) {
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/-1, "", /*last_key_length=*/0, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/100, "", /*last_key_length=*/0, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/0, "", /*last_key_length=*/-1, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(/*first_key_length=*/0, "", /*last_key_length=*/100, "",
+                      /*has_nulls=*/0),
+        pool_.get()));
+}
+
+TEST_F(BTreeIndexMetaTest, DeserializeRejectsMalformedFlagsAndTrailingBytes) {
+    ASSERT_NOK(
+        BTreeIndexMeta::Deserialize(MetadataBytes(0, "", 0, "", /*has_nulls=*/2), pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*truncated_version=*/1}), pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*unsupported_version=*/2, /*flags=*/0}),
+        pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*version=*/1, /*unknown_flags=*/4}),
+        pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(0, "", 0, "", /*has_nulls=*/0, {/*version=*/1, /*flags=*/0, /*trailing=*/0}),
+        pool_.get()));
+    ASSERT_NOK(BTreeIndexMeta::Deserialize(
+        MetadataBytes(1, "x", 0, "", /*has_nulls=*/0, {/*version=*/1, /*first_key_is_null=*/1}),
+        pool_.get()));
 }
 
 TEST_F(BTreeIndexMetaTest, HasNullsAndOnlyNulls) {
@@ -204,7 +284,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeNoNulls) {
     ASSERT_TRUE(serialized);
 
     // Deserialize
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized);
 
     // Verify has_nulls is false
@@ -221,7 +302,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeWithOnlyFirstKey) {
     ASSERT_TRUE(serialized);
 
     // Deserialize
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized);
 
     // Verify first_key
@@ -243,7 +325,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeWithOnlyLastKey) {
     ASSERT_TRUE(serialized);
 
     // Deserialize
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized);
 
     // Verify first_key is null
@@ -268,7 +351,8 @@ TEST_F(BTreeIndexMetaTest, SerializeDeserializeBinaryKeys) {
     ASSERT_TRUE(serialized);
 
     // Deserialize
-    auto deserialized = BTreeIndexMeta::Deserialize(serialized, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> deserialized,
+                         BTreeIndexMeta::Deserialize(serialized, pool_.get()));
     ASSERT_TRUE(deserialized);
 
     // Verify first_key

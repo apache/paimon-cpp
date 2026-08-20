@@ -22,6 +22,7 @@
 #include <cassert>
 #include <limits>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -46,14 +47,20 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/range_helper.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/utils/blob_view_lookup.h"
 #include "paimon/core/utils/data_evolution_utils.h"
+#include "paimon/core/utils/field_mapping.h"
+#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
+#include "paimon/predicate/predicate_utils.h"
 
 namespace paimon {
 namespace {
@@ -340,20 +347,20 @@ Result<std::unordered_set<BlobViewStruct>> DataEvolutionSplitRead::ExtractBlobVi
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-        if (struct_array == nullptr) {
+        if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(
                 "invalid array in ExtractBlobViewStructs, batch array is not a StructArray.");
         }
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
 
         for (int32_t field_idx = 0; field_idx < struct_array->num_fields(); ++field_idx) {
-            auto binary_array =
-                std::dynamic_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(field_idx));
-            if (binary_array == nullptr) {
+            auto field_array = struct_array->field(field_idx);
+            if (!field_array || field_array->type_id() != arrow::Type::LARGE_BINARY) {
                 return Status::Invalid(
                     "invalid array in ExtractBlobViewStructs, blob view column is not a "
                     "LargeBinaryArray.");
             }
+            auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(field_array);
             for (int64_t row = 0; row < binary_array->length(); ++row) {
                 if (binary_array->IsNull(row)) {
                     continue;
@@ -388,12 +395,22 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
         path_factory_->CreateDataFilePathFactory(split_impl->Partition(), split_impl->Bucket()));
     auto metas = split_impl->DataFiles();
     DeletionVector::Factory split_dv_factory = CreateSplitDvFactory(*split_impl);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> push_down_predicate,
+                           CreatePushDownPredicate(context_->GetPredicate(), raw_read_schema_));
 
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::vector<std::shared_ptr<DataFileMeta>>> split_by_row_id,
                            MergeRangesAndSort(std::move(metas)));
 
     std::vector<std::unique_ptr<BatchReader>> sub_readers;
     for (const std::vector<std::shared_ptr<DataFileMeta>>& need_merge_files : split_by_row_id) {
+        if (need_merge_files.size() > 1) {
+            PAIMON_ASSIGN_OR_RAISE(
+                bool skip_group,
+                SkipByFileIndex(push_down_predicate, need_merge_files, data_file_path_factory));
+            if (skip_group) {
+                continue;
+            }
+        }
         PAIMON_ASSIGN_OR_RAISE(std::optional<GroupDeletionVector> group_dv,
                                ReadGroupDeletionVector(need_merge_files, split_dv_factory));
         PAIMON_ASSIGN_OR_RAISE(DeletionVector::Factory group_dv_factory,
@@ -403,10 +420,15 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
             PAIMON_ASSIGN_OR_RAISE(
                 std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
                 CreateRawFileReaders(split_impl->Partition(), need_merge_files, raw_read_schema_,
-                                     /*predicate=*/nullptr, group_dv_factory, row_ranges,
+                                     push_down_predicate, group_dv_factory, row_ranges,
                                      data_file_path_factory,
                                      /*extra_format_options=*/{}));
-            assert(raw_file_readers.size() == 1);
+            if (raw_file_readers.empty()) {
+                continue;
+            }
+            if (raw_file_readers.size() != 1) {
+                return Status::Invalid("Single-file data evolution group created multiple readers");
+            }
             sub_readers.push_back(std::move(raw_file_readers[0]));
         } else {
             PAIMON_ASSIGN_OR_RAISE(
@@ -423,17 +445,110 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
     return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), pool_);
 }
 
+Result<std::shared_ptr<Predicate>> DataEvolutionSplitRead::CreatePushDownPredicate(
+    const std::shared_ptr<Predicate>& predicate,
+    const std::shared_ptr<arrow::Schema>& read_schema) {
+    std::map<std::string, int32_t> picked_field_name_to_idx;
+    for (int32_t i = 0; i < read_schema->num_fields(); ++i) {
+        const std::string& field_name = read_schema->field(i)->name();
+        if (!SpecialFields::IsSystemField(field_name)) {
+            picked_field_name_to_idx.emplace(field_name, i);
+        }
+    }
+    return PredicateUtils::CreatePickedFieldFilter(predicate, picked_field_name_to_idx);
+}
+
+Result<bool> DataEvolutionSplitRead::SkipByFileIndex(
+    const std::shared_ptr<Predicate>& predicate,
+    const std::vector<std::shared_ptr<DataFileMeta>>& files,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    if (!options_.FileIndexReadEnabled() || !predicate) {
+        return false;
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
+        FieldMappingBuilder::Create(raw_read_schema_, context_->GetPartitionKeys(), predicate));
+    std::set<int32_t> claimed_field_ids;
+    for (const auto& file : files) {
+        // Blob and vector-store files may cover only part of the row range, so their indexes
+        // cannot prove that the complete merged group misses the predicate.
+        if (!DataEvolutionUtils::IsNormalFile(file->file_name)) {
+            continue;
+        }
+
+        std::shared_ptr<TableSchema> data_schema = context_->GetTableSchema();
+        if (file->schema_id != data_schema->Id()) {
+            PAIMON_ASSIGN_OR_RAISE(data_schema, schema_manager_->ReadSchema(file->schema_id));
+        }
+        std::vector<DataField> written_fields;
+        if (file->write_cols) {
+            std::vector<std::string> data_write_cols;
+            data_write_cols.reserve(file->write_cols->size());
+            for (const auto& write_col : file->write_cols.value()) {
+                if (!SpecialFields::IsSystemField(write_col)) {
+                    data_write_cols.push_back(write_col);
+                }
+            }
+            PAIMON_ASSIGN_OR_RAISE(written_fields, data_schema->GetFields(data_write_cols));
+        } else {
+            written_fields = data_schema->Fields();
+        }
+
+        std::set<std::string> overwritten_field_names;
+        for (const auto& field : written_fields) {
+            if (!claimed_field_ids.insert(field.Id()).second) {
+                overwritten_field_names.insert(field.Name());
+            }
+        }
+
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldMapping> field_mapping,
+                               field_mapping_builder->CreateFieldMapping(written_fields));
+        std::shared_ptr<Predicate> data_predicate =
+            field_mapping->non_partition_info.non_partition_filter;
+        if (!overwritten_field_names.empty()) {
+            PAIMON_ASSIGN_OR_RAISE(data_predicate, PredicateUtils::ExcludePredicateWithFields(
+                                                       data_predicate, overwritten_field_names));
+        }
+        if (!data_predicate) {
+            continue;
+        }
+
+        auto written_schema = DataField::ConvertDataFieldsToArrowSchema(written_fields);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileIndexResult> index_result,
+            FileIndexEvaluator::Evaluate(written_schema, data_predicate, data_file_path_factory,
+                                         file, options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(bool is_remain, index_result->IsRemain());
+        if (!is_remain) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDvReaderIfNeeded(
     std::unique_ptr<FileBatchReader>&& file_reader, const std::shared_ptr<DataFileMeta>& file,
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
-    if (predicate) {
-        assert(false);
-        // as DataEvolutionSplitRead will skip predicate
-        return Status::Invalid("DataEvolutionSplitRead do not support predicate");
+    std::shared_ptr<FileIndexResult> file_index_result;
+    if (options_.FileIndexReadEnabled()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            file_index_result,
+            FileIndexEvaluator::Evaluate(data_schema, predicate, data_file_path_factory, file,
+                                         options_.GetFileSystem(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
+        if (!is_remain) {
+            return std::unique_ptr<FileBatchReader>();
+        }
     }
+    const RoaringBitmap32* index_selection = nullptr;
+    if (auto* bitmap_index = dynamic_cast<BitmapIndexResult*>(file_index_result.get())) {
+        PAIMON_ASSIGN_OR_RAISE(index_selection, bitmap_index->GetBitmap());
+    }
+
     // the factory is per row range group and already returns a view taking file-local positions.
     // Unlike RawFileSplitRead the vector is not folded into the format reader's selection: it is
     // no BitmapDeletionVector, and the blob fallback path's gap segments have no format reader.
@@ -443,10 +558,19 @@ Result<std::unique_ptr<FileBatchReader>> DataEvolutionSplitRead::ApplyIndexAndDv
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap32> selection_row_ids,
                            file->ToFileSelection(row_ranges));
+    if (index_selection) {
+        if (selection_row_ids) {
+            selection_row_ids.value() &= *index_selection;
+        } else {
+            selection_row_ids = *index_selection;
+        }
+    }
+    if (selection_row_ids && selection_row_ids->IsEmpty()) {
+        return std::unique_ptr<FileBatchReader>();
+    }
     ::ArrowSchema c_read_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
-    PAIMON_RETURN_NOT_OK(
-        file_reader->SetReadSchema(&c_read_schema, /*predicate=*/nullptr, selection_row_ids));
+    PAIMON_RETURN_NOT_OK(file_reader->SetReadSchema(&c_read_schema, predicate, selection_row_ids));
 
     std::unique_ptr<FileBatchReader> reader;
     if (!file_reader->SupportPreciseBitmapSelection() && selection_row_ids) {

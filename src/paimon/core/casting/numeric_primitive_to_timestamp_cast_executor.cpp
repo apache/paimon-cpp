@@ -27,7 +27,6 @@
 #include "arrow/array/array_base.h"
 #include "arrow/array/builder_dict.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/date_time_utils.h"

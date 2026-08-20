@@ -107,21 +107,19 @@ Status ResolvingFileSystem::Delete(const std::string& path, bool recursive) cons
     return fs->Delete(path, recursive);
 }
 
-Result<std::unique_ptr<FileStatus>> ResolvingFileSystem::GetFileStatus(
-    const std::string& path) const {
+Result<FileStatus> ResolvingFileSystem::GetFileStatus(const std::string& path) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> fs, GetRealFileSystem(path));
     return fs->GetFileStatus(path);
 }
 
-Status ResolvingFileSystem::ListDir(
-    const std::string& directory,
-    std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const {
+Status ResolvingFileSystem::ListDir(const std::string& directory,
+                                    std::vector<BasicFileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> fs, GetRealFileSystem(directory));
     return fs->ListDir(directory, file_status_list);
 }
 
-Status ResolvingFileSystem::ListFileStatus(
-    const std::string& path, std::vector<std::unique_ptr<FileStatus>>* file_status_list) const {
+Status ResolvingFileSystem::ListFileStatus(const std::string& path,
+                                           std::vector<FileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> fs, GetRealFileSystem(path));
     return fs->ListFileStatus(path, file_status_list);
 }

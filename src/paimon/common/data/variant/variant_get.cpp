@@ -31,6 +31,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/casting/cast_executor_factory.h"
 #include "paimon/data/decimal.h"
@@ -206,34 +207,34 @@ Status AppendLiteralToBuilder(const Literal& literal,
     switch (target_type->id()) {
         case arrow::Type::type::BOOL:
             return ToPaimonStatus(
-                static_cast<arrow::BooleanBuilder*>(builder)->Append(literal.GetValue<bool>()));
+                checked_cast<arrow::BooleanBuilder*>(builder)->Append(literal.GetValue<bool>()));
         case arrow::Type::type::INT8:
             return ToPaimonStatus(
-                static_cast<arrow::Int8Builder*>(builder)->Append(literal.GetValue<int8_t>()));
+                checked_cast<arrow::Int8Builder*>(builder)->Append(literal.GetValue<int8_t>()));
         case arrow::Type::type::INT16:
             return ToPaimonStatus(
-                static_cast<arrow::Int16Builder*>(builder)->Append(literal.GetValue<int16_t>()));
+                checked_cast<arrow::Int16Builder*>(builder)->Append(literal.GetValue<int16_t>()));
         case arrow::Type::type::INT32:
             return ToPaimonStatus(
-                static_cast<arrow::Int32Builder*>(builder)->Append(literal.GetValue<int32_t>()));
+                checked_cast<arrow::Int32Builder*>(builder)->Append(literal.GetValue<int32_t>()));
         case arrow::Type::type::INT64:
             return ToPaimonStatus(
-                static_cast<arrow::Int64Builder*>(builder)->Append(literal.GetValue<int64_t>()));
+                checked_cast<arrow::Int64Builder*>(builder)->Append(literal.GetValue<int64_t>()));
         case arrow::Type::type::FLOAT:
             return ToPaimonStatus(
-                static_cast<arrow::FloatBuilder*>(builder)->Append(literal.GetValue<float>()));
+                checked_cast<arrow::FloatBuilder*>(builder)->Append(literal.GetValue<float>()));
         case arrow::Type::type::DOUBLE:
             return ToPaimonStatus(
-                static_cast<arrow::DoubleBuilder*>(builder)->Append(literal.GetValue<double>()));
+                checked_cast<arrow::DoubleBuilder*>(builder)->Append(literal.GetValue<double>()));
         case arrow::Type::type::STRING:
-            return ToPaimonStatus(static_cast<arrow::StringBuilder*>(builder)->Append(
+            return ToPaimonStatus(checked_cast<arrow::StringBuilder*>(builder)->Append(
                 literal.GetValue<std::string>()));
         case arrow::Type::type::BINARY:
-            return ToPaimonStatus(static_cast<arrow::BinaryBuilder*>(builder)->Append(
+            return ToPaimonStatus(checked_cast<arrow::BinaryBuilder*>(builder)->Append(
                 literal.GetValue<std::string>()));
         case arrow::Type::type::DATE32:
             return ToPaimonStatus(
-                static_cast<arrow::Date32Builder*>(builder)->Append(literal.GetValue<int32_t>()));
+                checked_cast<arrow::Date32Builder*>(builder)->Append(literal.GetValue<int32_t>()));
         case arrow::Type::type::TIMESTAMP: {
             auto timestamp = literal.GetValue<Timestamp>();
             const auto& timestamp_type = static_cast<const arrow::TimestampType&>(*target_type);
@@ -254,12 +255,12 @@ Status AppendLiteralToBuilder(const Literal& literal,
                 default:
                     return Status::Invalid("Unsupported timestamp unit");
             }
-            return ToPaimonStatus(static_cast<arrow::TimestampBuilder*>(builder)->Append(value));
+            return ToPaimonStatus(checked_cast<arrow::TimestampBuilder*>(builder)->Append(value));
         }
         case arrow::Type::type::DECIMAL128: {
             auto decimal = literal.GetValue<Decimal>();
             arrow::Decimal128 value(static_cast<int64_t>(decimal.HighBits()), decimal.LowBits());
-            return ToPaimonStatus(static_cast<arrow::Decimal128Builder*>(builder)->Append(value));
+            return ToPaimonStatus(checked_cast<arrow::Decimal128Builder*>(builder)->Append(value));
         }
         default:
             return Status::Invalid(
@@ -291,12 +292,12 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
         VariantBuilder variant_builder(/*allow_duplicate_keys=*/false);
         PAIMON_RETURN_NOT_OK(variant_builder.AppendVariant(*variant));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GenericVariant> copied, variant_builder.Build(pool));
-        auto* struct_builder = static_cast<arrow::StructBuilder*>(builder);
+        auto* struct_builder = checked_cast<arrow::StructBuilder*>(builder);
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder->Append());
         PAIMON_ASSIGN_OR_RAISE(std::string_view value, copied->Value());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
-            static_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(0))->Append(value));
-        return ToPaimonStatus(static_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(1))
+            checked_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(0))->Append(value));
+        return ToPaimonStatus(checked_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(1))
                                   ->Append(copied->Metadata()));
     }
 
@@ -310,7 +311,7 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
             if (variant_type != VariantValueType::kObject) {
                 return invalid_cast();
             }
-            auto* struct_builder = static_cast<arrow::StructBuilder*>(builder);
+            auto* struct_builder = checked_cast<arrow::StructBuilder*>(builder);
             PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder->Append());
             const auto& struct_type = static_cast<const arrow::StructType&>(*target_field->type());
             for (int i = 0; i < struct_type.num_fields(); ++i) {
@@ -328,7 +329,7 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
                 variant_type != VariantValueType::kObject) {
                 return invalid_cast();
             }
-            auto* map_builder = static_cast<arrow::MapBuilder*>(builder);
+            auto* map_builder = checked_cast<arrow::MapBuilder*>(builder);
             PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder->Append());
             PAIMON_ASSIGN_OR_RAISE(int32_t object_size, variant->ObjectSize());
             for (int32_t i = 0; i < object_size; ++i) {
@@ -338,7 +339,7 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
                     return Status::Invalid(fmt::format("Malformed variant object at index {}", i));
                 }
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                    static_cast<arrow::StringBuilder*>(map_builder->key_builder())
+                    checked_cast<arrow::StringBuilder*>(map_builder->key_builder())
                         ->Append(field->key));
                 PAIMON_RETURN_NOT_OK(CastToBuilder(field->value, map_type.item_field(), cast_args,
                                                    pool, map_builder->item_builder()));
@@ -349,7 +350,7 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
             if (variant_type != VariantValueType::kArray) {
                 return invalid_cast();
             }
-            auto* list_builder = static_cast<arrow::ListBuilder*>(builder);
+            auto* list_builder = checked_cast<arrow::ListBuilder*>(builder);
             PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Append());
             const auto& list_type = static_cast<const arrow::ListType&>(*target_field->type());
             PAIMON_ASSIGN_OR_RAISE(int32_t array_size, variant->ArraySize());

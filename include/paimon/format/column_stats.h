@@ -33,8 +33,8 @@ namespace paimon {
 /// ColumnStats is an abstract base class that represents statistical information for data columns
 /// in Paimon tables. It provides min/max values and null count statistics
 ///
-/// Only primitive data types support min/max statistics. Nested types (arrays, maps, structs) only
-/// track null counts through `NestedColumnStats`.
+/// Only primitive data types support min/max statistics. Nested types (arrays, vectors, maps,
+/// structs) only track null counts through `NestedColumnStats`.
 ///
 /// @note This is an abstract base class. Use the static factory methods `CreateXXXColumnStats()` to
 /// create concrete instances for specific data types.
@@ -52,7 +52,7 @@ class PAIMON_EXPORT ColumnStats {
     /// @name CreateXXXColumnStats()
     /// %Factory methods `CreateXXXColumnStats()` to create column statistics.
     /// - min/max/null_count for primitive data types
-    /// - null_count for nested data types (arrays, maps, structs)
+    /// - null_count for nested data types (arrays, vectors, maps, structs)
     ///
     /// @{
     static std::unique_ptr<ColumnStats> CreateBooleanColumnStats(std::optional<bool> min,
@@ -88,8 +88,8 @@ class PAIMON_EXPORT ColumnStats {
     static std::unique_ptr<ColumnStats> CreateDateColumnStats(std::optional<int32_t> min,
                                                               std::optional<int32_t> max,
                                                               std::optional<int64_t> null_count);
-    /// Creates column statistics for nested data types (arrays, maps, structs), which only track
-    /// null counts.
+    /// Creates column statistics for nested data types (arrays, vectors, maps, structs), which only
+    /// track null counts.
     static std::unique_ptr<ColumnStats> CreateNestedColumnStats(const FieldType& nested_type,
                                                                 std::optional<int64_t> null_count);
     /// @}
@@ -180,7 +180,7 @@ class PAIMON_EXPORT NestedColumnStats : public ColumnStats {
     NestedColumnStats(const FieldType& nested_type, std::optional<int64_t> null_count)
         : nested_type_(nested_type), null_count_(null_count) {
         assert(nested_type == FieldType::ARRAY || nested_type == FieldType::MAP ||
-               nested_type == FieldType::STRUCT);
+               nested_type == FieldType::STRUCT || nested_type == FieldType::VECTOR);
     }
 
     std::optional<int64_t> NullCount() const override {

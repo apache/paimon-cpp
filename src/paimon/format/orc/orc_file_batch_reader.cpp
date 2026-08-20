@@ -46,6 +46,16 @@
 #include "paimon/format/orc/predicate_converter.h"
 
 namespace paimon::orc {
+namespace {
+
+void CollectAllColumnIds(const ::orc::Type* type, std::vector<uint64_t>* column_ids) {
+    column_ids->push_back(type->getColumnId());
+    for (uint64_t i = 0; i < type->getSubtypeCount(); ++i) {
+        CollectAllColumnIds(type->getSubtype(i), column_ids);
+    }
+}
+
+}  // namespace
 
 OrcFileBatchReader::OrcFileBatchReader(std::unique_ptr<::orc::ReaderMetrics>&& reader_metrics,
                                        std::unique_ptr<OrcReaderWrapper>&& reader,
@@ -228,13 +238,15 @@ Status OrcFileBatchReader::CollectTargetColumnIds(const ::orc::Type* src_type,
             }
             break;
         }
-        // Do not support partial field recall inside list/map types.
         default: {
+            // Partial field recall inside list/map types is unsupported, so the target must match
+            // the complete source subtree. Include the container and every descendant because all
+            // of their streams are recalled by the ORC reader.
             if (src_type->toString() != target_type->toString()) {
                 return Status::Invalid(fmt::format("type mismatch: src {} vs target {}",
                                                    src_type->toString(), target_type->toString()));
             }
-            target_column_ids->push_back(src_type->getColumnId());
+            CollectAllColumnIds(src_type, target_column_ids);
             break;
         }
     }

@@ -30,6 +30,7 @@
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/delta_varint_compressor.h"
 #include "paimon/data/blob.h"
 #include "paimon/fs/file_system.h"
@@ -101,7 +102,7 @@ Status BlobFormatWriter::AddBatch(ArrowArray* batch) {
                                       arrow::ImportArray(batch, data_type_));
 
     assert(arrow_array->num_fields() == 1);
-    auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(arrow_array);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
     auto child_array = struct_array->field(0);
 
     // Struct-level null is not supported (caller should not pass null struct rows)
@@ -118,8 +119,7 @@ Status BlobFormatWriter::AddBatch(ArrowArray* batch) {
         return Status::Invalid("BlobFormatWriter only support large binary type.");
     }
 
-    const auto& blob_array =
-        arrow::internal::checked_cast<const arrow::LargeBinaryArray&>(*child_array);
+    const auto& blob_array = checked_cast<const arrow::LargeBinaryArray&>(*child_array);
     assert(blob_array.length() == 1);
     std::string_view blob_data = blob_array.GetView(0);
     // Only a data-evolution partial-update write interprets the sentinel, which marks a row

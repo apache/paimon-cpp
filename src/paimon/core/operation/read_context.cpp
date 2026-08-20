@@ -41,7 +41,8 @@ ReadContext::ReadContext(
     const std::shared_ptr<Executor>& executor,
     const std::shared_ptr<FileSystem>& specific_file_system,
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-    const std::map<std::string, std::string>& options, PrefetchCacheMode prefetch_cache_mode,
+    const std::shared_ptr<RealtimeContext>& realtime_context,
+    const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
     const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache)
     : path_(path),
       branch_(branch),
@@ -59,8 +60,9 @@ ReadContext::ReadContext(
       executor_(executor),
       specific_file_system_(specific_file_system),
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
+      realtime_context_(realtime_context),
       options_(options),
-      prefetch_cache_mode_(prefetch_cache_mode),
+      read_ahead_cache_enabled_(read_ahead_cache_enabled),
       cache_config_(cache_config),
       cache_(cache) {}
 
@@ -95,7 +97,7 @@ class ReadContextBuilder::Impl {
         predicate_.reset();
         enable_predicate_filter_ = false;
         enable_prefetch_ = false;
-        prefetch_cache_mode_ = PrefetchCacheMode::ALWAYS;
+        read_ahead_cache_enabled_ = true;
         prefetch_batch_count_ = 600;
         prefetch_max_parallel_num_ = 3;
         enable_multi_thread_row_to_batch_ = false;
@@ -104,6 +106,7 @@ class ReadContextBuilder::Impl {
         memory_pool_ = GetDefaultPool();
         executor_.reset();
         specific_file_system_.reset();
+        realtime_context_.reset();
         cache_config_ = CacheConfig();
         cache_.reset();
     }
@@ -127,7 +130,8 @@ class ReadContextBuilder::Impl {
     std::shared_ptr<MemoryPool> memory_pool_ = GetDefaultPool();
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
-    PrefetchCacheMode prefetch_cache_mode_ = PrefetchCacheMode::ALWAYS;
+    std::shared_ptr<RealtimeContext> realtime_context_;
+    bool read_ahead_cache_enabled_ = true;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
 };
@@ -218,6 +222,12 @@ ReadContextBuilder& ReadContextBuilder::WithExecutor(const std::shared_ptr<Execu
     return *this;
 }
 
+ReadContextBuilder& ReadContextBuilder::WithRealtimeContext(
+    const std::shared_ptr<RealtimeContext>& realtime_context) {
+    impl_->realtime_context_ = realtime_context;
+    return *this;
+}
+
 ReadContextBuilder& ReadContextBuilder::SetTableSchema(const std::string& table_schema) {
     impl_->table_schema_ = table_schema;
     return *this;
@@ -240,8 +250,8 @@ ReadContextBuilder& ReadContextBuilder::WithFileSystem(
     return *this;
 }
 
-ReadContextBuilder& ReadContextBuilder::SetPrefetchCacheMode(PrefetchCacheMode mode) {
-    impl_->prefetch_cache_mode_ = mode;
+ReadContextBuilder& ReadContextBuilder::SetReadAheadCacheEnabled(bool enabled) {
+    impl_->read_ahead_cache_enabled_ = enabled;
     return *this;
 }
 
@@ -290,8 +300,8 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         impl_->prefetch_batch_count_, impl_->prefetch_max_parallel_num_,
         impl_->enable_multi_thread_row_to_batch_, impl_->row_to_batch_thread_number_,
         impl_->table_schema_, impl_->memory_pool_, impl_->executor_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->options_, impl_->prefetch_cache_mode_,
-        impl_->cache_config_, impl_->cache_);
+        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
+        impl_->read_ahead_cache_enabled_, impl_->cache_config_, impl_->cache_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

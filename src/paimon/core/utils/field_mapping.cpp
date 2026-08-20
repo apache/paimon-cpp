@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "paimon/common/predicate/compound_predicate_impl.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/core/casting/cast_executor_factory.h"
@@ -156,8 +157,8 @@ std::optional<NonExistFieldInfo> FieldMappingBuilder::CreateNonExistFieldInfo(
         // cannot be read from data files directly. Materialize it as nulls.
         if (read_field.Type()->id() == arrow::Type::STRUCT &&
             iter->second.Type()->id() == arrow::Type::STRUCT) {
-            auto read_struct = std::static_pointer_cast<arrow::StructType>(read_field.Type());
-            auto data_struct = std::static_pointer_cast<arrow::StructType>(iter->second.Type());
+            auto read_struct = checked_pointer_cast<arrow::StructType>(read_field.Type());
+            auto data_struct = checked_pointer_cast<arrow::StructType>(iter->second.Type());
             if (read_struct->num_fields() == 0 && data_struct->num_fields() > 0) {
                 non_exist_field_info.non_exist_read_schema.push_back(read_field);
                 non_exist_field_info.idx_in_target_read_schema.push_back(i);
@@ -184,7 +185,7 @@ Result<std::vector<std::shared_ptr<CastExecutor>>> FieldMappingBuilder::CreateDa
         if (!read_fields[i].Type()->Equals(data_fields[i].Type())) {
             auto read_type_id = read_fields[i].Type()->id();
             if (read_type_id == arrow::Type::STRUCT || read_type_id == arrow::Type::LIST ||
-                read_type_id == arrow::Type::MAP) {
+                read_type_id == arrow::Type::MAP || read_type_id == arrow::Type::FIXED_SIZE_LIST) {
                 // Nested type differs by pruning/evolution; the reader's reshape
                 // handles it, no scalar cast.
                 cast_executors.push_back(nullptr);

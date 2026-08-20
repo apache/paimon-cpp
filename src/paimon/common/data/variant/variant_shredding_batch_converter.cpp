@@ -25,12 +25,12 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/util/bitmap_ops.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/generic_variant.h"
 #include "paimon/common/data/variant/variant_shredding_writer.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -58,15 +58,13 @@ Result<std::shared_ptr<arrow::Array>> ShredVariantColumn(
         return Status::Invalid(
             fmt::format("variant column {} is not a struct<value, metadata> column", field_name));
     }
-    const auto& variant_column = arrow::internal::checked_cast<const arrow::StructArray&>(column);
+    const auto& variant_column = checked_cast<const arrow::StructArray&>(column);
     if (variant_column.num_fields() != 2) {
         return Status::Invalid(
             fmt::format("variant column {} is not a struct<value, metadata> column", field_name));
     }
-    const auto& value_column =
-        arrow::internal::checked_cast<const arrow::BinaryArray&>(*variant_column.field(0));
-    const auto& metadata_column =
-        arrow::internal::checked_cast<const arrow::BinaryArray&>(*variant_column.field(1));
+    const auto& value_column = checked_cast<const arrow::BinaryArray&>(*variant_column.field(0));
+    const auto& metadata_column = checked_cast<const arrow::BinaryArray&>(*variant_column.field(1));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<VariantShreddedColumnWriter> writer,
         VariantShreddedColumnWriter::Create(variant_schema, physical_type, arrow_pool));
@@ -124,11 +122,9 @@ Result<std::shared_ptr<arrow::Array>> VariantShreddingBatchConverter::ConvertFie
         return Status::Invalid(fmt::format("variant shredding cannot convert non-struct field {}",
                                            logical_field->name()));
     }
-    const auto& logical_struct = arrow::internal::checked_cast<const arrow::StructArray&>(*logical);
-    const auto& logical_type =
-        arrow::internal::checked_cast<const arrow::StructType&>(*logical_field->type());
-    const auto& physical_type =
-        arrow::internal::checked_cast<const arrow::StructType&>(*physical_field->type());
+    const auto& logical_struct = checked_cast<const arrow::StructArray&>(*logical);
+    const auto& logical_type = checked_cast<const arrow::StructType&>(*logical_field->type());
+    const auto& physical_type = checked_cast<const arrow::StructType&>(*physical_field->type());
     if (logical_type.num_fields() != physical_type.num_fields()) {
         return Status::Invalid(fmt::format("variant shredding physical struct {} does not match",
                                            physical_field->name()));
@@ -161,7 +157,7 @@ Result<std::unique_ptr<ArrowArray>> VariantShreddingBatchConverter::Convert(
     auto logical_struct_type = arrow::struct_(plan_->LogicalSchema()->fields());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> logical_array,
                                       arrow::ImportArray(logical_batch, logical_struct_type));
-    const auto& logical_struct = std::static_pointer_cast<arrow::StructArray>(logical_array);
+    const auto& logical_struct = checked_pointer_cast<arrow::StructArray>(logical_array);
 
     const auto& logical_fields = plan_->LogicalSchema()->fields();
     const auto& physical_fields = plan_->PhysicalSchema()->fields();

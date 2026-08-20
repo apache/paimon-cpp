@@ -119,14 +119,14 @@ class ScanAndReadInteTest : public testing::Test,
 
     void CheckPostponeFile(const std::string& root_path,
                            const std::vector<std::string>& subdirs) const {
-        std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+        std::vector<BasicFileStatus> status_list;
         auto file_system = std::make_shared<LocalFileSystem>();
         for (const auto& dir : subdirs) {
             ASSERT_OK(file_system->ListDir(PathUtil::JoinPath(root_path, dir), &status_list));
         }
         ASSERT_FALSE(status_list.empty());
         for (const auto& file_status : status_list) {
-            std::string path = file_status->GetPath();
+            std::string path = file_status.GetPath();
             ASSERT_TRUE(path.find("-u-") != std::string::npos);
             ASSERT_TRUE(path.find("-s-") != std::string::npos);
             ASSERT_TRUE(path.find("-w-") != std::string::npos);

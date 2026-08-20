@@ -20,6 +20,7 @@
 
 #include <memory>
 
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/utils/object_serializer.h"
 #include "paimon/core/utils/offset_row.h"
 
@@ -33,11 +34,11 @@ class PAIMON_EXPORT VersionedObjectSerializer : public ObjectSerializer<T> {
 
     static std::shared_ptr<arrow::DataType> VersionType(
         const std::shared_ptr<arrow::DataType>& data_type) {
-        auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(data_type);
-        if (!struct_type) {
+        if (!data_type || data_type->id() != arrow::Type::STRUCT) {
             assert(false);
             return nullptr;
         }
+        auto struct_type = checked_pointer_cast<arrow::StructType>(data_type);
         return struct_type
             ->AddField(0, arrow::field("_VERSION", arrow::int32(), /*nullable=*/false))
             .ValueOr(nullptr);

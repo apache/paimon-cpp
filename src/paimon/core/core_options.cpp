@@ -390,6 +390,7 @@ struct CoreOptions::Impl {
     int64_t commit_timeout = std::numeric_limits<int64_t>::max();
     int64_t commit_min_retry_wait = 10;
     int64_t commit_max_retry_wait = 10 * 1000;
+    int64_t realtime_read_view_ttl_millis = 5 * 60 * 1000;
 
     std::shared_ptr<FileFormat> file_format;
     std::shared_ptr<FileSystem> file_system;
@@ -802,6 +803,12 @@ struct CoreOptions::Impl {
         std::string scan_timestamp_str;
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_TIMESTAMP, &scan_timestamp_str));
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_TIMESTAMP_MILLIS, &scan_timestamp_millis));
+        PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
+                                                      &realtime_read_view_ttl_millis));
+        if (realtime_read_view_ttl_millis <= 0) {
+            return Status::Invalid(
+                fmt::format("{} must be positive", Options::REALTIME_READ_VIEW_TTL));
+        }
         if (scan_timestamp_millis != std::nullopt && !scan_timestamp_str.empty()) {
             return Status::Invalid(
                 "scan.timestamp-millis and scan.timestamp cannot be set at the same time");
@@ -1149,6 +1156,10 @@ std::optional<int64_t> CoreOptions::GetScanSnapshotId() const {
 }
 std::optional<int64_t> CoreOptions::GetScanTimestampMillis() const {
     return impl_->scan_timestamp_millis;
+}
+
+int64_t CoreOptions::GetRealtimeReadViewTtlMillis() const {
+    return impl_->realtime_read_view_ttl_millis;
 }
 
 int32_t CoreOptions::GetScanManifestEntryCacheMaxSnapshots() const {

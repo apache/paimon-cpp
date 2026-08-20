@@ -31,7 +31,6 @@
 #include "paimon/common/utils/math.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
-#include "paimon/fs/local/local_file_status.h"
 
 namespace paimon {
 
@@ -97,8 +96,8 @@ Result<bool> LocalFile::IsFile() const {
 
 Result<bool> LocalFile::IsDir() const {
     CHECK_HOOK();
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LocalFileStatus> file_status, GetFileStatus());
-    return file_status->IsDir();
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus());
+    return file_status.IsDir();
 }
 
 Status LocalFile::List(std::vector<std::string>* file_list) const {
@@ -160,7 +159,7 @@ Result<bool> LocalFile::Mkdir() const {
     return mkdir(path_.c_str(), 0755) == 0;
 }
 
-Result<std::unique_ptr<LocalFileStatus>> LocalFile::GetFileStatus() const {
+Result<FileStatus> LocalFile::GetFileStatus() const {
     CHECK_HOOK();
     struct stat buf;
     if (stat(path_.c_str(), &buf) < 0) {
@@ -168,20 +167,19 @@ Result<std::unique_ptr<LocalFileStatus>> LocalFile::GetFileStatus() const {
         return Status::IOError(
             fmt::format("get file '{}' status failed, ec: {}", path_, std::strerror(cur_errno)));
     }
-    return std::make_unique<LocalFileStatus>(path_, buf.st_size, buf.st_mtime * 1000,
-                                             S_ISDIR(buf.st_mode));
+    return FileStatus(path_, buf.st_size, S_ISDIR(buf.st_mode), buf.st_mtime * 1000);
 }
 
 Result<int64_t> LocalFile::Length() const {
     CHECK_HOOK();
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LocalFileStatus> file_status, GetFileStatus());
-    return file_status->GetLen();
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus());
+    return file_status.GetLen();
 }
 
 Result<int64_t> LocalFile::LastModifiedTimeMs() const {
     CHECK_HOOK();
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LocalFileStatus> file_status, GetFileStatus());
-    return file_status->GetModificationTime();
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus());
+    return file_status.GetModificationTime();
 }
 
 std::unique_ptr<LocalFile> LocalFile::GetParentFile() const {

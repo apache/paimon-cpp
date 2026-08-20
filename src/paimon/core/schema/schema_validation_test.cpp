@@ -46,6 +46,69 @@ TEST(SchemaValidationTest, TestSimple) {
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 }
 
+TEST(SchemaValidationTest, TestVectorType) {
+    auto vector_field = arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3));
+    auto schema = arrow::schema({arrow::field("id", arrow::int64()), vector_field});
+    std::map<std::string, std::string> parquet_options = {{Options::BUCKET, "-1"},
+                                                          {Options::FILE_FORMAT, "parquet"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, parquet_options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    std::map<std::string, std::string> orc_options = {{Options::BUCKET, "-1"},
+                                                      {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, orc_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "VECTOR currently only supports parquet data files");
+
+    std::map<std::string, std::string> primary_key_options = {{Options::BUCKET, "1"}};
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"embedding"}, primary_key_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "in primary key field embedding is unsupported");
+
+    primary_key_options[Options::FILE_FORMAT] = "parquet";
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"id"}, primary_key_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "VECTOR fields in primary-key tables are not implemented yet.");
+
+    auto nested_schema = arrow::schema({
+        arrow::field("id", arrow::int64()),
+        arrow::field("payload", arrow::struct_({arrow::field("embedding", vector_field->type())})),
+    });
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        TableSchema::Create(/*schema_id=*/0, nested_schema,
+                            /*partition_keys=*/{}, /*primary_keys=*/{"id"}, primary_key_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "VECTOR fields in primary-key tables are not implemented yet.");
+
+    std::map<std::string, std::string> data_evolution_options = {
+        {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+    };
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema,
+                                             /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, data_evolution_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "VECTOR fields in data-evolution tables are not implemented yet.");
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, nested_schema,
+                                             /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, data_evolution_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "VECTOR fields in data-evolution tables are not implemented yet.");
+}
+
 TEST(SchemaValidationTest, TestRowTracking) {
     auto f0 = arrow::field("f0", arrow::utf8());
     auto f1 = arrow::field("f1", arrow::int32());

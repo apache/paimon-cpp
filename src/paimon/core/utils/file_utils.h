@@ -24,11 +24,10 @@
 #include <string>
 #include <vector>
 
+#include "paimon/fs/file_system.h"
 #include "paimon/status.h"
-#include "paimon/type_fwd.h"
 
 namespace paimon {
-class BasicFileStatus;
 class FileSystem;
 
 /// Utils for file reading and writing.
@@ -50,9 +49,9 @@ class FileUtils {
     /// List versioned file status for the directory.
     ///
     /// @return Status
-    static Status ListVersionedFileStatus(
-        const std::shared_ptr<FileSystem>& fs, const std::string& dir, const std::string& prefix,
-        std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list);
+    static Status ListVersionedFileStatus(const std::shared_ptr<FileSystem>& fs,
+                                          const std::string& dir, const std::string& prefix,
+                                          std::vector<BasicFileStatus>* file_status_list);
 };
 
 }  // namespace paimon

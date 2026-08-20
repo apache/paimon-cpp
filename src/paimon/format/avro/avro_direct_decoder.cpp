@@ -23,11 +23,11 @@
 #include "paimon/format/avro/avro_direct_decoder.h"
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "avro/Decoder.hh"
 #include "avro/Node.hh"
 #include "avro/Types.hh"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/format/avro/avro_utils.h"
 
@@ -138,7 +138,7 @@ Status DecodeStructToBuilder(const ::avro::NodePtr& avro_node,
             fmt::format("Expected Avro record, got type: {}", AvroUtils::ToString(avro_node)));
     }
 
-    auto* struct_builder = arrow::internal::checked_cast<arrow::StructBuilder*>(array_builder);
+    auto* struct_builder = checked_cast<arrow::StructBuilder*>(array_builder);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder->Append());
 
     size_t skipped_fields = 0;
@@ -168,7 +168,7 @@ Status DecodeListToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* de
             fmt::format("Expected Avro array, got type: {}", AvroUtils::ToString(avro_node)));
     }
 
-    auto* list_builder = arrow::internal::checked_cast<arrow::ListBuilder*>(array_builder);
+    auto* list_builder = checked_cast<arrow::ListBuilder*>(array_builder);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Append());
 
     auto* value_builder = list_builder->value_builder();
@@ -191,7 +191,7 @@ Status DecodeListToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* de
 Status DecodeMapToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* decoder,
                           arrow::ArrayBuilder* array_builder,
                           AvroDirectDecoder::DecodeContext* ctx) {
-    auto* map_builder = arrow::internal::checked_cast<arrow::MapBuilder*>(array_builder);
+    auto* map_builder = checked_cast<arrow::MapBuilder*>(array_builder);
 
     if (avro_node->type() == ::avro::AVRO_MAP) {
         // Handle regular Avro map: map<string, value>
@@ -258,7 +258,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
 
     switch (type) {
         case ::avro::AVRO_BOOL: {
-            auto* builder = arrow::internal::checked_cast<arrow::BooleanBuilder*>(array_builder);
+            auto* builder = checked_cast<arrow::BooleanBuilder*>(array_builder);
             bool value = decoder->decodeBool();
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
             return Status::OK();
@@ -269,20 +269,17 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
             auto arrow_type = array_builder->type();
             switch (arrow_type->id()) {
                 case arrow::Type::INT8: {
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::Int8Builder*>(array_builder);
+                    auto* builder = checked_cast<arrow::Int8Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
                     return Status::OK();
                 }
                 case arrow::Type::INT16: {
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::Int16Builder*>(array_builder);
+                    auto* builder = checked_cast<arrow::Int16Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
                     return Status::OK();
                 }
                 case arrow::Type::INT32: {
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::Int32Builder*>(array_builder);
+                    auto* builder = checked_cast<arrow::Int32Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
                     return Status::OK();
                 }
@@ -292,8 +289,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                             fmt::format("Unexpected avro type [{}] with arrow type [{}].",
                                         ::avro::toString(type), arrow_type->ToString()));
                     }
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::Date32Builder*>(array_builder);
+                    auto* builder = checked_cast<arrow::Date32Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
                     return Status::OK();
                 }
@@ -308,8 +304,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
             int64_t value = decoder->decodeLong();
             switch (logical_type.type()) {
                 case ::avro::LogicalType::Type::NONE: {
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::Int64Builder*>(array_builder);
+                    auto* builder = checked_cast<arrow::Int64Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
                     return Status::OK();
                 }
@@ -319,10 +314,8 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                 case ::avro::LogicalType::Type::LOCAL_TIMESTAMP_MILLIS:
                 case ::avro::LogicalType::Type::LOCAL_TIMESTAMP_MICROS:
                 case ::avro::LogicalType::Type::LOCAL_TIMESTAMP_NANOS: {
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::TimestampBuilder*>(array_builder);
-                    auto ts_type =
-                        arrow::internal::checked_cast<arrow::TimestampType*>(builder->type().get());
+                    auto* builder = checked_cast<arrow::TimestampBuilder*>(array_builder);
+                    auto ts_type = checked_cast<arrow::TimestampType*>(builder->type().get());
                     // for arrow second, we need to convert it from avro millisecond
                     if (ts_type->unit() == arrow::TimeUnit::type::SECOND) {
                         value /= DateTimeUtils::CONVERSION_FACTORS[DateTimeUtils::MILLISECOND];
@@ -338,19 +331,19 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
         }
 
         case ::avro::AVRO_FLOAT: {
-            auto* builder = arrow::internal::checked_cast<arrow::FloatBuilder*>(array_builder);
+            auto* builder = checked_cast<arrow::FloatBuilder*>(array_builder);
             float value = decoder->decodeFloat();
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
             return Status::OK();
         }
         case ::avro::AVRO_DOUBLE: {
-            auto* builder = arrow::internal::checked_cast<arrow::DoubleBuilder*>(array_builder);
+            auto* builder = checked_cast<arrow::DoubleBuilder*>(array_builder);
             double value = decoder->decodeDouble();
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
             return Status::OK();
         }
         case ::avro::AVRO_STRING: {
-            auto* builder = arrow::internal::checked_cast<arrow::StringBuilder*>(array_builder);
+            auto* builder = checked_cast<arrow::StringBuilder*>(array_builder);
             decoder->decodeString(ctx->string_scratch);
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(ctx->string_scratch));
             return Status::OK();
@@ -360,16 +353,14 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
             decoder->decodeBytes(ctx->bytes_scratch);
             switch (logical_type.type()) {
                 case ::avro::LogicalType::Type::NONE: {
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::BinaryBuilder*>(array_builder);
+                    auto* builder = checked_cast<arrow::BinaryBuilder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(
                         builder->Append(ctx->bytes_scratch.data(),
                                         static_cast<int32_t>(ctx->bytes_scratch.size())));
                     return Status::OK();
                 }
                 case ::avro::LogicalType::Type::DECIMAL: {
-                    auto* builder =
-                        arrow::internal::checked_cast<arrow::Decimal128Builder*>(array_builder);
+                    auto* builder = checked_cast<arrow::Decimal128Builder*>(array_builder);
                     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                         arrow::Decimal128 decimal,
                         arrow::Decimal128::FromBigEndian(ctx->bytes_scratch.data(),

@@ -53,12 +53,27 @@ TEST(ArrowSchemaValidatorTest, TestSimple) {
         "col16",
         arrow::struct_({arrow::field("sub1", arrow::int8()), arrow::field("sub2", arrow::int16()),
                         arrow::field("sub3", arrow::int64())}));
+    auto col17_field = arrow::field("col17", arrow::fixed_size_list(arrow::float32(), 3));
 
-    auto arrow_schema = arrow::schema(
-        arrow::FieldVector({col1_field, col2_field, col3_field, col4_field, col5_field, col6_field,
-                            col7_field, col8_field, col9_field, col10_field, col11_field,
-                            col12_field, col13_field, col14_field, col15_field, col16_field}));
+    auto arrow_schema = arrow::schema(arrow::FieldVector(
+        {col1_field, col2_field, col3_field, col4_field, col5_field, col6_field, col7_field,
+         col8_field, col9_field, col10_field, col11_field, col12_field, col13_field, col14_field,
+         col15_field, col16_field, col17_field}));
     ASSERT_OK(ArrowSchemaValidator::ValidateSchema(*arrow_schema));
+}
+
+TEST(ArrowSchemaValidatorTest, TestVectorElementType) {
+    for (const auto& element_type :
+         {arrow::boolean(), arrow::int8(), arrow::int16(), arrow::int32(), arrow::int64(),
+          arrow::float32(), arrow::float64()}) {
+        auto vector = arrow::field("embedding", arrow::fixed_size_list(element_type, 3));
+        ASSERT_OK(ArrowSchemaValidator::ValidateSchema(*arrow::schema({vector})));
+    }
+    for (const auto& element_type : {arrow::utf8()}) {
+        auto vector = arrow::field("embedding", arrow::fixed_size_list(element_type, 3));
+        ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow::schema({vector})),
+                            "Invalid element type for vector");
+    }
 }
 
 TEST(ArrowSchemaValidatorTest, TestValidateNoRedundantFields) {

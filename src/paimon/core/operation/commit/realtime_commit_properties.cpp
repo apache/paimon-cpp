@@ -20,7 +20,6 @@
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 
 #include <algorithm>
-#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -148,10 +147,10 @@ class OffsetsJson : public Jsonizable<OffsetsJson> {
 void RealtimeCommitProperties::Sort(std::vector<RealtimeCommitProgress>* commits) {
     std::stable_sort(commits->begin(), commits->end(),
                      [](const RealtimeCommitProgress& lhs, const RealtimeCommitProgress& rhs) {
-                         if (!(lhs.partition_bucket == rhs.partition_bucket)) {
+                         if (lhs.partition_bucket != rhs.partition_bucket) {
                              return lhs.partition_bucket < rhs.partition_bucket;
                          }
-                         return lhs.offset_range.from < rhs.offset_range.from;
+                         return lhs.offset_range.begin < rhs.offset_range.begin;
                      });
 }
 
@@ -187,7 +186,7 @@ Result<std::string> RealtimeCommitProperties::SerializeOffsets(const RealtimeOff
 Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
     const std::map<std::string, std::string>& properties,
     const std::optional<Snapshot>& latest_snapshot,
-    const std::map<RealtimePartitionBucket, Range>& realtime_ranges,
+    const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
     const std::shared_ptr<FileSystem>& file_system, const std::string& table_root,
     const std::string& branch) {
     std::map<std::string, std::string> merged_properties = properties;
@@ -210,18 +209,17 @@ Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
             return Status::Invalid(
                 fmt::format("real-time commit bucket {} is invalid", partition_bucket.bucket));
         }
-        if (offset_range.from > offset_range.to) {
+        if (offset_range.begin >= offset_range.end) {
             return Status::Invalid("real-time commit offset range is invalid");
         }
         auto offset_iter = merged_offsets.find(partition_bucket);
-        int64_t previous_offset = offset_iter == merged_offsets.end() ? -1 : offset_iter->second;
-        if (previous_offset == std::numeric_limits<int64_t>::max() ||
-            offset_range.from != previous_offset + 1) {
+        int64_t previous_end_offset = offset_iter == merged_offsets.end() ? 0 : offset_iter->second;
+        if (offset_range.begin != previous_end_offset) {
             return Status::Invalid(
                 fmt::format("real-time commit offsets for bucket {} are not contiguous",
                             partition_bucket.bucket));
         }
-        merged_offsets[partition_bucket] = offset_range.to;
+        merged_offsets[partition_bucket] = offset_range.end;
     }
     PAIMON_ASSIGN_OR_RAISE(
         merged_properties[kOffsetsKey],

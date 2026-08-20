@@ -31,6 +31,7 @@
 #include "arrow/array/builder_primitive.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/defs.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
@@ -60,9 +61,9 @@ class PredicateBatchReaderTest : public ::testing::Test {
             data_type_, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int64Builder>(),
              std::make_shared<arrow::BooleanBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto big_int_builder = static_cast<arrow::Int64Builder*>(struct_builder.field_builder(1));
-        auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto big_int_builder = checked_cast<arrow::Int64Builder*>(struct_builder.field_builder(1));
+        auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
         for (int32_t i = 0 + offset; i < length + offset; ++i) {
             EXPECT_TRUE(struct_builder.Append().ok());
             EXPECT_TRUE(string_builder->Append("str_" + std::to_string(i)).ok());

@@ -30,6 +30,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/utils/date_time_utils.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
@@ -37,7 +38,6 @@
 #include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace arrow {
 class Array;
@@ -97,7 +97,7 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
                         prefetch_batch_count, batch_size, prefetch_batch_count * 2,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
-                        /*prefetch_cache_mode=*/PrefetchCacheMode::ALWAYS, CacheConfig(), pool_));
+                        /*read_ahead_cache_enabled=*/true, CacheConfig(), pool_));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);

@@ -28,6 +28,7 @@
 #include "avro/ValidSchema.hh"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/format/avro/avro_direct_decoder.h"
 #include "paimon/format/avro/avro_direct_encoder.h"
 #include "paimon/format/avro/avro_schema_converter.h"
@@ -316,9 +317,9 @@ TEST_F(AvroDirectEncoderDecoderTest, TestRecordType) {
         {std::make_shared<arrow::Int32Builder>(), std::make_shared<arrow::StringBuilder>(),
          std::make_shared<arrow::BooleanBuilder>()});
 
-    auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
-    auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(1));
-    auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
+    auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(0));
+    auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(1));
+    auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
 
     // Add first record
     ASSERT_TRUE(struct_builder.Append().ok());
@@ -416,7 +417,7 @@ TEST_F(AvroDirectEncoderDecoderTest, TestArrayType) {
     // Create list array
     arrow::ListBuilder list_builder(arrow::default_memory_pool(),
                                     std::make_shared<arrow::Int32Builder>());
-    auto int_builder = static_cast<arrow::Int32Builder*>(list_builder.value_builder());
+    auto int_builder = checked_cast<arrow::Int32Builder*>(list_builder.value_builder());
 
     // First list: [1, 2, 3]
     ASSERT_TRUE(list_builder.Append().ok());
@@ -446,8 +447,8 @@ TEST_F(AvroDirectEncoderDecoderTest, TestMapType) {
     arrow::MapBuilder map_builder(arrow::default_memory_pool(),
                                   std::make_shared<arrow::StringBuilder>(),
                                   std::make_shared<arrow::StringBuilder>());
-    auto key_builder = static_cast<arrow::StringBuilder*>(map_builder.key_builder());
-    auto value_builder = static_cast<arrow::StringBuilder*>(map_builder.item_builder());
+    auto key_builder = checked_cast<arrow::StringBuilder*>(map_builder.key_builder());
+    auto value_builder = checked_cast<arrow::StringBuilder*>(map_builder.item_builder());
 
     // First map: {"key1": "value1", "key2": "value2"}
     ASSERT_TRUE(map_builder.Append().ok());
@@ -490,8 +491,8 @@ TEST_F(AvroDirectEncoderDecoderTest, TestArrayBasedMapType) {
     arrow::MapBuilder map_builder(arrow::default_memory_pool(),
                                   std::make_shared<arrow::Int32Builder>(),
                                   std::make_shared<arrow::StringBuilder>());
-    auto key_builder = static_cast<arrow::Int32Builder*>(map_builder.key_builder());
-    auto value_builder = static_cast<arrow::StringBuilder*>(map_builder.item_builder());
+    auto key_builder = checked_cast<arrow::Int32Builder*>(map_builder.key_builder());
+    auto value_builder = checked_cast<arrow::StringBuilder*>(map_builder.item_builder());
 
     // First map: {111: "value1", 222: "value2"}
     ASSERT_TRUE(map_builder.Append().ok());
@@ -619,8 +620,8 @@ TEST_F(AvroDirectEncoderDecoderTest, TestInvalidMapType) {
     arrow::MapBuilder map_builder(arrow::default_memory_pool(),
                                   std::make_shared<arrow::Int32Builder>(),
                                   std::make_shared<arrow::StringBuilder>());
-    auto key_builder = static_cast<arrow::Int32Builder*>(map_builder.key_builder());
-    auto value_builder = static_cast<arrow::StringBuilder*>(map_builder.item_builder());
+    auto key_builder = checked_cast<arrow::Int32Builder*>(map_builder.key_builder());
+    auto value_builder = checked_cast<arrow::StringBuilder*>(map_builder.item_builder());
     ASSERT_TRUE(map_builder.Append().ok());
     ASSERT_TRUE(key_builder->Append(1).ok());
     ASSERT_TRUE(value_builder->Append("value1").ok());

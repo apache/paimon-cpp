@@ -23,9 +23,44 @@
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+namespace {
+
+class CastBase {
+ public:
+    virtual ~CastBase() = default;
+};
+
+class CastDerived : public CastBase {};
+
+}  // namespace
+
+TEST(CheckedCastTest, DelegatesToArrowCheckedCast) {
+    std::shared_ptr<CastBase> shared_base = std::make_shared<CastDerived>();
+    std::shared_ptr<CastDerived> shared_derived = checked_pointer_cast<CastDerived>(shared_base);
+    ASSERT_NE(shared_derived, nullptr);
+
+    std::unique_ptr<CastBase> unique_base = std::make_unique<CastDerived>();
+    std::unique_ptr<CastDerived> unique_derived =
+        checked_pointer_cast<CastDerived>(std::move(unique_base));
+    ASSERT_NE(unique_derived, nullptr);
+
+    CastBase* raw_base = shared_base.get();
+    ASSERT_EQ(checked_cast<CastDerived*>(raw_base), shared_derived.get());
+
+    std::shared_ptr<CastBase> null_base;
+    ASSERT_EQ(checked_pointer_cast<CastDerived>(null_base), nullptr);
+
+#ifndef NDEBUG
+    std::shared_ptr<CastBase> wrong_type = std::make_shared<CastBase>();
+    ASSERT_EQ(checked_pointer_cast<CastDerived>(wrong_type), nullptr);
+    ASSERT_EQ(checked_cast<CastDerived*>(wrong_type.get()), nullptr);
+#endif
+}
 
 TEST(ArrowUtilsTest, TestCreateProjection) {
     arrow::FieldVector file_fields = {
@@ -214,6 +249,42 @@ TEST(ArrowUtilsTest, TestCheckNullableMatchWithList) {
     }
 }
 
+TEST(ArrowUtilsTest, TestCheckNullableMatchRejectsNullVectorElement) {
+    auto vector_type = arrow::fixed_size_list(arrow::float32(), 3);
+    auto vector_field = arrow::field("embedding", vector_type);
+    arrow::FloatBuilder values_builder;
+    ASSERT_TRUE(values_builder.Append(1.0f).ok());
+    ASSERT_TRUE(values_builder.AppendNull().ok());
+    ASSERT_TRUE(values_builder.Append(3.0f).ok());
+    std::shared_ptr<arrow::Array> values = values_builder.Finish().ValueOrDie();
+    auto vector_data = arrow::ArrayData::Make(vector_type, 1, {nullptr}, {values->data()}, 0);
+    auto vector_array = arrow::MakeArray(vector_data);
+    auto struct_array = arrow::StructArray::Make({vector_array}, {vector_field}).ValueOrDie();
+
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({vector_field}), struct_array),
+        "VECTOR field embedding is invalid: VECTOR cannot contain null elements");
+}
+
+// Arrow accepts a FixedSizeList whose child is shorter than `length * list_size` when importing
+// it over the C data interface, so the nullability check must reject it rather than scan past the
+// end of the child.
+TEST(ArrowUtilsTest, TestCheckNullableMatchRejectsTruncatedVector) {
+    auto vector_type = arrow::fixed_size_list(arrow::float32(), 3);
+    auto vector_field = arrow::field("embedding", vector_type);
+    arrow::FloatBuilder values_builder;
+    ASSERT_TRUE(values_builder.AppendValues({1.0f, 2.0f, 3.0f}).ok());
+    std::shared_ptr<arrow::Array> values = values_builder.Finish().ValueOrDie();
+    auto vector_data = arrow::ArrayData::Make(vector_type, /*length=*/2, {nullptr},
+                                              {values->data()}, /*null_count=*/0);
+    auto vector_array = arrow::MakeArray(vector_data);
+    auto struct_array = arrow::StructArray::Make({vector_array}, {vector_field}).ValueOrDie();
+
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({vector_field}), struct_array),
+        "VECTOR field embedding is invalid: VECTOR holds 3 elements while 2 rows of dimension 3");
+}
+
 TEST(ArrowUtilsTest, TestCheckNullableMatchWithMap) {
     auto key_field = arrow::field("key", arrow::int32(), /*nullable=*/false);
     auto value_field = arrow::field("value", arrow::int32(), /*nullable=*/true);
@@ -346,7 +417,7 @@ TEST(ArrowUtilsTest, TestRemoveFieldFromStructArrayFieldNotFound) {
     auto src_array = arrow::ipc::internal::json::ArrayFromJSON(
                          struct_type, R"([{"a":1,"b":"x"},{"a":2,"b":"y"},{"a":3,"b":"z"}])")
                          .ValueOrDie();
-    auto src_struct_array = std::static_pointer_cast<arrow::StructArray>(src_array);
+    auto src_struct_array = checked_pointer_cast<arrow::StructArray>(src_array);
 
     ASSERT_OK_AND_ASSIGN(auto result,
                          ArrowUtils::RemoveFieldFromStructArray(src_struct_array, "missing"));
@@ -364,7 +435,7 @@ TEST(ArrowUtilsTest, TestRemoveFieldFromStructArraySuccess) {
             struct_type,
             R"([{"a":1,"b":"x","c":10},{"a":2,"b":"y","c":20},{"a":3,"b":"z","c":30}])")
             .ValueOrDie();
-    auto src_struct_array = std::static_pointer_cast<arrow::StructArray>(src_array);
+    auto src_struct_array = checked_pointer_cast<arrow::StructArray>(src_array);
 
     ASSERT_OK_AND_ASSIGN(auto result,
                          ArrowUtils::RemoveFieldFromStructArray(src_struct_array, "b"));
@@ -374,7 +445,7 @@ TEST(ArrowUtilsTest, TestRemoveFieldFromStructArraySuccess) {
     auto expected_array = arrow::ipc::internal::json::ArrayFromJSON(
                               expected_type, R"([{"a":1,"c":10},{"a":2,"c":20},{"a":3,"c":30}])")
                               .ValueOrDie();
-    auto expected_struct_array = std::static_pointer_cast<arrow::StructArray>(expected_array);
+    auto expected_struct_array = checked_pointer_cast<arrow::StructArray>(expected_array);
 
     ASSERT_EQ(result->type()->num_fields(), 2);
     ASSERT_EQ(result->type()->field(0)->name(), "a");
@@ -415,7 +486,7 @@ TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsets) {
     ASSERT_NE(normalized_batch.get(), record_batch.get());
     ASSERT_TRUE(normalized_batch->Equals(*record_batch));
     std::shared_ptr<arrow::StructArray> normalized_nested =
-        std::static_pointer_cast<arrow::StructArray>(normalized_batch->column(0));
+        checked_pointer_cast<arrow::StructArray>(normalized_batch->column(0));
     ASSERT_EQ(normalized_nested->offset(), 0);
     ASSERT_EQ(normalized_nested->field(0)->offset(), 0);
     ASSERT_EQ(normalized_batch->column(1)->offset(), 0);
@@ -488,6 +559,9 @@ std::vector<NormalizeCase> NormalizeCases() {
         {arrow::list(arrow::utf8()),
          R"([["a"], null, ["bb", "ccc"], [], ["d"], null, ["e", "f"], [], ["g"], ["h"]])",
          {{{0}, 2}}},
+        {arrow::fixed_size_list(arrow::int32(), 2),
+         "[[0, 1], null, [2, 3], [4, 5], [6, 7], null, [8, 9], [10, 11], [12, 13], [14, 15]]",
+         {{{0}, 1}}},
         {arrow::struct_({int_field, text_field}),
          R"([{"a": 0, "b": "x"}, null, {"a": 2, "b": null}, {"a": null, "b": "yyy"},
              {"a": 4, "b": "z"}, {"a": 5, "b": ""}, null, {"a": 7, "b": "w"},
@@ -722,6 +796,14 @@ TEST(ArrowUtilsTest, TestEqualsIgnoreNullable) {
         ASSERT_FALSE(ArrowUtils::EqualsIgnoreNullable(struct_type1, struct_type2));
         ASSERT_TRUE(ArrowUtils::EqualsIgnoreNullable(struct_type1, struct_type3));
         ASSERT_FALSE(ArrowUtils::EqualsIgnoreNullable(struct_type1, struct_type4));
+    }
+    {
+        auto vector3 = arrow::fixed_size_list(arrow::float32(), 3);
+        auto vector3_non_null =
+            arrow::fixed_size_list(arrow::field("item", arrow::float32(), false), 3);
+        auto vector5 = arrow::fixed_size_list(arrow::float32(), 5);
+        ASSERT_TRUE(ArrowUtils::EqualsIgnoreNullable(vector3, vector3_non_null));
+        ASSERT_FALSE(ArrowUtils::EqualsIgnoreNullable(vector3, vector5));
     }
     {
         // test complex

@@ -31,6 +31,7 @@
 #include "paimon/common/memory/memory_slice_output.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/crc32c.h"
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/memory/bytes.h"
@@ -76,9 +77,11 @@ Status BTreeGlobalIndexWriter::AddBatch(::ArrowArray* arrow_array,
         arrow_array, relative_row_ids, /*expected_next_row_id=*/std::nullopt));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                       arrow::ImportArray(arrow_array, arrow_type_));
-    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
-    PAIMON_RETURN_NOT_OK(Preconditions::CheckNotNull(
-        struct_array, "arrow array must be struct array when AddBatch to BTreeGlobalIndexWriter"));
+    if (!array || array->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid(
+            "arrow array must be struct array when AddBatch to BTreeGlobalIndexWriter");
+    }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
     auto value_array = struct_array->GetFieldByName(field_name_);
     PAIMON_RETURN_NOT_OK(Preconditions::CheckNotNull(
         value_array,

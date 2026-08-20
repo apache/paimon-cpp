@@ -24,6 +24,7 @@
 #include "paimon/catalog/table.h"
 #include "paimon/catalog_options.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -400,7 +401,7 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                            LoadDataTableSchema(load_identifier, branch, nullptr));
-    return std::static_pointer_cast<Schema>(schema);
+    return checked_pointer_cast<Schema>(schema);
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {

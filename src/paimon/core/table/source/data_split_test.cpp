@@ -28,6 +28,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -1515,7 +1516,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountResolvesMissingCardinalityViaFactor
         [&deletion_vector](
             const std::string& file_name) -> Result<std::shared_ptr<DeletionVector>> {
         if (file_name == "data-1.orc") {
-            return std::static_pointer_cast<DeletionVector>(deletion_vector);
+            return checked_pointer_cast<DeletionVector>(deletion_vector);
         }
         return std::shared_ptr<DeletionVector>();
     };

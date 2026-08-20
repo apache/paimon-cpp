@@ -33,6 +33,7 @@
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/status.h"
 namespace paimon {
 CompleteIndexScoreBatchReader::CompleteIndexScoreBatchReader(
@@ -71,10 +72,10 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
     auto& [c_array, c_schema] = batch;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
-    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-    if (!struct_array) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("cannot cast array to StructArray in CompleteIndexScoreBatchReader");
     }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
     auto struct_type = struct_array->struct_type();
     UpdateScoreFieldIndex(struct_type);
 
@@ -82,8 +83,11 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
     std::unique_ptr<arrow::ArrayBuilder> index_score_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
         arrow_pool_.get(), SpecialFields::IndexScore().Type(), &index_score_builder));
-    auto typed_builder = dynamic_cast<arrow::FloatBuilder*>(index_score_builder.get());
-    assert(typed_builder);
+    if (!index_score_builder || !index_score_builder->type() ||
+        index_score_builder->type()->id() != arrow::Type::FLOAT) {
+        return Status::Invalid("cannot cast index score builder to FloatBuilder");
+    }
+    auto* typed_builder = checked_cast<arrow::FloatBuilder*>(index_score_builder.get());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(typed_builder->Reserve(struct_array->length()));
     bool all_not_null = (struct_array->length() == bitmap.Cardinality());
     for (int64_t i = 0; i < struct_array->length(); i++) {

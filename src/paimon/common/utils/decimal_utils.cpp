@@ -26,16 +26,16 @@
 
 #include "arrow/api.h"
 #include "arrow/util/basic_decimal.h"
-#include "arrow/util/checked_cast.h"
 #include "arrow/util/decimal.h"
 #include "fmt/format.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 Status DecimalUtils::CheckDecimalType(const arrow::DataType& type) {
-    auto* decimal_type = dynamic_cast<const arrow::Decimal128Type*>(&type);
-    if (!decimal_type) {
+    if (type.id() != arrow::Type::DECIMAL128) {
         return Status::Invalid(fmt::format("Invalid decimal type: {}", type.ToString()));
     }
+    auto* decimal_type = checked_cast<const arrow::Decimal128Type*>(&type);
     if (decimal_type->precision() > Decimal::MAX_PRECISION ||
         decimal_type->precision() < Decimal::MIN_PRECISION) {
         return Status::Invalid(fmt::format("Invalid decimal type, precision must in range [{}, {}]",

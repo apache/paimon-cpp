@@ -26,6 +26,7 @@
 #include "arrow/api.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon::parquet {
 
@@ -90,7 +91,7 @@ arrow::Result<std::shared_ptr<Field>> ParquetFieldIdConverter::ProcessField(
                           CopyId(field->metadata(), convert_type));
     auto type = field->type();
     if (type->id() == arrow::Type::STRUCT) {
-        auto struct_type = std::static_pointer_cast<arrow::StructType>(type);
+        auto struct_type = checked_pointer_cast<arrow::StructType>(type);
         std::vector<std::shared_ptr<Field>> new_fields;
         for (const auto& child : struct_type->fields()) {
             ARROW_ASSIGN_OR_RAISE(auto new_child, ProcessField(child, convert_type));
@@ -99,13 +100,19 @@ arrow::Result<std::shared_ptr<Field>> ParquetFieldIdConverter::ProcessField(
         auto new_type = arrow::struct_(new_fields);
         return field->WithType(new_type)->WithMergedMetadata(updated_metadata);
     } else if (type->id() == arrow::Type::LIST) {
-        auto list_type = std::static_pointer_cast<arrow::ListType>(type);
+        auto list_type = checked_pointer_cast<arrow::ListType>(type);
         ARROW_ASSIGN_OR_RAISE(auto new_value_field,
                               ProcessField(list_type->value_field(), convert_type));
         auto new_type = arrow::list(new_value_field);
         return field->WithType(new_type)->WithMergedMetadata(updated_metadata);
+    } else if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
+        auto vector_type = checked_pointer_cast<arrow::FixedSizeListType>(type);
+        ARROW_ASSIGN_OR_RAISE(auto new_value_field,
+                              ProcessField(vector_type->value_field(), convert_type));
+        auto new_type = arrow::fixed_size_list(new_value_field, vector_type->list_size());
+        return field->WithType(new_type)->WithMergedMetadata(updated_metadata);
     } else if (type->id() == arrow::Type::MAP) {
-        auto map_type = std::static_pointer_cast<arrow::MapType>(type);
+        auto map_type = checked_pointer_cast<arrow::MapType>(type);
         ARROW_ASSIGN_OR_RAISE(auto new_key_field,
                               ProcessField(map_type->key_field(), convert_type));
         ARROW_ASSIGN_OR_RAISE(auto new_item_field,

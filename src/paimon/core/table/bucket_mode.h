@@ -63,10 +63,16 @@ enum class BucketMode {
 
 class BucketModeDefine {
  public:
+    /// The bucket id that all data of a `BucketMode::BUCKET_UNAWARE` table is written to. Note that
+    /// this is a bucket id, not a valid value of the 'bucket' option.
     static constexpr int32_t UNAWARE_BUCKET = 0;
+    /// The value of the 'bucket' option which enables `BucketMode::POSTPONE_MODE`, it is also used
+    /// as the bucket id of the data waiting to be assigned to a real bucket.
     static constexpr int32_t POSTPONE_BUCKET = -2;
 };
 
+/// Resolves the bucket mode from the 'bucket' option and the table schema. Note that an invalid
+/// 'bucket' value is rejected by `SchemaValidation::ValidateBucket` instead of here.
 BucketMode ResolveBucketMode(int32_t bucket, const std::shared_ptr<TableSchema>& table_schema);
 
 }  // namespace paimon

@@ -29,6 +29,7 @@
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/utils/read_result_collector.h"
@@ -56,7 +57,7 @@ class BlobFallbackBatchReaderTest : public ::testing::Test {
         arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
                                             {std::make_shared<arrow::LargeBinaryBuilder>()});
         auto blob_builder =
-            static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+            checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
         for (const auto& row : rows) {
             EXPECT_TRUE(struct_builder.Append().ok());
             if (!row) {
@@ -241,7 +242,7 @@ TEST_F(BlobFallbackBatchReaderTest, TestRowTrackingFieldsPreserved) {
                 arrow::StructBuilder struct_builder(struct_type, arrow::default_memory_pool(),
                                                     std::move(field_builders));
                 auto blob_builder =
-                    static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+                    checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
                 for (const auto& row : rows) {
                     EXPECT_TRUE(struct_builder.Append().ok());
                     if (!row.blob) {
@@ -254,12 +255,12 @@ TEST_F(BlobFallbackBatchReaderTest, TestRowTrackingFieldsPreserved) {
                     }
                     int32_t next_field = 1;
                     if (with_row_id) {
-                        auto builder = static_cast<arrow::Int64Builder*>(
+                        auto builder = checked_cast<arrow::Int64Builder*>(
                             struct_builder.field_builder(next_field++));
                         EXPECT_TRUE(builder->Append(row.row_id).ok());
                     }
                     if (with_seq_num) {
-                        auto builder = static_cast<arrow::Int64Builder*>(
+                        auto builder = checked_cast<arrow::Int64Builder*>(
                             struct_builder.field_builder(next_field));
                         EXPECT_TRUE(builder->Append(row.seq_num).ok());
                     }

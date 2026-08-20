@@ -724,12 +724,12 @@ Result<std::vector<GenericRow>> BranchesSystemTable::BuildRows() const {
 
     for (const auto& name : branches) {
         PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<FileStatus> branch_status,
+            FileStatus branch_status,
             context_.fs->GetFileStatus(BranchManager::BranchPath(context_.table_path, name)));
         GenericRow row(schema->num_fields());
         row.SetField(0, StringValue(name));
         PAIMON_ASSIGN_OR_RAISE(VariantType create_time,
-                               LocalTimestampMillisValue(branch_status->GetModificationTime()));
+                               LocalTimestampMillisValue(branch_status.GetModificationTime()));
         row.SetField(1, create_time);
         rows.push_back(std::move(row));
     }

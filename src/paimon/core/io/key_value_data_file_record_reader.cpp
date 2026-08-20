@@ -28,13 +28,13 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/columnar/columnar_row_ref.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/status.h"
 namespace paimon {
 class MemoryPool;
@@ -103,20 +103,25 @@ Result<std::unique_ptr<KeyValueRecordReader::Iterator>> KeyValueDataFileRecordRe
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
-    auto data_batch = arrow::internal::checked_pointer_cast<arrow::StructArray>(arrow_array);
-    assert(data_batch);
-    // do not use arrow::checked_pointer_cast as in release compile, checked_pointer_cast is
-    // static_cast without check
-    sequence_number_array_ =
-        std::dynamic_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(data_batch->field(0));
-    if (!sequence_number_array_) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid("cannot cast data batch to StructArray");
+    }
+    auto data_batch = checked_pointer_cast<arrow::StructArray>(arrow_array);
+    if (data_batch->num_fields() < SpecialFields::KEY_VALUE_SPECIAL_FIELD_COUNT) {
+        return Status::Invalid(
+            fmt::format("data batch field count {} is less than required special field count {}",
+                        data_batch->num_fields(), SpecialFields::KEY_VALUE_SPECIAL_FIELD_COUNT));
+    }
+    if (!data_batch->field(0) || data_batch->field(0)->type_id() != arrow::Type::INT64) {
         return Status::Invalid("cannot cast SEQUENCE_NUMBER column to int64 arrow array");
     }
-    row_kind_array_ =
-        std::dynamic_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(data_batch->field(1));
-    if (!row_kind_array_) {
+    sequence_number_array_ =
+        checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(data_batch->field(0));
+    if (!data_batch->field(1) || data_batch->field(1)->type_id() != arrow::Type::INT8) {
         return Status::Invalid("cannot cast VALUE_KIND column to int8 arrow array");
     }
+    row_kind_array_ =
+        checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(data_batch->field(1));
     arrow::ArrayVector key_fields;
     key_fields.reserve(key_schema_->num_fields());
     for (const auto& key_field : key_schema_->fields()) {

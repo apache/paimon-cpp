@@ -30,6 +30,7 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/internal_read_context.h"
@@ -441,8 +442,9 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
                          CreateDefaultExecutor(/*thread_count=*/2));
     auto split_read = std::make_unique<RawFileSplitRead>(
         /*path_factory=*/nullptr, std::move(internal_context), pool_, executor);
-    auto create_data_split = [this](bool is_streaming,
-                                    bool raw_convertible) -> std::shared_ptr<DataSplit> {
+    auto create_data_split = [this](bool is_streaming, bool raw_convertible,
+                                    std::optional<int64_t> delete_row_count =
+                                        0) -> std::shared_ptr<DataSplit> {
         auto meta = std::make_shared<DataFileMeta>(
             "data-d7725088-6bd4-4e70-9ce6-714ae93b47cc-0.orc", /*file_size=*/863, /*row_count=*/1,
             /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alice"), 1}, pool_.get()),
@@ -456,8 +458,8 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
                                               pool_.get()),
             /*min_sequence_number=*/0, /*max_sequence_number=*/0, /*schema_id=*/0,
             /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
-            /*creation_time=*/Timestamp(1743525392885ll, 0),
-            /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
+            /*creation_time=*/Timestamp(1743525392885ll, 0), delete_row_count,
+            /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
             /*write_cols=*/std::nullopt);
@@ -506,8 +508,49 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
         ASSERT_FALSE(match_result);
     }
     {
-        ASSERT_NOK(split_read->Match(nullptr, /*force_keep_delete=*/false));
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(
+            create_data_split(/*is_streaming=*/false, /*raw_convertible=*/false));
+        auto indexed_split = std::make_shared<IndexedSplitImpl>(
+            data_split, std::vector<Range>{Range(0, 0)}, std::vector<float>{0.5F});
+        ASSERT_NOK_WITH_MSG(split_read->CreateReader(indexed_split),
+                            "Primary-key reads do not support scored indexed splits yet");
     }
+    {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(
+            create_data_split(/*is_streaming=*/false, /*raw_convertible=*/false));
+        auto indexed_split =
+            std::make_shared<IndexedSplitImpl>(data_split, std::vector<Range>{Range(0, 1)});
+        ASSERT_NOK_WITH_MSG(split_read->CreateReader(indexed_split),
+                            "Invalid file-local row range [0, 1]");
+    }
+    {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(create_data_split(
+            /*is_streaming=*/false, /*raw_convertible=*/false, /*delete_row_count=*/std::nullopt));
+        auto indexed_split =
+            std::make_shared<IndexedSplitImpl>(data_split, std::vector<Range>{Range(0, 0)});
+        ASSERT_OK_AND_ASSIGN(bool match_result,
+                             split_read->Match(indexed_split, /*force_keep_delete=*/false));
+        ASSERT_FALSE(match_result);
+    }
+    {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(create_data_split(
+            /*is_streaming=*/false, /*raw_convertible=*/false, /*delete_row_count=*/1));
+        auto indexed_split =
+            std::make_shared<IndexedSplitImpl>(data_split, std::vector<Range>{Range(0, 0)});
+        ASSERT_OK_AND_ASSIGN(bool match_result,
+                             split_read->Match(indexed_split, /*force_keep_delete=*/false));
+        ASSERT_FALSE(match_result);
+    }
+    {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(create_data_split(
+            /*is_streaming=*/false, /*raw_convertible=*/false, /*delete_row_count=*/0));
+        auto indexed_split =
+            std::make_shared<IndexedSplitImpl>(data_split, std::vector<Range>{Range(0, 0)});
+        ASSERT_OK_AND_ASSIGN(bool match_result,
+                             split_read->Match(indexed_split, /*force_keep_delete=*/false));
+        ASSERT_TRUE(match_result);
+    }
+    ASSERT_NOK(split_read->Match(nullptr, /*force_keep_delete=*/false));
 }
 
 }  // namespace paimon::test

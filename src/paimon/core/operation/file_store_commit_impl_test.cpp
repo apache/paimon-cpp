@@ -90,8 +90,7 @@ class GmockFileSystem : public LocalFileSystem {
  public:
     MOCK_METHOD(Status, ReadFile, (const std::string& path, std::string* content), (override));
     MOCK_METHOD(Status, ListDir,
-                (const std::string& directory,
-                 std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list),
+                (const std::string& directory, std::vector<BasicFileStatus>* file_status_list),
                 (const, override));
     MOCK_METHOD(Status, AtomicStore, (const std::string& path, const std::string& content),
                 (override));
@@ -111,13 +110,11 @@ class GmockFileSystemFactory : public LocalFileSystemFactory {
         using ::testing::A;
         using ::testing::Invoke;
 
-        ON_CALL(*fs, ListDir(A<const std::string&>(),
-                             A<std::vector<std::unique_ptr<BasicFileStatus>>*>()))
-            .WillByDefault(
-                Invoke([fs_ptr](const std::string& directory,
-                                std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) {
-                    return fs_ptr->LocalFileSystem::ListDir(directory, file_status_list);
-                }));
+        ON_CALL(*fs, ListDir(A<const std::string&>(), A<std::vector<BasicFileStatus>*>()))
+            .WillByDefault(Invoke([fs_ptr](const std::string& directory,
+                                           std::vector<BasicFileStatus>* file_status_list) {
+                return fs_ptr->LocalFileSystem::ListDir(directory, file_status_list);
+            }));
 
         ON_CALL(*fs, ReadFile(A<const std::string&>(), A<std::string*>()))
             .WillByDefault(Invoke([fs_ptr](const std::string& path, std::string* content) {
@@ -350,8 +347,8 @@ class FileStoreCommitImplTest : public testing::Test {
     std::vector<std::shared_ptr<CommitMessage>> GetCommitMessages(const std::string& path,
                                                                   int32_t version) const {
         auto file_system = GetFileSystem();
-        EXPECT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> file, file_system->GetFileStatus(path));
-        std::vector<uint8_t> buffer(file->GetLen(), 0);
+        EXPECT_OK_AND_ASSIGN(FileStatus file, file_system->GetFileStatus(path));
+        std::vector<uint8_t> buffer(file.GetLen(), 0);
 
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<InputStream> in_stream, file_system->Open(path));
         EXPECT_TRUE(in_stream);
@@ -537,9 +534,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithConflictSnapshotAndRetryTenTimes) 
     EXPECT_CALL(*mock_fs, ListDir(testing::_, testing::_)).Times(testing::AnyNumber());
     EXPECT_CALL(*mock_fs,
                 ListDir(testing::StrEq(PathUtil::JoinPath(table_path, "snapshot")), testing::_))
-        .WillRepeatedly(
-            testing::Invoke([](const std::string& directory,
-                               std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) {
+        .WillRepeatedly(testing::Invoke(
+            [](const std::string& directory, std::vector<BasicFileStatus>* file_status_list) {
                 return Status::OK();
             }));
 
@@ -584,14 +580,12 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithConflictSnapshotAndRetryOnce) {
     EXPECT_CALL(*mock_fs, ListDir(testing::_, testing::_)).Times(testing::AnyNumber());
     EXPECT_CALL(*mock_fs,
                 ListDir(testing::StrEq(PathUtil::JoinPath(table_path, "snapshot")), testing::_))
-        .WillOnce(
-            testing::Invoke([](const std::string& directory,
-                               std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) {
+        .WillOnce(testing::Invoke(
+            [](const std::string& directory, std::vector<BasicFileStatus>* file_status_list) {
                 return Status::OK();
             }))
-        .WillRepeatedly(
-            testing::Invoke([&](const std::string& directory,
-                                std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) {
+        .WillRepeatedly(testing::Invoke(
+            [&](const std::string& directory, std::vector<BasicFileStatus>* file_status_list) {
                 return mock_fs->LocalFileSystem::ListDir(directory, file_status_list);
             }));
 

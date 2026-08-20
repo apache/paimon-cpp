@@ -38,6 +38,9 @@ class KeySerializer {
                                           const std::shared_ptr<arrow::DataType>& type,
                                           MemoryPool* pool);
 
+    static Status ValidateSerializedKey(const MemorySlice& slice,
+                                        const std::shared_ptr<arrow::DataType>& type);
+
     static MemorySlice::SliceComparator CreateComparator(
         const std::shared_ptr<arrow::DataType>& type, const std::shared_ptr<MemoryPool>& pool);
 };

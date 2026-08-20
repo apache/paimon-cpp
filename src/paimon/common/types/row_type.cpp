@@ -27,8 +27,8 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "rapidjson/allocators.h"
@@ -46,10 +46,10 @@ rapidjson::Value RowType::ToJson(rapidjson::Document::AllocatorType* allocator) 
     rapidjson::Value obj(rapidjson::kObjectType);
     obj.AddMember(rapidjson::StringRef("type"),
                   RapidJsonUtil::SerializeValue(WithNullable(TYPE), allocator).Move(), *allocator);
-    auto type = arrow::internal::checked_cast<arrow::StructType*>(type_.get());
-    if (type == nullptr) {
+    if (!type_ || type_->id() != arrow::Type::STRUCT) {
         throw std::invalid_argument("type failed to cast to StructType");
     }
+    auto type = checked_cast<arrow::StructType*>(type_.get());
 
     std::vector<DataField> fields;
     for (const auto& field : type->fields()) {

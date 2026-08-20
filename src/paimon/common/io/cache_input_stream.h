@@ -18,13 +18,12 @@
 
 #pragma once
 
-#include <cstring>
 #include <memory>
 #include <string>
 
 #include "paimon/common/utils/math.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/fs/file_system.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace paimon {
 
@@ -48,10 +47,9 @@ class CacheInputStream : public InputStream {
             PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint64_t>(offset, "read offset"));
             PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint64_t>(size, "read size"));
             ByteRange range{static_cast<uint64_t>(offset), static_cast<uint64_t>(size)};
-            PAIMON_ASSIGN_OR_RAISE(ByteSlice slice, cache_->Read(range));
-            if (slice.buffer) {
-                std::memcpy(buffer, slice.buffer->data() + slice.offset, slice.length);
-                return slice.length;
+            PAIMON_ASSIGN_OR_RAISE(bool hit, cache_->Read(range, buffer));
+            if (hit) {
+                return size;
             }
         }
         return input_stream_->Read(buffer, size, offset);
@@ -70,14 +68,12 @@ class CacheInputStream : public InputStream {
                 return;
             }
             ByteRange range{static_cast<uint64_t>(offset), static_cast<uint64_t>(size)};
-            Result<ByteSlice> slice = cache_->Read(range);
-            if (!slice.ok()) {
-                callback(slice.status());
+            Result<bool> hit = cache_->Read(range, buffer);
+            if (!hit.ok()) {
+                callback(hit.status());
                 return;
             }
-            if (slice.value().buffer) {
-                std::memcpy(buffer, slice.value().buffer->data() + slice.value().offset,
-                            slice.value().length);
+            if (hit.value()) {
                 callback(Status::OK());
                 return;
             }

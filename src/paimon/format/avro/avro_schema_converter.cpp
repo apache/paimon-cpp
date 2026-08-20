@@ -23,7 +23,6 @@
 #include <utility>
 #include <vector>
 
-#include "arrow/util/checked_cast.h"
 #include "avro/CustomAttributes.hh"
 #include "avro/LogicalType.hh"
 #include "avro/Node.hh"
@@ -32,6 +31,7 @@
 #include "avro/ValidSchema.hh"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/format/avro/avro_file_format_factory.h"
 #include "paimon/format/avro/avro_utils.h"
@@ -175,8 +175,7 @@ Result<std::shared_ptr<arrow::DataType>> AvroSchemaConverter::GetArrowType(
             if (logical_map_type->id() != arrow::Type::STRUCT) {
                 return Status::TypeError("invalid avro logical map item type");
             }
-            auto struct_type =
-                arrow::internal::checked_pointer_cast<arrow::StructType>(logical_map_type);
+            auto struct_type = checked_pointer_cast<arrow::StructType>(logical_map_type);
             const auto& fields = struct_type->fields();
             if (fields.size() != 2) {
                 return Status::TypeError("invalid avro logical map struct fields size");
@@ -280,7 +279,7 @@ Result<::avro::Schema> AvroSchemaConverter::ArrowTypeToAvroSchema(
         }
         case arrow::Type::type::TIMESTAMP: {
             const auto& arrow_timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(arrow_type);
+                checked_pointer_cast<arrow::TimestampType>(arrow_type);
             bool has_timezone = !arrow_timestamp_type->timezone().empty();
             ::avro::LongSchema timestamp_schema;
             switch (arrow_timestamp_type->unit()) {
@@ -314,7 +313,7 @@ Result<::avro::Schema> AvroSchemaConverter::ArrowTypeToAvroSchema(
         }
         case arrow::Type::type::DECIMAL128: {
             const auto& arrow_decimal_type =
-                arrow::internal::checked_pointer_cast<arrow::Decimal128Type>(arrow_type);
+                checked_pointer_cast<arrow::Decimal128Type>(arrow_type);
             ::avro::BytesSchema decimal_schema;
             ::avro::LogicalType decimal_type = ::avro::LogicalType(::avro::LogicalType::DECIMAL);
             decimal_type.setPrecision(arrow_decimal_type->precision());
@@ -323,8 +322,7 @@ Result<::avro::Schema> AvroSchemaConverter::ArrowTypeToAvroSchema(
             return nullable ? NullableSchema(decimal_schema) : decimal_schema;
         }
         case arrow::Type::LIST: {
-            const auto& list_type =
-                arrow::internal::checked_pointer_cast<const arrow::ListType>(arrow_type);
+            const auto& list_type = checked_pointer_cast<const arrow::ListType>(arrow_type);
             const auto& value_field = list_type->value_field();
             PAIMON_ASSIGN_OR_RAISE(::avro::Schema value_schema,
                                    ArrowTypeToAvroSchema(value_field, row_name));
@@ -332,8 +330,7 @@ Result<::avro::Schema> AvroSchemaConverter::ArrowTypeToAvroSchema(
             return nullable ? NullableSchema(array_schema) : array_schema;
         }
         case arrow::Type::STRUCT: {
-            const auto& struct_type =
-                arrow::internal::checked_pointer_cast<const arrow::StructType>(arrow_type);
+            const auto& struct_type = checked_pointer_cast<const arrow::StructType>(arrow_type);
             const auto& fields = struct_type->fields();
 
             ::avro::RecordSchema record_schema(row_name);
@@ -345,8 +342,7 @@ Result<::avro::Schema> AvroSchemaConverter::ArrowTypeToAvroSchema(
             return nullable ? NullableSchema(record_schema) : record_schema;
         }
         case arrow::Type::MAP: {
-            const auto& map_type =
-                arrow::internal::checked_pointer_cast<const arrow::MapType>(arrow_type);
+            const auto& map_type = checked_pointer_cast<const arrow::MapType>(arrow_type);
             const auto& key_field = map_type->key_field();
             const auto& item_field = map_type->item_field();
             if (key_field->nullable()) {

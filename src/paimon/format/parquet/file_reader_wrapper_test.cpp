@@ -18,8 +18,13 @@
 
 #include "paimon/format/parquet/file_reader_wrapper.h"
 
+#include <fstream>
+#include <functional>
+#include <iterator>
 #include <map>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/builder_binary.h"
@@ -33,6 +38,7 @@
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/format/parquet/parquet_field_id_converter.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
@@ -50,6 +56,64 @@ class Array;
 }  // namespace arrow
 
 namespace paimon::parquet::test {
+
+// Tracks positional reads (Read at offset / ReadAsync) issued through the stream.
+class ReadTrackingInputStream : public InputStream {
+ public:
+    explicit ReadTrackingInputStream(std::shared_ptr<InputStream> input)
+        : input_(std::move(input)) {}
+
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return input_->Seek(offset, origin);
+    }
+
+    Result<int64_t> GetPos() const override {
+        return input_->GetPos();
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        return input_->Read(buffer, size);
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        RecordPositionalRead(offset, size);
+        return input_->Read(buffer, size, offset);
+    }
+
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        RecordPositionalRead(offset, size);
+        input_->ReadAsync(buffer, size, offset, std::move(callback));
+    }
+
+    Result<std::string> GetUri() const override {
+        return input_->GetUri();
+    }
+
+    Result<int64_t> Length() const override {
+        return input_->Length();
+    }
+
+    Status Close() override {
+        return input_->Close();
+    }
+
+    int64_t GetPositionalReadBytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return positional_read_bytes_;
+    }
+
+ private:
+    void RecordPositionalRead(int64_t offset, int64_t size) {
+        (void)offset;
+        std::lock_guard<std::mutex> lock(mutex_);
+        positional_read_bytes_ += size;
+    }
+
+    std::shared_ptr<InputStream> input_;
+    mutable std::mutex mutex_;
+    int64_t positional_read_bytes_ = 0;
+};
 
 class FileReaderWrapperTest : public ::testing::Test {
  public:
@@ -86,9 +150,9 @@ class FileReaderWrapperTest : public ::testing::Test {
             data_type, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int32Builder>(),
              std::make_shared<arrow::BooleanBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
-        auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
+        auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(2));
         for (int32_t i = 0 + offset; i < record_batch_size + offset; ++i) {
             EXPECT_TRUE(struct_builder.Append().ok());
             EXPECT_TRUE(string_builder->Append("str_" + std::to_string(i)).ok());
@@ -120,8 +184,14 @@ class FileReaderWrapperTest : public ::testing::Test {
     Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapper(
         const std::string& file_path, int64_t wrapper_batch_size = 0) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> in, fs_->Open(file_path));
+        return PrepareReaderWrapperOnStream(std::move(in), wrapper_batch_size);
+    }
+
+    Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapperOnStream(
+        std::shared_ptr<InputStream> in, int64_t wrapper_batch_size = 0) {
         PAIMON_ASSIGN_OR_RAISE(int64_t file_length, in->Length());
-        auto input_stream = std::make_unique<ArrowInputStreamAdapter>(in, file_length, arrow_pool_);
+        auto input_stream =
+            std::make_unique<ArrowInputStreamAdapter>(std::move(in), file_length, arrow_pool_);
         ::parquet::arrow::FileReaderBuilder file_reader_builder;
         ::parquet::ReaderProperties reader_properties;
         reader_properties.enable_buffered_stream();
@@ -247,6 +317,52 @@ TEST_F(FileReaderWrapperTest, Simple) {
     ASSERT_FALSE(record_batch);
     ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
     ASSERT_EQ(5500, reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+}
+
+/// The prefetch framework always issues SeekToRow right after SetReadRanges, while the
+/// wrapper is still uninitialized (before the first Next()). That seek must not build
+/// the arrow batch reader eagerly: building it once in SeekToRow and again in
+/// PrepareForReading makes the arrow reader request every column chunk twice (2x read
+/// amplification). The deferred construction must also honor the seeked start position.
+TEST_F(FileReaderWrapperTest, SeekBeforeInitIssuesNoReadsAndStartsAtSeekPosition) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "seek_before_init.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/5500);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
+    auto tracking_stream = std::make_shared<ReadTrackingInputStream>(std::move(in));
+    auto* tracking = tracking_stream.get();
+    ASSERT_OK_AND_ASSIGN(auto reader_wrapper,
+                         PrepareReaderWrapperOnStream(std::move(tracking_stream)));
+    ASSERT_EQ(6, reader_wrapper->GetNumberOfRowGroups());
+
+    // Baseline: only metadata reads happened so far (footer etc. during Open/Build).
+    int64_t baseline_read_bytes = tracking->GetPositionalReadBytes();
+
+    // Seek to the start of RG2 while still uninitialized. This must only record the
+    // position, not build a batch reader that would eagerly read column chunks.
+    ASSERT_OK(reader_wrapper->SeekToRow(2000));
+    ASSERT_EQ(2000, reader_wrapper->GetNextRowToRead());
+    ASSERT_EQ(baseline_read_bytes, tracking->GetPositionalReadBytes())
+        << "SeekToRow before initialization issued eager column chunk reads; the deferred "
+           "PrepareForReader would build a second reader and read everything twice";
+
+    // The first Next() performs the single deferred initialization at the seeked position.
+    int64_t total_rows = 0;
+    bool checked_first_batch = false;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(auto batch, reader_wrapper->Next());
+        if (!batch) {
+            break;
+        }
+        if (!checked_first_batch) {
+            ASSERT_EQ(2000, reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+            checked_first_batch = true;
+        }
+        total_rows += batch->num_rows();
+    }
+    // RG2..RG5 cover rows [2000, 5500).
+    ASSERT_EQ(3500, total_rows);
+    ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
 }
 
 /// Regression: when batch_size_ is 0 (the default) and a row group is consumed via
@@ -566,6 +682,220 @@ TEST_F(FileReaderWrapperTest, PrepareForReading) {
     ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
     ASSERT_EQ(std::numeric_limits<uint64_t>::max(),
               reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+}
+
+namespace {
+
+// A minimal Thrift compact-protocol walker, just enough to locate and corrupt one
+// i64 field inside a Parquet footer. Only the field types that may appear in an
+// unencrypted footer are supported; anything else makes the walk fail.
+class CompactThriftFooter {
+ public:
+    CompactThriftFooter(std::string* data, size_t pos) : data_(data), pos_(pos) {}
+
+    size_t pos() const {
+        return pos_;
+    }
+
+    // Advance to the struct field with the given id, checking it has the expected
+    // type, and leave the cursor at the start of its value.
+    bool SeekField(int32_t target_id, uint8_t target_type) {
+        int32_t field_id = 0;
+        while (true) {
+            uint8_t type = 0;
+            if (!NextField(&field_id, &type)) return false;
+            if (field_id == 0) return false;  // STOP without finding the field
+            if (field_id == target_id) return type == target_type;
+            if (!SkipValue(type)) return false;
+        }
+    }
+
+    // Enter the body of the first element of the list at the cursor; the element
+    // must be a struct.
+    bool EnterFirstListElement() {
+        uint64_t header = 0;
+        if (!ReadByte(&header)) return false;
+        uint64_t size = (header >> 4) & 0x0F;
+        if ((header & 0x0F) != kStruct) return false;
+        if (size == 15 && !ReadVarint(&size)) return false;
+        return size > 0;  // Cursor is now at the first element's struct body.
+    }
+
+    static constexpr uint8_t kI64 = 6;
+    static constexpr uint8_t kList = 9;
+    static constexpr uint8_t kStruct = 12;
+
+ private:
+    static constexpr uint8_t kBoolTrue = 1;
+    static constexpr uint8_t kBoolFalse = 2;
+    static constexpr uint8_t kByte = 3;
+    static constexpr uint8_t kI16 = 4;
+    static constexpr uint8_t kI32 = 5;
+    static constexpr uint8_t kDouble = 7;
+    static constexpr uint8_t kBinary = 8;
+    static constexpr uint8_t kSet = 10;
+    static constexpr uint8_t kMap = 11;
+
+    bool ReadByte(uint64_t* out) {
+        if (pos_ >= data_->size()) return false;
+        *out = static_cast<uint8_t>((*data_)[pos_++]);
+        return true;
+    }
+
+    bool ReadVarint(uint64_t* out) {
+        *out = 0;
+        for (int shift = 0; shift < 64; shift += 7) {
+            uint64_t byte = 0;
+            if (!ReadByte(&byte)) return false;
+            *out |= (byte & 0x7F) << shift;
+            if ((byte & 0x80) == 0) return true;
+        }
+        return false;  // Varints longer than 10 bytes are malformed.
+    }
+
+    bool NextField(int32_t* field_id, uint8_t* type) {
+        uint64_t header = 0;
+        if (!ReadByte(&header)) return false;
+        if (header == 0) {
+            *field_id = 0;  // STOP
+            return true;
+        }
+        *type = header & 0x0F;
+        uint64_t delta = (header >> 4) & 0x0F;
+        if (delta != 0) {
+            *field_id += static_cast<int32_t>(delta);
+            return true;
+        }
+        uint64_t zigzag = 0;
+        if (!ReadVarint(&zigzag)) return false;
+        *field_id = static_cast<int32_t>((zigzag >> 1) ^ -(zigzag & 1));
+        return true;
+    }
+
+    bool SkipValue(uint8_t type) {
+        switch (type) {
+            case kBoolTrue:
+            case kBoolFalse:
+                return true;  // The value is encoded in the field header itself.
+            case kByte: {
+                uint64_t unused = 0;
+                return ReadByte(&unused);
+            }
+            case kI16:
+            case kI32:
+            case kI64: {
+                uint64_t unused = 0;
+                return ReadVarint(&unused);
+            }
+            case kDouble:
+                if (pos_ + 8 > data_->size()) return false;
+                pos_ += 8;
+                return true;
+            case kBinary: {
+                uint64_t length = 0;
+                if (!ReadVarint(&length)) return false;
+                if (pos_ + length > data_->size()) return false;
+                pos_ += length;
+                return true;
+            }
+            case kList:
+            case kSet:
+                return SkipCollection();
+            case kMap: {
+                uint64_t size = 0;
+                if (!ReadVarint(&size)) return false;
+                if (size == 0) return true;
+                uint64_t kv_types = 0;
+                if (!ReadByte(&kv_types)) return false;
+                for (uint64_t i = 0; i < size; ++i) {
+                    if (!SkipValue((kv_types >> 4) & 0x0F)) return false;
+                    if (!SkipValue(kv_types & 0x0F)) return false;
+                }
+                return true;
+            }
+            case kStruct: {
+                int32_t field_id = 0;
+                while (true) {
+                    uint8_t field_type = 0;
+                    if (!NextField(&field_id, &field_type)) return false;
+                    if (field_id == 0) return true;  // STOP
+                    if (!SkipValue(field_type)) return false;
+                }
+            }
+            default:
+                return false;
+        }
+    }
+
+    bool SkipCollection() {
+        uint64_t header = 0;
+        if (!ReadByte(&header)) return false;
+        uint64_t size = (header >> 4) & 0x0F;
+        uint8_t elem_type = header & 0x0F;
+        if (size == 15 && !ReadVarint(&size)) return false;
+        for (uint64_t i = 0; i < size; ++i) {
+            if (elem_type == kBoolTrue || elem_type == kBoolFalse) {
+                uint64_t unused = 0;
+                if (!ReadByte(&unused)) return false;
+                continue;
+            }
+            if (!SkipValue(elem_type)) return false;
+        }
+        return true;
+    }
+
+    std::string* data_;
+    size_t pos_;
+};
+
+}  // namespace
+
+// A corrupt footer may carry negative column chunk offsets. GetPreBufferRanges must
+// reject them instead of casting them into huge uint64_t ranges that would blow up
+// the downstream range coalescing.
+TEST_F(FileReaderWrapperTest, GetPreBufferRangesRejectsNegativeMetadataOffset) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "test.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/100);
+
+    std::ifstream file(file_path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    file.close();
+    ASSERT_GT(content.size(), size_t{12});
+
+    // Footer layout: [thrift FileMetaData][footer length (4-byte LE)]["PAR1"].
+    size_t tail = content.size();
+    ASSERT_EQ("PAR1", content.substr(tail - 4));
+    uint32_t footer_length = static_cast<uint8_t>(content[tail - 8]) |
+                             (static_cast<uint8_t>(content[tail - 7]) << 8) |
+                             (static_cast<uint8_t>(content[tail - 6]) << 16) |
+                             (static_cast<uint8_t>(content[tail - 5]) << 24);
+    ASSERT_LT(static_cast<uint64_t>(footer_length) + 8, content.size());
+    size_t footer_start = tail - 8 - footer_length;
+
+    // Walk to FileMetaData.row_groups[0].columns[0].meta_data.data_page_offset and
+    // flip the sign of its zigzag varint (positive -> negative, byte length kept).
+    CompactThriftFooter footer(&content, footer_start);
+    ASSERT_TRUE(footer.SeekField(/*FileMetaData.row_groups=*/4, CompactThriftFooter::kList));
+    ASSERT_TRUE(footer.EnterFirstListElement());
+    ASSERT_TRUE(footer.SeekField(/*RowGroup.columns=*/1, CompactThriftFooter::kList));
+    ASSERT_TRUE(footer.EnterFirstListElement());
+    ASSERT_TRUE(footer.SeekField(/*ColumnChunk.meta_data=*/3, CompactThriftFooter::kStruct));
+    ASSERT_TRUE(footer.SeekField(/*ColumnMetaData.data_page_offset=*/9, CompactThriftFooter::kI64));
+    size_t offset_pos = footer.pos();
+    ASSERT_EQ(0, content[offset_pos] & 0x01);  // Positive value: even zigzag encoding.
+    content[offset_pos] |= 0x01;               // Now decodes to a negative offset.
+
+    std::string corrupt_path = PathUtil::JoinPath(dir_->Str(), "corrupt.parquet");
+    std::ofstream corrupt_file(corrupt_path, std::ios::binary);
+    corrupt_file.write(content.data(), static_cast<std::streamsize>(content.size()));
+    corrupt_file.close();
+
+    ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(corrupt_path));
+    ASSERT_OK(reader_wrapper->PrepareForReadingLazy(
+        {TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/false,
+                        /*ranges=*/RowRanges())},
+        /*column_indices=*/{0, 1, 2}));
+    ASSERT_NOK_WITH_MSG(reader_wrapper->GetPreBufferRanges(), "pre-buffer range offset");
 }
 
 }  // namespace paimon::parquet::test

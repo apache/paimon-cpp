@@ -26,9 +26,9 @@
 #include <utility>
 
 #include "arrow/type.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
@@ -125,8 +125,7 @@ Result<BinaryRowWriter::FieldSetterFunc> BinaryRowWriter::CreateFieldSetter(
             break;
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(field_type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             field_setter = [field_idx, precision](const VariantType& field,
                                                   BinaryRowWriter* writer) -> void {
@@ -144,9 +143,7 @@ Result<BinaryRowWriter::FieldSetterFunc> BinaryRowWriter::CreateFieldSetter(
             return field_setter;
         }
         case arrow::Type::type::DECIMAL128: {
-            auto* decimal_type =
-                arrow::internal::checked_cast<arrow::Decimal128Type*>(field_type.get());
-            assert(decimal_type);
+            auto* decimal_type = checked_cast<arrow::Decimal128Type*>(field_type.get());
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
             field_setter = [field_idx, precision, scale](const VariantType& field,

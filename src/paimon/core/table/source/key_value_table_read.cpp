@@ -21,6 +21,7 @@
 
 #include <utility>
 
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/operation/merge_file_split_read.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -74,7 +75,45 @@ void KeyValueTableRead::ForceKeepDelete(bool force_keep_delete) {
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
     const std::shared_ptr<Split>& split) {
-    auto data_split = std::dynamic_pointer_cast<DataSplit>(split);
+    std::shared_ptr<Split> dispatch_split = split;
+    if (auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
+        PAIMON_RETURN_NOT_OK(indexed_split->Validate());
+        if (!indexed_split->Scores().empty()) {
+            // TODO(wangyong9999): Propagate indexed scores through the primary-key
+            // physical-position read path.
+            return Status::NotImplemented(
+                "Primary-key reads do not support scored indexed splits yet.");
+        }
+        // Primary-key indexed splits carry physical positions and are routed independently
+        // of the inner split's raw-convertible marker, matching Java's dedicated provider.
+        const std::shared_ptr<DataSplit>& inner_split = indexed_split->GetDataSplit();
+        if (!force_keep_delete_) {
+            bool has_raw_reader = false;
+            for (const auto& read : split_reads_) {
+                if (dynamic_cast<RawFileSplitRead*>(read.get()) != nullptr) {
+                    has_raw_reader = true;
+                    PAIMON_ASSIGN_OR_RAISE(bool matched,
+                                           read->Match(indexed_split, /*force_keep_delete=*/false));
+                    if (matched) {
+                        return read->CreateReader(indexed_split);
+                    }
+                    // A manually supplied or deserialized indexed split can still reference
+                    // legacy files. Preserve merge semantics when raw-read safety is uncertain.
+                    dispatch_split = inner_split;
+                    break;
+                }
+            }
+            if (!has_raw_reader) {
+                return Status::Invalid(
+                    "create reader failed, primary-key indexed split has no raw reader.");
+            }
+        } else {
+            // Keeping delete rows is incompatible with physical-position pruning. Reading the
+            // inner split through the normal merge path preserves correctness.
+            dispatch_split = inner_split;
+        }
+    }
+    auto data_split = std::dynamic_pointer_cast<DataSplit>(dispatch_split);
     if (!data_split) {
         return Status::Invalid("split cannot be casted to DataSplit");
     }

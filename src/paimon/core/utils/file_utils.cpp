@@ -48,24 +48,24 @@ Status FileUtils::ListVersionedFiles(const std::shared_ptr<FileSystem>& fs, cons
 Status FileUtils::ListOriginalVersionedFiles(const std::shared_ptr<FileSystem>& fs,
                                              const std::string& dir, const std::string& prefix,
                                              std::vector<std::string>* files) {
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(ListVersionedFileStatus(fs, dir, prefix, &file_status_list));
     for (auto& file_status : file_status_list) {
-        std::string file_name = PathUtil::GetName(file_status->GetPath());
+        std::string file_name = PathUtil::GetName(file_status.GetPath());
         files->emplace_back(file_name.substr(prefix.size()));
     }
     return Status::OK();
 }
 
-Status FileUtils::ListVersionedFileStatus(
-    const std::shared_ptr<FileSystem>& fs, const std::string& dir, const std::string& prefix,
-    std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) {
+Status FileUtils::ListVersionedFileStatus(const std::shared_ptr<FileSystem>& fs,
+                                          const std::string& dir, const std::string& prefix,
+                                          std::vector<BasicFileStatus>* file_status_list) {
     PAIMON_ASSIGN_OR_RAISE(bool exist, fs->Exists(dir));
     if (exist) {
-        std::vector<std::unique_ptr<BasicFileStatus>> file_statuses;
+        std::vector<BasicFileStatus> file_statuses;
         PAIMON_RETURN_NOT_OK(fs->ListDir(dir, &file_statuses));
         for (auto& file_status : file_statuses) {
-            std::string file_name = PathUtil::GetName(file_status->GetPath());
+            std::string file_name = PathUtil::GetName(file_status.GetPath());
             if (StringUtils::StartsWith(file_name, prefix)) {
                 file_status_list->emplace_back(std::move(file_status));
             }

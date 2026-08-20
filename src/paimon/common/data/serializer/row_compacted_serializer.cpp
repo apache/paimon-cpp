@@ -25,6 +25,7 @@
 #include "paimon/common/data/data_define.h"
 #include "paimon/common/data/generic_row.h"
 #include "paimon/common/data/serializer/binary_serializer_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
 
@@ -123,14 +124,10 @@ Result<MemorySlice::SliceComparator> RowCompactedSerializer::CreateSliceComparat
         auto field_type = schema->field(i)->type();
         field_infos[i].type_id = field_type->id();
         if (field_type->id() == arrow::Type::type::TIMESTAMP) {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(field_type);
-            assert(timestamp_type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field_type);
             field_infos[i].precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
         } else if (field_type->id() == arrow::Type::type::DECIMAL128) {
-            auto decimal_type =
-                arrow::internal::checked_pointer_cast<arrow::Decimal128Type>(field_type);
-            assert(decimal_type);
+            auto decimal_type = checked_pointer_cast<arrow::Decimal128Type>(field_type);
             field_infos[i].precision = decimal_type->precision();
             field_infos[i].scale = decimal_type->scale();
         }
@@ -269,8 +266,7 @@ Result<RowCompactedSerializer::FieldReader> RowCompactedSerializer::CreateFieldR
             break;
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(field_type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             field_reader = [precision](int32_t pos, RowReader* reader) -> Result<VariantType> {
                 PAIMON_ASSIGN_OR_RAISE(VariantType value, reader->ReadTimestamp(precision));
@@ -279,9 +275,7 @@ Result<RowCompactedSerializer::FieldReader> RowCompactedSerializer::CreateFieldR
             break;
         }
         case arrow::Type::type::DECIMAL128: {
-            auto* decimal_type =
-                arrow::internal::checked_cast<arrow::Decimal128Type*>(field_type.get());
-            assert(decimal_type);
+            auto* decimal_type = checked_cast<arrow::Decimal128Type*>(field_type.get());
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
             field_reader = [precision, scale](int32_t pos,
@@ -306,8 +300,7 @@ Result<RowCompactedSerializer::FieldReader> RowCompactedSerializer::CreateFieldR
             break;
         }
         case arrow::Type::type::STRUCT: {
-            auto* struct_type = arrow::internal::checked_cast<arrow::StructType*>(field_type.get());
-            assert(struct_type);
+            auto* struct_type = checked_cast<arrow::StructType*>(field_type.get());
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<RowCompactedSerializer> serializer,
                 RowCompactedSerializer::Create(arrow::schema(struct_type->fields()), pool));
@@ -403,8 +396,7 @@ Result<RowCompactedSerializer::FieldWriter> RowCompactedSerializer::CreateFieldW
             break;
         }
         case arrow::Type::type::TIMESTAMP: {
-            auto timestamp_type =
-                arrow::internal::checked_pointer_cast<arrow::TimestampType>(field_type);
+            auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(field_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
             field_writer = [precision](int32_t pos, const VariantType& field,
                                        RowWriter* writer) -> Status {
@@ -414,9 +406,7 @@ Result<RowCompactedSerializer::FieldWriter> RowCompactedSerializer::CreateFieldW
             break;
         }
         case arrow::Type::type::DECIMAL128: {
-            auto* decimal_type =
-                arrow::internal::checked_cast<arrow::Decimal128Type*>(field_type.get());
-            assert(decimal_type);
+            auto* decimal_type = checked_cast<arrow::Decimal128Type*>(field_type.get());
             auto precision = decimal_type->precision();
             field_writer = [precision](int32_t pos, const VariantType& field,
                                        RowWriter* writer) -> Status {
@@ -441,8 +431,7 @@ Result<RowCompactedSerializer::FieldWriter> RowCompactedSerializer::CreateFieldW
             break;
         }
         case arrow::Type::type::STRUCT: {
-            auto struct_type = arrow::internal::checked_pointer_cast<arrow::StructType>(field_type);
-            assert(struct_type);
+            auto struct_type = checked_pointer_cast<arrow::StructType>(field_type);
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<RowCompactedSerializer> serializer,
                 RowCompactedSerializer::Create(arrow::schema(struct_type->fields()), pool));

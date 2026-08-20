@@ -33,6 +33,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/long_counter.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/append_data_file_writer_factory.h"
@@ -90,7 +91,10 @@ Status AppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         auto data_type = arrow::struct_(write_schema_->fields());
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                           arrow::ImportArray(batch->GetData(), data_type));
-        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
+        if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
+            return Status::Invalid("AppendOnlyWriter: input is not a StructArray");
+        }
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
         PAIMON_RETURN_NOT_OK(BlobUtils::ValidateBlobInlineFields(
             struct_array, inline_descriptor_fields_, "blob-descriptor-field"));
         PAIMON_RETURN_NOT_OK(BlobUtils::ValidateBlobInlineFields(struct_array, inline_view_fields_,

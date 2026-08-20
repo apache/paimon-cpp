@@ -27,11 +27,11 @@
 #include <utility>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "paimon/common/data/variant/variant_binary_util.h"
 #include "paimon/common/data/variant/variant_defs.h"
 #include "paimon/common/data/variant/variant_shredding_write_plan.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 
 namespace paimon {
 
@@ -90,7 +90,7 @@ std::shared_ptr<SimpleSchema> MergeDecimalWithLong(const arrow::Decimal128Type& 
         return SimpleSchema::Scalar(arrow::int64());
     }
     // A long can always fit in a decimal(19, 0).
-    auto long_decimal = std::static_pointer_cast<arrow::Decimal128Type>(arrow::decimal128(19, 0));
+    auto long_decimal = checked_pointer_cast<arrow::Decimal128Type>(arrow::decimal128(19, 0));
     return MergeDecimal(d, *long_decimal);
 }
 
@@ -381,7 +381,7 @@ std::shared_ptr<arrow::Field> FindArrowField(const std::shared_ptr<arrow::DataTy
     if (type == nullptr || type->id() != arrow::Type::STRUCT) {
         return nullptr;
     }
-    return std::static_pointer_cast<arrow::StructType>(type)->GetFieldByName(name);
+    return checked_pointer_cast<arrow::StructType>(type)->GetFieldByName(name);
 }
 
 bool IsUntyped(const std::shared_ptr<SimpleSchema>& schema) {
@@ -464,7 +464,7 @@ std::shared_ptr<SimpleSchema> SelectedSchemaToSimpleSchema(
         auto result = std::make_shared<SimpleSchema>();
         result->is_array = true;
         result->element = SelectedSchemaToSimpleSchema(
-            std::static_pointer_cast<arrow::ListType>(selected)->value_type(), field_count);
+            checked_pointer_cast<arrow::ListType>(selected)->value_type(), field_count);
         return result;
     }
     return SimpleSchema::Scalar(selected);
@@ -552,7 +552,7 @@ std::shared_ptr<arrow::DataType> FinalizeAdaptiveSchema(
         std::shared_ptr<arrow::DataType> previous_element;
         if (previous_selected != nullptr && previous_selected->id() == arrow::Type::LIST) {
             previous_element =
-                std::static_pointer_cast<arrow::ListType>(previous_selected)->value_type();
+                checked_pointer_cast<arrow::ListType>(previous_selected)->value_type();
         }
         return arrow::list(FinalizeAdaptiveSchema(combined->element, current_element,
                                                   previous_element, root_value_count,
@@ -616,17 +616,15 @@ InferVariantShreddingSchema::CollectSamplesAtPath(const SampleBatches& sample_ba
             if (column != sample_batch) {
                 ancestors.push_back(column);
             }
-            column = arrow::internal::checked_cast<const arrow::StructArray&>(*column).field(index);
+            column = checked_cast<const arrow::StructArray&>(*column).field(index);
         }
         if (column == nullptr) {
             return Status::Invalid("sample batch misses the planned variant column");
         }
-        const auto& variant_array =
-            arrow::internal::checked_cast<const arrow::StructArray&>(*column);
-        const auto& value_array =
-            arrow::internal::checked_cast<const arrow::BinaryArray&>(*variant_array.field(0));
+        const auto& variant_array = checked_cast<const arrow::StructArray&>(*column);
+        const auto& value_array = checked_cast<const arrow::BinaryArray&>(*variant_array.field(0));
         const auto& metadata_array =
-            arrow::internal::checked_cast<const arrow::BinaryArray&>(*variant_array.field(1));
+            checked_cast<const arrow::BinaryArray&>(*variant_array.field(1));
         for (int64_t row = 0; row < variant_array.length(); ++row) {
             bool row_is_null = variant_array.IsNull(row);
             for (const std::shared_ptr<arrow::Array>& ancestor : ancestors) {

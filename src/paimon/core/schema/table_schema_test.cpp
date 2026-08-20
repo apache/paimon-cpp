@@ -22,9 +22,9 @@
 #include <utility>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -1106,7 +1106,7 @@ TEST_F(TableSchemaTest, SetFieldIdStructType) {
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(struct_field, /*set_field_id=*/true, &field_id));
-        auto struct_type = std::static_pointer_cast<arrow::StructType>(new_field->type());
+        auto struct_type = checked_pointer_cast<arrow::StructType>(new_field->type());
         ASSERT_EQ(struct_type->num_fields(), 2);
         ASSERT_EQ(new_field->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
         ASSERT_EQ(struct_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "1");
@@ -1118,7 +1118,7 @@ TEST_F(TableSchemaTest, SetFieldIdStructType) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> new_field,
                              TableSchema::AssignFieldIdsRecursively(
                                  struct_field, /*set_field_id=*/false, &field_id));
-        auto struct_type = std::static_pointer_cast<arrow::StructType>(new_field->type());
+        auto struct_type = checked_pointer_cast<arrow::StructType>(new_field->type());
         ASSERT_EQ(struct_type->num_fields(), 2);
         ASSERT_FALSE(new_field->metadata());
         ASSERT_EQ(struct_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
@@ -1136,7 +1136,7 @@ TEST_F(TableSchemaTest, SetFieldIdListType) {
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(list_field, /*set_field_id=*/true, &field_id));
         ASSERT_EQ(new_field->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
-        auto list_type = arrow::internal::checked_pointer_cast<arrow::ListType>(new_field->type());
+        auto list_type = checked_pointer_cast<arrow::ListType>(new_field->type());
         ASSERT_FALSE(list_type->value_field()->metadata());
         ASSERT_EQ(field_id, 1);
     }
@@ -1146,7 +1146,7 @@ TEST_F(TableSchemaTest, SetFieldIdListType) {
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(list_field, /*set_field_id=*/false, &field_id));
         ASSERT_FALSE(new_field->metadata());
-        auto list_type = arrow::internal::checked_pointer_cast<arrow::ListType>(new_field->type());
+        auto list_type = checked_pointer_cast<arrow::ListType>(new_field->type());
         ASSERT_FALSE(list_type->value_field()->metadata());
         ASSERT_EQ(field_id, 0);
     }
@@ -1160,7 +1160,7 @@ TEST_F(TableSchemaTest, SetFieldIdMapType) {
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(map_field, /*set_field_id=*/true, &field_id));
         ASSERT_EQ(new_field->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(new_field->type());
+        auto map_type = checked_pointer_cast<arrow::MapType>(new_field->type());
         std::shared_ptr<arrow::Field> key_field = map_type->key_field();
         std::shared_ptr<arrow::Field> value_field = map_type->item_field();
         ASSERT_FALSE(key_field->metadata());
@@ -1173,7 +1173,7 @@ TEST_F(TableSchemaTest, SetFieldIdMapType) {
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(map_field, /*set_field_id=*/false, &field_id));
         ASSERT_FALSE(new_field->metadata());
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(new_field->type());
+        auto map_type = checked_pointer_cast<arrow::MapType>(new_field->type());
         std::shared_ptr<arrow::Field> key_field = map_type->key_field();
         std::shared_ptr<arrow::Field> value_field = map_type->item_field();
         ASSERT_FALSE(key_field->metadata());
@@ -1194,15 +1194,15 @@ TEST_F(TableSchemaTest, SetFieldIdMapWithStruct) {
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(map_field, /*set_field_id=*/true, &field_id));
         ASSERT_EQ(new_field->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(new_field->type());
+        auto map_type = checked_pointer_cast<arrow::MapType>(new_field->type());
         std::shared_ptr<arrow::Field> key_field = map_type->key_field();
         std::shared_ptr<arrow::Field> value_field = map_type->item_field();
         ASSERT_FALSE(key_field->metadata());
-        auto key_inner_type = std::static_pointer_cast<arrow::StructType>(key_field->type());
+        auto key_inner_type = checked_pointer_cast<arrow::StructType>(key_field->type());
         ASSERT_EQ(key_inner_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "1");
         ASSERT_EQ(key_inner_type->field(1)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "2");
         ASSERT_FALSE(value_field->metadata());
-        auto value_inner_type = std::static_pointer_cast<arrow::StructType>(value_field->type());
+        auto value_inner_type = checked_pointer_cast<arrow::StructType>(value_field->type());
         ASSERT_EQ(value_inner_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(),
                   "3");
         ASSERT_EQ(value_inner_type->field(1)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(),
@@ -1215,15 +1215,15 @@ TEST_F(TableSchemaTest, SetFieldIdMapWithStruct) {
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(map_field, /*set_field_id=*/false, &field_id));
         ASSERT_FALSE(new_field->metadata());
-        auto map_type = arrow::internal::checked_pointer_cast<arrow::MapType>(new_field->type());
+        auto map_type = checked_pointer_cast<arrow::MapType>(new_field->type());
         std::shared_ptr<arrow::Field> key_field = map_type->key_field();
         std::shared_ptr<arrow::Field> value_field = map_type->item_field();
         ASSERT_FALSE(key_field->metadata());
-        auto key_inner_type = std::static_pointer_cast<arrow::StructType>(key_field->type());
+        auto key_inner_type = checked_pointer_cast<arrow::StructType>(key_field->type());
         ASSERT_EQ(key_inner_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
         ASSERT_EQ(key_inner_type->field(1)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "1");
         ASSERT_FALSE(value_field->metadata());
-        auto value_inner_type = std::static_pointer_cast<arrow::StructType>(value_field->type());
+        auto value_inner_type = checked_pointer_cast<arrow::StructType>(value_field->type());
         ASSERT_EQ(value_inner_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(),
                   "2");
         ASSERT_EQ(value_inner_type->field(1)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(),
@@ -1243,9 +1243,9 @@ TEST_F(TableSchemaTest, SetFieldIdNestedStruct) {
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(outer_struct, /*set_field_id=*/true, &field_id));
         ASSERT_EQ(new_field->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
-        auto outer_type = std::static_pointer_cast<arrow::StructType>(new_field->type());
+        auto outer_type = checked_pointer_cast<arrow::StructType>(new_field->type());
         ASSERT_EQ(outer_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "1");
-        auto inner_type = std::static_pointer_cast<arrow::StructType>(outer_type->field(0)->type());
+        auto inner_type = checked_pointer_cast<arrow::StructType>(outer_type->field(0)->type());
         ASSERT_EQ(inner_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "2");
         ASSERT_EQ(inner_type->field(1)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "3");
         ASSERT_EQ(field_id, 4);
@@ -1256,9 +1256,9 @@ TEST_F(TableSchemaTest, SetFieldIdNestedStruct) {
                              TableSchema::AssignFieldIdsRecursively(
                                  outer_struct, /*set_field_id=*/false, &field_id));
         ASSERT_FALSE(new_field->metadata());
-        auto outer_type = std::static_pointer_cast<arrow::StructType>(new_field->type());
+        auto outer_type = checked_pointer_cast<arrow::StructType>(new_field->type());
         ASSERT_EQ(outer_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
-        auto inner_type = std::static_pointer_cast<arrow::StructType>(outer_type->field(0)->type());
+        auto inner_type = checked_pointer_cast<arrow::StructType>(outer_type->field(0)->type());
         ASSERT_EQ(inner_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "1");
         ASSERT_EQ(inner_type->field(1)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "2");
         ASSERT_EQ(field_id, 3);
@@ -1274,11 +1274,10 @@ TEST_F(TableSchemaTest, SetFieldIdNestedListInStruct) {
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::Field> new_field,
             TableSchema::AssignFieldIdsRecursively(struct_field, /*set_field_id=*/true, &field_id));
-        auto struct_type = std::static_pointer_cast<arrow::StructType>(new_field->type());
+        auto struct_type = checked_pointer_cast<arrow::StructType>(new_field->type());
         ASSERT_EQ(new_field->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
         ASSERT_EQ(struct_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "1");
-        auto list_type =
-            arrow::internal::checked_pointer_cast<arrow::ListType>(struct_type->field(0)->type());
+        auto list_type = checked_pointer_cast<arrow::ListType>(struct_type->field(0)->type());
         ASSERT_FALSE(list_type->value_field()->metadata());
         ASSERT_EQ(field_id, 2);
     }
@@ -1287,11 +1286,10 @@ TEST_F(TableSchemaTest, SetFieldIdNestedListInStruct) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> new_field,
                              TableSchema::AssignFieldIdsRecursively(
                                  struct_field, /*set_field_id=*/false, &field_id));
-        auto struct_type = std::static_pointer_cast<arrow::StructType>(new_field->type());
+        auto struct_type = checked_pointer_cast<arrow::StructType>(new_field->type());
         ASSERT_FALSE(new_field->metadata());
         ASSERT_EQ(struct_type->field(0)->metadata()->Get(DataField::FIELD_ID).ValueOrDie(), "0");
-        auto list_type =
-            arrow::internal::checked_pointer_cast<arrow::ListType>(struct_type->field(0)->type());
+        auto list_type = checked_pointer_cast<arrow::ListType>(struct_type->field(0)->type());
         ASSERT_FALSE(list_type->value_field()->metadata());
         ASSERT_EQ(field_id, 1);
     }
@@ -1318,7 +1316,7 @@ TEST_F(TableSchemaTest, NullableMapKeySchemaIsSupported) {
     })";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> table_schema,
                          TableSchema::CreateFromJson(table_schema_str));
-    auto json_map_type = std::static_pointer_cast<arrow::MapType>(table_schema->Fields()[0].Type());
+    auto json_map_type = checked_pointer_cast<arrow::MapType>(table_schema->Fields()[0].Type());
     ASSERT_FALSE(json_map_type->key_field()->nullable());
 
     auto nullable_key_map =
@@ -1329,7 +1327,7 @@ TEST_F(TableSchemaTest, NullableMapKeySchemaIsSupported) {
         TableSchema::Create(/*schema_id=*/0, arrow::schema({arrow::field("f0", nullable_key_map)}),
                             /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}));
     auto direct_map_type =
-        std::static_pointer_cast<arrow::MapType>(direct_table_schema->Fields()[0].Type());
+        checked_pointer_cast<arrow::MapType>(direct_table_schema->Fields()[0].Type());
     ASSERT_TRUE(direct_map_type->key_field()->nullable());
 }
 
@@ -1343,12 +1341,12 @@ TEST_F(TableSchemaTest, MapKeysSortedIsNormalized) {
         TableSchema::Create(/*schema_id=*/0, arrow::schema({arrow::field("f0", sorted_map)}),
                             /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}));
 
-    auto map_type = std::static_pointer_cast<arrow::MapType>(table_schema->Fields()[0].Type());
+    auto map_type = checked_pointer_cast<arrow::MapType>(table_schema->Fields()[0].Type());
     ASSERT_FALSE(map_type->keys_sorted());
 
     ASSERT_OK_AND_ASSIGN(std::string json, table_schema->ToJsonString());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> restored, TableSchema::CreateFromJson(json));
-    auto restored_map_type = std::static_pointer_cast<arrow::MapType>(restored->Fields()[0].Type());
+    auto restored_map_type = checked_pointer_cast<arrow::MapType>(restored->Fields()[0].Type());
     ASSERT_FALSE(restored_map_type->keys_sorted());
     ASSERT_TRUE(map_type->Equals(*restored_map_type));
 }

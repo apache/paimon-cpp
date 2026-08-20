@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -32,15 +33,16 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/realtime/realtime_context.h"
+#include "paimon/realtime/realtime_store.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
 
 namespace paimon {
 
-int64_t RealtimeTableScan::GetCommittedOffset(const RealtimeOffsetMap& committed_offsets,
-                                              const RealtimePartitionBucket& partition_bucket) {
+int64_t RealtimeTableScan::GetCommittedEndOffset(const RealtimeOffsetMap& committed_offsets,
+                                                 const RealtimePartitionBucket& partition_bucket) {
     auto iter = committed_offsets.find(partition_bucket);
-    return iter == committed_offsets.end() ? -1 : iter->second;
+    return iter == committed_offsets.end() ? 0 : iter->second;
 }
 
 bool RealtimeTableScan::MatchPartition(const std::map<std::string, std::string>& partition) const {
@@ -87,9 +89,9 @@ Result<RealtimeTableScan::MemoryViewMap> RealtimeTableScan::CollectActiveMemoryV
         if (!MatchPartition(memory.partition_bucket.partition)) {
             continue;
         }
-        const std::optional<Range> memory_range = memory.read_view->GetOffsetRange();
-        if (!memory_range ||
-            memory_range->to <= GetCommittedOffset(committed_offsets, memory.partition_bucket)) {
+        const std::optional<OffsetRange> memory_range = memory.read_view->GetOffsetRange();
+        if (!memory_range || memory_range->end <= GetCommittedEndOffset(committed_offsets,
+                                                                        memory.partition_bucket)) {
             continue;
         }
         RealtimePartitionBucket partition_bucket = memory.partition_bucket;
@@ -100,7 +102,7 @@ Result<RealtimeTableScan::MemoryViewMap> RealtimeTableScan::CollectActiveMemoryV
 
 Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSplits(
     const std::vector<std::shared_ptr<Split>>& disk_splits, MemoryViewMap&& active_memory,
-    const RealtimeOffsetMap& committed_offsets) const {
+    const RealtimeOffsetMap& committed_offsets, const std::optional<int64_t>& snapshot_id) const {
     std::map<RealtimePartitionBucket, std::vector<std::shared_ptr<Split>>> disk_by_partition_bucket;
     for (const std::shared_ptr<Split>& split : disk_splits) {
         std::shared_ptr<DataSplitImpl> data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
@@ -119,6 +121,30 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
 
     // TODO(xinyu.lxy): Support splitting one partition-bucket into multiple real-time splits.
     std::vector<std::shared_ptr<Split>> result;
+    std::vector<std::string> pinned_tickets;
+    ScopeGuard ticket_guard([this, &pinned_tickets]() {
+        for (const std::string& ticket : pinned_tickets) {
+            Status status = realtime_context_->ReleaseReadView(ticket);
+            (void)status;
+        }
+    });
+    auto create_realtime_split =
+        [this, &committed_offsets, &snapshot_id, &pinned_tickets](
+            const RealtimePartitionBucket& key,
+            std::vector<std::shared_ptr<Split>>&& grouped_disk_splits,
+            const RealtimePartitionBucketView& memory) -> Result<std::shared_ptr<Split>> {
+        const std::optional<OffsetRange> memory_range = memory.read_view->GetOffsetRange();
+        if (!memory_range) {
+            return Status::Invalid("real-time split cannot reference an empty memory view");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::string opaque_ticket,
+                               realtime_context_->PinReadView(memory, read_view_ttl_millis_));
+        pinned_tickets.push_back(opaque_ticket);
+        return std::make_shared<RealtimeSplit>(
+            RealtimeSplit::kCurrentVersion, snapshot_id, key.partition, key.bucket,
+            std::move(grouped_disk_splits), GetCommittedEndOffset(committed_offsets, key),
+            memory_range->end, std::move(opaque_ticket));
+    };
     for (auto& [key, grouped_disk_splits] : disk_by_partition_bucket) {
         auto memory_iter = active_memory.find(key);
         if (memory_iter == active_memory.end()) {
@@ -126,32 +152,36 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
             continue;
         }
         RealtimePartitionBucketView& memory = memory_iter->second;
-        result.push_back(std::make_shared<RealtimeSplit>(
-            key.partition, key.bucket, std::move(grouped_disk_splits), memory.indexer,
-            memory.read_view, GetCommittedOffset(committed_offsets, key)));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Split> realtime_split,
+                               create_realtime_split(key, std::move(grouped_disk_splits), memory));
+        result.push_back(std::move(realtime_split));
         active_memory.erase(memory_iter);
     }
 
     for (auto& [key, memory] : active_memory) {
-        result.push_back(std::make_shared<RealtimeSplit>(
-            key.partition, key.bucket, std::vector<std::shared_ptr<Split>>(), memory.indexer,
-            memory.read_view, GetCommittedOffset(committed_offsets, key)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<Split> realtime_split,
+            create_realtime_split(key, std::vector<std::shared_ptr<Split>>(), memory));
+        result.push_back(std::move(realtime_split));
     }
+    ticket_guard.Release();
     return result;
 }
 
 RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
-                                     const std::shared_ptr<RealtimeContext>& realtime_context,
+                                     const std::shared_ptr<RealtimeContextImpl>& realtime_context,
                                      const std::shared_ptr<FileStorePathFactory>& path_factory,
                                      const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                      const std::shared_ptr<FileSystem>& file_system,
-                                     const std::shared_ptr<ScanFilter>& scan_filter)
+                                     const std::shared_ptr<ScanFilter>& scan_filter,
+                                     int64_t read_view_ttl_millis)
     : disk_scan_(std::move(disk_scan)),
       realtime_context_(realtime_context),
       path_factory_(path_factory),
       snapshot_manager_(snapshot_manager),
       file_system_(file_system),
-      scan_filter_(scan_filter) {}
+      scan_filter_(scan_filter),
+      read_view_ttl_millis_(read_view_ttl_millis) {}
 
 Result<std::shared_ptr<Plan>> RealtimeTableScan::CreatePlan() {
     // Memory is pinned first. If a commit and reclaim happens before disk planning, the old memory
@@ -162,9 +192,9 @@ Result<std::shared_ptr<Plan>> RealtimeTableScan::CreatePlan() {
     PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap committed_offsets, LoadCommittedOffsets(disk_plan));
     PAIMON_ASSIGN_OR_RAISE(MemoryViewMap active_memory,
                            CollectActiveMemoryViews(std::move(memory_views), committed_offsets));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<std::shared_ptr<Split>> splits,
-        CreateRealtimeSplits(disk_plan->Splits(), std::move(active_memory), committed_offsets));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Split>> splits,
+                           CreateRealtimeSplits(disk_plan->Splits(), std::move(active_memory),
+                                                committed_offsets, disk_plan->SnapshotId()));
     return std::make_shared<PlanImpl>(disk_plan->SnapshotId(), splits);
 }
 

@@ -236,8 +236,8 @@ Result<std::shared_ptr<LookupFile>> LookupLevels<T>::CreateLookupFile(
     }
 
     // Get file size for cache weight calculation
-    PAIMON_ASSIGN_OR_RAISE(auto file_status, fs_->GetFileStatus(kv_file_path));
-    int64_t file_size = file_status->GetLen();
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(kv_file_path));
+    int64_t file_size = file_status.GetLen();
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LookupStoreReader> reader,
                            lookup_store_factory_->CreateReader(fs_, kv_file_path, pool_));

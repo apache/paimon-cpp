@@ -84,7 +84,7 @@ class JavaCompatTest : public ::testing::Test {
         std::string archive_path = PathUtil::JoinPath(fixture_dir, fixture_name);
 
         EXPECT_OK_AND_ASSIGN(auto file_status, fs_->GetFileStatus(archive_path));
-        int64_t file_size = file_status->GetLen();
+        int64_t file_size = file_status.GetLen();
         EXPECT_GT(file_size, 4) << "fixture archive must exist and be > 4 bytes";
 
         // Empty metadata (options not needed for cross-read — we use defaults)
@@ -312,9 +312,8 @@ class FixedNameGlobalIndexFileWriter : public GlobalIndexFileWriter {
         return fs_->Create(ToPath(file_name), /*overwrite=*/true);
     }
     Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status,
-                               fs_->GetFileStatus(ToPath(file_name)));
-        return file_status->GetLen();
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(ToPath(file_name)));
+        return file_status.GetLen();
     }
 
  private:
@@ -412,7 +411,7 @@ TEST_F(JavaCompatTest, CppWriteDefaultTokenizerForJavaCrossRead) {
     //    Build a reader directly off the archive path (mirrors OpenFixture
     //    but rooted at the cpp fixtures dir).
     ASSERT_OK_AND_ASSIGN(auto file_status, fs_->GetFileStatus(archive_path));
-    int64_t file_size = file_status->GetLen();
+    int64_t file_size = file_status.GetLen();
     auto meta_bytes = std::make_shared<Bytes>(std::string("{}"), pool_.get());
     GlobalIndexIOMeta io_meta(archive_path, file_size, meta_bytes);
     auto reader_factory =

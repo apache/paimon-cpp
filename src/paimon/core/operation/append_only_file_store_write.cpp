@@ -21,6 +21,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "arrow/c/bridge.h"
@@ -29,6 +30,7 @@
 #include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/append/append_only_writer.h"
 #include "paimon/core/append/bucketed_append_compact_manager.h"
 #include "paimon/core/compact/noop_compact_manager.h"
@@ -47,6 +49,7 @@
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/operation/restore_files.h"
 #include "paimon/core/realtime/realtime_append_only_writer.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
@@ -108,8 +111,10 @@ Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
         RealtimeOffsetMap committed_offsets,
         RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),
                                               options_.GetFileSystem()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context_));
     PAIMON_RETURN_NOT_OK(
-        realtime_context_->AdvanceCommittedProgress(snapshot_id, committed_offsets));
+        realtime_context_impl->AdvanceCommittedProgress(snapshot_id, committed_offsets));
     return Status::OK();
 }
 
@@ -176,11 +181,11 @@ Result<std::vector<std::shared_ptr<DataFileMeta>>> AppendOnlyFileStoreWrite::Com
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
-        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-        if (!struct_array) {
+        if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(
                 "cannot cast array to StructArray in CompleteRowKindBatchReader");
         }
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
         PAIMON_ASSIGN_OR_RAISE(struct_array, ArrowUtils::RemoveFieldFromStructArray(
                                                  struct_array, SpecialFields::ValueKind().Name()));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -296,7 +301,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyFileStoreWrite::CreateFilesReader
     auto read = std::make_unique<RawFileSplitRead>(file_store_path_factory_, internal_read_context,
                                                    pool_, compact_executor_);
 
-    return read->CreateReader(partition, bucket, files, dv_factory);
+    return read->CreateReader(partition, bucket, files, dv_factory,
+                              /*local_row_ranges=*/std::nullopt);
 }
 
 }  // namespace paimon

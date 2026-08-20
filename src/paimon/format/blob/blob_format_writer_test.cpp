@@ -26,6 +26,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/stream_utils.h"
 #include "paimon/data/blob.h"
 #include "paimon/format/blob/blob_file_batch_reader.h"
@@ -160,7 +161,7 @@ class BlobFormatWriterTestBase : public ::testing::Test {
         arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
                                             {std::make_shared<arrow::LargeBinaryBuilder>()});
         auto blob_builder =
-            static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+            checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->Append(bytes.data(), bytes.size()));
         std::shared_ptr<arrow::Array> array;
@@ -185,7 +186,7 @@ class BlobFormatWriterTestBase : public ::testing::Test {
                                paimon::test::ReadResultCollector::CollectResult(reader.get()));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concat_array,
                                           arrow::Concatenate(chunked_array->chunks()));
-        return arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
+        return checked_pointer_cast<arrow::StructArray>(concat_array);
     }
 
  protected:
@@ -212,7 +213,7 @@ class BlobFormatWriterTest : public BlobFormatWriterTestBase,
         arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
                                             {std::make_shared<arrow::LargeBinaryBuilder>()});
         auto blob_builder =
-            static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+            checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder.Append());
         PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> blob_data,
                                blob->ToData(file_system_, pool_));
@@ -278,7 +279,7 @@ TEST_P(BlobFormatWriterTest, TestSimple) {
     // check result
     if (blob_as_descriptor_) {
         auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
         ASSERT_TRUE(struct_array);
         ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Blob>> result_blobs,
                              paimon::test::TestHelper::ToBlobs(struct_array));
@@ -364,7 +365,7 @@ TEST_P(BlobFormatWriterTest, TestAddBatchWithInvalidBatchLength) {
     // Test batch with wrong length (not 1)
     arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::BinaryBuilder>()});
-    auto blob_builder = static_cast<arrow::BinaryBuilder*>(struct_builder.field_builder(0));
+    auto blob_builder = checked_cast<arrow::BinaryBuilder*>(struct_builder.field_builder(0));
 
     // Add two rows instead of one
     ASSERT_OK_AND_ASSIGN(auto blob, Blob::FromPath(paimon::test::GetDataDir() + "/xxhash.data"));
@@ -475,7 +476,7 @@ TEST_P(BlobFormatWriterTest, TestLargeBlob) {
     // check result
     if (blob_as_descriptor_) {
         auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
         ASSERT_TRUE(struct_array);
         ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Blob>> result_blobs,
                              paimon::test::TestHelper::ToBlobs(struct_array));
@@ -494,7 +495,7 @@ TEST_P(BlobFormatWriterTest, TestAddBatchWithNullValues) {
     // Write one row with child-level null blob
     arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::LargeBinaryBuilder>()});
-    auto blob_builder = static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+    auto blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
     ASSERT_TRUE(struct_builder.Append().ok());
     ASSERT_TRUE(blob_builder->AppendNull().ok());
     std::shared_ptr<arrow::Array> null_child_array;
@@ -523,7 +524,7 @@ TEST_P(BlobFormatWriterTest, TestAddBatchWithNullValues) {
                          paimon::test::ReadResultCollector::CollectResult(reader.get()));
 
     auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-    auto result_struct = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
+    auto result_struct = checked_pointer_cast<arrow::StructArray>(concat_array);
     ASSERT_TRUE(result_struct);
     ASSERT_EQ(result_struct->length(), 1);
     ASSERT_TRUE(result_struct->field(0)->IsNull(0));
@@ -574,8 +575,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnMissingFile) {
     ASSERT_EQ(result_struct->length(), 2);
     ASSERT_TRUE(result_struct->field(0)->IsNull(0));
     ASSERT_FALSE(result_struct->field(0)->IsNull(1));
-    auto binary_array =
-        arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(result_struct->field(0));
+    auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(result_struct->field(0));
     ASSERT_OK_AND_ASSIGN(auto expected_data, blob->ToData(file_system_, pool_));
     ASSERT_EQ(binary_array->GetView(1),
               std::string_view(expected_data->data(), expected_data->size()));
@@ -665,8 +665,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnBothOptionsEnabled) {
     ASSERT_TRUE(result_struct->field(0)->IsNull(0));
     ASSERT_TRUE(result_struct->field(0)->IsNull(1));
     ASSERT_FALSE(result_struct->field(0)->IsNull(2));
-    auto binary_array =
-        arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(result_struct->field(0));
+    auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(result_struct->field(0));
     ASSERT_OK_AND_ASSIGN(auto expected_data, blob->ToData(file_system_, pool_));
     ASSERT_EQ(binary_array->GetView(2),
               std::string_view(expected_data->data(), expected_data->size()));
@@ -872,8 +871,7 @@ TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnExistsCheckFailure) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result_struct, ReadBackAsData());
     ASSERT_EQ(result_struct->length(), 1);
     ASSERT_FALSE(result_struct->field(0)->IsNull(0));
-    auto binary_array =
-        arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(result_struct->field(0));
+    auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(result_struct->field(0));
     ASSERT_OK_AND_ASSIGN(auto expected_data, blob->ToData(file_system_, pool_));
     ASSERT_EQ(binary_array->GetView(0),
               std::string_view(expected_data->data(), expected_data->size()));
@@ -987,7 +985,7 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestWritePlaceholderGoldenBytes) {
 
     arrow::StructBuilder struct_builder(struct_type_, arrow::default_memory_pool(),
                                         {std::make_shared<arrow::LargeBinaryBuilder>()});
-    auto blob_builder = static_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
+    auto blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(struct_builder.field_builder(0));
     ASSERT_TRUE(struct_builder.Append().ok());
     ASSERT_TRUE(blob_builder->AppendNull().ok());
     std::shared_ptr<arrow::Array> null_array;
@@ -1068,10 +1066,9 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderStrictAndAwareModes) 
         ASSERT_OK_AND_ASSIGN(auto chunked_array,
                              paimon::test::ReadResultCollector::CollectResult(reader.get()));
         auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
         ASSERT_EQ(struct_array->length(), 2);
-        auto binary_array =
-            arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
+        auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
         ASSERT_EQ(binary_array->GetString(0), "inline");
         ASSERT_FALSE(binary_array->IsNull(1));
         ASSERT_EQ(binary_array->GetString(1), PlaceholderSentinelBytes());
@@ -1093,9 +1090,8 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderStrictAndAwareModes) 
         ASSERT_OK_AND_ASSIGN(auto chunked_array,
                              paimon::test::ReadResultCollector::CollectResult(reader.get()));
         auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
-        auto binary_array =
-            arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
+        auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
         ASSERT_EQ(binary_array->GetString(1), PlaceholderSentinelBytes());
     }
 }
@@ -1127,10 +1123,9 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderWithSelectionBitmap) 
     ASSERT_OK_AND_ASSIGN(auto chunked_array,
                          paimon::test::ReadResultCollector::CollectResult(reader.get()));
     auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-    auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
     ASSERT_EQ(struct_array->length(), 2);
-    auto binary_array =
-        arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
+    auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
     ASSERT_EQ(binary_array->GetString(0), PlaceholderSentinelBytes());
     ASSERT_EQ(binary_array->GetString(1), "third");
 }
@@ -1158,10 +1153,9 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelBytesVerbatimWithoutPlacehol
     ASSERT_OK_AND_ASSIGN(auto chunked_array,
                          paimon::test::ReadResultCollector::CollectResult(reader.get()));
     auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-    auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
     ASSERT_EQ(struct_array->length(), 1);
-    auto binary_array =
-        arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
+    auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
     ASSERT_FALSE(binary_array->IsNull(0));
     ASSERT_EQ(binary_array->GetString(0), PlaceholderSentinelBytes());
 }
@@ -1194,9 +1188,8 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelPrefixedValueVerbatimInPlace
         ASSERT_OK_AND_ASSIGN(auto chunked_array,
                              paimon::test::ReadResultCollector::CollectResult(reader.get()));
         auto concat_array = arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
-        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(concat_array);
-        auto binary_array =
-            arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(concat_array);
+        auto binary_array = checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
         ASSERT_EQ(struct_array->length(), 2);
         ASSERT_EQ(binary_array->GetString(0), sentinel + sentinel);
         ASSERT_EQ(binary_array->GetString(1), sentinel + "suffix");

@@ -43,9 +43,9 @@ TEST_F(LuminaFileIOTest, TestSimple) {
     // check file exist
     ASSERT_OK_AND_ASSIGN(bool exist, fs->Exists(index_path));
     ASSERT_TRUE(exist);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStatus> file_status, fs->GetFileStatus(index_path));
-    ASSERT_FALSE(file_status->IsDir());
-    ASSERT_EQ(file_status->GetLen(), content.length());
+    ASSERT_OK_AND_ASSIGN(FileStatus file_status, fs->GetFileStatus(index_path));
+    ASSERT_FALSE(file_status.IsDir());
+    ASSERT_EQ(file_status.GetLen(), content.length());
 
     // read content
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs->Open(index_path));

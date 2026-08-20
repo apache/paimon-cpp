@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <unordered_map>
 
 #include "arrow/acero/options.h"
@@ -40,6 +41,7 @@
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
@@ -113,6 +115,12 @@ bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_t
             const auto& file_list = static_cast<const arrow::ListType&>(*file_type);
             return HasSameNestedProjectionShape(read_list.value_type(), file_list.value_type());
         }
+        case arrow::Type::FIXED_SIZE_LIST: {
+            const auto& read_vector = checked_cast<const arrow::FixedSizeListType&>(*read_type);
+            const auto& file_vector = checked_cast<const arrow::FixedSizeListType&>(*file_type);
+            return read_vector.list_size() == file_vector.list_size() &&
+                   HasSameNestedProjectionShape(read_vector.value_type(), file_vector.value_type());
+        }
         case arrow::Type::MAP: {
             const auto& read_map = static_cast<const arrow::MapType&>(*read_type);
             const auto& file_map = static_cast<const arrow::MapType&>(*file_type);
@@ -122,6 +130,18 @@ bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_t
         default:
             return false;
     }
+}
+
+// Resolve whether parquet-level pre-buffering should be enabled. When the framework
+// provides runtime hints, they describe the authoritative state of this read: once the
+// shared read-ahead cache takes over prefetching, disable parquet's own pre-buffering so
+// the same byte ranges are not buffered twice. Without hints, fall back to the option.
+Result<bool> ResolvePreBufferEnabled(const std::map<std::string, std::string>& options,
+                                     const std::optional<ReadHints>& hints) {
+    if (hints.has_value() && hints->prefetch_enabled && hints->read_ahead_cache_enabled) {
+        return false;
+    }
+    return OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, true);
 }
 }  // namespace
 
@@ -143,14 +163,14 @@ Result<std::unique_ptr<ParquetFileBatchReader>> ParquetFileBatchReader::Create(
     const std::map<std::string, std::string>& options, int32_t batch_size,
     std::shared_ptr<::parquet::FileMetaData> file_metadata,
     std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes,
-    const std::shared_ptr<arrow::MemoryPool>& pool) {
+    const std::shared_ptr<arrow::MemoryPool>& pool, const std::optional<ReadHints>& hints) {
     try {
         assert(input_stream);
         PAIMON_ASSIGN_OR_RAISE(::parquet::ReaderProperties reader_properties,
-                               CreateReaderProperties(pool, options));
+                               CreateReaderProperties(pool, options, hints));
 
         PAIMON_ASSIGN_OR_RAISE(::parquet::ArrowReaderProperties arrow_reader_properties,
-                               CreateArrowReaderProperties(pool, options, batch_size));
+                               CreateArrowReaderProperties(pool, options, batch_size, hints));
 
         ::parquet::arrow::FileReaderBuilder file_reader_builder;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -635,14 +655,16 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> ParquetFileBatchReader::GenRe
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetFileBatchReader::GenReadRanges")
 }
 
+Result<std::vector<std::pair<uint64_t, uint64_t>>> ParquetFileBatchReader::PreBufferRange() {
+    return reader_->GetPreBufferRanges();
+}
+
 Result<::parquet::ReaderProperties> ParquetFileBatchReader::CreateReaderProperties(
     const std::shared_ptr<arrow::MemoryPool>& pool,
-    const std::map<std::string, std::string>& options) {
+    const std::map<std::string, std::string>& options, const std::optional<ReadHints>& hints) {
     ::parquet::ReaderProperties reader_properties;
     // TODO(jinli.zjw): set more ReaderProperties (compare with java)
-    PAIMON_ASSIGN_OR_RAISE(
-        bool enable_pre_buffer,
-        OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, true));
+    PAIMON_ASSIGN_OR_RAISE(bool enable_pre_buffer, ResolvePreBufferEnabled(options, hints));
     if (enable_pre_buffer) {
         reader_properties.enable_buffered_stream();
     } else {
@@ -653,7 +675,8 @@ Result<::parquet::ReaderProperties> ParquetFileBatchReader::CreateReaderProperti
 
 Result<::parquet::ArrowReaderProperties> ParquetFileBatchReader::CreateArrowReaderProperties(
     const std::shared_ptr<arrow::MemoryPool>& pool,
-    const std::map<std::string, std::string>& options, int32_t batch_size) {
+    const std::map<std::string, std::string>& options, int32_t batch_size,
+    const std::optional<ReadHints>& hints) {
     PAIMON_ASSIGN_OR_RAISE(
         uint32_t executor_thread_count,
         OptionsUtils::GetValueFromMap<uint32_t>(options, PARQUET_READ_EXECUTOR_THREAD_COUNT,
@@ -661,9 +684,7 @@ Result<::parquet::ArrowReaderProperties> ParquetFileBatchReader::CreateArrowRead
 
     ::parquet::ArrowReaderProperties arrow_reader_props;
     // TODO(jinli.zjw): set more ArrowReaderProperties (compare with java)
-    PAIMON_ASSIGN_OR_RAISE(
-        bool enable_pre_buffer,
-        OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, true));
+    PAIMON_ASSIGN_OR_RAISE(bool enable_pre_buffer, ResolvePreBufferEnabled(options, hints));
     arrow_reader_props.set_pre_buffer(enable_pre_buffer);
     arrow_reader_props.set_batch_size(static_cast<int64_t>(batch_size));
     if (executor_thread_count != 0) {
@@ -740,6 +761,16 @@ Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::D
         const auto& file_list = static_cast<const arrow::ListType&>(*file_type);
         PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_list.value_type(), file_list.value_type(),
                                                 leaf_index, indices));
+    } else if (file_type->id() == arrow::Type::FIXED_SIZE_LIST) {
+        if (!HasSameNestedProjectionShape(read_type, file_type)) {
+            return Status::Invalid(fmt::format(
+                "Parquet does not support partial projection inside list/map: src {} vs target {}",
+                file_type->ToString(), read_type->ToString()));
+        }
+        const auto& read_vector = checked_cast<const arrow::FixedSizeListType&>(*read_type);
+        const auto& file_vector = checked_cast<const arrow::FixedSizeListType&>(*file_type);
+        PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_vector.value_type(), file_vector.value_type(),
+                                                leaf_index, indices));
     } else if (file_type->id() == arrow::Type::MAP) {
         if (!HasSameNestedProjectionShape(read_type, file_type)) {
             return Status::Invalid(fmt::format(
@@ -761,8 +792,7 @@ Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::D
 
 void ParquetFileBatchReader::SkipLeafIndices(const std::shared_ptr<arrow::DataType>& file_type,
                                              int32_t* leaf_index) {
-    if (file_type->id() == arrow::Type::STRUCT || file_type->id() == arrow::Type::LIST ||
-        file_type->id() == arrow::Type::MAP) {
+    if (ArrowSchemaValidator::IsNestedType(file_type)) {
         for (int32_t i = 0; i < file_type->num_fields(); i++) {
             SkipLeafIndices(file_type->field(i)->type(), leaf_index);
         }

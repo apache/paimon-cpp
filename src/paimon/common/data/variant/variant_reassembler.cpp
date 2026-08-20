@@ -28,12 +28,12 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/generic_variant.h"
 #include "paimon/common/data/variant/variant_builder.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 
 namespace paimon {
@@ -229,9 +229,9 @@ Result<std::shared_ptr<arrow::Array>> VariantReassembler::AssembleVariantArray(
     auto output_type = VariantTypeUtils::UnshreddedStructType();
     std::unique_ptr<arrow::ArrayBuilder> output_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(arrow_pool, output_type, &output_builder));
-    auto* struct_builder = static_cast<arrow::StructBuilder*>(output_builder.get());
-    auto* value_builder = static_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(0));
-    auto* metadata_builder = static_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(1));
+    auto* struct_builder = checked_cast<arrow::StructBuilder*>(output_builder.get());
+    auto* value_builder = checked_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(0));
+    auto* metadata_builder = checked_cast<arrow::BinaryBuilder*>(struct_builder->field_builder(1));
 
     bool unshredded = schema->IsUnshredded();
     for (int64_t row = 0; row < shredded->length(); ++row) {

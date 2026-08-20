@@ -41,6 +41,7 @@
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/restore_files.h"
@@ -194,7 +195,7 @@ class AppendOnlyFileStoreWriteTest : public testing::Test {
         }
         std::shared_ptr<arrow::Array> array =
             arrow::Concatenate(result->chunks(), arrow::default_memory_pool()).ValueOrDie();
-        return std::static_pointer_cast<arrow::StructArray>(array);
+        return checked_pointer_cast<arrow::StructArray>(array);
     }
 
     MapSharedShreddingFieldMeta ShreddingMeta(const std::shared_ptr<arrow::Schema>& file_schema,
@@ -312,7 +313,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange)
     ASSERT_EQ(1, first_prepared.size());
     ASSERT_TRUE(first_prepared[0].partition_bucket.partition.empty());
     ASSERT_EQ(0, first_prepared[0].partition_bucket.bucket);
-    ASSERT_EQ(Range(0, 1), first_prepared[0].offset_range);
+    ASSERT_EQ(OffsetRange(0, 2), first_prepared[0].offset_range);
     std::shared_ptr<DataFileMeta> first_file = OnlyNewFile({first_prepared[0].commit_message});
     ASSERT_FALSE(first_file->write_cols.has_value());
     std::shared_ptr<arrow::Schema> first_schema =
@@ -338,7 +339,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange)
     ASSERT_EQ(1, second_prepared.size());
     ASSERT_TRUE(second_prepared[0].partition_bucket.partition.empty());
     ASSERT_EQ(0, second_prepared[0].partition_bucket.bucket);
-    ASSERT_EQ(Range(2, 2), second_prepared[0].offset_range);
+    ASSERT_EQ(OffsetRange(2, 3), second_prepared[0].offset_range);
     std::shared_ptr<DataFileMeta> second_file = OnlyNewFile({second_prepared[0].commit_message});
     std::shared_ptr<arrow::StructArray> second_array =
         ReadDataFileArray(table_path, second_file, options);

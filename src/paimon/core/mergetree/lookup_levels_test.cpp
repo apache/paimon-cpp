@@ -238,10 +238,10 @@ TEST_F(LookupLevelsTest, TestMultiLevels) {
     ASSERT_EQ(lookup_levels->GetLevels()->NonEmptyHighestLevel(), 2);
 
     // test lookup file in tmp dir
-    std::vector<std::unique_ptr<BasicFileStatus>> file_status_list;
+    std::vector<BasicFileStatus> file_status_list;
     ASSERT_OK(fs_->ListDir(tmp_dir_->Str(), &file_status_list));
     ASSERT_EQ(file_status_list.size(), 1);
-    auto channel_dir = file_status_list[0]->GetPath();
+    auto channel_dir = file_status_list[0].GetPath();
     file_status_list.clear();
     ASSERT_OK(fs_->ListDir(channel_dir, &file_status_list));
     ASSERT_EQ(file_status_list.size(), 2);
@@ -740,10 +740,10 @@ TEST_F(LookupLevelsTest, TestLookupFileCacheIntegration) {
     ASSERT_EQ(shared_cache->Size(), 3);  // file0, file1, file2
 
     // Collect local file paths for later verification
-    std::vector<std::unique_ptr<BasicFileStatus>> tmp_files;
+    std::vector<BasicFileStatus> tmp_files;
     ASSERT_OK(fs_->ListDir(tmp_dir_->Str(), &tmp_files));
     ASSERT_EQ(tmp_files.size(), 1);
-    auto channel_dir = tmp_files[0]->GetPath();
+    auto channel_dir = tmp_files[0].GetPath();
     tmp_files.clear();
     ASSERT_OK(fs_->ListDir(channel_dir, &tmp_files));
     ASSERT_EQ(tmp_files.size(), 3);

@@ -63,9 +63,8 @@ class GlobalIndexFileManager : public GlobalIndexFileReader, public GlobalIndexF
     }
 
     Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status,
-                               fs_->GetFileStatus(ToPath(file_name)));
-        return file_status->GetLen();
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(ToPath(file_name)));
+        return file_status.GetLen();
     }
 
     bool IsExternalPath() const {

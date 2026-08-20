@@ -36,6 +36,10 @@ class MemoryPool;
 class ReadContext;
 
 /// Given a `Split` or a list of `Split`, generate a reader for batch reading.
+///
+/// A real-time split may create at most one successful reader. Calls using the same real-time
+/// split must not run concurrently, and the split must not be reused by multiple queries. A failed
+/// reader creation may be retried sequentially while its read-view ticket remains valid.
 class PAIMON_EXPORT TableRead {
  public:
     virtual ~TableRead() = default;

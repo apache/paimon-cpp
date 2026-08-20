@@ -27,6 +27,7 @@
 #include "paimon/common/predicate/leaf_function.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/predicate/leaf_predicate.h"
 namespace paimon {
 class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
@@ -41,7 +42,7 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
     }
 
     Result<std::vector<char>> Test(const arrow::Array& array) const override {
-        const auto& struct_array = arrow::internal::checked_cast<const arrow::StructArray&>(array);
+        const auto& struct_array = checked_cast<const arrow::StructArray&>(array);
         if (field_index_ >= static_cast<int32_t>(struct_array.fields().size())) {
             return Status::Invalid(
                 fmt::format("field index {} exceed field count {} in struct array", field_index_,

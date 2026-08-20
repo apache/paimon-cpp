@@ -26,9 +26,9 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/key_value_in_memory_record_reader.h"
 #include "paimon/core/io/key_value_record_reader.h"
 #include "paimon/data/decimal.h"
@@ -73,10 +73,10 @@ Result<bool> InMemorySortBuffer::Write(std::unique_ptr<RecordBatch>&& moved_batc
     std::unique_ptr<RecordBatch> batch = std::move(moved_batch);
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(batch->GetData(), value_type_));
-    auto value_struct_array = std::dynamic_pointer_cast<arrow::StructArray>(arrow_array);
-    if (value_struct_array == nullptr) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("invalid RecordBatch: cannot cast to StructArray");
     }
+    auto value_struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
     PAIMON_ASSIGN_OR_RAISE(int64_t memory_in_bytes, EstimateMemoryUse(value_struct_array));
     current_memory_in_bytes_ += static_cast<uint64_t>(memory_in_bytes);
 
@@ -146,30 +146,24 @@ Result<int64_t> InMemorySortBuffer::EstimateMemoryUse(const std::shared_ptr<arro
             return null_bits_size_in_bytes + array->length() * sizeof(Decimal::int128_t);
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY: {
-            auto binary_array =
-                arrow::internal::checked_cast<const arrow::BinaryArray*>(array.get());
-            assert(binary_array);
+            auto binary_array = checked_cast<const arrow::BinaryArray*>(array.get());
             int64_t value_length = binary_array->total_values_length();
             int64_t offset_length = array->length() * sizeof(int32_t);
             return null_bits_size_in_bytes + value_length + offset_length;
         }
         case arrow::Type::type::LIST: {
-            auto list_array = arrow::internal::checked_cast<const arrow::ListArray*>(array.get());
-            assert(list_array);
+            auto list_array = checked_cast<const arrow::ListArray*>(array.get());
             PAIMON_ASSIGN_OR_RAISE(int64_t value_mem, EstimateMemoryUse(list_array->values()));
             return null_bits_size_in_bytes + value_mem;
         }
         case arrow::Type::type::MAP: {
-            auto map_array = arrow::internal::checked_cast<const arrow::MapArray*>(array.get());
-            assert(map_array);
+            auto map_array = checked_cast<const arrow::MapArray*>(array.get());
             PAIMON_ASSIGN_OR_RAISE(int64_t key_mem, EstimateMemoryUse(map_array->keys()));
             PAIMON_ASSIGN_OR_RAISE(int64_t item_mem, EstimateMemoryUse(map_array->items()));
             return null_bits_size_in_bytes + key_mem + item_mem;
         }
         case arrow::Type::type::STRUCT: {
-            auto struct_array =
-                arrow::internal::checked_cast<const arrow::StructArray*>(array.get());
-            assert(struct_array);
+            auto struct_array = checked_cast<const arrow::StructArray*>(array.get());
             int64_t struct_mem = 0;
             for (const auto& field : struct_array->fields()) {
                 PAIMON_ASSIGN_OR_RAISE(int64_t field_mem, EstimateMemoryUse(field));

@@ -19,7 +19,9 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
+#include "paimon/format/read_hints.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/type_fwd.h"
@@ -38,6 +40,15 @@ class PAIMON_EXPORT ReaderBuilder {
     /// Inject a cache for reader-specific immutable metadata.
     virtual ReaderBuilder* WithCache(const std::shared_ptr<Cache>& cache) {
         (void)cache;
+        return this;
+    }
+
+    /// Inject runtime read state from the framework layer, so the format can adapt
+    /// its internal behavior accordingly. When present, the hints describe the
+    /// authoritative runtime state of this read; when absent, the format should fall
+    /// back to its own options.
+    virtual ReaderBuilder* WithReadHints(const std::optional<ReadHints>& hints) {
+        (void)hints;
         return this;
     }
 

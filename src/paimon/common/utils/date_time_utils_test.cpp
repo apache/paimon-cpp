@@ -22,6 +22,7 @@
 #include <memory>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
 
@@ -182,39 +183,39 @@ TEST(DateTimeUtilsTest, TestTimestampToInteger) {
 
 TEST(DateTimeUtilsTest, TestGetPrecisionFromType) {
     auto ts_sec_type = arrow::timestamp(arrow::TimeUnit::type::SECOND);
-    auto ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_sec_type);
+    auto ts_type = checked_pointer_cast<arrow::TimestampType>(ts_sec_type);
     ASSERT_EQ(DateTimeUtils::GetPrecisionFromType(ts_type), 0);
 
     auto ts_milli_type = arrow::timestamp(arrow::TimeUnit::type::MILLI);
-    ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_milli_type);
+    ts_type = checked_pointer_cast<arrow::TimestampType>(ts_milli_type);
     ASSERT_EQ(DateTimeUtils::GetPrecisionFromType(ts_type), 3);
 
     auto ts_micro_type = arrow::timestamp(arrow::TimeUnit::type::MICRO);
-    ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_micro_type);
+    ts_type = checked_pointer_cast<arrow::TimestampType>(ts_micro_type);
     ASSERT_EQ(DateTimeUtils::GetPrecisionFromType(ts_type), 6);
 
     auto ts_nano_type = arrow::timestamp(arrow::TimeUnit::type::NANO);
-    ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_nano_type);
+    ts_type = checked_pointer_cast<arrow::TimestampType>(ts_nano_type);
     ASSERT_EQ(DateTimeUtils::GetPrecisionFromType(ts_type), 9);
 }
 
 TEST(DateTimeUtilsTest, TestGetTimeTypeFromArrowType) {
     auto ts_sec_type = arrow::timestamp(arrow::TimeUnit::type::SECOND);
-    auto ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_sec_type);
+    auto ts_type = checked_pointer_cast<arrow::TimestampType>(ts_sec_type);
     ASSERT_EQ(DateTimeUtils::GetTimeTypeFromArrowType(ts_type), DateTimeUtils::TimeType::SECOND);
 
     auto ts_milli_type = arrow::timestamp(arrow::TimeUnit::type::MILLI);
-    ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_milli_type);
+    ts_type = checked_pointer_cast<arrow::TimestampType>(ts_milli_type);
     ASSERT_EQ(DateTimeUtils::GetTimeTypeFromArrowType(ts_type),
               DateTimeUtils::TimeType::MILLISECOND);
 
     auto ts_micro_type = arrow::timestamp(arrow::TimeUnit::type::MICRO);
-    ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_micro_type);
+    ts_type = checked_pointer_cast<arrow::TimestampType>(ts_micro_type);
     ASSERT_EQ(DateTimeUtils::GetTimeTypeFromArrowType(ts_type),
               DateTimeUtils::TimeType::MICROSECOND);
 
     auto ts_nano_type = arrow::timestamp(arrow::TimeUnit::type::NANO);
-    ts_type = arrow::internal::checked_pointer_cast<arrow::TimestampType>(ts_nano_type);
+    ts_type = checked_pointer_cast<arrow::TimestampType>(ts_nano_type);
     ASSERT_EQ(DateTimeUtils::GetTimeTypeFromArrowType(ts_type),
               DateTimeUtils::TimeType::NANOSECOND);
 }

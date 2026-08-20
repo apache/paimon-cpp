@@ -39,6 +39,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/core_options.h"
 #include "paimon/data/variant.h"
@@ -377,7 +378,7 @@ class VariantParquetTest : public ::testing::Test {
     void OpenFile(std::unique_ptr<FileBatchReader>* file_reader,
                   std::shared_ptr<arrow::Schema>* file_schema) {
         ASSERT_OK_AND_ASSIGN(auto input_stream, fs_->Open(file_path_));
-        auto length = fs_->GetFileStatus(file_path_).value()->GetLen();
+        auto length = fs_->GetFileStatus(file_path_).value().GetLen();
         auto in_stream =
             std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, arrow_pool_);
         std::map<std::string, std::string> options = {};
@@ -385,7 +386,8 @@ class VariantParquetTest : public ::testing::Test {
                                                       std::move(in_stream), options,
                                                       /*batch_size=*/1024,
                                                       /*file_metadata=*/nullptr,
-                                                      /*storage_read_bytes=*/nullptr, arrow_pool_));
+                                                      /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                                      /*hints=*/std::nullopt));
         *file_reader = std::move(parquet_reader);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<::ArrowSchema> c_file_schema,
                              (*file_reader)->GetFileSchema());
@@ -432,7 +434,7 @@ class VariantParquetTest : public ::testing::Test {
         auto& [read_batch, bitmap] = batch_with_bitmap;
         auto imported = arrow::ImportArray(read_batch.first.get(), read_batch.second.get());
         ASSERT_TRUE(imported.ok()) << imported.status().ToString();
-        auto result_struct = std::static_pointer_cast<arrow::StructArray>(imported.ValueOrDie());
+        auto result_struct = checked_pointer_cast<arrow::StructArray>(imported.ValueOrDie());
         *column = result_struct->field(1);
         shredding_reader->Close();
         // The assembled arrays borrow the reader's memory pool; keep the reader alive until the
@@ -446,7 +448,7 @@ class VariantParquetTest : public ::testing::Test {
         std::shared_ptr<arrow::Array> column;
         ReadColumn(read_schema, &column);
         ASSERT_EQ(column->type_id(), arrow::Type::STRUCT);
-        *v_column = std::static_pointer_cast<arrow::StructArray>(column);
+        *v_column = checked_pointer_cast<arrow::StructArray>(column);
     }
 
  protected:
@@ -511,7 +513,7 @@ TEST_F(VariantParquetTest, PhysicalLayoutMatchesJava) {
     ASSERT_EQ(variant_group_node->field_id(), 2);
     ASSERT_EQ(variant_group_node->logical_type()->type(), ::parquet::LogicalType::Type::NONE);
     const auto* variant_group =
-        static_cast<const ::parquet::schema::GroupNode*>(variant_group_node.get());
+        checked_cast<const ::parquet::schema::GroupNode*>(variant_group_node.get());
     ASSERT_EQ(variant_group->field_count(), 2);
     const auto& value_node = variant_group->field(0);
     ASSERT_EQ(value_node->name(), "value");
@@ -519,7 +521,7 @@ TEST_F(VariantParquetTest, PhysicalLayoutMatchesJava) {
     ASSERT_TRUE(value_node->is_required());
     ASSERT_EQ(value_node->field_id(), 0);
     ASSERT_EQ(
-        static_cast<const ::parquet::schema::PrimitiveNode*>(value_node.get())->physical_type(),
+        checked_cast<const ::parquet::schema::PrimitiveNode*>(value_node.get())->physical_type(),
         ::parquet::Type::BYTE_ARRAY);
     const auto& metadata_node = variant_group->field(1);
     ASSERT_EQ(metadata_node->name(), "metadata");
@@ -550,8 +552,8 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
             ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &raw_reader).ok());
         std::shared_ptr<arrow::Table> table;
         ASSERT_TRUE(raw_reader->ReadTable(&table).ok());
-        auto raw_variant = std::static_pointer_cast<arrow::StructArray>(table->column(1)->chunk(0));
-        auto raw_value = std::static_pointer_cast<arrow::BinaryArray>(raw_variant->field(0));
+        auto raw_variant = checked_pointer_cast<arrow::StructArray>(table->column(1)->chunk(0));
+        auto raw_value = checked_pointer_cast<arrow::BinaryArray>(raw_variant->field(0));
         for (size_t i = 0; i < jsons.size(); ++i) {
             SCOPED_TRACE("raw row " + std::to_string(i));
             if (jsons[i] != nullptr) {
@@ -564,15 +566,16 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
     }
 
     ASSERT_OK_AND_ASSIGN(auto input_stream, fs_->Open(file_path_));
-    auto length = fs_->GetFileStatus(file_path_).value()->GetLen();
+    auto length = fs_->GetFileStatus(file_path_).value().GetLen();
     auto in_stream =
         std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, arrow_pool_);
     std::map<std::string, std::string> options = {};
-    ASSERT_OK_AND_ASSIGN(auto batch_reader, ParquetFileBatchReader::Create(
-                                                std::move(in_stream), options,
-                                                /*batch_size=*/1024,
-                                                /*file_metadata=*/nullptr,
-                                                /*storage_read_bytes=*/nullptr, arrow_pool_));
+    ASSERT_OK_AND_ASSIGN(auto batch_reader,
+                         ParquetFileBatchReader::Create(std::move(in_stream), options,
+                                                        /*batch_size=*/1024,
+                                                        /*file_metadata=*/nullptr,
+                                                        /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                                        /*hints=*/std::nullopt));
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*paimon_schema_, c_schema.get()).ok());
     ASSERT_OK(batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
@@ -582,13 +585,13 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
     batch_reader->Close();
     ASSERT_EQ(result_chunked->length(), static_cast<int64_t>(jsons.size()));
     ASSERT_EQ(result_chunked->num_chunks(), 1);
-    auto result_struct = std::static_pointer_cast<arrow::StructArray>(result_chunked->chunk(0));
+    auto result_struct = checked_pointer_cast<arrow::StructArray>(result_chunked->chunk(0));
 
-    auto variant_column = std::static_pointer_cast<arrow::StructArray>(result_struct->field(1));
+    auto variant_column = checked_pointer_cast<arrow::StructArray>(result_struct->field(1));
     ASSERT_EQ(variant_column->length(), static_cast<int64_t>(jsons.size()));
     ASSERT_EQ(variant_column->field(0)->length(), variant_column->length());
-    auto value_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
-    auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
+    auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
+    auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
     for (size_t i = 0; i < jsons.size(); ++i) {
         SCOPED_TRACE("row " + std::to_string(i));
         if (jsons[i] == nullptr) {
@@ -635,8 +638,8 @@ TEST_F(VariantParquetTest, ShreddedWriteAndReadRoundTrip) {
     std::shared_ptr<arrow::StructArray> variant_column;
     ReadVariantColumn(paimon_schema_, &variant_column);
     ASSERT_EQ(variant_column->length(), static_cast<int64_t>(jsons.size()));
-    auto value_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
-    auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
+    auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
+    auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
     for (size_t i = 0; i < jsons.size(); ++i) {
         SCOPED_TRACE("row " + std::to_string(i));
         if (jsons[i] == nullptr) {
@@ -683,8 +686,8 @@ TEST_F(VariantParquetTest, UntypedPhysicalVariantWriteAndReadRoundTrip) {
     std::shared_ptr<arrow::StructArray> variant_column;
     ReadVariantColumn(paimon_schema_, &variant_column);
     ASSERT_EQ(variant_column->length(), static_cast<int64_t>(jsons.size()));
-    auto value_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
-    auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
+    auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
+    auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
     for (size_t i = 0; i < jsons.size(); ++i) {
         SCOPED_TRACE("row " + std::to_string(i));
         if (jsons[i] == nullptr) {
@@ -735,8 +738,8 @@ TEST_F(VariantParquetTest, AdaptiveInferenceUntypedPhysicalWriteAndReadRoundTrip
     std::shared_ptr<arrow::StructArray> variant_column;
     ReadVariantColumn(paimon_schema_, &variant_column);
     ASSERT_EQ(variant_column->length(), static_cast<int64_t>(jsons.size()));
-    auto value_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
-    auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
+    auto value_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(0));
+    auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(variant_column->field(1));
     for (size_t i = 0; i < jsons.size(); ++i) {
         SCOPED_TRACE("row " + std::to_string(i));
         if (jsons[i] == nullptr) {

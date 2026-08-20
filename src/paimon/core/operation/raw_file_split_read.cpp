@@ -18,12 +18,14 @@
 
 #include "paimon/core/operation/raw_file_split_read.h"
 
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "paimon/common/file_index/bitmap/apply_bitmap_index_batch_reader.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
@@ -32,6 +34,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/operation/internal_read_context.h"
@@ -52,6 +55,30 @@ class DataFilePathFactory;
 class Executor;
 class Predicate;
 
+namespace {
+
+Status ValidateFileLocalRowRanges(const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+                                  const std::optional<std::vector<Range>>& local_row_ranges) {
+    if (local_row_ranges == std::nullopt) {
+        return Status::OK();
+    }
+    if (data_files.size() != 1) {
+        return Status::Invalid("file-local row ranges require exactly one data file");
+    }
+    const auto& file = data_files.front();
+    for (const Range& range : local_row_ranges.value()) {
+        if (range.from < 0 || range.to < range.from || range.to >= file->row_count ||
+            range.to >= std::numeric_limits<int32_t>::max()) {
+            return Status::Invalid(
+                fmt::format("Invalid file-local row range [{}, {}] for file {} with {} rows.",
+                            range.from, range.to, file->file_name, file->row_count));
+        }
+    }
+    return Status::OK();
+}
+
+}  // namespace
+
 RawFileSplitRead::RawFileSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
                                    const std::shared_ptr<InternalReadContext>& context,
                                    const std::shared_ptr<MemoryPool>& memory_pool,
@@ -64,18 +91,40 @@ RawFileSplitRead::RawFileSplitRead(const std::shared_ptr<FileStorePathFactory>& 
 
 Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     const std::shared_ptr<Split>& split) {
+    if (auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
+        PAIMON_RETURN_NOT_OK(indexed_split->Validate());
+        if (!indexed_split->Scores().empty()) {
+            // TODO(wangyong9999): Propagate indexed scores through the primary-key
+            // physical-position read path.
+            return Status::NotImplemented(
+                "Primary-key reads do not support scored indexed splits yet.");
+        }
+        const std::shared_ptr<DataSplit>& inner_split = indexed_split->GetDataSplit();
+        auto inner_split_impl = std::dynamic_pointer_cast<DataSplitImpl>(inner_split);
+        if (!inner_split_impl) {
+            return Status::Invalid("cannot cast indexed inner split to data_split");
+        }
+        if (inner_split_impl->DataFiles().size() != 1) {
+            return Status::Invalid(
+                "indexed splits with file-local row ranges must contain exactly one file");
+        }
+        return CreateReader(inner_split_impl->Partition(), inner_split_impl->Bucket(),
+                            inner_split_impl->DataFiles(), inner_split_impl->DeletionFiles(),
+                            indexed_split->RowRanges());
+    }
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
     if (!data_split) {
         return Status::Invalid("cannot cast split to data_split in RawFileSplitRead");
     }
     return CreateReader(data_split->Partition(), data_split->Bucket(), data_split->DataFiles(),
-                        data_split->DeletionFiles());
+                        data_split->DeletionFiles(), /*local_row_ranges=*/std::nullopt);
 }
 
 Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     const BinaryRow& partition, int32_t bucket,
     const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-    DeletionVector::Factory dv_factory) {
+    DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& local_row_ranges) {
+    PAIMON_RETURN_NOT_OK(ValidateFileLocalRowRanges(data_files, local_row_ranges));
     const auto& predicate = context_->GetPredicate();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            path_factory_->CreateDataFilePathFactory(partition, bucket));
@@ -83,7 +132,7 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
         CreateRawFileReaders(partition, data_files, raw_read_schema_, predicate, dv_factory,
-                             /*row_ranges=*/{}, data_file_path_factory,
+                             local_row_ranges, data_file_path_factory,
                              /*extra_format_options=*/{}));
 
     auto raw_readers =
@@ -97,16 +146,24 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
 Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     const BinaryRow& partition, int32_t bucket,
     const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-    const std::vector<std::optional<DeletionFile>>& deletion_files) {
+    const std::vector<std::optional<DeletionFile>>& deletion_files,
+    const std::optional<std::vector<Range>>& local_row_ranges) {
     auto dv_factory = DeletionVector::CreateFactory(
         options_.GetFileSystem(), DeletionVector::CreateDeletionFileMap(data_files, deletion_files),
         pool_);
-    return CreateReader(partition, bucket, data_files, dv_factory);
+    return CreateReader(partition, bucket, data_files, dv_factory, local_row_ranges);
 }
 
 Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
                                      bool force_keep_delete) const {
-    auto split_impl = dynamic_cast<DataSplitImpl*>(split.get());
+    bool is_indexed = false;
+    std::shared_ptr<Split> data_split = split;
+    if (auto indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(split)) {
+        PAIMON_RETURN_NOT_OK(indexed_split->Validate());
+        data_split = indexed_split->GetDataSplit();
+        is_indexed = true;
+    }
+    auto split_impl = dynamic_cast<DataSplitImpl*>(data_split.get());
     if (split_impl == nullptr) {
         return Status::Invalid("unexpected error, split cast to impl failed");
     }
@@ -114,14 +171,16 @@ Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
         // for append table, always return true
         return true;
     }
-    bool matched = !force_keep_delete && !split_impl->IsStreaming() && split_impl->RawConvertible();
+    bool matched = !force_keep_delete && !split_impl->IsStreaming() &&
+                   (is_indexed || split_impl->RawConvertible());
     if (matched) {
         // for legacy version, we are not sure if there are delete rows, but in order to be
         // compatible with the query acceleration of the OLAP engine, we have generated raw
         // files.
         // Here, for the sake of correctness, we still need to perform drop delete filtering.
         for (const auto& file : split_impl->DataFiles()) {
-            if (file->delete_row_count == std::nullopt) {
+            if (file == nullptr || file->delete_row_count == std::nullopt ||
+                file->delete_row_count.value() != 0) {
                 return false;
             }
         }
@@ -150,6 +209,22 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
     const RoaringBitmap32* selection = nullptr;
     if (auto* bitmap_file_index = dynamic_cast<BitmapIndexResult*>(file_index_result.get())) {
         PAIMON_ASSIGN_OR_RAISE(selection, bitmap_file_index->GetBitmap());
+    }
+
+    // narrow the selection to the file-local row positions of an indexed split
+    std::optional<RoaringBitmap32> ranges_selection;
+    if (ranges != std::nullopt) {
+        RoaringBitmap32 ranges_bitmap;
+        for (const Range& range : ranges.value()) {
+            ranges_bitmap.AddRange(static_cast<int32_t>(range.from),
+                                   static_cast<int32_t>(range.to + 1));
+        }
+        if (selection != nullptr) {
+            ranges_selection = RoaringBitmap32::And(*selection, ranges_bitmap);
+        } else {
+            ranges_selection = std::move(ranges_bitmap);
+        }
+        selection = &ranges_selection.value();
     }
 
     // prepare deletion bitmap for deletion vector

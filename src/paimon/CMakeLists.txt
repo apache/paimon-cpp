@@ -157,6 +157,7 @@ set(PAIMON_COMMON_SRCS
     common/utils/arrow/arrow_output_stream_adapter.cpp
     common/utils/arrow/arrow_utils.cpp
     common/utils/arrow/mem_utils.cpp
+    common/utils/arrow/vector_utils.cpp
     common/utils/binary_row_partition_computer.cpp
     common/utils/bit_set.cpp
     common/utils/bloom_filter.cpp
@@ -254,6 +255,11 @@ set(PAIMON_CORE_SRCS
     core/index/index_file_handler.cpp
     core/index/global_index_meta.cpp
     core/index/index_file_meta_serializer.cpp
+    core/index/pk/primary_key_index_source_meta.cpp
+    core/index/pk/primary_key_index_definitions.cpp
+    core/index/pksorted/pk_sorted_index_group.cpp
+    core/index/pksorted/pk_sorted_bucket_index_state.cpp
+    core/index/pksorted/pk_sorted_index_file.cpp
     core/io/generic_row_to_arrow_array_converter.cpp
     core/io/meta_to_arrow_array_converter.cpp
     core/io/async_key_value_producer_and_consumer.cpp
@@ -270,6 +276,7 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_writer.cpp
     core/io/field_mapping_reader.cpp
     core/io/complete_row_tracking_fields_reader.cpp
+    core/io/vector_file_batch_reader.cpp
     core/io/file_index_evaluator.cpp
     core/io/key_value_data_file_record_reader.cpp
     core/io/key_value_data_file_writer_factory.cpp
@@ -366,10 +373,11 @@ set(PAIMON_CORE_SRCS
     core/manifest/snapshot_live_manifest_entries.cpp
     core/operation/write_context.cpp
     core/operation/write_restore.cpp
-    core/realtime/arrow_mem_indexer.cpp
-    core/realtime/arrow_mem_indexer_factory.cpp
+    core/realtime/arrow_realtime_store.cpp
+    core/realtime/arrow_realtime_store_factory.cpp
     core/realtime/realtime_append_only_writer.cpp
     core/realtime/realtime_context.cpp
+    core/realtime/realtime_context_impl.cpp
     core/postpone/postpone_bucket_writer.cpp
     core/schema/arrow_schema_validator.cpp
     core/schema/schema_manager.cpp
@@ -404,6 +412,9 @@ set(PAIMON_CORE_SRCS
     core/table/source/table_read.cpp
     core/table/source/table_scan.cpp
     core/table/source/data_evolution_batch_scan.cpp
+    core/table/source/primary_key_sorted_index_scan.cpp
+    core/table/source/primary_key_sorted_index_result.cpp
+    core/table/source/primary_key_index_batch_scan.cpp
     core/table/system/audit_log_system_table.cpp
     core/table/system/binlog_system_table.cpp
     core/table/system/global_system_tables.cpp
@@ -602,6 +613,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/row_range_index_test.cpp
                     common/utils/var_length_int_utils_test.cpp
                     common/utils/arrow/arrow_utils_test.cpp
+                    common/utils/arrow/vector_utils_test.cpp
                     common/utils/arrow/arrow_stream_adapter_test.cpp
                     common/utils/arrow/mem_utils_test.cpp
                     common/utils/arrow/status_utils_test.cpp
@@ -722,6 +734,9 @@ if(PAIMON_BUILD_TESTS)
                     core/index/index_in_data_file_dir_path_factory_test.cpp
                     core/index/deletion_vector_meta_test.cpp
                     core/index/index_file_meta_serializer_test.cpp
+                    core/index/pk/primary_key_index_source_meta_test.cpp
+                    core/index/pk/primary_key_index_definitions_test.cpp
+                    core/index/pksorted/pk_sorted_bucket_index_state_test.cpp
                     core/index/index_file_handler_test.cpp
                     core/io/compact_increment_test.cpp
                     core/io/infer_shredding_file_writer_test.cpp
@@ -735,10 +750,12 @@ if(PAIMON_BUILD_TESTS)
                     core/io/key_value_in_memory_record_reader_test.cpp
                     core/io/merged_key_value_record_reader_test.cpp
                     core/io/complete_row_tracking_fields_reader_test.cpp
+                    core/io/vector_file_batch_reader_test.cpp
                     core/io/data_file_meta_test.cpp
                     core/io/file_index_evaluator_test.cpp
                     core/io/single_file_writer_test.cpp
                     core/io/rolling_blob_file_writer_test.cpp
+                    core/global_index/global_index_evaluator_impl_test.cpp
                     core/global_index/indexed_split_test.cpp
                     core/manifest/file_source_test.cpp
                     core/manifest/file_kind_test.cpp
@@ -753,8 +770,9 @@ if(PAIMON_BUILD_TESTS)
                     core/manifest/index_manifest_entry_serializer_test.cpp
                     core/manifest/index_manifest_file_handler_test.cpp
                     core/memory/writer_memory_manager_test.cpp
-                    core/realtime/arrow_mem_indexer_test.cpp
+                    core/realtime/arrow_realtime_store_test.cpp
                     core/realtime/realtime_context_test.cpp
+                    core/realtime/realtime_reader_test.cpp
                     core/mergetree/levels_test.cpp
                     core/mergetree/lookup_file_test.cpp
                     core/mergetree/lookup_levels_test.cpp
@@ -857,6 +875,7 @@ if(PAIMON_BUILD_TESTS)
                     core/table/sink/commit_message_test.cpp
                     core/table/sink/commit_message_impl_test.cpp
                     core/table/source/fallback_data_split_test.cpp
+                    core/table/source/primary_key_sorted_index_scan_test.cpp
                     core/table/source/table_read_test.cpp
                     core/table/source/append_count_reader_test.cpp
                     core/table/source/pk_count_reader_test.cpp

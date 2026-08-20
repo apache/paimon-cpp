@@ -51,6 +51,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/decimal_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -146,13 +147,13 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
 
     void CheckFileCount(const std::string& root_path, const std::vector<std::string>& subdirs,
                         int32_t expect_file_count) const {
-        std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+        std::vector<BasicFileStatus> status_list;
         for (const auto& dir : subdirs) {
             ASSERT_OK(file_system_->ListDir(PathUtil::JoinPath(root_path, dir), &status_list));
         }
         int32_t file_count = 0;
         for (const auto& file_status : status_list) {
-            if (!file_status->IsDir()) {
+            if (!file_status.IsDir()) {
                 file_count++;
             }
         }
@@ -173,10 +174,10 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
             struct_type, arrow::default_memory_pool(),
             {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int32Builder>(),
              std::make_shared<arrow::Int32Builder>(), std::make_shared<arrow::DoubleBuilder>()});
-        auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-        auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
-        auto int_builder1 = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(2));
-        auto double_builder = static_cast<arrow::DoubleBuilder*>(struct_builder.field_builder(3));
+        auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+        auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
+        auto int_builder1 = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(2));
+        auto double_builder = checked_cast<arrow::DoubleBuilder*>(struct_builder.field_builder(3));
 
         for (const auto& d : raw_data) {
             EXPECT_TRUE(struct_builder.Append().ok());
@@ -317,7 +318,7 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
                                      {BlobUtils::ToArrowField(blob_field, false)}));
         PAIMON_ASSIGN_OR_RAISE(
             auto actual_blobs,
-            TestHelper::ToBlobs(std::static_pointer_cast<arrow::StructArray>(blob_struct_array)));
+            TestHelper::ToBlobs(checked_pointer_cast<arrow::StructArray>(blob_struct_array)));
         PAIMON_ASSIGN_OR_RAISE(bool blobs_equal, TestHelper::CheckBlobsEqual(
                                                      actual_blobs, expected_blobs, file_system_));
         if (!blobs_equal) {
@@ -2536,12 +2537,12 @@ TEST_P(WriteInteTest, TestWriteWithFieldId) {
     ASSERT_OK(CommitMessages(table_path, commit_messages, /*ignore_empty_commit=*/false));
 
     // check data file has field id meta
-    std::vector<std::unique_ptr<BasicFileStatus>> status_list;
+    std::vector<BasicFileStatus> status_list;
     ASSERT_OK(file_system_->ListDir(table_path + "/bucket-0/", &status_list));
     std::vector<std::string> files;
     for (const auto& file_status : status_list) {
-        if (!file_status->IsDir()) {
-            files.emplace_back(file_status->GetPath());
+        if (!file_status.IsDir()) {
+            files.emplace_back(file_status.GetPath());
         }
     }
     ASSERT_EQ(files.size(), 1);

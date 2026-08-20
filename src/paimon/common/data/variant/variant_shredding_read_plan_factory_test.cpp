@@ -34,6 +34,7 @@
 #include "paimon/common/data/variant/variant_shredding_writer.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -62,7 +63,7 @@ class VariantShreddingReadPlanFactoryTest : public ::testing::Test {
                                                                  arrow::default_memory_pool()));
         ASSERT_OK(writer->Append(*variant));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> arr, writer->Finish());
-        *array = std::static_pointer_cast<arrow::StructArray>(arr);
+        *array = checked_pointer_cast<arrow::StructArray>(arr);
     }
 
     // The unshredded physical StructArray (struct{value, metadata}) for one variant.
@@ -141,9 +142,9 @@ TEST_F(VariantShreddingReadPlanFactoryTest, FullVariantReadOfShreddedFile) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled,
                          plan->Assemble(shredded, arrow::default_memory_pool()));
-    auto assembled_struct = std::static_pointer_cast<arrow::StructArray>(assembled);
-    auto value_column = std::static_pointer_cast<arrow::BinaryArray>(assembled_struct->field(0));
-    auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(assembled_struct->field(1));
+    auto assembled_struct = checked_pointer_cast<arrow::StructArray>(assembled);
+    auto value_column = checked_pointer_cast<arrow::BinaryArray>(assembled_struct->field(0));
+    auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(assembled_struct->field(1));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GenericVariant> rebuilt,
         GenericVariant::Create(value_column->GetView(0), metadata_column->GetView(0), pool_));
@@ -176,11 +177,11 @@ TEST_F(VariantShreddingReadPlanFactoryTest, FullVariantReadOfUntypedPhysicalFile
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled,
                          plan->Assemble(shredded, arrow::default_memory_pool()));
-    auto assembled_struct = std::static_pointer_cast<arrow::StructArray>(assembled);
+    auto assembled_struct = checked_pointer_cast<arrow::StructArray>(assembled);
     ASSERT_EQ(assembled_struct->data()->child_data[0], shredded->data()->child_data[1]);
     ASSERT_EQ(assembled_struct->data()->child_data[1], shredded->data()->child_data[0]);
-    auto value_column = std::static_pointer_cast<arrow::BinaryArray>(assembled_struct->field(0));
-    auto metadata_column = std::static_pointer_cast<arrow::BinaryArray>(assembled_struct->field(1));
+    auto value_column = checked_pointer_cast<arrow::BinaryArray>(assembled_struct->field(0));
+    auto metadata_column = checked_pointer_cast<arrow::BinaryArray>(assembled_struct->field(1));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GenericVariant> rebuilt,
         GenericVariant::Create(value_column->GetView(0), metadata_column->GetView(0), pool_));
@@ -205,7 +206,7 @@ TEST_F(VariantShreddingReadPlanFactoryTest, AccessProjectionOnUnshreddedFile) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled,
                          plan->Assemble(unshredded, arrow::default_memory_pool()));
-    auto row = std::static_pointer_cast<arrow::StructArray>(assembled);
+    auto row = checked_pointer_cast<arrow::StructArray>(assembled);
     ASSERT_EQ(row->length(), 1);
     EXPECT_EQ(static_cast<const arrow::Int64Array&>(*row->field(0)).Value(0), 5);
     EXPECT_EQ(static_cast<const arrow::StringArray&>(*row->field(1)).GetString(0), "hi");
@@ -255,7 +256,7 @@ TEST_F(VariantShreddingReadPlanFactoryTest, AccessProjectionOnShreddedFile) {
     ASSERT_TRUE(made.ok()) << made.status().ToString();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled,
                          plan->Assemble(made.ValueOrDie(), arrow::default_memory_pool()));
-    auto row = std::static_pointer_cast<arrow::StructArray>(assembled);
+    auto row = checked_pointer_cast<arrow::StructArray>(assembled);
     EXPECT_EQ(static_cast<const arrow::Int64Array&>(*row->field(0)).Value(0), 5);
     EXPECT_EQ(static_cast<const arrow::StringArray&>(*row->field(1)).GetString(0), "hi");
 }
@@ -288,7 +289,7 @@ TEST_F(VariantShreddingReadPlanFactoryTest, NestedVariantColumnAndTypeMismatch) 
     ASSERT_TRUE(made.ok()) << made.status().ToString();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> assembled,
                          plan->Assemble(made.ValueOrDie(), arrow::default_memory_pool()));
-    auto row = std::static_pointer_cast<arrow::StructArray>(assembled);
+    auto row = checked_pointer_cast<arrow::StructArray>(assembled);
     EXPECT_EQ(static_cast<const arrow::Int32Array&>(*row->field(0)).Value(0), 7);
     ASSERT_EQ(row->field(1)->type_id(), arrow::Type::STRUCT);
 

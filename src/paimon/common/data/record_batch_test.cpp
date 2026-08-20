@@ -33,6 +33,7 @@
 #include "arrow/status.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -53,10 +54,10 @@ TEST(RecordBatchTest, TestSimple) {
         struct_type, arrow::default_memory_pool(),
         {std::make_shared<arrow::StringBuilder>(), std::make_shared<arrow::Int32Builder>(),
          std::make_shared<arrow::Int64Builder>(), std::make_shared<arrow::BooleanBuilder>()});
-    auto string_builder = static_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
-    auto int_builder = static_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
-    auto long_builder = static_cast<arrow::Int64Builder*>(struct_builder.field_builder(2));
-    auto bool_builder = static_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(3));
+    auto string_builder = checked_cast<arrow::StringBuilder*>(struct_builder.field_builder(0));
+    auto int_builder = checked_cast<arrow::Int32Builder*>(struct_builder.field_builder(1));
+    auto long_builder = checked_cast<arrow::Int64Builder*>(struct_builder.field_builder(2));
+    auto bool_builder = checked_cast<arrow::BooleanBuilder*>(struct_builder.field_builder(3));
     for (int32_t i = 0; i < 10; ++i) {
         ASSERT_TRUE(struct_builder.Append().ok());
         ASSERT_TRUE(string_builder->Append("20240813").ok());

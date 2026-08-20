@@ -65,12 +65,13 @@ struct DeletionFile;
 /// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ApplyBitmapIndexBatchReader)
 /// ->(CompleteRowTrackingFieldsBatchReader)->(ShreddingFileReader)
 /// ->(MapSharedShreddingFileReader)
-/// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
+/// ->(VectorFileBatchReader)->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
 ///
 ///
-/// A union `SplitRead` to read multiple inner files to merge columns, note that this class
-/// does not support filtering push down: a predicate would have to be evaluated consistently
-/// across the files being merged, which is not implemented here.
+/// A union `SplitRead` to read multiple inner files to merge columns. A single-file row range
+/// group gets both file-index and format-level predicate pushdown. A merged group only uses file
+/// indexes to skip the whole group: filtering its child readers independently would break their
+/// positional alignment.
 ///
 /// Deletion vectors are supported: a row range group's vector is maintained against the
 /// group's anchor file (DataEvolutionUtils::RetrieveAnchorFile), so its positions are
@@ -171,6 +172,21 @@ class DataEvolutionSplitRead : public AbstractSplitRead {
     Result<std::unique_ptr<BatchReader>> InnerCreateReader(
         const std::shared_ptr<DataSplit>& data_split,
         const std::optional<std::vector<Range>>& row_ranges) const;
+
+    /// Keeps top-level conjuncts whose fields all belong to `read_schema`, excluding conjuncts
+    /// over system fields. The returned predicate is for pushdown only; the original predicate is
+    /// still evaluated as a residual filter when requested by the read context.
+    static Result<std::shared_ptr<Predicate>> CreatePushDownPredicate(
+        const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<arrow::Schema>& read_schema);
+
+    /// Returns true when file indexes prove that no row in a merged row range group can match.
+    /// Only normal files are considered, and an older copy of a field is excluded after a newer
+    /// file has claimed the same field id.
+    Result<bool> SkipByFileIndex(
+        const std::shared_ptr<Predicate>& predicate,
+        const std::vector<std::shared_ptr<DataFileMeta>>& files,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
 
     /// Builds the deletion vector factory over the split's deletion files, keyed by data file
     /// name. Only anchor files carry one. Returns a null factory when the split has none.

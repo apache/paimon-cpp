@@ -32,6 +32,7 @@
 #include "paimon/common/data/generic_row.h"
 #include "paimon/common/data/serializer/binary_serializer_utils.h"
 #include "paimon/common/types/row_kind.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
@@ -55,7 +56,7 @@ std::shared_ptr<InternalRow> Row(VariantType id, int32_t sequence, int32_t value
 
 VariantType Rows(std::vector<VariantType> rows) {
     return VariantType(
-        std::static_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(rows))));
+        checked_pointer_cast<InternalArray>(std::make_shared<GenericArray>(std::move(rows))));
 }
 
 std::shared_ptr<InternalArray> GetRows(const VariantType& value) {
@@ -159,7 +160,7 @@ TEST(FieldNestedUpdateAggTest, RetractRequiresMatchingRowKind) {
     ASSERT_OK_AND_ASSIGN(
         VariantType kept,
         agg->Retract(Rows({Row(int32_t{1}, 1, 10)}),
-                     Rows({VariantType(std::static_pointer_cast<InternalRow>(retract_row))})));
+                     Rows({VariantType(checked_pointer_cast<InternalRow>(retract_row))})));
     ASSERT_EQ(1, GetRows(kept)->Size());
     ASSERT_TRUE(FindRow(kept, 1));
 }
@@ -236,7 +237,7 @@ VariantType KeyedRow(VariantType k0, VariantType k1, std::string_view v, int32_t
     row->SetField(2, v);
     row->SetField(3, seq);
     row->SetField(4, seq2);
-    return VariantType(std::static_pointer_cast<InternalRow>(row));
+    return VariantType(checked_pointer_cast<InternalRow>(row));
 }
 
 Result<std::unique_ptr<FieldNestedUpdateAgg>> MakeKeyedAgg(

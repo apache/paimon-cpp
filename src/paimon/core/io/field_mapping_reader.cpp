@@ -29,12 +29,12 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/scalar.h"
-#include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/casting/cast_executor.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -54,8 +54,7 @@ Result<bool> FieldMappingReader::HasMapSelectedKeysRecursively(
     if (NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field)) {
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
                                NestedProjectionUtils::GetMapSelectedKeys(read_field));
-        auto read_struct =
-            arrow::internal::checked_pointer_cast<arrow::StructType>(read_field->type());
+        auto read_struct = checked_pointer_cast<arrow::StructType>(read_field->type());
         if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
             return Status::Invalid(fmt::format(
                 "selected-key metadata size {} does not match STRUCT field count {} for {}",
@@ -109,8 +108,8 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::FilterMapSelectedKeysR
                             "field '{}', got {}",
                             read_field->name(), array->type()->ToString()));
         }
-        auto struct_array = std::static_pointer_cast<arrow::StructArray>(array);
-        auto read_struct_type = std::static_pointer_cast<arrow::StructType>(read_field->type());
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+        auto read_struct_type = checked_pointer_cast<arrow::StructType>(read_field->type());
         if (struct_array->num_fields() != read_struct_type->num_fields()) {
             return Status::Invalid(fmt::format(
                 "FilterMapSelectedKeysRecursively struct field count mismatch for '{}': "
@@ -217,7 +216,7 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::CastNonPartitionArrayI
     if (!need_casting_) {
         return src_array;
     }
-    auto* struct_array = arrow::internal::checked_cast<arrow::StructArray*>(src_array.get());
+    auto* struct_array = checked_cast<arrow::StructArray*>(src_array.get());
     int32_t field_count = struct_array->num_fields();
     assert(static_cast<size_t>(field_count) == non_partition_info_.cast_executors.size());
     arrow::ArrayVector casted_array;
@@ -434,8 +433,7 @@ Status FieldMappingReader::MappingFields(const std::shared_ptr<arrow::Array>& da
                                          const std::vector<int32_t>& idx_in_target_schema,
                                          arrow::ArrayVector* target_array,
                                          std::vector<std::string>* target_field_names) {
-    auto* struct_array = arrow::internal::checked_cast<arrow::StructArray*>(data_array.get());
-    assert(struct_array);
+    auto* struct_array = checked_cast<arrow::StructArray*>(data_array.get());
     assert(struct_array->fields().size() == idx_in_target_schema.size());
     for (size_t i = 0; i < idx_in_target_schema.size(); i++) {
         std::shared_ptr<arrow::Array> field_array = struct_array->field(i);

@@ -31,7 +31,6 @@
 #include "jdo_error.h"  // NOLINT(build/include_subdir)
 #include "paimon/common/utils/math.h"
 #include "paimon/common/utils/path_util.h"
-#include "paimon/fs/jindo/jindo_file_status.h"
 #include "paimon/fs/jindo/jindo_utils.h"
 
 namespace paimon::jindo {
@@ -129,8 +128,8 @@ Status JindoFileSystem::Rename(const std::string& src, const std::string& dst) c
         return Status::Invalid(
             fmt::format("rename {} to {} failed, because: dst file already exist", src, dst));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status, GetFileStatus(src));
-    if (!file_status->IsDir() && dst.back() == '/') {
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus(src));
+    if (!file_status.IsDir() && dst.back() == '/') {
         return Status::Invalid(
             fmt::format("rename {} to {} failed, because: src file is not a dir", src, dst));
     }
@@ -153,23 +152,23 @@ Status JindoFileSystem::Delete(const std::string& path, bool recursive) const {
     return Status::OK();
 }
 
-Result<std::unique_ptr<FileStatus>> JindoFileSystem::GetFileStatus(const std::string& path) const {
+Result<FileStatus> JindoFileSystem::GetFileStatus(const std::string& path) const {
     JdoFileInfo file_info;
     PAIMON_RETURN_NOT_OK_FROM_JINDO(impl_->GetFileSystem()->getFileInfo(path, &file_info));
-    return std::make_unique<JindoFileStatus>(std::move(file_info));
+    return FileStatus(file_info.getPath(), file_info.getLength(), file_info.isDir(),
+                      file_info.getMtime());
 }
 
-Status JindoFileSystem::ListDir(
-    const std::string& directory,
-    std::vector<std::unique_ptr<BasicFileStatus>>* file_status_list) const {
+Status JindoFileSystem::ListDir(const std::string& directory,
+                                std::vector<BasicFileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(bool exist, Exists(directory));
     if (!exist) {
         return Status::OK();
     }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status, GetFileStatus(directory));
-    if (!file_status->IsDir()) {
+    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus(directory));
+    if (!file_status.IsDir()) {
         return Status::Invalid(
-            fmt::format("file {} already exists and is not a directory", file_status->GetPath()));
+            fmt::format("file {} already exists and is not a directory", file_status.GetPath()));
     }
     JdoListResult list_result;
     while (true) {
@@ -178,8 +177,7 @@ Status JindoFileSystem::ListDir(
         auto file_infos = list_result.getFileInfos();
         file_status_list->reserve(file_status_list->size() + file_infos.size());
         for (auto& file_info : file_infos) {
-            file_status_list->push_back(
-                std::make_unique<JindoBasicFileStatus>(std::move(file_info)));
+            file_status_list->emplace_back(file_info.getPath(), file_info.isDir());
         }
         if (!list_result.isTruncated()) {
             break;
@@ -191,8 +189,8 @@ Status JindoFileSystem::ListDir(
     return Status::OK();
 }
 
-Status JindoFileSystem::ListFileStatus(
-    const std::string& path, std::vector<std::unique_ptr<FileStatus>>* file_status_list) const {
+Status JindoFileSystem::ListFileStatus(const std::string& path,
+                                       std::vector<FileStatus>* file_status_list) const {
     PAIMON_ASSIGN_OR_RAISE(bool exist, Exists(path));
     if (!exist) {
         return Status::OK();
@@ -207,8 +205,7 @@ Status JindoFileSystem::ListFileStatus(
         for (auto& file_info : file_infos) {
             // oss not support list FileStatus, only return BasicFileStatus
             // call GetFileStatus to return FileStatus
-            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStatus> file_status,
-                                   GetFileStatus(file_info.getPath()));
+            PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, GetFileStatus(file_info.getPath()));
             file_status_list->push_back(std::move(file_status));
         }
         if (!list_result.isTruncated()) {

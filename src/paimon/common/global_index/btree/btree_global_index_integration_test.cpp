@@ -16,6 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+#include <cstdint>
+#include <functional>
+
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
@@ -55,8 +58,9 @@ class FakeGlobalIndexFileWriter : public GlobalIndexFileWriter {
     }
 
     Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        PAIMON_ASSIGN_OR_RAISE(auto file_status, fs_->GetFileStatus(base_path_ + "/" + file_name));
-        return file_status->GetLen();
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status,
+                               fs_->GetFileStatus(base_path_ + "/" + file_name));
+        return file_status.GetLen();
     }
 
     std::string ToPath(const std::string& file_name) const override {
@@ -486,8 +490,8 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteEmptyStringKeyMetadata) {
     ASSERT_OK_AND_ASSIGN(auto metas, writer->Finish());
     ASSERT_EQ(metas.size(), 1);
 
-    std::shared_ptr<BTreeIndexMeta> meta =
-        BTreeIndexMeta::Deserialize(metas[0].metadata, pool_.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BTreeIndexMeta> meta,
+                         BTreeIndexMeta::Deserialize(metas[0].metadata, pool_.get()));
     ASSERT_TRUE(meta->FirstKey());
     ASSERT_EQ(meta->FirstKey()->size(), 0);
     ASSERT_TRUE(meta->LastKey());

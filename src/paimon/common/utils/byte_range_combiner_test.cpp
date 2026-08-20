@@ -21,9 +21,11 @@
 
 #include "paimon/common/utils/byte_range_combiner.h"
 
+#include <limits>
+
 #include "gtest/gtest.h"
+#include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/testing/utils/testharness.h"
-#include "paimon/utils/read_ahead_cache.h"
 
 namespace paimon::test {
 
@@ -73,6 +75,28 @@ TEST(ByteRangeCombinerTest, TestBasics) {
 
     // Completely overlapping ranges should be eliminated
     check({{20, 5}, {20, 5}, {21, 2}}, {{20, 5}});
+}
+
+// Ranges beyond the int64 bound (e.g. negative signed metadata values cast to uint64_t)
+// must be rejected before the unchecked offset + length arithmetic, which would otherwise
+// wrap around or spin the splitting loop until memory is exhausted.
+TEST(ByteRangeCombinerTest, TestRejectsRangesBeyondInt64Bound) {
+    constexpr auto kInt64Max = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    auto check_invalid = [](std::vector<ByteRange> ranges) -> void {
+        ASSERT_NOK_WITH_MSG(
+            ByteRangeCombiner::CoalesceByteRanges(std::move(ranges), /*hole_size_limit=*/9,
+                                                  /*range_size_limit=*/99),
+            "exceeds the int64 bound");
+    };
+
+    // Offset beyond int64 (negative int64 cast to uint64_t lands here).
+    check_invalid({{kInt64Max + 1, 1}});
+    // Length beyond int64 (e.g. -1 cast to uint64_t), which would explode the split loop.
+    check_invalid({{0, std::numeric_limits<uint64_t>::max()}});
+    // Both in range individually, but the end position overflows the int64 bound.
+    check_invalid({{kInt64Max - 10, 20}});
+    // One bad range among valid ones still fails the whole batch.
+    check_invalid({{100, 10}, {0, std::numeric_limits<uint64_t>::max()}});
 }
 
 }  // namespace paimon::test

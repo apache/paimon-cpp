@@ -26,6 +26,7 @@
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -91,16 +92,16 @@ class ParquetFieldIdConverterTest : public ::testing::Test {
 
         auto type_id = field->type()->id();
         if (type_id == arrow::Type::STRUCT) {
-            auto struct_type = std::static_pointer_cast<arrow::StructType>(field->type());
+            auto struct_type = checked_pointer_cast<arrow::StructType>(field->type());
             for (const auto& child : struct_type->fields()) {
                 PrintFieldMetadataRecursive(child, indent + 1, convert_type, field_infos);
             }
         } else if (type_id == arrow::Type::LIST) {
-            auto list_type = std::static_pointer_cast<arrow::ListType>(field->type());
+            auto list_type = checked_pointer_cast<arrow::ListType>(field->type());
             PrintFieldMetadataRecursive(list_type->value_field(), indent + 1, convert_type,
                                         field_infos);
         } else if (type_id == arrow::Type::MAP) {
-            auto map_type = std::static_pointer_cast<arrow::MapType>(field->type());
+            auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
             PrintFieldMetadataRecursive(map_type->key_field(), indent + 1, convert_type,
                                         field_infos);
             PrintFieldMetadataRecursive(map_type->item_field(), indent + 1, convert_type,
@@ -185,7 +186,8 @@ TEST_F(ParquetFieldIdConverterTest, TestNestedType) {
                                       arrow::field("sub2", arrow::timestamp(arrow::TimeUnit::NANO)),
                                       arrow::field("sub3", arrow::decimal128(23, 5)),
                                       arrow::field("sub4", arrow::binary()),
-                                      arrow::field("sub5", arrow::binary())})))};
+                                      arrow::field("sub5", arrow::binary())}))),
+        arrow::field("f3", arrow::fixed_size_list(arrow::float32(), 7))};
     auto schema = arrow::schema(fields);
     ASSERT_OK_AND_ASSIGN(
         auto table_schema,
@@ -210,8 +212,11 @@ TEST_F(ParquetFieldIdConverterTest, TestNestedType) {
         {"sub4", arrow::Type::BINARY, "16"},     {"sub5", arrow::Type::BINARY, "17"},
         {"sub1", arrow::Type::DATE32, "18"},     {"sub2", arrow::Type::TIMESTAMP, "19"},
         {"sub3", arrow::Type::DECIMAL128, "20"}, {"sub4", arrow::Type::BINARY, "21"},
-        {"sub5", arrow::Type::BINARY, "22"}};
+        {"sub5", arrow::Type::BINARY, "22"},     {"f3", arrow::Type::FIXED_SIZE_LIST, "23"}};
     ASSERT_EQ(expected_field_infos, field_infos);
+    auto new_vector =
+        checked_pointer_cast<arrow::FixedSizeListType>(new_schema->GetFieldByName("f3")->type());
+    ASSERT_EQ(new_vector->list_size(), 7);
     // convert to paimon.id
     ASSERT_OK_AND_ASSIGN(auto old_schema,
                          ParquetFieldIdConverter::GetPaimonIdsFromParquetIds(new_schema));
@@ -219,6 +224,9 @@ TEST_F(ParquetFieldIdConverterTest, TestNestedType) {
     PrintFieldMetadata(old_schema, ParquetFieldIdConverter::IdConvertType::PARQUET_TO_PAIMON_ID,
                        &old_field_infos);
     ASSERT_EQ(expected_field_infos, old_field_infos);
+    auto old_vector =
+        checked_pointer_cast<arrow::FixedSizeListType>(old_schema->GetFieldByName("f3")->type());
+    ASSERT_EQ(old_vector->list_size(), 7);
 }
 
 }  // namespace paimon::parquet::test

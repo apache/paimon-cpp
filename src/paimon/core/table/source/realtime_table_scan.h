@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-#include "paimon/realtime/realtime_context.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/result.h"
 #include "paimon/table/source/table_scan.h"
 
@@ -39,19 +39,19 @@ class SnapshotManager;
 class RealtimeTableScan : public TableScan {
  public:
     RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
-                      const std::shared_ptr<RealtimeContext>& realtime_context,
+                      const std::shared_ptr<RealtimeContextImpl>& realtime_context,
                       const std::shared_ptr<FileStorePathFactory>& path_factory,
                       const std::shared_ptr<SnapshotManager>& snapshot_manager,
                       const std::shared_ptr<FileSystem>& file_system,
-                      const std::shared_ptr<ScanFilter>& scan_filter);
+                      const std::shared_ptr<ScanFilter>& scan_filter, int64_t read_view_ttl_millis);
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
 
  private:
     using MemoryViewMap = std::map<RealtimePartitionBucket, RealtimePartitionBucketView>;
 
-    static int64_t GetCommittedOffset(const RealtimeOffsetMap& committed_offsets,
-                                      const RealtimePartitionBucket& partition_bucket);
+    static int64_t GetCommittedEndOffset(const RealtimeOffsetMap& committed_offsets,
+                                         const RealtimePartitionBucket& partition_bucket);
 
     bool MatchPartition(const std::map<std::string, std::string>& partition) const;
 
@@ -63,14 +63,16 @@ class RealtimeTableScan : public TableScan {
 
     Result<std::vector<std::shared_ptr<Split>>> CreateRealtimeSplits(
         const std::vector<std::shared_ptr<Split>>& disk_splits, MemoryViewMap&& active_memory,
-        const RealtimeOffsetMap& committed_offsets) const;
+        const RealtimeOffsetMap& committed_offsets,
+        const std::optional<int64_t>& snapshot_id) const;
 
     std::unique_ptr<TableScan> disk_scan_;
-    std::shared_ptr<RealtimeContext> realtime_context_;
+    std::shared_ptr<RealtimeContextImpl> realtime_context_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<SnapshotManager> snapshot_manager_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<ScanFilter> scan_filter_;
+    int64_t read_view_ttl_millis_;
 };
 
 }  // namespace paimon

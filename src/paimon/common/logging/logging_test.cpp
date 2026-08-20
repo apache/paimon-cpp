@@ -135,16 +135,16 @@ TEST(LoggerTest, TestGlogWritesLogFileToDisk) {
     // Collect the content of whatever file glog created in our directory.
     std::string on_disk_path;
     std::string content;
-    std::vector<std::unique_ptr<BasicFileStatus>> entries;
+    std::vector<BasicFileStatus> entries;
     ASSERT_OK(fs->ListDir(tmp_dir->Str(), &entries));
     for (const auto& entry : entries) {
-        if (entry->IsDir()) {
+        if (entry.IsDir()) {
             continue;
         }
         std::string file_content;
-        ASSERT_OK(fs->ReadFile(entry->GetPath(), &file_content));
+        ASSERT_OK(fs->ReadFile(entry.GetPath(), &file_content));
         if (file_content.find(token) != std::string::npos) {
-            on_disk_path = entry->GetPath();
+            on_disk_path = entry.GetPath();
             content = std::move(file_content);
             break;
         }

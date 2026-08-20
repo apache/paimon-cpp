@@ -101,6 +101,10 @@ TEST(FieldTypeUtilsTest, ConvertToFieldType) {
     ASSERT_OK_AND_ASSIGN(result, FieldTypeUtils::ConvertToFieldType(arrow::Type::type::STRUCT));
     ASSERT_EQ(result, FieldType::STRUCT);
 
+    ASSERT_OK_AND_ASSIGN(result,
+                         FieldTypeUtils::ConvertToFieldType(arrow::Type::type::FIXED_SIZE_LIST));
+    ASSERT_EQ(result, FieldType::VECTOR);
+
     // Test unsupported Arrow type
     ASSERT_NOK(FieldTypeUtils::ConvertToFieldType(arrow::Type::type::UINT8));
 }
@@ -124,6 +128,7 @@ TEST(FieldTypeUtilsTest, FieldTypeToString) {
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::ARRAY), "ARRAY");
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::MAP), "MAP");
     ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::STRUCT), "STRUCT");
+    ASSERT_EQ(FieldTypeUtils::FieldTypeToString(FieldType::VECTOR), "VECTOR");
 
     // Test UNKNOWN type
     auto unknown_type = static_cast<FieldType>(128);

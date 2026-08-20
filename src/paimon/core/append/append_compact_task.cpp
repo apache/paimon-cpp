@@ -24,6 +24,7 @@
 
 #include "fmt/format.h"
 #include "fmt/ranges.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/core/compact/cancellation_controller.h"
 #include "paimon/core/io/compact_increment.h"
@@ -73,7 +74,7 @@ Result<std::shared_ptr<CommitMessage>> AppendCompactTask::DoCompact(
                                                               /*total_buckets=*/options.GetBucket(),
                                                               data_increment, compact_increment);
 
-    return std::static_pointer_cast<CommitMessage>(commit_message);
+    return checked_pointer_cast<CommitMessage>(commit_message);
 }
 
 std::string AppendCompactTask::ToString() const {
