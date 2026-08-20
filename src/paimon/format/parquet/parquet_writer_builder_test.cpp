@@ -22,6 +22,7 @@
 
 #include "arrow/type_fwd.h"
 #include "arrow/util/type_fwd.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/defs.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
@@ -236,6 +237,22 @@ TEST(ParquetWriterBuilderTest, TestInvalidWriterVersion) {
     ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
     ASSERT_NOK_WITH_MSG(builder.PrepareWriterProperties("zstd"),
                         "Unknown writer version PARQUET_3_0");
+}
+
+TEST(ParquetWriterBuilderTest, TestInvalidPageRowCountLimit) {
+    arrow::FieldVector fields;
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    for (const std::string& invalid_value : {"0", "-1"}) {
+        std::map<std::string, std::string> options;
+        options[Options::FILE_FORMAT] = "parquet";
+        options[Options::MANIFEST_FORMAT] = "parquet";
+        options[PARQUET_PAGE_ROW_COUNT_LIMIT] = invalid_value;
+        ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
+        ASSERT_NOK_WITH_MSG(builder.PrepareWriterProperties("zstd"),
+                            fmt::format("Option 'parquet.page.row.count.limit' should be greater "
+                                        "than 0, but got {}",
+                                        invalid_value));
+    }
 }
 
 }  // namespace paimon::parquet::test

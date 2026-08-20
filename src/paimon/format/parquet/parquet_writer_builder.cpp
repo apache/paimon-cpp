@@ -90,6 +90,11 @@ Result<std::shared_ptr<::parquet::WriterProperties>> ParquetWriterBuilder::Prepa
         int64_t page_row_count_limit,
         OptionsUtils::GetValueFromMap<int64_t>(options_, PARQUET_PAGE_ROW_COUNT_LIMIT,
                                                ::parquet::DEFAULT_DATA_PAGE_ROW_COUNT_LIMIT));
+    // Aligned with parquet-mr's checkArgument(rowCount > 0) for parquet.page.row.count.limit.
+    if (page_row_count_limit <= 0) {
+        return Status::Invalid(fmt::format("Option '{}' should be greater than 0, but got {}",
+                                           PARQUET_PAGE_ROW_COUNT_LIMIT, page_row_count_limit));
+    }
     builder.data_page_row_count_limit(page_row_count_limit);
     PAIMON_ASSIGN_OR_RAISE(bool enable_dictionary, OptionsUtils::GetValueFromMap<bool>(
                                                        options_, PARQUET_ENABLE_DICTIONARY,
