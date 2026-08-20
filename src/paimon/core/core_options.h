@@ -40,6 +40,7 @@
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/table/source/startup_mode.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
@@ -48,7 +49,6 @@ namespace paimon {
 
 class ExpireConfig;
 class Cache;
-enum class StatisticsMode;
 
 class PAIMON_EXPORT CoreOptions {
  public:
@@ -107,8 +107,9 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetSourceSplitOpenFileCost() const;
     std::optional<int64_t> GetScanSnapshotId() const;
     std::optional<int64_t> GetScanTimestampMillis() const;
+    bool RealtimeEnabled() const;
     int64_t GetRealtimeReadViewTtlMillis() const;
-    /// Returns the statistics mode used by real-time memory indexers.
+    /// Returns the statistics mode used by the real-time store.
     StatisticsMode GetRealtimeStoreStatisticsMode() const;
     int32_t GetScanManifestEntryCacheMaxSnapshots() const;
 

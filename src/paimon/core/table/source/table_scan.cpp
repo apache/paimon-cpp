@@ -220,6 +220,9 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
     if (!context.GetRealtimeContext()) {
         return Status::OK();
     }
+    if (!core_options.RealtimeEnabled()) {
+        return Status::Invalid("real-time scan requires realtime.enabled=true");
+    }
     if (!table_schema.PrimaryKeys().empty()) {
         return Status::Invalid("real-time union read currently supports append tables only");
     }

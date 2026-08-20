@@ -175,7 +175,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
 
     auto expire_snapshots = std::make_shared<ExpireSnapshots>(
         snapshot_manager, path_factory, manifest_list, manifest_file, options.GetFileSystem(),
-        options.GetExpireConfig(), ctx->GetExecutor());
+        options.GetExpireConfig(), options.RealtimeEnabled(), ctx->GetExecutor());
 
     CommitScanner::ScanSupplier scan_supplier;
     if (table_schema.value()->PrimaryKeys().empty()) {

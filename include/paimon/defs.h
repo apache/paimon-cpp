@@ -540,6 +540,10 @@ struct PAIMON_EXPORT Options {
     /// "scan.timestamp" can be used as an alternative string input for the same mode.
     static const char SCAN_TIMESTAMP_MILLIS[];
 
+    /// "realtime.enabled" - Whether real-time write, commit, and read operations are enabled.
+    /// Default value is "false".
+    static const char REALTIME_ENABLED[];
+
     /// "realtime.read-view-ttl" - Lifetime of a real-time memory view pinned by scan planning
     /// before reader creation. Default value is "5 min".
     static const char REALTIME_READ_VIEW_TTL[];

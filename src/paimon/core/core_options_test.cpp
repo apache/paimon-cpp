@@ -29,7 +29,7 @@
 #include "paimon/core/options/expire_config.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
-#include "paimon/realtime/realtime_store.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
@@ -55,6 +55,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ("__DEFAULT_PARTITION__", core_options.GetPartitionDefaultName());
     ASSERT_EQ(std::nullopt, core_options.GetScanSnapshotId());
     ASSERT_EQ(5 * 60 * 1000, core_options.GetRealtimeReadViewTtlMillis());
+    ASSERT_FALSE(core_options.RealtimeEnabled());
     ASSERT_EQ(StatisticsMode::NONE, core_options.GetRealtimeStoreStatisticsMode());
     ASSERT_EQ("zstd", core_options.GetFileCompression());
     ASSERT_EQ("zstd", core_options.GetWriteFileCompression(0));
@@ -306,6 +307,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::LOOKUP_REMOTE_LEVEL_THRESHOLD, "2"},
         {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"},
+        {Options::REALTIME_ENABLED, "true"},
         {Options::BUCKET_FUNCTION_TYPE, "mod"},
         {"fields.metrics.map.storage-layout", "shared-shredding"},
         {"fields.metrics.map.shared-shredding.max-columns", "128"},
@@ -465,6 +467,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(10L * 1024 * 1024 * 1024, core_options.GetLookupCacheMaxDiskSize());
     ASSERT_TRUE(core_options.TableReadSequenceNumberEnabled());
     ASSERT_TRUE(core_options.KeyValueSequenceNumberEnabled());
+    ASSERT_TRUE(core_options.RealtimeEnabled());
     ASSERT_TRUE(core_options.LookupRemoteFileEnabled());
     ASSERT_EQ(core_options.GetLookupRemoteLevelThreshold(), 2);
     ASSERT_EQ(BucketFunctionType::MOD, core_options.GetBucketFunctionType());
@@ -494,6 +497,7 @@ TEST(CoreOptionsTest, TestInvalidCase) {
                         "invalid lookup mode: invalid");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::LOOKUP_COMPACT_MAX_INTERVAL, "invalid"}}),
                         "Invalid Config [lookup-compact.max-interval: invalid]");
+    ASSERT_NOK(CoreOptions::FromMap({{Options::REALTIME_ENABLED, "invalid"}}));
     ASSERT_NOK_WITH_MSG(
         CoreOptions::FromMap({{Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "-1"}}),
         "scan.manifest-entry-cache.max-snapshots must be non-negative");

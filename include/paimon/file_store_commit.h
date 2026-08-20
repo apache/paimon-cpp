@@ -80,8 +80,9 @@ class PAIMON_EXPORT FileStoreCommit {
     /// snapshot atomically publishes the data files and the updated offset map.
     ///
     /// If this method returns an error, the caller may retry with the same arguments. Each call
-    /// reloads the latest committed progress and treats ranges already covered by a committed
-    /// snapshot as successfully committed.
+    /// reloads the latest committed state. A retry is treated as committed only when both its
+    /// commit identity (`commit_user`, `commit_identifier`) and its requested offset ranges
+    /// identify committed progress.
     ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.

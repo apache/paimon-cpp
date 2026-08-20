@@ -889,6 +889,9 @@ Status FileStoreCommitImpl::Commit(
 Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
     const std::vector<RealtimeCommitProgress>& realtime_commits, int64_t identifier,
     std::optional<int64_t> watermark) {
+    if (!options_.RealtimeEnabled()) {
+        return Status::Invalid("CommitWithProgress requires realtime.enabled=true");
+    }
     if (realtime_commits.empty()) {
         return Status::Invalid("real-time commits must not be empty");
     }
@@ -929,12 +932,24 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
         commit_messages.push_back(realtime_commit.commit_message);
     }
 
+    std::shared_ptr<ManifestCommittable> committable =
+        CreateManifestCommittable(identifier, commit_messages, watermark, /*properties=*/{});
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<ManifestCommittable>> pending_committables,
+                           FilterCommitted({committable}));
+    const bool identifier_committed = pending_committables.empty();
+
     PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
                            snapshot_manager_->LatestSnapshot());
     PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap committed_offsets,
                            RealtimeCommitProperties::ReadOffsets(latest_snapshot, fs_));
     PAIMON_ASSIGN_OR_RAISE(bool ranges_committed, RealtimeCommitProperties::AreRangesCommitted(
                                                       committed_offsets, realtime_ranges));
+    if (ranges_committed != identifier_committed) {
+        return Status::Invalid(
+            ranges_committed
+                ? "real-time offset ranges were committed by another commit user or identifier"
+                : "real-time commit identifier was committed without the requested offset ranges");
+    }
     if (ranges_committed) {
         if (!latest_snapshot) {
             return Status::Invalid("real-time commit ranges are covered without a snapshot");
@@ -942,8 +957,7 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
         return latest_snapshot->Id();
     }
 
-    std::shared_ptr<ManifestCommittable> committable =
-        CreateManifestCommittable(identifier, commit_messages, watermark, /*properties=*/{});
+    PAIMON_RETURN_NOT_OK(CheckFilesExistence(pending_committables));
     const int64_t previous_snapshot_id = last_committed_snapshot_id_;
     PAIMON_RETURN_NOT_OK(Commit(committable, /*check_append_files=*/false,
                                 /*retry_on_conflict=*/false, realtime_ranges));

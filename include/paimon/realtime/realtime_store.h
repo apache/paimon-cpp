@@ -31,6 +31,7 @@
 #include "paimon/realtime/offset_range.h"
 #include "paimon/record_batch.h"
 #include "paimon/result.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/visibility.h"
 
 struct ArrowSchema;
@@ -39,14 +40,6 @@ namespace paimon {
 
 class MemoryPool;
 class Predicate;
-
-/// Statistics collected by a `RealtimeStore` for query predicate pushdown.
-enum class StatisticsMode {
-    /// Do not collect statistics.
-    NONE,
-    /// Collect statistics for all supported fields.
-    FULL,
-};
 
 /// A table record batch and its framework-assigned contiguous offset range.
 ///

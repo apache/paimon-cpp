@@ -189,9 +189,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
                    arrow::field("pt", arrow::utf8())};
         schema_ = arrow::schema(fields_);
         options_ = {
-            {Options::MANIFEST_FORMAT, "orc"}, {Options::FILE_FORMAT, "orc"},
-            {Options::FILE_SYSTEM, "local"},   {Options::BUCKET, "1"},
-            {Options::BUCKET_KEY, "id"},       {Options::TARGET_FILE_SIZE, "1048576"},
+            {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, "orc"},
+            {Options::FILE_SYSTEM, "local"},     {Options::BUCKET, "1"},
+            {Options::BUCKET_KEY, "id"},         {Options::TARGET_FILE_SIZE, "1048576"},
+            {Options::REALTIME_ENABLED, "true"},
         };
     }
 
@@ -568,6 +569,44 @@ class RealtimeWriteInteTest : public ::testing::Test {
     std::shared_ptr<MemoryPool> pool_;
 };
 
+TEST_F(RealtimeWriteInteTest, TestRealtimeOperationsRequireEnabledOption) {
+    CreateTable(/*partition_keys=*/{});
+    std::map<std::string, std::string> disabled_options = options_;
+    disabled_options[Options::REALTIME_ENABLED] = "false";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+
+    WriteContextBuilder write_builder(table_path_, commit_user_);
+    write_builder.SetOptions(disabled_options)
+        .WithStreamingMode(true)
+        .WithRealtimeContext(realtime_context);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)),
+                        "real-time write requires realtime.enabled=true");
+
+    ScanContextBuilder scan_builder(table_path_);
+    scan_builder.SetOptions(disabled_options).WithRealtimeContext(realtime_context);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)),
+                        "real-time scan requires realtime.enabled=true");
+
+    ReadContextBuilder read_builder(table_path_);
+    read_builder.SetOptions(disabled_options).WithRealtimeContext(realtime_context);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+                        "real-time read requires realtime.enabled=true");
+
+    CommitContextBuilder commit_builder(table_path_, commit_user_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         commit_builder.SetOptions(disabled_options).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_NOK_WITH_MSG(commit->CommitWithProgress(/*realtime_commits=*/{},
+                                                   /*commit_identifier=*/0,
+                                                   /*watermark=*/std::nullopt),
+                        "CommitWithProgress requires realtime.enabled=true");
+}
+
 TEST_F(RealtimeWriteInteTest, TestAppendCommitAndRead) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter());
@@ -712,6 +751,31 @@ TEST_F(RealtimeWriteInteTest, TestCommitWithProgressRetryIsIdempotent) {
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestCommitWithProgressRejectsCoveredRangesFromAnotherUser) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter());
+    std::vector<Row> expected_rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(expected_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK(Commit(commits, /*commit_identifier=*/0));
+
+    CommitContextBuilder builder(table_path_, "another_realtime_commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.SetOptions(options_).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(context)));
+    ASSERT_NOK_WITH_MSG(commit->CommitWithProgress(commits, /*commit_identifier=*/0,
+                                                   /*watermark=*/std::nullopt),
+                        "another commit user or identifier");
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows());
+    ASSERT_EQ(expected_rows, actual_rows);
+    ASSERT_OK(writer->Close());
+}
+
 TEST_F(RealtimeWriteInteTest, TestRealtimeWriteAcrossAppendCompaction) {
     options_[Options::TARGET_FILE_ROW_NUM] = "2";
     options_[Options::COMPACTION_MIN_FILE_NUM] = "2";
@@ -841,6 +905,53 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeOffsetFileLifecycle) {
     ASSERT_TRUE(second_offsets_exist);
     ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets,
                          RealtimeCommitProperties::ReadOffsets(second_snapshot, file_system));
+    ASSERT_EQ(5, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestCompactionSnapshotRetainsSharedOffsetFile) {
+    options_[Options::TARGET_FILE_ROW_NUM] = "2";
+    options_[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    options_[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
+    options_[Options::SNAPSHOT_NUM_RETAINED_MAX] = "1";
+    options_[Options::SNAPSHOT_TIME_RETAINED] = "1ms";
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter());
+
+    for (int64_t first_id = 0; first_id < 5; first_id += 2) {
+        std::vector<Row> rows =
+            MakeRows(first_id, std::min<int64_t>(2, 5 - first_id), /*partition=*/"p0");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeBatch(rows, /*partitioned=*/false));
+        ASSERT_OK(writer->Write(std::move(batch)));
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t realtime_snapshot_id, Commit(commits, /*commit_identifier=*/0));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot compact_snapshot, CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                                                     /*commit_identifier=*/1));
+    ASSERT_EQ(Snapshot::CommitKind::Compact(), compact_snapshot.GetCommitKind());
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options_));
+    std::shared_ptr<FileSystem> file_system = core_options.GetFileSystem();
+    SnapshotManager snapshot_manager(file_system, table_path_);
+    ASSERT_OK_AND_ASSIGN(Snapshot realtime_snapshot,
+                         snapshot_manager.LoadSnapshot(realtime_snapshot_id));
+    std::optional<std::string> realtime_offsets_path =
+        RealtimeCommitProperties::GetOffsetsPath(realtime_snapshot);
+    std::optional<std::string> compact_offsets_path =
+        RealtimeCommitProperties::GetOffsetsPath(compact_snapshot);
+    ASSERT_TRUE(realtime_offsets_path);
+    ASSERT_TRUE(compact_offsets_path);
+    ASSERT_EQ(realtime_offsets_path, compact_offsets_path);
+
+    ASSERT_OK_AND_ASSIGN(int32_t expired_snapshots, ExpireSnapshots());
+    ASSERT_EQ(1, expired_snapshots);
+    ASSERT_OK_AND_ASSIGN(bool offsets_exist, file_system->Exists(compact_offsets_path.value()));
+    ASSERT_TRUE(offsets_exist);
+    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets,
+                         RealtimeCommitProperties::ReadOffsets(compact_snapshot, file_system));
     ASSERT_EQ(5, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
     ASSERT_OK(writer->Close());
 }

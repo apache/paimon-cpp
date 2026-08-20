@@ -38,7 +38,7 @@
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
-#include "paimon/realtime/realtime_store.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -391,6 +391,7 @@ struct CoreOptions::Impl {
     int64_t commit_timeout = std::numeric_limits<int64_t>::max();
     int64_t commit_min_retry_wait = 10;
     int64_t commit_max_retry_wait = 10 * 1000;
+    bool realtime_enabled = false;
     int64_t realtime_read_view_ttl_millis = 5 * 60 * 1000;
     StatisticsMode realtime_store_statistics_mode = StatisticsMode::NONE;
 
@@ -850,6 +851,7 @@ struct CoreOptions::Impl {
 
     // Parse real-time write and read configurations.
     Status ParseRealtimeOptions(const ConfigParser& parser) {
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::REALTIME_ENABLED, &realtime_enabled));
         PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
                                                       &realtime_read_view_ttl_millis));
         if (realtime_read_view_ttl_millis <= 0) {
@@ -1180,6 +1182,10 @@ std::optional<int64_t> CoreOptions::GetScanSnapshotId() const {
 }
 std::optional<int64_t> CoreOptions::GetScanTimestampMillis() const {
     return impl_->scan_timestamp_millis;
+}
+
+bool CoreOptions::RealtimeEnabled() const {
+    return impl_->realtime_enabled;
 }
 
 int64_t CoreOptions::GetRealtimeReadViewTtlMillis() const {

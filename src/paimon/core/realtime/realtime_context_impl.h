@@ -33,6 +33,7 @@
 
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/visibility.h"
 
 struct ArrowSchema;
@@ -42,7 +43,6 @@ namespace paimon {
 class RealtimeStore;
 class RealtimeReadView;
 class MemoryPool;
-enum class StatisticsMode;
 
 struct RealtimeStoreState {
     std::shared_ptr<RealtimeStore> store;

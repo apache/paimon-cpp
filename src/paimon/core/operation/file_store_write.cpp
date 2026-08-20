@@ -120,6 +120,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     }
 
     bool ignore_previous_files = ctx->IgnorePreviousFiles();
+    if (ctx->GetRealtimeContext() && !options.RealtimeEnabled()) {
+        return Status::Invalid("real-time write requires realtime.enabled=true");
+    }
     if (schema->PrimaryKeys().empty()) {
         // append table
         bool need_dv_maintainer_factory = options.DeletionVectorsEnabled();

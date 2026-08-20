@@ -33,6 +33,7 @@
 #include "paimon/record_batch.h"             // IWYU pragma: export
 #include "paimon/result.h"                   // IWYU pragma: export
 #include "paimon/scan_context.h"             // IWYU pragma: export
+#include "paimon/statistics_mode.h"          // IWYU pragma: export
 #include "paimon/status.h"                   // IWYU pragma: export
 #include "paimon/table/source/table_read.h"  // IWYU pragma: export
 #include "paimon/table/source/table_scan.h"  // IWYU pragma: export

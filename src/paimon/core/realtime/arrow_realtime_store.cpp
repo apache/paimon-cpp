@@ -221,7 +221,8 @@ class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
             if (stored.offset_range.end <= offset_begin_) {
                 continue;
             }
-            if (!MayMatch(stored)) {
+            PAIMON_ASSIGN_OR_RAISE(bool may_match, MayMatch(stored));
+            if (!may_match) {
                 continue;
             }
             int64_t begin = std::max<int64_t>(0, offset_begin_ - stored.offset_range.begin);
@@ -248,7 +249,7 @@ class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
     }
 
  private:
-    bool MayMatch(const StoredBatch& stored) const {
+    Result<bool> MayMatch(const StoredBatch& stored) const {
         if (!predicate_filter_ || !stored.statistics) {
             return true;
         }
@@ -263,12 +264,8 @@ class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
             std::make_shared<ColumnarArray>(statistics.null_counts.get(), memory_pool_,
                                             /*offset=*/0, statistics.null_counts->length());
         ProjectedArray projected_null_counts(null_counts, statistics_mapping_);
-        Result<bool> result =
-            predicate_filter_->Test(read_schema_, stored.data->length(), projected_min,
-                                    projected_max, projected_null_counts);
-        // Statistics are only an optional pruning aid. An unsupported predicate or incomplete
-        // statistic must retain the batch to avoid false negatives.
-        return !result.ok() || result.value();
+        return predicate_filter_->Test(read_schema_, stored.data->length(), projected_min,
+                                       projected_max, projected_null_counts);
     }
 
     Result<std::shared_ptr<arrow::StructArray>> BuildOutput(const StoredBatch& stored) {

@@ -29,6 +29,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -98,9 +99,9 @@ class ArrowRealtimeStoreTest : public testing::Test {
         std::shared_ptr<arrow::Array> array =
             arrow::ImportArray(batch.first.first.get(), batch.first.second.get()).ValueOrDie();
         std::shared_ptr<arrow::StructArray> struct_array =
-            std::static_pointer_cast<arrow::StructArray>(array);
+            checked_pointer_cast<arrow::StructArray>(array);
         std::shared_ptr<arrow::Int64Array> ids =
-            std::static_pointer_cast<arrow::Int64Array>(struct_array->field(/*id=*/1));
+            checked_pointer_cast<arrow::Int64Array>(struct_array->field(/*pos=*/1));
         std::vector<int64_t> result;
         for (RoaringBitmap32::Iterator iter = batch.second.Begin(); iter != batch.second.End();
              ++iter) {

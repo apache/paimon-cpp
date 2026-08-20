@@ -157,8 +157,10 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::ListPaimonFileDirs() const
     std::set<std::string> paimon_file_dirs;
     paimon_file_dirs.insert(snapshot_manager_->SnapshotDirectory());
     paimon_file_dirs.insert(FileStorePathFactory::ManifestPath(root_path_));
-    paimon_file_dirs.insert(
-        RealtimeCommitProperties::OffsetsDirectory(root_path_, options_.GetBranch()));
+    if (options_.RealtimeEnabled()) {
+        paimon_file_dirs.insert(
+            RealtimeCommitProperties::OffsetsDirectory(root_path_, options_.GetBranch()));
+    }
     // TODO(jinli.zjw): support clean index, stats, changelog in the future
     // paimon_file_dirs.insert(FileStorePathFactory::IndexPath(root_path_));
     // paimon_file_dirs.insert(FileStorePathFactory::StatisticsPath(root_path_));
@@ -297,9 +299,12 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
     used_files.insert(SnapshotManager::SNAPSHOT_PREFIX + std::to_string(snapshot.Id()));
     used_files.insert(snapshot.BaseManifestList());
     used_files.insert(snapshot.DeltaManifestList());
-    std::optional<std::string> offsets_path = RealtimeCommitProperties::GetOffsetsPath(snapshot);
-    if (offsets_path) {
-        used_files.insert(PathUtil::GetName(offsets_path.value()));
+    if (options_.RealtimeEnabled()) {
+        std::optional<std::string> offsets_path =
+            RealtimeCommitProperties::GetOffsetsPath(snapshot);
+        if (offsets_path) {
+            used_files.insert(PathUtil::GetName(offsets_path.value()));
+        }
     }
     std::vector<ManifestFileMeta> manifests;
     PAIMON_RETURN_NOT_OK(manifest_list_->ReadIfFileExist(snapshot.BaseManifestList(),
