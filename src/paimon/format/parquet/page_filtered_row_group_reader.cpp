@@ -397,8 +397,8 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
     std::vector<std::shared_ptr<arrow::ChunkedArray>> result_arrays;
     result_arrays.reserve(field_indices.size());
 
-    std::shared_ptr<std::unordered_set<int>> col_indices_set(new std::unordered_set<int>());
-    col_indices_set->insert(column_indices.begin(), column_indices.end());
+    std::shared_ptr<std::unordered_set<int>> col_indices_set =
+        std::make_shared<std::unordered_set<int>>(column_indices.begin(), column_indices.end());
     // TODO(zhouhongfeng.zhf): This loop could be parallelized.
     for (int field_idx : field_indices) {
         PAIMON_ASSIGN_OR_RAISE(
