@@ -68,12 +68,33 @@ TEST(IOHookTest, TestThrowExceptionMode) {
     hook->Clear();
 }
 
+// The disabled state is the production default: Try() must take the lock-free fast
+// path, always return OK, and not count IOs (see IOCount()'s contract). Clear() first
+// so the test does not depend on execution order.
+TEST(IOHookTest, TestDisabledFastPath) {
+    auto hook = IOHook::GetInstance();
+    hook->Clear();
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_EQ(0, hook->IOCount());
+
+    // Re-arming and disarming must restore the exact disabled behavior.
+    hook->Reset(0, IOHook::Mode::RETURN_ERROR);
+    ASSERT_NOK(hook->Try("path"));
+    ASSERT_EQ(1, hook->IOCount());
+    hook->Clear();
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_EQ(0, hook->IOCount());
+}
+
 // Regression test for torn IOHook configurations: Reset()/Clear() run on one thread
 // while other threads call Try() concurrently. A shared start barrier releases all
 // threads together, and the reset thread keeps hammering until every worker has
-// finished, so overlap is structural rather than timing-dependent. Under a
-// ThreadSanitizer build this deterministically reports any unsynchronized access;
-// functionally every Try() must return OK.
+// finished, so overlap is structural rather than timing-dependent. The continuous
+// arm/disarm cycling also keeps workers switching between the disabled fast path and
+// the synchronized armed path. Under a ThreadSanitizer build this deterministically
+// reports any unsynchronized access; functionally every Try() must return OK.
 TEST(IOHookTest, TestConcurrentResetAndTry) {
     auto hook = IOHook::GetInstance();
 
