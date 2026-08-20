@@ -55,6 +55,7 @@ TEST_F(ManifestEntrySerializerTest, TestToFromRow) {
     ManifestEntrySerializer serializer(pool);
     for (const auto& entry : entries) {
         ASSERT_OK_AND_ASSIGN(auto row, serializer.ToRow(entry));
+        ASSERT_EQ(entry.Bucket(), ManifestEntrySerializer::GetBucket(row));
         ASSERT_OK_AND_ASSIGN(auto result_entry, serializer.FromRow(row));
         ASSERT_EQ(entry, result_entry);
         ASSERT_EQ(entry.ToString(), result_entry.ToString());

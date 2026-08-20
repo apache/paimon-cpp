@@ -95,7 +95,7 @@ Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t buc
             for (int64_t i = 0; i < batch->length(); i++) {
                 ColumnarRow row(batch->fields(), pool_, i);
                 PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(row.GetInt(0)));
-                if (row.GetInt(3) != bucket) {
+                if (ManifestEntrySerializer::GetBucket(row) != bucket) {
                     continue;
                 }
                 PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));

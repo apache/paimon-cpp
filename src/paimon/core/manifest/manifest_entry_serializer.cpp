@@ -44,6 +44,10 @@ Status ManifestEntrySerializer::ValidateVersion(int32_t version) {
     return Status::Invalid(fmt::format("Unsupported version: {}", version));
 }
 
+int32_t ManifestEntrySerializer::GetBucket(const InternalRow& row) {
+    return row.GetInt(3);
+}
+
 Result<ManifestEntry> ManifestEntrySerializer::ConvertFrom(int32_t version,
                                                            const InternalRow& row) const {
     PAIMON_RETURN_NOT_OK(ValidateVersion(version));

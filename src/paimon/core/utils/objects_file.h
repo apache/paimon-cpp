@@ -186,7 +186,6 @@ Status ObjectsFile<T>::ReadArrowBatches(
                            reader_builder_->Build(file_input_stream));
     auto reader = std::make_unique<ManifestMetaReader>(std::move(batch_reader),
                                                        serializer_->GetDataType(), pool_);
-    ScopeGuard close_reader([&reader]() { reader->Close(); });
     while (true) {
         PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch arrow_array, reader->NextBatch());
         auto& c_array = arrow_array.first;
