@@ -28,13 +28,14 @@
 #include "gtest/gtest.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 
 TEST(BloomFilter64Test, TestSimple) {
     int32_t items = 10000;
     auto pool = GetDefaultPool();
-    BloomFilter64 bloom_filter(items, 0.02, pool);
+    ASSERT_OK_AND_ASSIGN(BloomFilter64 bloom_filter, BloomFilter64::Create(items, 0.02, pool));
     std::mt19937_64 engine(std::random_device{}());  // NOLINT(whitespace/braces)
     std::uniform_int_distribution<int64_t> distribution(std::numeric_limits<int64_t>::min(),
                                                         std::numeric_limits<int64_t>::max());
@@ -61,6 +62,26 @@ TEST(BloomFilter64Test, TestSimple) {
     ASSERT_TRUE(static_cast<double>(false_positives) / num < 0.03);
 }
 
+TEST(BloomFilter64Test, TestInvalidItemsAndFpp) {
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+
+    ASSERT_NOK_WITH_MSG(BloomFilter64::Create(/*items=*/0, /*fpp=*/0.1, pool),
+                        "items must be greater than 0");
+    ASSERT_NOK_WITH_MSG(BloomFilter64::Create(/*items=*/-1, /*fpp=*/0.1, pool),
+                        "items must be greater than 0");
+    ASSERT_NOK_WITH_MSG(BloomFilter64::Create(/*items=*/100, /*fpp=*/0.0, pool),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(BloomFilter64::Create(/*items=*/100, /*fpp=*/-0.1, pool),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(BloomFilter64::Create(/*items=*/100, /*fpp=*/1.0, pool),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(BloomFilter64::Create(/*items=*/100, /*fpp=*/1.1, pool),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(
+        BloomFilter64::Create(/*items=*/std::numeric_limits<int64_t>::max(), /*fpp=*/0.1, pool),
+        "bloom filter size exceeds the supported range");
+}
+
 TEST(BloomFilter64Test, TestCompatibleWithJava) {
     // data: -10, -5, 0, 13, 100, 200, 500
     std::vector<uint8_t> se_bytes = {241, 255, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -74,7 +95,7 @@ TEST(BloomFilter64Test, TestCompatibleWithJava) {
         ASSERT_TRUE(bloom_filter.TestHash(value));
     }
 
-    BloomFilter64 bloom_filter2(10, 0.01, pool);
+    ASSERT_OK_AND_ASSIGN(BloomFilter64 bloom_filter2, BloomFilter64::Create(10, 0.01, pool));
     ASSERT_EQ(7, bloom_filter2.GetNumHashFunctions());
     ASSERT_EQ(se_bytes.size() * BloomFilter64::BYTE_SIZE, bloom_filter2.num_bits_);
     ASSERT_EQ(se_bytes.size(), bloom_filter2.GetBitSet().bytes_->size());

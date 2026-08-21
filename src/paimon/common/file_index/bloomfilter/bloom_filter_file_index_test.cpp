@@ -18,10 +18,16 @@
 
 #include "paimon/common/file_index/bloomfilter/bloom_filter_file_index.h"
 
+#include <cstring>
+#include <map>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
@@ -49,21 +55,60 @@ class BloomFilterIndexReaderTest : public ::testing::Test {
         return c_schema;
     }
 
+    Result<PAIMON_UNIQUE_PTR<Bytes>> WriteIndex(
+        const std::shared_ptr<arrow::DataType>& data_type, const std::string& json,
+        const std::map<std::string, std::string>& options) const {
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field("f0", data_type)});
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()), json)
+                .ValueOrDie();
+        ::ArrowSchema c_schema;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &c_schema));
+        BloomFilterFileIndex file_index(options);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexWriter> writer,
+                               file_index.CreateWriter(&c_schema, pool_));
+        ::ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        PAIMON_RETURN_NOT_OK(writer->AddBatch(&c_array));
+        return writer->SerializedBytes();
+    }
+
  private:
     std::shared_ptr<MemoryPool> pool_;
 };
 
+TEST_F(BloomFilterIndexReaderTest, TestWriterRejectsInvalidOptionsAndType) {
+    auto create_writer = [&](const std::shared_ptr<arrow::DataType>& type,
+                             const std::map<std::string, std::string>& options) {
+        BloomFilterFileIndex file_index(options);
+        return file_index.CreateWriter(CreateArrowSchema(type).get(), pool_);
+    };
+    ASSERT_NOK_WITH_MSG(create_writer(arrow::int32(), {{"items", "0"}}),
+                        "items must be greater than 0");
+    ASSERT_NOK_WITH_MSG(create_writer(arrow::int32(), {{"fpp", "1"}}),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(create_writer(arrow::boolean(), {}),
+                        "bloom filter index does not support BOOLEAN");
+}
+
 TEST_F(BloomFilterIndexReaderTest, TestStringType) {
-    // data: "a", "b", ""
-    std::vector<uint8_t> index_bytes = {0, 0, 0, 6, 0, 32, 32, 3, 208, 32, 0, 64, 73, 16, 201};
-    auto input_stream = std::make_shared<ByteArrayInputStream>(
-        reinterpret_cast<char*>(index_bytes.data()), index_bytes.size());
+    // Java writer output for data: "a", "b", "" with items=10 and fpp=0.02.
+    const std::vector<uint8_t> expected = {0, 0, 0, 6, 0, 32, 32, 3, 208, 32, 0, 64, 73, 16, 201};
+    ASSERT_OK_AND_ASSIGN(
+        PAIMON_UNIQUE_PTR<Bytes> bytes,
+        WriteIndex(arrow::utf8(), R"([["a"], ["b"], [""]])", {{"items", "10"}, {"fpp", "0.02"}}));
+    ASSERT_EQ(expected.size(), bytes->size());
+    ASSERT_EQ(0, std::memcmp(expected.data(), bytes->data(), expected.size()));
+
+    std::shared_ptr<ByteArrayInputStream> input_stream =
+        std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
 
     BloomFilterFileIndex file_index({});
     ASSERT_OK_AND_ASSIGN(
         auto reader,
         file_index.CreateReader(CreateArrowSchema(arrow::utf8()).get(),
-                                /*start=*/0, /*length=*/index_bytes.size(), input_stream, pool_));
+                                /*start=*/0, /*length=*/bytes->size(), input_stream, pool_));
     ASSERT_TRUE(reader);
     ASSERT_TRUE(reader->VisitEqual(Literal(FieldType::STRING, "a", 1)).value()->IsRemain().value());
     ASSERT_TRUE(reader->VisitEqual(Literal(FieldType::STRING, "b", 1)).value()->IsRemain().value());

@@ -103,24 +103,18 @@ Result<std::shared_ptr<FileIndexWriter>> BitmapFileIndex::CreateWriter(
             "invalid schema for BitmapFileIndexWriter, supposed to have single "
             "field.");
     }
-    auto arrow_field = arrow_schema->field(0);
-    return BitmapFileIndexWriter::Create(arrow_schema, arrow_field->name(), options_, pool);
+    return BitmapFileIndexWriter::Create(arrow_schema->field(0), options_, pool);
 }
 
 Result<std::shared_ptr<BitmapFileIndexWriter>> BitmapFileIndexWriter::Create(
-    const std::shared_ptr<arrow::Schema>& arrow_schema, const std::string& field_name,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<arrow::Field>& field, const std::map<std::string, std::string>& options,
+    const std::shared_ptr<MemoryPool>& pool) {
     PAIMON_ASSIGN_OR_RAISE(int8_t version,
                            OptionsUtils::GetValueFromMap<int8_t>(options, BitmapFileIndex::VERSION,
                                                                  BitmapFileIndex::VERSION_2));
-    auto arrow_field = arrow_schema->GetFieldByName(field_name);
-    if (!arrow_field) {
-        return Status::Invalid(
-            fmt::format("field {} not in arrow_schema for BitmapFileIndexWriter", field_name));
-    }
-    auto struct_type = arrow::struct_({arrow_field});
+    std::shared_ptr<arrow::DataType> struct_type = arrow::struct_({field});
     return std::shared_ptr<BitmapFileIndexWriter>(
-        new BitmapFileIndexWriter(version, struct_type, arrow_field->type(), options, pool));
+        new BitmapFileIndexWriter(version, struct_type, field->type(), options, pool));
 }
 
 BitmapFileIndexWriter::BitmapFileIndexWriter(int8_t version,

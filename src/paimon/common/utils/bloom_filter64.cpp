@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <utility>
 
 #include "paimon/memory/bytes.h"
@@ -50,14 +52,35 @@ int32_t BloomFilter64::BitSet::BitSize() const {
     return (bytes_->size() - offset_) * BloomFilter64::BYTE_SIZE;
 }
 
-BloomFilter64::BloomFilter64(int64_t items, double fpp, const std::shared_ptr<MemoryPool>& pool)
-    : pool_(pool) {
-    auto nb = static_cast<int32_t>(-items * std::log(fpp) / (std::log(2) * std::log(2)));
-    num_bits_ = nb + (BloomFilter64::BYTE_SIZE - (nb % BloomFilter64::BYTE_SIZE));
-    num_hash_functions_ = std::max(
-        1, static_cast<int32_t>(std::round(static_cast<double>(num_bits_) / items * std::log(2))));
-    auto bytes = std::make_shared<Bytes>(num_bits_ / BloomFilter64::BYTE_SIZE, pool_.get());
-    bit_set_ = std::make_unique<BitSet>(bytes, /*offset=*/0);
+void BloomFilter64::BitSet::ToByteArray(int32_t offset, int32_t length, char* bytes) const {
+    assert(bytes);
+    assert(offset >= 0);
+    assert(length >= 0);
+    assert(static_cast<size_t>(offset_ + length) <= bytes_->size());
+    std::memcpy(bytes + offset, bytes_->data() + offset_, length);
+}
+
+Result<BloomFilter64> BloomFilter64::Create(int64_t items, double fpp,
+                                            const std::shared_ptr<MemoryPool>& pool) {
+    if (items <= 0) {
+        return Status::Invalid("items must be greater than 0 for bloom filter");
+    }
+    if (!std::isfinite(fpp) || fpp <= 0.0 || fpp >= 1.0) {
+        return Status::Invalid("fpp must be greater than 0 and less than 1 for bloom filter");
+    }
+    const double log_two = std::log(2);
+    const double estimated_bits = -static_cast<double>(items) * std::log(fpp) / (log_two * log_two);
+    if (estimated_bits > std::numeric_limits<int32_t>::max() - BYTE_SIZE) {
+        return Status::Invalid("bloom filter size exceeds the supported range");
+    }
+    const auto num_bits_without_padding = static_cast<int32_t>(estimated_bits);
+    const int32_t num_bits =
+        num_bits_without_padding + (BYTE_SIZE - (num_bits_without_padding % BYTE_SIZE));
+    const int32_t num_hash_functions = std::max(
+        1, static_cast<int32_t>(std::round(static_cast<double>(num_bits) / items * log_two)));
+    auto bytes = std::make_shared<Bytes>(num_bits / BYTE_SIZE, pool.get());
+    auto bit_set = std::make_unique<BitSet>(bytes, /*offset=*/0);
+    return BloomFilter64(num_hash_functions, std::move(bit_set));
 }
 
 BloomFilter64::BloomFilter64(int32_t num_hash_functions, std::unique_ptr<BitSet>&& bit_set)

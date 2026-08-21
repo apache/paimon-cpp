@@ -60,18 +60,12 @@ Result<std::shared_ptr<FileIndexWriter>> RangeBitmapFileIndex::CreateWriter(
         return Status::Invalid(
             "invalid schema for RangeBitmapFileIndexWriter, supposed to have single field.");
     }
-    const auto arrow_field = arrow_schema_ptr->field(0);
-    return RangeBitmapFileIndexWriter::Create(arrow_schema_ptr, arrow_field->name(), options_,
-                                              pool);
+    return RangeBitmapFileIndexWriter::Create(arrow_schema_ptr->field(0), options_, pool);
 }
 
 Result<std::shared_ptr<RangeBitmapFileIndexWriter>> RangeBitmapFileIndexWriter::Create(
-    const std::shared_ptr<arrow::Schema>& arrow_schema, const std::string& field_name,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool) {
-    const auto field = arrow_schema->GetFieldByName(field_name);
-    if (!field) {
-        return Status::Invalid(fmt::format("Field not found in schema: {}", field_name));
-    }
+    const std::shared_ptr<arrow::Field>& field, const std::map<std::string, std::string>& options,
+    const std::shared_ptr<MemoryPool>& pool) {
     PAIMON_ASSIGN_OR_RAISE(FieldType field_type,
                            FieldTypeUtils::ConvertToFieldType(field->type()->id()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeyFactory> shared_key_factory,
@@ -82,12 +76,12 @@ Result<std::shared_ptr<RangeBitmapFileIndexWriter>> RangeBitmapFileIndexWriter::
         chunk_size_it != options.end()) {
         PAIMON_ASSIGN_OR_RAISE(parsed_chunk_size, MemorySize::ParseBytes(chunk_size_it->second));
     }
-    auto struct_type = arrow::struct_({field});
+    std::shared_ptr<arrow::DataType> struct_type = arrow::struct_({field});
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RangeBitmap::Appender> appender_ptr,
         RangeBitmap::Appender::Create(shared_key_factory, parsed_chunk_size, pool));
-    return std::make_shared<RangeBitmapFileIndexWriter>(
-        struct_type, field->type(), options, pool, shared_key_factory, std::move(appender_ptr));
+    return std::make_shared<RangeBitmapFileIndexWriter>(struct_type, pool, shared_key_factory,
+                                                        std::move(appender_ptr));
 }
 
 Status RangeBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
@@ -117,13 +111,9 @@ Result<PAIMON_UNIQUE_PTR<Bytes>> RangeBitmapFileIndexWriter::SerializedBytes() c
 }
 
 RangeBitmapFileIndexWriter::RangeBitmapFileIndexWriter(
-    const std::shared_ptr<arrow::DataType>& struct_type,
-    const std::shared_ptr<arrow::DataType>& arrow_type,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<arrow::DataType>& struct_type, const std::shared_ptr<MemoryPool>& pool,
     const std::shared_ptr<KeyFactory>& key_factory, std::unique_ptr<RangeBitmap::Appender> appender)
     : struct_type_(struct_type),
-      arrow_type_(arrow_type),
-      options_(options),
       pool_(pool),
       key_factory_(key_factory),
       appender_(std::move(appender)) {}

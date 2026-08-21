@@ -18,13 +18,23 @@
 
 #include "paimon/common/file_index/bsi/bit_slice_index_bitmap_file_index.h"
 
+#include <algorithm>
 #include <cassert>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
+#include <utility>
+#include <vector>
 
+#include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/file_index/bsi/bit_slice_index_roaring_bitmap.h"
+#include "paimon/common/io/memory_segment_output_stream.h"
+#include "paimon/common/memory/memory_segment_utils.h"
+#include "paimon/common/predicate/literal_converter.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
@@ -52,6 +62,103 @@ class MemoryPool;
 
 BitSliceIndexBitmapFileIndex::BitSliceIndexBitmapFileIndex(
     const std::map<std::string, std::string>& options) {}
+
+Result<std::shared_ptr<FileIndexWriter>> BitSliceIndexBitmapFileIndex::CreateWriter(
+    ::ArrowSchema* c_arrow_schema, const std::shared_ptr<MemoryPool>& pool) const {
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
+                                      arrow::ImportSchema(c_arrow_schema));
+    if (arrow_schema->num_fields() != 1) {
+        return Status::Invalid(
+            "invalid schema for BitSliceIndexBitmapFileIndexWriter, supposed to have single "
+            "field.");
+    }
+    const std::shared_ptr<arrow::Field> field = arrow_schema->field(0);
+    PAIMON_ASSIGN_OR_RAISE(ValueMapperType value_mapper, GetValueMapper(field->type()));
+    return std::make_shared<BitSliceIndexBitmapFileIndexWriter>(field, value_mapper, pool);
+}
+
+BitSliceIndexBitmapFileIndexWriter::BitSliceIndexBitmapFileIndexWriter(
+    const std::shared_ptr<arrow::Field>& field,
+    const BitSliceIndexBitmapFileIndex::ValueMapperType& value_mapper,
+    const std::shared_ptr<MemoryPool>& pool)
+    : struct_type_(arrow::struct_({field})), value_mapper_(value_mapper), pool_(pool) {}
+
+Status BitSliceIndexBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                      arrow::ImportArray(batch, struct_type_));
+    if (!array || array->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid(
+            "invalid batch for BitSliceIndexBitmapFileIndexWriter, expected a struct array");
+    }
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+    if (struct_array->num_fields() != 1) {
+        return Status::Invalid(
+            "invalid batch for BitSliceIndexBitmapFileIndexWriter, expected a struct array with "
+            "exactly one field");
+    }
+    if (struct_array->length() > static_cast<int64_t>(std::numeric_limits<int32_t>::max()) -
+                                     static_cast<int64_t>(values_.size())) {
+        return Status::Invalid("bsi index row count exceeds the supported int32 range");
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<Literal> literals,
+        LiteralConverter::ConvertLiteralsFromArray(*struct_array->field(0), /*own_data=*/true));
+    values_.reserve(values_.size() + literals.size());
+    for (const Literal& literal : literals) {
+        if (literal.IsNull()) {
+            values_.emplace_back(std::nullopt);
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(int64_t value, value_mapper_(literal));
+        values_.emplace_back(value);
+        if (value < 0) {
+            const int64_t absolute_value = SafeAbs(value);
+            negative_min_ = std::min(negative_min_, absolute_value);
+            negative_max_ = std::max(negative_max_, absolute_value);
+        } else {
+            positive_min_ = std::min(positive_min_, value);
+            positive_max_ = std::max(positive_max_, value);
+        }
+    }
+    return Status::OK();
+}
+
+Result<PAIMON_UNIQUE_PTR<Bytes>> BitSliceIndexBitmapFileIndexWriter::SerializedBytes() const {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BitSliceIndexRoaringBitmap::Appender> positive,
+        BitSliceIndexRoaringBitmap::Appender::Create(positive_min_, positive_max_));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BitSliceIndexRoaringBitmap::Appender> negative,
+        BitSliceIndexRoaringBitmap::Appender::Create(negative_min_, negative_max_));
+    for (size_t i = 0; i < values_.size(); ++i) {
+        if (!values_[i]) {
+            continue;
+        }
+        const int64_t value = values_[i].value();
+        if (value < 0) {
+            PAIMON_RETURN_NOT_OK(negative->Append(static_cast<int32_t>(i), SafeAbs(value)));
+        } else {
+            PAIMON_RETURN_NOT_OK(positive->Append(static_cast<int32_t>(i), value));
+        }
+    }
+
+    MemorySegmentOutputStream output_stream(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+    output_stream.SetOrder(ByteOrder::PAIMON_BIG_ENDIAN);
+    output_stream.WriteValue<int8_t>(BitSliceIndexBitmapFileIndex::VERSION_1);
+    output_stream.WriteValue<int32_t>(static_cast<int32_t>(values_.size()));
+    const bool has_positive = positive->IsNotEmpty();
+    output_stream.WriteValue<bool>(has_positive);
+    if (has_positive) {
+        output_stream.WriteBytes(positive->Serialize(pool_));
+    }
+    const bool has_negative = negative->IsNotEmpty();
+    output_stream.WriteValue<bool>(has_negative);
+    if (has_negative) {
+        output_stream.WriteBytes(negative->Serialize(pool_));
+    }
+    return MemorySegmentUtils::CopyToBytes(output_stream.Segments(), /*offset=*/0,
+                                           /*num_bytes=*/output_stream.CurrentSize(), pool_.get());
+}
 
 Result<std::shared_ptr<FileIndexReader>> BitSliceIndexBitmapFileIndex::CreateReader(
     ::ArrowSchema* c_arrow_schema, int32_t start, int32_t length,

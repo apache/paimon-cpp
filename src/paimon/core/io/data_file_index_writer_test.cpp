@@ -197,11 +197,38 @@ TEST_F(DataFileIndexWriterTest, TestExternalIndexAndAbortCleanup) {
     ASSERT_FALSE(exists);
 }
 
+TEST_F(DataFileIndexWriterTest, TestBsiAndBloomFilterEmbeddedRoundTrip) {
+    ASSERT_OK_AND_ASSIGN(auto writer,
+                         CreateWriter({{"file-index.bsi.columns", "f0"},
+                                       {"file-index.bloom-filter.columns", "f1"},
+                                       {"file-index.bloom-filter.f1.items", "100"},
+                                       {"file-index.bloom-filter.f1.fpp", "0.01"},
+                                       {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}}));
+    ASSERT_OK(writer->AddBatch(CreateBatch(R"([{"f0": 1, "f1": 10},
+                                                {"f0": -2, "f1": 20}])")));
+    ASSERT_OK(writer->AddBatch(CreateBatch(R"([{"f0": null, "f1": 30},
+                                                {"f0": 5, "f1": 40}])")));
+
+    ASSERT_OK_AND_ASSIGN(FileIndexWriteResult result, writer->Finish("unused.orc"));
+    ASSERT_TRUE(result.embedded_index);
+    ASSERT_OK_AND_ASSIGN(auto reader, CreateReader(result.embedded_index));
+
+    ASSERT_OK_AND_ASSIGN(auto bsi_readers, ReadColumn(reader.get(), "f0"));
+    ASSERT_EQ(1, bsi_readers.size());
+    ASSERT_OK_AND_ASSIGN(auto greater_result, bsi_readers[0]->VisitGreaterThan(Literal(1)));
+    ASSERT_EQ("{3}", greater_result->ToString());
+    ASSERT_OK_AND_ASSIGN(auto null_result, bsi_readers[0]->VisitIsNull());
+    ASSERT_EQ("{2}", null_result->ToString());
+
+    ASSERT_OK_AND_ASSIGN(auto bloom_readers, ReadColumn(reader.get(), "f1"));
+    ASSERT_EQ(1, bloom_readers.size());
+    ASSERT_OK_AND_ASSIGN(auto present_result, bloom_readers[0]->VisitEqual(Literal(30)));
+    ASSERT_TRUE(present_result->IsRemain().value());
+}
+
 TEST_F(DataFileIndexWriterTest, TestUnavailableWriterFailsCreation) {
     ASSERT_NOK_WITH_MSG(CreateWriter({{"file-index.unknown.columns", "f0"}}),
                         "File index type 'unknown' is not registered");
-    ASSERT_NOK_WITH_MSG(CreateWriter({{"file-index.bloom-filter.columns", "f0"}}),
-                        "do not support index writer in bloom filter");
 }
 
 TEST_F(DataFileIndexWriterTest, TestRejectSystemFieldIndex) {

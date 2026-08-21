@@ -93,7 +93,7 @@ TEST_P(SstFileIOTest, TestSimple) {
                          fs_->Create(index_path, /*overwrite=*/false));
 
     // write data
-    auto bf = BloomFilter::Create(30, 0.01);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bf, BloomFilter::Create(30, 0.01));
     auto seg_for_bf = MemorySegment::AllocateHeapMemory(bf->ByteLength(), pool_.get());
     ASSERT_OK(bf->SetMemorySegment(seg_for_bf));
     auto writer = std::make_shared<SstFileWriter>(out, bf, 50, factory, pool_);
@@ -234,7 +234,7 @@ TEST_F(SstFileIOTest, TestIOException) {
         CHECK_HOOK_STATUS(out_result.status(), i);
         std::shared_ptr<OutputStream> out = std::move(out_result).value();
 
-        auto bf = BloomFilter::Create(30, 0.01);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bf, BloomFilter::Create(30, 0.01));
         MemorySegment seg_for_bf = MemorySegment::AllocateHeapMemory(bf->ByteLength(), pool_.get());
         ASSERT_OK(bf->SetMemorySegment(seg_for_bf));
         auto writer = std::make_shared<SstFileWriter>(out, bf, 50, factory, pool_);
