@@ -34,7 +34,8 @@ namespace paimon::test {
 TEST(PartitionUtilsTest, MatchNormalizedPartitionSpec) {
     const std::map<std::string, std::string> partition = {{"dt", "2026-08-21"}, {"region", "cn"}};
 
-    ASSERT_TRUE(PartitionUtils::MatchNormalizedPartitionSpec(partition, /*partition_spec=*/{}));
+    ASSERT_TRUE(
+        PartitionUtils::MatchNormalizedPartitionSpec(partition, /*normalized_partition_spec=*/{}));
     ASSERT_TRUE(PartitionUtils::MatchNormalizedPartitionSpec(partition, {{"dt", "2026-08-21"}}));
     ASSERT_TRUE(PartitionUtils::MatchNormalizedPartitionSpec(
         partition, {{"dt", "2026-08-21"}, {"region", "cn"}}));

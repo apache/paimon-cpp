@@ -75,6 +75,10 @@ class BinaryRowPartitionComputer {
                                const std::vector<PartitionConverter>& partition_converters,
                                const std::shared_ptr<MemoryPool>& memory_pool);
 
+    /// A non-null `included_fields` enables partial partitions and records present fields.
+    Result<BinaryRow> ConvertToBinaryRow(const std::map<std::string, std::string>& partition,
+                                         std::vector<bool>* included_fields) const;
+
     static Result<arrow::Type::type> GetTypeFromArrowSchema(
         const std::shared_ptr<arrow::Schema>& schema, const std::string& field_name);
 
