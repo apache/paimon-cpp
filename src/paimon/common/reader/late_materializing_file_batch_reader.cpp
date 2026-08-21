@@ -1,0 +1,353 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+#include "paimon/common/reader/late_materializing_file_batch_reader.h"
+
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "arrow/array/concatenate.h"
+#include "arrow/array/util.h"
+#include "arrow/c/bridge.h"
+#include "arrow/type.h"
+#include "arrow/util/checked_cast.h"
+#include "fmt/format.h"
+#include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/predicate/predicate_utils.h"
+#include "paimon/status.h"
+
+namespace paimon {
+
+Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
+    std::unique_ptr<PrefetchFileBatchReader> inner) {
+    auto reader = std::unique_ptr<LateMaterializingFileBatchReader>(
+        new LateMaterializingFileBatchReader(std::move(inner)));
+    return reader;
+}
+
+Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch() {
+    return Status::Invalid(
+        "paimon inner reader PrefetchFileBatchReader should use NextBatchWithBitmap");
+}
+
+Result<FileBatchReader::ReadBatchWithBitmap>
+LateMaterializingFileBatchReader::NextBatchWithBitmap() {
+    if (state_ == kProbing) {
+        // This calling will update matched_bitmap_ and probe_data_
+        PAIMON_RETURN_NOT_OK(ReadAndFilterProbeData());
+        if (matched_bitmap_.IsEmpty()) {
+            state_ = kEOF;
+        } else {
+            // inner_->SetReadSchema with matched_bitmap_
+            PAIMON_RETURN_NOT_OK(SetInnerPayloadSchema());
+            state_ = kRunning;
+        }
+    }
+
+    if (state_ == kNoLatMat) {
+        return inner_->NextBatchWithBitmap();
+    } else if (state_ == kRunning) {
+        return ReadPayloadBatch();
+    } else if (state_ == kEOF) {
+        return MakeEofBatchWithBitmap();
+    }
+    return Status::Invalid("invalid state when calling NextBatchWithBitmap: " +
+                           std::to_string(state_));
+}
+
+Result<std::shared_ptr<PredicateFilter>> LateMaterializingFileBatchReader::BindProbeFilter() {
+    // non_partition_filter's field_index_ is relative to the full data field list, so the
+    // predicate must be rebound by name to the probe schema before evaluating it.
+    std::map<std::string, int32_t> name_to_idx;
+    for (int32_t i = 0; i < probe_schema_->num_fields(); ++i) {
+        name_to_idx.emplace(probe_schema_->field(i)->name(), i);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> bound_predicate,
+                           PredicateUtils::CreatePickedFieldFilter(predicate_, name_to_idx));
+    auto bound_filter = std::dynamic_pointer_cast<PredicateFilter>(bound_predicate);
+    if (!bound_filter) {
+        return Status::Invalid("failed to bind predicate to probe schema");
+    }
+    return bound_filter;
+}
+
+Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
+    const std::shared_ptr<arrow::Array>& array,
+    const std::shared_ptr<PredicateFilter>& bound_filter) {
+    PAIMON_ASSIGN_OR_RAISE(std::vector<char> results, bound_filter->Test(*array));
+    if (results.size() != static_cast<size_t>(array->length())) {
+        return Status::Invalid(
+            fmt::format("predicate result size {} does not match probe batch length {}",
+                        results.size(), array->length()));
+    }
+    // batch-local offsets of the rows passing both the predicate and the selection
+    RoaringBitmap32 batch_matched;
+    for (int64_t i = 0; i < array->length(); ++i) {
+        if (!results[static_cast<size_t>(i)]) {
+            continue;
+        }
+        // The format reader prunes row groups/pages, so a batch offset is not a file row id.
+        PAIMON_ASSIGN_OR_RAISE(uint64_t file_row,
+                               inner_->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
+        // keep matched_bitmap_ ⊆ selection_ (file index ∩ ¬DV), which the probe reader applies
+        // imprecisely
+        if (selection_ && !selection_->Contains(file_row)) {
+            continue;
+        }
+        batch_matched.Add(static_cast<uint32_t>(i));
+        matched_bitmap_.Add(file_row);
+    }
+    return batch_matched;
+}
+
+Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<PredicateFilter> bound_filter, BindProbeFilter());
+    matched_bitmap_ = RoaringBitmap32();
+    probe_cursor_ = 0;
+    arrow::ArrayVector probe_arrays;
+    while (true) {
+        PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch batch, inner_->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        auto& [c_array, c_schema] = batch;
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                          arrow::ImportArray(c_array.get(), c_schema.get()));
+        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 batch_matched,
+                               FilterProbeBatch(array, bound_filter));
+        // Compact each probe batch down to its matched rows so probe_data_ aligns row-for-row
+        // (ascending file order) with matched_bitmap_ and the later payload output.
+        if (!batch_matched.IsEmpty()) {
+            PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector matched_slices,
+                                   ReaderUtils::GenerateFilteredArrayVector(array, batch_matched));
+            probe_arrays.insert(probe_arrays.end(), std::make_move_iterator(matched_slices.begin()),
+                                std::make_move_iterator(matched_slices.end()));
+        }
+    }
+
+    std::shared_ptr<arrow::Array> probe_array;
+    if (probe_arrays.empty()) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            probe_array, arrow::MakeEmptyArray(arrow::struct_(probe_schema_->fields())));
+    } else {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(probe_array, arrow::Concatenate(probe_arrays));
+    }
+    probe_data_ = arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_array);
+    return Status::OK();
+}
+
+Result<FileBatchReader::ReadBatchWithBitmap> LateMaterializingFileBatchReader::ReadPayloadBatch() {
+    while (true) {
+        PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatchWithBitmap batch_with_bitmap,
+                               inner_->NextBatchWithBitmap());
+        if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+            state_ = kEOF;
+            return MakeEofBatchWithBitmap();
+        }
+        auto& [batch, bitmap] = batch_with_bitmap;
+        // The payload reader prunes at row group/page granularity, so the returned batch is a
+        // superset; the bitmap marks the rows that are actually in matched_bitmap_.
+        if (bitmap.IsEmpty()) {
+            ReaderUtils::ReleaseReadBatch(std::move(batch));
+            continue;
+        }
+        auto& [c_array, c_schema] = batch;
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_array,
+                                          arrow::ImportArray(c_array.get(), c_schema.get()));
+
+        // Record the file row id of each emitted row so GetPreviousBatchFileRowId stays correct
+        // after compaction/reassembly.
+        row_mapping_.clear();
+        for (auto it = bitmap.Begin(); it != bitmap.End(); ++it) {
+            PAIMON_ASSIGN_OR_RAISE(uint64_t file_row,
+                                   inner_->GetPreviousBatchFileRowId(static_cast<uint64_t>(*it)));
+            row_mapping_.push_back(file_row);
+        }
+
+        // Compact the payload superset down to the matched rows (ascending file row order).
+        PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
+                               ReaderUtils::GenerateFilteredArrayVector(payload_array, bitmap));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_compacted,
+                                          arrow::Concatenate(payload_slices));
+
+        // probe_data_ holds the matched probe rows in the same ascending file order, so a running
+        // cursor yields row-for-row alignment with the compacted payload.
+        int64_t card = static_cast<int64_t>(bitmap.Cardinality());
+        if (probe_cursor_ + card > probe_data_->length()) {
+            return Status::Invalid(
+                fmt::format("probe cache underflow: cursor {} + {} exceeds probe rows {}",
+                            probe_cursor_, card, probe_data_->length()));
+        }
+        std::shared_ptr<arrow::Array> probe_selected = probe_data_->Slice(probe_cursor_, card);
+        probe_cursor_ += card;
+
+        PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch assembled,
+                               AssembleFullBatch(payload_compacted, probe_selected));
+        return ReaderUtils::AddAllValidBitmap(std::move(assembled));
+    }
+}
+
+Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::AssembleFullBatch(
+    const std::shared_ptr<arrow::Array>& payload_array,
+    const std::shared_ptr<arrow::Array>& probe_array) {
+    auto payload_struct = arrow::internal::checked_pointer_cast<arrow::StructArray>(payload_array);
+    auto probe_struct = arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_array);
+    arrow::ArrayVector children;
+    children.reserve(full_schema_->num_fields());
+    for (const auto& field : full_schema_->fields()) {
+        std::shared_ptr<arrow::Array> col = payload_struct->GetFieldByName(field->name());
+        if (!col) {
+            col = probe_struct->GetFieldByName(field->name());
+        }
+        if (!col) {
+            return Status::Invalid(
+                fmt::format("field {} missing in both payload and probe columns", field->name()));
+        }
+        children.push_back(std::move(col));
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> full_struct,
+                                      arrow::StructArray::Make(children, full_schema_->fields()));
+    std::unique_ptr<::ArrowArray> c_array = std::make_unique<::ArrowArray>();
+    std::unique_ptr<::ArrowSchema> c_schema = std::make_unique<::ArrowSchema>();
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::ExportArray(*full_struct, c_array.get(), c_schema.get()));
+    return std::make_pair(std::move(c_array), std::move(c_schema));
+}
+
+Status LateMaterializingFileBatchReader::SetInnerProbeSchema() {
+    ::ArrowSchema c_probe_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*probe_schema_, &c_probe_schema));
+    return inner_->SetReadSchema(&c_probe_schema, predicate_, selection_);
+}
+
+Status LateMaterializingFileBatchReader::SetInnerPayloadSchema() {
+    ::ArrowSchema c_payload_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*payload_schema_, &c_payload_schema));
+    if (matched_bitmap_.IsEmpty()) {
+        return Status::Invalid("late materialization bitmap is empty. Should return EOF.");
+    }
+    return inner_->SetReadSchema(&c_payload_schema, /*predicate=*/nullptr, matched_bitmap_);
+}
+
+Status LateMaterializingFileBatchReader::SetInnerFullSchema() {
+    ::ArrowSchema c_full_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*full_schema_, &c_full_schema));
+    return inner_->SetReadSchema(&c_full_schema, predicate_, selection_);
+}
+
+std::shared_ptr<Metrics> LateMaterializingFileBatchReader::GetReaderMetrics() const {
+    return inner_->GetReaderMetrics();
+}
+
+void LateMaterializingFileBatchReader::Close() {
+    inner_->Close();
+}
+
+Result<std::unique_ptr<::ArrowSchema>> LateMaterializingFileBatchReader::GetFileSchema() const {
+    return inner_->GetFileSchema();
+}
+
+Status LateMaterializingFileBatchReader::SetReadSchema(
+    ::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
+    const std::optional<RoaringBitmap32>& selection_bitmap) {
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(full_schema_, arrow::ImportSchema(read_schema));
+    predicate_ = predicate;
+    selection_ = selection_bitmap;
+    matched_bitmap_ = RoaringBitmap32();
+    probe_data_.reset();
+    probe_cursor_ = 0;
+    row_mapping_.clear();
+    probe_schema_.reset();
+    payload_schema_.reset();
+    if (predicate_ != nullptr) {
+        std::set<std::string> probe_names;
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate_, &probe_names));
+        arrow::FieldVector probe_fields;
+        arrow::FieldVector payload_fields;
+        for (const auto& field : full_schema_->fields()) {
+            if (probe_names.count(field->name()) > 0) {
+                probe_fields.push_back(field);
+            } else {
+                payload_fields.push_back(field);
+            }
+        }
+        // probing only pays off when the predicate fields are a strict subset of the read schema
+        if (!probe_fields.empty() && !payload_fields.empty()) {
+            probe_schema_ = arrow::schema(probe_fields, full_schema_->metadata());
+            payload_schema_ = arrow::schema(payload_fields, full_schema_->metadata());
+        }
+    }
+
+    if (predicate_ == nullptr || probe_schema_ == nullptr) {
+        PAIMON_RETURN_NOT_OK(SetInnerFullSchema());
+        state_ = kNoLatMat;
+    } else {
+        PAIMON_RETURN_NOT_OK(SetInnerProbeSchema());
+        state_ = kProbing;
+    }
+    return Status::OK();
+}
+
+Result<uint64_t> LateMaterializingFileBatchReader::GetPreviousBatchFileRowId(
+    uint64_t batch_row_id) const {
+    if (state_ == kNoLatMat) {
+        return inner_->GetPreviousBatchFileRowId(batch_row_id);
+    }
+    // In kRunning the emitted batch is compacted/reassembled, so row ids come from row_mapping_
+    // instead of the inner reader.
+    if (batch_row_id >= row_mapping_.size()) {
+        return Status::Invalid(
+            fmt::format("batch_row_id {} is out of range, last batch row count is {}", batch_row_id,
+                        row_mapping_.size()));
+    }
+    return row_mapping_[batch_row_id];
+}
+
+Result<uint64_t> LateMaterializingFileBatchReader::GetNumberOfRows() const {
+    return inner_->GetNumberOfRows();
+}
+
+bool LateMaterializingFileBatchReader::SupportPreciseBitmapSelection() const {
+    return inner_->SupportPreciseBitmapSelection();
+}
+
+Status LateMaterializingFileBatchReader::SeekToRow(uint64_t row_number) {
+    return inner_->SeekToRow(row_number);
+}
+
+uint64_t LateMaterializingFileBatchReader::GetNextRowToRead() const {
+    return inner_->GetNextRowToRead();
+}
+
+Result<std::vector<std::pair<uint64_t, uint64_t>>> LateMaterializingFileBatchReader::GenReadRanges(
+    bool* need_prefetch) const {
+    return inner_->GenReadRanges(need_prefetch);
+}
+
+Status LateMaterializingFileBatchReader::SetReadRanges(
+    const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) {
+    return inner_->SetReadRanges(read_ranges);
+}
+
+}  // namespace paimon
