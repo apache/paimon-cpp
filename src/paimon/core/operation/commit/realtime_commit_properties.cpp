@@ -37,6 +37,17 @@
 namespace paimon {
 namespace {
 
+bool MatchPartitionSpec(const std::map<std::string, std::string>& partition,
+                        const std::map<std::string, std::string>& partition_spec) {
+    for (const auto& [key, value] : partition_spec) {
+        auto iter = partition.find(key);
+        if (iter == partition.end() || iter->second != value) {
+            return false;
+        }
+    }
+    return true;
+}
+
 class OffsetEntryJson : public Jsonizable<OffsetEntryJson> {
  public:
     OffsetEntryJson() = default;
@@ -234,11 +245,16 @@ Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
     const std::map<std::string, std::string>& properties,
     const std::optional<Snapshot>& latest_snapshot,
     const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
+    bool reset_all_realtime_progress,
+    const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
     const std::shared_ptr<FileSystem>& file_system, const std::string& table_root,
     const std::string& branch) {
     std::map<std::string, std::string> merged_properties = properties;
-    if (realtime_ranges.empty()) {
-        if (latest_snapshot && latest_snapshot->Properties()) {
+    if (reset_all_realtime_progress || !removed_realtime_partitions.empty()) {
+        merged_properties.erase(kOffsetsKey);
+    }
+    if (realtime_ranges.empty() && removed_realtime_partitions.empty()) {
+        if (!reset_all_realtime_progress && latest_snapshot && latest_snapshot->Properties()) {
             const std::map<std::string, std::string>& latest_properties =
                 latest_snapshot->Properties().value();
             auto offsets_iter = latest_properties.find(kOffsetsKey);
@@ -249,8 +265,21 @@ Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
         return merged_properties;
     }
 
-    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap merged_offsets,
-                           ReadOffsets(latest_snapshot, file_system));
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeOffsetMap merged_offsets,
+        ReadOffsets(reset_all_realtime_progress ? std::nullopt : latest_snapshot, file_system));
+    for (auto iter = merged_offsets.begin(); iter != merged_offsets.end();) {
+        bool removed =
+            std::any_of(removed_realtime_partitions.begin(), removed_realtime_partitions.end(),
+                        [&iter](const std::map<std::string, std::string>& partition_spec) {
+                            return MatchPartitionSpec(iter->first.partition, partition_spec);
+                        });
+        if (removed) {
+            iter = merged_offsets.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
     for (const auto& [partition_bucket, offset_range] : realtime_ranges) {
         if (partition_bucket.bucket < 0) {
             return Status::Invalid(
@@ -267,6 +296,10 @@ Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
                             partition_bucket.bucket));
         }
         merged_offsets[partition_bucket] = offset_range.end;
+    }
+    if (merged_offsets.empty()) {
+        merged_properties.erase(kOffsetsKey);
+        return merged_properties;
     }
     PAIMON_ASSIGN_OR_RAISE(
         merged_properties[kOffsetsKey],

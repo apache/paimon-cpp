@@ -185,21 +185,23 @@ class FileStoreCommitImpl : public FileStoreCommit {
     void ReportCommit(const ManifestEntryChanges& changes, int64_t commit_duration,
                       int32_t generated_snapshot, int32_t attempt);
 
-    Result<int32_t> TryCommit(const std::vector<ManifestEntry>& delta_files,
-                              const std::vector<ManifestEntry>& changelog_files,
-                              const std::vector<IndexManifestEntry>& index_entries,
-                              int64_t identifier, std::optional<int64_t> watermark,
-                              const std::map<std::string, std::string>& properties,
-                              const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
-                              Snapshot::CommitKind commit_kind, bool detect_conflicts,
-                              bool retry_on_conflict);
+    Result<int32_t> TryCommit(
+        const std::vector<ManifestEntry>& delta_files,
+        const std::vector<ManifestEntry>& changelog_files,
+        const std::vector<IndexManifestEntry>& index_entries, int64_t identifier,
+        std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties,
+        const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
+        Snapshot::CommitKind commit_kind, bool reset_all_realtime_progress,
+        const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
+        bool detect_conflicts, bool retry_on_conflict);
 
-    Result<int32_t> TryCommit(const std::shared_ptr<CommitChangesProvider>& changes_provider,
-                              int64_t identifier, std::optional<int64_t> watermark,
-                              const std::map<std::string, std::string>& properties,
-                              const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
-                              Snapshot::CommitKind commit_kind, bool detect_conflicts,
-                              bool retry_on_conflict);
+    Result<int32_t> TryCommit(
+        const std::shared_ptr<CommitChangesProvider>& changes_provider, int64_t identifier,
+        std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties,
+        const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
+        Snapshot::CommitKind commit_kind, bool reset_all_realtime_progress,
+        const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
+        bool detect_conflicts, bool retry_on_conflict);
 
     Result<bool> TryCommitOnce(const std::vector<ManifestEntry>& delta_files,
                                const std::vector<ManifestEntry>& changelog_files,

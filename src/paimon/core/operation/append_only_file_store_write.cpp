@@ -106,6 +106,10 @@ Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
         return Status::Invalid("refresh committed snapshot requires a real-time writer");
     }
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(snapshot_id));
+    if (snapshot.GetCommitKind() == Snapshot::CommitKind::Overwrite()) {
+        return Status::Invalid(
+            "real-time committed progress was reset by overwrite; recreate RealtimeContext");
+    }
     PAIMON_ASSIGN_OR_RAISE(
         RealtimeOffsetMap committed_offsets,
         RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),

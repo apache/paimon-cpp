@@ -311,18 +311,24 @@ TEST_F(RealtimeCommitPropertiesTest, BuildRejectsInvalidProgress) {
         {RealtimePartitionBucket({{"dt", "2"}}, /*bucket=*/-1), OffsetRange(0, 1)}};
     ASSERT_NOK_WITH_MSG(
         RealtimeCommitProperties::Build(/*properties=*/{}, /*latest_snapshot=*/std::nullopt,
-                                        invalid_bucket, file_system_, directory_->Str(), "main"),
+                                        invalid_bucket, /*reset_all_realtime_progress=*/false,
+                                        /*removed_realtime_partitions=*/{}, file_system_,
+                                        directory_->Str(), "main"),
         "bucket -1 is invalid");
 
     std::map<RealtimePartitionBucket, OffsetRange> gap = {
         {RealtimePartitionBucket({{"dt", "2"}}, /*bucket=*/0), OffsetRange(3, 5)}};
     ASSERT_NOK_WITH_MSG(RealtimeCommitProperties::Build(/*properties=*/{}, latest_snapshot, gap,
+                                                        /*reset_all_realtime_progress=*/false,
+                                                        /*removed_realtime_partitions=*/{},
                                                         file_system_, directory_->Str(), "main"),
                         "are not contiguous");
 
     std::map<RealtimePartitionBucket, OffsetRange> overlap = {
         {RealtimePartitionBucket({{"dt", "2"}}, /*bucket=*/0), OffsetRange(0, 2)}};
     ASSERT_NOK_WITH_MSG(RealtimeCommitProperties::Build(/*properties=*/{}, latest_snapshot, overlap,
+                                                        /*reset_all_realtime_progress=*/false,
+                                                        /*removed_realtime_partitions=*/{},
                                                         file_system_, directory_->Str(), "main"),
                         "are not contiguous");
 
@@ -333,7 +339,9 @@ TEST_F(RealtimeCommitPropertiesTest, BuildRejectsInvalidProgress) {
          OffsetRange(std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::max())}};
     ASSERT_NOK_WITH_MSG(
         RealtimeCommitProperties::Build(/*properties=*/{}, exhausted_snapshot, after_max,
-                                        file_system_, directory_->Str(), "main"),
+                                        /*reset_all_realtime_progress=*/false,
+                                        /*removed_realtime_partitions=*/{}, file_system_,
+                                        directory_->Str(), "main"),
         "offset range is invalid");
 }
 
@@ -346,16 +354,53 @@ TEST_F(RealtimeCommitPropertiesTest, BuildWithoutProgress) {
     ASSERT_OK_AND_ASSIGN(Properties inherited,
                          RealtimeCommitProperties::Build(
                              properties, std::optional<Snapshot>(MakeSnapshot(latest_properties)),
-                             /*realtime_ranges=*/{}, /*file_system=*/nullptr,
+                             /*realtime_ranges=*/{}, /*reset_all_realtime_progress=*/false,
+                             /*removed_realtime_partitions=*/{},
+                             /*file_system=*/nullptr,
                              /*table_root=*/"", /*branch=*/"main"));
     ASSERT_EQ("value", inherited.at("custom"));
     ASSERT_EQ(latest_offsets_path, inherited.at(RealtimeCommitProperties::kOffsetsKey));
 
     ASSERT_OK_AND_ASSIGN(Properties unchanged, RealtimeCommitProperties::Build(
                                                    properties, /*latest_snapshot=*/std::nullopt,
-                                                   /*realtime_ranges=*/{}, /*file_system=*/nullptr,
+                                                   /*realtime_ranges=*/{},
+                                                   /*reset_all_realtime_progress=*/false,
+                                                   /*removed_realtime_partitions=*/{},
+                                                   /*file_system=*/nullptr,
                                                    /*table_root=*/"", /*branch=*/"main"));
     ASSERT_EQ(properties, unchanged);
+
+    Properties properties_with_stale_offset = properties;
+    properties_with_stale_offset[RealtimeCommitProperties::kOffsetsKey] = "stale.offsets";
+    ASSERT_OK_AND_ASSIGN(
+        Properties overwritten,
+        RealtimeCommitProperties::Build(
+            properties_with_stale_offset, std::optional<Snapshot>(MakeSnapshot(latest_properties)),
+            /*realtime_ranges=*/{}, /*reset_all_realtime_progress=*/true,
+            /*removed_realtime_partitions=*/{},
+            /*file_system=*/nullptr, /*table_root=*/"", /*branch=*/"main"));
+    ASSERT_EQ("value", overwritten.at("custom"));
+    ASSERT_EQ(0, overwritten.count(RealtimeCommitProperties::kOffsetsKey));
+}
+
+TEST_F(RealtimeCommitPropertiesTest, BuildRemovesOnlyOverwrittenPartitions) {
+    RealtimePartitionBucket dt2_bucket0({{"dt", "2"}}, /*bucket=*/0);
+    RealtimePartitionBucket dt2_bucket1({{"dt", "2"}}, /*bucket=*/1);
+    RealtimePartitionBucket dt3_bucket0({{"dt", "3"}}, /*bucket=*/0);
+    RealtimeOffsetMap committed_offsets = {{dt2_bucket0, 3}, {dt2_bucket1, 4}, {dt3_bucket0, 5}};
+    ASSERT_OK_AND_ASSIGN(Snapshot latest_snapshot, MakeSnapshotWithOffsets(committed_offsets));
+    std::vector<std::map<std::string, std::string>> removed_partitions = {{{"dt", "2"}}};
+
+    ASSERT_OK_AND_ASSIGN(Properties properties,
+                         RealtimeCommitProperties::Build(
+                             /*properties=*/{}, latest_snapshot, /*realtime_ranges=*/{},
+                             /*reset_all_realtime_progress=*/false, removed_partitions,
+                             file_system_, directory_->Str(), "main"));
+    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap actual,
+                         RealtimeCommitProperties::ReadOffsets(
+                             std::optional<Snapshot>(MakeSnapshot(properties)), file_system_));
+    RealtimeOffsetMap expected = {{dt3_bucket0, 5}};
+    ASSERT_EQ(expected, actual);
 }
 
 TEST_F(RealtimeCommitPropertiesTest, BuildWritesMergedProgress) {
@@ -368,10 +413,12 @@ TEST_F(RealtimeCommitPropertiesTest, BuildWritesMergedProgress) {
         {RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0), OffsetRange(7, 9)}};
     std::map<std::string, std::string> properties = {{"custom", "value"}};
 
-    ASSERT_OK_AND_ASSIGN(Properties merged,
-                         RealtimeCommitProperties::Build(
-                             properties, std::optional<Snapshot>(MakeSnapshot(latest_properties)),
-                             ranges, file_system_, directory_->Str(), "main"));
+    ASSERT_OK_AND_ASSIGN(
+        Properties merged,
+        RealtimeCommitProperties::Build(
+            properties, std::optional<Snapshot>(MakeSnapshot(latest_properties)), ranges,
+            /*reset_all_realtime_progress=*/false,
+            /*removed_realtime_partitions=*/{}, file_system_, directory_->Str(), "main"));
     ASSERT_EQ("value", merged.at("custom"));
     ASSERT_NE(latest_offsets_path, merged.at(RealtimeCommitProperties::kOffsetsKey));
 
@@ -388,10 +435,12 @@ TEST_F(RealtimeCommitPropertiesTest, BuildWritesMergedProgress) {
 TEST_F(RealtimeCommitPropertiesTest, BuildRequiresFileSystem) {
     std::map<RealtimePartitionBucket, OffsetRange> ranges = {
         {RealtimePartitionBucket({{"dt", "2"}}, /*bucket=*/0), OffsetRange(0, 2)}};
-    ASSERT_NOK_WITH_MSG(RealtimeCommitProperties::Build(
-                            /*properties=*/{}, /*latest_snapshot=*/std::nullopt, ranges,
-                            /*file_system=*/nullptr, directory_->Str(), "main"),
-                        "file system is null");
+    ASSERT_NOK_WITH_MSG(
+        RealtimeCommitProperties::Build(
+            /*properties=*/{}, /*latest_snapshot=*/std::nullopt, ranges,
+            /*reset_all_realtime_progress=*/false,
+            /*removed_realtime_partitions=*/{}, /*file_system=*/nullptr, directory_->Str(), "main"),
+        "file system is null");
 }
 
 }  // namespace paimon::test
