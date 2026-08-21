@@ -258,6 +258,15 @@ TEST_F(ParquetVectorIoTest, WriteAndReadVector) {
                   R"([[1, [1.0, 2.0, 3.0]], [2, null], [3, [4.0, 5.0, 6.0]]])");
 }
 
+TEST_F(ParquetVectorIoTest, WriteAndReadAllNullVector) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto struct_type = checked_pointer_cast<arrow::StructType>(arrow::struct_(
+        {arrow::field("id", arrow::int32()), arrow::field("embedding", vector_type)}));
+    WriteAndCheck("all-null-vector-list.parquet", struct_type, struct_type,
+                  R"([[1, null], [2, null], [3, null]])");
+}
+
 TEST_F(ParquetVectorIoTest, WriteAndReadAllNullFixedSizeListWithArrowSchema) {
     auto vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);

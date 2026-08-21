@@ -119,6 +119,11 @@ Result<std::shared_ptr<arrow::Array>> CastListToVector(
             fmt::format("Cannot restore VECTOR from type {}", array->type()->ToString()));
     }
     PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorElements(*array));
+    if (array->null_count() == array->length()) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> result,
+                                          arrow::MakeArrayOfNull(read_type, array->length(), pool));
+        return result;
+    }
     arrow::compute::ExecContext exec_context(pool);
     arrow::TypeHolder type_holder(read_type.get());
     arrow::compute::CastOptions options = arrow::compute::CastOptions::Safe();
