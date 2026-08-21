@@ -29,6 +29,7 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/util/checked_cast.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -181,7 +182,7 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
         return false;
     }
 
- private:
+ protected:
     static uint64_t ToReaderRowNumber(int32_t row_number) {
         if (row_number < 0) {
             return std::numeric_limits<uint64_t>::max();
@@ -201,6 +202,85 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
     bool enable_randomize_batch_size_ = true;
     std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
     std::mt19937 random_engine_{std::random_device{}()};  // NOLINT(whitespace/braces)
+};
+
+// A projecting, range-honoring variant of MockFileBatchReader for exercising readers that split
+// the read schema into probe/payload passes (e.g. LateMaterializingFileBatchReader). Compared to
+// MockFileBatchReader it:
+//   * projects each batch down to the columns requested via SetReadSchema (matched by name);
+//   * honors the FileBatchReader contract that SetReadSchema restarts reading from the first row
+//     and drops the previously assigned read ranges;
+//   * restricts NextBatch output to the assigned read ranges (skipping gaps between them), so it
+//     behaves like a real format reader when PrefetchFileBatchReaderImpl dispatches disjoint
+//     ranges to parallel readers. An empty range set means "no restriction" (read the whole file).
+class ProjectingMockFileBatchReader : public MockFileBatchReader {
+ public:
+    using MockFileBatchReader::MockFileBatchReader;
+
+    Status SetReadSchema(::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& /*predicate*/,
+                         const std::optional<RoaringBitmap32>& /*selection_bitmap*/) override {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(proj_schema_, arrow::ImportSchema(read_schema));
+        current_pos_ = 0;
+        previous_batch_first_row_num_ = std::numeric_limits<uint64_t>::max();
+        read_ranges_.clear();
+        return Status::OK();
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        int64_t begin = current_pos_;
+        int64_t range_end = read_end_pos_;
+        if (!read_ranges_.empty()) {
+            // read_ranges_ are ascending, half-open [first, second); find the first still-unread
+            // range and skip any gap before it.
+            const std::pair<uint64_t, uint64_t>* selected = nullptr;
+            for (const auto& range : read_ranges_) {
+                if (static_cast<int64_t>(range.second) > begin) {
+                    selected = &range;
+                    break;
+                }
+            }
+            if (selected == nullptr) {
+                previous_batch_first_row_num_ = static_cast<uint64_t>(begin);
+                return BatchReader::MakeEofBatchWithBitmap();
+            }
+            begin = std::max(begin, static_cast<int64_t>(selected->first));
+            range_end = static_cast<int64_t>(selected->second);
+        }
+        if (begin >= read_end_pos_) {
+            previous_batch_first_row_num_ = static_cast<uint64_t>(begin);
+            return BatchReader::MakeEofBatchWithBitmap();
+        }
+        int64_t end =
+            std::min({static_cast<int64_t>(read_end_pos_), range_end, begin + batch_size_});
+        auto full = arrow::internal::checked_pointer_cast<arrow::StructArray>(
+            data_->Slice(begin, end - begin));
+        std::shared_ptr<arrow::Array> out = full;
+        if (proj_schema_) {
+            arrow::ArrayVector children;
+            arrow::FieldVector fields;
+            for (const auto& field : proj_schema_->fields()) {
+                std::shared_ptr<arrow::Array> col = full->GetFieldByName(field->name());
+                if (!col) {
+                    return Status::Invalid("projecting mock: unknown field " + field->name());
+                }
+                children.push_back(col);
+                fields.push_back(field);
+            }
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(out, arrow::StructArray::Make(children, fields));
+        }
+        RoaringBitmap32 bitmap;
+        bitmap.AddRange(0, static_cast<int32_t>(end - begin));
+        previous_batch_first_row_num_ = static_cast<uint64_t>(begin);
+        current_pos_ = static_cast<int32_t>(end);
+        auto c_array = std::make_unique<::ArrowArray>();
+        auto c_schema = std::make_unique<::ArrowSchema>();
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*out, c_array.get(), c_schema.get()));
+        return std::make_pair(std::make_pair(std::move(c_array), std::move(c_schema)),
+                              std::move(bitmap));
+    }
+
+ private:
+    std::shared_ptr<arrow::Schema> proj_schema_;
 };
 
 }  // namespace paimon::test
