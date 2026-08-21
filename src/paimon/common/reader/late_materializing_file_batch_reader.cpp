@@ -348,7 +348,19 @@ bool LateMaterializingFileBatchReader::SupportPreciseBitmapSelection() const {
 }
 
 Status LateMaterializingFileBatchReader::SeekToRow(uint64_t row_number) {
-    return inner_->SeekToRow(row_number);
+    PAIMON_RETURN_NOT_OK(inner_->SeekToRow(row_number));
+    if (state_ == kRunning || state_ == kEOF) {
+        int64_t cursor = 0;
+        for (auto it = matched_bitmap_.Begin(); it != matched_bitmap_.End(); ++it) {
+            if (static_cast<uint64_t>(*it) >= row_number) {
+                break;
+            }
+            ++cursor;
+        }
+        probe_cursor_ = cursor;
+        state_ = kRunning;  // a seek after EOF re-activates payload reading
+    }
+    return Status::OK();
 }
 
 uint64_t LateMaterializingFileBatchReader::GetNextRowToRead() const {
