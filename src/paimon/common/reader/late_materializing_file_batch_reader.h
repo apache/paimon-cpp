@@ -98,6 +98,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
 
     LatMatState state_ = kInit;
     std::unique_ptr<PrefetchFileBatchReader> inner_;
+    std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
     std::shared_ptr<arrow::Schema> full_schema_;
     // projection holding only the predicate fields; nullptr when probing is not applicable
     std::shared_ptr<arrow::Schema> probe_schema_;

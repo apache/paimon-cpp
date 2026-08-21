@@ -238,7 +238,10 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::AssembleFul
 Status LateMaterializingFileBatchReader::SetInnerProbeSchema() {
     ::ArrowSchema c_probe_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*probe_schema_, &c_probe_schema));
-    return inner_->SetReadSchema(&c_probe_schema, predicate_, selection_);
+    PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_probe_schema, predicate_, selection_));
+    // SetReadSchema may refresh the read ranges of the inner reader, so we set it again.
+    PAIMON_RETURN_NOT_OK(SetReadRanges(read_ranges_));
+    return Status::OK();
 }
 
 Status LateMaterializingFileBatchReader::SetInnerPayloadSchema() {
@@ -247,13 +250,17 @@ Status LateMaterializingFileBatchReader::SetInnerPayloadSchema() {
     if (matched_bitmap_.IsEmpty()) {
         return Status::Invalid("late materialization bitmap is empty. Should return EOF.");
     }
-    return inner_->SetReadSchema(&c_payload_schema, /*predicate=*/nullptr, matched_bitmap_);
+    PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_payload_schema, /*predicate=*/nullptr, matched_bitmap_));
+    PAIMON_RETURN_NOT_OK(SetReadRanges(read_ranges_));
+    return Status::OK();
 }
 
 Status LateMaterializingFileBatchReader::SetInnerFullSchema() {
     ::ArrowSchema c_full_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*full_schema_, &c_full_schema));
-    return inner_->SetReadSchema(&c_full_schema, predicate_, selection_);
+    PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_full_schema, predicate_, selection_));
+    PAIMON_RETURN_NOT_OK(SetReadRanges(read_ranges_));
+    return Status::OK();
 }
 
 std::shared_ptr<Metrics> LateMaterializingFileBatchReader::GetReaderMetrics() const {
@@ -347,7 +354,9 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> LateMaterializingFileBatchRea
 
 Status LateMaterializingFileBatchReader::SetReadRanges(
     const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) {
-    return inner_->SetReadRanges(read_ranges);
+    read_ranges_ = read_ranges;
+    PAIMON_RETURN_NOT_OK(inner_->SetReadRanges(read_ranges_));
+    return Status::OK();
 }
 
 }  // namespace paimon
