@@ -166,8 +166,6 @@ Result<FileBatchReader::ReadBatchWithBitmap> LateMaterializingFileBatchReader::R
             return MakeEofBatchWithBitmap();
         }
         auto& [batch, bitmap] = batch_with_bitmap;
-        // The payload reader prunes at row group/page granularity, so the returned batch is a
-        // superset; the bitmap marks the rows that are actually in matched_bitmap_.
         if (bitmap.IsEmpty()) {
             ReaderUtils::ReleaseReadBatch(std::move(batch));
             continue;
@@ -176,24 +174,34 @@ Result<FileBatchReader::ReadBatchWithBitmap> LateMaterializingFileBatchReader::R
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
 
-        // Record the file row id of each emitted row so GetPreviousBatchFileRowId stays correct
-        // after compaction/reassembly.
+        // Recompute the precise selection: keep only the candidate rows whose file row id is in
+        // matched_bitmap_. Also record their file row ids so GetPreviousBatchFileRowId stays
+        // correct after compaction/reassembly.
+        RoaringBitmap32 valid;
         row_mapping_.clear();
         for (auto it = bitmap.Begin(); it != bitmap.End(); ++it) {
-            PAIMON_ASSIGN_OR_RAISE(uint64_t file_row,
-                                   inner_->GetPreviousBatchFileRowId(static_cast<uint64_t>(*it)));
+            uint64_t offset = static_cast<uint64_t>(*it);
+            PAIMON_ASSIGN_OR_RAISE(uint64_t file_row, inner_->GetPreviousBatchFileRowId(offset));
+            if (!matched_bitmap_.Contains(file_row)) {
+                continue;
+            }
+            valid.Add(static_cast<uint32_t>(offset));
             row_mapping_.push_back(file_row);
+        }
+        if (valid.IsEmpty()) {
+            ReaderUtils::ReleaseReadBatch(std::move(batch));
+            continue;
         }
 
         // Compact the payload superset down to the matched rows (ascending file row order).
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
-                               ReaderUtils::GenerateFilteredArrayVector(payload_array, bitmap));
+                               ReaderUtils::GenerateFilteredArrayVector(payload_array, valid));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_compacted,
                                           arrow::Concatenate(payload_slices));
 
         // probe_data_ holds the matched probe rows in the same ascending file order, so a running
         // cursor yields row-for-row alignment with the compacted payload.
-        int64_t card = static_cast<int64_t>(bitmap.Cardinality());
+        int64_t card = static_cast<int64_t>(valid.Cardinality());
         if (probe_cursor_ + card > probe_data_->length()) {
             return Status::Invalid(
                 fmt::format("probe cache underflow: cursor {} + {} exceeds probe rows {}",
