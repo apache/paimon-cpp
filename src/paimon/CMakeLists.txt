@@ -882,6 +882,7 @@ if(PAIMON_BUILD_TESTS)
                     core/utils/file_utils_test.cpp
                     core/utils/manifest_meta_reader_test.cpp
                     core/utils/offset_row_test.cpp
+                    core/utils/partition_utils_test.cpp
                     core/utils/partition_path_utils_test.cpp
                     core/utils/snapshot_manager_test.cpp
                     core/utils/tag_manager_test.cpp

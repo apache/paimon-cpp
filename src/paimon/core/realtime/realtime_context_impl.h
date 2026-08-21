@@ -79,8 +79,9 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
 
     Status ReleaseReadView(const std::string& opaque_ticket);
 
-    // Returns an error requiring a new context if a newer snapshot moves committed progress
-    // backwards, because segments reclaimed by this context cannot be restored in place.
+    // Returns an error requiring a new context if a newer snapshot removes or moves committed
+    // progress backwards for a store created by this context. Progress for inactive stores is
+    // only reference state and can be replaced in place.
     Status AdvanceCommittedProgress(int64_t snapshot_id,
                                     const RealtimeOffsetMap& committed_offsets);
 
@@ -102,7 +103,9 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     std::mutex mutex_;
     std::mutex progress_mutex_;
     std::map<RealtimePartitionBucket, std::shared_ptr<RealtimeStore>> stores_;
+    // Full-table progress used as the initial offset when a store is created lazily.
     RealtimeOffsetMap committed_offsets_;
+    // Progress already reflected in stores owned by this context.
     RealtimeOffsetMap reclaimed_offsets_;
     std::optional<int64_t> last_refreshed_snapshot_id_;
     std::mutex read_views_mutex_;

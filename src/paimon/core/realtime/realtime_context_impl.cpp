@@ -231,18 +231,27 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
                 return Status::Invalid("invalid partition-bucket committed offset");
             }
         }
-        // Reclaimed segments cannot be restored in place. A rollback therefore requires the
-        // caller to discard this context and rebuild it from the rolled-back snapshot.
-        for (const auto& [partition_bucket, previous_offset] : committed_offsets_) {
+        // Only stores created by this context can contain state which cannot be restored in
+        // place. Offsets for other partition-buckets are reference state for lazy store creation
+        // and may be removed or rolled back without rebuilding the context.
+        std::lock_guard<std::mutex> registry_lock(mutex_);
+        for (const auto& store_entry : stores_) {
+            const RealtimePartitionBucket& partition_bucket = store_entry.first;
+            auto previous_iter = committed_offsets_.find(partition_bucket);
+            if (previous_iter == committed_offsets_.end()) {
+                continue;
+            }
+
             auto current_iter = committed_offsets.find(partition_bucket);
             if (current_iter == committed_offsets.end()) {
                 return Status::Invalid(
-                    "real-time committed progress removed a partition-bucket; recreate "
+                    "real-time committed progress removed an active partition-bucket; recreate "
                     "RealtimeContext");
             }
-            if (current_iter->second < previous_offset) {
+            if (current_iter->second < previous_iter->second) {
                 return Status::Invalid(
-                    "real-time committed offset moved backwards; recreate RealtimeContext");
+                    "real-time committed offset moved backwards for an active partition-bucket; "
+                    "recreate RealtimeContext");
             }
         }
         committed_offsets_ = committed_offsets;

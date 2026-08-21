@@ -31,22 +31,12 @@
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/core/utils/partition_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/macros.h"
 
 namespace paimon {
 namespace {
-
-bool MatchPartitionSpec(const std::map<std::string, std::string>& partition,
-                        const std::map<std::string, std::string>& partition_spec) {
-    for (const auto& [key, value] : partition_spec) {
-        auto iter = partition.find(key);
-        if (iter == partition.end() || iter->second != value) {
-            return false;
-        }
-    }
-    return true;
-}
 
 class OffsetEntryJson : public Jsonizable<OffsetEntryJson> {
  public:
@@ -247,6 +237,7 @@ Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
     const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
     bool reset_all_realtime_progress,
     const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
+    const BinaryRowPartitionComputer& partition_computer,
     const std::shared_ptr<FileSystem>& file_system, const std::string& table_root,
     const std::string& branch) {
     std::map<std::string, std::string> merged_properties = properties;
@@ -269,11 +260,15 @@ Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
         RealtimeOffsetMap merged_offsets,
         ReadOffsets(reset_all_realtime_progress ? std::nullopt : latest_snapshot, file_system));
     for (auto iter = merged_offsets.begin(); iter != merged_offsets.end();) {
-        bool removed =
-            std::any_of(removed_realtime_partitions.begin(), removed_realtime_partitions.end(),
-                        [&iter](const std::map<std::string, std::string>& partition_spec) {
-                            return MatchPartitionSpec(iter->first.partition, partition_spec);
-                        });
+        bool removed = false;
+        for (const auto& partition_spec : removed_realtime_partitions) {
+            PAIMON_ASSIGN_OR_RAISE(
+                removed, PartitionUtils::MatchPartitionSpec(iter->first.partition, partition_spec,
+                                                            partition_computer));
+            if (removed) {
+                break;
+            }
+        }
         if (removed) {
             iter = merged_offsets.erase(iter);
         } else {

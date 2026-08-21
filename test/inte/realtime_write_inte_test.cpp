@@ -269,6 +269,33 @@ class RealtimeWriteInteTest : public ::testing::Test {
         return builder.SetBucket(bucket).Finish();
     }
 
+    Result<std::unique_ptr<RecordBatch>> MakeDatePartitionBatch(
+        int64_t first_id, int64_t count, int32_t date, const std::string& partition) const {
+        if (count <= 0) {
+            return Status::Invalid("cannot create an empty test batch");
+        }
+        std::string json = "[";
+        for (int64_t i = 0; i < count; ++i) {
+            if (i > 0) {
+                json += ",";
+            }
+            int64_t id = first_id + i;
+            json += "[" + std::to_string(id) + ",\"value-" + std::to_string(id) + "\"," +
+                    std::to_string(date) + "]";
+        }
+        json += "]";
+
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> array,
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), json));
+        ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        return RecordBatchBuilder(&c_array)
+            .SetPartition({{"pt", partition}})
+            .SetBucket(/*bucket=*/0)
+            .Finish();
+    }
+
     Result<std::unique_ptr<RecordBatch>> MakeUnpartitionedBatchFromJson(
         const std::string& json) const {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
@@ -591,6 +618,52 @@ class RealtimeWriteInteTest : public ::testing::Test {
 
         ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows());
         ASSERT_EQ(expected_rows, actual_rows);
+    }
+
+    void CheckDropDatePartitionRemovesOffset(bool legacy_partition_name_enabled) {
+        fields_ = {arrow::field("id", arrow::int64()), arrow::field("payload", arrow::utf8()),
+                   arrow::field("pt", arrow::date32())};
+        schema_ = arrow::schema(fields_);
+        options_[Options::PARTITION_GENERATE_LEGACY_NAME] =
+            legacy_partition_name_enabled ? "true" : "false";
+        CreateTable(/*partition_keys=*/{"pt"});
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                             RealtimeContext::Create());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                             CreateRealtimeWriter(realtime_context));
+        constexpr int32_t kDate = 19723;
+        constexpr int64_t kRowCount = 3;
+        const std::string partition = "2024-01-01";
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeDatePartitionBatch(/*first_id=*/0, kRowCount, kDate, partition));
+        ASSERT_OK(writer->Write(std::move(batch)));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                             writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+        ASSERT_EQ(1, commits.size());
+        ASSERT_OK(Commit(commits, /*commit_identifier=*/0));
+
+        const std::string normalized_partition =
+            legacy_partition_name_enabled ? std::to_string(kDate) : partition;
+        RealtimePartitionBucket partition_bucket({{"pt", normalized_partition}}, /*bucket=*/0);
+        ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap offsets_before_drop, ReadCommittedOffsets());
+        ASSERT_EQ(1, offsets_before_drop.size());
+        ASSERT_EQ(kRowCount, offsets_before_drop.at(partition_bucket));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan_before_drop,
+                             CreatePlan(/*realtime_context=*/nullptr, /*predicate=*/nullptr));
+        ASSERT_OK_AND_ASSIGN(int64_t rows_before_drop,
+                             CountRows(plan_before_drop, /*realtime_context=*/nullptr));
+        ASSERT_EQ(kRowCount, rows_before_drop);
+
+        ASSERT_OK(DropPartition({{"pt", partition}}, /*commit_identifier=*/1));
+        ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap offsets_after_drop, ReadCommittedOffsets());
+        ASSERT_TRUE(offsets_after_drop.empty());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan_after_drop,
+                             CreatePlan(/*realtime_context=*/nullptr, /*predicate=*/nullptr));
+        ASSERT_OK_AND_ASSIGN(int64_t rows_after_drop,
+                             CountRows(plan_after_drop, /*realtime_context=*/nullptr));
+        ASSERT_EQ(0, rows_after_drop);
+        ASSERT_OK(writer->Close());
     }
 
     std::unique_ptr<UniqueTestDirectory> dir_;
@@ -2459,6 +2532,72 @@ TEST_F(RealtimeWriteInteTest, TestDropPartitionRequiresReopenRealtimeContext) {
     ASSERT_EQ(2, final_offsets.at(partition_bucket));
     ASSERT_EQ(3, final_offsets.at(retained_partition_bucket));
     ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestDropInactivePartitionDoesNotRequireReopenRealtimeContext) {
+    CreateTable(/*partition_keys=*/{"pt"});
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> seed_context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> seed_writer,
+                         CreateRealtimeWriter(seed_context));
+    for (int64_t partition_index = 0; partition_index < 2; ++partition_index) {
+        std::string partition = "p" + std::to_string(partition_index);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeBatch(MakeRows(partition_index * 10, /*count=*/3, partition),
+                                       /*partitioned=*/true));
+        ASSERT_OK(seed_writer->Write(std::move(batch)));
+    }
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> seed_commits,
+                         seed_writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(2, seed_commits.size());
+    ASSERT_OK(Commit(seed_commits, /*commit_identifier=*/0));
+    ASSERT_OK(seed_writer->Close());
+    seed_writer.reset();
+    seed_context.reset();
+
+    // The new context loads offsets for both partitions, but creates a store only for p0.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p0_batch,
+                         MakeBatch(MakeRows(/*first_id=*/20, /*count=*/1, /*partition=*/"p0"),
+                                   /*partitioned=*/true));
+    ASSERT_OK(writer->Write(std::move(p0_batch)));
+
+    ASSERT_OK_AND_ASSIGN(int64_t drop_snapshot_id,
+                         DropPartition({{"pt", "p1"}}, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(drop_snapshot_id));
+    const RealtimePartitionBucket p0_partition_bucket({{"pt", "p0"}}, /*bucket=*/0);
+    const RealtimePartitionBucket p1_partition_bucket({{"pt", "p1"}}, /*bucket=*/0);
+    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap offsets_after_drop, ReadCommittedOffsets());
+    ASSERT_EQ(1, offsets_after_drop.size());
+    ASSERT_EQ(3, offsets_after_drop.at(p0_partition_bucket));
+    ASSERT_EQ(offsets_after_drop.end(), offsets_after_drop.find(p1_partition_bucket));
+
+    // Since p1 was never active in this context, writing it after the drop starts from zero.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p1_batch,
+                         MakeBatch(MakeRows(/*first_id=*/30, /*count=*/2, /*partition=*/"p1"),
+                                   /*partitioned=*/true));
+    ASSERT_OK(writer->Write(std::move(p1_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+    ASSERT_EQ(2, commits.size());
+    auto p1_commit =
+        std::find_if(commits.begin(), commits.end(), [&](const RealtimeCommitProgress& commit) {
+            return commit.partition_bucket == p1_partition_bucket;
+        });
+    ASSERT_NE(commits.end(), p1_commit);
+    ASSERT_EQ(OffsetRange(0, 2), p1_commit->offset_range);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestDropDatePartitionRemovesOffsetWithLegacyPartitionName) {
+    CheckDropDatePartitionRemovesOffset(/*legacy_partition_name_enabled=*/true);
+}
+
+TEST_F(RealtimeWriteInteTest, TestDropDatePartitionRemovesOffsetWithoutLegacyPartitionName) {
+    CheckDropDatePartitionRemovesOffset(/*legacy_partition_name_enabled=*/false);
 }
 
 TEST_F(RealtimeWriteInteTest, TestMultipleBucketsRestoreIndependentOffsets) {

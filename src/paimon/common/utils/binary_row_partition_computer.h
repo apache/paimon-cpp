@@ -55,6 +55,8 @@ class BinaryRowPartitionComputer {
         bool legacy_partition_name_enabled, const std::shared_ptr<MemoryPool>& memory_pool);
 
     Result<BinaryRow> ToBinaryRow(const std::map<std::string, std::string>& partition) const;
+    Result<std::map<std::string, std::string>> NormalizePartitionSpec(
+        const std::map<std::string, std::string>& partition) const;
     Result<std::vector<std::pair<std::string, std::string>>> GeneratePartitionVector(
         const BinaryRow& partition) const;
     const std::vector<std::string>& GetPartitionKeys() const {

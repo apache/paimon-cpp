@@ -80,6 +80,7 @@
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/core/utils/partition_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
@@ -95,17 +96,6 @@ namespace {
 constexpr const char* kCommitStrictModeLastSafeSnapshot = "commit.strict-mode.last-safe-snapshot";
 constexpr const char* kSequenceSnapshotOrdering = "sequence.snapshot-ordering";
 constexpr const char* kPkClusteringOverride = "pk-clustering-override";
-
-bool MatchPartitionSpec(const std::map<std::string, std::string>& partition,
-                        const std::map<std::string, std::string>& partition_spec) {
-    for (const auto& [key, value] : partition_spec) {
-        auto iter = partition.find(key);
-        if (iter == partition.end() || iter->second != value) {
-            return false;
-        }
-    }
-    return true;
-}
 
 }  // namespace
 
@@ -667,7 +657,10 @@ Status FileStoreCommitImpl::ExecuteOverwrite(
             PAIMON_ASSIGN_OR_RAISE(partition_map, PartitionToMap(entry.Partition()));
             bool belongs_to_overwrite_partition = false;
             for (const auto& partition_spec : partitions) {
-                if (MatchPartitionSpec(partition_map, partition_spec)) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    bool matched, PartitionUtils::MatchPartitionSpec(partition_map, partition_spec,
+                                                                     *partition_computer_));
+                if (matched) {
                     belongs_to_overwrite_partition = true;
                     break;
                 }
@@ -1009,9 +1002,10 @@ Result<int32_t> FileStoreCommitImpl::TryCommit(
         using SnapshotProperties = std::map<std::string, std::string>;
         PAIMON_ASSIGN_OR_RAISE(
             SnapshotProperties snapshot_properties,
-            RealtimeCommitProperties::Build(
-                properties, latest_snapshot, realtime_ranges, reset_all_realtime_progress,
-                removed_realtime_partitions, fs_, root_path_, snapshot_manager_->Branch()));
+            RealtimeCommitProperties::Build(properties, latest_snapshot, realtime_ranges,
+                                            reset_all_realtime_progress,
+                                            removed_realtime_partitions, *partition_computer_, fs_,
+                                            root_path_, snapshot_manager_->Branch()));
         PAIMON_ASSIGN_OR_RAISE(
             bool commit_success,
             TryCommitOnce(commit_changes->delta_files, commit_changes->changelog_files,

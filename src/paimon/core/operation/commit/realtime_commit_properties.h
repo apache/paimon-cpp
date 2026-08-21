@@ -33,6 +33,7 @@
 
 namespace paimon {
 
+class BinaryRowPartitionComputer;
 class FileSystem;
 
 class RealtimeCommitProperties {
@@ -74,6 +75,7 @@ class RealtimeCommitProperties {
         const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
         bool reset_all_realtime_progress,
         const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
+        const BinaryRowPartitionComputer& partition_computer,
         const std::shared_ptr<FileSystem>& file_system, const std::string& table_root,
         const std::string& branch);
 

@@ -102,6 +102,48 @@ Result<BinaryRow> BinaryRowPartitionComputer::ToBinaryRow(
     return binary_row;
 }
 
+Result<std::map<std::string, std::string>> BinaryRowPartitionComputer::NormalizePartitionSpec(
+    const std::map<std::string, std::string>& partition) const {
+    for (const auto& [partition_key, _] : partition) {
+        if (std::find(partition_keys_.begin(), partition_keys_.end(), partition_key) ==
+            partition_keys_.end()) {
+            return Status::Invalid(
+                fmt::format("field {} does not exist in partition keys", partition_key));
+        }
+    }
+
+    BinaryRow binary_row(partition_converters_.size());
+    BinaryRowWriter writer(&binary_row, /*initial_size=*/0, memory_pool_.get());
+    std::vector<bool> included_fields(partition_converters_.size(), false);
+    for (size_t field_idx = 0; field_idx < partition_converters_.size(); ++field_idx) {
+        const PartitionConverter& partition_converter = partition_converters_[field_idx];
+        auto input_iter = partition.find(partition_converter.partition_key);
+        if (input_iter == partition.end()) {
+            writer.SetNullAt(field_idx);
+            continue;
+        }
+
+        included_fields[field_idx] = true;
+        if (input_iter->second == default_part_value_) {
+            writer.SetNullAt(field_idx);
+        } else {
+            PAIMON_RETURN_NOT_OK(
+                partition_converter.converter(input_iter->second, field_idx, &writer));
+        }
+    }
+    writer.Complete();
+
+    std::vector<std::pair<std::string, std::string>> normalized_values;
+    PAIMON_ASSIGN_OR_RAISE(normalized_values, GeneratePartitionVector(binary_row));
+    std::map<std::string, std::string> normalized_partition;
+    for (size_t field_idx = 0; field_idx < normalized_values.size(); ++field_idx) {
+        if (included_fields[field_idx]) {
+            normalized_partition.insert(normalized_values[field_idx]);
+        }
+    }
+    return normalized_partition;
+}
+
 Result<std::vector<std::pair<std::string, std::string>>>
 BinaryRowPartitionComputer::GeneratePartitionVector(const BinaryRow& partition) const {
     if (static_cast<size_t>(partition.GetFieldCount()) != partition_converters_.size()) {

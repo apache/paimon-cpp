@@ -38,6 +38,7 @@
 #include "paimon/core/operation/commit/overwrite_changes_provider.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/utils/partition_utils.h"
 #include "paimon/scan_context.h"
 
 namespace paimon {
@@ -183,14 +184,9 @@ Result<std::vector<IndexManifestEntry>> CommitScanner::ReadAllIndexEntriesFromPa
         }
 
         for (const auto& partition_spec : partitions) {
-            bool matched = true;
-            for (const auto& [key, value] : partition_spec) {
-                auto iter = partition.find(key);
-                if (iter == partition.end() || iter->second != value) {
-                    matched = false;
-                    break;
-                }
-            }
+            PAIMON_ASSIGN_OR_RAISE(bool matched,
+                                   PartitionUtils::MatchPartitionSpec(partition, partition_spec,
+                                                                      *partition_computer_));
             if (matched) {
                 return true;
             }

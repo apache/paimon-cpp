@@ -211,6 +211,29 @@ TEST(RealtimeContextTest, TestCommittedProgressIsMonotonicAndSelective) {
     ASSERT_EQ(std::vector<int64_t>({8}), factory->stores[1]->committed_offsets);
 }
 
+TEST(RealtimeContextTest, TestRemovedInactivePartitionDoesNotRequireReopen) {
+    auto factory = std::make_shared<TestingRealtimeStoreFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    const std::map<std::string, std::string> active_partition = {{"dt", "2026-08-02"}};
+    const std::map<std::string, std::string> inactive_partition = {{"dt", "2026-08-03"}};
+    const RealtimePartitionBucket active_partition_bucket(active_partition, /*bucket=*/0);
+    const RealtimePartitionBucket inactive_partition_bucket(inactive_partition, /*bucket=*/0);
+
+    ASSERT_OK(context->AdvanceCommittedProgress(
+        5, {{active_partition_bucket, /*offset=*/7}, {inactive_partition_bucket, /*offset=*/9}}));
+    ASSERT_OK_AND_ASSIGN(RealtimeStoreState active_state,
+                         context->GetOrCreateRealtimeStore(active_partition, 0, MakeWriteSchema(),
+                                                           StatisticsMode::NONE, {}, pool));
+    ASSERT_EQ(7, active_state.initial_offset);
+
+    ASSERT_OK(context->AdvanceCommittedProgress(6, {{active_partition_bucket, /*offset=*/7}}));
+    ASSERT_OK_AND_ASSIGN(RealtimeStoreState inactive_state,
+                         context->GetOrCreateRealtimeStore(inactive_partition, 0, MakeWriteSchema(),
+                                                           StatisticsMode::NONE, {}, pool));
+    ASSERT_EQ(0, inactive_state.initial_offset);
+}
+
 TEST(RealtimeContextTest, TestRetriesOnlyIncompleteReclamation) {
     auto factory = std::make_shared<TestingRealtimeStoreFactory>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
