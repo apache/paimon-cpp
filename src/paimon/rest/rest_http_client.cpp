@@ -123,7 +123,9 @@ bool IsRetriableTransportError(CURLcode code) {
         case CURLE_RECV_ERROR:
         case CURLE_PARTIAL_FILE:
         case CURLE_HTTP2:
+#if CURL_AT_LEAST_VERSION(7, 49, 0)
         case CURLE_HTTP2_STREAM:
+#endif
             return true;
         default:
             return false;
