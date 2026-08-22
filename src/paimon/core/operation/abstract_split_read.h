@@ -118,15 +118,8 @@ class AbstractSplitRead : public SplitRead {
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
 
     Result<std::pair<std::unique_ptr<FileBatchReader>, std::set<int32_t>>>
-    ApplySharedShreddingReaderIfNeeded(std::unique_ptr<FileBatchReader>&& file_reader,
-                                       const std::shared_ptr<arrow::Schema>& read_schema) const;
-
-    /// Wraps the reader with a `ShreddingFileReader` when any read variant column needs
-    /// reassembly or path extraction; a plain read of an unshredded variant column is passed
-    /// through untouched.
-    Result<std::unique_ptr<FileBatchReader>> ApplyVariantShreddingReaderIfNeeded(
-        std::unique_ptr<FileBatchReader>&& file_reader,
-        const std::shared_ptr<arrow::Schema>& read_schema) const;
+    ApplyShreddingReaderIfNeeded(std::unique_ptr<FileBatchReader>&& file_reader,
+                                 const std::shared_ptr<arrow::Schema>& read_schema) const;
 
     static bool NeedCompleteRowTrackingFields(bool row_tracking_enabled,
                                               const std::shared_ptr<arrow::Schema>& read_schema);
