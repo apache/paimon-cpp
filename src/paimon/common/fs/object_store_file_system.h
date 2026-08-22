@@ -19,7 +19,12 @@
 
 #pragma once
 
+#include <curl/curl.h>
+
+#include <cctype>
+#include <cerrno>
 #include <cstdint>
+#include <ctime>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -31,6 +36,71 @@
 
 namespace paimon {
 
+class ObjectStoreFileSystemUtils {
+ public:
+    static inline int64_t ParseModificationTime(const std::string& value) {
+        std::tm parsed_time{};
+        const char* current = strptime(value.c_str(), "%Y-%m-%dT%H:%M:%S", &parsed_time);
+        if (current != nullptr) {
+            int32_t milliseconds = 0;
+            int32_t fraction_digits = 0;
+            if (*current == '.') {
+                ++current;
+                const char* fraction_begin = current;
+                while (std::isdigit(static_cast<unsigned char>(*current))) {
+                    if (fraction_digits < 3) {
+                        milliseconds = milliseconds * 10 + (*current - '0');
+                    }
+                    ++fraction_digits;
+                    ++current;
+                }
+                if (current == fraction_begin) {
+                    current = nullptr;
+                }
+                while (fraction_digits < 3) {
+                    milliseconds *= 10;
+                    ++fraction_digits;
+                }
+            }
+
+            int32_t timezone_offset_seconds = 0;
+            bool valid_timezone = false;
+            if (current != nullptr && *current == 'Z' && current[1] == '\0') {
+                valid_timezone = true;
+            } else if (current != nullptr && (*current == '+' || *current == '-') &&
+                       std::isdigit(static_cast<unsigned char>(current[1])) &&
+                       std::isdigit(static_cast<unsigned char>(current[2])) && current[3] == ':' &&
+                       std::isdigit(static_cast<unsigned char>(current[4])) &&
+                       std::isdigit(static_cast<unsigned char>(current[5])) && current[6] == '\0') {
+                int32_t hours = (current[1] - '0') * 10 + current[2] - '0';
+                int32_t minutes = (current[4] - '0') * 10 + current[5] - '0';
+                if (hours <= 23 && minutes <= 59) {
+                    timezone_offset_seconds = (hours * 60 + minutes) * 60;
+                    if (*current == '-') {
+                        timezone_offset_seconds = -timezone_offset_seconds;
+                    }
+                    valid_timezone = true;
+                }
+            }
+
+            if (valid_timezone) {
+                errno = 0;
+                time_t seconds = timegm(&parsed_time);
+                if (seconds != static_cast<time_t>(-1) || errno != EOVERFLOW) {
+                    int64_t utc_seconds = static_cast<int64_t>(seconds) - timezone_offset_seconds;
+                    return utc_seconds * 1000 + milliseconds;
+                }
+            }
+        }
+
+        time_t seconds = curl_getdate(value.c_str(), nullptr);
+        if (seconds == static_cast<time_t>(-1)) {
+            return FileStatus::kUnknownModificationTime;
+        }
+        return static_cast<int64_t>(seconds) * 1000;
+    }
+};
+
 struct ObjectStorePath {
     std::string bucket;
     std::string key;
@@ -39,7 +109,7 @@ struct ObjectStorePath {
 struct ObjectMetadata {
     std::string key;
     int64_t size = 0;
-    int64_t modification_time = 0;
+    int64_t modification_time = FileStatus::kUnknownModificationTime;
 };
 
 struct ListObjectsResult {

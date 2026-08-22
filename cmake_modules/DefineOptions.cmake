@@ -219,6 +219,11 @@ if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
                          ""
                          AUTO
                          BUNDLED)
+    define_option_string(OSS_SDK_V2_SOURCE
+                         "Dependency source for OSS SDK v2; SYSTEM is unsupported"
+                         ""
+                         AUTO
+                         BUNDLED)
     define_option_string(fmt_SOURCE
                          "Dependency source for fmt"
                          ""

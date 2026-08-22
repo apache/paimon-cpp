@@ -30,6 +30,7 @@
 #include "paimon/common/utils/path_util.h"
 
 namespace paimon {
+
 namespace {
 
 constexpr int64_t kMaxReadAheadMemory = 64LL * 1024LL * 1024LL;

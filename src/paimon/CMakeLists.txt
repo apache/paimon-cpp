@@ -201,7 +201,7 @@ set(PAIMON_REST_LINK_LIBS)
 if(PAIMON_ENABLE_REST)
     set(PAIMON_REST_LINK_LIBS OpenSSL::Crypto)
 endif()
-if(PAIMON_ENABLE_S3)
+if(PAIMON_ENABLE_OSS OR PAIMON_ENABLE_S3)
     list(APPEND PAIMON_COMMON_SRCS common/fs/object_store_file_system.cpp)
 endif()
 
@@ -948,7 +948,7 @@ if(PAIMON_BUILD_TESTS)
     endif()
 
     set(PAIMON_OBJECT_STORE_FS_TEST_SOURCES)
-    if(PAIMON_ENABLE_S3)
+    if(PAIMON_ENABLE_OSS OR PAIMON_ENABLE_S3)
         list(APPEND PAIMON_OBJECT_STORE_FS_TEST_SOURCES
              common/fs/object_store_file_system_test.cpp)
     endif()
