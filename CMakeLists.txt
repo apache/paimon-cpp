@@ -60,6 +60,7 @@ option(PAIMON_USE_UBSAN "Use Undefined Behavior Sanitizer" OFF)
 option(PAIMON_USE_CXX11_ABI "Use C++11 ABI" ON)
 option(PAIMON_ENABLE_AVRO "Whether to enable avro file format" ON)
 option(PAIMON_ENABLE_ORC "Whether to enable orc file format" ON)
+option(PAIMON_ENABLE_MOSAIC "Whether to enable mosaic file format (Rust FFI)" OFF)
 option(PAIMON_ENABLE_JINDO "Whether to enable jindo file system" OFF)
 option(PAIMON_ENABLE_S3 "Whether to enable S3 file system" OFF)
 option(PAIMON_ENABLE_NETWORK_TESTS
@@ -85,6 +86,9 @@ if(PAIMON_ENABLE_REST)
 endif()
 if(PAIMON_ENABLE_AVRO)
     add_definitions(-DPAIMON_ENABLE_AVRO)
+endif()
+if(PAIMON_ENABLE_MOSAIC)
+    add_definitions(-DPAIMON_ENABLE_MOSAIC)
 endif()
 if(PAIMON_ENABLE_JINDO)
     add_definitions(-DPAIMON_ENABLE_JINDO)
@@ -388,6 +392,11 @@ if(PAIMON_BUILD_TESTS OR PAIMON_BUILD_BENCHMARKS)
     paimon_link_libraries_whole_archive(PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS
                                         paimon_parquet_file_format_static)
 
+    if(PAIMON_ENABLE_MOSAIC)
+        paimon_link_libraries_whole_archive(PAIMON_MOSAIC_FILE_FORMAT_STATIC_LINK_LIBS
+                                            paimon_mosaic_file_format_static)
+    endif()
+
     if(PAIMON_ENABLE_ORC)
         paimon_link_libraries_whole_archive(PAIMON_ORC_FILE_FORMAT_STATIC_LINK_LIBS
                                             paimon_orc_file_format_static)
@@ -438,6 +447,14 @@ if(PAIMON_BUILD_TESTS)
                                         paimon_blob_file_format_static)
     paimon_link_libraries_whole_archive(PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS
                                         paimon_parquet_file_format_static)
+
+    if(PAIMON_ENABLE_MOSAIC)
+        paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
+                                           paimon_mosaic_file_format_shared)
+        list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
+        paimon_link_libraries_whole_archive(PAIMON_MOSAIC_FILE_FORMAT_STATIC_LINK_LIBS
+                                            paimon_mosaic_file_format_static)
+    endif()
 
     if(PAIMON_ENABLE_ORC)
         paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
@@ -520,6 +537,9 @@ add_subdirectory(src/paimon/format/blob)
 add_subdirectory(src/paimon/format/orc)
 add_subdirectory(src/paimon/format/parquet)
 add_subdirectory(src/paimon/format/avro)
+if(PAIMON_ENABLE_MOSAIC)
+    add_subdirectory(src/paimon/format/mosaic)
+endif()
 if(PAIMON_ENABLE_LUMINA)
     add_subdirectory(src/paimon/global_index/lumina)
 endif()

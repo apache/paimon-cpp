@@ -150,6 +150,11 @@ class ReadResultCollector {
         return std::make_pair(std::move(c_array), std::move(c_schema));
     }
 
+    static Status CheckBatchOffset(const BatchReader::ReadBatch& batch) {
+        assert(!BatchReader::IsEofBatch(batch));
+        return CheckArrayOffset(batch.first.get());
+    }
+
     // Noted that, sort chunked array by multiple key for timestamp type may cause
     // coredump in arrow, refer to https://github.com/apache/arrow/issues/47252
     static Result<std::shared_ptr<arrow::ChunkedArray>> SortArray(
@@ -202,11 +207,6 @@ class ReadResultCollector {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(auto result_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
         return result_array;
-    }
-
-    static Status CheckBatchOffset(const BatchReader::ReadBatch& batch) {
-        assert(!BatchReader::IsEofBatch(batch));
-        return CheckArrayOffset(batch.first.get());
     }
 
     static Status CheckArrayOffset(const ArrowArray* array) {

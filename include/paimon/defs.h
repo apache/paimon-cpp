@@ -156,6 +156,10 @@ struct PAIMON_EXPORT Options {
     /// 9, but the read and write speed will significantly decrease. Default value is 1.
     static const char FILE_COMPRESSION_ZSTD_LEVEL[];
 
+    /// "file.block-size" - File block size of format, default value of orc stripe is 64 MB, and
+    /// parquet row group is 128 MB.
+    static const char FILE_BLOCK_SIZE[];
+
     /// "manifest.target-file-size" - Suggested file size of a manifest file.
     /// Default value is 8MB.
     static const char MANIFEST_TARGET_FILE_SIZE[];

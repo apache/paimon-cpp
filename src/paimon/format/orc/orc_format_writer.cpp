@@ -40,10 +40,12 @@
 #include "orc/Writer.hh"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
+#include "paimon/defs.h"
 #include "paimon/format/orc/orc_adapter.h"
 #include "paimon/format/orc/orc_format_defs.h"
 #include "paimon/format/orc/orc_memory_pool.h"
@@ -248,9 +250,14 @@ Result<::orc::WriterOptions> OrcFormatWriter::PrepareWriterOptions(
         }
     }
     ::orc::WriterOptions writer_options;
+    const std::string& stripe_size_key = options.find(Options::FILE_BLOCK_SIZE) == options.end()
+                                             ? ORC_STRIPE_SIZE
+                                             : Options::FILE_BLOCK_SIZE;
     PAIMON_ASSIGN_OR_RAISE(
-        uint64_t stripe_size,
-        OptionsUtils::GetValueFromMap<uint64_t>(options, ORC_STRIPE_SIZE, DEFAULT_STRIPE_SIZE));
+        std::string stripe_size_value,
+        OptionsUtils::GetValueFromMap<std::string>(options, stripe_size_key,
+                                                   std::to_string(DEFAULT_STRIPE_SIZE)));
+    PAIMON_ASSIGN_OR_RAISE(int64_t stripe_size, MemorySize::ParseBytes(stripe_size_value));
     writer_options.setStripeSize(stripe_size);
     PAIMON_ASSIGN_OR_RAISE(::orc::CompressionKind compression,
                            ToOrcCompressionKind(StringUtils::ToLowerCase(file_compression)));

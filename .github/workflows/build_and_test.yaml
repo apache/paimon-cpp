@@ -75,7 +75,6 @@ jobs:
           - name: asan-ubsan-x86_64
             build_args: --enable_asan --enable_ubsan
           - name: tsan-x86_64
-            skip_rust: true
             build_args: --enable_tsan
           - name: gcc-debug-aarch64
             runner: ubuntu-24.04-arm
@@ -96,7 +95,6 @@ jobs:
             build_args: --build_type Release
           - name: tsan-aarch64
             runner: ubuntu-24.04-arm
-            skip_rust: true
             build_args: --enable_tsan
     steps:
       - name: Checkout paimon-cpp
@@ -108,8 +106,7 @@ jobs:
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-${{ matrix.name }}
-      - name: Install Rust toolchain (tantivy-fts)
-        if: ${{ !matrix.skip_rust }}
+      - name: Install Rust toolchain (Mosaic and tantivy-fts)
         shell: bash
         run: ci/scripts/setup_rust.sh
       - name: Install HTTP and TLS development dependencies
