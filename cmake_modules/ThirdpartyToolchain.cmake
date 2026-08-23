@@ -1344,28 +1344,27 @@ macro(build_mosaic)
     file(MAKE_DIRECTORY "${MOSAIC_INCLUDE_DIR}")
     file(MAKE_DIRECTORY "${MOSAIC_LIB_DIR}")
 
-    externalproject_add(
-        mosaic_ep
-        URL ${MOSAIC_SOURCE_URL}
-        URL_HASH "SHA256=${PAIMON_MOSAIC_BUILD_SHA256_CHECKSUM}"
-        ${THIRDPARTY_LOG_OPTIONS}
-        CONFIGURE_COMMAND ""
-        BUILD_COMMAND
-            ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${MOSAIC_CARGO_TARGET_DIR}
-            ${PAIMON_CARGO_EXECUTABLE} build --release --manifest-path
-            <SOURCE_DIR>/ffi/Cargo.toml
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MOSAIC_CARGO_DYNAMIC_LIB}
-                ${MOSAIC_DYNAMIC_LIB}
-        INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_directory <SOURCE_DIR>/include
-                        ${MOSAIC_INCLUDE_DIR}
-        BUILD_BYPRODUCTS "${MOSAIC_DYNAMIC_LIB}")
+    externalproject_add(mosaic_ep
+                        URL ${MOSAIC_SOURCE_URL}
+                        URL_HASH "SHA256=${PAIMON_MOSAIC_BUILD_SHA256_CHECKSUM}"
+                        ${THIRDPARTY_LOG_OPTIONS}
+                        CONFIGURE_COMMAND ""
+                        BUILD_COMMAND ${CMAKE_COMMAND} -E env
+                                      CARGO_TARGET_DIR=${MOSAIC_CARGO_TARGET_DIR}
+                                      ${PAIMON_CARGO_EXECUTABLE} build --release
+                                      --manifest-path <SOURCE_DIR>/ffi/Cargo.toml
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                ${MOSAIC_CARGO_DYNAMIC_LIB} ${MOSAIC_DYNAMIC_LIB}
+                        INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_directory
+                                        <SOURCE_DIR>/include ${MOSAIC_INCLUDE_DIR}
+                        BUILD_BYPRODUCTS "${MOSAIC_DYNAMIC_LIB}")
 
     add_library(paimon_mosaic_ffi SHARED IMPORTED GLOBAL)
-    set_target_properties(
-        paimon_mosaic_ffi
-        PROPERTIES IMPORTED_LOCATION "${MOSAIC_DYNAMIC_LIB}"
-                   IMPORTED_NO_SONAME TRUE
-                   INTERFACE_INCLUDE_DIRECTORIES "${MOSAIC_INCLUDE_DIR}")
+    set_target_properties(paimon_mosaic_ffi
+                          PROPERTIES IMPORTED_LOCATION "${MOSAIC_DYNAMIC_LIB}"
+                                     IMPORTED_NO_SONAME TRUE
+                                     INTERFACE_INCLUDE_DIRECTORIES
+                                     "${MOSAIC_INCLUDE_DIR}")
     add_dependencies(paimon_mosaic_ffi mosaic_ep)
 
     install(FILES "${MOSAIC_DYNAMIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
