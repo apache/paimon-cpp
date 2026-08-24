@@ -162,10 +162,9 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
             if (BatchReader::IsEofBatch(batch_with_bitmap)) {
                 break;
             }
-            PAIMON_ASSIGN_OR_RAISE(
-                BatchReader::ReadBatch batch,
-                ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap),
-                                                    arrow::default_memory_pool()));
+            PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch,
+                                   ReaderUtils::ApplyBitmapToReadBatch(
+                                       std::move(batch_with_bitmap), arrow::default_memory_pool()));
             auto& [c_array, c_schema] = batch;
             PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                               arrow::ImportArray(c_array.get(), c_schema.get()));
@@ -182,11 +181,10 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
     // Build a struct with 5 columns [a:int64, b:utf8, c:int64, d:utf8, e:int64], each carrying a
     // distinct value pattern so any column reordering is detected.
     std::shared_ptr<arrow::Array> BuildMultiFieldData(int32_t n) {
-        auto type = arrow::struct_({arrow::field("a", arrow::int64()),
-                                    arrow::field("b", arrow::utf8()),
-                                    arrow::field("c", arrow::int64()),
-                                    arrow::field("d", arrow::utf8()),
-                                    arrow::field("e", arrow::int64())});
+        auto type =
+            arrow::struct_({arrow::field("a", arrow::int64()), arrow::field("b", arrow::utf8()),
+                            arrow::field("c", arrow::int64()), arrow::field("d", arrow::utf8()),
+                            arrow::field("e", arrow::int64())});
         arrow::StructBuilder builder(
             type, arrow::default_memory_pool(),
             {std::make_shared<arrow::Int64Builder>(), std::make_shared<arrow::StringBuilder>(),
@@ -457,10 +455,10 @@ TEST_F(LateMaterializingFileBatchReaderTest, MultiFieldPreservesColumnOrder) {
     auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     // probe columns = {a (idx0), c (idx2)}; payload columns = {b, d, e}
-    auto pred_a = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "a", FieldType::BIGINT,
-                                                   Literal(3l));
-    auto pred_c = PredicateBuilder::LessThan(/*field_index=*/2, "c", FieldType::BIGINT,
-                                             Literal(700l));
+    auto pred_a =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "a", FieldType::BIGINT, Literal(3l));
+    auto pred_c =
+        PredicateBuilder::LessThan(/*field_index=*/2, "c", FieldType::BIGINT, Literal(700l));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({pred_a, pred_c}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(type->fields()), predicate, std::nullopt));
 
@@ -499,15 +497,16 @@ TEST_F(LateMaterializingFileBatchReaderTest, NestedPayloadColumn) {
     auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     // probe = {k}; payload = {arr (list<int64>), tag}
-    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
-                                                      Literal(5l));
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(type->fields()), predicate, std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result, CollectStruct(reader.get()));
     ASSERT_TRUE(result);
     ASSERT_EQ(result->length(), 3);  // k = 5,6,7
     auto k = arrow::internal::checked_pointer_cast<arrow::Int64Array>(result->GetFieldByName("k"));
-    auto arr = arrow::internal::checked_pointer_cast<arrow::ListArray>(result->GetFieldByName("arr"));
+    auto arr =
+        arrow::internal::checked_pointer_cast<arrow::ListArray>(result->GetFieldByName("arr"));
     auto tag =
         arrow::internal::checked_pointer_cast<arrow::StringArray>(result->GetFieldByName("tag"));
     ASSERT_TRUE(k && arr && tag);
@@ -537,8 +536,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, WorksAsInnerOfPrefetchReader) {
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
             GetDefaultPool()));
-    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
-                                                      Literal(4l));
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(4l));
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
     ASSERT_OK(impl->SetReadSchema(&c_schema, predicate, std::nullopt));
@@ -581,7 +580,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerReentrantSetReadSchema
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result1, CollectStruct(impl.get()));
     ASSERT_TRUE(result1);
     ASSERT_EQ(result1->length(), 3);  // k = 7,8,9
-    auto k1 = arrow::internal::checked_pointer_cast<arrow::Int64Array>(result1->GetFieldByName("k"));
+    auto k1 =
+        arrow::internal::checked_pointer_cast<arrow::Int64Array>(result1->GetFieldByName("k"));
     for (int64_t j = 0; j < result1->length(); ++j) {
         EXPECT_EQ(k1->Value(j), 7 + j);
     }
@@ -594,8 +594,10 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerReentrantSetReadSchema
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result2, CollectStruct(impl.get()));
     ASSERT_TRUE(result2);
     ASSERT_EQ(result2->length(), 3);  // k = 0,1,2
-    auto k2 = arrow::internal::checked_pointer_cast<arrow::Int64Array>(result2->GetFieldByName("k"));
-    auto v2 = arrow::internal::checked_pointer_cast<arrow::StringArray>(result2->GetFieldByName("v"));
+    auto k2 =
+        arrow::internal::checked_pointer_cast<arrow::Int64Array>(result2->GetFieldByName("k"));
+    auto v2 =
+        arrow::internal::checked_pointer_cast<arrow::StringArray>(result2->GetFieldByName("v"));
     for (int64_t j = 0; j < result2->length(); ++j) {
         EXPECT_EQ(k2->Value(j), j);
         EXPECT_EQ(v2->GetString(j), "v_" + std::to_string(j));
@@ -625,8 +627,8 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerParallelReadersWithSee
             /*enable_adaptive_prefetch_strategy=*/false, executor,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/false, CacheConfig(),
             GetDefaultPool()));
-    auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
-                                                      Literal(5l));
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(full_fields_), &c_schema).ok());
     ASSERT_OK(impl->SetReadSchema(&c_schema, predicate, std::nullopt));

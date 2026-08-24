@@ -33,6 +33,7 @@ namespace paimon {
 class PredicateFilter;
 
 // For convenience, we abbreviate `Later Materializing` as `LatMat`.
+// TODO(zhouhongfeng.zhf): add this reader to the split read path.
 class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
  public:
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
@@ -68,22 +69,18 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
         kRunning,   // Lat-mat is enable an is reading data
         kEOF
     };
-    /// Scan the probe projection once, evaluating the predicate batch by batch: the matched file
-    /// row ids go into matched_bitmap_ and the matched probe values into probe_data_.
+
+    /// Read the probe projection once (whole file) and evaluating the predicate batch by batch.
+    /// This function updates matched_bitmap_ and probe_data_.
+    /// TODO(zhouhongfeng.zhf): Read the probe data batch by batch to save memory.
     Status ReadAndFilterProbeData();
 
-    /// Rebind the predicate to probe_schema_'s field indices, so that it can be evaluated over
-    /// the probe batches.
     Result<std::shared_ptr<PredicateFilter>> BindProbeFilter();
 
-    /// Evaluate bound_filter over a single probe batch, adding the matched file row ids (that also
-    /// pass selection_) to matched_bitmap_. Returns the batch-local offsets of the matched rows so
-    /// the caller can compact the probe batch down to those rows.
     Result<RoaringBitmap32> FilterProbeBatch(const std::shared_ptr<arrow::Array>& array,
                                              const std::shared_ptr<PredicateFilter>& bound_filter);
 
-    /// In kRunning state, read one payload batch, map its matched rows back to the cached probe
-    /// rows by file row id, and reassemble the full read schema.
+    /// Read one payload batch with bitmap (matched rows only)
     Result<FileBatchReader::ReadBatchWithBitmap> ReadPayloadBatch();
 
     /// Combine the compacted payload columns and the selected probe columns into a single struct
@@ -92,10 +89,9 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
         const std::shared_ptr<arrow::Array>& payload_array,
         const std::shared_ptr<arrow::Array>& probe_array);
 
-    Status SetInnerProbeSchema();
-    Status SetInnerPayloadSchema();
-    Status SetInnerFullSchema();
-    Status ReapplyReadRanges();
+    Status SetInnerReadSchema(const std::shared_ptr<arrow::Schema>& read_schema,
+                              const std::shared_ptr<Predicate>& predicate,
+                              const std::optional<RoaringBitmap32>& selection);
 
     LatMatState state_ = kInit;
     std::unique_ptr<PrefetchFileBatchReader> inner_;
@@ -107,14 +103,12 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     std::shared_ptr<arrow::Schema> payload_schema_;
     std::shared_ptr<Predicate> predicate_;
     std::optional<RoaringBitmap32> selection_;
-    // matched probe rows only, concatenated in ascending file row order (aligned 1:1 with
-    // matched_bitmap_)
+    // the probe_data_ is sliced and compacted with the matched_bitmap_
     std::shared_ptr<arrow::StructArray> probe_data_;
-    // file-level row ids that pass the predicate (and selection_); drives the payload read
     RoaringBitmap32 matched_bitmap_;
     // read cursor into probe_data_ for the payload phase
     int64_t probe_cursor_ = 0;
-    // file row id of each row in the batch last emitted in kRunning state
+    // to support GetPreviousBatchFileRowId
     std::vector<uint64_t> row_mapping_;
 };
 
