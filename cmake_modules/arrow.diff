@@ -15,6 +15,13 @@ diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/Thi
 index 8cb3ec83f5..0765df8fa8 100644
 --- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
 +++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+@@ -814,5 +814,6 @@ if(DEFINED ENV{ARROW_THRIFT_URL})
+   set(THRIFT_SOURCE_URL "$ENV{ARROW_THRIFT_URL}")
+ else()
+   set_urls(THRIFT_SOURCE_URL
++           "https://archive.apache.org/dist/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
+            "https://www.apache.org/dyn/closer.cgi?action=download&filename=/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
+            "https://downloads.apache.org/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
 @@ -983,6 +983,11 @@ if(CMAKE_TOOLCHAIN_FILE)
    list(APPEND EP_COMMON_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
  endif()
