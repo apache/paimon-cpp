@@ -36,6 +36,7 @@
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
@@ -213,6 +214,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
                             probe_cursor_, card, probe_data_->length()));
         }
         std::shared_ptr<arrow::Array> probe_selected = probe_data_->Slice(probe_cursor_, card);
+        PAIMON_ASSIGN_OR_RAISE(probe_selected, ArrowUtils::NormalizeArrayOffsets(probe_selected, arrow_pool_.get()));
         probe_cursor_ += card;
 
         PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch assembled,
@@ -237,6 +239,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::AssembleFul
             return Status::Invalid(
                 fmt::format("field {} missing in both payload and probe columns", field->name()));
         }
+        PAIMON_ASSIGN_OR_RAISE(col, ArrowUtils::NormalizeArrayOffsets(col, arrow_pool_.get()));
         children.push_back(std::move(col));
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> full_struct,
@@ -301,13 +304,6 @@ Status LateMaterializingFileBatchReader::SetReadSchema(
         if (!probe_fields.empty() && !payload_fields.empty()) {
             probe_schema_ = arrow::schema(probe_fields, full_schema_->metadata());
             payload_schema_ = arrow::schema(payload_fields, full_schema_->metadata());
-            // Guard: probing must be able to bind the predicate to the probe projection. If
-            // binding fails (unexpected predicate/schema shapes, e.g. after a wrapper translated
-            // the schema), stay on the plain passthrough path instead of failing mid-read.
-            if (!BindProbeFilter().ok()) {
-                probe_schema_.reset();
-                payload_schema_.reset();
-            }
         }
     }
 

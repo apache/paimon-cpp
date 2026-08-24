@@ -449,15 +449,20 @@ Result<std::shared_ptr<arrow::RecordBatch>> ArrowUtils::NormalizeRecordBatchOffs
         if (normalized_columns.empty()) {
             normalized_columns = record_batch->columns();
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> normalized_data,
-                               RebaseToZeroOffset(column->data(), pool));
-        normalized_columns[i] = arrow::MakeArray(normalized_data);
+        PAIMON_ASSIGN_OR_RAISE(normalized_columns[i], NormalizeArrayOffsets(column, pool));
     }
     if (normalized_columns.empty()) {
         return record_batch;
     }
     return arrow::RecordBatch::Make(record_batch->schema(), record_batch->num_rows(),
                                     std::move(normalized_columns));
+}
+
+Result<std::shared_ptr<arrow::Array>> ArrowUtils::NormalizeArrayOffsets(
+    const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> normalized_data,
+                               RebaseToZeroOffset(array->data(), pool));
+    return arrow::MakeArray(normalized_data);
 }
 
 Result<arrow::Compression::type> ArrowUtils::GetCompressionType(const std::string& compression) {
