@@ -157,7 +157,8 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReade
     if (context_->EnablePrefetch() && file_format_identifier != "blob" &&
         file_format_identifier != "avro") {
         if (context_->EnableLateMaterializing()) {
-            reader_builder = std::make_unique<LateMaterializingReaderBuilder>(std::move(reader_builder), pool_);
+            reader_builder =
+                std::make_unique<LateMaterializingReaderBuilder>(std::move(reader_builder), pool_);
         }
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<PrefetchFileBatchReaderImpl> prefetch_reader,

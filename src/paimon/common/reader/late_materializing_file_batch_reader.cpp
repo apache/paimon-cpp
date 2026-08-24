@@ -34,9 +34,9 @@
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
@@ -214,7 +214,8 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
                             probe_cursor_, card, probe_data_->length()));
         }
         std::shared_ptr<arrow::Array> probe_selected = probe_data_->Slice(probe_cursor_, card);
-        PAIMON_ASSIGN_OR_RAISE(probe_selected, ArrowUtils::NormalizeArrayOffsets(probe_selected, arrow_pool_.get()));
+        PAIMON_ASSIGN_OR_RAISE(
+            probe_selected, ArrowUtils::NormalizeArrayOffsets(probe_selected, arrow_pool_.get()));
         probe_cursor_ += card;
 
         PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch assembled,

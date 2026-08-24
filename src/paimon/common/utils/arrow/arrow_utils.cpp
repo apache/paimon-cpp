@@ -461,7 +461,7 @@ Result<std::shared_ptr<arrow::RecordBatch>> ArrowUtils::NormalizeRecordBatchOffs
 Result<std::shared_ptr<arrow::Array>> ArrowUtils::NormalizeArrayOffsets(
     const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> normalized_data,
-                               RebaseToZeroOffset(array->data(), pool));
+                           RebaseToZeroOffset(array->data(), pool));
     return arrow::MakeArray(normalized_data);
 }
 
