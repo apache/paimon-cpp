@@ -32,6 +32,7 @@
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
+#include "paimon/common/reader/late_materializing_reader_builder.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -47,38 +48,11 @@
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_file_system.h"
+#include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon::test {
-
-// A ReaderBuilder whose Build() wraps a projecting, range-honoring mock in a
-// LateMaterializingFileBatchReader, so the late-materialization reader can be exercised as an
-// inner reader of PrefetchFileBatchReaderImpl.
-class LmReaderBuilder : public ReaderBuilder {
- public:
-    LmReaderBuilder(std::shared_ptr<arrow::Array> data, std::shared_ptr<arrow::DataType> type,
-                    int32_t batch_size)
-        : data_(std::move(data)), type_(std::move(type)), batch_size_(batch_size) {}
-
-    ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& /*pool*/) override {
-        return this;
-    }
-
-    Result<std::unique_ptr<FileBatchReader>> Build(
-        const std::shared_ptr<InputStream>& /*stream*/) const override {
-        auto mock = std::make_unique<MockFileBatchReader>(data_, type_, batch_size_);
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<LateMaterializingFileBatchReader> reader,
-            LateMaterializingFileBatchReader::Create(std::move(mock), GetDefaultPool()));
-        return std::unique_ptr<FileBatchReader>(std::move(reader));
-    }
-
- private:
-    std::shared_ptr<arrow::Array> data_;
-    std::shared_ptr<arrow::DataType> type_;
-    int32_t batch_size_ = 0;
-};
 
 class LateMaterializingFileBatchReaderTest : public ::testing::Test {
  public:
@@ -538,7 +512,9 @@ TEST_F(LateMaterializingFileBatchReaderTest, NestedPayloadColumn) {
 // PrefetchFileBatchReaderImpl (schema broadcast, range dispatch, seek, row-id tracking).
 TEST_F(LateMaterializingFileBatchReaderTest, WorksAsInnerOfPrefetchReader) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
-    LmReaderBuilder builder(data, full_type_, /*batch_size=*/3);
+    LateMaterializingReaderBuilder builder(
+        std::make_unique<MockFormatReaderBuilder>(data, full_type_, /*batch_size=*/3),
+        GetDefaultPool());
     auto mock_fs = std::make_shared<MockFileSystem>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
     ASSERT_OK_AND_ASSIGN(
@@ -572,7 +548,9 @@ TEST_F(LateMaterializingFileBatchReaderTest, WorksAsInnerOfPrefetchReader) {
 // re-plans ranges) must reset the probe state and produce correct results for the new predicate.
 TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerReentrantSetReadSchema) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
-    LmReaderBuilder builder(data, full_type_, /*batch_size=*/3);
+    LateMaterializingReaderBuilder builder(
+        std::make_unique<MockFormatReaderBuilder>(data, full_type_, /*batch_size=*/3),
+        GetDefaultPool());
     auto mock_fs = std::make_shared<MockFileSystem>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
     ASSERT_OK_AND_ASSIGN(
@@ -629,7 +607,9 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerParallelReadersWithSee
     auto data = BuildData(ks);
     // Per-batch ranges (the mock's default) let the impl split work across the parallel readers,
     // and each range-honoring reader only reads its assigned slice.
-    LmReaderBuilder builder(data, full_type_, /*batch_size=*/3);
+    LateMaterializingReaderBuilder builder(
+        std::make_unique<MockFormatReaderBuilder>(data, full_type_, /*batch_size=*/3),
+        GetDefaultPool());
     auto mock_fs = std::make_shared<MockFileSystem>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(3));
     ASSERT_OK_AND_ASSIGN(
