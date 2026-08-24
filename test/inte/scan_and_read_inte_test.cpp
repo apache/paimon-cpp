@@ -2833,7 +2833,7 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
     std::shared_ptr<Predicate> predicate_without_stats = PredicateBuilder::GreaterOrEqual(
         /*field_index=*/4, /*field_name=*/"f_bigint", FieldType::BIGINT,
         Literal(int64_t{10000000020LL}));
-    for (const std::string& table_name : {"append_java_compat", "append_python_compat"}) {
+    for (const std::string table_name : {"append_java_compat", "append_python_compat"}) {
         SCOPED_TRACE(table_name);
         std::string table_path = GetDataDir() + "/mosaic/" + table_name + ".db/" + table_name;
         check_compatibility(table_path, /*predicate=*/nullptr, expected);

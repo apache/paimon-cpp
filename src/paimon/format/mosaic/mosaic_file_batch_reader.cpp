@@ -178,7 +178,7 @@ Result<bool> MosaicFileBatchReader::MatchesRowGroup(uint32_t row_group, uint32_t
     PAIMON_ASSIGN_OR_RAISE(
         ColumnStatsVector column_stats,
         MosaicStatsUtils::ConvertColumnStatistics(file_schema_, row_group_stats,
-                                                  /*missing_null_count_is_zero=*/true));
+                                                  /*missing_null_count_is_zero=*/false));
     PAIMON_ASSIGN_OR_RAISE(SimpleStats simple_stats,
                            SimpleStatsConverter::ToBinary(column_stats, pool_.get()));
     return predicate_filter_->Test(file_schema_, row_count, simple_stats.MinValues(),

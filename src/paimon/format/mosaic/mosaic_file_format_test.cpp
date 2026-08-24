@@ -337,7 +337,7 @@ TEST_F(MosaicFileFormatTest, RowGroupPredicateFiltering) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::shared_ptr<arrow::Array> data =
         arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_(fields), R"([[1,1],[2,2],[10,10],[11,11],[20,20],[21,21]])")
+            arrow::struct_(fields), R"([[1,null],[2,2],[10,10],[11,11],[20,20],[21,21]])")
             .ValueOrDie();
     ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2, configured_format));
     ASSERT_OK_AND_ASSIGN(FooterLayout footer_layout, ReadFooterLayout(path));
@@ -380,6 +380,16 @@ TEST_F(MosaicFileFormatTest, RowGroupPredicateFiltering) {
                          paimon::test::ReadResultCollector::CollectResult(reader.get()));
     ASSERT_TRUE(actual_without_stats->Equals(arrow::ChunkedArray(data)))
         << actual_without_stats->ToString();
+
+    ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    predicate =
+        PredicateBuilder::IsNull(/*field_index=*/1, /*field_name=*/"untracked", FieldType::INT);
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual_is_null_without_stats,
+                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_TRUE(actual_is_null_without_stats->Equals(arrow::ChunkedArray(data)))
+        << actual_is_null_without_stats->ToString();
 }
 
 TEST_F(MosaicFileFormatTest, WriteThenReadSupportedTypes) {
