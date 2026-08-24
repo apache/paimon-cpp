@@ -60,10 +60,9 @@ class LateMaterializingReaderBuilder : public ReaderBuilder {
             return Status::Invalid("Late materialization requires prefetch interface");
         }
         base.release();
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<LateMaterializingFileBatchReader> reader,
-            LateMaterializingFileBatchReader::Create(
-                std::unique_ptr<PrefetchFileBatchReader>(prefetch), pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                               LateMaterializingFileBatchReader::Create(
+                                   std::unique_ptr<PrefetchFileBatchReader>(prefetch), pool_));
         return std::unique_ptr<FileBatchReader>(std::move(reader));
     }
 

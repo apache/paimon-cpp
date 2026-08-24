@@ -33,7 +33,9 @@ namespace paimon {
 class PredicateFilter;
 
 // For convenience, we abbreviate `Later Materializing` as `LatMat`.
-// TODO(zhouhongfeng.zhf): add this reader to the split read path.
+// This reader is installed below the prefetch layer (see
+// AbstractSplitRead::CreateFileBatchReader) and performs probe/payload two-phase reads when a
+// predicate is pushed down through SetReadSchema; without a predicate it is a plain passthrough.
 class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
  public:
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(

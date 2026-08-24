@@ -59,6 +59,11 @@ arrow::MemoryPool* LateMaterializingFileBatchReader::ArrowPool() const {
 }
 
 Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch() {
+    if (state_ == kInit) {
+        // SetReadSchema has not been called: read with the file schema, matching the
+        // FileBatchReader contract for schema-less reads.
+        state_ = kNoLatMat;
+    }
     if (state_ == kProbing) {
         PAIMON_RETURN_NOT_OK(ReadAndFilterProbeData());
         if (matched_bitmap_.IsEmpty()) {
@@ -296,6 +301,13 @@ Status LateMaterializingFileBatchReader::SetReadSchema(
         if (!probe_fields.empty() && !payload_fields.empty()) {
             probe_schema_ = arrow::schema(probe_fields, full_schema_->metadata());
             payload_schema_ = arrow::schema(payload_fields, full_schema_->metadata());
+            // Guard: probing must be able to bind the predicate to the probe projection. If
+            // binding fails (unexpected predicate/schema shapes, e.g. after a wrapper translated
+            // the schema), stay on the plain passthrough path instead of failing mid-read.
+            if (!BindProbeFilter().ok()) {
+                probe_schema_.reset();
+                payload_schema_.reset();
+            }
         }
     }
 
