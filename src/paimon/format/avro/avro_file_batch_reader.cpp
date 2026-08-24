@@ -110,6 +110,10 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
             if (!reader_->hasMore()) {
                 break;
             }
+            if (array_builder_->length() == 0) {
+                PAIMON_RETURN_NOT_OK(
+                    AvroDirectDecoder::ReserveBuilderCapacity(array_builder_.get(), batch_size_));
+            }
             reader_->decr();
             PAIMON_RETURN_NOT_OK(AvroDirectDecoder::DecodeAvroToBuilder(
                 reader_->dataSchema().root(), read_fields_projection_, &reader_->decoder(),
@@ -123,7 +127,9 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           array_builder_->Finish());
+#ifndef NDEBUG
         PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
+#endif
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
