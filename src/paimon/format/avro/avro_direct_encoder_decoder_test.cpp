@@ -373,7 +373,7 @@ TEST_F(AvroDirectEncoderDecoderTest, TestReserveBuilderCapacity) {
     std::unique_ptr<arrow::ArrayBuilder> builder = std::move(builder_result).ValueOrDie();
 
     constexpr int64_t capacity = 1024;
-    ASSERT_OK(AvroDirectDecoder::ReserveBuilderCapacity(builder.get(), capacity));
+    ASSERT_OK(AvroDirectDecoder::ReserveBuilderCapacity(capacity, builder.get()));
 
     auto* root_builder = checked_cast<arrow::StructBuilder*>(builder.get());
     ASSERT_GE(root_builder->capacity(), capacity);

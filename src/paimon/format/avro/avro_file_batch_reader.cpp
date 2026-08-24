@@ -18,6 +18,7 @@
 
 #include "paimon/format/avro/avro_file_batch_reader.h"
 
+#include <cassert>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -112,7 +113,7 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
             }
             if (array_builder_->length() == 0) {
                 PAIMON_RETURN_NOT_OK(
-                    AvroDirectDecoder::ReserveBuilderCapacity(array_builder_.get(), batch_size_));
+                    AvroDirectDecoder::ReserveBuilderCapacity(batch_size_, array_builder_.get()));
             }
             reader_->decr();
             PAIMON_RETURN_NOT_OK(AvroDirectDecoder::DecodeAvroToBuilder(
@@ -127,9 +128,7 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           array_builder_->Finish());
-#ifndef NDEBUG
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
-#endif
+        assert(array->Validate().ok());
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));

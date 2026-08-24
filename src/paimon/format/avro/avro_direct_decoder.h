@@ -83,10 +83,10 @@ class AvroDirectDecoder {
                                       DecodeContext* ctx);
 
     /// Reserve slots for a builder and any struct children with the same cardinality.
-    /// @param array_builder Builder to reserve.
     /// @param capacity Number of additional values to append.
+    /// @param array_builder Builder to reserve.
     /// @return Status::OK if all reservations succeed.
-    static Status ReserveBuilderCapacity(arrow::ArrayBuilder* array_builder, int64_t capacity);
+    static Status ReserveBuilderCapacity(int64_t capacity, arrow::ArrayBuilder* array_builder);
 };
 
 }  // namespace paimon::avro
