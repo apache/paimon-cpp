@@ -63,6 +63,7 @@
 #include "paimon/data/blob.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_write.h"
+#include "paimon/format/mosaic/mosaic_format_defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
@@ -589,6 +590,9 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
 std::vector<std::string> GetTestValuesForBlobTableInteTest() {
     std::vector<std::string> values;
     values.emplace_back("parquet");
+#ifdef PAIMON_ENABLE_MOSAIC
+    values.emplace_back("mosaic");
+#endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
 #endif
@@ -2229,7 +2233,16 @@ TEST_P(BlobTableInteTest, TestPredicate) {
         // Avro does not have stats.
         return;
     }
-    CreateTable();
+    if (GetParam() == "mosaic") {
+        CreateTable(/*partition_keys=*/{}, {{Options::MANIFEST_FORMAT, "orc"},
+                                            {Options::FILE_FORMAT, GetParam()},
+                                            {Options::FILE_SYSTEM, "local"},
+                                            {Options::ROW_TRACKING_ENABLED, "true"},
+                                            {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                            {mosaic::MOSAIC_STATS_COLUMNS, "f0,f2"}});
+    } else {
+        CreateTable();
+    }
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
 
@@ -2366,7 +2379,7 @@ TEST_P(BlobTableInteTest, TestIOException) {
 
 TEST_P(BlobTableInteTest, TestReadTableWithDenseStats) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     std::string table_path =
@@ -2430,7 +2443,7 @@ TEST_P(BlobTableInteTest, TestReadTableWithDenseStats) {
 
 TEST_P(BlobTableInteTest, TestDataEvolutionAndAlterTable) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     std::string table_path = paimon::test::GetDataDir() + file_format +
@@ -2725,7 +2738,7 @@ TEST_P(BlobTableInteTest, TestAppendWriteWithNullBlob) {
 
 TEST_P(BlobTableInteTest, TestReadTableWithMultiBlobFields) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     std::string table_path = paimon::test::GetDataDir() + file_format +
@@ -2797,6 +2810,9 @@ TEST_P(BlobTableInteTest, TestReadTableWithMultiBlobFields) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorField) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     // Two blob fields configured via BLOB_DESCRIPTOR_FIELD and stored inline as descriptors.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("b0", true),
@@ -2850,6 +2866,9 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorField) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorFieldPartialInline) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     // 4 blob fields: b0,b1 are inline descriptors; b2,b3 are regular blob fields written to
     // .blob files.
     arrow::FieldVector fields = {
@@ -2911,6 +2930,9 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorFieldPartialInline) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorMultiCommitAndShuffledReadSchema) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     // Multiple write+commit rounds with a shuffled read schema: b3, b2, b1, b0, f0.
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::int32()), BlobUtils::ToArrowField("b0", true),
@@ -3036,7 +3058,7 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorMultiCommitAndShuffledReadSchema) {
 // The shared-shredding map is read from one main data file while the blob payload is read from a
 // separate blob file with the same row-id range.
 TEST_P(BlobTableInteTest, TestSharedShreddingWithBlobDataEvolution) {
-    if (GetParam() == "avro") {
+    if (GetParam() == "avro" || GetParam() == "mosaic") {
         return;
     }
 
@@ -3095,7 +3117,7 @@ TEST_P(BlobTableInteTest, TestSharedShreddingWithBlobDataEvolution) {
 
 // Two independent shared-shredding map columns are written into different main files.
 TEST_P(BlobTableInteTest, TestMultipleSharedShreddingMapsWithBlobDataEvolution) {
-    if (GetParam() == "avro") {
+    if (GetParam() == "avro" || GetParam() == "mosaic") {
         return;
     }
 
@@ -3157,7 +3179,7 @@ TEST_P(BlobTableInteTest, TestMultipleSharedShreddingMapsWithBlobDataEvolution) 
 
 // A newer partial data file rewrites only the shared-shredding map for the same row-id range.
 TEST_P(BlobTableInteTest, TestSharedShreddingMapOverrideWithBlobDataEvolution) {
-    if (GetParam() == "avro") {
+    if (GetParam() == "avro" || GetParam() == "mosaic") {
         return;
     }
 
@@ -3281,6 +3303,9 @@ TEST_P(BlobTableInteTest, TestOrcMapStorageLayoutEvolutionWithBlobDataEvolution)
 }
 
 TEST_P(BlobTableInteTest, TestDataEvolutionWithBlobDescriptorField) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     // Test DataEvolution (split-column write) combined with blob descriptor fields.
     // Schema: f0(int32), b0/b1(blob descriptor inline), b2/b3(blob).
     // Commit 1: file A writes (f0, b2, b3)
@@ -3432,7 +3457,7 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorFieldWriteRawBytesDirectly) {
 
 TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3596,7 +3621,7 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
 
 TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3756,6 +3781,9 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
 
 TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
     auto file_format = GetParam();
+    if (file_format == "mosaic") {
+        return;
+    }
     // Upstream table has two blob descriptor fields. The downstream view references cells from
     // both b0 (field_id=1) and b1 (field_id=2).
     const std::string upstream_db_name = "upstream_two_blob";
@@ -3880,7 +3908,7 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
 
 TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4041,6 +4069,9 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewFailsWhenBothPathsAbsent) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     auto upstream_dir = UniqueTestDirectory::Create("local");
     arrow::FieldVector fields =
         CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/false);
@@ -4056,6 +4087,9 @@ TEST_P(BlobTableInteTest, TestBlobViewFailsWhenBothPathsAbsent) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     auto upstream_dir = UniqueTestDirectory::Create("local");
     arrow::FieldVector fields =
         CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/true);
@@ -4096,6 +4130,9 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceInEveryRowRangeGroup) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     auto upstream_dir = UniqueTestDirectory::Create("local");
     arrow::FieldVector fields =
         CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/true);
@@ -4137,6 +4174,9 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceInEveryRowRangeGroup
 // predicate, so filtering a row out that way does not stop its blob view reference from being
 // resolved. This asserts the current behavior, not a desired one.
 TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     auto upstream_dir = UniqueTestDirectory::Create("local");
     arrow::FieldVector fields =
         CreateBlobViewTable(upstream_dir->Str(), /*deletion_vectors_enabled=*/false);
@@ -4170,6 +4210,9 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
 
 TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
     auto file_format = GetParam();
+    if (file_format == "mosaic") {
+        return;
+    }
     const std::string upstream_db_name = "fallback_db";
     const std::string upstream_table_name = "fallback_table";
     arrow::FieldVector upstream_fields = {arrow::field("f0", arrow::int32()),
@@ -4281,7 +4324,7 @@ TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
 
 TEST_P(BlobTableInteTest, TestReadBlobDescriptorFieldFromJava) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     std::string table_path =

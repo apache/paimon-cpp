@@ -34,6 +34,7 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/format/column_stats.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/format/format_writer.h"
@@ -43,6 +44,8 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
@@ -242,9 +245,9 @@ TEST_F(MosaicFileFormatTest, SetReadSchemaResetsReaderToFirstRow) {
 
 TEST_F(MosaicFileFormatTest, WriterOptions) {
     std::map<std::string, std::string> options = {
-        {"file.format", "mosaic"},
-        {Options::FILE_BLOCK_SIZE, "1 B"},
-        {MOSAIC_NUM_BUCKETS, "2"},
+        {"file.format", "mosaic"},      {Options::FILE_BLOCK_SIZE, "1 B"},
+        {MOSAIC_NUM_BUCKETS, "2"},      {MOSAIC_MAX_DICT_TOTAL_BYTES, "1 KB"},
+        {MOSAIC_MAX_DICT_ENTRIES, "2"}, {MOSAIC_PAGE_SIZE_THRESHOLD, "1 B"},
     };
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> configured_format,
                          FileFormatFactory::Get("mosaic", options));
@@ -269,6 +272,114 @@ TEST_F(MosaicFileFormatTest, WriterOptions) {
     ASSERT_EQ(footer_layout.first, 2);
     ASSERT_EQ(footer_layout.second, 3);
     AssertReadWithBatchSizes(path, schema, expected, {10});
+}
+
+TEST_F(MosaicFileFormatTest, ExtractStatistics) {
+    std::map<std::string, std::string> options = {
+        {"file.format", "mosaic"},
+        {Options::FILE_BLOCK_SIZE, "1 B"},
+        {MOSAIC_STATS_COLUMNS, " id, name, ts, amount, all_null "},
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> configured_format,
+                         FileFormatFactory::Get("mosaic", options));
+    std::string path = PathUtil::JoinPath(directory_->Str(), "statistics.mosaic");
+    arrow::FieldVector fields = {
+        arrow::field("id", arrow::int32()),
+        arrow::field("name", arrow::utf8()),
+        arrow::field("ts", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("amount", arrow::decimal128(10, 2)),
+        arrow::field("untracked", arrow::int64()),
+        arrow::field("all_null", arrow::int32()),
+    };
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+          [3,"three","1970-01-01 00:00:00.000000003","3.30",30,null],
+          [1,"one","1970-01-01 00:00:00.000000001","1.10",10,null],
+          [null,null,null,null,null,null],
+          [5,"five","1970-01-01 00:00:00.000000005","5.50",50,null],
+          [2,"","1970-01-01 00:00:00.000000002","2.20",20,null]
+        ])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2, configured_format));
+
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FormatStatsExtractor> extractor,
+                         configured_format->CreateStatsExtractor(&ffi_schema));
+    ASSERT_OK_AND_ASSIGN(auto result, extractor->ExtractWithFileInfo(file_system_, path, pool_));
+    ASSERT_EQ(result.second.GetRowCount(), 5);
+    std::vector<std::string> expected_stats = {
+        "min 1, max 5, null count 1",
+        "min , max three, null count 1",
+        "min 1970-01-01 00:00:00.000000001, max 1970-01-01 00:00:00.000000005, null count 1",
+        "min 1.10, max 5.50, null count 1",
+        "min null, max null, null count null",
+        "min null, max null, null count 5",
+    };
+    ASSERT_EQ(result.first.size(), expected_stats.size());
+    for (size_t i = 0; i < expected_stats.size(); ++i) {
+        ASSERT_EQ(result.first[i]->ToString(), expected_stats[i]);
+    }
+}
+
+TEST_F(MosaicFileFormatTest, RowGroupPredicateFiltering) {
+    std::map<std::string, std::string> options = {
+        {"file.format", "mosaic"},
+        {Options::FILE_BLOCK_SIZE, "1 B"},
+        {MOSAIC_STATS_COLUMNS, "id"},
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> configured_format,
+                         FileFormatFactory::Get("mosaic", options));
+    std::string path = PathUtil::JoinPath(directory_->Str(), "predicate.mosaic");
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("untracked", arrow::int32())};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields), R"([[1,1],[2,2],[10,10],[11,11],[20,20],[21,21]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2, configured_format));
+    ASSERT_OK_AND_ASSIGN(FooterLayout footer_layout, ReadFooterLayout(path));
+    ASSERT_EQ(footer_layout.second, 3);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         configured_format->CreateReaderBuilder(/*batch_size=*/10));
+    reader_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, reader_builder->Build(input));
+
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, /*field_name=*/"id", FieldType::INT, Literal(15));
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    std::shared_ptr<arrow::Array> actual =
+        arrow::ImportArray(batch.first.get(), batch.second.get()).ValueOrDie();
+    ASSERT_TRUE(actual->Equals(data->Slice(/*offset=*/4, /*length=*/2))) << actual->ToString();
+    ASSERT_OK_AND_ASSIGN(uint64_t first_row, reader->GetPreviousBatchFileRowId(/*batch_row_id=*/0));
+    ASSERT_EQ(first_row, 4);
+    ASSERT_OK_AND_ASSIGN(batch, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(batch));
+
+    ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"id",
+                                              FieldType::INT, Literal(100));
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(batch, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(batch));
+
+    ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
+    predicate = PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"untracked",
+                                              FieldType::INT, Literal(100));
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual_without_stats,
+                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_TRUE(actual_without_stats->Equals(arrow::ChunkedArray(data)))
+        << actual_without_stats->ToString();
 }
 
 TEST_F(MosaicFileFormatTest, WriteThenReadSupportedTypes) {

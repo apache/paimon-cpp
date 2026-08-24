@@ -23,4 +23,17 @@ namespace paimon::mosaic {
 
 static inline const char MOSAIC_NUM_BUCKETS[] = "mosaic.num-buckets";
 
+/// Max dict size per column.
+static inline const char MOSAIC_MAX_DICT_TOTAL_BYTES[] = "mosaic.max-dict-total-bytes";
+
+/// Max dict entries per column.
+static inline const char MOSAIC_MAX_DICT_ENTRIES[] = "mosaic.max-dict-entries";
+
+/// Min avg column page size to enable paged mode.
+static inline const char MOSAIC_PAGE_SIZE_THRESHOLD[] = "mosaic.page-size-threshold";
+
+/// Comma-separated list of column names to collect statistics for. Empty means no statistics
+/// collection.
+static inline const char MOSAIC_STATS_COLUMNS[] = "mosaic.stats-columns";
+
 }  // namespace paimon::mosaic

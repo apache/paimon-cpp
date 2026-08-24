@@ -37,6 +37,7 @@ namespace paimon {
 class InputStream;
 class MemoryPool;
 class Metrics;
+class PredicateFilter;
 }  // namespace paimon
 
 namespace paimon::mosaic {
@@ -67,9 +68,11 @@ class MosaicFileBatchReader : public FileBatchReader {
                           MosaicReaderHandle* reader,
                           const std::shared_ptr<arrow::Schema>& file_schema,
                           uint32_t num_row_groups, uint64_t total_rows,
+                          const std::shared_ptr<MemoryPool>& pool,
                           const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<std::shared_ptr<arrow::Array>> ReadNextRowGroup();
+    Result<bool> MatchesRowGroup(uint32_t row_group, uint32_t row_count);
     void CloseInternal();
 
     std::shared_ptr<InputStream> input_;
@@ -86,7 +89,9 @@ class MosaicFileBatchReader : public FileBatchReader {
     int64_t current_batch_offset_ = 0;
     uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
     uint64_t previous_batch_row_count_ = 0;
+    std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<PredicateFilter> predicate_filter_;
     std::shared_ptr<Metrics> metrics_;
     bool closed_ = false;
 };

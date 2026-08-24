@@ -23,6 +23,7 @@
 #include "arrow/c/helpers.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/format/mosaic/mosaic_reader_builder.h"
+#include "paimon/format/mosaic/mosaic_stats_extractor.h"
 #include "paimon/format/mosaic/mosaic_writer_builder.h"
 
 namespace paimon::mosaic {
@@ -45,10 +46,12 @@ Result<std::unique_ptr<WriterBuilder>> MosaicFileFormat::CreateWriterBuilder(
 
 Result<std::unique_ptr<FormatStatsExtractor>> MosaicFileFormat::CreateStatsExtractor(
     ::ArrowSchema* schema) const {
-    if (schema != nullptr) {
-        ArrowSchemaRelease(schema);
+    if (schema == nullptr) {
+        return Status::Invalid("Mosaic stats schema is nullptr");
     }
-    return Status::NotImplemented("Mosaic statistics extraction is not supported");
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
+                                      arrow::ImportSchema(schema));
+    return std::make_unique<MosaicStatsExtractor>(typed_schema);
 }
 
 }  // namespace paimon::mosaic

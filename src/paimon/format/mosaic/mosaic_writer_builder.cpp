@@ -19,6 +19,11 @@
 
 #include "paimon/format/mosaic/mosaic_writer_builder.h"
 
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "arrow/type.h"
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/common/utils/options_utils.h"
@@ -51,6 +56,21 @@ Result<std::unique_ptr<FormatWriter>> MosaicWriterBuilder::Build(
     PAIMON_ASSIGN_OR_RAISE(writer_options.num_buckets,
                            OptionsUtils::GetValueFromMap<uint32_t>(options_, MOSAIC_NUM_BUCKETS,
                                                                    writer_options.num_buckets));
+    auto max_dict_total_bytes = options_.find(MOSAIC_MAX_DICT_TOTAL_BYTES);
+    if (max_dict_total_bytes != options_.end()) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t value, MemorySize::ParseBytes(max_dict_total_bytes->second));
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint32_t>(value, "Mosaic max dict total bytes"));
+        writer_options.max_dict_total_bytes = static_cast<uint32_t>(value);
+    }
+    PAIMON_ASSIGN_OR_RAISE(writer_options.max_dict_entries,
+                           OptionsUtils::GetValueFromMap<uint32_t>(
+                               options_, MOSAIC_MAX_DICT_ENTRIES, writer_options.max_dict_entries));
+    auto page_size_threshold = options_.find(MOSAIC_PAGE_SIZE_THRESHOLD);
+    if (page_size_threshold != options_.end()) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t value, MemorySize::ParseBytes(page_size_threshold->second));
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint32_t>(value, "Mosaic page size threshold"));
+        writer_options.page_size_threshold = static_cast<uint32_t>(value);
+    }
     auto block_size = options_.find(Options::FILE_BLOCK_SIZE);
     if (block_size != options_.end()) {
         PAIMON_ASSIGN_OR_RAISE(int64_t row_group_max_size,
@@ -59,8 +79,25 @@ Result<std::unique_ptr<FormatWriter>> MosaicWriterBuilder::Build(
             ValidateValueInRange<uint64_t>(row_group_max_size, "Mosaic row group max size"));
         writer_options.row_group_max_size = static_cast<uint64_t>(row_group_max_size);
     }
-    writer_options.stats_columns = nullptr;
-    writer_options.num_stats_columns = 0;
+    std::vector<std::string> stats_columns;
+    auto stats_columns_iter = options_.find(MOSAIC_STATS_COLUMNS);
+    if (stats_columns_iter != options_.end()) {
+        for (std::string column : StringUtils::Split(stats_columns_iter->second, ",")) {
+            StringUtils::Trim(&column);
+            if (!column.empty() && schema_->GetFieldByName(column) != nullptr) {
+                stats_columns.push_back(std::move(column));
+            }
+        }
+    }
+    std::vector<const char*> stats_column_pointers;
+    stats_column_pointers.reserve(stats_columns.size());
+    for (const std::string& column : stats_columns) {
+        stats_column_pointers.push_back(column.c_str());
+    }
+    writer_options.stats_columns = stats_column_pointers.data();
+    PAIMON_RETURN_NOT_OK(
+        ValidateValueInRange<uint32_t>(stats_column_pointers.size(), "Mosaic stats column count"));
+    writer_options.num_stats_columns = static_cast<uint32_t>(stats_column_pointers.size());
     return MosaicFormatWriter::Create(output, schema_, writer_options);
 }
 

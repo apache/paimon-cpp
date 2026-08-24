@@ -20,6 +20,8 @@ set(PAIMON_MOSAIC_FILE_FORMAT
     mosaic_file_format.cpp
     mosaic_file_format_factory.cpp
     mosaic_format_writer.cpp
+    mosaic_stats.cpp
+    mosaic_stats_extractor.cpp
     mosaic_stream.cpp
     mosaic_writer_builder.cpp)
 

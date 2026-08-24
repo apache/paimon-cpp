@@ -28,22 +28,24 @@
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/math.h"
+#include "paimon/core/stats/simple_stats.h"
+#include "paimon/core/stats/simple_stats_converter.h"
+#include "paimon/format/mosaic/mosaic_stats.h"
 #include "paimon/fs/file_system.h"
 
 namespace paimon::mosaic {
 
-MosaicFileBatchReader::MosaicFileBatchReader(const std::shared_ptr<InputStream>& input,
-                                             int32_t batch_size,
-                                             std::unique_ptr<MosaicInputContext> input_context,
-                                             MosaicReaderHandle* reader,
-                                             const std::shared_ptr<arrow::Schema>& file_schema,
-                                             uint32_t num_row_groups, uint64_t total_rows,
-                                             const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+MosaicFileBatchReader::MosaicFileBatchReader(
+    const std::shared_ptr<InputStream>& input, int32_t batch_size,
+    std::unique_ptr<MosaicInputContext> input_context, MosaicReaderHandle* reader,
+    const std::shared_ptr<arrow::Schema>& file_schema, uint32_t num_row_groups, uint64_t total_rows,
+    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : input_(input),
       batch_size_(batch_size),
       input_context_(std::move(input_context)),
@@ -51,6 +53,7 @@ MosaicFileBatchReader::MosaicFileBatchReader(const std::shared_ptr<InputStream>&
       file_schema_(file_schema),
       num_row_groups_(num_row_groups),
       total_rows_(total_rows),
+      pool_(pool),
       arrow_pool_(arrow_pool),
       metrics_(std::make_shared<MetricsImpl>()) {}
 
@@ -108,7 +111,7 @@ Result<std::unique_ptr<MosaicFileBatchReader>> MosaicFileBatchReader::Create(
     }
     return std::unique_ptr<MosaicFileBatchReader>(
         new MosaicFileBatchReader(input, batch_size, std::move(input_context), reader, file_schema,
-                                  num_row_groups, total_rows, arrow_pool));
+                                  num_row_groups, total_rows, pool, arrow_pool));
 }
 
 MosaicFileBatchReader::~MosaicFileBatchReader() {
@@ -124,6 +127,10 @@ Result<std::shared_ptr<arrow::Array>> MosaicFileBatchReader::ReadNextRowGroup() 
         }
         current_row_group_first_row_ = next_row_group_first_row_;
         next_row_group_first_row_ += row_count;
+        PAIMON_ASSIGN_OR_RAISE(bool matches, MatchesRowGroup(row_group, row_count));
+        if (!matches) {
+            continue;
+        }
 
         MosaicRowGroupReaderHandle* row_group_reader =
             mosaic_reader_open_row_group(reader_, row_group);
@@ -153,6 +160,29 @@ Result<std::shared_ptr<arrow::Array>> MosaicFileBatchReader::ReadNextRowGroup() 
         }
     }
     return std::shared_ptr<arrow::Array>();
+}
+
+Result<bool> MosaicFileBatchReader::MatchesRowGroup(uint32_t row_group, uint32_t row_count) {
+    if (predicate_filter_ == nullptr) {
+        return true;
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        MosaicStatsUtils::RowGroupStatistics stats,
+        MosaicStatsUtils::ReadRowGroupStatistics(row_group, input_context_.get(), reader_));
+    // This matches the Java Mosaic reader: a file without row-group statistics is always kept.
+    if (stats.empty()) {
+        return true;
+    }
+    std::vector<MosaicStatsUtils::RowGroupStatistics> row_group_stats;
+    row_group_stats.push_back(std::move(stats));
+    PAIMON_ASSIGN_OR_RAISE(
+        ColumnStatsVector column_stats,
+        MosaicStatsUtils::ConvertColumnStatistics(file_schema_, row_group_stats,
+                                                  /*missing_null_count_is_zero=*/true));
+    PAIMON_ASSIGN_OR_RAISE(SimpleStats simple_stats,
+                           SimpleStatsConverter::ToBinary(column_stats, pool_.get()));
+    return predicate_filter_->Test(file_schema_, row_count, simple_stats.MinValues(),
+                                   simple_stats.MaxValues(), simple_stats.NullCounts());
 }
 
 Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
@@ -210,7 +240,6 @@ Status MosaicFileBatchReader::SetReadSchema(
     if (read_schema == nullptr) {
         return Status::Invalid("Mosaic read schema is nullptr");
     }
-    (void)predicate;
     (void)selection_bitmap;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(read_schema));
@@ -227,6 +256,7 @@ Status MosaicFileBatchReader::SetReadSchema(
     if (mosaic_reader_set_projection(reader_, name_pointers.data(), name_pointers.size()) != 0) {
         return MosaicFfiError("set Mosaic projection", input_context_->GetCallbackStatus());
     }
+    predicate_filter_ = std::dynamic_pointer_cast<PredicateFilter>(predicate);
     next_row_group_ = 0;
     next_row_group_first_row_ = 0;
     current_row_group_first_row_ = 0;

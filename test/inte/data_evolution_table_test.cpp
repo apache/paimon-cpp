@@ -32,6 +32,7 @@
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/defs.h"
+#include "paimon/format/mosaic/mosaic_format_defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/indexed_split.h"
@@ -90,27 +91,36 @@ class DataEvolutionTableTest : public ::testing::Test,
         return CreateTable(/*partition_keys=*/{});
     }
 
-    Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArray(
+    Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArrays(
         const std::string& table_path, const std::map<std::string, std::string>& partition,
         const std::vector<std::string>& write_cols,
-        const std::shared_ptr<arrow::Array>& write_array) const {
+        const std::vector<std::shared_ptr<arrow::Array>>& write_arrays) const {
         // write
         WriteContextBuilder write_builder(table_path, "commit_user_1");
         write_builder.WithWriteSchema(write_cols);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
                                FileStoreWrite::Create(std::move(write_context)));
-        ArrowArray c_array;
-        EXPECT_TRUE(arrow::ExportArray(*write_array, &c_array).ok());
-        auto record_batch = std::make_unique<RecordBatch>(
-            partition, /*bucket=*/0,
-            /*row_kinds=*/std::vector<RecordBatch::RowKind>(), &c_array);
-        PAIMON_RETURN_NOT_OK(file_store_write->Write(std::move(record_batch)));
+        for (const auto& write_array : write_arrays) {
+            ArrowArray c_array;
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*write_array, &c_array));
+            auto record_batch = std::make_unique<RecordBatch>(
+                partition, /*bucket=*/0,
+                /*row_kinds=*/std::vector<RecordBatch::RowKind>(), &c_array);
+            PAIMON_RETURN_NOT_OK(file_store_write->Write(std::move(record_batch)));
+        }
         PAIMON_ASSIGN_OR_RAISE(auto commit_msgs,
                                file_store_write->PrepareCommit(
                                    /*wait_compaction=*/false, /*commit_identifier=*/0));
         PAIMON_RETURN_NOT_OK(file_store_write->Close());
         return commit_msgs;
+    }
+
+    Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArray(
+        const std::string& table_path, const std::map<std::string, std::string>& partition,
+        const std::vector<std::string>& write_cols,
+        const std::shared_ptr<arrow::Array>& write_array) const {
+        return WriteArrays(table_path, partition, write_cols, {write_array});
     }
 
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteArray(
@@ -840,6 +850,9 @@ TEST_P(DataEvolutionTableTest, TestOnlySomeColumns) {
 }
 
 TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) {
+    if (FileFormat() == "mosaic") {
+        return;
+    }
     if (FileFormat() == "avro") {
         return;
     }
@@ -1478,6 +1491,9 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
         {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "true"}, {"parquet.write.max-row-group-length", "1"}};
+    if (file_format == "mosaic") {
+        options.emplace(mosaic::MOSAIC_STATS_COLUMNS, "f0");
+    }
 
     CreateTable(partition_keys, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -1642,6 +1658,9 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
 }
 
 TEST_P(DataEvolutionTableTest, TestAlterTable) {
+    if (FileFormat() == "mosaic") {
+        return;
+    }
     auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
@@ -1739,6 +1758,9 @@ TEST_P(DataEvolutionTableTest, TestAlterTable) {
 }
 
 TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
+    if (FileFormat() == "mosaic") {
+        return;
+    }
     auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
@@ -1769,6 +1791,9 @@ TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
 }
 
 TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
+    if (FileFormat() == "mosaic") {
+        return;
+    }
     auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
@@ -1850,6 +1875,9 @@ TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
 }
 
 TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
+    if (FileFormat() == "mosaic") {
+        return;
+    }
     auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
@@ -1988,6 +2016,9 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
 }
 
 TEST_P(DataEvolutionTableTest, TestDataEvolutionPredicatePushDownBoundaries) {
+    if (FileFormat() == "mosaic") {
+        return;
+    }
     auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
@@ -2102,15 +2133,19 @@ TEST_P(DataEvolutionTableTest, TestFormatPredicatePushDownWithoutFileIndex) {
         return;
     }
 
-    CreateDataEvolutionTable(
-        /*deletion_vectors_enabled=*/false, {{Options::FILE_INDEX_READ_ENABLED, "false"},
-                                             {Options::WRITE_BATCH_SIZE, "1"},
-                                             {"parquet.page.size", "1"},
-                                             {"parquet.enable-dictionary", "false"},
-                                             {"parquet.write.enable-page-index", "true"},
-                                             {"parquet.read.enable-page-index-filter", "true"},
-                                             {"orc.stripe.size", "1"},
-                                             {"orc.row.index.stride", "1"}});
+    std::map<std::string, std::string> options = {{Options::FILE_INDEX_READ_ENABLED, "false"},
+                                                  {Options::WRITE_BATCH_SIZE, "1"},
+                                                  {"parquet.page.size", "1"},
+                                                  {"parquet.enable-dictionary", "false"},
+                                                  {"parquet.write.enable-page-index", "true"},
+                                                  {"parquet.read.enable-page-index-filter", "true"},
+                                                  {"orc.stripe.size", "1"},
+                                                  {"orc.row.index.stride", "1"}};
+    if (FileFormat() == "mosaic") {
+        options.emplace(Options::FILE_BLOCK_SIZE, "1 B");
+        options.emplace(mosaic::MOSAIC_STATS_COLUMNS, "f0");
+    }
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
     auto input = std::dynamic_pointer_cast<arrow::StructArray>(
@@ -2121,7 +2156,16 @@ TEST_P(DataEvolutionTableTest, TestFormatPredicatePushDownWithoutFileIndex) {
         [4, "d", "w"]
     ])")
             .ValueOrDie());
-    ASSERT_OK_AND_ASSIGN(auto commit_messages, WriteArray(table_path, {"f0", "f1", "f2"}, input));
+    std::vector<std::shared_ptr<arrow::Array>> write_arrays;
+    for (int64_t i = 0; i < input->length(); i++) {
+        arrow::ArrayVector children;
+        for (const auto& child : input->fields()) {
+            children.push_back(child->Slice(i, 1));
+        }
+        write_arrays.push_back(arrow::StructArray::Make(children, fields_).ValueOrDie());
+    }
+    ASSERT_OK_AND_ASSIGN(auto commit_messages, WriteArrays(table_path, /*partition=*/{},
+                                                           {"f0", "f1", "f2"}, write_arrays));
     ASSERT_OK(Commit(table_path, commit_messages));
 
     auto predicate =
@@ -2142,7 +2186,16 @@ TEST_P(DataEvolutionTableTest, TestPredicate) {
         // Avro does not have stats.
         return;
     }
-    CreateTable();
+    if (FileFormat() == "mosaic") {
+        CreateTable(/*partition_keys=*/{}, {{Options::MANIFEST_FORMAT, "orc"},
+                                            {Options::FILE_FORMAT, FileFormat()},
+                                            {Options::FILE_SYSTEM, "local"},
+                                            {Options::ROW_TRACKING_ENABLED, "true"},
+                                            {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                            {mosaic::MOSAIC_STATS_COLUMNS, "f0,f1,f2"}});
+    } else {
+        CreateTable();
+    }
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
 
@@ -2283,6 +2336,9 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
+    if (FileFormat() == "mosaic") {
+        options.emplace(mosaic::MOSAIC_STATS_COLUMNS, "f0,f1");
+    }
     CreateTable(/*partition_keys=*/{}, options);
 
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -3099,6 +3155,9 @@ std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionTableTest() {
     std::vector<DataEvolutionTableParam> values;
     for (bool enable_snapshot_live_manifest_cache : {false, true}) {
         values.emplace_back("parquet", enable_snapshot_live_manifest_cache);
+#ifdef PAIMON_ENABLE_MOSAIC
+        values.emplace_back("mosaic", enable_snapshot_live_manifest_cache);
+#endif
 #ifdef PAIMON_ENABLE_ORC
         values.emplace_back("orc", enable_snapshot_live_manifest_cache);
 #endif

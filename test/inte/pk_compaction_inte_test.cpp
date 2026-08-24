@@ -445,7 +445,7 @@ TEST_F(PkCompactionInteTest, TestMetadataOnlyLevelUpgradeKeepsValueStats) {
 // Verify shared-shredding MAP can be read correctly after PK full compaction.
 TEST_P(PkCompactionInteTest, TestKeyValueTableFullCompactionWithMapSharedShredding) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -517,7 +517,7 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableFullCompactionWithMapSharedShreddi
 
 TEST_P(PkCompactionInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3235,7 +3235,7 @@ TEST_F(PkCompactionInteTest, RemoteLookupFileWithSchemaEvolution) {
 //   6. ScanAndVerify after full compact
 TEST_P(PkCompactionInteTest, TestLookupCompatibility) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     // Step 1: Copy pk_compact_lookup table to temp dir.
@@ -3597,6 +3597,9 @@ TEST_F(PkCompactionInteTest, AggHllAndThetaSketches) {
 std::vector<std::string> GetTestValuesForCompactionInteTest() {
     std::vector<std::string> values;
     values.emplace_back("parquet");
+#ifdef PAIMON_ENABLE_MOSAIC
+    values.emplace_back("mosaic");
+#endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
 #endif
