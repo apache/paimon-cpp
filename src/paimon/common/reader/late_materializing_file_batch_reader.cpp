@@ -28,11 +28,13 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/array/util.h"
 #include "arrow/c/bridge.h"
+#include "arrow/memory_pool.h"
 #include "arrow/type.h"
 #include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
@@ -40,10 +42,20 @@
 namespace paimon {
 
 Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
-    std::unique_ptr<PrefetchFileBatchReader> inner) {
+    std::unique_ptr<PrefetchFileBatchReader> inner, std::shared_ptr<MemoryPool> pool) {
+    // The reader's own compaction allocations go through an arrow pool; bridge the paimon pool
+    // once here so the accounting matches the rest of the read path.
+    std::shared_ptr<arrow::MemoryPool> arrow_pool;
+    if (pool != nullptr) {
+        arrow_pool = GetArrowPool(pool);
+    }
     auto reader = std::unique_ptr<LateMaterializingFileBatchReader>(
-        new LateMaterializingFileBatchReader(std::move(inner)));
+        new LateMaterializingFileBatchReader(std::move(inner), std::move(arrow_pool)));
     return reader;
+}
+
+arrow::MemoryPool* LateMaterializingFileBatchReader::ArrowPool() const {
+    return arrow_pool_ ? arrow_pool_.get() : arrow::default_memory_pool();
 }
 
 Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch() {
@@ -147,7 +159,8 @@ Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             probe_array, arrow::MakeEmptyArray(arrow::struct_(probe_schema_->fields())));
     } else {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(probe_array, arrow::Concatenate(probe_arrays));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(probe_array,
+                                          arrow::Concatenate(probe_arrays, ArrowPool()));
     }
     probe_data_ = arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_array);
     return Status::OK();
@@ -191,7 +204,7 @@ Result<FileBatchReader::ReadBatchWithBitmap> LateMaterializingFileBatchReader::R
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
                                ReaderUtils::GenerateFilteredArrayVector(payload_array, valid));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_compacted,
-                                          arrow::Concatenate(payload_slices));
+                                          arrow::Concatenate(payload_slices, ArrowPool()));
 
         int64_t card = static_cast<int64_t>(valid.Cardinality());
         if (probe_cursor_ + card > probe_data_->length()) {

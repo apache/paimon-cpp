@@ -37,7 +37,7 @@ class PredicateFilter;
 class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
  public:
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
-        std::unique_ptr<PrefetchFileBatchReader> inner);
+        std::unique_ptr<PrefetchFileBatchReader> inner, std::shared_ptr<MemoryPool> pool);
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
     Result<FileBatchReader::ReadBatchWithBitmap> NextBatchWithBitmap() override;
@@ -59,8 +59,9 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
 
  private:
-    explicit LateMaterializingFileBatchReader(std::unique_ptr<PrefetchFileBatchReader> inner)
-        : inner_(std::move(inner)) {}
+    explicit LateMaterializingFileBatchReader(std::unique_ptr<PrefetchFileBatchReader> inner,
+                                              std::shared_ptr<arrow::MemoryPool> arrow_pool)
+        : inner_(std::move(inner)), arrow_pool_(std::move(arrow_pool)) {}
 
     enum LatMatState {
         kInit,
@@ -93,8 +94,13 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
                               const std::shared_ptr<Predicate>& predicate,
                               const std::optional<RoaringBitmap32>& selection);
 
-    LatMatState state_ = kInit;
+    // Arrow pool for this reader's own allocations (probe/payload compaction). Falls back to the
+    // arrow default pool when no pool was provided.
+    arrow::MemoryPool* ArrowPool() const;
+
     std::unique_ptr<PrefetchFileBatchReader> inner_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    LatMatState state_ = kInit;
     std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
     std::shared_ptr<arrow::Schema> full_schema_;
     // projection holding only the predicate fields; nullptr when probing is not applicable
