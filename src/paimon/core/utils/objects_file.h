@@ -134,8 +134,9 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
         file_name,
         [this, &filter, result](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
             result->reserve(result->size() + struct_array->length());
+            const arrow::ArrayVector& fields = struct_array->fields();
             for (int64_t i = 0; i < struct_array->length(); i++) {
-                ColumnarRow row(struct_array->fields(), pool_, i);
+                ColumnarRow row(fields, pool_, i);
                 PAIMON_ASSIGN_OR_RAISE(T obj, serializer_->FromRow(row));
                 if (filter) {
                     PAIMON_ASSIGN_OR_RAISE(bool filter_res, filter(obj));
