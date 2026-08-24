@@ -18,6 +18,7 @@
 
 #include "paimon/format/blob/blob_format_writer.h"
 
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -109,6 +110,99 @@ class VanishingFileSystem : public LocalFileSystem {
 
  private:
     mutable int64_t exists_call_count_ = 0;
+};
+
+/// An input stream that delegates to a real one but reports a read length the copy loop has to
+/// refuse: zero, standing in for a backend that returns nothing while bytes remain, or one byte
+/// more than was asked for, standing in for one claiming to have filled past the buffer.
+class BadReadInputStream : public InputStream {
+ public:
+    BadReadInputStream(std::unique_ptr<InputStream>&& wrapped, bool read_more)
+        : wrapped_(std::move(wrapped)), read_more_(read_more) {}
+
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return wrapped_->Seek(offset, origin);
+    }
+
+    Result<int64_t> GetPos() const override {
+        return wrapped_->GetPos();
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        PAIMON_ASSIGN_OR_RAISE(int64_t actual_read_len, wrapped_->Read(buffer, size));
+        return read_more_ ? actual_read_len + 1 : 0;
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        return wrapped_->Read(buffer, size, offset);
+    }
+
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        wrapped_->ReadAsync(buffer, size, offset, std::move(callback));
+    }
+
+    Status Close() override {
+        return wrapped_->Close();
+    }
+
+    Result<std::string> GetUri() const override {
+        return wrapped_->GetUri();
+    }
+
+    Result<int64_t> Length() const override {
+        return wrapped_->Length();
+    }
+
+ private:
+    std::unique_ptr<InputStream> wrapped_;
+    bool read_more_;
+};
+
+/// A file system handing out those streams, so a test can drive the copy loop's read guard.
+class BadReadFileSystem : public LocalFileSystem {
+ public:
+    explicit BadReadFileSystem(bool read_more) : read_more_(read_more) {}
+
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> wrapped, real_fs_.Open(path));
+        return std::unique_ptr<InputStream>(
+            std::make_unique<BadReadInputStream>(std::move(wrapped), read_more_));
+    }
+
+ private:
+    LocalFileSystem real_fs_;
+    bool read_more_;
+};
+
+/// An output stream that stores nothing while reporting a written length the write loop has to
+/// refuse: zero, or one byte more than it was handed.
+class BadWriteOutputStream : public OutputStream {
+ public:
+    explicit BadWriteOutputStream(bool write_more) : write_more_(write_more) {}
+
+    Result<int64_t> GetPos() const override {
+        return 0;
+    }
+
+    Result<int64_t> Write(const char* buffer, int64_t size) override {
+        return write_more_ ? size + 1 : 0;
+    }
+
+    Status Flush() override {
+        return Status::OK();
+    }
+
+    Status Close() override {
+        return Status::OK();
+    }
+
+    Result<std::string> GetUri() const override {
+        return std::string("mock://bad-write");
+    }
+
+ private:
+    bool write_more_;
 };
 
 class BlobFormatWriterTestBase : public ::testing::Test {
@@ -340,6 +434,20 @@ TEST_P(BlobFormatWriterTest, TestCreateWithInvalidParameters) {
                                                  /*write_null_on_fetch_failure=*/false,
                                                  /*write_placeholder=*/false, file_system_, pool_),
                         "field regular_col: binary is not BLOB");
+
+    // Test with out-of-range copy buffer sizes
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false,
+                                 /*write_placeholder=*/false, file_system_, pool_,
+                                 /*copy_buffer_size=*/0),
+        "must be between 1 byte and");
+    ASSERT_NOK_WITH_MSG(
+        BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false,
+                                 /*write_placeholder=*/false, file_system_, pool_,
+                                 static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1),
+        "must be between 1 byte and");
 }
 
 TEST_P(BlobFormatWriterTest, TestInvalidCase) {
@@ -443,8 +551,8 @@ TEST_P(BlobFormatWriterTest, TestLargeBlob) {
     ASSERT_OK_AND_ASSIGN(auto large_file_stream,
                          file_system_->Create(large_file_path, /*overwrite=*/true));
 
-    // Write data larger than TMP_BUFFER_SIZE (1MB)
-    const size_t large_size = BlobFormatWriter::kTmpBufferSize * 2 + 1000;  // ~2MB
+    // Write data larger than the default copy buffer so the copy loops over several chunks
+    const size_t large_size = BlobDefs::kDefaultCopyBufferSize * 2 + 1000;  // ~9KB
     std::vector<char> large_data(large_size, 'A');
     ASSERT_OK_AND_ASSIGN(int64_t written, large_file_stream->Write(large_data.data(), large_size));
     ASSERT_EQ(written, large_size);
@@ -970,6 +1078,71 @@ TEST_P(BlobFormatWriterTest, TestAddBatchWithZeroLengthBlob) {
 /// Placeholder tests always feed the sentinel bytes of the placeholder write protocol, so
 /// they do not depend on the blob_as_descriptor_ parameter and run once on the
 /// non-parameterized fixture.
+using BlobFormatWriterCopyBufferTest = BlobFormatWriterTestBase;
+
+TEST_F(BlobFormatWriterCopyBufferTest, TestTinyCopyBufferCopiesInChunks) {
+    // A one-byte copy buffer forces the payload copy to loop chunk by chunk; the record must
+    // still round-trip byte for byte.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> writer,
+        BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/false,
+                                 /*write_null_on_fetch_failure=*/false,
+                                 /*write_placeholder=*/false, file_system_, pool_,
+                                 /*copy_buffer_size=*/1));
+    const std::string payload = "tiny-buffer-payload";
+    ASSERT_OK_AND_ASSIGN(auto blob_array, MakeBlobArrayFromBytes(payload));
+    ASSERT_OK(AddBatchOnce(writer, blob_array));
+    ASSERT_OK(writer->Flush());
+    ASSERT_OK(writer->Finish());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> struct_array, ReadBackAsData());
+    ASSERT_EQ(struct_array->length(), 1);
+    auto binary_array =
+        arrow::internal::checked_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));
+    ASSERT_FALSE(binary_array->IsNull(0));
+    ASSERT_EQ(binary_array->GetString(0), payload);
+}
+
+TEST_F(BlobFormatWriterCopyBufferTest, TestImpossibleReadLengthIsRejected) {
+    // The copy loop continues a partial read, but a read returning nothing would spin forever and
+    // one claiming more than the buffer holds would checksum bytes that were never read. Both are
+    // refused instead of continued.
+    std::string payload_file = paimon::test::GetDataDir() + "/xxhash.data";
+    for (bool read_more : {false, true}) {
+        auto bad_fs = std::make_shared<BadReadFileSystem>(read_more);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<OutputStream> out,
+            file_system_->Create(dir_->Str() + (read_more ? "/read-more.blob" : "/read-none.blob"),
+                                 /*overwrite=*/true));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BlobFormatWriter> writer,
+                             BlobFormatWriter::Create(out, struct_type_,
+                                                      /*write_null_on_missing_file=*/false,
+                                                      /*write_null_on_fetch_failure=*/false,
+                                                      /*write_placeholder=*/false, bad_fs, pool_));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Blob> blob,
+                             Blob::FromPath(payload_file, /*offset=*/0, /*length=*/91));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, PrepareDescriptorArray(blob));
+        ASSERT_NOK_WITH_MSG(AddBatchOnce(writer, array), "unexpected read length");
+        ASSERT_OK(out->Close());
+    }
+}
+
+TEST_F(BlobFormatWriterCopyBufferTest, TestImpossibleWrittenLengthIsRejected) {
+    // The same on the writing side: a backend that stores nothing, or claims to have taken more
+    // than it was handed, would leave the record framing wrong, so neither is continued.
+    for (bool write_more : {false, true}) {
+        auto out = std::make_shared<BadWriteOutputStream>(write_more);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<BlobFormatWriter> writer,
+            BlobFormatWriter::Create(out, struct_type_, /*write_null_on_missing_file=*/false,
+                                     /*write_null_on_fetch_failure=*/false,
+                                     /*write_placeholder=*/false, file_system_, pool_));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                             MakeBlobArrayFromBytes("payload-bytes"));
+        ASSERT_NOK_WITH_MSG(AddBatchOnce(writer, array), "unexpected written length");
+    }
+}
+
 using BlobFormatWriterPlaceholderTest = BlobFormatWriterTestBase;
 
 std::string PlaceholderSentinelBytes() {

@@ -21,12 +21,15 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "arrow/util/crc32.h"
+#include "paimon/common/data/blob_defs.h"
 #include "paimon/format/format_writer.h"
 #include "paimon/logging.h"
 #include "paimon/memory/bytes.h"
@@ -76,10 +79,14 @@ class BlobFormatWriter : public FormatWriter {
     /// BlobDefs::kPlaceholderSentinel as a placeholder entry (bin_length -2, no data bytes);
     /// any other value is stored verbatim. When disabled, values are never interpreted and can
     /// never be turned into placeholder entries.
+    ///
+    /// `copy_buffer_size` is the payload copy buffer size in bytes (see
+    /// Options::BLOB_COPY_BUFFER_SIZE); production callers should pass the configured value.
     static Result<std::unique_ptr<BlobFormatWriter>> Create(
         const std::shared_ptr<OutputStream>& out, const std::shared_ptr<arrow::DataType>& data_type,
         bool write_null_on_missing_file, bool write_null_on_fetch_failure, bool write_placeholder,
-        const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<MemoryPool>& pool,
+        int64_t copy_buffer_size = BlobDefs::kDefaultCopyBufferSize);
 
     Status AddBatch(ArrowArray* batch) override;
 
@@ -88,6 +95,14 @@ class BlobFormatWriter : public FormatWriter {
     Status Finish() override;
 
     Result<bool> ReachTargetSize(bool suggested_check, int64_t target_size) const override;
+
+    /// The (offset, length) of the payload bytes stored by the last AddBatch, or nullopt when
+    /// that record kept no payload (a NULL or placeholder entry). This is the byte range a
+    /// BlobDescriptor for the record must point at; exposing it here keeps the record layout
+    /// out of callers.
+    std::optional<std::pair<int64_t, int64_t>> LastPayloadRange() const override {
+        return last_payload_range_;
+    }
 
     std::shared_ptr<Metrics> GetWriterMetrics() const override {
         return metrics_;
@@ -100,7 +115,7 @@ class BlobFormatWriter : public FormatWriter {
                      const std::shared_ptr<arrow::DataType>& data_type,
                      bool write_null_on_missing_file, bool write_null_on_fetch_failure,
                      bool write_placeholder, const std::shared_ptr<FileSystem>& fs,
-                     const std::shared_ptr<MemoryPool>& pool);
+                     const std::shared_ptr<MemoryPool>& pool, int64_t copy_buffer_size);
 
     Status WriteBlob(std::string_view blob_data);
 
@@ -127,8 +142,6 @@ class BlobFormatWriter : public FormatWriter {
                                                           const std::shared_ptr<MemoryPool>& pool);
 
  private:
-    static constexpr uint32_t kTmpBufferSize = 1024 * 1024;
-
     uint32_t crc32_ = 0;
     std::vector<int64_t> bin_lengths_;
     std::shared_ptr<OutputStream> out_;
@@ -144,6 +157,7 @@ class BlobFormatWriter : public FormatWriter {
     bool write_null_on_missing_file_ = false;
     bool write_null_on_fetch_failure_ = false;
     bool write_placeholder_ = false;
+    std::optional<std::pair<int64_t, int64_t>> last_payload_range_;
     uint64_t null_on_missing_file_count_ = 0;
     uint64_t null_on_fetch_failure_count_ = 0;
     std::unique_ptr<Logger> logger_;

@@ -18,6 +18,7 @@
  */
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -106,6 +107,14 @@ class DeletionVector {
     /// @return the number of distinct integers added to the DeletionVector.
     virtual Result<int64_t> GetCardinality() const = 0;
 
+    /// Invokes `consumer` once per deleted position, in ascending order, and stops at the
+    /// first non-OK status it returns.
+    ///
+    /// Callers that have to relocate deletions — moving a vector onto a file whose row range
+    /// starts elsewhere — need the positions themselves; probing `IsDeleted` across the whole
+    /// range instead would cost one virtual call per row rather than one per deletion.
+    virtual Status ForEachDeletedPosition(const std::function<Status(int64_t)>& consumer) const = 0;
+
     /// Serializes the deletion vector.
     virtual Result<int32_t> SerializeTo(const std::shared_ptr<MemoryPool>& pool,
                                         DataOutputStream* out) = 0;
@@ -116,7 +125,20 @@ class DeletionVector {
     virtual Result<PAIMON_UNIQUE_PTR<Bytes>> SerializeToBytes(
         const std::shared_ptr<MemoryPool>& pool) = 0;
 
+    /// Creates an empty deletion vector of the kind a table configured with `bitmap64`
+    /// stores.
+    ///
+    /// The two kinds serialize differently and refuse to merge into one another, so every
+    /// writer has to build the kind the table already holds. Going through one factory keeps
+    /// that decision in a single place rather than in each call site that happens to need a
+    /// new vector.
+    static std::shared_ptr<DeletionVector> Create(bool bitmap64);
+
     /// Deserializes a deletion vector from a byte array.
+    ///
+    /// The inverse of `SerializeToBytes`, so `bytes` holds only the checksum-covered region —
+    /// the magic number and the bitmap — without the length prefix and checksum a stored record
+    /// is framed with. `Read` is the overload taking the whole framed record instead.
     ///
     /// @param bytes The byte array containing the serialized deletion vector.
     /// @return A DeletionVector instance that represents the deserialized data.

@@ -150,6 +150,14 @@ Status RowToArrowArrayConverter<T, R>::Reserve(arrow::ArrayBuilder* array_builde
                 binary_builder->ReserveData(INFLATION_FACTOR * reserved_sizes_[(*idx)++]));
             break;
         }
+        case arrow::Type::type::LARGE_BINARY: {
+            // reserve large binary data buffer (managed blob descriptor columns)
+            PAIMON_ASSIGN_OR_RAISE(arrow::LargeBinaryBuilder * large_binary_builder,
+                                   CastToTypedBuilder<arrow::LargeBinaryBuilder>(array_builder));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                large_binary_builder->ReserveData(INFLATION_FACTOR * reserved_sizes_[(*idx)++]));
+            break;
+        }
         case arrow::Type::type::LIST: {
             PAIMON_ASSIGN_OR_RAISE(auto* list_builder,
                                    CastToTypedBuilder<arrow::ListBuilder>(array_builder));
@@ -216,6 +224,12 @@ Status RowToArrowArrayConverter<T, R>::Accumulate(const arrow::Array* array, int
             auto binary_array = checked_cast<const arrow::BinaryArray*>(array);
             // accumulate the bytes buffer size of binary
             UpdateAccumulatedVec(binary_array->value_data()->size(), idx);
+            break;
+        }
+        case arrow::Type::type::LARGE_BINARY: {
+            auto large_binary_array = checked_cast<const arrow::LargeBinaryArray*>(array);
+            // accumulate the bytes buffer size of large binary
+            UpdateAccumulatedVec(large_binary_array->value_data()->size(), idx);
             break;
         }
         case arrow::Type::type::LIST: {
@@ -366,6 +380,27 @@ RowToArrowArrayConverter<T, R>::AppendField(bool use_view, arrow::ArrayBuilder* 
             (*reserve_count)++;
             PAIMON_ASSIGN_OR_RAISE(auto* field_builder,
                                    CastToTypedBuilder<arrow::BinaryBuilder>(array_builder));
+            if (use_view) {
+                return RowToArrowArrayConverter<T, R>::AppendValueFunc(
+                    [field_builder](const DataGetters& data_getter, int32_t pos) -> arrow::Status {
+                        CHECK_AND_APPEND_NULL(data_getter, field_builder, pos);
+                        auto view = data_getter.GetStringView(pos);
+                        return field_builder->Append(view.data(), view.size());
+                    });
+            }
+            return RowToArrowArrayConverter<T, R>::AppendValueFunc(
+                [field_builder](const DataGetters& data_getter, int32_t pos) -> arrow::Status {
+                    CHECK_AND_APPEND_NULL(data_getter, field_builder, pos);
+                    auto bytes = data_getter.GetBinary(pos);
+                    assert(bytes);
+                    return field_builder->Append(bytes->data(), bytes->size());
+                });
+        }
+        case arrow::Type::type::LARGE_BINARY: {
+            // Managed blob descriptor columns of a primary-key table.
+            (*reserve_count)++;
+            PAIMON_ASSIGN_OR_RAISE(arrow::LargeBinaryBuilder * field_builder,
+                                   CastToTypedBuilder<arrow::LargeBinaryBuilder>(array_builder));
             if (use_view) {
                 return RowToArrowArrayConverter<T, R>::AppendValueFunc(
                     [field_builder](const DataGetters& data_getter, int32_t pos) -> arrow::Status {

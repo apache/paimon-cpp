@@ -27,6 +27,7 @@
 
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_writer_base.h"
+#include "paimon/core/io/managed_blob_reference_collector.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/result.h"
@@ -55,9 +56,22 @@ class KeyValueDataFileWriter : public DataFileWriterBase<KeyValueBatch> {
                            const std::shared_ptr<arrow::Schema>& write_schema,
                            bool is_external_path, const std::shared_ptr<MemoryPool>& pool);
 
+    /// Attaches the managed blob reference collector of a primary-key managed blob table. The
+    /// collector records the pack files this data file's rows reference; its `.blobref`
+    /// sidecar is written on close and carried in the result's extra files. Must be set before
+    /// the first Write().
+    void SetBlobReferenceCollector(std::unique_ptr<ManagedBlobReferenceCollector> collector);
+
     Status Write(KeyValueBatch batch) override;
 
     Result<std::shared_ptr<DataFileMeta>> GetResult() override;
+
+    void Abort() override;
+
+    Result<AbortExecutor> GetAbortExecutor() const override;
+
+ protected:
+    Status BeforeFinish() override;
 
  private:
     Result<std::vector<std::shared_ptr<ColumnStats>>> GetFieldStats();
@@ -84,6 +98,7 @@ class KeyValueDataFileWriter : public DataFileWriterBase<KeyValueBatch> {
     int64_t max_sequence_number_ = std::numeric_limits<int64_t>::min();
     std::shared_ptr<InternalRow> min_key_;
     std::shared_ptr<InternalRow> max_key_;
+    std::unique_ptr<ManagedBlobReferenceCollector> blob_reference_collector_;
 };
 
 }  // namespace paimon

@@ -121,6 +121,42 @@ TEST(DeletionVectorTest, TestCompatibleWithJava) {
     ASSERT_EQ(*serialized_dv, *serialize_bytes);
 }
 
+TEST(DeletionVectorTest, DeserializeFromBytesTellsTheVectorKindsApart) {
+    // The bytes hold only the checksum-covered region - the magic number and the bitmap - and
+    // the two vector kinds store that magic in opposite byte orders, which is the only thing
+    // identifying the kind here. A bitmap64 vector read back as a bitmap32 one would take its
+    // bitmap apart at the wrong stride, so the round trip has to return the kind it was given.
+    auto pool = GetDefaultPool();
+    auto deletion_vector = std::make_shared<Bitmap64DeletionVector>();
+    ASSERT_OK(deletion_vector->Delete(1));
+    ASSERT_OK(deletion_vector->Delete(int64_t{1} << 33));
+
+    ASSERT_OK_AND_ASSIGN(auto bytes, deletion_vector->SerializeToBytes(pool));
+    ASSERT_OK_AND_ASSIGN(auto deserialized,
+                         DeletionVector::DeserializeFromBytes(bytes.get(), pool.get()));
+    ASSERT_TRUE(dynamic_cast<Bitmap64DeletionVector*>(deserialized.get()) != nullptr);
+    ASSERT_TRUE(deserialized->IsDeleted(1).value());
+    ASSERT_TRUE(deserialized->IsDeleted(int64_t{1} << 33).value());
+    ASSERT_FALSE(deserialized->IsDeleted(2).value());
+}
+
+TEST(DeletionVectorTest, DeserializeFromBytesRejectsUnreadableBytes) {
+    auto pool = GetDefaultPool();
+    // Too short to hold a magic number at all: reading one would run past the buffer.
+    const size_t too_short_size = BitmapDeletionVector::MAGIC_NUMBER_SIZE_BYTES - 1;
+    auto short_bytes = std::make_shared<Bytes>(too_short_size, pool.get());
+    ASSERT_NOK_WITH_MSG(DeletionVector::DeserializeFromBytes(short_bytes.get(), pool.get()),
+                        "too short to hold a magic number");
+
+    // Long enough, but the magic belongs to neither kind in either byte order.
+    std::vector<uint8_t> data;
+    AppendInt32BigEndian(&data, /*value=*/12345);
+    auto bad_magic_bytes = std::make_shared<Bytes>(data.size(), pool.get());
+    memcpy(bad_magic_bytes->data(), data.data(), data.size());
+    ASSERT_NOK_WITH_MSG(DeletionVector::DeserializeFromBytes(bad_magic_bytes.get(), pool.get()),
+                        "Invalid magic number");
+}
+
 TEST(DeletionVectorTest, ReadFromDataInputStreamLengthMismatch) {
     std::vector<uint8_t> data;
     AppendInt32BigEndian(&data, /*value=*/8);
@@ -147,7 +183,7 @@ TEST(DeletionVectorTest, ReadFromDataInputStreamInvalidBitmapLength) {
                         "Invalid bitmap length");
 }
 
-TEST(DeletionVectorTest, ReadFromDataInputStreamBitmap64NotImplemented) {
+TEST(DeletionVectorTest, ReadFromDataInputStreamBitmap64SizeNotMatch) {
     std::vector<uint8_t> data;
     AppendInt32BigEndian(&data, /*value=*/8);
     // Trigger: EndianSwapValue(magic_number) == Bitmap64DeletionVector::MAGIC_NUMBER.
@@ -158,9 +194,10 @@ TEST(DeletionVectorTest, ReadFromDataInputStreamBitmap64NotImplemented) {
     DataInputStream in(input_stream);
     auto pool = GetDefaultPool();
 
-    ASSERT_NOK_WITH_MSG(
-        DeletionVector::Read(&in, std::nullopt, pool.get()),
-        "NotImplemented: bitmap64 deletion vectors are not supported in this version");
+    // A bitmap64 record is recorded whole, so the caller's length has to exceed the bitmap
+    // length by the framing. 100 does not describe this record and must be rejected rather
+    // than read as if it did.
+    ASSERT_NOK_WITH_MSG(DeletionVector::Read(&in, /*length=*/100, pool.get()), "Size not match");
 }
 
 TEST(DeletionVectorTest, ReadFromDataInputStreamInvalidMagicNumber) {

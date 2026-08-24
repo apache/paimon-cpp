@@ -20,6 +20,8 @@
 
 #include <cassert>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
@@ -44,6 +46,7 @@
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/data_increment.h"
 #include "paimon/core/io/key_value_data_file_writer_factory.h"
+#include "paimon/core/io/primary_key_blob_externalizer.h"
 #include "paimon/core/io/shredding_key_value_data_file_writer_factory.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/utils/commit_increment.h"
@@ -76,8 +79,14 @@ Result<std::unique_ptr<PostponeBucketWriter>> PostponeBucketWriter::Create(
     const std::shared_ptr<arrow::Schema>& value_schema, const CoreOptions& options,
     const std::shared_ptr<MemoryPool>& pool) {
     auto write_schema = BuildPostponeBucketWriteSchema(value_schema);
-    return std::unique_ptr<PostponeBucketWriter>(new PostponeBucketWriter(
+    std::unique_ptr<PostponeBucketWriter> writer(new PostponeBucketWriter(
         trimmed_primary_keys, path_factory, schema_id, value_schema, write_schema, options, pool));
+    // Managed blob payloads are externalized before buffering, exactly as in the merge-tree
+    // writer, so postpone-bucket files hold descriptors too. Null without managed blob fields.
+    PAIMON_ASSIGN_OR_RAISE(
+        writer->blob_externalizer_,
+        PrimaryKeyBlobExternalizer::Create(options, value_schema, path_factory, pool));
+    return writer;
 }
 
 PostponeBucketWriter::PostponeBucketWriter(const std::vector<std::string>& trimmed_primary_keys,
@@ -95,13 +104,17 @@ PostponeBucketWriter::PostponeBucketWriter(const std::vector<std::string>& trimm
       schema_id_(schema_id),
       value_type_(arrow::struct_(value_schema->fields())),
       write_schema_(write_schema),
-      metrics_(std::make_shared<MetricsImpl>()) {}
+      metrics_(std::make_shared<MetricsImpl>()),
+      logger_(Logger::GetLogger("PostponeBucketWriter")) {}
 
 Status PostponeBucketWriter::Write(std::unique_ptr<RecordBatch>&& moved_batch) {
     if (moved_batch->GetData()->length == 0) {
         return Status::OK();
     }
     std::unique_ptr<RecordBatch> batch = std::move(moved_batch);
+    if (blob_externalizer_) {
+        PAIMON_ASSIGN_OR_RAISE(batch, blob_externalizer_->Externalize(std::move(batch)));
+    }
     // check input array
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> value_struct_array,
                            CheckAndCastValueArray(batch->GetData()));
@@ -147,7 +160,16 @@ Status PostponeBucketWriter::Write(std::unique_ptr<RecordBatch>&& moved_batch) {
 
 Result<CommitIncrement> PostponeBucketWriter::PrepareCommit(bool wait_compaction) {
     PAIMON_RETURN_NOT_OK(Flush());
-    return DrainIncrement();
+    std::vector<std::string> owned_managed_blob_packs;
+    if (blob_externalizer_) {
+        // Seal the packs this writer created and hand them over, exactly as the merge-tree
+        // writer does: their paths ride along with the increment so a failed commit can roll
+        // back exactly the packs it created.
+        PAIMON_ASSIGN_OR_RAISE(owned_managed_blob_packs, blob_externalizer_->PrepareCommit());
+    }
+    PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment, DrainIncrement());
+    increment.SetOwnedManagedBlobPacks(std::move(owned_managed_blob_packs));
+    return increment;
 }
 
 Result<std::shared_ptr<arrow::StructArray>> PostponeBucketWriter::CheckAndCastValueArray(

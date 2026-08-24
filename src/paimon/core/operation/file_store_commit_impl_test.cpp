@@ -1547,7 +1547,11 @@ TEST_F(FileStoreCommitImplTest, TestAbortDeletesDataAndIndexFiles) {
 
     const BinaryRow partition = CreateIntRow(10);
     const int32_t bucket = 0;
-    auto new_data_file = CreateAppendDataFileMeta("abort-new-data", 1);
+    // The new data file carries a companion file - a managed blob reference sidecar - which has
+    // to go with it: a rolled back commit that leaves the sidecar behind orphans it.
+    const std::string sidecar_file_name = "abort-new-data.blobref";
+    auto new_data_file =
+        CreateAppendDataFileMeta("abort-new-data", 1)->CopyWithExtraFiles({sidecar_file_name});
     auto compact_data_file = CreateAppendDataFileMeta("abort-compact-data", 1);
     auto new_index_file = CreateIndexFileMeta("abort-new-index");
     auto compact_index_file = CreateIndexFileMeta("abort-compact-index");
@@ -1568,8 +1572,9 @@ TEST_F(FileStoreCommitImplTest, TestAbortDeletesDataAndIndexFiles) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_pf,
                          commit_impl->path_factory_->CreateIndexFileFactory(partition, bucket));
     std::vector<std::string> paths = {
-        data_pf->ToPath(new_data_file), data_pf->ToPath(compact_data_file),
-        index_pf->ToPath(new_index_file), index_pf->ToPath(compact_index_file)};
+        data_pf->ToPath(new_data_file), data_pf->ToAlignedPath(sidecar_file_name, new_data_file),
+        data_pf->ToPath(compact_data_file), index_pf->ToPath(new_index_file),
+        index_pf->ToPath(compact_index_file)};
     for (const auto& path : paths) {
         ASSERT_OK(file_system_->WriteFile(path, /*content=*/"", /*overwrite=*/false));
         ASSERT_OK_AND_ASSIGN(bool exist, file_system_->Exists(path));
@@ -2549,6 +2554,12 @@ TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsRejectsUnsupportedOptions) 
     ASSERT_OK_AND_ASSIGN(CoreOptions ok_options,
                          CoreOptions::FromMap({{Options::FILE_SYSTEM, "local"}}));
     ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(ok_options));
+
+    // 'pk-clustering-override' is rejected by value: an explicit false equals the C++
+    // behavior and is allowed.
+    ASSERT_OK_AND_ASSIGN(CoreOptions pk_clustering_false,
+                         CoreOptions::FromMap({{Options::PK_CLUSTERING_OVERRIDE, "false"}}));
+    ASSERT_OK(FileStoreCommitImpl::ValidateCommitOptions(pk_clustering_false));
 }
 
 TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsAllowsManifestDeleteFileDropStats) {
@@ -3094,6 +3105,31 @@ TEST_F(FileStoreCommitImplTest, RowIdCheckConflictSetsCheckSnapshotAndReturnsSel
     FileStoreCommit& returned = commit_impl->RowIdCheckConflict(/*row_id_check_from_snapshot=*/5);
     ASSERT_EQ(commit_impl.get(), &returned);
     ASSERT_TRUE(commit_impl->conflict_detection_.HasRowIdCheckFromSnapshot());
+    // The column-overlap rule is the one a partial-column update needs, and it applies to every
+    // commit kind.
+    ASSERT_EQ(commit_impl->conflict_detection_.GetRowIdCheckStrategy(),
+              ConflictDetection::RowIdCheckStrategy::kDataEvolutionDml);
+    ASSERT_TRUE(
+        commit_impl->conflict_detection_.RowIdCheckAppliesTo(Snapshot::CommitKind::Append()));
+
+    // Materializing deletion vectors takes rows away instead of updating columns, so it records
+    // the range rule, and only a compaction commit can carry it.
+    FileStoreCommit& materialize_returned =
+        commit_impl->RowIdCheckConflictForMaterializeDeletionVectors(
+            /*row_id_check_from_snapshot=*/7);
+    ASSERT_EQ(commit_impl.get(), &materialize_returned);
+    ASSERT_EQ(commit_impl->conflict_detection_.GetRowIdCheckStrategy(),
+              ConflictDetection::RowIdCheckStrategy::kMaterializeDeletionVectors);
+    ASSERT_TRUE(
+        commit_impl->conflict_detection_.RowIdCheckAppliesTo(Snapshot::CommitKind::Compact()));
+    ASSERT_FALSE(
+        commit_impl->conflict_detection_.RowIdCheckAppliesTo(Snapshot::CommitKind::Append()));
+
+    // Disabling it stops every kind from being checked.
+    commit_impl->RowIdCheckConflictForMaterializeDeletionVectors(std::nullopt);
+    ASSERT_FALSE(commit_impl->conflict_detection_.HasRowIdCheckFromSnapshot());
+    ASSERT_FALSE(
+        commit_impl->conflict_detection_.RowIdCheckAppliesTo(Snapshot::CommitKind::Compact()));
 }
 
 }  // namespace paimon::test

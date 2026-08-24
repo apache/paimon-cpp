@@ -139,6 +139,7 @@ set(PAIMON_COMMON_SRCS
     common/reader/reader_utils.cpp
     common/reader/blob_fallback_batch_reader.cpp
     common/reader/blob_view_resolving_batch_reader.cpp
+    common/reader/managed_blob_resolving_batch_reader.cpp
     common/reader/complete_row_kind_batch_reader.cpp
     common/reader/data_evolution_file_reader.cpp
     common/sst/block_handle.cpp
@@ -209,6 +210,11 @@ set(PAIMON_CORE_SRCS
     core/bucket/bucket_select_converter.cpp
     core/append/append_compact_task.cpp
     core/append/append_compact_coordinator.cpp
+    core/append/data_evolution_compact_deletion_vector_rewriter.cpp
+    core/append/data_evolution_compact_global_index_dropper.cpp
+    core/append/data_evolution_compact_planner.cpp
+    core/append/data_evolution_materialize_deletion_compact_task.cpp
+    core/append/data_evolution_normal_compact_task.cpp
     core/bucket/hive_bucket_function.cpp
     core/bucket/mod_bucket_function.cpp
     core/bucket/bucket_id_calculator.cpp
@@ -246,6 +252,7 @@ set(PAIMON_CORE_SRCS
     core/core_options.cpp
     core/deletionvectors/deletion_vector.cpp
     core/deletionvectors/deletion_file_writer.cpp
+    core/deletionvectors/bitmap64_deletion_vector.cpp
     core/deletionvectors/bitmap_deletion_vector.cpp
     core/deletionvectors/deletion_vectors_index_file.cpp
     core/deletionvectors/deletion_vector_index_file_writer.cpp
@@ -284,6 +291,9 @@ set(PAIMON_CORE_SRCS
     core/io/key_value_data_file_record_reader.cpp
     core/io/key_value_data_file_writer_factory.cpp
     core/io/key_value_data_file_writer.cpp
+    core/io/managed_blob_reference_collector.cpp
+    core/io/managed_blob_reference_file.cpp
+    core/io/primary_key_blob_externalizer.cpp
     core/io/key_value_in_memory_record_reader.cpp
     core/io/merged_key_value_record_reader.cpp
     core/io/key_value_meta_projection_consumer.cpp
@@ -352,7 +362,10 @@ set(PAIMON_CORE_SRCS
     core/operation/commit/overwrite_changes_provider.cpp
     core/operation/commit/realtime_commit_properties.cpp
     core/operation/commit/row_id_column_conflict_checker.cpp
+    core/operation/commit/row_id_range_conflict_checker.cpp
+    core/operation/commit/uncommitted_file_cleaner.cpp
     core/operation/commit/manifest_entry_changes.cpp
+    core/operation/commit/materialized_index_changes_provider.cpp
     core/operation/commit/row_tracking_commit_utils.cpp
     core/operation/commit/sequence_snapshot_properties.cpp
     core/operation/commit/retry_waiter.cpp
@@ -605,6 +618,7 @@ if(PAIMON_BUILD_TESTS)
                     common/reader/complete_row_kind_batch_reader_test.cpp
                     common/reader/blob_fallback_batch_reader_test.cpp
                     common/reader/blob_view_resolving_batch_reader_test.cpp
+                    common/reader/managed_blob_resolving_batch_reader_test.cpp
                     common/reader/data_evolution_file_reader_test.cpp
                     common/reader/data_evolution_array_test.cpp
                     common/reader/data_evolution_row_test.cpp
@@ -711,6 +725,11 @@ if(PAIMON_BUILD_TESTS)
                     core/append/append_only_writer_test.cpp
                     core/append/append_compact_coordinator_test.cpp
                     core/append/bucketed_append_compact_manager_test.cpp
+                    core/append/data_evolution_compact_deletion_vector_rewriter_test.cpp
+                    core/append/data_evolution_compact_global_index_dropper_test.cpp
+                    core/append/data_evolution_compact_planner_test.cpp
+                    core/append/data_evolution_materialize_deletion_compact_task_test.cpp
+                    core/append/data_evolution_normal_compact_task_test.cpp
                     core/bucket/bucket_select_converter_test.cpp
                     core/bucket/default_bucket_function_test.cpp
                     core/bucket/hive_bucket_function_test.cpp
@@ -731,6 +750,7 @@ if(PAIMON_BUILD_TESTS)
                     core/core_options_test.cpp
                     core/options/lookup_strategy_test.cpp
                     core/deletionvectors/apply_deletion_vector_batch_reader_test.cpp
+                    core/deletionvectors/bitmap64_deletion_vector_test.cpp
                     core/deletionvectors/bitmap_deletion_vector_test.cpp
                     core/deletionvectors/bucketed_dv_maintainer_test.cpp
                     core/deletionvectors/deletion_file_writer_test.cpp
@@ -762,6 +782,9 @@ if(PAIMON_BUILD_TESTS)
                     core/io/data_file_index_writer_test.cpp
                     core/io/file_index_options_test.cpp
                     core/io/file_index_evaluator_test.cpp
+                    core/io/managed_blob_reference_collector_test.cpp
+                    core/io/managed_blob_reference_file_test.cpp
+                    core/io/primary_key_blob_externalizer_test.cpp
                     core/io/single_file_writer_test.cpp
                     core/io/rolling_blob_file_writer_test.cpp
                     core/global_index/global_index_evaluator_impl_test.cpp
@@ -842,6 +865,9 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit/manifest_entry_changes_test.cpp
                     core/operation/commit/overwrite_changes_provider_test.cpp
                     core/operation/commit/row_id_column_conflict_checker_test.cpp
+                    core/operation/commit/row_id_range_conflict_checker_test.cpp
+                    core/operation/commit/uncommitted_file_cleaner_test.cpp
+                    core/operation/commit/materialized_index_changes_provider_test.cpp
                     core/operation/commit/row_tracking_commit_utils_test.cpp
                     core/operation/commit/realtime_commit_properties_test.cpp
                     core/operation/commit/sequence_snapshot_properties_test.cpp

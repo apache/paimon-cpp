@@ -94,23 +94,32 @@ Result<std::unique_ptr<InputStream>> Blob::NewInputStream(
     if (fs == nullptr) {
         return Status::Invalid("file system is nullptr");
     }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> file,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> opened,
                            fs->Open(impl_->GetDescriptor()->Uri()));
 
-    int64_t blob_length = impl_->GetDescriptor()->Length();
-    int64_t blob_offset = impl_->GetDescriptor()->Offset();
+    // Keep a shared handle so the stream is explicitly closed when a check below or
+    // OffsetInputStream::Create itself fails; on success the offset stream shares ownership.
+    std::shared_ptr<InputStream> file = std::move(opened);
+    Result<std::unique_ptr<InputStream>> result = [&]() -> Result<std::unique_ptr<InputStream>> {
+        int64_t blob_length = impl_->GetDescriptor()->Length();
+        int64_t blob_offset = impl_->GetDescriptor()->Offset();
 
-    PAIMON_ASSIGN_OR_RAISE(int64_t total_length, file->Length());
-    if (PAIMON_UNLIKELY(blob_offset > total_length)) {
-        return Status::Invalid(
-            fmt::format("offset {} exceed total length {}", blob_offset, total_length));
-    }
-    if (blob_length == -1) {
-        // blob_length == -1 means it's dynamic length, should read to the end
-        blob_length = total_length - blob_offset;
-    }
+        PAIMON_ASSIGN_OR_RAISE(int64_t total_length, file->Length());
+        if (PAIMON_UNLIKELY(blob_offset > total_length)) {
+            return Status::Invalid(
+                fmt::format("offset {} exceed total length {}", blob_offset, total_length));
+        }
+        if (blob_length == -1) {
+            // blob_length == -1 means it's dynamic length, should read to the end
+            blob_length = total_length - blob_offset;
+        }
 
-    return OffsetInputStream::Create(std::move(file), blob_length, blob_offset, total_length);
+        return OffsetInputStream::Create(file, blob_length, blob_offset, total_length);
+    }();
+    if (!result.ok()) {
+        [[maybe_unused]] Status close_status = file->Close();
+    }
+    return result;
 }
 
 Result<PAIMON_UNIQUE_PTR<Bytes>> Blob::ToData(const std::shared_ptr<FileSystem>& fs,

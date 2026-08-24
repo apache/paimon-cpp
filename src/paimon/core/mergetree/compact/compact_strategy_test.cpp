@@ -18,6 +18,7 @@
 
 #include "paimon/core/mergetree/compact/compact_strategy.h"
 
+#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {

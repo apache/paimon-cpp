@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/operation/commit/row_id_conflict_checker.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/utils/range.h"
 
@@ -41,13 +42,13 @@ namespace paimon {
 ///   For each checking files, do binary search to find overlapping ranges. If their updated
 ///   columns also overlap, return conflicting result.
 ///
-class RowIdColumnConflictChecker {
+class RowIdColumnConflictChecker : public RowIdConflictChecker {
  public:
     static Result<std::shared_ptr<RowIdColumnConflictChecker>> FromDataFiles(
         const std::shared_ptr<SchemaManager>& schema_manager,
         const std::vector<std::shared_ptr<DataFileMeta>>& delta_files);
 
-    bool IsEmpty() const {
+    bool IsEmpty() const override {
         return write_ranges_.empty();
     }
 
@@ -57,7 +58,7 @@ class RowIdColumnConflictChecker {
     ///
     /// @param file committed incremental data file
     /// @return true if conflict
-    Result<bool> ConflictsWith(const std::shared_ptr<DataFileMeta>& file) const;
+    Result<bool> ConflictsWith(const std::shared_ptr<DataFileMeta>& file) const override;
 
  private:
     /// Range and field id Set.

@@ -51,6 +51,13 @@ class ColumnarUtils {
         auto type_id = array->type_id();
         bool is_dict = (type_id == arrow::Type::type::DICTIONARY);
         if (!is_dict) {
+            // Large binary/string arrays carry 64-bit offsets and must not be read through
+            // the 32-bit-offset BinaryArray accessors (e.g. managed blob descriptor columns).
+            if (type_id == arrow::Type::type::LARGE_BINARY ||
+                type_id == arrow::Type::type::LARGE_STRING) {
+                const auto* typed_array = checked_cast<const arrow::LargeBinaryArray*>(array);
+                return typed_array->GetView(pos);
+            }
             const auto* typed_array = checked_cast<const arrow::BinaryArray*>(array);
             return typed_array->GetView(pos);
         } else {

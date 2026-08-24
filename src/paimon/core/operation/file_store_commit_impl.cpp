@@ -44,6 +44,7 @@
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/vector_store_utils.h"
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
@@ -66,9 +67,11 @@
 #include "paimon/core/operation/commit/commit_changes_provider.h"
 #include "paimon/core/operation/commit/compacted_changelog_path_resolver.h"
 #include "paimon/core/operation/commit/conflict_detection.h"
+#include "paimon/core/operation/commit/materialized_index_changes_provider.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/commit/row_tracking_commit_utils.h"
 #include "paimon/core/operation/commit/sequence_snapshot_properties.h"
+#include "paimon/core/operation/commit/uncommitted_file_cleaner.h"
 #include "paimon/core/operation/expire_snapshots.h"
 #include "paimon/core/operation/manifest_file_merger.h"
 #include "paimon/core/operation/metrics/commit_metrics.h"
@@ -78,9 +81,11 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
+#include "paimon/core/utils/data_evolution_utils.h"
 #include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/defs.h"
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/logging.h"
@@ -94,7 +99,6 @@ namespace {
 
 constexpr const char* kCommitStrictModeLastSafeSnapshot = "commit.strict-mode.last-safe-snapshot";
 constexpr const char* kSequenceSnapshotOrdering = "sequence.snapshot-ordering";
-constexpr const char* kPkClusteringOverride = "pk-clustering-override";
 
 bool MatchPartitionSpec(const std::map<std::string, std::string>& partition,
                         const std::map<std::string, std::string>& partition_spec) {
@@ -105,6 +109,26 @@ bool MatchPartitionSpec(const std::map<std::string, std::string>& partition,
         }
     }
     return true;
+}
+
+/// The (partition, bucket) pairs whose deletion vectors this commit materializes: it replaced
+/// normal files and wrote every output without a row id, so the commit assigns fresh ones and
+/// the global indexes over the old ids no longer address anything.
+MaterializedBuckets CollectMaterializedBuckets(
+    const std::vector<std::shared_ptr<CommitMessage>>& commit_messages) {
+    MaterializedBuckets result;
+    for (const std::shared_ptr<CommitMessage>& message : commit_messages) {
+        auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        if (message_impl == nullptr) {
+            continue;
+        }
+        const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+        if (DataEvolutionUtils::IsMaterializedCompaction(compact_increment.CompactBefore(),
+                                                         compact_increment.CompactAfter())) {
+            result.insert(MaterializedBucket{message_impl->Partition(), message_impl->Bucket()});
+        }
+    }
+    return result;
 }
 
 }  // namespace
@@ -119,8 +143,9 @@ Status FileStoreCommitImpl::ValidateCommitOptions(const CoreOptions& options) {
     if (raw_options.find(kSequenceSnapshotOrdering) != raw_options.end()) {
         unsupported_options.emplace_back(kSequenceSnapshotOrdering);
     }
-    if (raw_options.find(kPkClusteringOverride) != raw_options.end()) {
-        unsupported_options.emplace_back(kPkClusteringOverride);
+    // Rejected by value: an explicit false equals the C++ behavior and is fine.
+    if (options.PkClusteringOverride()) {
+        unsupported_options.emplace_back(Options::PK_CLUSTERING_OVERRIDE);
     }
 
     if (!unsupported_options.empty()) {
@@ -214,49 +239,9 @@ Status FileStoreCommitImpl::TruncateTable(int64_t commit_identifier) {
 
 Status FileStoreCommitImpl::Abort(
     const std::vector<std::shared_ptr<CommitMessage>>& commit_messages) {
-    for (const auto& message : commit_messages) {
-        auto* msg = dynamic_cast<CommitMessageImpl*>(message.get());
-        if (msg == nullptr) {
-            return Status::Invalid("fail to cast commit message to impl");
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<DataFilePathFactory> data_file_path_factory,
-            path_factory_->CreateDataFilePathFactory(msg->Partition(), msg->Bucket()));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<IndexPathFactory> index_file_path_factory,
-            path_factory_->CreateIndexFileFactory(msg->Partition(), msg->Bucket()));
-
-        const DataIncrement& new_files_increment = msg->GetNewFilesIncrement();
-        const CompactIncrement& compact_increment = msg->GetCompactIncrement();
-
-        std::vector<std::shared_ptr<DataFileMeta>> data_files_to_delete;
-        auto append_data_files =
-            [&data_files_to_delete](const std::vector<std::shared_ptr<DataFileMeta>>& files) {
-                data_files_to_delete.insert(data_files_to_delete.end(), files.begin(), files.end());
-            };
-        append_data_files(new_files_increment.NewFiles());
-        append_data_files(new_files_increment.ChangelogFiles());
-        append_data_files(compact_increment.CompactAfter());
-        append_data_files(compact_increment.ChangelogFiles());
-        for (const auto& file : data_files_to_delete) {
-            // Best-effort cleanup: ignore delete failures, aligning with Java deleteQuietly.
-            [[maybe_unused]] Status status =
-                fs_->Delete(data_file_path_factory->ToPath(file), /*recursive=*/false);
-        }
-
-        std::vector<std::shared_ptr<IndexFileMeta>> index_files_to_delete;
-        auto append_index_files = [&index_files_to_delete](
-                                      const std::vector<std::shared_ptr<IndexFileMeta>>& files) {
-            index_files_to_delete.insert(index_files_to_delete.end(), files.begin(), files.end());
-        };
-        append_index_files(new_files_increment.NewIndexFiles());
-        append_index_files(compact_increment.NewIndexFiles());
-        for (const auto& file : index_files_to_delete) {
-            [[maybe_unused]] Status status =
-                fs_->Delete(index_file_path_factory->ToPath(file), /*recursive=*/false);
-        }
-    }
-    return Status::OK();
+    // Shared with the write path, which has to remove the same set when PrepareCommit fails
+    // after producing some of its messages.
+    return UncommittedFileCleaner::Delete(path_factory_, fs_, commit_messages, logger_.get());
 }
 
 Result<std::vector<ManifestEntry>> FileStoreCommitImpl::ReadAddManifestEntries(
@@ -373,7 +358,16 @@ Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id)
 
 FileStoreCommit& FileStoreCommitImpl::RowIdCheckConflict(
     std::optional<int64_t> row_id_check_from_snapshot) {
-    conflict_detection_.SetRowIdCheckFromSnapshot(row_id_check_from_snapshot);
+    conflict_detection_.SetRowIdCheckFromSnapshot(
+        row_id_check_from_snapshot, ConflictDetection::RowIdCheckStrategy::kDataEvolutionDml);
+    return *this;
+}
+
+FileStoreCommit& FileStoreCommitImpl::RowIdCheckConflictForMaterializeDeletionVectors(
+    std::optional<int64_t> row_id_check_from_snapshot) {
+    conflict_detection_.SetRowIdCheckFromSnapshot(
+        row_id_check_from_snapshot,
+        ConflictDetection::RowIdCheckStrategy::kMaterializeDeletionVectors);
     return *this;
 }
 
@@ -847,7 +841,7 @@ Status FileStoreCommitImpl::Commit(
             commit_kind = Snapshot::CommitKind::Overwrite();
             check_append_files = true;
         }
-        if (conflict_detection_.HasRowIdCheckFromSnapshot()) {
+        if (conflict_detection_.RowIdCheckAppliesTo(commit_kind)) {
             check_append_files = true;
         }
         if (changes.HasGlobalIndexFileAdditions()) {
@@ -865,12 +859,40 @@ Status FileStoreCommitImpl::Commit(
     }
 
     if (changes.HasCompactChanges()) {
-        PAIMON_ASSIGN_OR_RAISE(int32_t cnt,
-                               TryCommit(changes.compact_table_files, changes.compact_changelog,
-                                         changes.compact_index_files, committable->Identifier(),
-                                         committable->Watermark(), committable->Properties(),
-                                         /*realtime_ranges=*/{}, Snapshot::CommitKind::Compact(),
-                                         /*detect_conflicts=*/true, retry_on_conflict));
+        // A materializing commit re-decides which global indexes it drops on every attempt, so
+        // one committed concurrently is dropped by this attempt or by the retry it causes.
+        MaterializedBuckets materialized_buckets =
+            CollectMaterializedBuckets(committable->FileCommittables());
+        int32_t cnt = 0;
+        if (materialized_buckets.empty()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                cnt, TryCommit(changes.compact_table_files, changes.compact_changelog,
+                               changes.compact_index_files, committable->Identifier(),
+                               committable->Watermark(), committable->Properties(),
+                               /*realtime_ranges=*/{}, Snapshot::CommitKind::Compact(),
+                               /*detect_conflicts=*/true, retry_on_conflict));
+        } else {
+            auto index_scan =
+                [this](const Snapshot& snapshot) -> Result<std::vector<IndexManifestEntry>> {
+                std::vector<IndexManifestEntry> entries;
+                if (!snapshot.IndexManifest()) {
+                    return entries;
+                }
+                PAIMON_RETURN_NOT_OK(index_manifest_file_->Read(snapshot.IndexManifest().value(),
+                                                                /*filter=*/nullptr, &entries));
+                return entries;
+            };
+            std::shared_ptr<CommitChangesProvider> changes_provider =
+                std::make_shared<MaterializedIndexChangesProvider>(
+                    changes.compact_table_files, changes.compact_changelog,
+                    changes.compact_index_files, std::move(materialized_buckets),
+                    std::move(index_scan));
+            PAIMON_ASSIGN_OR_RAISE(
+                cnt, TryCommit(changes_provider, committable->Identifier(),
+                               committable->Watermark(), committable->Properties(),
+                               /*realtime_ranges=*/{}, Snapshot::CommitKind::Compact(),
+                               /*detect_conflicts=*/true, retry_on_conflict));
+        }
         attempt += cnt;
         generated_snapshot += 1;
     }
@@ -1127,23 +1149,55 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
                 delta_files.end());
         }
 
-        std::optional<std::shared_ptr<RowIdColumnConflictChecker>> row_id_column_conflict_checker =
-            std::nullopt;
-        if (conflict_detection_.HasRowIdCheckFromSnapshot()) {
-            std::vector<std::shared_ptr<DataFileMeta>> delta_data_files;
-            delta_data_files.reserve(delta_files.size());
-            for (const auto& entry : delta_files) {
-                delta_data_files.push_back(entry.File());
+        std::optional<std::shared_ptr<RowIdConflictChecker>> row_id_conflict_checker = std::nullopt;
+        if (conflict_detection_.RowIdCheckAppliesTo(commit_kind)) {
+            if (conflict_detection_.GetRowIdCheckStrategy() ==
+                ConflictDetection::RowIdCheckStrategy::kMaterializeDeletionVectors) {
+                // Materializing rewrites whole row ranges and lets this commit assign new row
+                // ids to what survives, so the rows it takes away are the ones another writer
+                // must not have written over: the check is built from the normal files this
+                // commit drops, not from what it adds.
+                std::vector<std::shared_ptr<DataFileMeta>> dropped_data_files;
+                for (const auto& entry : delta_files) {
+                    if (!(entry.Kind() == FileKind::Delete()) || !entry.File()->first_row_id ||
+                        BlobUtils::IsBlobFile(entry.FileName()) ||
+                        VectorStoreUtils::IsVectorStoreFile(entry.FileName())) {
+                        continue;
+                    }
+                    dropped_data_files.push_back(entry.File());
+                }
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<RowIdRangeConflictChecker> checker,
+                    RowIdRangeConflictChecker::FromDataFiles(dropped_data_files));
+                row_id_conflict_checker = checker;
+            } else {
+                std::vector<std::shared_ptr<DataFileMeta>> delta_data_files;
+                delta_data_files.reserve(delta_files.size());
+                for (const auto& entry : delta_files) {
+                    delta_data_files.push_back(entry.File());
+                }
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<RowIdColumnConflictChecker> checker,
+                    RowIdColumnConflictChecker::FromDataFiles(schema_manager_, delta_data_files));
+                row_id_conflict_checker = checker;
             }
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<RowIdColumnConflictChecker> checker,
-                RowIdColumnConflictChecker::FromDataFiles(schema_manager_, delta_data_files));
-            row_id_column_conflict_checker = checker;
+        }
+
+        // Read only for the commit shape that pairs a dropped data file with its deletion
+        // vector, so every other commit keeps its current I/O, and even then keep only the
+        // entries that shape can be decided by.
+        std::vector<IndexManifestEntry> base_index_entries;
+        std::function<Result<bool>(const IndexManifestEntry&)> base_index_filter =
+            conflict_detection_.BaseIndexEntryFilter(delta_files, index_entries, commit_kind);
+        if (base_index_filter && latest_snapshot.value().IndexManifest().has_value()) {
+            PAIMON_RETURN_NOT_OK(
+                index_manifest_file_->Read(latest_snapshot.value().IndexManifest().value(),
+                                           base_index_filter, &base_index_entries));
         }
 
         PAIMON_RETURN_NOT_OK(conflict_detection_.CheckConflicts(
             latest_snapshot.value(), base_data_files, delta_files, index_entries,
-            row_id_column_conflict_checker, commit_kind));
+            row_id_conflict_checker, commit_kind, base_index_entries));
     }
 
     std::vector<ManifestFileMeta> merge_before_manifests;

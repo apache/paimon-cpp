@@ -19,6 +19,10 @@
 
 #include "paimon/common/data/blob_utils.h"
 
+#include <set>
+#include <string>
+#include <vector>
+
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
@@ -138,6 +142,27 @@ TEST_F(BlobUtilsTest, SeparateBlobSchema) {
         ASSERT_TRUE(schemas.main_schema->Equals(*schema));
         ASSERT_EQ(schemas.blob_schema->num_fields(), 0);
     }
+}
+
+TEST_F(BlobUtilsTest, ManagedBlobFieldNames) {
+    auto int_field = arrow::field("f1_int", arrow::int32());
+    std::shared_ptr<arrow::Field> blob_field_1 = BlobUtils::ToArrowField("f2_blob", true);
+    std::shared_ptr<arrow::Field> blob_field_2 = BlobUtils::ToArrowField("f3_blob", true);
+    std::shared_ptr<arrow::Schema> schema = arrow::schema({int_field, blob_field_1, blob_field_2});
+
+    // Managed fields are the blob fields the table does not keep inline, in schema order: they
+    // are the ones whose payload is externalized into a pack and replaced by a descriptor.
+    ASSERT_EQ(BlobUtils::ManagedBlobFieldNames(schema, /*inline_fields=*/{}),
+              (std::vector<std::string>{"f2_blob", "f3_blob"}));
+    ASSERT_EQ(BlobUtils::ManagedBlobFieldNames(schema, /*inline_fields=*/{"f2_blob"}),
+              (std::vector<std::string>{"f3_blob"}));
+    ASSERT_TRUE(
+        BlobUtils::ManagedBlobFieldNames(schema, /*inline_fields=*/{"f2_blob", "f3_blob"}).empty());
+
+    // A non-blob field is never managed, and naming one inline changes nothing.
+    std::shared_ptr<arrow::Schema> no_blob_schema = arrow::schema({int_field});
+    ASSERT_TRUE(
+        BlobUtils::ManagedBlobFieldNames(no_blob_schema, /*inline_fields=*/{"f1_int"}).empty());
 }
 
 TEST_F(BlobUtilsTest, SeparateBlobArray) {

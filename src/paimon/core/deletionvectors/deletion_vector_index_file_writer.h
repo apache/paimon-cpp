@@ -20,6 +20,7 @@
 
 #include <map>
 #include <memory>
+#include <vector>
 
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/index/index_path_factory.h"
@@ -43,6 +44,15 @@ class DeletionVectorIndexFileWriter {
     /// future.
     Result<std::shared_ptr<IndexFileMeta>> WriteSingleFile(
         const std::map<std::string, std::shared_ptr<DeletionVector>>& input);
+
+    /// Writes `input` into as many index files as `target_size` allows, rolling to a new file
+    /// once the current one reaches it, and returns them in write order.
+    ///
+    /// A single index file addresses its vectors with int32 offsets and lengths, so a large
+    /// enough set of vectors cannot be written into one file at all. Rolling also keeps a
+    /// rewrite from replacing many small index files with one oversized file.
+    Result<std::vector<std::shared_ptr<IndexFileMeta>>> WriteWithRolling(
+        const std::map<std::string, std::shared_ptr<DeletionVector>>& input, int64_t target_size);
 
  private:
     std::shared_ptr<IndexPathFactory> index_path_factory_;

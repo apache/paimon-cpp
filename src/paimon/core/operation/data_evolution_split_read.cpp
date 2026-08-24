@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -98,6 +99,17 @@ class PositionShiftedDeletionVector : public DeletionVector {
     Result<int64_t> GetCardinality() const override {
         PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 valid, inner_->IsValid(offset_, length_));
         return length_ - valid.Cardinality();
+    }
+
+    /// Window-local deleted positions: the group vector's positions outside `[offset_,
+    /// offset_ + length_)` belong to other files of the row range group and are skipped.
+    Status ForEachDeletedPosition(const std::function<Status(int64_t)>& consumer) const override {
+        return inner_->ForEachDeletedPosition([&](int64_t position) -> Status {
+            if (position < offset_ || position >= offset_ + length_) {
+                return Status::OK();
+            }
+            return consumer(position - offset_);
+        });
     }
 
     Status Delete(int64_t) override {

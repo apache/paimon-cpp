@@ -28,6 +28,7 @@
 #include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/table/source/deletion_file.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/io/byte_array_input_stream.h"
 #include "paimon/io/data_input_stream.h"
 #include "paimon/memory/memory_pool.h"
 
@@ -78,9 +79,37 @@ std::unordered_map<std::string, DeletionFile> DeletionVector::CreateDeletionFile
     return deletion_file_map;
 }
 
+std::shared_ptr<DeletionVector> DeletionVector::Create(bool bitmap64) {
+    if (bitmap64) {
+        return std::make_shared<Bitmap64DeletionVector>(RoaringBitmap64());
+    }
+    return std::make_shared<BitmapDeletionVector>(RoaringBitmap32());
+}
+
 Result<PAIMON_UNIQUE_PTR<DeletionVector>> DeletionVector::DeserializeFromBytes(const Bytes* bytes,
                                                                                MemoryPool* pool) {
-    return BitmapDeletionVector::Deserialize(bytes->data(), bytes->size(), pool);
+    // `bytes` holds the checksum-covered region: the magic number and the bitmap. The two
+    // vector kinds store that magic in opposite byte orders, which is what identifies them.
+    if (bytes->size() < BitmapDeletionVector::MAGIC_NUMBER_SIZE_BYTES) {
+        return Status::Invalid(fmt::format(
+            "Deletion vector of {} bytes is too short to hold a magic number.", bytes->size()));
+    }
+    auto in = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+    DataInputStream input(in);
+    PAIMON_ASSIGN_OR_RAISE(int32_t magic_number, input.ReadValue<int32_t>());
+    if (magic_number == BitmapDeletionVector::MAGIC_NUMBER) {
+        return BitmapDeletionVector::DeserializeWithoutMagicNumber(
+            bytes->data() + BitmapDeletionVector::MAGIC_NUMBER_SIZE_BYTES,
+            bytes->size() - BitmapDeletionVector::MAGIC_NUMBER_SIZE_BYTES, pool);
+    }
+    if (EndianSwapValue(magic_number) == Bitmap64DeletionVector::MAGIC_NUMBER) {
+        return Bitmap64DeletionVector::DeserializeWithoutMagicNumber(
+            bytes->data() + Bitmap64DeletionVector::MAGIC_NUMBER_SIZE_BYTES,
+            bytes->size() - Bitmap64DeletionVector::MAGIC_NUMBER_SIZE_BYTES, pool);
+    }
+    return Status::Invalid(fmt::format(
+        "Invalid magic number: {}, v1 dv magic number: {}, v2 magic number: {}", magic_number,
+        BitmapDeletionVector::MAGIC_NUMBER, Bitmap64DeletionVector::MAGIC_NUMBER));
 }
 
 Result<PAIMON_UNIQUE_PTR<DeletionVector>> DeletionVector::Read(const FileSystem* file_system,
@@ -88,17 +117,21 @@ Result<PAIMON_UNIQUE_PTR<DeletionVector>> DeletionVector::Read(const FileSystem*
                                                                MemoryPool* pool) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input,
                            file_system->Open(deletion_file.path));
-    DataInputStream file_input_stream(input);
-    PAIMON_RETURN_NOT_OK(file_input_stream.Seek(deletion_file.offset));
-    PAIMON_ASSIGN_OR_RAISE(int32_t actual_length, file_input_stream.ReadValue<int32_t>());
-    if (actual_length != deletion_file.length) {
-        return Status::Invalid(
-            fmt::format("Size not match, actual size: {}, expect size: {}, file path: {}",
-                        actual_length, deletion_file.length, deletion_file.path));
+    auto file_input_stream = std::make_shared<DataInputStream>(input);
+    PAIMON_RETURN_NOT_OK(file_input_stream->Seek(deletion_file.offset));
+    // Delegated rather than re-framed here: the two vector kinds disagree on both the byte
+    // order of the magic and on what the recorded length counts, and the stream overload is
+    // the one place that knows the difference.
+    Result<PAIMON_UNIQUE_PTR<DeletionVector>> result =
+        Read(file_input_stream.get(), deletion_file.length, pool);
+    if (!result.ok()) {
+        // The stream overload cannot name the file it was handed, and that name is what a
+        // corrupt or mismatched deletion file has to be tracked down by.
+        return Status(
+            result.status().code(),
+            fmt::format("{}, file path: {}", result.status().message(), deletion_file.path));
     }
-    auto bytes = Bytes::AllocateBytes(deletion_file.length, pool);
-    PAIMON_RETURN_NOT_OK(file_input_stream.ReadBytes(bytes.get()));
-    return DeserializeFromBytes(bytes.get(), pool);
+    return result;
 }
 
 Result<PAIMON_UNIQUE_PTR<DeletionVector>> DeletionVector::Read(DataInputStream* input_stream,
@@ -127,10 +160,32 @@ Result<PAIMON_UNIQUE_PTR<DeletionVector>> DeletionVector::Read(DataInputStream* 
         return BitmapDeletionVector::DeserializeWithoutMagicNumber(bytes->data(), bytes->size(),
                                                                    pool);
     } else if (EndianSwapValue(magic_number) == Bitmap64DeletionVector::MAGIC_NUMBER) {
-        return Status::NotImplemented(
-            "bitmap64 deletion vectors are not supported in this version, "
-            "please use bitmap deletion vectors instead or upgrade to a version "
-            "that supports bitmap64.");
+        // A bitmap64 record is recorded whole, so the expected bitmap length is the recorded
+        // length minus the framing a bitmap32 record does not count.
+        if (length.has_value()) {
+            int64_t expected_bitmap_length = length.value() -
+                                             Bitmap64DeletionVector::LENGTH_SIZE_BYTES -
+                                             Bitmap64DeletionVector::CRC_SIZE_BYTES;
+            if (bitmap_length != expected_bitmap_length) {
+                return Status::Invalid(
+                    fmt::format("Size not match, actual size: {}, expected size: {}", bitmap_length,
+                                expected_bitmap_length));
+            }
+        }
+
+        int32_t payload_length = bitmap_length - Bitmap64DeletionVector::MAGIC_NUMBER_SIZE_BYTES;
+        if (payload_length < 0) {
+            return Status::Invalid(fmt::format("Invalid bitmap length: {}", bitmap_length));
+        }
+
+        auto bytes = Bytes::AllocateBytes(payload_length, pool);
+        PAIMON_RETURN_NOT_OK(input_stream->ReadBytes(bytes.get()));
+        // skip crc (4 bytes)
+        PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] int32_t unused_crc,
+                               input_stream->ReadValue<int32_t>());
+
+        return Bitmap64DeletionVector::DeserializeWithoutMagicNumber(bytes->data(), bytes->size(),
+                                                                     pool);
     }
 
     return Status::Invalid(fmt::format(

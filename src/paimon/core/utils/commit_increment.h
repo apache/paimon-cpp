@@ -21,6 +21,9 @@
 
 #include <memory>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "paimon/core/compact/compact_deletion_file.h"
 #include "paimon/core/io/compact_increment.h"
@@ -66,11 +69,26 @@ class CommitIncrement {
         realtime_offset_range_ = offset_range;
     }
 
+    /// Paths of the managed blob packs this increment's writer created and handed over, which a
+    /// rollback of the resulting commit has to delete. Empty for every table without managed
+    /// blob fields.
+    ///
+    /// Taking rather than reading: ownership moves on to the commit message built from this
+    /// increment, and leaving a second copy behind would invite two owners deleting one pack.
+    std::vector<std::string> TakeOwnedManagedBlobPacks() {
+        return std::move(owned_managed_blob_packs_);
+    }
+
+    void SetOwnedManagedBlobPacks(std::vector<std::string> packs) {
+        owned_managed_blob_packs_ = std::move(packs);
+    }
+
  private:
     DataIncrement data_increment_;
     CompactIncrement compact_increment_;
     std::shared_ptr<CompactDeletionFile> compact_deletion_file_;
     std::optional<OffsetRange> realtime_offset_range_;
+    std::vector<std::string> owned_managed_blob_packs_;
 };
 
 }  // namespace paimon

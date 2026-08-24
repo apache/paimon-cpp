@@ -19,9 +19,16 @@
 
 #include "paimon/core/table/source/key_value_table_read.h"
 
+#include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "arrow/type.h"
+#include "paimon/common/data/blob_utils.h"
+#include "paimon/common/reader/managed_blob_resolving_batch_reader.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/merge_file_split_read.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -95,7 +102,9 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
                     PAIMON_ASSIGN_OR_RAISE(bool matched,
                                            read->Match(indexed_split, /*force_keep_delete=*/false));
                     if (matched) {
-                        return read->CreateReader(indexed_split);
+                        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
+                                               read->CreateReader(indexed_split));
+                        return WrapWithManagedBlobResolverIfNeeded(std::move(reader));
                     }
                     // A manually supplied or deserialized indexed split can still reference
                     // legacy files. Preserve merge semantics when raw-read safety is uncertain.
@@ -120,10 +129,30 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
     for (const auto& read : split_reads_) {
         PAIMON_ASSIGN_OR_RAISE(bool matched, read->Match(data_split, force_keep_delete_));
         if (matched) {
-            return read->CreateReader(data_split);
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
+                                   read->CreateReader(data_split));
+            return WrapWithManagedBlobResolverIfNeeded(std::move(reader));
         }
     }
     return Status::Invalid("create reader failed, not read match with data split.");
+}
+
+Result<std::unique_ptr<BatchReader>> KeyValueTableRead::WrapWithManagedBlobResolverIfNeeded(
+    std::unique_ptr<BatchReader>&& reader) const {
+    const CoreOptions& options = context_->GetCoreOptions();
+    // With blob-as-descriptor the caller wants the descriptors themselves.
+    if (options.BlobAsDescriptor()) {
+        return std::move(reader);
+    }
+    std::vector<std::string> inline_field_names = options.GetBlobInlineFields();
+    std::set<std::string> inline_fields(inline_field_names.begin(), inline_field_names.end());
+    std::vector<std::string> managed_fields =
+        BlobUtils::ManagedBlobFieldNames(context_->GetReadSchema(), inline_fields);
+    if (managed_fields.empty()) {
+        return std::move(reader);
+    }
+    return std::make_unique<ManagedBlobResolvingBatchReader>(
+        std::move(reader), std::move(managed_fields), options.GetFileSystem(), GetMemoryPool());
 }
 
 Result<std::unique_ptr<CountReader>> KeyValueTableRead::CreateCountReader(

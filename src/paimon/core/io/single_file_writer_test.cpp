@@ -19,7 +19,10 @@
 #include "paimon/core/io/single_file_writer.h"
 
 #include <map>
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/abi.h"
@@ -30,6 +33,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
+#include "paimon/fs/file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -79,6 +83,36 @@ TEST(SingleFileWriterTest, TestSimple) {
     abort_executor.Abort();
     ASSERT_OK_AND_ASSIGN(auto exist, file_system->Exists(file_path));
     ASSERT_FALSE(exist);
+}
+
+TEST(SingleFileWriterTest, TestAbortExecutorRemovesCompanionFiles) {
+    // Besides the data file an abort executor may carry companion files written next to it
+    // (e.g. a managed blob reference sidecar), which have to go with it. A path another
+    // cleanup already removed is not a failure, so aborting stays repeatable.
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<FileSystem> file_system = dir->GetFileSystem();
+
+    std::string data_path = dir->Str() + "/data-0.orc";
+    std::string sidecar_path = data_path + ".blobref";
+    for (const std::string& path : {data_path, sidecar_path}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> out,
+                             file_system->Create(path, /*overwrite=*/false));
+        ASSERT_OK(out->Close());
+    }
+    std::string absent_path = dir->Str() + "/data-1.orc";
+
+    SimpleSingleFileWriter::AbortExecutor abort_executor(
+        file_system, std::vector<std::string>{data_path, sidecar_path, absent_path});
+    abort_executor.Abort();
+
+    ASSERT_OK_AND_ASSIGN(bool data_exists, file_system->Exists(data_path));
+    ASSERT_FALSE(data_exists);
+    ASSERT_OK_AND_ASSIGN(bool sidecar_exists, file_system->Exists(sidecar_path));
+    ASSERT_FALSE(sidecar_exists);
+
+    // Everything is gone now, so a second abort has nothing left to delete and still returns.
+    abort_executor.Abort();
 }
 
 TEST(SingleFileWriterTest, TestInvalidConvert) {

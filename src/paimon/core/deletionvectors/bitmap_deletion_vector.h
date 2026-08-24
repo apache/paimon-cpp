@@ -18,6 +18,7 @@
  */
 #pragma once
 
+#include <functional>
 #include <memory>
 
 #include "paimon/common/io/data_output_stream.h"
@@ -58,6 +59,13 @@ class BitmapDeletionVector : public DeletionVector {
 
     Result<int64_t> GetCardinality() const override {
         return roaring_bitmap_.Cardinality();
+    }
+
+    Status ForEachDeletedPosition(const std::function<Status(int64_t)>& consumer) const override {
+        for (auto it = roaring_bitmap_.Begin(); it != roaring_bitmap_.End(); ++it) {
+            PAIMON_RETURN_NOT_OK(consumer(static_cast<int64_t>(*it)));
+        }
+        return Status::OK();
     }
 
     Result<int32_t> SerializeTo(const std::shared_ptr<MemoryPool>& pool,

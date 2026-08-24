@@ -97,6 +97,17 @@ Result<BlobUtils::SeparatedStructArrays> BlobUtils::SeparateBlobArray(
     return result;
 }
 
+std::vector<std::string> BlobUtils::ManagedBlobFieldNames(
+    const std::shared_ptr<arrow::Schema>& schema, const std::set<std::string>& inline_fields) {
+    std::vector<std::string> managed_fields;
+    for (const auto& field : schema->fields()) {
+        if (IsBlobField(field) && inline_fields.count(field->name()) == 0) {
+            managed_fields.push_back(field->name());
+        }
+    }
+    return managed_fields;
+}
+
 bool BlobUtils::IsBlobField(const std::shared_ptr<arrow::Field>& field) {
     const auto& type = field->type();
     if (type->id() != arrow::Type::LARGE_BINARY) {

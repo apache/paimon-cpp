@@ -19,13 +19,17 @@
 #include "paimon/core/operation/expire_snapshots.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_kind.h"
@@ -45,6 +49,10 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+/// The `(path, size)` pair `ManifestList::Write` returns. Named so it can be spelled without a
+/// comma inside an `ASSERT_OK_AND_ASSIGN` argument.
+using ManifestListFile = std::pair<std::string, int64_t>;
 
 class ExpireSnapshotsTest : public testing::Test {
  public:
@@ -130,8 +138,9 @@ class ExpireSnapshotsTest : public testing::Test {
         return path_factory;
     }
 
-    ManifestEntry CreateManifestEntry(const std::string& file_name, int32_t bucket,
-                                      const FileKind& kind) const {
+    ManifestEntry CreateManifestEntry(
+        const std::string& file_name, int32_t bucket, const FileKind& kind,
+        const std::vector<std::optional<std::string>>& extra_files = {}) const {
         int32_t arity = 2;
         BinaryRow row(arity);
         BinaryRowWriter writer(&row, 20, mem_pool_.get());
@@ -143,7 +152,7 @@ class ExpireSnapshotsTest : public testing::Test {
             file_name, 1024, 8, DataFileMeta::EmptyMinKey(), DataFileMeta::EmptyMaxKey(),
             SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), /*min_seq_no=*/16,
             /*max_seq_no=*/32,
-            /*schema_id=*/1, /*level=*/2, /*extra_files=*/std::vector<std::optional<std::string>>(),
+            /*schema_id=*/1, /*level=*/2, extra_files,
             /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/3,
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*external_path=*/std::nullopt,
@@ -250,6 +259,64 @@ TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {
                        {{test_data_path_ + "/f0=true/f3=3/bucket-0/file1", data_file_entries[2]},
                         {test_data_path_ + "/f0=true/f3=3/bucket-1/file2", data_file_entries[1]},
                         {test_data_path_ + "/f0=true/f3=3/bucket-2/file3", data_file_entries[3]}}));
+    }
+}
+
+TEST_F(ExpireSnapshotsTest, TestCleanUnusedDataFilesRemovesCompanionFiles) {
+    // An expired data file takes its companion files with it: a managed blob reference sidecar
+    // is written next to its data file and is only ever reachable through it, so leaving it
+    // behind would leak a file nothing can ever name again.
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    std::shared_ptr<FileStorePathFactory> path_factory = CreateFactory(dir->Str());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ManifestList> manifest_list,
+        ManifestList::Create(fs_, options.GetManifestFormat(), options.GetManifestCompression(),
+                             path_factory, options.GetCache(), mem_pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ManifestFile> manifest_file,
+        ManifestFile::Create(fs_, options.GetManifestFormat(), options.GetManifestCompression(),
+                             path_factory, options.GetManifestTargetFileSize(), mem_pool_, options,
+                             partition_schema_));
+
+    // Two buckets, so the per-(partition, bucket) path factory the deletion builds is exercised
+    // more than once, and one data file without a companion file next to it.
+    ManifestEntry with_sidecar =
+        CreateManifestEntry("data-0.orc", /*bucket=*/1, FileKind::Delete(), {"data-0.orc.blobref"});
+    ManifestEntry without_sidecar =
+        CreateManifestEntry("data-1.orc", /*bucket=*/1, FileKind::Delete());
+    ManifestEntry other_bucket =
+        CreateManifestEntry("data-2.orc", /*bucket=*/2, FileKind::Delete(), {"data-2.orc.blobref"});
+
+    ASSERT_OK_AND_ASSIGN(std::string bucket_1_path,
+                         path_factory->BucketPath(with_sidecar.Partition(), /*bucket=*/1));
+    ASSERT_OK_AND_ASSIGN(std::string bucket_2_path,
+                         path_factory->BucketPath(other_bucket.Partition(), /*bucket=*/2));
+    ASSERT_OK(fs_->Mkdirs(bucket_1_path));
+    ASSERT_OK(fs_->Mkdirs(bucket_2_path));
+    std::vector<std::string> written_paths = {
+        PathUtil::JoinPath(bucket_1_path, "data-0.orc"),
+        PathUtil::JoinPath(bucket_1_path, "data-0.orc.blobref"),
+        PathUtil::JoinPath(bucket_1_path, "data-1.orc"),
+        PathUtil::JoinPath(bucket_2_path, "data-2.orc"),
+        PathUtil::JoinPath(bucket_2_path, "data-2.orc.blobref")};
+    for (const std::string& path : written_paths) {
+        ASSERT_OK(fs_->WriteFile(path, "content", /*overwrite=*/true));
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> metas,
+                         manifest_file->Write({with_sidecar, without_sidecar, other_bucket}));
+    ASSERT_OK_AND_ASSIGN(ManifestListFile manifest_list_file, manifest_list->Write(metas));
+
+    auto snapshot_manager = std::make_shared<SnapshotManager>(fs_, dir->Str());
+    ExpireSnapshots expire(snapshot_manager, path_factory, manifest_list, manifest_file, fs_,
+                           options.GetExpireConfig(), executor_);
+    ASSERT_OK(expire.CleanUnusedDataFiles(manifest_list_file.first));
+
+    for (const std::string& path : written_paths) {
+        ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(path));
+        ASSERT_FALSE(exists) << path;
     }
 }
 

@@ -32,6 +32,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/deletionvectors/apply_deletion_vector_batch_reader.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
@@ -268,9 +269,11 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
     }
 
     if (deletion_vector && !deletion && !deletion_vector->IsEmpty()) {
-        // TODO(xinyu.lxy): if deletion vector is bitmap64, use ApplyBitmapIndexBatchReader to
-        // filter result
-        return Status::NotImplemented("Only support BitmapDeletionVector");
+        // A bitmap64 vector has no RoaringBitmap32 to push down as a precise selection, so its
+        // deletions are applied to the rows the reader returns instead. Correct but not
+        // pushed down, which only costs the rows a selection would have skipped.
+        return std::unique_ptr<FileBatchReader>(
+            std::make_unique<ApplyDeletionVectorBatchReader>(std::move(reader), deletion_vector));
     }
     return std::move(reader);
 }

@@ -821,6 +821,18 @@ TEST_F(DataEvolutionSplitReadTest, TestCreateGroupDvFactoryShiftsPositions) {
     // deleted position inside the window, probing beyond the window is rejected
     ASSERT_EQ(blob_dv->GetCardinality().value(), 1);
     ASSERT_NOK_WITH_MSG(blob_dv->IsDeleted(30), "out of window");
+    // enumerating the deletions is windowed the same way: the anchor sees both, the blob file
+    // only the one inside its window, translated to its own positions
+    std::vector<int64_t> visited;
+    auto collect = [&visited](int64_t position) -> Status {
+        visited.push_back(position);
+        return Status::OK();
+    };
+    ASSERT_OK(blob_dv->ForEachDeletedPosition(collect));
+    ASSERT_EQ(visited, (std::vector<int64_t>{5}));
+    visited.clear();
+    ASSERT_OK(anchor_dv->ForEachDeletedPosition(collect));
+    ASSERT_EQ(visited, (std::vector<int64_t>{10, 45}));
 
     // the mutating and serializing halves would silently drop the shift, so they reject
     ASSERT_NOK_WITH_MSG(blob_dv->Delete(0), "read-only");

@@ -226,9 +226,11 @@ Result<std::unique_ptr<FileBatchReader>> MergeFileSplitRead::ApplyIndexAndDvRead
                                                                 deletion_vector);
     }
     if (deletion_vector && !deletion && !deletion_vector->IsEmpty()) {
-        // TODO(xinyu.lxy): if deletion vector is bitmap64, use ApplyBitmapIndexBatchReader to
-        // filter result
-        return Status::NotImplemented("Only support BitmapDeletionVector");
+        // A bitmap64 vector has no RoaringBitmap32 to push down as a precise selection, so its
+        // deletions are applied to the rows the reader returns instead. Correct but not
+        // pushed down, which only costs the rows a selection would have skipped.
+        return std::make_unique<ApplyDeletionVectorBatchReader>(std::move(file_reader),
+                                                                deletion_vector);
     }
     return std::move(file_reader);
 }

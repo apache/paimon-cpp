@@ -18,14 +18,18 @@
 
 #include "paimon/core/io/data_file_path_factory.h"
 
+#include <memory>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/fs/external_path_provider.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/managed_blob_reference_file.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/data/timestamp.h"
@@ -81,6 +85,26 @@ TEST_F(DataFilePathFactoryTest, TestNewPathWithDataFilePrefixAndExternalPath) {
     ASSERT_EQ(factory_.Parent(), "/tmp/p0=1/p1=0/bucket-0/");
     ASSERT_EQ(factory_.NewPathFromName("index-file"),
               "/tmp/external_path/p0=1/p1=0/bucket-0/index-file");
+}
+
+TEST_F(DataFilePathFactoryTest, TestNewManagedBlobPath) {
+    std::string path1 = factory_.NewManagedBlobPath();
+    std::string path2 = factory_.NewManagedBlobPath();
+
+    // A managed pack is named like a data file but carries the managed blob suffix, which is
+    // what tells maintenance apart from a data file it must never delete on its own.
+    ASSERT_NE(path1, path2);
+    ASSERT_TRUE(StringUtils::StartsWith(path1, "/tmp/data-"));
+    ASSERT_TRUE(StringUtils::EndsWith(path1, ManagedBlobReferenceFile::kManagedBlobSuffix));
+
+    // Unlike a data file, a managed pack stays in the bucket directory: external data paths are
+    // rejected for a primary-key managed blob table, so the pack must not follow one.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ExternalPathProvider> external_path_provider,
+                         ExternalPathProvider::Create({"/tmp/external_path/"}, "p0=1/bucket-0"));
+    ASSERT_OK(factory_.Init(/*parent=*/"/tmp/p0=1/bucket-0", /*format_identifier=*/"txt",
+                            /*data_file_prefix=*/"data-", std::move(external_path_provider)));
+    ASSERT_TRUE(StringUtils::StartsWith(factory_.NewPath(), "/tmp/external_path/"));
+    ASSERT_TRUE(StringUtils::StartsWith(factory_.NewManagedBlobPath(), "/tmp/p0=1/bucket-0/"));
 }
 
 TEST_F(DataFilePathFactoryTest, TestToPath) {

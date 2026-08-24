@@ -71,6 +71,19 @@ class SchemaValidation {
 
     static Status ValidateRowTracking(const TableSchema& table_schema, const CoreOptions& options);
 
+    /// Validates the managed BLOB configuration of a primary-key table: managed blob fields
+    /// cannot be key or ordering fields, only merge engines and options compatible with
+    /// externally stored payloads are allowed, a sequence-group-protected managed blob
+    /// field cannot use an aggregate function that needs the retracted payload, and the
+    /// capabilities Paimon C++ has not ported are rejected by value or presence
+    /// (`pk-clustering-override` set to true, `blob-descriptor.source-table`).
+    static Status ValidatePrimaryKeyBlobConfiguration(const TableSchema& table_schema,
+                                                      const CoreOptions& options);
+
+    /// Validates that no partial-update sequence-group ordering field is a BLOB column.
+    static Status ValidateSequenceGroupOrderingFields(const TableSchema& table_schema,
+                                                      const CoreOptions& options);
+
     static Status ValidateBlobFields(const TableSchema& schema, const CoreOptions& options);
 
     static Status ValidateMapStorageLayout(const TableSchema& schema, const CoreOptions& options);

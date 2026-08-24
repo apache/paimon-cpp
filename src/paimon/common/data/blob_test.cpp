@@ -19,6 +19,11 @@
 
 #include "paimon/data/blob.h"
 
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
@@ -27,6 +32,71 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+namespace {
+
+/// An input stream that delegates to a real one and counts how often it was closed, so a test
+/// can tell whether a handle was handed over or released.
+class CloseCountingInputStream : public InputStream {
+ public:
+    CloseCountingInputStream(std::unique_ptr<InputStream>&& wrapped, int32_t* close_count)
+        : wrapped_(std::move(wrapped)), close_count_(close_count) {}
+
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return wrapped_->Seek(offset, origin);
+    }
+
+    Result<int64_t> GetPos() const override {
+        return wrapped_->GetPos();
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        return wrapped_->Read(buffer, size);
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        return wrapped_->Read(buffer, size, offset);
+    }
+
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        wrapped_->ReadAsync(buffer, size, offset, std::move(callback));
+    }
+
+    Status Close() override {
+        (*close_count_)++;
+        return wrapped_->Close();
+    }
+
+    Result<std::string> GetUri() const override {
+        return wrapped_->GetUri();
+    }
+
+    Result<int64_t> Length() const override {
+        return wrapped_->Length();
+    }
+
+ private:
+    std::unique_ptr<InputStream> wrapped_;
+    int32_t* close_count_;
+};
+
+/// A local file system handing out those streams.
+class CloseCountingFileSystem : public LocalFileSystem {
+ public:
+    explicit CloseCountingFileSystem(int32_t* close_count) : close_count_(close_count) {}
+
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> wrapped, LocalFileSystem::Open(path));
+        return std::unique_ptr<InputStream>(
+            std::make_unique<CloseCountingInputStream>(std::move(wrapped), close_count_));
+    }
+
+ private:
+    int32_t* close_count_;
+};
+
+}  // namespace
 
 class BlobTest : public ::testing::Test {
  public:
@@ -144,6 +214,28 @@ TEST_F(BlobTest, TestNewInputStreamWithDynamicLength) {
     ASSERT_OK_AND_ASSIGN(auto bytes_read, input_stream->Read(buffer.data(), buffer.size()));
     ASSERT_EQ(12, bytes_read);
     ASSERT_EQ("cdefghijklmn", buffer);
+}
+
+TEST_F(BlobTest, TestNewInputStreamClosesTheFileOnFailure) {
+    // Whether the descriptor fits its file can only be told once the file is open, so a
+    // descriptor pointing past the end fails after the open. The handle taken to find that out
+    // has to be released there and then: nothing else can reach it any more.
+    int32_t close_count = 0;
+    auto counting_fs = std::make_shared<CloseCountingFileSystem>(&close_count);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Blob> out_of_range_blob,
+                         Blob::FromPath(uri_, /*offset=*/100, /*length=*/1));
+    ASSERT_NOK_WITH_MSG(out_of_range_blob->NewInputStream(counting_fs), "exceed total length");
+    ASSERT_EQ(close_count, 1);
+
+    // A descriptor that fits hands the open file to the caller instead, who closes it.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Blob> blob,
+                         Blob::FromPath(uri_, /*offset=*/2, /*length=*/6));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input_stream,
+                         blob->NewInputStream(counting_fs));
+    ASSERT_EQ(close_count, 1);
+    ASSERT_OK(input_stream->Close());
+    ASSERT_EQ(close_count, 2);
 }
 
 TEST_F(BlobTest, TestArrowField) {

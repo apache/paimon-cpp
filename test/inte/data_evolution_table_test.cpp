@@ -17,24 +17,42 @@
  * under the License.
  */
 #include <algorithm>
+#include <set>
 #include <tuple>
+#include <utility>
 
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/append/append_compact_coordinator.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/date_time_utils.h"
+#include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/append/data_evolution_compact_global_index_dropper.h"
+#include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/index/deletion_vector_meta.h"
+#include "paimon/core/index/global_index_meta.h"
+#include "paimon/core/index/index_file_handler.h"
+#include "paimon/core/index/index_file_meta.h"
+#include "paimon/core/manifest/index_manifest_entry.h"
+#include "paimon/core/manifest/index_manifest_file.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/core/utils/index_file_path_factories.h"
+#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/indexed_split.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/result.h"
@@ -179,6 +197,18 @@ class DataEvolutionTableTest : public ::testing::Test,
         return commit_message;
     }
 
+    /// The row id the next commit hands out, 0 for a table without a snapshot. A commit only
+    /// advances it over the row ids it assigned itself, so a group stamped past it does not
+    /// move it.
+    Result<int64_t> NextRowId(const std::string& table_path) const {
+        SnapshotManager snapshot_manager(dir_->GetFileSystem(), table_path);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, snapshot_manager.LatestSnapshot());
+        if (!snapshot.has_value() || !snapshot.value().NextRowId()) {
+            return 0;
+        }
+        return snapshot.value().NextRowId().value();
+    }
+
     /// Writes one row range group holding `f0_values`, starting at `first_row_id`: a full-row
     /// write plus a partial f2 write over the same rows, so the group's split merges columns
     /// from two files and is not raw convertible. When `partition` is set the files land in that
@@ -187,9 +217,15 @@ class DataEvolutionTableTest : public ::testing::Test,
     /// The f2 write starts only once the full-row write is committed, which is what makes the
     /// f2 file the newer of the pair. Writing both before either commit left the column merge
     /// free to serve f2 from the full-row write instead.
+    ///
+    /// With `assign_row_ids_by_commit` the full-row write takes the row ids the commit hands
+    /// out, which keeps the table's next row id in step with the rows it holds. A caller that
+    /// places a group past that, to leave a row id gap, stamps the ids itself instead and
+    /// leaves the next row id where it was.
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteAndCommitGroup(
         const std::string& table_path, int64_t first_row_id, const std::vector<int32_t>& f0_values,
-        const std::map<std::string, std::string>& partition = {}) const {
+        const std::map<std::string, std::string>& partition = {},
+        bool assign_row_ids_by_commit = false) const {
         auto partition_f1 = partition.find("f1");
         std::string base_json = "[";
         std::string f2_json = "[";
@@ -212,10 +248,23 @@ class DataEvolutionTableTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::shared_ptr<CommitMessage>> base_msgs,
             WriteArray(table_path, partition, arrow::schema(fields_)->field_names(), base_array));
-        // both writes are stamped with the same first row id, so their files cover the same row
-        // id range and form one row range group
+        // both writes cover the same first row id, so their files cover the same row id range
+        // and form one row range group
+        if (assign_row_ids_by_commit) {
+            PAIMON_ASSIGN_OR_RAISE(int64_t next_row_id, NextRowId(table_path));
+            if (next_row_id != first_row_id) {
+                return Status::Invalid(fmt::format(
+                    "The commit assigns row ids from {}, so it cannot place a group at {}.",
+                    next_row_id, first_row_id));
+            }
+            PAIMON_RETURN_NOT_OK(Commit(table_path, base_msgs));
+        } else {
+            SetFirstRowId(first_row_id, base_msgs);
+            PAIMON_RETURN_NOT_OK(Commit(table_path, base_msgs));
+        }
+        // The commit assigns row ids onto its own copies of the metas, so the caller's copies
+        // are stamped either way.
         SetFirstRowId(first_row_id, base_msgs);
-        PAIMON_RETURN_NOT_OK(Commit(table_path, base_msgs));
 
         arrow::FieldVector f2_fields = {fields_[2]};
         auto f2_array = std::dynamic_pointer_cast<arrow::StructArray>(
@@ -342,6 +391,138 @@ class DataEvolutionTableTest : public ::testing::Test,
             }
         }
         return DeletionVectorTestHelper::RetrieveAnchorFileNames(data_files);
+    }
+
+    /// Compaction of one row range group whose deletions have to survive it, for either vector
+    /// kind. The moved vector is rebuilt as the kind the table stores, because the two
+    /// serialize differently and refuse to merge into one another.
+    void CompactKeepsDeletionVectorsOfOneRowRangeGroup(bool bitmap64) {
+        std::map<std::string, std::string> extra_options;
+        if (bitmap64) {
+            extra_options.emplace(Options::DELETION_VECTOR_BITMAP64, "true");
+        }
+        std::map<std::string, std::string> options =
+            CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true, extra_options);
+        std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                             WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                                 /*f0_values=*/{1, 2, 3, 4}));
+
+        // Delete row ids 1 and 3 through the group's anchor file, the file the vector is keyed
+        // by.
+        ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+        ASSERT_OK(CommitDeletionVectors(table_path, group_msgs[0],
+                                        {{anchor_file_name, /*deleted_positions=*/{1, 3}}}));
+        auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(
+                arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+                R"([
+        [1, 0],
+        [3, 2]
+    ])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+
+        // The compaction rewrites the group's two files into one and re-keys their deletions
+        // onto it, so the round produces the data message plus one index-only message.
+        std::map<std::string, std::string> compact_options = options;
+        compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+        ASSERT_OK_AND_ASSIGN(
+            std::vector<std::shared_ptr<CommitMessage>> messages,
+            AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                          dir_->GetFileSystem(), GetDefaultPool()));
+        ASSERT_EQ(messages.size(), 2);
+        auto index_message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[1]);
+        ASSERT_TRUE(index_message);
+        EXPECT_TRUE(index_message->GetCompactIncrement().CompactBefore().empty());
+        EXPECT_TRUE(index_message->GetCompactIncrement().CompactAfter().empty());
+        EXPECT_EQ(index_message->GetCompactIncrement().NewIndexFiles().size(), 1);
+        EXPECT_FALSE(index_message->GetCompactIncrement().DeletedIndexFiles().empty());
+        ASSERT_OK(Commit(table_path, messages));
+
+        // Same rows, same row ids: the deletions followed their rows onto the compacted file
+        // instead of being dropped by the rewrite.
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+    }
+
+    /// RunAndCommit over several rounds on a table whose deletion vectors move in every
+    /// round, for either vector kind.
+    ///
+    /// This is where the snapshot each round re-reads and the index files each round rewrites
+    /// have to line up: round N+1 must see the index files round N wrote, not the ones it
+    /// replaced. Each group also gets its deletion vector in its own commit, so the partition
+    /// starts with one index file per group rather than a single shared one.
+    void RunAndCommitMovesDeletionVectorsEveryRound(bool bitmap64) {
+        std::map<std::string, std::string> extra_options;
+        if (bitmap64) {
+            extra_options.emplace(Options::DELETION_VECTOR_BITMAP64, "true");
+        }
+        std::map<std::string, std::string> options =
+            CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true, extra_options);
+        std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+        // Three groups at row ids [0,1], [4,5] and [8,9], each with a deletion on its own
+        // anchor, each deletion committed separately so it lands in its own index file. The row
+        // id gaps keep the groups in contiguous runs of their own, so a round merges the files
+        // of one group and never packs two groups into one file.
+        std::vector<std::string> known_anchors;
+        for (int32_t group = 0; group < 3; group++) {
+            int64_t first_row_id = group * 4;
+            ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                                 WriteAndCommitGroup(table_path, first_row_id,
+                                                     /*f0_values=*/
+                                                     {static_cast<int32_t>(first_row_id + 1),
+                                                      static_cast<int32_t>(first_row_id + 2)}));
+            ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors,
+                                 PlannedAnchorFileNames(table_path));
+            std::string new_anchor;
+            for (const std::string& anchor : anchors) {
+                if (std::find(known_anchors.begin(), known_anchors.end(), anchor) ==
+                    known_anchors.end()) {
+                    new_anchor = anchor;
+                }
+            }
+            ASSERT_FALSE(new_anchor.empty());
+            known_anchors.push_back(new_anchor);
+            // Delete the group's second row, so every round has a vector to move.
+            ASSERT_OK(CommitDeletionVectors(table_path, group_msgs[0],
+                                            {{new_anchor, /*deleted_positions=*/{1}}}));
+        }
+
+        auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(
+                arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+                R"([
+        [1, 0],
+        [5, 4],
+        [9, 8]
+    ])")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+
+        std::map<std::string, std::string> compact_options = options;
+        compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+        ASSERT_OK_AND_ASSIGN(int32_t rounds, AppendCompactCoordinator::RunAndCommit(
+                                                 table_path, compact_options,
+                                                 /*partitions=*/{},
+                                                 /*commit_user=*/"commit_user_1",
+                                                 dir_->GetFileSystem(), GetDefaultPool(),
+                                                 /*candidate_files_per_round=*/1));
+        // Every group is compacted, and each round commits on its own.
+        ASSERT_GT(rounds, 1);
+
+        // The deletions followed their rows through every round: had a round read a stale
+        // index, or replaced index files another round still owned, rows would come back.
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+
+        // Every group is one file now and no two of them are contiguous, so a further run -
+        // this one over the whole row id space at once - commits no round at all.
+        ASSERT_OK_AND_ASSIGN(
+            rounds, AppendCompactCoordinator::RunAndCommit(
+                        table_path, compact_options, /*partitions=*/{},
+                        /*commit_user=*/"commit_user_1", dir_->GetFileSystem(), GetDefaultPool()));
+        ASSERT_EQ(rounds, 0);
+        ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
     }
 
     /// PlannedAnchorFileNames for a table holding a single row range group.
@@ -536,6 +717,155 @@ class DataEvolutionTableTest : public ::testing::Test,
         return std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), data_str)
                 .ValueOrDie());
+    }
+
+    /// Creates the (f0, f1, f2) data evolution table partitioned by f1, with deletion vectors
+    /// on, and returns the options it was created with.
+    std::map<std::string, std::string> CreatePartitionedDataEvolutionTable() const {
+        std::map<std::string, std::string> options = {
+            {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, FileFormat()},
+            {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
+            {Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::DELETION_VECTORS_ENABLED, "true"}};
+        CreateTable(/*partition_keys=*/{"f1"}, options);
+        return options;
+    }
+
+    /// Commits a global index over `row_range`, without building a real index file: the dropper
+    /// only ever looks at the manifest metadata, so a placeholder name is enough to observe
+    /// whether the entry survives a materialization.
+    Status CommitFakeGlobalIndex(const std::string& table_path, const std::string& index_file_name,
+                                 const std::map<std::string, std::string>& partition,
+                                 int64_t row_range_start, int64_t row_range_end) const {
+        GlobalIndexMeta global_index_meta(
+            row_range_start, row_range_end, /*index_field_id=*/1,
+            /*extra_field_ids=*/std::nullopt,
+            std::make_shared<Bytes>(std::string("{}"), GetDefaultPool().get()));
+        auto index_file_meta = std::make_shared<IndexFileMeta>(
+            "bitmap", index_file_name, /*file_size=*/10,
+            /*row_count=*/row_range_end - row_range_start + 1, /*dv_ranges=*/std::nullopt,
+            /*external_path=*/std::nullopt, global_index_meta);
+        PAIMON_ASSIGN_OR_RAISE(BinaryRow partition_row, BuildPartitionRow(partition));
+        DataIncrement data_increment({index_file_meta});
+        auto message = std::make_shared<CommitMessageImpl>(
+            partition_row, /*bucket=*/0, /*total_buckets=*/std::nullopt, data_increment,
+            CompactIncrement({}, {}, {}));
+        return Commit(table_path, {message});
+    }
+
+    /// The names of the global index files the latest snapshot still holds, so a test can tell
+    /// whether materializing dropped them.
+    Result<std::set<std::string>> ScanGlobalIndexFileNames(const std::string& table_path) const {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
+                               CreateIndexFileHandler(table_path));
+        SnapshotManager snapshot_manager(dir_->GetFileSystem(), table_path);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, snapshot_manager.LatestSnapshot());
+        std::set<std::string> result;
+        if (!snapshot.has_value()) {
+            return result;
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<IndexManifestEntry> entries,
+            index_file_handler->Scan(
+                snapshot.value(), [](const IndexManifestEntry& entry) -> Result<bool> {
+                    return entry.index_file->GetGlobalIndexMeta() != std::nullopt;
+                }));
+        for (const IndexManifestEntry& entry : entries) {
+            result.insert(entry.index_file->FileName());
+        }
+        return result;
+    }
+
+    /// The deletion-vector index the latest snapshot holds: which data files each index file
+    /// stores a vector for. Lets a test tell a rewritten index file from an untouched one, and
+    /// see whether a vector the rewrite had to carry over is still recorded.
+    Result<std::map<std::string, std::set<std::string>>> ScanDeletionVectorIndex(
+        const std::string& table_path) const {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
+                               CreateIndexFileHandler(table_path));
+        SnapshotManager snapshot_manager(dir_->GetFileSystem(), table_path);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, snapshot_manager.LatestSnapshot());
+        std::map<std::string, std::set<std::string>> result;
+        if (!snapshot.has_value()) {
+            return result;
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<IndexManifestEntry> entries,
+            index_file_handler->Scan(snapshot.value(),
+                                     [](const IndexManifestEntry& entry) -> Result<bool> {
+                                         return entry.index_file->IndexType() ==
+                                                DeletionVectorsIndexFile::DELETION_VECTORS_INDEX;
+                                     }));
+        for (const IndexManifestEntry& entry : entries) {
+            std::set<std::string>& data_files = result[entry.index_file->FileName()];
+            const std::optional<LinkedHashMap<std::string, DeletionVectorMeta>>& dv_ranges =
+                entry.index_file->DvRanges();
+            if (dv_ranges == std::nullopt) {
+                return Status::Invalid("deletion vector index file has no deletion vector metas");
+            }
+            for (const auto& [data_file_name, dv_meta] : dv_ranges.value()) {
+                data_files.insert(data_file_name);
+            }
+        }
+        return result;
+    }
+
+    Result<BinaryRow> BuildPartitionRow(const std::map<std::string, std::string>& partition) const {
+        if (partition.empty()) {
+            return BinaryRow::EmptyRow();
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                               ReadLatestSchema(PathUtil::JoinPath(dir_->Str(), "foo.db/bar")));
+        auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+        PAIMON_ASSIGN_OR_RAISE(
+            CoreOptions core_options,
+            CoreOptions::FromMap(table_schema->Options(), dir_->GetFileSystem()));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<BinaryRowPartitionComputer> computer,
+            BinaryRowPartitionComputer::Create(
+                table_schema->PartitionKeys(), arrow_schema, core_options.GetPartitionDefaultName(),
+                core_options.LegacyPartitionNameEnabled(), GetDefaultPool()));
+        return computer->ToBinaryRow(partition);
+    }
+
+    Result<std::shared_ptr<TableSchema>> ReadLatestSchema(const std::string& table_path) const {
+        SchemaManager schema_manager(dir_->GetFileSystem(), table_path);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               schema_manager.Latest());
+        if (latest == std::nullopt) {
+            return Status::Invalid("table schema does not exist");
+        }
+        return latest.value();
+    }
+
+    Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
+        const std::string& table_path) const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                               ReadLatestSchema(table_path));
+        PAIMON_ASSIGN_OR_RAISE(
+            CoreOptions core_options,
+            CoreOptions::FromMap(table_schema->Options(), dir_->GetFileSystem()));
+        auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
+                               core_options.CreateExternalPaths());
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
+                               core_options.CreateGlobalIndexExternalPath());
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileStorePathFactory> path_factory,
+            FileStorePathFactory::Create(table_path, arrow_schema, table_schema->PartitionKeys(),
+                                         core_options.GetPartitionDefaultName(), FileFormat(),
+                                         core_options.DataFilePrefix(),
+                                         core_options.LegacyPartitionNameEnabled(), external_paths,
+                                         global_index_external_path,
+                                         core_options.IndexFileInDataFileDir(), GetDefaultPool()));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
+                               IndexManifestFile::Create(
+                                   core_options.GetFileSystem(), core_options.GetManifestFormat(),
+                                   core_options.GetManifestCompression(), path_factory,
+                                   core_options.GetBucket(), GetDefaultPool(), core_options));
+        return std::make_unique<IndexFileHandler>(
+            core_options.GetFileSystem(), std::move(index_manifest_file),
+            std::make_shared<IndexFilePathFactories>(path_factory),
+            core_options.DeletionVectorsBitmap64(), GetDefaultPool());
     }
 
  private:
@@ -3093,6 +3423,1430 @@ TEST_P(DataEvolutionTableTest, TestLimitPushDownDisabledByRowRangeIndex) {
     ASSERT_EQ(limited.splits.size(), 2);
     ASSERT_OK_AND_ASSIGN(std::vector<int32_t> values, CollectF0Values(limited.rows));
     ASSERT_EQ(values, (std::vector<int32_t>{3, 101, 102}));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAcrossEvolvedFieldGroups) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // Two evolved field groups (row id ranges [0, 1] and [2, 3]), each made of a full-column
+    // file and a newer partial f2 file over the exact same rows.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4}));
+
+    // The coordinator merges the four contiguous files into one full-column file.
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 4);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    const std::shared_ptr<DataFileMeta>& compacted_file = compact_increment.CompactAfter()[0];
+    // Row ids and the merged sequence number range of the inputs are preserved, so the rewrite
+    // does not disturb row tracking metadata.
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id, compacted_file->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+    ASSERT_EQ(compacted_file->row_count, 4);
+    ASSERT_EQ(compacted_file->min_sequence_number, 1);
+    ASSERT_EQ(compacted_file->max_sequence_number, 4);
+    ASSERT_TRUE(compacted_file->file_source.has_value());
+    ASSERT_EQ(compacted_file->file_source.value(), FileSource::Compact());
+    ASSERT_EQ(compacted_file->write_cols, std::nullopt);
+    // Contract for data-evolution compact messages: total buckets stay unset.
+    ASSERT_EQ(message_impl->TotalBuckets(), std::nullopt);
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // The merged rows keep the newest f2 values and their row ids. The read now serves from
+    // the single compacted file.
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "a0", "y0", 0],
+        [2, "a1", "y1", 1],
+        [3, "a0", "y0", 2],
+        [4, "a1", "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+
+    // The compacted file carries the merged sequence range, so every row now reads the group
+    // maximum sequence number (4), where rows 0-1 read 2 before the compaction.
+    auto expected_sequence_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_,
+                            SpecialFields::SequenceNumber().field_}),
+            R"([
+        [1, 0, 4],
+        [2, 1, 4],
+        [3, 2, 4],
+        [4, 3, 4]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(
+        ScanAndRead(table_path, {"f0", "_ROW_ID", "_SEQUENCE_NUMBER"}, expected_sequence_array));
+
+    // A second coordinator run finds a single file and plans nothing.
+    ASSERT_OK_AND_ASSIGN(messages, AppendCompactCoordinator::Run(
+                                       table_path, compact_options,
+                                       /*partitions=*/{}, dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_TRUE(messages.empty());
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactKeepsDeletionVectorsOfOneRowRangeGroup) {
+    CompactKeepsDeletionVectorsOfOneRowRangeGroup(/*bitmap64=*/false);
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactKeepsBitmap64DeletionVectors) {
+    CompactKeepsDeletionVectorsOfOneRowRangeGroup(/*bitmap64=*/true);
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactShiftsDeletionVectorsAcrossRowRangeGroups) {
+    // Two groups compacted into one file: the second group's deletions are stored relative to
+    // its own anchor, so they have to shift by the distance between the two row ranges.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> first_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{1, 2}));
+    ASSERT_OK_AND_ASSIGN(std::string first_anchor, PlannedAnchorFileName(table_path));
+    // Row id 1, which is position 1 of the first group.
+    ASSERT_OK(CommitDeletionVectors(table_path, first_msgs[0],
+                                    {{first_anchor, /*deleted_positions=*/{1}}}));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> second_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/2,
+                                             /*f0_values=*/{3, 4}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    std::string second_anchor;
+    for (const std::string& anchor : anchors) {
+        if (anchor != first_anchor) {
+            second_anchor = anchor;
+        }
+    }
+    ASSERT_FALSE(second_anchor.empty());
+    // Row id 2, which is position 0 of the second group — the position that has to move.
+    ASSERT_OK(CommitDeletionVectors(table_path, second_msgs[0],
+                                    {{second_anchor, /*deleted_positions=*/{0}}}));
+
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+            R"([
+        [1, 0],
+        [4, 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_FALSE(messages.empty());
+    ASSERT_OK(Commit(table_path, messages));
+
+    // Row ids 1 and 2 stay deleted: position 0 of the second group became position 2 of the
+    // compacted file, and only a correct shift keeps row id 3 alive.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactRejectsADeletionOutsideTheGroupItBelongsTo) {
+    // A deleted position is recorded relative to its own row range group. One past that group
+    // - a corrupt or mis-keyed vector - would land on another group's rows after the shift, so
+    // the rewrite refuses it rather than moving it.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> first_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{1, 2}));
+    ASSERT_OK_AND_ASSIGN(std::string first_anchor, PlannedAnchorFileName(table_path));
+    // Position 4 of a two row group: past its own rows, and past the four rows the two groups
+    // compact into.
+    ASSERT_OK(CommitDeletionVectors(table_path, first_msgs[0],
+                                    {{first_anchor, /*deleted_positions=*/{4}}}));
+
+    // A second group right behind the first, so the two are compacted into one file and the
+    // first group's deletions have to be moved rather than merged unchanged.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4}));
+
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool())
+            .status(),
+        "Cannot move deletion position");
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactRewritesOnlyTheTouchedDeletionVectorIndexFile) {
+    // A partition holding two deletion-vector index files where the compaction touches only
+    // one: the untouched file must survive the commit instead of being rewritten with it.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    // A two-file group at row ids 0-3, which the compaction will merge.
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{1, 2, 3, 4}));
+    ASSERT_OK_AND_ASSIGN(std::string group_anchor, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs[0],
+                                    {{group_anchor, /*deleted_positions=*/{1}}}));
+
+    // A lone file at row ids 8-9. The row id gap keeps it out of the group's bin, and on its
+    // own it stays below `compaction.min.file-num`, so the compaction leaves it alone.
+    auto lone_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [9, "i", "p"],
+        [10, "j", "q"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> lone_msgs,
+                         WriteArray(table_path, schema->field_names(), lone_array));
+    SetFirstRowId(/*reset_first_row_id=*/8, lone_msgs);
+    ASSERT_OK(Commit(table_path, lone_msgs));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    std::string lone_anchor;
+    for (const std::string& anchor_name : anchors) {
+        if (anchor_name != group_anchor) {
+            lone_anchor = anchor_name;
+        }
+    }
+    ASSERT_FALSE(lone_anchor.empty());
+    // Row id 8, stored in a second index file because it is committed on its own.
+    ASSERT_OK(CommitDeletionVectors(table_path, lone_msgs[0],
+                                    {{lone_anchor, /*deleted_positions=*/{0}}}));
+
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+            R"([
+        [1, 0],
+        [3, 2],
+        [4, 3],
+        [10, 9]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    // Exactly one data message for the merged group plus one index-only message; the lone
+    // file was not planned, so it contributes neither.
+    ASSERT_EQ(messages.size(), 2);
+    auto index_message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[1]);
+    ASSERT_TRUE(index_message);
+    // Only the index file that stored the group's vector is replaced. Rewriting the whole
+    // partition would delete the lone file's index file here as well.
+    EXPECT_EQ(index_message->GetCompactIncrement().DeletedIndexFiles().size(), 1);
+    EXPECT_EQ(index_message->GetCompactIncrement().NewIndexFiles().size(), 1);
+    ASSERT_OK(Commit(table_path, messages));
+
+    // Both deletions still apply: the moved one on the compacted file and the untouched one
+    // on the lone file.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactCarriesSiblingDeletionVectorsOfTheTouchedIndexFile) {
+    // The counterpart of the test above: there the two vectors sat in different index files,
+    // here they share one and the compaction touches only one of them. The file is replaced
+    // whole, so the sibling vector has to be read back out of it and written into the
+    // replacement - the one path where the rewrite re-reads a vector it is not moving.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    // A two-file group at row ids 0-3, which the compaction will merge.
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{1, 2, 3, 4}));
+
+    // A lone file at row ids 8-9. The row id gap keeps it out of the group's bin, and on its
+    // own it stays below `compaction.min.file-num`, so the compaction leaves it alone.
+    auto lone_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [9, "i", "p"],
+        [10, "j", "q"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> lone_msgs,
+                         WriteArray(table_path, schema->field_names(), lone_array));
+    SetFirstRowId(/*reset_first_row_id=*/8, lone_msgs);
+    ASSERT_OK(Commit(table_path, lone_msgs));
+
+    // Ordered by ascending first row id, so the group's anchor comes first.
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    // One commit for both vectors, which is what puts them in the same index file: row id 1 of
+    // the group and row id 8 of the lone file.
+    ASSERT_OK(CommitDeletionVectors(
+        table_path, group_msgs[0],
+        {{anchors[0], /*deleted_positions=*/{1}}, {anchors[1], /*deleted_positions=*/{0}}}));
+    std::map<std::string, std::set<std::string>> index_before;
+    ASSERT_OK_AND_ASSIGN(index_before, ScanDeletionVectorIndex(table_path));
+    ASSERT_EQ(index_before.size(), 1);
+    ASSERT_EQ(index_before.begin()->second, std::set<std::string>({anchors[0], anchors[1]}));
+
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+            R"([
+        [1, 0],
+        [3, 2],
+        [4, 3],
+        [10, 9]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 2);
+    ASSERT_OK(Commit(table_path, messages));
+
+    // The shared index file is gone and everything it still owed is in its replacement: the
+    // lone file's vector, carried over untouched, and the group's, re-keyed onto the compacted
+    // file. The old group anchor is not recorded any more, its file no longer exists.
+    std::map<std::string, std::set<std::string>> index_after;
+    ASSERT_OK_AND_ASSIGN(index_after, ScanDeletionVectorIndex(table_path));
+    ASSERT_FALSE(index_after.empty());
+    std::set<std::string> covered;
+    for (const auto& [index_file_name, data_files] : index_after) {
+        ASSERT_EQ(index_before.count(index_file_name), 0);
+        covered.insert(data_files.begin(), data_files.end());
+    }
+    ASSERT_EQ(covered.size(), 2);
+    ASSERT_EQ(covered.count(anchors[1]), 1);
+    ASSERT_EQ(covered.count(anchors[0]), 0);
+
+    // Both deletions still apply: the moved one on the compacted file and the carried-over one
+    // on the lone file.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsReassignsRowIds) {
+    // The default compaction keeps every row and re-keys the deletions. Materializing instead
+    // drops the deleted rows for real, so the survivors are renumbered from the table's next row
+    // id and the vectors disappear rather than moving.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+        WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2, 3, 4},
+                            /*partition=*/{}, /*assign_row_ids_by_commit=*/true));
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{1, 3}}}));
+
+    // Before: rows 2 and 4 are logically deleted, and the survivors keep their original row ids.
+    auto before = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+            R"([
+        [1, 0],
+        [3, 2]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, before));
+
+    ASSERT_OK_AND_ASSIGN(int32_t commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                                              table_path, options, /*partitions=*/{},
+                                              /*commit_user=*/"commit_user_1",
+                                              dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 1);
+
+    // After: the same two rows, but renumbered. The commit handed out row ids 0-3 for the
+    // originals, so those four are spent and the survivors start at the table's next row id, 4.
+    auto after = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+            R"([
+        [1, 4],
+        [3, 5]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, after));
+
+    // The deletions are gone, not merely moved: nothing is left for a second run to do.
+    ASSERT_OK_AND_ASSIGN(
+        commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                     table_path, options, /*partitions=*/{},
+                     /*commit_user=*/"commit_user_1", dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 0);
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, after));
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsIsANoOpWithoutDeletions) {
+    // No vector anywhere means nothing to apply, and in particular no rewrite: a table without
+    // deletions must not have its row ids churned just because the entry point was called.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+            R"([
+        [1, 0],
+        [2, 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+
+    ASSERT_OK_AND_ASSIGN(int32_t commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                                              table_path, options, /*partitions=*/{},
+                                              /*commit_user=*/"commit_user_1",
+                                              dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 0);
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsLeavesUndeletedRangesAlone) {
+    // Two groups, only one carrying deletions. The untouched group must keep its row ids, or
+    // every reference into it would break for no reason.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> first_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                             /*partition=*/{}, /*assign_row_ids_by_commit=*/true));
+    ASSERT_OK_AND_ASSIGN(std::string first_anchor, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, first_msgs[0],
+                                    {{first_anchor, /*deleted_positions=*/{0}}}));
+
+    // A second group beyond a row id gap, so it forms its own contiguous run. Its row ids are
+    // stamped rather than handed out by the commit, which leaves the table's next row id at 2.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/8, /*f0_values=*/{9, 10}));
+
+    ASSERT_OK_AND_ASSIGN(int32_t commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                                              table_path, options, /*partitions=*/{},
+                                              /*commit_user=*/"commit_user_1",
+                                              dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 1);
+
+    // Row id 1 survived the first group and was renumbered from the table's next row id, which
+    // the rewritten range left at 2; the second group is untouched at 8 and 9.
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], SpecialFields::RowId().field_}),
+            R"([
+        [2, 2],
+        [9, 8],
+        [10, 9]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsDropsGlobalIndexes) {
+    // Materializing renumbers the surviving rows, so every global index of the partition now
+    // points at row ids that moved or no longer exist. There is no way to fix such an index up
+    // from the compaction's own metadata, so it has to go in the same commit as the rewrite.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{1, 2, 3, 4}));
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{1, 3}}}));
+    ASSERT_OK(CommitFakeGlobalIndex(table_path, "fake_index_file", /*partition=*/{},
+                                    /*row_range_start=*/0, /*row_range_end=*/3));
+
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> before, ScanGlobalIndexFileNames(table_path));
+    ASSERT_EQ(before, std::set<std::string>({"fake_index_file"}));
+
+    ASSERT_OK_AND_ASSIGN(int32_t commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                                              table_path, options, /*partitions=*/{},
+                                              /*commit_user=*/"commit_user_1",
+                                              dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 1);
+
+    // Gone, in the very snapshot that renumbered the rows: no reader can see the new row ids
+    // through the stale index.
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> after, ScanGlobalIndexFileNames(table_path));
+    ASSERT_TRUE(after.empty());
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsKeepsOtherPartitionsUntouched) {
+    // Two partitions, only one carrying deletions. Materializing must rewrite and renumber only
+    // that one, and drop only its global index — dropping the other partition's would throw
+    // away an index that is still perfectly valid.
+    std::map<std::string, std::string> options = CreatePartitionedDataEvolutionTable();
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> deleted_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                             /*partition=*/{{"f1", "2024"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4},
+                                  /*partition=*/{{"f1", "2025"}}));
+
+    // Only the 2024 partition's anchor gets a vector.
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchors, PlannedAnchorFileNames(table_path));
+    ASSERT_EQ(anchors.size(), 2);
+    ASSERT_OK(CommitDeletionVectors(table_path, deleted_msgs[0],
+                                    {{anchors[0], /*deleted_positions=*/{0}}}));
+
+    ASSERT_OK(CommitFakeGlobalIndex(table_path, "index_2024", /*partition=*/{{"f1", "2024"}},
+                                    /*row_range_start=*/0, /*row_range_end=*/1));
+    ASSERT_OK(CommitFakeGlobalIndex(table_path, "index_2025", /*partition=*/{{"f1", "2025"}},
+                                    /*row_range_start=*/2, /*row_range_end=*/3));
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> before, ScanGlobalIndexFileNames(table_path));
+    ASSERT_EQ(before, std::set<std::string>({"index_2024", "index_2025"}));
+
+    ASSERT_OK_AND_ASSIGN(int32_t commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                                              table_path, options, /*partitions=*/{},
+                                              /*commit_user=*/"commit_user_1",
+                                              dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 1);
+
+    // The untouched partition keeps its index; only the materialized one loses it.
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> after, ScanGlobalIndexFileNames(table_path));
+    ASSERT_EQ(after, std::set<std::string>({"index_2025"}));
+}
+
+TEST_P(DataEvolutionTableTest, TestDropGlobalIndexesTakesEveryIndexOfTheSnapshotItIsGiven) {
+    // The dropper scans the snapshot it is handed rather than the one the compaction planned
+    // against, so an index another writer committed in between - one nothing in the round's
+    // messages refers to - is dropped as well instead of surviving as a silently wrong index.
+    // Both indexes go in a single message, since an index file is addressed by partition and
+    // bucket and these two share both.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+    auto group_msg = std::dynamic_pointer_cast<CommitMessageImpl>(group_msgs[0]);
+    ASSERT_TRUE(group_msg);
+    ASSERT_FALSE(group_msg->GetNewFilesIncrement().NewFiles().empty());
+
+    ASSERT_OK(CommitFakeGlobalIndex(table_path, "planned_index", /*partition=*/{},
+                                    /*row_range_start=*/0, /*row_range_end=*/1));
+    ASSERT_OK(CommitFakeGlobalIndex(table_path, "late_index", /*partition=*/{},
+                                    /*row_range_start=*/0, /*row_range_end=*/1));
+
+    // A range whose rows were all deleted rewrites to nothing, which is a materialized shape: the
+    // row ids it replaced are gone for good, so every index over them is invalid.
+    std::vector<std::shared_ptr<DataFileMeta>> replaced = {
+        group_msg->GetNewFilesIncrement().NewFiles()[0]};
+    std::vector<std::shared_ptr<CommitMessage>> compact_messages = {
+        std::make_shared<CommitMessageImpl>(
+            group_msg->Partition(), group_msg->Bucket(), /*total_buckets=*/std::nullopt,
+            DataIncrement(/*new_files=*/{}, /*deleted_files=*/{}, /*changelog_files=*/{}),
+            CompactIncrement(std::move(replaced), /*compact_after=*/{}, /*changelog_files=*/{}))};
+
+    SnapshotManager snapshot_manager(dir_->GetFileSystem(), table_path);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> latest_snapshot,
+                         snapshot_manager.LatestSnapshot());
+    ASSERT_TRUE(latest_snapshot.has_value());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
+                         CreateIndexFileHandler(table_path));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> dropped,
+                         DataEvolutionCompactGlobalIndexDropper::DropGlobalIndexes(
+                             compact_messages, latest_snapshot.value(),
+                             std::shared_ptr<IndexFileHandler>(std::move(index_file_handler))));
+    ASSERT_EQ(dropped.size(), 1);
+    auto dropped_impl = std::dynamic_pointer_cast<CommitMessageImpl>(dropped[0]);
+    ASSERT_TRUE(dropped_impl);
+    ASSERT_TRUE(dropped_impl->Partition() == group_msg->Partition());
+    ASSERT_EQ(dropped_impl->Bucket(), 0);
+
+    std::set<std::string> dropped_names;
+    for (const auto& index_file : dropped_impl->GetCompactIncrement().DeletedIndexFiles()) {
+        dropped_names.insert(index_file->FileName());
+    }
+    ASSERT_EQ(dropped_names, std::set<std::string>({"planned_index", "late_index"}));
+
+    // The message carries the index deletions and nothing else: the rewrite itself travels in the
+    // compaction's own messages.
+    ASSERT_TRUE(dropped_impl->GetCompactIncrement().CompactBefore().empty());
+    ASSERT_TRUE(dropped_impl->GetCompactIncrement().CompactAfter().empty());
+    ASSERT_TRUE(dropped_impl->GetCompactIncrement().NewIndexFiles().empty());
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsOnAFullyDeletedRange) {
+    // Every row of the range is deleted, so materializing rewrites it to nothing at all: the
+    // one shape where the compaction produces no output file, which the rewriter, the index
+    // dropper and the commit check all have to recognise without an output to look at.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> group_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{1, 2}));
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, group_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{0, 1}}}));
+    ASSERT_OK(CommitFakeGlobalIndex(table_path, "fake_index_file", /*partition=*/{},
+                                    /*row_range_start=*/0, /*row_range_end=*/1));
+
+    // Nothing is readable already; the rows are only logically gone.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, /*expected_array=*/nullptr,
+                          /*predicate=*/nullptr, /*row_ranges=*/{},
+                          /*check_scan_plan_when_empty_result=*/false));
+
+    ASSERT_OK_AND_ASSIGN(int32_t commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                                              table_path, options, /*partitions=*/{},
+                                              /*commit_user=*/"commit_user_1",
+                                              dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 1);
+
+    // Still nothing to read, but now the files, their vectors and the index over their row ids
+    // are all gone rather than merely masked.
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "_ROW_ID"}, /*expected_array=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> indexes, ScanGlobalIndexFileNames(table_path));
+    ASSERT_TRUE(indexes.empty());
+
+    // And it is idempotent: with no vector left there is nothing to materialize.
+    ASSERT_OK_AND_ASSIGN(
+        commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                     table_path, options, /*partitions=*/{},
+                     /*commit_user=*/"commit_user_1", dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 0);
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsRejectsNonDataEvolutionOptions) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    // A commit user is required, since this entry point commits on its own.
+    ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::MaterializeDeletionVectors(
+                            table_path, options, /*partitions=*/{},
+                            /*commit_user=*/"", dir_->GetFileSystem(), GetDefaultPool())
+                            .status(),
+                        "needs a commit user");
+
+    // Turning deletion vectors off here would make the rewrite ignore the deletion files and
+    // silently resurrect the deleted rows, so the immutable-option guard rejects it.
+    std::map<std::string, std::string> without_dv = options;
+    without_dv[Options::DELETION_VECTORS_ENABLED] = "false";
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::MaterializeDeletionVectors(
+            table_path, without_dv, /*partitions=*/{},
+            /*commit_user=*/"commit_user_1", dir_->GetFileSystem(), GetDefaultPool())
+            .status(),
+        "immutable table options");
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeKeepsAnUpdateOnAnUntouchedRange) {
+    // Materializing renumbers the rows of the ranges carrying deletions. A partial update on a
+    // range it does not touch has to come through unchanged: its rows keep their ids and its
+    // columns stay on top, while only the deleted range is rewritten and renumbered.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> first_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                             /*partition=*/{}, /*assign_row_ids_by_commit=*/true));
+    ASSERT_OK_AND_ASSIGN(std::string first_anchor, PlannedAnchorFileName(table_path));
+    // Only the first group carries a deletion, so only it is materialized.
+    ASSERT_OK(CommitDeletionVectors(table_path, first_msgs[0],
+                                    {{first_anchor, /*deleted_positions=*/{1}}}));
+
+    // The second group sits beyond a row id gap: materializing rewrites the whole contiguous
+    // run a deletion falls in, so a group adjacent to the deleted one would be rewritten and
+    // renumbered along with it. Its row ids are stamped rather than handed out by the commit,
+    // which leaves the table's next row id at 2.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/8, /*f0_values=*/{3, 4}));
+
+    // A partial update over the second group's rows, committed before the materialization runs.
+    auto concurrent_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields_[2]}), R"([
+        ["z2"],
+        ["z3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> concurrent_msgs,
+                         WriteArray(table_path, {"f2"}, concurrent_array));
+    SetFirstRowId(/*reset_first_row_id=*/8, concurrent_msgs);
+    ASSERT_OK(Commit(table_path, concurrent_msgs));
+
+    ASSERT_OK_AND_ASSIGN(int32_t commits, AppendCompactCoordinator::MaterializeDeletionVectors(
+                                              table_path, options, /*partitions=*/{},
+                                              /*commit_user=*/"commit_user_1",
+                                              dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(commits, 1);
+
+    // Row ids 8 and 9 keep their updated f2; the survivor of the first group is renumbered from
+    // the table's next row id and keeps the columns it had.
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "y0", 2],
+        [3, "z2", 8],
+        [4, "z3", 9]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f2", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestMaterializeDeletionVectorsNeedsDeletionVectorsEnabled) {
+    // A table that never stored a deletion vector has nothing to materialize, and the rewrite
+    // would renumber its row ids for no gain. Saying so is more useful than scanning the table
+    // and reporting zero commits, which reads as "there was nothing to do this time".
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::MaterializeDeletionVectors(
+            table_path, options, /*partitions=*/{},
+            /*commit_user=*/"commit_user_1", dir_->GetFileSystem(), GetDefaultPool())
+            .status(),
+        "needs 'deletion-vectors.enabled' to be set");
+}
+
+TEST_P(DataEvolutionTableTest, TestRunAndCommitCommitsWithoutCallerCommit) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4}));
+
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(int32_t rounds, AppendCompactCoordinator::RunAndCommit(
+                                             table_path, compact_options, /*partitions=*/{},
+                                             /*commit_user=*/"commit_user_1", dir_->GetFileSystem(),
+                                             GetDefaultPool()));
+    ASSERT_EQ(rounds, 1);
+
+    // No caller commit ran, so the rows below are served by the snapshot RunAndCommit wrote.
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "y0", 0],
+        [2, "y1", 1],
+        [3, "y0", 2],
+        [4, "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f2", "_ROW_ID"}, expected));
+
+    // Nothing is left to merge, so a second call commits no round at all.
+    ASSERT_OK_AND_ASSIGN(
+        rounds, AppendCompactCoordinator::RunAndCommit(
+                    table_path, compact_options, /*partitions=*/{},
+                    /*commit_user=*/"commit_user_1", dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(rounds, 0);
+}
+
+TEST_P(DataEvolutionTableTest, TestRunAndCommitSplitsRowIdSpaceIntoRounds) {
+    // Each group below lands in its own manifest, so a one-file-per-round budget cuts the row
+    // id space between them and every group is compacted and committed on its own.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4, /*f0_values=*/{5, 6}));
+
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(int32_t rounds, AppendCompactCoordinator::RunAndCommit(
+                                             table_path, compact_options, /*partitions=*/{},
+                                             /*commit_user=*/"commit_user_1", dir_->GetFileSystem(),
+                                             GetDefaultPool(),
+                                             /*candidate_files_per_round=*/1));
+    // More than one commit, and every group still merged.
+    ASSERT_GT(rounds, 1);
+
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "y0", 0],
+        [2, "y1", 1],
+        [3, "y0", 2],
+        [4, "y1", 3],
+        [5, "y0", 4],
+        [6, "y1", 5]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f2", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestRunAndCommitAfterMaterializingAFullyDeletedRange) {
+    // Materializing a fully deleted range leaves a manifest holding nothing but deletions, and
+    // a hole in the row id space where its rows used to be. The rounds are planned over that
+    // snapshot: the groups written afterwards still compact one round each, and the rows the
+    // materialization removed stay removed.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> deleted_msgs,
+                         WriteAndCommitGroup(table_path, /*first_row_id=*/0,
+                                             /*f0_values=*/{1, 2}));
+    ASSERT_OK_AND_ASSIGN(std::string anchor_file_name, PlannedAnchorFileName(table_path));
+    ASSERT_OK(CommitDeletionVectors(table_path, deleted_msgs[0],
+                                    {{anchor_file_name, /*deleted_positions=*/{0, 1}}}));
+    ASSERT_OK_AND_ASSIGN(
+        int32_t materialize_commits,
+        AppendCompactCoordinator::MaterializeDeletionVectors(
+            table_path, options, /*partitions=*/{},
+            /*commit_user=*/"commit_user_1", dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(materialize_commits, 1);
+
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4, /*f0_values=*/{5, 6}));
+
+    std::map<std::string, std::string> compact_options = options;
+    compact_options[Options::COMPACTION_MIN_FILE_NUM] = "2";
+    ASSERT_OK_AND_ASSIGN(int32_t rounds, AppendCompactCoordinator::RunAndCommit(
+                                             table_path, compact_options, /*partitions=*/{},
+                                             /*commit_user=*/"commit_user_1", dir_->GetFileSystem(),
+                                             GetDefaultPool(),
+                                             /*candidate_files_per_round=*/1));
+    ASSERT_GT(rounds, 1);
+
+    auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [3, "y0", 2],
+        [4, "y1", 3],
+        [5, "y0", 4],
+        [6, "y1", 5]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f2", "_ROW_ID"}, expected));
+}
+
+TEST_P(DataEvolutionTableTest, TestRunAndCommitWithPartitionFilterSplitsOnlyThatPartition) {
+    // Exercises the partition-aware half of the round split: manifests the filter rules out
+    // are left out of the row id split, so the rounds follow the selected partition's rows
+    // rather than the whole table's.
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                  /*partition=*/{{"f1", "2024"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4},
+                                  /*partition=*/{{"f1", "2025"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/4, /*f0_values=*/{5, 6},
+                                  /*partition=*/{{"f1", "2024"}}));
+
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(int32_t rounds, AppendCompactCoordinator::RunAndCommit(
+                                             table_path, compact_options,
+                                             /*partitions=*/{{{"f1", "2024"}}},
+                                             /*commit_user=*/"commit_user_1", dir_->GetFileSystem(),
+                                             GetDefaultPool(),
+                                             /*candidate_files_per_round=*/1));
+    // The two 2024 groups sit either side of the 2025 group in row id order, so a
+    // one-file-per-round budget still splits them into separate rounds.
+    ASSERT_GT(rounds, 1);
+
+    auto read_type =
+        arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_});
+    auto expected_2024 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "2024", "y0", 0],
+        [2, "2024", "y1", 1],
+        [5, "2024", "y0", 4],
+        [6, "2024", "y1", 5]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2024,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2024", 4))));
+
+    // The unselected partition was never planned, so its rows read back untouched.
+    auto expected_2025 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [3, "2025", "y0", 2],
+        [4, "2025", "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2025,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2025", 4))));
+}
+
+TEST_P(DataEvolutionTableTest, TestRunAndCommitMovesDeletionVectorsEveryRoundBitmap32) {
+    RunAndCommitMovesDeletionVectorsEveryRound(/*bitmap64=*/false);
+}
+
+TEST_P(DataEvolutionTableTest, TestRunAndCommitMovesDeletionVectorsEveryRoundBitmap64) {
+    RunAndCommitMovesDeletionVectorsEveryRound(/*bitmap64=*/true);
+}
+
+TEST_P(DataEvolutionTableTest, TestRunAndCommitRejectsEmptyCommitUser) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::RunAndCommit(
+                            table_path, options, /*partitions=*/{}, /*commit_user=*/"",
+                            dir_->GetFileSystem(), GetDefaultPool())
+                            .status(),
+                        "needs a commit user");
+    ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::RunAndCommit(
+                            table_path, options, /*partitions=*/{},
+                            /*commit_user=*/"commit_user_1", dir_->GetFileSystem(),
+                            GetDefaultPool(), /*candidate_files_per_round=*/0)
+                            .status(),
+                        "must be positive");
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactRejectsImmutableOptionOverrides) {
+    // Turning data evolution off at the compaction entry point would route the table into
+    // the plain append rewrite, which reorders row ids; the override is rejected before any
+    // scanning. The same guard covers the other path-deciding and layout options, checked
+    // here against the same table.
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/true);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    const std::vector<std::pair<std::string, std::string>> overrides = {
+        {Options::DATA_EVOLUTION_ENABLED, "false"},
+        {Options::ROW_TRACKING_ENABLED, "false"},
+        {Options::BUCKET, "2"},
+        {Options::BLOB_FIELD, "f0"},
+        // Turning deletion vectors off would let the rewrite ignore the deletion files
+        // entirely, resurrecting every deleted row.
+        {Options::DELETION_VECTORS_ENABLED, "false"},
+        // Flipping the deletion vector kind would either fail the rewrite on a merge or
+        // quietly replace the table's vectors with the other kind.
+        {Options::DELETION_VECTOR_BITMAP64, "true"},
+    };
+    for (const auto& [key, value] : overrides) {
+        SCOPED_TRACE(key);
+        std::map<std::string, std::string> compact_options = options;
+        compact_options[key] = value;
+        ASSERT_NOK_WITH_MSG(
+            AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                          dir_->GetFileSystem(), GetDefaultPool())
+                .status(),
+            "immutable table options");
+    }
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactRejectsLegacyRewriteRowIdsOption) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    // The legacy row-id rewriting mode is gone; the coordinator fails instead of silently
+    // ignoring the option.
+    std::map<std::string, std::string> compact_options = options;
+    compact_options.emplace("data-evolution.compaction.rewrite-row-ids", "true");
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool())
+            .status(),
+        "no longer supported");
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAcrossEvolvedFieldGroupsWithPartitions) {
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // One evolved field group per partition, each made of a full-column file and a newer
+    // partial f2 file over the same rows.
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                  /*partition=*/{{"f1", "2024"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4},
+                                  /*partition=*/{{"f1", "2025"}}));
+
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    // Bins never span partitions: one task per partition, each merging the two files of its
+    // field group.
+    ASSERT_EQ(messages.size(), 2);
+    std::set<int64_t> compacted_first_row_ids;
+    for (const auto& message : messages) {
+        auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        ASSERT_TRUE(message_impl);
+        const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+        ASSERT_EQ(compact_increment.CompactBefore().size(), 2);
+        ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+        ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id,
+                             compact_increment.CompactAfter()[0]->NonNullFirstRowId());
+        compacted_first_row_ids.insert(compacted_first_row_id);
+    }
+    ASSERT_EQ(compacted_first_row_ids, (std::set<int64_t>{0, 2}));
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // Split order across partitions does not follow row ids, so each partition is verified
+    // through its own partition predicate.
+    auto read_type =
+        arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_});
+    auto expected_2024 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "2024", "y0", 0],
+        [2, "2024", "y1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2024,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2024", 4))));
+    auto expected_2025 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [3, "2025", "y0", 2],
+        [4, "2025", "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2025,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2025", 4))));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactWithPartitionFilter) {
+    CreateTable(/*partition_keys=*/{"f1"});
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2},
+                                  /*partition=*/{{"f1", "2024"}}));
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/2, /*f0_values=*/{3, 4},
+                                  /*partition=*/{{"f1", "2025"}}));
+
+    // Only the selected partition is planned; the other partition's field group stays as it
+    // is and keeps serving reads from its original files.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         AppendCompactCoordinator::Run(table_path, compact_options,
+                                                       /*partitions=*/{{{"f1", "2024"}}},
+                                                       dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 2);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id,
+                         compact_increment.CompactAfter()[0]->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // Split order across partitions does not follow row ids, so each partition is verified
+    // through its own partition predicate: the compacted 2024 rows and the untouched 2025
+    // rows read back unchanged.
+    auto read_type =
+        arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_});
+    auto expected_2024 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "2024", "y0", 0],
+        [2, "2024", "y1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2024,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2024", 4))));
+    auto expected_2025 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [3, "2025", "y0", 2],
+        [4, "2025", "y1", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(
+        table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_2025,
+        PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
+                                Literal(FieldType::STRING, "2025", 4))));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAcrossSchemaEvolution) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // Schema 0: two full-row commits, row ids [0, 1] and [2, 3], sequence numbers 1 and 2.
+    for (const std::string& rows_json : {std::string(R"([[1, "a0", "x0"], [2, "a1", "x1"]])"),
+                                         std::string(R"([[3, "a2", "x2"], [4, "a3", "x3"]])")}) {
+        auto schema0_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), rows_json)
+                .ValueOrDie());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema0_msgs,
+                             WriteArray(table_path, {"f0", "f1", "f2"}, schema0_array));
+        ASSERT_OK(Commit(table_path, schema0_msgs));
+    }
+
+    // Evolve the schema: change f0 INT -> BIGINT (keeps field id 0, a type change) and add
+    // f3 INT with the fresh field id 3.
+    arrow::FieldVector evolved_fields = {
+        arrow::field("f0", arrow::int64()),
+        arrow::field("f1", arrow::utf8()),
+        arrow::field("f2", arrow::utf8()),
+        arrow::field("f3", arrow::int32()),
+    };
+    ASSERT_OK(TestHelper::WriteNextSchema(
+        dir_->GetFileSystem(), table_path,
+        {DataField(0, evolved_fields[0]), DataField(1, evolved_fields[1]),
+         DataField(2, evolved_fields[2]), DataField(3, evolved_fields[3])},
+        /*highest_field_id=*/3, options));
+
+    // Schema 1: two more full rows, row ids [4, 5], sequence number 3 (rows [2, 3] from the
+    // second schema-0 commit above stay untouched and keep their added f3 as NULL).
+    auto schema1_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(evolved_fields), R"([
+        [5, "a4", "x4", 50],
+        [6, "a5", "x5", 60]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema1_msgs,
+                         WriteArray(table_path, {"f0", "f1", "f2", "f3"}, schema1_array));
+    ASSERT_OK(Commit(table_path, schema1_msgs));
+
+    // A schema-1 partial write fills the added f3 for the first schema-0 rows: the [0, 1]
+    // field group now merges files written under different schema ids, sequence number 4.
+    auto f3_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({evolved_fields[3]}), R"([
+        [100],
+        [200]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> f3_msgs,
+                         WriteArray(table_path, {"f3"}, f3_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, f3_msgs);
+    ASSERT_OK(Commit(table_path, f3_msgs));
+
+    // Pre-compaction read through the latest schema: f0 is cast to BIGINT everywhere, the
+    // added f3 is NULL for the untouched schema-0 rows [2, 3] and filled through the
+    // cross-schema field group for rows [0, 1].
+    auto read_type =
+        arrow::struct_({evolved_fields[0], evolved_fields[1], evolved_fields[2], evolved_fields[3],
+                        SpecialFields::RowId().field_, SpecialFields::SequenceNumber().field_});
+    std::vector<std::string> read_names = {"f0", "f1", "f2", "f3", "_ROW_ID", "_SEQUENCE_NUMBER"};
+    auto expected_before = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "a0", "x0", 100, 0, 4],
+        [2, "a1", "x1", 200, 1, 4],
+        [3, "a2", "x2", null, 2, 2],
+        [4, "a3", "x3", null, 3, 2],
+        [5, "a4", "x4", 50, 4, 3],
+        [6, "a5", "x5", 60, 5, 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_before));
+
+    // The coordinator merges all four files — schema-0, schema-1 and the cross-schema
+    // partial — into one file written with the latest schema.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 4);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    const std::shared_ptr<DataFileMeta>& compacted_file = compact_increment.CompactAfter()[0];
+    // The rewritten file holds every column of the latest schema and carries its schema id;
+    // row ids and the merged sequence range of the inputs are preserved.
+    ASSERT_EQ(compacted_file->schema_id, 1);
+    ASSERT_EQ(compacted_file->write_cols, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id, compacted_file->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+    ASSERT_EQ(compacted_file->row_count, 6);
+    ASSERT_EQ(compacted_file->min_sequence_number, 1);
+    ASSERT_EQ(compacted_file->max_sequence_number, 4);
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // After the rewrite the merged values survive: the cast f0, the NULL-filled f3 and the
+    // cross-schema f3 fill are now materialized in the compacted file, and every row reads
+    // the group's maximum sequence number.
+    auto expected_after = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "a0", "x0", 100, 0, 4],
+        [2, "a1", "x1", 200, 1, 4],
+        [3, "a2", "x2", null, 2, 4],
+        [4, "a3", "x3", null, 3, 4],
+        [5, "a4", "x4", 50, 4, 4],
+        [6, "a5", "x5", 60, 5, 4]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_after));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactAfterDropColumn) {
+    std::map<std::string, std::string> options =
+        CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // Schema 0: two full rows, row ids [0, 1], sequence number 1.
+    auto schema0_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [1, "a0", "x0"],
+        [2, "a1", "x1"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema0_msgs,
+                         WriteArray(table_path, {"f0", "f1", "f2"}, schema0_array));
+    ASSERT_OK(Commit(table_path, schema0_msgs));
+
+    // Drop f2. The surviving fields keep their ids, and the highest field id stays 2 so a
+    // later added column cannot recycle the dropped id.
+    ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path,
+                                          {DataField(0, fields_[0]), DataField(1, fields_[1])},
+                                          /*highest_field_id=*/2, options));
+
+    // Schema 1: two more rows without f2, row ids [2, 3], sequence number 2.
+    arrow::FieldVector remaining_fields = {fields_[0], fields_[1]};
+    auto schema1_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(remaining_fields), R"([
+        [3, "a2"],
+        [4, "a3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> schema1_msgs,
+                         WriteArray(table_path, {"f0", "f1"}, schema1_array));
+    ASSERT_OK(Commit(table_path, schema1_msgs));
+
+    auto read_type =
+        arrow::struct_({remaining_fields[0], remaining_fields[1], SpecialFields::RowId().field_});
+    std::vector<std::string> read_names = {"f0", "f1", "_ROW_ID"};
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, R"([
+        [1, "a0", 0],
+        [2, "a1", 1],
+        [3, "a2", 2],
+        [4, "a3", 3]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_array));
+
+    // The rewrite reads the schema-0 file with the dropped column projected away and writes
+    // the latest two-column schema.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 2);
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    const std::shared_ptr<DataFileMeta>& compacted_file = compact_increment.CompactAfter()[0];
+    ASSERT_EQ(compacted_file->schema_id, 1);
+    ASSERT_EQ(compacted_file->write_cols, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(int64_t compacted_first_row_id, compacted_file->NonNullFirstRowId());
+    ASSERT_EQ(compacted_first_row_id, 0);
+    ASSERT_EQ(compacted_file->row_count, 4);
+
+    ASSERT_OK(Commit(table_path, messages));
+    ASSERT_OK(ScanAndRead(table_path, read_names, expected_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestStaleCompactMessagePreservesConcurrentPartialUpdate) {
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    // One evolved field group over rows [0, 1]: a full-column file and a newer partial f2
+    // file ("y0"/"y1").
+    ASSERT_OK(WriteAndCommitGroup(table_path, /*first_row_id=*/0, /*f0_values=*/{1, 2}));
+
+    // Plan and execute the compaction but hold its commit message back, so the commit below
+    // races it with a stale view of the files.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+
+    // A concurrent partial update lands on the same rows after the compaction has read its
+    // input.
+    auto concurrent_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields_[2]}), R"([
+        ["z0"],
+        ["z1"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> concurrent_msgs,
+                         WriteArray(table_path, {"f2"}, concurrent_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, concurrent_msgs);
+    ASSERT_OK(Commit(table_path, concurrent_msgs));
+
+    // The stale compact message still commits: its before-files are still live, and the
+    // rewritten file keeps the input group's sequence range, so the newer update stays on
+    // top instead of being swallowed.
+    ASSERT_OK(Commit(table_path, messages));
+
+    // f2 serves from the concurrent update (newest sequence), the other columns from the
+    // compacted file, and row ids are unchanged.
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [1, "a0", "z0", 0],
+        [2, "a1", "z1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestSmallFileCompactConflictsWithConcurrentPartialUpdate) {
+    // Merging the groups [0, 0] and [1, 1] into one [0, 1] file moves the field group boundary,
+    // so a concurrent partial update aligned with the OLD boundary must conflict — committing
+    // the stale compact would leave the update's file misaligned with its new group.
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    for (const std::string& row_json :
+         {std::string(R"([[10, "a0", "b0"]])"), std::string(R"([[11, "a1", "b1"]])")}) {
+        auto row_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), row_json)
+                .ValueOrDie());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> row_msgs,
+                             WriteArray(table_path, {"f0", "f1", "f2"}, row_array));
+        ASSERT_OK(Commit(table_path, row_msgs));
+    }
+
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+
+    // The concurrent update lands on row 0 only, aligned with the pre-compaction boundary.
+    auto concurrent_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields_[2]}), R"([
+        ["upd0"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> concurrent_msgs,
+                         WriteArray(table_path, {"f2"}, concurrent_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, concurrent_msgs);
+    ASSERT_OK(Commit(table_path, concurrent_msgs));
+
+    // The compact-kind commit always runs the row range alignment check on data-evolution
+    // tables, so the stale message is rejected and the table keeps serving the update.
+    ASSERT_NOK_WITH_MSG(Commit(table_path, messages),
+                        "'COMPACT' operations have encountered conflicts");
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [10, "a0", "upd0", 0],
+        [11, "a1", "b1", 1]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestCompactKeepsConcurrentAppendForNextSmallFileMerge) {
+    // An append outside the task's row id range neither conflicts with nor is consumed by the
+    // stale compact message; the next coordinator round merges it with the compacted file.
+    CreateDataEvolutionTable(/*deletion_vectors_enabled=*/false);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+
+    for (const std::string& row_json :
+         {std::string(R"([[10, "a0", "b0"]])"), std::string(R"([[11, "a1", "b1"]])")}) {
+        auto row_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), row_json)
+                .ValueOrDie());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> row_msgs,
+                             WriteArray(table_path, {"f0", "f1", "f2"}, row_array));
+        ASSERT_OK(Commit(table_path, row_msgs));
+    }
+
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(messages.size(), 1);
+
+    // The concurrent append takes the next row id range [2, 2], outside the task's range.
+    auto append_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [12, "a2", "b2"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> append_msgs,
+                         WriteArray(table_path, {"f0", "f1", "f2"}, append_array));
+    ASSERT_OK(Commit(table_path, append_msgs));
+
+    // The stale compact message still commits: the appended range does not overlap the
+    // rewritten one.
+    ASSERT_OK(Commit(table_path, messages));
+
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields_[0], fields_[1], fields_[2], SpecialFields::RowId().field_}),
+            R"([
+        [10, "a0", "b0", 0],
+        [11, "a1", "b1", 1],
+        [12, "a2", "b2", 2]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
+
+    // The next round packs the compacted file [0, 1] and the appended file [2, 2] — adjacent
+    // ranges — into one task and merges them.
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> next_messages,
+        AppendCompactCoordinator::Run(table_path, compact_options,
+                                      /*partitions=*/{}, dir_->GetFileSystem(), GetDefaultPool()));
+    ASSERT_EQ(next_messages.size(), 1);
+    auto next_message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(next_messages[0]);
+    ASSERT_TRUE(next_message_impl);
+    const CompactIncrement& next_increment = next_message_impl->GetCompactIncrement();
+    ASSERT_EQ(next_increment.CompactBefore().size(), 2);
+    ASSERT_EQ(next_increment.CompactAfter().size(), 1);
+    ASSERT_OK_AND_ASSIGN(int64_t next_first_row_id,
+                         next_increment.CompactAfter()[0]->NonNullFirstRowId());
+    ASSERT_EQ(next_first_row_id, 0);
+    ASSERT_EQ(next_increment.CompactAfter()[0]->row_count, 3);
+    ASSERT_OK(Commit(table_path, next_messages));
+    ASSERT_OK(ScanAndRead(table_path, {"f0", "f1", "f2", "_ROW_ID"}, expected_array));
 }
 
 std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionTableTest() {

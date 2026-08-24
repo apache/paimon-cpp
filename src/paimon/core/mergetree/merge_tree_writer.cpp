@@ -21,8 +21,10 @@
 #include <algorithm>
 #include <cassert>
 #include <map>
+#include <string>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/abi.h"
@@ -40,6 +42,7 @@
 #include "paimon/core/io/key_value_data_file_writer_factory.h"
 #include "paimon/core/io/key_value_meta_projection_consumer.h"
 #include "paimon/core/io/key_value_record_reader.h"
+#include "paimon/core/io/primary_key_blob_externalizer.h"
 #include "paimon/core/io/row_to_arrow_array_converter.h"
 #include "paimon/core/io/shredding_key_value_data_file_writer_factory.h"
 #include "paimon/core/manifest/file_source.h"
@@ -67,10 +70,17 @@ Result<std::shared_ptr<MergeTreeWriter>> MergeTreeWriter::Create(
                             options.GetSequenceField(), key_comparator, user_defined_seq_comparator,
                             merge_function_wrapper, options, io_manager, enable_multi_thread_spill,
                             pool));
-    return std::shared_ptr<MergeTreeWriter>(
+    std::shared_ptr<MergeTreeWriter> writer(
         new MergeTreeWriter(trimmed_primary_keys, options, path_factory, key_comparator,
                             user_defined_seq_comparator, merge_function_wrapper, schema_id,
                             write_schema, compact_manager, std::move(write_buffer), pool));
+    // Managed blob payloads leave the row before it is buffered: they are externalized into
+    // pack files and the buffered value holds a descriptor, so the write buffer and any spill
+    // never carry the payload bytes.
+    PAIMON_ASSIGN_OR_RAISE(
+        writer->blob_externalizer_,
+        PrimaryKeyBlobExternalizer::Create(options, value_schema, path_factory, pool));
+    return writer;
 }
 
 MergeTreeWriter::MergeTreeWriter(
@@ -96,6 +106,11 @@ MergeTreeWriter::MergeTreeWriter(
       metrics_(std::make_shared<MetricsImpl>()) {}
 
 Status MergeTreeWriter::DoClose() {
+    // Uncommitted managed blob packs die with the writer, mirroring the temporary data file
+    // cleanup below; packs handed over by PrepareCommit are unaffected.
+    if (blob_externalizer_) {
+        blob_externalizer_->Abort();
+    }
     // Request cancellation and wait for running compaction to exit.
     // This avoids reusing cancellation state while an old task is still running.
     compact_manager_->CancelAndWaitCompaction();
@@ -119,8 +134,11 @@ Status MergeTreeWriter::DoClose() {
         }
     }
     for (const auto& file : delete_files) {
-        // Keep Java parity: temporary file cleanup is quiet.
-        [[maybe_unused]] auto s = options_.GetFileSystem()->Delete(path_factory_->ToPath(file));
+        // Temporary file cleanup is quiet and removes the data file together with its companion
+        // files (e.g. the managed blob reference sidecar).
+        for (const auto& path : path_factory_->CollectFiles(file)) {
+            [[maybe_unused]] auto s = options_.GetFileSystem()->Delete(path);
+        }
     }
 
     write_buffer_->Clear();
@@ -146,6 +164,10 @@ Status MergeTreeWriter::FlushMemory() {
 }
 
 Status MergeTreeWriter::Write(std::unique_ptr<RecordBatch>&& moved_batch) {
+    if (blob_externalizer_) {
+        PAIMON_ASSIGN_OR_RAISE(moved_batch,
+                               blob_externalizer_->Externalize(std::move(moved_batch)));
+    }
     PAIMON_ASSIGN_OR_RAISE(bool has_remaining_quota, write_buffer_->Write(std::move(moved_batch)));
     if (!has_remaining_quota) {
         return FlushWriteBuffer(/*wait_for_latest_compaction=*/false,
@@ -201,7 +223,11 @@ Status MergeTreeWriter::UpdateCompactResult(const std::shared_ptr<CompactResult>
             if (!in_compact_before(file->file_name) &&
                 after_files.find(file->file_name) == after_files.end()) {
                 auto fs = options_.GetFileSystem();
-                [[maybe_unused]] auto s = fs->Delete(path_factory_->ToPath(file));
+                // An intermediate file's companion files (e.g. the managed blob reference
+                // sidecar) are no longer needed either.
+                for (const auto& path : path_factory_->CollectFiles(file)) {
+                    [[maybe_unused]] auto s = fs->Delete(path);
+                }
             }
         } else {
             compact_before_.push_back(file);
@@ -241,7 +267,16 @@ Result<CommitIncrement> MergeTreeWriter::PrepareCommit(bool wait_compaction) {
         wait_compaction = true;
     }
     PAIMON_RETURN_NOT_OK(TrySyncLatestCompaction(wait_compaction));
-    return DrainIncrement();
+    std::vector<std::string> owned_managed_blob_packs;
+    if (blob_externalizer_) {
+        // Seal the packs this writer created and hand them over: it no longer deletes them on
+        // close, and their paths ride along with the increment so a failed commit can roll back
+        // exactly the packs it created.
+        PAIMON_ASSIGN_OR_RAISE(owned_managed_blob_packs, blob_externalizer_->PrepareCommit());
+    }
+    PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment, DrainIncrement());
+    increment.SetOwnedManagedBlobPacks(std::move(owned_managed_blob_packs));
+    return increment;
 }
 
 Result<bool> MergeTreeWriter::CompactNotCompleted() {

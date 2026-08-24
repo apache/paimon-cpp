@@ -18,13 +18,16 @@
  */
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 
+#include <memory>
 #include <set>
+#include <vector>
 
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/fs/file_system_factory.h"
+#include "paimon/io/data_input_stream.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -191,6 +194,48 @@ TEST(BitmapDeletionVectorTest, MergeTwoBitmapDeletionVectors) {
     ASSERT_FALSE(dv1->IsDeleted(0).value());
     ASSERT_FALSE(dv1->IsDeleted(6).value());
     ASSERT_EQ(dv1->GetCardinality().value(), 5);
+}
+
+TEST(BitmapDeletionVectorTest, ForEachDeletedPositionVisitsPositionsInOrder) {
+    RoaringBitmap32 roaring;
+    roaring.Add(20);
+    roaring.Add(3);
+    roaring.Add(11);
+    auto dv = std::make_shared<BitmapDeletionVector>(roaring);
+
+    std::vector<int64_t> visited;
+    ASSERT_OK(dv->ForEachDeletedPosition([&visited](int64_t position) -> Status {
+        visited.push_back(position);
+        return Status::OK();
+    }));
+    // Ascending order, whatever order the positions were added in: callers that relocate a
+    // vector onto another row range rely on visiting every deleted position exactly once.
+    ASSERT_EQ(visited, (std::vector<int64_t>{3, 11, 20}));
+
+    RoaringBitmap32 empty_roaring;
+    auto empty_dv = std::make_shared<BitmapDeletionVector>(empty_roaring);
+    visited.clear();
+    ASSERT_OK(empty_dv->ForEachDeletedPosition([&visited](int64_t position) -> Status {
+        visited.push_back(position);
+        return Status::OK();
+    }));
+    ASSERT_TRUE(visited.empty());
+}
+
+TEST(BitmapDeletionVectorTest, ForEachDeletedPositionStopsOnConsumerFailure) {
+    RoaringBitmap32 roaring;
+    roaring.Add(1);
+    roaring.Add(2);
+    roaring.Add(3);
+    auto dv = std::make_shared<BitmapDeletionVector>(roaring);
+
+    int32_t calls = 0;
+    Status status = dv->ForEachDeletedPosition([&calls](int64_t) -> Status {
+        calls++;
+        return Status::Invalid("stop here");
+    });
+    ASSERT_NOK_WITH_MSG(status, "stop here");
+    ASSERT_EQ(calls, 1);
 }
 
 TEST(BitmapDeletionVectorTest, MergeEmptyDeletionVector) {

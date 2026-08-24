@@ -19,11 +19,14 @@
 #include "paimon/format/blob/blob_format_writer.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "fmt/format.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_descriptor.h"
 #include "paimon/common/data/blob_utils.h"
@@ -33,6 +36,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/delta_varint_compressor.h"
 #include "paimon/data/blob.h"
+#include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/logging.h"
@@ -44,7 +48,8 @@ BlobFormatWriter::BlobFormatWriter(const std::shared_ptr<OutputStream>& out, con
                                    bool write_null_on_missing_file,
                                    bool write_null_on_fetch_failure, bool write_placeholder,
                                    const std::shared_ptr<FileSystem>& fs,
-                                   const std::shared_ptr<MemoryPool>& pool)
+                                   const std::shared_ptr<MemoryPool>& pool,
+                                   int64_t copy_buffer_size)
     : out_(out),
       uri_(uri),
       data_type_(data_type),
@@ -53,10 +58,11 @@ BlobFormatWriter::BlobFormatWriter(const std::shared_ptr<OutputStream>& out, con
       write_null_on_missing_file_(write_null_on_missing_file),
       write_null_on_fetch_failure_(write_null_on_fetch_failure),
       write_placeholder_(write_placeholder) {
-    // Create() has already checked that data_type has exactly one BLOB field.
+    // Create() has already checked that data_type has exactly one BLOB field and that
+    // copy_buffer_size is within range.
     blob_field_name_ = data_type_->field(0)->name();
     metrics_ = std::make_shared<MetricsImpl>();
-    tmp_buffer_ = Bytes::AllocateBytes(kTmpBufferSize, pool_.get());
+    tmp_buffer_ = Bytes::AllocateBytes(copy_buffer_size, pool_.get());
     magic_number_bytes_ = IntegerToLittleEndian<int32_t>(BlobDefs::kMagicNumber, pool_);
     logger_ = Logger::GetLogger("BlobFormatWriter");
 }
@@ -64,9 +70,15 @@ BlobFormatWriter::BlobFormatWriter(const std::shared_ptr<OutputStream>& out, con
 Result<std::unique_ptr<BlobFormatWriter>> BlobFormatWriter::Create(
     const std::shared_ptr<OutputStream>& out, const std::shared_ptr<arrow::DataType>& data_type,
     bool write_null_on_missing_file, bool write_null_on_fetch_failure, bool write_placeholder,
-    const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<MemoryPool>& pool,
+    int64_t copy_buffer_size) {
     if (out == nullptr) {
         return Status::Invalid("blob format writer create failed. out is nullptr");
+    }
+    if (copy_buffer_size <= 0 || copy_buffer_size > std::numeric_limits<int32_t>::max()) {
+        return Status::Invalid(fmt::format(
+            "'{}' must be between 1 byte and {} bytes, but was {} bytes.",
+            Options::BLOB_COPY_BUFFER_SIZE, std::numeric_limits<int32_t>::max(), copy_buffer_size));
     }
     if (data_type == nullptr) {
         return Status::Invalid("blob format writer create failed. data_type is nullptr");
@@ -86,9 +98,9 @@ Result<std::unique_ptr<BlobFormatWriter>> BlobFormatWriter::Create(
             fmt::format("field {} is not BLOB", data_type->field(0)->ToString()));
     }
     PAIMON_ASSIGN_OR_RAISE(std::string uri, out->GetUri());
-    return std::unique_ptr<BlobFormatWriter>(
-        new BlobFormatWriter(out, uri, data_type, write_null_on_missing_file,
-                             write_null_on_fetch_failure, write_placeholder, fs, pool));
+    return std::unique_ptr<BlobFormatWriter>(new BlobFormatWriter(
+        out, uri, data_type, write_null_on_missing_file, write_null_on_fetch_failure,
+        write_placeholder, fs, pool, copy_buffer_size));
 }
 
 Status BlobFormatWriter::AddBatch(ArrowArray* batch) {
@@ -98,6 +110,9 @@ Status BlobFormatWriter::AddBatch(ArrowArray* batch) {
     if (batch->length != 1) {
         return Status::Invalid("BlobFormatWriter only supports batch with a row count of 1");
     }
+    // Only a record that stores payload bytes publishes a range; NULL and placeholder
+    // entries leave it empty.
+    last_payload_range_.reset();
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(batch, data_type_));
 
@@ -161,6 +176,11 @@ Status BlobFormatWriter::Finish() {
 }
 
 Status BlobFormatWriter::WriteBlob(std::string_view blob_data) {
+    // Probe the output position before any stream is opened, so a probe failure has nothing
+    // to leak: from the moment the input stream exists, every path runs through the explicit
+    // Close below.
+    PAIMON_ASSIGN_OR_RAISE(int64_t previous_pos, out_->GetPos());
+
     // Open the blob input stream before writing any bytes, so that a failed fetch can be
     // converted to a NULL element without leaving partial data in the output stream.
     // Whether blob_data is a serialized BlobDescriptor is detected by its magic header rather
@@ -180,33 +200,43 @@ Status BlobFormatWriter::WriteBlob(std::string_view blob_data) {
     } else {
         in = std::make_unique<ByteArrayInputStream>(blob_data.data(), blob_data.size());
     }
-    PAIMON_ASSIGN_OR_RAISE(int64_t file_length, in->Length());
-
     crc32_ = 0;
-    PAIMON_ASSIGN_OR_RAISE(int64_t previous_pos, out_->GetPos());
 
-    // write magic number
-    PAIMON_RETURN_NOT_OK(WriteWithCrc32(magic_number_bytes_->data(), magic_number_bytes_->size()));
-    int64_t total_read_length = 0;
-    int64_t read_len = std::min(file_length, static_cast<int64_t>(tmp_buffer_->size()));
-    while (read_len > 0) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t actual_read_len, in->Read(tmp_buffer_->data(), read_len));
-        if (actual_read_len != read_len) {
-            return Status::Invalid(
-                fmt::format("actual read length {}, not match with expect length {}",
-                            actual_read_len, read_len));
+    // Copy the payload; the source stream is closed on every path and a failed copy keeps its
+    // own error. Partial reads are legal for a file system and are simply continued.
+    Status copy_status = [&]() -> Status {
+        PAIMON_ASSIGN_OR_RAISE(int64_t file_length, in->Length());
+        // write magic number
+        PAIMON_RETURN_NOT_OK(
+            WriteWithCrc32(magic_number_bytes_->data(), magic_number_bytes_->size()));
+        int64_t total_read_length = 0;
+        while (total_read_length < file_length) {
+            int64_t read_len = std::min(file_length - total_read_length,
+                                        static_cast<int64_t>(tmp_buffer_->size()));
+            PAIMON_ASSIGN_OR_RAISE(int64_t actual_read_len,
+                                   in->Read(tmp_buffer_->data(), read_len));
+            if (actual_read_len <= 0 || actual_read_len > read_len) {
+                return Status::IOError(fmt::format("unexpected read length {} after {} of {} bytes",
+                                                   actual_read_len, total_read_length,
+                                                   file_length));
+            }
+            PAIMON_RETURN_NOT_OK(WriteWithCrc32(tmp_buffer_->data(), actual_read_len));
+            total_read_length += actual_read_len;
         }
-        PAIMON_RETURN_NOT_OK(WriteWithCrc32(tmp_buffer_->data(), actual_read_len));
-        total_read_length += actual_read_len;
-        read_len =
-            std::min(file_length - total_read_length, static_cast<int64_t>(tmp_buffer_->size()));
+        return Status::OK();
+    }();
+    Status in_close_status = in->Close();
+    if (copy_status.ok()) {
+        copy_status = in_close_status;
     }
+    PAIMON_RETURN_NOT_OK(copy_status);
 
     // write bin length
     PAIMON_ASSIGN_OR_RAISE(int64_t current_pos, out_->GetPos());
     /// magic number(4) + blob content(bin length - 16) + bin length(8) + crc32(4)
     /// ↑                                             ↑
     /// previous_pos                               current_pos
+    last_payload_range_ = std::make_pair(previous_pos + 4, current_pos - previous_pos - 4);
     int64_t bin_length = current_pos - previous_pos + 8 + 4;
     bin_lengths_.push_back(bin_length);
     PAIMON_UNIQUE_PTR<Bytes> bin_length_bytes = IntegerToLittleEndian<int64_t>(bin_length, pool_);
@@ -290,10 +320,16 @@ Result<std::unique_ptr<InputStream>> BlobFormatWriter::HandleFetchFailure(
 }
 
 Status BlobFormatWriter::WriteBytes(const char* data, int64_t length) {
-    PAIMON_ASSIGN_OR_RAISE(int64_t actual, out_->Write(data, length));
-    if (actual != length) {
-        return Status::Invalid(
-            fmt::format("unexpected actual length {} not match with expect {}", actual, length));
+    int64_t total_written = 0;
+    while (total_written < length) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t actual,
+                               out_->Write(data + total_written, length - total_written));
+        // Like the read path, reject a backend claiming more than was requested.
+        if (actual <= 0 || actual > length - total_written) {
+            return Status::IOError(fmt::format("unexpected written length {} after {} of {} bytes",
+                                               actual, total_written, length));
+        }
+        total_written += actual;
     }
     return Status::OK();
 }

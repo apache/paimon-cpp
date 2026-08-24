@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/bucket/bucket_function_type.h"
 #include "paimon/common/fs/resolving_file_system.h"
@@ -194,6 +195,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::TARGET_FILE_SIZE, "512MB"},
         {Options::TARGET_FILE_ROW_NUM, "123"},
         {Options::BLOB_TARGET_FILE_SIZE, "1G"},
+        {Options::BLOB_COPY_BUFFER_SIZE, "8 kb"},
         {Options::PARTITION_DEFAULT_NAME, "foo"},
         {Options::MANIFEST_TARGET_FILE_SIZE, "16MB"},
         {Options::MANIFEST_FULL_COMPACTION_FILE_SIZE, "32MB"},
@@ -482,6 +484,14 @@ TEST(CoreOptionsTest, TestFromMap) {
 TEST(CoreOptionsTest, TestInvalidCase) {
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::TARGET_FILE_ROW_NUM, "0"}}),
                         "target-file-row-num should be at least 1");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BLOB_COPY_BUFFER_SIZE, "0"}}),
+                        "must be between 1 byte and");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BLOB_COPY_BUFFER_SIZE, "3 gb"}}),
+                        "must be between 1 byte and");
+    // The inclusive upper bound is still accepted.
+    ASSERT_OK(
+        CoreOptions::FromMap({{Options::BLOB_COPY_BUFFER_SIZE,
+                               fmt::format("{} bytes", std::numeric_limits<int32_t>::max())}}));
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BUCKET, "3.5"}}),
                         "Invalid Config [bucket: 3.5]");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::SCAN_SNAPSHOT_ID, "3.5"}}),

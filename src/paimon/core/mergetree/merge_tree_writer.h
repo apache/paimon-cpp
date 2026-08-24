@@ -51,6 +51,7 @@ class IOManager;
 class FieldsComparator;
 class MemoryPool;
 class Metrics;
+class PrimaryKeyBlobExternalizer;
 template <typename T>
 class MergeFunctionWrapper;
 
@@ -128,6 +129,12 @@ class MergeTreeWriter : public BatchWriter {
     std::shared_ptr<arrow::Schema> write_schema_;
 
     std::shared_ptr<CompactManager> compact_manager_;
+
+    /// Externalizes managed blob payloads before buffering; null unless the table is a
+    /// primary-key managed blob table. Declared before the write buffer: buffered batches
+    /// hold descriptor columns allocated from the externalizer's pool, so the buffer must be
+    /// destroyed first.
+    std::unique_ptr<PrimaryKeyBlobExternalizer> blob_externalizer_;
 
     std::unique_ptr<WriteBuffer> write_buffer_;
 

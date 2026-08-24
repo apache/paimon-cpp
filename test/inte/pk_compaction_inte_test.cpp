@@ -379,6 +379,9 @@ class PkCompactionInteTest : public ::testing::Test,
         return split.value();
     }
 
+    /// Body of the deduplicate-with-deletion-vectors test, run once per vector kind.
+    void RunDeduplicateWithDeletionVectors(bool bitmap64);
+
  private:
     std::shared_ptr<MemoryPool> pool_;
     std::unique_ptr<UniqueTestDirectory> dir_;
@@ -641,7 +644,7 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding
 //   7. ScanAndVerify after DV compact (data read with DV applied)
 //   8. Full compact to merge everything
 //   9. ScanAndVerify after full compact (all data merged)
-TEST_F(PkCompactionInteTest, DeduplicateWithDeletionVectors) {
+void PkCompactionInteTest::RunDeduplicateWithDeletionVectors(bool bitmap64) {
     // f4 is a large padding field to make the initial file substantially bigger than
     // subsequent small level-0 files, preventing PickForSizeRatio from merging them all.
     arrow::FieldVector fields = {
@@ -655,6 +658,11 @@ TEST_F(PkCompactionInteTest, DeduplicateWithDeletionVectors) {
                                                   {Options::BUCKET_KEY, "f2"},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::DELETION_VECTORS_ENABLED, "true"}};
+    if (bitmap64) {
+        // A 64 bit vector cannot be pushed down as a 32 bit selection, so the read applies it
+        // to the rows it returns instead. What the table reads back must not differ.
+        options[Options::DELETION_VECTOR_BITMAP64] = "true";
+    }
     CreateTable(fields, partition_keys, primary_keys, options);
     std::string table_path = TablePath();
     auto data_type = arrow::struct_(fields);
@@ -753,6 +761,14 @@ TEST_F(PkCompactionInteTest, DeduplicateWithDeletionVectors) {
         // clang-format on
         ScanAndVerify(table_path, fields, expected_data);
     }
+}
+
+TEST_F(PkCompactionInteTest, DeduplicateWithDeletionVectors) {
+    RunDeduplicateWithDeletionVectors(/*bitmap64=*/false);
+}
+
+TEST_F(PkCompactionInteTest, DeduplicateWithBitmap64DeletionVectors) {
+    RunDeduplicateWithDeletionVectors(/*bitmap64=*/true);
 }
 
 // Test: PK table compact writes output files to external path.

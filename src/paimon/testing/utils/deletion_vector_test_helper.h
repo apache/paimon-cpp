@@ -31,7 +31,6 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/range_helper.h"
 #include "paimon/core/core_options.h"
-#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/index/index_file_meta.h"
@@ -48,7 +47,6 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
-#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon::test {
 
@@ -117,7 +115,10 @@ class DeletionVectorTestHelper {
         for (const auto& [file_name, deleted_positions] : deleted_positions_by_file) {
             // deleting through the vector itself applies the same position bound a writer is
             // held to, instead of narrowing to the bitmap's index type and wrapping silently
-            auto deletion_vector = std::make_shared<BitmapDeletionVector>(RoaringBitmap32());
+            // Follow the table's configured vector kind, so a bitmap64 table is exercised
+            // through the 64 bit path rather than silently getting 32 bit vectors.
+            std::shared_ptr<DeletionVector> deletion_vector =
+                DeletionVector::Create(core_options.DeletionVectorsBitmap64());
             for (int64_t position : deleted_positions) {
                 if (position < 0) {
                     return Status::Invalid(fmt::format(

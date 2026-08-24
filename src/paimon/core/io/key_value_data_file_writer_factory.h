@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/core/io/data_file_writer_factory.h"
+#include "paimon/core/io/managed_blob_reference_collector.h"
 #include "paimon/core/io/single_file_writer_factory.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/manifest/file_source.h"
@@ -56,6 +57,11 @@ class KeyValueDataFileWriterFactory
     CreateWriter() const override;
 
  protected:
+    /// Builds the managed blob reference collector for the data file at `data_file_path`, or
+    /// nullptr when the write schema holds no managed blob field.
+    Result<std::unique_ptr<ManagedBlobReferenceCollector>> CreateBlobReferenceCollector(
+        const std::string& data_file_path) const;
+
     std::shared_ptr<arrow::Schema> write_schema_;
     int32_t level_;
     FileSource file_source_;

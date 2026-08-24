@@ -36,6 +36,8 @@
 #include "paimon/core/operation/commit/manifest_entry_changes.h"
 #include "paimon/core/operation/commit/retry_waiter.h"
 #include "paimon/core/operation/commit/row_id_column_conflict_checker.h"
+#include "paimon/core/operation/commit/row_id_conflict_checker.h"
+#include "paimon/core/operation/commit/row_id_range_conflict_checker.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/file_store_commit.h"
@@ -139,6 +141,9 @@ class FileStoreCommitImpl : public FileStoreCommit {
     Result<bool> RollbackToAsLatest(int64_t target_snapshot_id) override;
 
     FileStoreCommit& RowIdCheckConflict(std::optional<int64_t> row_id_check_from_snapshot) override;
+
+    FileStoreCommit& RowIdCheckConflictForMaterializeDeletionVectors(
+        std::optional<int64_t> row_id_check_from_snapshot) override;
 
     std::shared_ptr<Metrics> GetCommitMetrics() const override {
         return metrics_;

@@ -151,6 +151,14 @@ Result<int64_t> InMemorySortBuffer::EstimateMemoryUse(const std::shared_ptr<arro
             int64_t offset_length = array->length() * sizeof(int32_t);
             return null_bits_size_in_bytes + value_length + offset_length;
         }
+        case arrow::Type::type::LARGE_BINARY: {
+            // Managed blob columns of a primary-key table buffer their serialized
+            // descriptors as large binary.
+            auto large_binary_array = checked_cast<const arrow::LargeBinaryArray*>(array.get());
+            int64_t value_length = large_binary_array->total_values_length();
+            int64_t offset_length = array->length() * sizeof(int64_t);
+            return null_bits_size_in_bytes + value_length + offset_length;
+        }
         case arrow::Type::type::LIST: {
             auto list_array = checked_cast<const arrow::ListArray*>(array.get());
             PAIMON_ASSIGN_OR_RAISE(int64_t value_mem, EstimateMemoryUse(list_array->values()));

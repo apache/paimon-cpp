@@ -27,6 +27,8 @@
 #include "fmt/format.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/operation/commit/uncommitted_file_cleaner.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/operation/file_system_write_restore.h"
 #include "paimon/core/operation/metrics/compaction_metrics.h"
@@ -188,6 +190,22 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AbstractFileStoreWrite::Prep
     }
 
     std::vector<std::shared_ptr<CommitMessage>> result;
+    // A writer hands its files over the moment it drains an increment, so once a message exists
+    // nothing the writer does removes its data files, sidecars or managed blob packs. Failing
+    // out of this loop never hands `result` to the caller, so the messages built so far would
+    // be stranded with no one left to clean them up.
+    ScopeGuard prepare_guard([this, &result]() {
+        if (result.empty()) {
+            return;
+        }
+        Status status = UncommittedFileCleaner::Delete(
+            file_store_path_factory_, options_.GetFileSystem(), result, logger_.get());
+        if (!status.ok()) {
+            PAIMON_LOG_WARN(logger_,
+                            "Failed to clean up the messages of a failed prepare commit: %s",
+                            status.ToString().c_str());
+        }
+    });
     auto metrics = compaction_metrics_->GetMetrics();
     for (auto partition_iter = writers_.begin(); partition_iter != writers_.end();) {
         auto& partition = partition_iter->first;
@@ -198,21 +216,32 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AbstractFileStoreWrite::Prep
             PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
                                    writer_container.writer->PrepareCommit(wait_compaction));
             writer_memory_manager_->RefreshWriterMemory(writer_container.writer.get());
+            // Enrolling the increment is what puts its files under the guard above, so it has
+            // to happen before anything that can fail with the increment already drained.
+            auto enroll_increment = [&partition, bucket, &writer_container,
+                                     &result](CommitIncrement* enrolled) {
+                auto committable = std::make_shared<CommitMessageImpl>(
+                    partition, bucket, writer_container.total_buckets,
+                    enrolled->GetNewFilesIncrement(), enrolled->GetCompactIncrement());
+                committable->SetOwnedManagedBlobPacks(enrolled->TakeOwnedManagedBlobPacks());
+                result.push_back(committable);
+                return committable;
+            };
             auto compact_deletion_file = increment.GetCompactDeletionFile();
             auto& compact_increment = increment.GetCompactIncrement();
             if (compact_deletion_file) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    std::optional<std::shared_ptr<IndexFileMeta>> dv_index_file_meta,
-                    compact_deletion_file->GetOrCompute());
-                if (dv_index_file_meta) {
-                    compact_increment.AddNewIndexFiles({dv_index_file_meta.value()});
+                Result<std::optional<std::shared_ptr<IndexFileMeta>>> dv_index_file_meta =
+                    compact_deletion_file->GetOrCompute();
+                if (!dv_index_file_meta.ok()) {
+                    enroll_increment(&increment);
+                    return dv_index_file_meta.status();
+                }
+                if (dv_index_file_meta.value()) {
+                    compact_increment.AddNewIndexFiles({dv_index_file_meta.value().value()});
                 }
             }
 
-            auto committable = std::make_shared<CommitMessageImpl>(
-                partition, bucket, writer_container.total_buckets, increment.GetNewFilesIncrement(),
-                compact_increment);
-            result.push_back(committable);
+            std::shared_ptr<CommitMessageImpl> committable = enroll_increment(&increment);
             if (!committable->IsEmpty()) {
                 writer_container.last_modified_commit_identifier = commit_identifier;
                 metrics->Merge(writer_container.writer->GetMetrics());
@@ -261,6 +290,7 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AbstractFileStoreWrite::Prep
         }
     }
 
+    prepare_guard.Release();
     metrics_->Overwrite(metrics);
     return result;
 }
@@ -298,6 +328,21 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
     }
 
     std::vector<RealtimeCommitProgress> result;
+    // Same hand-over as the batch path above: a sealed writer no longer owns the files of the
+    // message it produced, so an early return has to take them with it.
+    std::vector<std::shared_ptr<CommitMessage>> produced;
+    ScopeGuard prepare_guard([this, &produced]() {
+        if (produced.empty()) {
+            return;
+        }
+        Status status = UncommittedFileCleaner::Delete(
+            file_store_path_factory_, options_.GetFileSystem(), produced, logger_.get());
+        if (!status.ok()) {
+            PAIMON_LOG_WARN(logger_,
+                            "Failed to clean up the messages of a failed prepare commit: %s",
+                            status.ToString().c_str());
+        }
+    });
     for (const WriterSnapshot& snapshot : writer_snapshots) {
         PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
                                snapshot.writer->PrepareCommit(/*wait_compaction=*/false));
@@ -305,6 +350,8 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
         auto committable = std::make_shared<CommitMessageImpl>(
             snapshot.partition, snapshot.bucket, snapshot.total_buckets,
             increment.GetNewFilesIncrement(), increment.GetCompactIncrement());
+        committable->SetOwnedManagedBlobPacks(increment.TakeOwnedManagedBlobPacks());
+        produced.push_back(committable);
         if (!increment.GetRealtimeOffsetRange()) {
             if (!committable->IsEmpty()) {
                 return Status::Invalid("real-time commit message does not have an offset range");
@@ -323,6 +370,7 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
             committable, RealtimePartitionBucket(std::move(partition), snapshot.bucket),
             increment.GetRealtimeOffsetRange().value()});
     }
+    prepare_guard.Release();
     {
         std::lock_guard<std::mutex> lock(realtime_metrics_mutex_);
         std::shared_ptr<Metrics> metrics = compaction_metrics_->GetMetrics();

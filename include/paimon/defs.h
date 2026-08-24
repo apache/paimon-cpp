@@ -143,6 +143,10 @@ struct PAIMON_EXPORT Options {
     /// scan splitting. When unset, defaults to the negation of BLOB_AS_DESCRIPTOR.
     static const char BLOB_SPLIT_BY_FILE_SIZE[];
 
+    /// "blob.copy-buffer-size" - Buffer size used when copying blob payloads into blob files.
+    /// Must be between 1 byte and 2147483647 bytes. Default value is "4 kb".
+    static const char BLOB_COPY_BUFFER_SIZE[];
+
     /// "partition.default-name" - The default partition name in case the dynamic partition column
     /// value is null/empty string. Default is "__DEFAULT_PARTITION__".
     static const char PARTITION_DEFAULT_NAME[];
@@ -364,9 +368,12 @@ struct PAIMON_EXPORT Options {
     /// files containing deletion vectors are generated when data is written, which marks the data
     /// for deletion. During read operations, by applying these index files, merging can be avoided.
     /// Default value is false.
-    /// @note On a data-evolution table (`DATA_EVOLUTION_ENABLED`), Paimon C++ reads deletion
-    /// vectors but does not write them: the deletes have to be issued by another engine, and such
-    /// a table is never compacted.
+    /// @note On a data-evolution table (`DATA_EVOLUTION_ENABLED`), Paimon C++ does not originate
+    /// new logical deletions: a delete has to be issued by another engine. It does read the
+    /// resulting vectors, and compacting such a table writes deletion-vector index files of its
+    /// own — the deletions of the replaced files re-keyed onto the rewritten ones, committed in
+    /// the same snapshot. On a plain append table without buckets, deletion vectors still block
+    /// compaction.
     static const char DELETION_VECTORS_ENABLED[];
 
     /// "deletion-vector.index-file.target-size" - The target size of deletion vector index file.
@@ -375,7 +382,6 @@ struct PAIMON_EXPORT Options {
 
     /// "deletion-vectors.bitmap64" - Enable 64 bit bitmap implementation. Note that only 64 bit
     /// bitmap implementation is compatible with Iceberg. Default value is "false".
-    /// @note: bitmap64 dv is not supported.
     static const char DELETION_VECTOR_BITMAP64[];
 
     ///  @note `CHANGELOG_PRODUCER` currently only support `none`
@@ -435,6 +441,14 @@ struct PAIMON_EXPORT Options {
     /// "data-evolution.enabled" - Whether enable data evolution for row tracking table. Default
     /// value is "false".
     static const char DATA_EVOLUTION_ENABLED[];
+    /// "data-evolution.compaction.rewrite-row-ids" - The legacy data-evolution row-id rewriting
+    /// mode. No longer supported; setting it to "true" fails the compaction. Default value is
+    /// "false".
+    static const char DATA_EVOLUTION_COMPACTION_REWRITE_ROW_IDS[];
+    /// "pk-clustering-override" - Whether to override clustering for primary-key tables. Not
+    /// supported by Paimon C++: "true" is rejected by the commit path (and by schema validation
+    /// for primary-key managed BLOB tables). Default value is "false".
+    static const char PK_CLUSTERING_OVERRIDE[];
     /// "partition.legacy-name" - The legacy partition name is using `ToString` for all types. If
     /// false, using casting to string for all types. Default value is "true".
     static const char PARTITION_GENERATE_LEGACY_NAME[];
@@ -500,6 +514,11 @@ struct PAIMON_EXPORT Options {
     /// "blob-descriptor-field" - Comma-separated field names to treat as BLOB fields and store as
     /// serialized BlobDescriptor bytes inline in data files. No default value.
     static const char BLOB_DESCRIPTOR_FIELD[];
+    /// "blob-descriptor.source-table" - The source table whose credentials would re-materialize
+    /// blob descriptors. Not supported by Paimon C++, which always reads descriptors through
+    /// the table's own file system; configuring it on a primary-key managed BLOB table fails
+    /// schema validation instead of silently changing semantics. No default value.
+    static const char BLOB_DESCRIPTOR_SOURCE_TABLE[];
     /// "blob.stored-descriptor-fields" deprecated as a fallback for `BLOB_DESCRIPTOR_FIELD`.
     static const char FALLBACK_BLOB_DESCRIPTOR_FIELD[];
     /// "blob-view-field" - Comma-separated field names to treat as BLOB fields and store as

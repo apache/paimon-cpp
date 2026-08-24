@@ -313,6 +313,263 @@ TEST(SchemaValidationTest, TestWithBlobField) {
     }
 }
 
+TEST(SchemaValidationTest, TestPrimaryKeyManagedBlob) {
+    auto f0 = arrow::field("f0", arrow::utf8(), /*nullable=*/false);
+    auto f1 = arrow::field("f1", arrow::int32());
+    std::shared_ptr<arrow::Field> f2 = BlobUtils::ToArrowField("f2", true);
+    arrow::FieldVector fields = {f0, f1, f2};
+    auto schema = arrow::schema(fields);
+    std::vector<std::string> primary_keys = {"f0"};
+    std::vector<std::string> partition_keys = {};
+    {
+        // A primary-key table manages its blob payloads itself: neither row tracking nor data
+        // evolution is required.
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // first-row is an allowed merge engine for managed blob tables.
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"},
+                                                      {Options::MERGE_ENGINE, "first-row"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"},
+                                                      {Options::MERGE_ENGINE, "aggregation"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "only support the deduplicate, partial-update and first-row merge "
+                            "engines");
+    }
+    {
+        // A managed blob descriptor is rewritten by compaction and cannot produce a changelog.
+        // The table-wide rule that Paimon C++ supports no changelog producer at all rejects
+        // this first; the managed blob rule behind it stays a second line of defence for when
+        // changelog producers arrive.
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"},
+                                                      {Options::CHANGELOG_PRODUCER, "input"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "keep changelog-producer as 'none'");
+    }
+    {
+        // An explicit "none" is the default behaviour and stays allowed, so neither rule can
+        // degrade into rejecting the option itself.
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"},
+                                                      {Options::CHANGELOG_PRODUCER, "none"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // Declaring every blob column inline leaves the table without managed blob fields, so
+        // none of the managed restrictions apply — here the otherwise rejected clustering
+        // override and source table are both accepted.
+        std::map<std::string, std::string> options = {
+            {Options::BUCKET, "2"},
+            {Options::BUCKET_KEY, "f0"},
+            {Options::BLOB_DESCRIPTOR_FIELD, "f2"},
+            {Options::PK_CLUSTERING_OVERRIDE, "true"},
+            {Options::BLOB_DESCRIPTOR_SOURCE_TABLE, "foo.bar"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // The blob target file size drives pack rolling and must be positive.
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"},
+                                                      {Options::BLOB_TARGET_FILE_SIZE, "0"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "must be positive for tables with managed BLOB fields");
+    }
+    {
+        // A managed blob field stores a storage descriptor, not a stable logical value, so
+        // it cannot identify a row.
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"}};
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                 /*primary_keys=*/{"f0", "f2"}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "cannot be part of the primary key");
+    }
+    {
+        // Nor can it order rows.
+        std::map<std::string, std::string> options = {
+            {Options::BUCKET, "2"}, {Options::BUCKET_KEY, "f0"}, {Options::SEQUENCE_FIELD, "f2"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "cannot be a sequence field");
+    }
+    {
+        // The option would re-materialize descriptors through another table's credentials;
+        // C++ rejects it instead of silently using the table's own file system.
+        std::map<std::string, std::string> options = {
+            {Options::BUCKET, "2"},
+            {Options::BUCKET_KEY, "f0"},
+            {Options::BLOB_DESCRIPTOR_SOURCE_TABLE, "foo.bar"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "does not support 'blob-descriptor.source-table'");
+    }
+    {
+        // The unsupported clustering override is rejected by value: only "true"
+        // fails, an explicit "false" equals the default behavior.
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"},
+                                                      {Options::PK_CLUSTERING_OVERRIDE, "true"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "do not support 'pk-clustering-override'");
+
+        options[Options::PK_CLUSTERING_OVERRIDE] = "false";
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // Managed packs stay in the default bucket directory; external data paths are
+        // rejected on the raw option: configuring the option at all — even
+        // as an empty string — fails.
+        for (const std::string& external_paths : {std::string("file:///tmp/data"), std::string()}) {
+            std::map<std::string, std::string> options = {
+                {Options::BUCKET, "2"},
+                {Options::BUCKET_KEY, "f0"},
+                {Options::DATA_FILE_EXTERNAL_PATHS, external_paths}};
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                                 TableSchema::Create(/*schema_id=*/0, schema, partition_keys,
+                                                     primary_keys, options));
+            ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                                "do not support data file external paths");
+        }
+    }
+}
+
+TEST(SchemaValidationTest, TestPrimaryKeyManagedBlobSequenceGroups) {
+    auto f0 = arrow::field("f0", arrow::utf8(), /*nullable=*/false);
+    auto f1 = arrow::field("f1", arrow::int32());
+    std::shared_ptr<arrow::Field> f2 = BlobUtils::ToArrowField("f2", true);
+    arrow::FieldVector fields = {f0, f1, f2};
+    auto schema = arrow::schema(fields);
+    std::vector<std::string> primary_keys = {"f0"};
+    std::map<std::string, std::string> base_options = {{Options::BUCKET, "2"},
+                                                       {Options::BUCKET_KEY, "f0"},
+                                                       {Options::MERGE_ENGINE, "partial-update"}};
+    {
+        // A sequence group may protect the managed blob field without an aggregate function.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f1.sequence-group", "f2");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // An aggregate function that needs the retracted value is rejected: retract rows drop
+        // the managed blob payload.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f1.sequence-group", "f2");
+        options.emplace("fields.f2.aggregate-function", "listagg");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "cannot use aggregate function");
+    }
+    {
+        // With ignore-delete the retract messages never reach the merge function, so the
+        // payload can no longer be lost and the aggregate function is accepted.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f1.sequence-group", "f2");
+        options.emplace("fields.f2.aggregate-function", "listagg");
+        options.emplace(Options::IGNORE_DELETE, "true");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // last_value never needs the retracted value.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f1.sequence-group", "f2");
+        options.emplace("fields.f2.aggregate-function", "last_value");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // ignore-retract explicitly accepts the dropped payload.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f1.sequence-group", "f2");
+        options.emplace("fields.f2.aggregate-function", "listagg");
+        options.emplace("fields.f2.ignore-retract", "true");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // Without a per-field function the default aggregate function applies and is checked
+        // through the same rule.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f1.sequence-group", "f2");
+        options.emplace(Options::FIELDS_DEFAULT_AGG_FUNC, "listagg");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "cannot use aggregate function");
+    }
+    {
+        // A last_value default aggregate function never needs the retracted value.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f1.sequence-group", "f2");
+        options.emplace(Options::FIELDS_DEFAULT_AGG_FUNC, "last_value");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        // A BLOB column cannot order a sequence group.
+        std::map<std::string, std::string> options = base_options;
+        options.emplace("fields.f2.sequence-group", "f1");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 primary_keys, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "cannot be used as a sequence-group ordering field");
+    }
+}
+
 TEST(SchemaValidationTest, TestDuplicateField) {
     auto f0 = arrow::field("f0", arrow::map(arrow::utf8(), arrow::int32()));
     auto f1 = arrow::field("f1", arrow::int32());

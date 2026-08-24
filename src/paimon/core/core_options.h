@@ -89,6 +89,15 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetTargetFileRowNum() const;
     int64_t GetBlobTargetFileSize() const;
     bool BlobSplitByFileSize() const;
+    /// Whether reads return blob values as serialized descriptors instead of payload bytes.
+    bool BlobAsDescriptor() const;
+    /// The legacy data-evolution row-id rewriting mode; no longer supported and rejected by
+    /// the compaction entry point when set.
+    bool DataEvolutionCompactionRewriteRowIds() const;
+    /// The unsupported clustering override for primary-key tables; only "true" is rejected
+    /// (by the commit path and by managed-blob schema validation), an explicit "false"
+    /// equals the C++ behavior and is allowed.
+    bool PkClusteringOverride() const;
     int64_t GetCompactionFileSize(bool has_primary_key) const;
     std::string GetPartitionDefaultName() const;
 

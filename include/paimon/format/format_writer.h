@@ -18,9 +18,12 @@
 
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 
 #include "paimon/status.h"
 #include "paimon/type_fwd.h"
@@ -75,6 +78,18 @@ class PAIMON_EXPORT FormatWriter {
     /// Adds metadata to the file footer. Values are encoded by each format writer
     /// before being persisted. Must be called before Finish().
     virtual Status AddMetadata(const std::map<std::string, std::string>& metadata) = 0;
+
+    /// The `(offset, length)` of the payload bytes the last `AddBatch()` stored, for a format
+    /// that stores one addressable payload per record.
+    ///
+    /// A caller that has to point a descriptor at the bytes it just wrote needs this, and the
+    /// byte range is the only thing it needs — declaring it here keeps that caller from
+    /// downcasting a `FormatWriter` the format factory handed it to the one implementation it
+    /// happens to expect. The default is empty, which is also what a record that kept no
+    /// payload reports, so a caller that requires one has to reject both alike.
+    virtual std::optional<std::pair<int64_t, int64_t>> LastPayloadRange() const {
+        return std::nullopt;
+    }
 };
 
 }  // namespace paimon

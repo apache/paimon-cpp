@@ -44,6 +44,7 @@
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/mergetree/compact/aggregate/field_last_value_agg.h"
 #include "paimon/core/options/changelog_producer.h"
 #include "paimon/core/options/expire_config.h"
 #include "paimon/core/options/map_storage_layout.h"
@@ -197,6 +198,8 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
 
     PAIMON_RETURN_NOT_OK(ValidateRowTracking(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidatePrimaryKeyBlobConfiguration(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateSequenceGroupOrderingFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     return Status::OK();
@@ -508,13 +511,156 @@ Status SchemaValidation::ValidateRowTracking(const TableSchema& table_schema,
             }
         }
 
-        // Validate data evolution must be enabled when blob-field is configured
-        PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
-            options.DataEvolutionEnabled(),
-            "Data evolution config must be enabled for table with BLOB type column."));
+        // A primary-key table manages its blob payloads itself (table-managed packs plus
+        // reference sidecars); only append tables need data evolution for BLOB columns.
+        bool primary_key_managed_blob = !table_schema.PrimaryKeys().empty();
+        if (!primary_key_managed_blob) {
+            PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+                options.DataEvolutionEnabled(),
+                "Data evolution config must be enabled for table with BLOB type column."));
+        }
         PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
             table_schema.Fields().size() > blob_names.size(),
             "Table with BLOB type column must have other normal columns."));
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidatePrimaryKeyBlobConfiguration(const TableSchema& table_schema,
+                                                             const CoreOptions& options) {
+    if (table_schema.PrimaryKeys().empty()) {
+        return Status::OK();
+    }
+    std::vector<std::string> inline_field_names = options.GetBlobInlineFields();
+    std::set<std::string> inline_fields(inline_field_names.begin(), inline_field_names.end());
+    std::vector<std::string> managed_blob_fields = BlobUtils::ManagedBlobFieldNames(
+        DataField::ConvertDataFieldsToArrowSchema(table_schema.Fields()), inline_fields);
+    if (managed_blob_fields.empty()) {
+        return Status::OK();
+    }
+
+    // Managed blob fields cannot serve as keys or ordering fields: the stored descriptor
+    // identifies where a payload lives, not a stable logical value — re-externalizing an
+    // equal payload yields different bytes (compaction itself rewrites descriptors
+    // verbatim).
+    for (const auto& field_name : managed_blob_fields) {
+        if (std::find(table_schema.PrimaryKeys().begin(), table_schema.PrimaryKeys().end(),
+                      field_name) != table_schema.PrimaryKeys().end()) {
+            return Status::Invalid(fmt::format(
+                "Managed BLOB field {} cannot be part of the primary key.", field_name));
+        }
+        // Defensive, and untestable through this entry point: a primary-key table's bucket keys
+        // are its primary keys unless `bucket-key` names a subset of them
+        // (TableSchema::OriginalBucketKeys enforces that), and the check above already refuses a
+        // managed blob field in the primary key. Kept for a future bucket key that does not
+        // have to come from the primary key.
+        if (std::find(table_schema.BucketKeys().begin(), table_schema.BucketKeys().end(),
+                      field_name) != table_schema.BucketKeys().end()) {
+            return Status::Invalid(
+                fmt::format("Managed BLOB field {} cannot be a bucket key.", field_name));
+        }
+        const auto& sequence_fields = options.GetSequenceField();
+        if (std::find(sequence_fields.begin(), sequence_fields.end(), field_name) !=
+            sequence_fields.end()) {
+            return Status::Invalid(
+                fmt::format("Managed BLOB field {} cannot be a sequence field.", field_name));
+        }
+    }
+
+    if (options.GetBlobTargetFileSize() <= 0) {
+        return Status::Invalid(
+            fmt::format("'{}' must be positive for tables with managed BLOB fields, but is {}.",
+                        Options::BLOB_TARGET_FILE_SIZE, options.GetBlobTargetFileSize()));
+    }
+    MergeEngine merge_engine = options.GetMergeEngine();
+    if (merge_engine != MergeEngine::DEDUPLICATE && merge_engine != MergeEngine::PARTIAL_UPDATE &&
+        merge_engine != MergeEngine::FIRST_ROW) {
+        return Status::Invalid(
+            "Primary-key tables with managed BLOB fields only support the deduplicate, "
+            "partial-update and first-row merge engines.");
+    }
+    if (options.GetChangelogProducer() != ChangelogProducer::NONE) {
+        return Status::Invalid(
+            "Primary-key tables with managed BLOB fields do not support changelog producers.");
+    }
+    // Checked on the raw option: resolving the paths would surface unrelated strategy errors
+    // instead of this rule, and configuring the option at all — even as an empty string — is
+    // rejected.
+    if (options.ToMap().count(Options::DATA_FILE_EXTERNAL_PATHS) != 0) {
+        return Status::Invalid(
+            "Primary-key tables with managed BLOB fields do not support data file external "
+            "paths.");
+    }
+    // Only an effective "true" is rejected; an explicit "false" equals the default behavior.
+    if (options.PkClusteringOverride()) {
+        return Status::Invalid(
+            fmt::format("Primary-key tables with managed BLOB fields do not support '{}'.",
+                        Options::PK_CLUSTERING_OVERRIDE));
+    }
+    // The option names a source table whose own file system the descriptors would have to be
+    // re-materialized through; Paimon C++ always uses the table's own, so accepting it would
+    // silently change credential semantics. Fail loudly until the capability is supported.
+    if (options.ToMap().count(Options::BLOB_DESCRIPTOR_SOURCE_TABLE) != 0) {
+        return Status::NotImplemented(
+            fmt::format("Paimon C++ does not support '{}' for primary-key tables with managed "
+                        "BLOB fields; descriptors are always read through the table's own file "
+                        "system.",
+                        Options::BLOB_DESCRIPTOR_SOURCE_TABLE));
+    }
+
+    // A retract row drops its managed BLOB payload, so an aggregate function that has to see
+    // the retracted value cannot protect a managed BLOB field through a sequence group.
+    if (merge_engine == MergeEngine::PARTIAL_UPDATE && !options.IgnoreDelete()) {
+        std::set<std::string> sequence_group_protected_fields;
+        for (const auto& [ordering_fields, protected_fields] : options.GetFieldsSequenceGroups()) {
+            for (const auto& protected_field :
+                 StringUtils::Split(protected_fields, Options::FIELDS_SEPARATOR)) {
+                sequence_group_protected_fields.insert(protected_field);
+            }
+        }
+        for (const auto& field_name : managed_blob_fields) {
+            if (sequence_group_protected_fields.count(field_name) == 0) {
+                continue;
+            }
+            PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> aggregate_function,
+                                   options.GetFieldAggFunc(field_name));
+            if (!aggregate_function) {
+                aggregate_function = options.GetFieldsDefaultFunc();
+            }
+            PAIMON_ASSIGN_OR_RAISE(bool ignore_retract, options.FieldAggIgnoreRetract(field_name));
+            if (aggregate_function && aggregate_function.value() != FieldLastValueAgg::NAME &&
+                !ignore_retract) {
+                return Status::Invalid(fmt::format(
+                    "Managed BLOB field '{}' cannot use aggregate function '{}' because "
+                    "managed BLOB payloads are not retained in retract messages. Set "
+                    "'fields.{}.ignore-retract' to true to ignore retract messages.",
+                    field_name, aggregate_function.value(), field_name));
+            }
+        }
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateSequenceGroupOrderingFields(const TableSchema& table_schema,
+                                                             const CoreOptions& options) {
+    if (options.GetMergeEngine() != MergeEngine::PARTIAL_UPDATE) {
+        return Status::OK();
+    }
+    for (const auto& [ordering_fields, protected_fields] : options.GetFieldsSequenceGroups()) {
+        std::vector<std::string> ordering_field_names =
+            StringUtils::Split(ordering_fields, Options::FIELDS_SEPARATOR);
+        PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> fields,
+                               table_schema.GetFields(ordering_field_names));
+        for (const auto& field : fields) {
+            // A BLOB value cannot order rows: for managed fields it is a storage descriptor,
+            // not a stable logical value.
+            if (BlobUtils::IsBlobField(field.ArrowField())) {
+                return Status::Invalid(fmt::format(
+                    "Field '{}' with BLOB type cannot be used as a sequence-group ordering "
+                    "field in option 'fields.{}.sequence-group'.",
+                    field.Name(), ordering_fields));
+            }
+        }
     }
     return Status::OK();
 }

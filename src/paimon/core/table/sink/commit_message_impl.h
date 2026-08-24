@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "paimon/commit_message.h"
 #include "paimon/common/data/binary_row.h"
@@ -64,6 +66,25 @@ class CommitMessageImpl : public CommitMessage {
         return data_increment_.IsEmpty() && compact_increment_.IsEmpty();
     }
 
+    /// Paths of the managed blob packs this message's writer created, which
+    /// `FileStoreCommit::Abort` deletes when the commit never lands.
+    ///
+    /// The packs a message *references* cannot be used instead: a compaction rewrites blob
+    /// descriptors verbatim, so a compacted file's `.blobref` sidecar lists the packs of the
+    /// files it merged, which older snapshots still read.
+    ///
+    /// Deliberately outside the serialized form, which other engines read too: a message that
+    /// crosses a process boundary loses the list, so the far side's rollback leaves the packs
+    /// behind rather than deleting the wrong ones. Leaking is the failure this trades for, and
+    /// it is the one the rest of the design already tolerates.
+    const std::vector<std::string>& OwnedManagedBlobPacks() const {
+        return owned_managed_blob_packs_;
+    }
+
+    void SetOwnedManagedBlobPacks(std::vector<std::string> packs) {
+        owned_managed_blob_packs_ = std::move(packs);
+    }
+
     std::string ToString() const;
 
     bool operator==(const CommitMessageImpl& other) const;
@@ -76,6 +97,7 @@ class CommitMessageImpl : public CommitMessage {
     std::optional<int32_t> total_buckets_;
     DataIncrement data_increment_;
     CompactIncrement compact_increment_;
+    std::vector<std::string> owned_managed_blob_packs_;
 };
 
 }  // namespace paimon

@@ -340,13 +340,14 @@ come back.
 Limitations
 ~~~~~~~~~~~
 
-- Only the default 32-bit deletion vectors can be read. ``deletion-vectors.bitmap64`` is not
-  supported yet, and a read fails when it actually encounters a 64-bit deletion vector.
-- Paimon C++ does not write deletion vectors for data-evolution tables, so the deletes
-  themselves have to be issued by another engine.
+- Paimon C++ does not originate new logical deletions on a data-evolution table, so the
+  deletes themselves have to be issued by another engine. It does write deletion-vector index
+  files when compacting, but only to carry existing deletions onto the rewritten files.
 - A commit that drops data files from such a table, an overwrite for instance, is refused.
   Whether it conflicts with a concurrent commit rewriting those files' deletion vectors cannot
   be decided yet, so it fails rather than committing against a stale state. Appending is
   unaffected, and so is another engine replacing a deletion vector.
-- Such a table is never compacted; see
-  :ref:`the compaction note <data-evolution-deletion-vectors-compaction>`.
+- Compacting such a table re-keys its deletion vectors onto the rewritten files in the same
+  snapshot, so deleted rows stay deleted; see :ref:`data-evolution-compaction`. Applying the
+  deletions physically instead, which reassigns ``_ROW_ID`` values and drops the affected
+  global indexes, is a separate explicit operation described there.

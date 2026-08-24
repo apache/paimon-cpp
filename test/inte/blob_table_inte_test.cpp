@@ -40,6 +40,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/append/append_compact_coordinator.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_array_writer.h"
 #include "paimon/common/data/binary_row.h"
@@ -54,9 +55,12 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/io/compact_increment.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
+#include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/utils/file_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -670,6 +674,65 @@ TEST_P(BlobTableInteTest, TestAppendTableWriteWithBlobAsDescriptorFalse) {
 
     // BLOB_AS_DESCRIPTOR=false: blob data is stored inline, read result should match input
     ASSERT_OK(ScanAndRead(table_path, schema->field_names(), write_array));
+}
+
+TEST_P(BlobTableInteTest, TestDataEvolutionCompactionLeavesBlobFilesInPlace) {
+    CreateTable();
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+
+    // Two commits build two evolved field groups over contiguous row ids; each write stores
+    // its blob column in a dedicated .blob file next to the normal data file.
+    auto array1 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [0, "blob-0", "s0"],
+        [1, "blob-1", "s1"]
+    ])")
+            .ValueOrDie());
+    auto array2 = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [2, "blob-2", "s2"],
+        [3, "blob-3", "s3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs1,
+                         WriteArray(table_path, {}, schema->field_names(), {array1}));
+    ASSERT_OK(Commit(table_path, commit_msgs1));
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs2,
+                         WriteArray(table_path, {}, schema->field_names(), {array2}));
+    ASSERT_OK(Commit(table_path, commit_msgs2));
+
+    // The coordinator rewrites only the normal files; the dedicated blob files never enter
+    // the task and stay in place, still covering the rewritten file's row range.
+    std::map<std::string, std::string> compact_options = {{Options::COMPACTION_MIN_FILE_NUM, "2"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> messages,
+        AppendCompactCoordinator::Run(table_path, compact_options, /*partitions=*/{},
+                                      dir_->GetFileSystem(), pool_));
+    ASSERT_EQ(messages.size(), 1);
+    auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+    ASSERT_TRUE(message_impl);
+    const CompactIncrement& compact_increment = message_impl->GetCompactIncrement();
+    ASSERT_EQ(compact_increment.CompactBefore().size(), 2);
+    for (const auto& file : compact_increment.CompactBefore()) {
+        ASSERT_FALSE(StringUtils::EndsWith(file->file_name, ".blob")) << file->file_name;
+    }
+    ASSERT_EQ(compact_increment.CompactAfter().size(), 1);
+    ASSERT_FALSE(StringUtils::EndsWith(compact_increment.CompactAfter()[0]->file_name, ".blob"));
+
+    ASSERT_OK(Commit(table_path, messages));
+
+    // The blob payloads still resolve after the rewrite: the read serves the normal columns
+    // from the compacted file and the blob column from the untouched .blob files.
+    auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+        [0, "blob-0", "s0"],
+        [1, "blob-1", "s1"],
+        [2, "blob-2", "s2"],
+        [3, "blob-3", "s3"]
+    ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, schema->field_names(), expected_array));
 }
 
 TEST_P(BlobTableInteTest, TestWriteNullOnMissingFile) {

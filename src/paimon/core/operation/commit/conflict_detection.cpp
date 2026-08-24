@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <tuple>
@@ -46,7 +47,7 @@
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/commit/commit_scanner.h"
 #include "paimon/core/operation/commit/manifest_entry_changes.h"
-#include "paimon/core/operation/commit/row_id_column_conflict_checker.h"
+#include "paimon/core/operation/commit/row_id_conflict_checker.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -63,6 +64,17 @@ bool IsDedicatedStorageFile(const std::string& file_name) {
     return BlobUtils::IsBlobFile(file_name) || VectorStoreUtils::IsVectorStoreFile(file_name);
 }
 
+/// The message both row id existence checks report, so a file is named the same way whichever
+/// of them rejected the commit.
+Status RowIdExistenceConflict(const ManifestEntry& entry) {
+    return Status::Invalid(fmt::format(
+        "Row ID existence conflict: file '{}' references firstRowId={}, rowCount={} in bucket "
+        "{}, but no matching file exists in the current snapshot. The referenced file may have "
+        "been rewritten by a concurrent compaction or removed by an overwrite.",
+        entry.FileName(), entry.File()->first_row_id.value(), entry.File()->row_count,
+        entry.Bucket()));
+}
+
 struct PartitionBucketKey {
     BinaryRow partition;
     int32_t bucket;
@@ -77,6 +89,72 @@ struct PartitionBucketKeyHash {
         return std::hash<BinaryRow>()(key.partition) ^ (std::hash<int32_t>()(key.bucket) << 1);
     }
 };
+
+/// A data file's identity within a table. A deletion vector belongs to one file of one
+/// partition and bucket, so keying by name alone would let entries of different buckets, or of
+/// a partition this commit does not touch, stand in for one another.
+struct DataFileKey {
+    BinaryRow partition;
+    int32_t bucket;
+    std::string file_name;
+
+    bool operator==(const DataFileKey& other) const {
+        return bucket == other.bucket && file_name == other.file_name &&
+               partition == other.partition;
+    }
+};
+
+struct DataFileKeyHash {
+    size_t operator()(const DataFileKey& key) const {
+        return std::hash<BinaryRow>()(key.partition) ^ (std::hash<int32_t>()(key.bucket) << 1) ^
+               (std::hash<std::string>()(key.file_name) << 2);
+    }
+};
+
+/// Where a data file's deletion vector lives and how many rows it deletes.
+struct DeletionVectorOwner {
+    std::string index_file_name;
+    std::optional<int64_t> cardinality;
+};
+
+using DeletionVectorOwners = std::unordered_map<DataFileKey, DeletionVectorOwner, DataFileKeyHash>;
+
+/// Indexes the deletion vectors of `entries` whose kind is `kind` by the data file each covers.
+/// Deletion-vector index metadata already records both, so nothing is deserialized here.
+///
+/// A data file may hold at most one vector, which `GlobalDeletionVectorCombiner` also enforces
+/// when the index manifest is written. Two entries claiming the same file mean the metadata this
+/// check reasons about is already inconsistent, so it is refused rather than resolved by
+/// whichever entry happens to come last.
+Result<DeletionVectorOwners> CollectDeletionVectorOwners(
+    const std::vector<IndexManifestEntry>& entries, const FileKind& kind) {
+    DeletionVectorOwners result;
+    for (const IndexManifestEntry& entry : entries) {
+        if (entry.index_file->IndexType() != DeletionVectorsIndexFile::DELETION_VECTORS_INDEX ||
+            !(entry.kind == kind)) {
+            continue;
+        }
+        const std::optional<LinkedHashMap<std::string, DeletionVectorMeta>>& dv_ranges =
+            entry.index_file->DvRanges();
+        if (dv_ranges == std::nullopt) {
+            continue;
+        }
+        for (const auto& [data_file_name, dv_meta] : dv_ranges.value()) {
+            DataFileKey key{entry.partition, entry.bucket, data_file_name};
+            auto inserted = result.emplace(
+                std::move(key),
+                DeletionVectorOwner{entry.index_file->FileName(), dv_meta.GetCardinality()});
+            if (!inserted.second) {
+                return Status::Invalid(fmt::format(
+                    "Data file {} has a deletion vector in both index file {} and index file {} "
+                    "of the same partition and bucket.",
+                    data_file_name, inserted.first->second.index_file_name,
+                    entry.index_file->FileName()));
+            }
+        }
+    }
+    return result;
+}
 
 }  // namespace
 
@@ -99,23 +177,35 @@ ConflictDetection::ConflictDetection(std::shared_ptr<TableSchema> table_schema,
       table_name_(table_name) {}
 
 void ConflictDetection::SetRowIdCheckFromSnapshot(
-    const std::optional<int64_t>& row_id_check_from_snapshot) {
+    const std::optional<int64_t>& row_id_check_from_snapshot, RowIdCheckStrategy strategy) {
     row_id_check_from_snapshot_ = row_id_check_from_snapshot;
+    row_id_check_strategy_ = strategy;
 }
 
 bool ConflictDetection::HasRowIdCheckFromSnapshot() const {
     return row_id_check_from_snapshot_.has_value();
 }
 
+bool ConflictDetection::RowIdCheckAppliesTo(const Snapshot::CommitKind& commit_kind) const {
+    if (!row_id_check_from_snapshot_) {
+        return false;
+    }
+    if (row_id_check_strategy_ == RowIdCheckStrategy::kMaterializeDeletionVectors) {
+        return commit_kind == Snapshot::CommitKind::Compact();
+    }
+    return true;
+}
+
 Status ConflictDetection::CheckConflicts(
     const Snapshot& latest_snapshot, const std::vector<ManifestEntry>& base_entries,
     const std::vector<ManifestEntry>& delta_entries,
     const std::vector<IndexManifestEntry>& delta_index_entries,
-    const std::optional<std::shared_ptr<RowIdColumnConflictChecker>>&
-        row_id_column_conflict_checker,
-    const Snapshot::CommitKind& commit_kind) const {
+    const std::optional<std::shared_ptr<RowIdConflictChecker>>& row_id_conflict_checker,
+    const Snapshot::CommitKind& commit_kind,
+    const std::vector<IndexManifestEntry>& base_index_entries) const {
     std::string base_commit_user = latest_snapshot.CommitUser();
-    PAIMON_RETURN_NOT_OK(CheckDeletionVectorsNotBypassed(delta_entries));
+    PAIMON_RETURN_NOT_OK(CheckDeletionVectorsNotBypassed(delta_entries, delta_index_entries,
+                                                         base_index_entries, commit_kind));
     std::vector<ManifestEntry> all_entries = base_entries;
     all_entries.insert(all_entries.end(), delta_entries.begin(), delta_entries.end());
     PAIMON_RETURN_NOT_OK(CheckBucketKeepSame(all_entries, commit_kind, base_commit_user,
@@ -142,14 +232,12 @@ Status ConflictDetection::CheckConflicts(
         CheckDeleteInEntries(merged_entries, base_commit_user, base_entries, delta_entries));
     PAIMON_RETURN_NOT_OK(
         CheckKeyRange(merged_entries, base_commit_user, base_entries, delta_entries));
-    if (commit_kind != Snapshot::CommitKind::Compact()) {
-        PAIMON_RETURN_NOT_OK(
-            CheckRowIdExistence(base_entries, delta_entries, latest_snapshot.NextRowId()));
-    }
+    PAIMON_RETURN_NOT_OK(
+        CheckRowIdExistence(base_entries, delta_entries, latest_snapshot.NextRowId(), commit_kind));
     PAIMON_RETURN_NOT_OK(CheckRowIdRangeConflicts(commit_kind, merged_entries));
     PAIMON_RETURN_NOT_OK(CheckGlobalIndexRowIdExistence(base_entries, delta_index_entries));
-    PAIMON_RETURN_NOT_OK(CheckForRowIdFromSnapshot(
-        latest_snapshot, delta_entries, delta_index_entries, row_id_column_conflict_checker));
+    PAIMON_RETURN_NOT_OK(CheckForRowIdFromSnapshot(latest_snapshot, delta_entries,
+                                                   delta_index_entries, row_id_conflict_checker));
     return Status::OK();
 }
 
@@ -171,11 +259,84 @@ bool ConflictDetection::ShouldBeOverwriteCommit(
     return false;
 }
 
+bool ConflictDetection::IsDataEvolutionCompaction(const Snapshot::CommitKind& commit_kind) const {
+    return commit_kind == Snapshot::CommitKind::Compact() && options_.DataEvolutionEnabled();
+}
+
+std::function<Result<bool>(const IndexManifestEntry&)> ConflictDetection::BaseIndexEntryFilter(
+    const std::vector<ManifestEntry>& delta_entries,
+    const std::vector<IndexManifestEntry>& delta_index_entries,
+    const Snapshot::CommitKind& commit_kind) const {
+    if (!options_.DeletionVectorsEnabled() ||
+        ResolveBucketMode(options_.GetBucket(), table_schema_) != BucketMode::BUCKET_UNAWARE ||
+        !IsDataEvolutionCompaction(commit_kind)) {
+        return nullptr;
+    }
+    // Only a commit that actually drops data files consults them.
+    auto dropped_data_files = std::make_shared<std::unordered_set<std::string>>();
+    auto touched_partitions = std::make_shared<std::unordered_set<BinaryRow>>();
+    for (const ManifestEntry& entry : delta_entries) {
+        if (entry.Kind() == FileKind::Delete()) {
+            dropped_data_files->insert(entry.File()->file_name);
+            touched_partitions->insert(entry.Partition());
+        }
+    }
+    if (dropped_data_files->empty()) {
+        return nullptr;
+    }
+    auto removed_index_files = std::make_shared<std::unordered_set<std::string>>();
+    for (const IndexManifestEntry& entry : delta_index_entries) {
+        if (entry.index_file->IndexType() == DeletionVectorsIndexFile::DELETION_VECTORS_INDEX &&
+            entry.kind == FileKind::Delete()) {
+            removed_index_files->insert(entry.index_file->FileName());
+        }
+    }
+
+    // Of the whole index manifest, only two kinds of entry can decide the migration: one this
+    // commit replaces, whose other vectors have to be carried over, and one holding the vector
+    // of a file this commit drops. Keeping only those bounds a round's memory by its own work
+    // on a large table. The manifest file itself is still read whole; this bounds what is kept
+    // from it, not the bytes read.
+    return [dropped_data_files, touched_partitions,
+            removed_index_files](const IndexManifestEntry& entry) -> Result<bool> {
+        if (entry.index_file->IndexType() != DeletionVectorsIndexFile::DELETION_VECTORS_INDEX ||
+            touched_partitions->count(entry.partition) == 0) {
+            return false;
+        }
+        if (removed_index_files->count(entry.index_file->FileName()) != 0) {
+            return true;
+        }
+        const std::optional<LinkedHashMap<std::string, DeletionVectorMeta>>& dv_ranges =
+            entry.index_file->DvRanges();
+        if (dv_ranges == std::nullopt) {
+            return false;
+        }
+        for (const auto& [data_file_name, _] : dv_ranges.value()) {
+            if (dropped_data_files->count(data_file_name) != 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+}
+
 Status ConflictDetection::CheckDeletionVectorsNotBypassed(
-    const std::vector<ManifestEntry>& delta_entries) const {
+    const std::vector<ManifestEntry>& delta_entries,
+    const std::vector<IndexManifestEntry>& delta_index_entries,
+    const std::vector<IndexManifestEntry>& base_index_entries,
+    const Snapshot::CommitKind& commit_kind) const {
     if (!options_.DeletionVectorsEnabled() ||
         ResolveBucketMode(options_.GetBucket(), table_schema_) != BucketMode::BUCKET_UNAWARE) {
         return Status::OK();
+    }
+    if (IsDataEvolutionCompaction(commit_kind)) {
+        // A data-evolution compaction preserves row ids and rewrites files without applying
+        // their deletions, so DataEvolutionCompactDeletionVectorRewriter can move the vectors of
+        // the replaced row range groups onto the rewritten file and remove the index files that
+        // held them, all inside this commit. That is the migration the refusal below stands in
+        // for, so the shape is allowed — once the migration is verified to be complete.
+        return CheckDeletionVectorMigrationIsComplete(delta_entries, delta_index_entries,
+                                                      base_index_entries);
     }
     for (const ManifestEntry& entry : delta_entries) {
         if (entry.Kind() == FileKind::Delete()) {
@@ -184,6 +345,212 @@ Status ConflictDetection::CheckDeletionVectorsNotBypassed(
                 "are enabled on a table without buckets: the conflict between it and a concurrent "
                 "commit rewriting that file's deletion vector cannot be detected yet.",
                 entry.File()->file_name));
+        }
+    }
+    return Status::OK();
+}
+
+Status ConflictDetection::CheckDeletionVectorMigrationIsComplete(
+    const std::vector<ManifestEntry>& delta_entries,
+    const std::vector<IndexManifestEntry>& delta_index_entries,
+    const std::vector<IndexManifestEntry>& base_index_entries) const {
+    // What the *latest* snapshot records for each data file: which index file holds its vector
+    // and how many rows that vector deletes. Reading it here rather than from the snapshot the
+    // compaction planned against is what makes a vector another engine wrote in between visible.
+    PAIMON_ASSIGN_OR_RAISE(DeletionVectorOwners base_vector_by_data_file,
+                           CollectDeletionVectorOwners(base_index_entries, FileKind::Add()));
+    if (base_vector_by_data_file.empty()) {
+        return Status::OK();
+    }
+    PAIMON_ASSIGN_OR_RAISE(DeletionVectorOwners new_vector_by_data_file,
+                           CollectDeletionVectorOwners(delta_index_entries, FileKind::Add()));
+    std::unordered_set<std::string> removed_index_files;
+    for (const IndexManifestEntry& entry : delta_index_entries) {
+        if (entry.index_file->IndexType() == DeletionVectorsIndexFile::DELETION_VECTORS_INDEX &&
+            entry.kind == FileKind::Delete()) {
+            removed_index_files.insert(entry.index_file->FileName());
+        }
+    }
+
+    // The files this commit writes, by the row range each covers. A data-evolution compaction
+    // rewrites one contiguous run of rows into one file, so the dropped files a given output
+    // replaces are exactly those whose rows it now holds in the same partition and bucket —
+    // which is what says where each of their vectors has to end up. Blob and vector-store files
+    // are dedicated storage: they are never rewritten and never carry a vector, so a blob file
+    // spanning the same rows must not be mistaken for the output that took them over.
+    struct CompactOutput {
+        DataFileKey key;
+        Range row_range;
+        int64_t expected_cardinality = 0;
+        bool expected_cardinality_known = true;
+    };
+    std::vector<CompactOutput> outputs;
+    // Output indices of one partition and bucket, kept sorted by row range so a dropped file
+    // finds the output covering it by binary search. A round may plan a hundred thousand files
+    // into thousands of outputs, and scanning every output per dropped file would make this
+    // check quadratic in the size of the round.
+    std::unordered_map<PartitionBucketKey, std::vector<size_t>, PartitionBucketKeyHash>
+        outputs_by_group;
+    std::unordered_set<DataFileKey, DataFileKeyHash> dropped_data_files;
+    std::vector<const ManifestEntry*> dropped_entries;
+    // A materialized compaction physically applied its deletions and wrote its rows without row
+    // ids, which the commit then assigns afresh. Its old vectors are meant to disappear rather
+    // than move, so the group accounting below does not apply to the partitions it touched.
+    // Missing row ids on the rewritten files are what identifies such a commit.
+    std::unordered_set<PartitionBucketKey, PartitionBucketKeyHash> materialized_groups;
+    std::unordered_set<PartitionBucketKey, PartitionBucketKeyHash> groups_writing_data;
+    for (const ManifestEntry& entry : delta_entries) {
+        const std::shared_ptr<DataFileMeta>& file = entry.File();
+        if (IsDedicatedStorageFile(file->file_name)) {
+            continue;
+        }
+        DataFileKey key{entry.Partition(), entry.Bucket(), file->file_name};
+        if (entry.Kind() == FileKind::Add()) {
+            groups_writing_data.insert(PartitionBucketKey{entry.Partition(), entry.Bucket()});
+            if (file->first_row_id && file->row_count > 0) {
+                outputs_by_group[PartitionBucketKey{entry.Partition(), entry.Bucket()}].push_back(
+                    outputs.size());
+                outputs.push_back(CompactOutput{
+                    std::move(key), Range(file->first_row_id.value(),
+                                          file->first_row_id.value() + file->row_count - 1)});
+            } else if (file->first_row_id == std::nullopt) {
+                materialized_groups.insert(PartitionBucketKey{entry.Partition(), entry.Bucket()});
+            }
+            continue;
+        }
+        dropped_data_files.insert(std::move(key));
+        dropped_entries.push_back(&entry);
+    }
+    // The outputs of one group cover disjoint row ranges, so sorting by their start makes the
+    // last output starting at or before a dropped file's first row the only candidate.
+    for (auto& [group, output_indices] : outputs_by_group) {
+        std::sort(output_indices.begin(), output_indices.end(),
+                  [&outputs](size_t left, size_t right) {
+                      return outputs[left].row_range.from < outputs[right].row_range.from;
+                  });
+    }
+
+    for (const ManifestEntry* entry : dropped_entries) {
+        const std::shared_ptr<DataFileMeta>& file = entry->File();
+        DataFileKey dropped_key{entry->Partition(), entry->Bucket(), file->file_name};
+        auto owner = base_vector_by_data_file.find(dropped_key);
+        if (owner == base_vector_by_data_file.end()) {
+            continue;
+        }
+        // 1. The dropped file's vector outlives it. Either another commit re-keyed that vector
+        //    after the round was planned, or the round forgot to take it. No exception for a
+        //    vector that deletes nothing: the rewriter takes a replaced file's vector away
+        //    whether or not it is empty, exactly so this stays decidable from the recorded
+        //    cardinality, which older metadata may not carry at all.
+        if (removed_index_files.count(owner->second.index_file_name) == 0) {
+            return Status::Invalid(fmt::format(
+                "Data evolution compaction drops data file {}, but its deletion vector in index "
+                "file {} is not removed by the same commit. Another commit must have written that "
+                "vector after the compaction was planned; give up committing and plan again.",
+                file->file_name, owner->second.index_file_name));
+        }
+        if (owner->second.cardinality == 0) {
+            continue;
+        }
+        // The deletions of a materialized group were applied to the rows themselves, so nothing
+        // has to receive them; removing the vector, checked above, is the whole migration. The
+        // same holds when the commit writes no data file into the group at all: every row of the
+        // range was deleted, so it rewrites to nothing and there is no output to demand.
+        PartitionBucketKey group{entry->Partition(), entry->Bucket()};
+        if (materialized_groups.count(group) != 0 || groups_writing_data.count(group) == 0) {
+            continue;
+        }
+        // 2. The rows of a dropped file whose deletions have to move are not covered by any file
+        //    this commit writes into the same partition and bucket, so those deletions have
+        //    nowhere to go.
+        CompactOutput* output = nullptr;
+        auto group_outputs = outputs_by_group.find(group);
+        if (file->first_row_id && file->row_count > 0 && group_outputs != outputs_by_group.end()) {
+            Range dropped_range(file->first_row_id.value(),
+                                file->first_row_id.value() + file->row_count - 1);
+            const std::vector<size_t>& output_indices = group_outputs->second;
+            auto candidate =
+                std::upper_bound(output_indices.begin(), output_indices.end(), dropped_range.from,
+                                 [&outputs](int64_t from, size_t index) {
+                                     return from < outputs[index].row_range.from;
+                                 });
+            if (candidate != output_indices.begin()) {
+                CompactOutput& covering = outputs[*std::prev(candidate)];
+                if (dropped_range.to <= covering.row_range.to) {
+                    output = &covering;
+                }
+            }
+        }
+        if (output == nullptr) {
+            return Status::Invalid(fmt::format(
+                "Data evolution compaction drops data file {} and removes its deletion vector, "
+                "but writes no file covering its rows. Its deleted rows would become visible "
+                "again.",
+                file->file_name));
+        }
+        if (owner->second.cardinality) {
+            output->expected_cardinality += owner->second.cardinality.value();
+        } else {
+            output->expected_cardinality_known = false;
+        }
+    }
+
+    // 3. An output file has to carry the deletions of every group it absorbed. Their row ranges
+    //    are disjoint, so the merged vector deletes exactly as many rows as they did together;
+    //    any other count means deletions were dropped, or invented, along the way. Counts are
+    //    all this can compare: the recorded cardinality is metadata, and reading the vectors to
+    //    compare them position by position is what this check exists to avoid. An equally large
+    //    but differently positioned vector therefore passes.
+    for (const CompactOutput& output : outputs) {
+        // Nothing known to be deleted moved into this output, so it owes no vector. An
+        // absorbed vector whose cardinality the metadata does not record lands here too: it
+        // may well have been empty, and demanding a vector on that basis would reject a
+        // correct commit for good rather than for a race.
+        if (output.expected_cardinality == 0) {
+            continue;
+        }
+        auto moved = new_vector_by_data_file.find(output.key);
+        if (moved == new_vector_by_data_file.end()) {
+            return Status::Invalid(fmt::format(
+                "Data evolution compaction rewrites data files carrying {} deleted rows into {}, "
+                "but writes no deletion vector for it. Those rows would become visible again.",
+                output.expected_cardinality, output.key.file_name));
+        }
+        if (output.expected_cardinality_known && moved->second.cardinality &&
+            moved->second.cardinality.value() != output.expected_cardinality) {
+            return Status::Invalid(fmt::format(
+                "Data evolution compaction rewrites data files carrying {} deleted rows into {}, "
+                "but its new deletion vector deletes {} rows. The migration lost or invented "
+                "deletions.",
+                output.expected_cardinality, output.key.file_name,
+                moved->second.cardinality.value()));
+        }
+    }
+
+    // 4. A file the commit keeps loses the vector it had, or gets one deleting a different
+    //    number of rows, because the index file holding it is replaced without its vector being
+    //    carried over. Compared by cardinality only, for the same reason as check 3.
+    for (const auto& [data_file_key, base_vector] : base_vector_by_data_file) {
+        if (removed_index_files.count(base_vector.index_file_name) == 0 ||
+            dropped_data_files.count(data_file_key) != 0) {
+            continue;
+        }
+        auto kept = new_vector_by_data_file.find(data_file_key);
+        if (kept == new_vector_by_data_file.end()) {
+            return Status::Invalid(fmt::format(
+                "Data evolution compaction removes deletion vector index file {}, but data file "
+                "{}, which the commit keeps, does not get its vector back. Its deleted rows would "
+                "become visible again.",
+                base_vector.index_file_name, data_file_key.file_name));
+        }
+        if (base_vector.cardinality && kept->second.cardinality &&
+            base_vector.cardinality.value() != kept->second.cardinality.value()) {
+            return Status::Invalid(fmt::format(
+                "Data evolution compaction rewrites the deletion vector of data file {}, which it "
+                "keeps, from {} deleted rows to {}. An untouched vector has to be carried over "
+                "with the rows it deletes.",
+                data_file_key.file_name, base_vector.cardinality.value(),
+                kept->second.cardinality.value()));
         }
     }
     return Status::OK();
@@ -434,11 +801,76 @@ Status ConflictDetection::CheckKeyRange(const std::vector<ManifestEntry>& merged
 
 Status ConflictDetection::CheckRowIdExistence(const std::vector<ManifestEntry>& base_entries,
                                               const std::vector<ManifestEntry>& delta_entries,
-                                              const std::optional<int64_t>& next_row_id) const {
+                                              const std::optional<int64_t>& next_row_id,
+                                              const Snapshot::CommitKind& commit_kind) const {
     if (!options_.DataEvolutionEnabled()) {
         return Status::OK();
     }
 
+    std::vector<const ManifestEntry*> existing_data_files;
+    existing_data_files.reserve(base_entries.size());
+    for (const ManifestEntry& entry : base_entries) {
+        if (!entry.File()->first_row_id || IsDedicatedStorageFile(entry.FileName())) {
+            continue;
+        }
+        existing_data_files.push_back(&entry);
+    }
+
+    if (commit_kind == Snapshot::CommitKind::Compact()) {
+        return CheckCompactRowIdExistence(existing_data_files, delta_entries);
+    }
+    return CheckNonCompactRowIdExistence(existing_data_files, delta_entries, next_row_id);
+}
+
+Status ConflictDetection::CheckCompactRowIdExistence(
+    const std::vector<const ManifestEntry*>& existing_data_files,
+    const std::vector<ManifestEntry>& delta_entries) const {
+    // A compaction rewrites rows that are already in the table, so every row id range it adds
+    // has to be covered by the ranges the current snapshot holds - in the same partition and
+    // bucket, since an output may only span data files of one of them. A range that is not
+    // means the round was planned against rows a concurrent commit has since reassigned: the
+    // rewritten file would move those row ids back to where they no longer belong.
+    std::unordered_map<PartitionBucketKey, std::vector<Range>, PartitionBucketKeyHash>
+        existing_ranges;
+    for (const ManifestEntry* entry : existing_data_files) {
+        int64_t range_from = entry->File()->first_row_id.value();
+        int64_t range_to = range_from + entry->File()->row_count - 1;
+        existing_ranges[PartitionBucketKey{entry->Partition(), entry->Bucket()}].emplace_back(
+            range_from, range_to);
+    }
+
+    std::unordered_map<PartitionBucketKey, RowRangeIndex, PartitionBucketKeyHash> existing_indexes;
+    for (auto& [key, ranges] : existing_ranges) {
+        // Adjacent ranges are merged: one output file may take over a contiguous run of them.
+        PAIMON_ASSIGN_OR_RAISE(RowRangeIndex index,
+                               RowRangeIndex::Create(ranges, /*merge_adjacent=*/true));
+        existing_indexes.emplace(key, std::move(index));
+    }
+
+    for (const ManifestEntry& entry : delta_entries) {
+        // A dedicated storage file is left to CheckDedicatedFileRowIdRangeConflicts, which
+        // holds it to the stricter rule: its range has to sit inside the range of a single
+        // data file, not merely inside a contiguous run of them.
+        if (!(entry.Kind() == FileKind::Add()) || !entry.File()->first_row_id ||
+            IsDedicatedStorageFile(entry.FileName())) {
+            continue;
+        }
+        int64_t range_from = entry.File()->first_row_id.value();
+        Range row_range(range_from, range_from + entry.File()->row_count - 1);
+        auto existing_index =
+            existing_indexes.find(PartitionBucketKey{entry.Partition(), entry.Bucket()});
+        if (existing_index == existing_indexes.end() ||
+            !existing_index->second.Contains(row_range)) {
+            return RowIdExistenceConflict(entry);
+        }
+    }
+    return Status::OK();
+}
+
+Status ConflictDetection::CheckNonCompactRowIdExistence(
+    const std::vector<const ManifestEntry*>& existing_data_files,
+    const std::vector<ManifestEntry>& delta_entries,
+    const std::optional<int64_t>& next_row_id) const {
     std::vector<ManifestEntry> files_to_check;
     files_to_check.reserve(delta_entries.size());
     for (const ManifestEntry& entry : delta_entries) {
@@ -453,13 +885,10 @@ Status ConflictDetection::CheckRowIdExistence(const std::vector<ManifestEntry>& 
     }
 
     std::vector<Range> existing_data_ranges;
-    existing_data_ranges.reserve(base_entries.size());
-    for (const ManifestEntry& entry : base_entries) {
-        if (!entry.File()->first_row_id || IsDedicatedStorageFile(entry.FileName())) {
-            continue;
-        }
-        int64_t range_from = entry.File()->first_row_id.value();
-        int64_t range_to = range_from + entry.File()->row_count - 1;
+    existing_data_ranges.reserve(existing_data_files.size());
+    for (const ManifestEntry* entry : existing_data_files) {
+        int64_t range_from = entry->File()->first_row_id.value();
+        int64_t range_to = range_from + entry->File()->row_count - 1;
         existing_data_ranges.emplace_back(range_from, range_to);
     }
 
@@ -480,13 +909,7 @@ Status ConflictDetection::CheckRowIdExistence(const std::vector<ManifestEntry>& 
         }
 
         if (!exists) {
-            return Status::Invalid(fmt::format(
-                "Row ID existence conflict: file '{}' references firstRowId={}, rowCount={} in "
-                "bucket {}, but no matching file exists in the current snapshot. The referenced "
-                "file may have been rewritten by a concurrent compaction or removed by an "
-                "overwrite.",
-                entry.FileName(), entry.File()->first_row_id.value(), entry.File()->row_count,
-                entry.Bucket()));
+            return RowIdExistenceConflict(entry);
         }
     }
 
@@ -624,11 +1047,10 @@ Status ConflictDetection::CheckDedicatedFileRowIdRangeConflicts(
 Status ConflictDetection::CheckForRowIdFromSnapshot(
     const Snapshot& latest_snapshot, const std::vector<ManifestEntry>& delta_entries,
     const std::vector<IndexManifestEntry>& delta_index_entries,
-    const std::optional<std::shared_ptr<RowIdColumnConflictChecker>>&
-        row_id_column_conflict_checker) const {
+    const std::optional<std::shared_ptr<RowIdConflictChecker>>& row_id_conflict_checker) const {
     if (!options_.DataEvolutionEnabled() || !row_id_check_from_snapshot_ || !snapshot_manager_ ||
-        !row_id_column_conflict_checker || !row_id_column_conflict_checker.value() ||
-        row_id_column_conflict_checker.value()->IsEmpty()) {
+        !row_id_conflict_checker || !row_id_conflict_checker.value() ||
+        row_id_conflict_checker.value()->IsEmpty()) {
         return Status::OK();
     }
 
@@ -680,9 +1102,8 @@ Status ConflictDetection::CheckForRowIdFromSnapshot(
             if (history_first_row_id >= check_next_row_id) {
                 continue;
             }
-            PAIMON_ASSIGN_OR_RAISE(
-                bool conflicts,
-                row_id_column_conflict_checker.value()->ConflictsWith(history_entry.File()));
+            PAIMON_ASSIGN_OR_RAISE(bool conflicts, row_id_conflict_checker.value()->ConflictsWith(
+                                                       history_entry.File()));
             if (conflicts) {
                 return Status::Invalid(
                     "For Data Evolution table, multiple 'MERGE INTO' operations have "

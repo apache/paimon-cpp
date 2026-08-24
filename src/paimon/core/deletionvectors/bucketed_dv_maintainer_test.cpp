@@ -23,6 +23,7 @@
 #include <string>
 
 #include "gtest/gtest.h"
+#include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/testing/mock/mock_index_path_factory.h"
@@ -137,20 +138,44 @@ TEST(BucketedDvMaintainerTest, TestNotifyNewDeletionOnExistingVectorOnlyMarksWhe
     ASSERT_TRUE(modified_write.has_value());
 }
 
-TEST(BucketedDvMaintainerTest, TestNotifyNewDeletionReturnsNotImplementedForBitmap64) {
+TEST(BucketedDvMaintainerTest, TestNotifyNewDeletionCreatesTheVectorKindOfTheTable) {
+    // A bitmap64 table stores 64 bit vectors, so that is the kind the maintainer has to create.
+    // A position beyond the 32 bit range is what tells the two apart: the 32 bit vector cannot
+    // hold it at all.
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
+    constexpr int64_t kBeyondBitmap32 = int64_t{1} << 33;
+
     auto index_file = CreateDvIndexFile(dir->Str(), /*bitmap64=*/true);
     BucketedDvMaintainer maintainer(index_file, /*deletion_vectors=*/{});
 
-    Status status = maintainer.NotifyNewDeletion("file-new", /*position=*/1);
-    ASSERT_TRUE(status.IsNotImplemented());
+    ASSERT_OK(maintainer.NotifyNewDeletion("file-new", kBeyondBitmap32));
+    auto created = maintainer.DeletionVectorOf("file-new");
+    ASSERT_TRUE(created.has_value());
+    ASSERT_TRUE(std::dynamic_pointer_cast<Bitmap64DeletionVector>(created.value()) != nullptr);
+    ASSERT_OK_AND_ASSIGN(bool deleted, created.value()->IsDeleted(kBeyondBitmap32));
+    ASSERT_TRUE(deleted);
 
-    auto lookup = maintainer.DeletionVectorOf("file-new");
-    ASSERT_FALSE(lookup.has_value());
-
+    // The deletion also has to survive the index file, which frames a 64 bit vector differently
+    // from a 32 bit one.
     ASSERT_OK_AND_ASSIGN(auto write_result, maintainer.WriteDeletionVectorsIndex());
-    ASSERT_FALSE(write_result.has_value());
+    ASSERT_TRUE(write_result.has_value());
+    ASSERT_OK_AND_ASSIGN(auto restored, index_file->ReadAllDeletionVectors(write_result.value()));
+    ASSERT_EQ(restored.size(), 1);
+    auto restored_vector = restored.at("file-new");
+    ASSERT_TRUE(std::dynamic_pointer_cast<Bitmap64DeletionVector>(restored_vector) != nullptr);
+    ASSERT_OK_AND_ASSIGN(bool restored_deleted, restored_vector->IsDeleted(kBeyondBitmap32));
+    ASSERT_TRUE(restored_deleted);
+
+    // A bitmap32 table keeps the 32 bit kind, which refuses the position it cannot hold.
+    auto bitmap32_index_file = CreateDvIndexFile(dir->Str());
+    BucketedDvMaintainer bitmap32_maintainer(bitmap32_index_file, /*deletion_vectors=*/{});
+    ASSERT_NOK(bitmap32_maintainer.NotifyNewDeletion("file-new", kBeyondBitmap32));
+    ASSERT_OK(bitmap32_maintainer.NotifyNewDeletion("file-new", /*position=*/7));
+    auto bitmap32_vector = bitmap32_maintainer.DeletionVectorOf("file-new");
+    ASSERT_TRUE(bitmap32_vector.has_value());
+    ASSERT_TRUE(std::dynamic_pointer_cast<BitmapDeletionVector>(bitmap32_vector.value()) !=
+                nullptr);
 }
 
 }  // namespace paimon::test

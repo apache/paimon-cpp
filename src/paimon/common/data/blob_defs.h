@@ -50,6 +50,10 @@ class BlobDefs {
     /// Metadata value identifying a Paimon Blob extension type field.
     static constexpr char kExtensionTypeValue[] = "paimon.type.blob";
 
+    /// Default buffer size for copying blob payloads into blob files, the "4 kb" default of
+    /// `blob.copy-buffer-size` (Options::BLOB_COPY_BUFFER_SIZE).
+    static constexpr int64_t kDefaultCopyBufferSize = 4 * 1024;
+
     /// A bin_length value of -1 in the index indicates a null blob entry.
     static constexpr int64_t kNullBinLength = -1;
     /// A bin_length value of -2 in the index indicates a placeholder blob entry, written by

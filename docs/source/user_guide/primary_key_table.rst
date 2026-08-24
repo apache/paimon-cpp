@@ -80,3 +80,97 @@ merged according to the user-specified merge engine and the timestamp of each re
 New records written into the LSM tree will be first buffered in memory. When the
 memory buffer is full, all records in memory will be sorted and flushed to disk.
 A new sorted run is now created.
+
+.. _primary-key-managed-blob:
+
+Managed BLOB Storage
+--------------------
+A primary-key table may define top-level ``BLOB`` columns. Their payload bytes
+are table-managed: they never enter the merge-tree write buffer or the data
+files. Unlike ``BLOB`` columns in append tables, primary-key managed BLOB
+storage does not require ``row-tracking.enabled`` or
+``data-evolution.enabled`` — a row-tracking table cannot define primary keys
+in the first place. When a row is written, each non-null blob value is copied into a pack
+file named ``data-<uuid>-<n>.managed.blob`` in the bucket directory, and the
+row stores only a small descriptor (pack path, offset, length) in its place.
+A pack is sealed once it reaches ``blob.target-file-size``; the copy uses a
+``blob.copy-buffer-size`` buffer (default ``4 kb``, must be between 1 byte and
+2147483647 bytes). Paimon C++ checks those bounds while parsing the table
+options, so a table configured with an out-of-range value fails to open; Paimon
+Java checks the same bounds only when a blob write first needs the buffer.
+Retract rows (``DELETE`` / ``UPDATE_BEFORE``) never keep a payload; their blob
+value becomes NULL.
+
+Reads resolve the descriptors back to payload bytes with one ranged read per
+value, after merging, so only surviving rows ever fetch their payloads. Set
+``blob-as-descriptor`` to ``true`` to receive the serialized descriptors
+instead.
+
+Every data file carries a ``.blobref`` sidecar in its extra files, listing the
+pack files its rows reference. Compaction rewrites descriptors verbatim —
+payloads are never copied again — and rebuilds the sidecar so it lists exactly
+the packs the surviving rows still reference. The sidecar is removed wherever
+its data file is removed with its companion files; a pack file may be shared
+by several data files and is never deleted by table maintenance (orphan file
+clean skips ``.managed.blob`` files).
+
+A pack is owned by the writer that **created** it until ``prepareCommit``, and
+by that commit from then on. ``prepareCommit`` seals the open packs and hands
+their paths to the commit message it produces, so a rollback knows exactly
+which packs to remove:
+
+- A writer that aborts or closes without committing deletes the packs it has
+  not handed over, along with the data files and sidecars it wrote.
+- A ``prepareCommit`` that fails partway — one bucket's writer already produced
+  a message when a later one fails — deletes what the messages it had already
+  produced own, since the caller never receives them.
+- A commit that fails hands its messages to ``FileStoreCommit::Abort``, which
+  deletes the rolled back data files, their sidecars, and the packs those
+  messages own.
+
+Owning a pack and referencing one are different things, and only ownership
+decides a rollback. Compaction rewrites blob descriptors verbatim, so a
+compacted file's sidecar lists the packs of the files it merged — packs that
+the snapshots a failed compaction never touched still read. A rollback that
+deleted every pack its files reference would break those snapshots, so it
+deletes only what the same writer created.
+
+.. note::
+   The owned-pack list travels in memory only; it is not part of the commit
+   message's serialized form, which is shared with Paimon Java. A message that
+   crosses a process boundary before being aborted therefore leaves its packs
+   behind instead of removing the wrong ones.
+
+.. note::
+   Snapshot expiration removes a ``.blobref`` sidecar together with its
+   expired data file. What no cleanup covers is a process that neither commits
+   nor aborts, for instance one that crashes after ``prepareCommit``: its data
+   files, sidecars and packs stay behind, and unlike an append table's stray
+   files they cannot be collected later, because the orphan files cleaner does
+   not support primary-key tables and never treats a ``.managed.blob`` pack as
+   an orphan.
+
+Restrictions:
+
+- Only top-level scalar ``BLOB`` columns are managed. ``ARRAY<BLOB>`` and
+  ``MAP<K, BLOB>`` fields, which Paimon Java also externalizes, are not
+  supported yet.
+- ``blob-descriptor.source-table`` (re-materializing descriptors through the
+  source table's credentials) is not supported: configuring it fails schema
+  validation, and descriptors are always read and copied through the table's
+  own file system.
+- ``pk-clustering-override`` set to ``true`` is not supported; an explicit
+  ``false`` is accepted.
+- Only the ``deduplicate``, ``partial-update`` and ``first-row`` merge engines
+  are supported, and ``changelog-producer`` must stay ``none``.
+- A managed ``BLOB`` column cannot be a primary key, bucket key, sequence
+  field or partition key, and the table needs at least one other normal
+  column.
+- A ``BLOB`` column cannot order a partial-update sequence group, and a
+  sequence-group-protected managed ``BLOB`` field only supports no aggregate
+  function, ``last_value``, or ``fields.<field>.ignore-retract`` set to
+  ``true`` (retract rows do not retain the payload).
+- ``data-file.external-paths`` is not supported.
+- ``blob-descriptor-field`` / ``blob-view-field`` columns are inline blob
+  fields: they keep caller-provided bytes in the data files and are not
+  table-managed.

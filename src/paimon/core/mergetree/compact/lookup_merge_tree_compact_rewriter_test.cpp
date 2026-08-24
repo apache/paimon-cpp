@@ -30,6 +30,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/compact/noop_compact_manager.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/mergetree/compact/aggregate/aggregate_merge_function.h"

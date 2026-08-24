@@ -195,6 +195,20 @@ class PAIMON_EXPORT FileStoreCommit {
     virtual FileStoreCommit& RowIdCheckConflict(
         std::optional<int64_t> row_id_check_from_snapshot) = 0;
 
+    /// Configure row-id conflict checking for a commit that materializes deletion vectors.
+    ///
+    /// Such a commit drops the rows its deletion vectors marked and lets the commit assign new
+    /// row ids to the survivors, so it conflicts with anything another writer added over the
+    /// row ranges it rewrites - whatever columns that writer wrote. `RowIdCheckConflict`
+    /// checks the narrower column-overlap rule instead, which a rewrite of whole ranges cannot
+    /// rely on. Only compaction commits are checked. Passing std::nullopt disables it.
+    ///
+    /// @param row_id_check_from_snapshot Snapshot id the materialization was planned against,
+    ///     or std::nullopt to disable.
+    /// @return Current commit object for chaining.
+    virtual FileStoreCommit& RowIdCheckConflictForMaterializeDeletionVectors(
+        std::optional<int64_t> row_id_check_from_snapshot) = 0;
+
     /// Retrieve metrics related to commit operations.
     ///
     /// @return A shared pointer to a `Metrics` object containing commit metrics.

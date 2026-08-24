@@ -48,10 +48,14 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/io/compact_increment.h"
+#include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/data_increment.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/file_store_commit_impl.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
@@ -685,6 +689,98 @@ TEST_F(CleanInteTest, TestOrphanFilesClean) {
         ASSERT_OK_AND_ASSIGN(std::set<std::string> cleaned_paths, cleaner->Clean());
         ASSERT_TRUE(CheckEqual(
             cleaned_paths, {"data-orphan2.orc", "manifest-orphan", ".manifest-orphan.uuid.tmp"}));
+    }
+}
+
+TEST_F(CleanInteTest, TestOrphanFilesCleanKeepsCompanionFilesOfLiveDataFiles) {
+    // A data file's extra files - a managed blob reference sidecar, for instance - live and die
+    // with the data file itself. They are cleanable on their own, so the used-file set has to
+    // register every manifest entry's extra files: a sidecar of a live data file must survive
+    // the clean, while one nothing references is genuinely orphaned.
+    auto string_field = arrow::field("f0", arrow::utf8());
+    auto int_field = arrow::field("f1", arrow::int32());
+    auto int_field1 = arrow::field("f2", arrow::int32());
+    auto double_field = arrow::field("f3", arrow::float64());
+    auto schema =
+        arrow::schema(arrow::FieldVector({string_field, int_field, int_field1, double_field}));
+
+    std::string commit_user = "commit_user_1";
+    ::ArrowSchema arrow_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &arrow_schema).ok());
+
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "orc"}, {Options::FILE_FORMAT, "orc"},
+        {Options::FILE_SYSTEM, "local"},   {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "f3"},
+    };
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::string table_path,
+                         CreateTestTable(dir->Str(), /*db_name=*/"foo",
+                                         /*table_name=*/"bar", &arrow_schema,
+                                         /*partition_keys=*/{},
+                                         /*primary_keys=*/{}, options));
+
+    WriteContextBuilder context_builder(table_path, commit_user);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
+                         context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
+                         FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeRecordBatch({{"Alice", 10, 1, 11.1}, {"Bob", 10, 0, 12.1}},
+                                         /*partition_map=*/{}, /*bucket=*/0));
+    ASSERT_OK(file_store_write->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> results,
+                         file_store_write->PrepareCommit(/*wait_compaction=*/false, 0));
+    ASSERT_FALSE(results.empty());
+
+    // Give every written data file a companion sidecar next to it, and carry it in the manifest
+    // entry the same way a managed blob write does.
+    std::vector<std::shared_ptr<CommitMessage>> messages_with_sidecars;
+    std::vector<std::string> live_sidecar_paths;
+    for (const auto& message : results) {
+        auto message_impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        ASSERT_TRUE(message_impl);
+        std::vector<std::shared_ptr<DataFileMeta>> new_files;
+        for (const auto& file : message_impl->GetNewFilesIncrement().NewFiles()) {
+            std::string sidecar_file_name = file->file_name + ".blobref";
+            std::string sidecar_path = PathUtil::JoinPath(
+                table_path, fmt::format("bucket-{}/{}", message_impl->Bucket(), sidecar_file_name));
+            ASSERT_OK(file_system_->WriteFile(sidecar_path, "sidecar", /*overwrite=*/true));
+            live_sidecar_paths.push_back(sidecar_path);
+            new_files.push_back(file->CopyWithExtraFiles({sidecar_file_name}));
+        }
+        ASSERT_FALSE(new_files.empty());
+        messages_with_sidecars.push_back(std::make_shared<CommitMessageImpl>(
+            message_impl->Partition(), message_impl->Bucket(), message_impl->TotalBuckets(),
+            DataIncrement(std::move(new_files), /*deleted_files=*/{}, /*changelog_files=*/{}),
+            message_impl->GetCompactIncrement()));
+    }
+
+    CommitContextBuilder commit_context_builder(table_path, commit_user);
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<CommitContext> commit_context,
+        commit_context_builder.WithFileSystem(file_system_).IgnoreEmptyCommit(false).Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK(commit->Commit(messages_with_sidecars, 0));
+
+    // A sidecar whose data file no snapshot records: nothing protects it.
+    std::string orphan_sidecar_path =
+        PathUtil::JoinPath(table_path, "bucket-0/data-orphan.orc.blobref");
+    ASSERT_OK(file_system_->WriteFile(orphan_sidecar_path, "orphan", /*overwrite=*/true));
+
+    CleanContextBuilder clean_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CleanContext> clean_context,
+                         clean_context_builder.WithFileSystem(file_system_)
+                             .WithOlderThanMs(std::numeric_limits<int64_t>::max())
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(auto cleaner, OrphanFilesCleaner::Create(std::move(clean_context)));
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> cleaned_paths, cleaner->Clean());
+    ASSERT_TRUE(CheckEqual(cleaned_paths, {"data-orphan.orc.blobref"}));
+    for (const auto& sidecar_path : live_sidecar_paths) {
+        ASSERT_OK_AND_ASSIGN(bool exist, file_system_->Exists(sidecar_path));
+        ASSERT_TRUE(exist) << sidecar_path;
     }
 }
 

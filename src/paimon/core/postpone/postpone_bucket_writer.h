@@ -30,10 +30,12 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/io/primary_key_blob_externalizer.h"
 #include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/utils/batch_writer.h"
 #include "paimon/core/utils/commit_increment.h"
+#include "paimon/logging.h"
 #include "paimon/record_batch.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -97,6 +99,23 @@ class PostponeBucketWriter : public BatchWriter {
 
  private:
     Status DoClose() {
+        // Uncommitted managed blob packs die with the writer; packs handed over by
+        // PrepareCommit are unaffected.
+        if (blob_externalizer_) {
+            blob_externalizer_->Abort();
+        }
+        // Flushed files not drained by PrepareCommit were never committed: remove them
+        // together with their companion files, mirroring the merge-tree writer cleanup.
+        for (const auto& file : new_files_) {
+            for (const auto& path : path_factory_->CollectFiles(file)) {
+                auto status = options_.GetFileSystem()->Delete(path);
+                if (!status.ok()) {
+                    PAIMON_LOG_WARN(logger_, "Failed to delete uncommitted postpone file %s: %s",
+                                    path.c_str(), status.ToString().c_str());
+                }
+            }
+        }
+        new_files_.clear();
         sequence_number_array_.reset();
         row_kind_array_.reset();
         if (writer_) {
@@ -142,6 +161,10 @@ class PostponeBucketWriter : public BatchWriter {
     std::shared_ptr<arrow::DataType> value_type_;
     std::shared_ptr<arrow::Schema> write_schema_;
     std::shared_ptr<Metrics> metrics_;
+    std::unique_ptr<Logger> logger_;
+    /// Externalizes managed blob payloads before buffering; null unless the table is a
+    /// primary-key managed blob table.
+    std::unique_ptr<PrimaryKeyBlobExternalizer> blob_externalizer_;
     std::vector<std::shared_ptr<DataFileMeta>> new_files_;
     std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>> writer_;
     std::shared_ptr<arrow::Array> sequence_number_array_;

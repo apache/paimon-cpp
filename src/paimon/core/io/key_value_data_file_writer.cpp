@@ -63,6 +63,11 @@ KeyValueDataFileWriter::KeyValueDataFileWriter(
       is_external_path_(is_external_path),
       disable_stats_(stats_extractor == nullptr) {}
 
+void KeyValueDataFileWriter::SetBlobReferenceCollector(
+    std::unique_ptr<ManagedBlobReferenceCollector> collector) {
+    blob_reference_collector_ = std::move(collector);
+}
+
 Status KeyValueDataFileWriter::Write(KeyValueBatch batch) {
     // update min and max key
     if (!min_key_) {
@@ -75,7 +80,34 @@ Status KeyValueDataFileWriter::Write(KeyValueBatch batch) {
     // update delete row count
     delete_row_count_ += batch.delete_row_count;
 
+    if (blob_reference_collector_) {
+        PAIMON_RETURN_NOT_OK(blob_reference_collector_->Collect(&batch));
+    }
+
     return WriteRecordWithFileIndex(std::move(batch));
+}
+
+Status KeyValueDataFileWriter::BeforeFinish() {
+    PAIMON_RETURN_NOT_OK(DataFileWriterBase::BeforeFinish());
+    if (blob_reference_collector_) {
+        PAIMON_RETURN_NOT_OK(blob_reference_collector_->Close());
+    }
+    return Status::OK();
+}
+
+void KeyValueDataFileWriter::Abort() {
+    if (blob_reference_collector_) {
+        blob_reference_collector_->Abort();
+    }
+    DataFileWriterBase::Abort();
+}
+
+Result<KeyValueDataFileWriter::AbortExecutor> KeyValueDataFileWriter::GetAbortExecutor() const {
+    PAIMON_ASSIGN_OR_RAISE(AbortExecutor executor, DataFileWriterBase::GetAbortExecutor());
+    if (blob_reference_collector_) {
+        executor.Add(fs_, blob_reference_collector_->SidecarPath());
+    }
+    return executor;
 }
 
 Result<std::shared_ptr<DataFileMeta>> KeyValueDataFileWriter::GetResult() {
@@ -104,10 +136,17 @@ Result<std::shared_ptr<DataFileMeta>> KeyValueDataFileWriter::GetResult() {
     }
     PAIMON_ASSIGN_OR_RAISE(int64_t local_micro, DateTimeUtils::GetCurrentLocalTimeUs());
     const FileIndexWriteResult& file_index = GetFileIndexWriteResult();
+    // The blob reference sidecar travels in the extra files, tying its lifecycle to the data
+    // file wherever extra files are collected for deletion.
+    std::vector<std::optional<std::string>> extra_files = file_index.extra_files;
+    if (blob_reference_collector_) {
+        PAIMON_ASSIGN_OR_RAISE(std::string sidecar_file_name,
+                               blob_reference_collector_->ResultFileName());
+        extra_files.emplace_back(std::move(sidecar_file_name));
+    }
     return std::make_shared<DataFileMeta>(
         PathUtil::GetName(path_), output_bytes_, RecordCount(), min_key, max_key, key_stats,
-        value_stats, min_sequence_number_, max_sequence_number_, schema_id_, level_,
-        file_index.extra_files,
+        value_stats, min_sequence_number_, max_sequence_number_, schema_id_, level_, extra_files,
         Timestamp(/*millisecond=*/local_micro / 1000, /*nano_of_millisecond=*/0), delete_row_count_,
         file_index.embedded_index, file_source_, /*value_stats_cols=*/std::nullopt, final_path,
         /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);

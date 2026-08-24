@@ -18,6 +18,10 @@
  */
 #include "paimon/core/deletionvectors/deletion_vector_index_file_writer.h"
 
+#include <utility>
+#include <vector>
+
+#include "fmt/format.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/deletionvectors/deletion_file_writer.h"
 
@@ -39,6 +43,54 @@ Result<std::shared_ptr<IndexFileMeta>> DeletionVectorIndexFileWriter::WriteSingl
     PAIMON_RETURN_NOT_OK(writer->Close());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexFileMeta> result, writer->GetResult());
     return result;
+}
+
+Result<std::vector<std::shared_ptr<IndexFileMeta>>> DeletionVectorIndexFileWriter::WriteWithRolling(
+    const std::map<std::string, std::shared_ptr<DeletionVector>>& input, int64_t target_size) {
+    if (target_size <= 0) {
+        return Status::Invalid(fmt::format(
+            "Deletion vector index file target size must be positive, but was {}.", target_size));
+    }
+    std::vector<std::shared_ptr<IndexFileMeta>> results;
+    if (input.empty()) {
+        return results;
+    }
+
+    std::unique_ptr<DeletionFileWriter> writer;
+    // Closes a writer that a failure left open, so a partial index file never stays behind
+    // holding its output stream.
+    ScopeGuard guard([&]() {
+        if (writer) {
+            (void)writer->Close();
+        }
+    });
+    for (const auto& [key, value] : input) {
+        if (writer == nullptr) {
+            PAIMON_ASSIGN_OR_RAISE(writer,
+                                   DeletionFileWriter::Create(index_path_factory_, fs_, pool_));
+        }
+        PAIMON_RETURN_NOT_OK(writer->Write(key, value));
+        PAIMON_ASSIGN_OR_RAISE(int64_t written, writer->GetPos());
+        // Strictly greater, so a set of vectors adding up to exactly the target still lands in
+        // one file.
+        if (written <= target_size) {
+            continue;
+        }
+        // Rolled after the write rather than before it, so a vector larger than the target
+        // still lands in a file of its own instead of failing.
+        PAIMON_RETURN_NOT_OK(writer->Close());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexFileMeta> result, writer->GetResult());
+        results.push_back(std::move(result));
+        writer.reset();
+    }
+    if (writer != nullptr) {
+        PAIMON_RETURN_NOT_OK(writer->Close());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexFileMeta> result, writer->GetResult());
+        results.push_back(std::move(result));
+        writer.reset();
+    }
+    guard.Release();
+    return results;
 }
 
 }  // namespace paimon

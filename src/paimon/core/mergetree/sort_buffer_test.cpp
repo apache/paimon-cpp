@@ -193,6 +193,8 @@ TEST_F(SortBufferTest, TestInMemorySortBufferEstimateMemoryUse) {
         ASSERT_EQ(memory_use, expected_memory_use);
     }
     {
+        // v12 is the shape a managed blob column buffers its descriptors in: large binary,
+        // whose offsets are 8 bytes wide rather than the 4 of a binary column.
         arrow::FieldVector fields = {arrow::field("v0", arrow::boolean()),
                                      arrow::field("v1", arrow::int8()),
                                      arrow::field("v2", arrow::int16()),
@@ -204,21 +206,22 @@ TEST_F(SortBufferTest, TestInMemorySortBufferEstimateMemoryUse) {
                                      arrow::field("v8", arrow::timestamp(arrow::TimeUnit::NANO)),
                                      arrow::field("v9", arrow::decimal128(30, 20)),
                                      arrow::field("v10", arrow::utf8()),
-                                     arrow::field("v11", arrow::binary())};
+                                     arrow::field("v11", arrow::binary()),
+                                     arrow::field("v12", arrow::large_binary())};
 
         auto array = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
-        [true, 10, 200, 65536, 123456789, 0.0, 0.0, 2000, -86399999999500, "2134.48690000000000000009", "difference", "Alice"],
-        [false, -128, -32768, -2147483648, -9223372036854775808, -3.4028235E38, -1.7976931348623157E308, -719528, -9223372036854775808, "-999999999999999999.99999999999999999999", "Alice", "Two"],
-        [true, 127, 32767, 2147483647, 9223372036854775807, 3.4028235E38, 1.7976931348623157E308, 2932896, 9223372036854775807, "999999999999999999.99999999999999999999", "Alice", "made"],
-        [true, 0, 0, 0, 0, 1.4E-45, 4.9E-324, 0, 0, "0.00000000000000000000", "Alice", "wood"]
+        [true, 10, 200, 65536, 123456789, 0.0, 0.0, 2000, -86399999999500, "2134.48690000000000000009", "difference", "Alice", "one"],
+        [false, -128, -32768, -2147483648, -9223372036854775808, -3.4028235E38, -1.7976931348623157E308, -719528, -9223372036854775808, "-999999999999999999.99999999999999999999", "Alice", "Two", "two"],
+        [true, 127, 32767, 2147483647, 9223372036854775807, 3.4028235E38, 1.7976931348623157E308, 2932896, 9223372036854775807, "999999999999999999.99999999999999999999", "Alice", "made", "three"],
+        [true, 0, 0, 0, 0, 1.4E-45, 4.9E-324, 0, 0, "0.00000000000000000000", "Alice", "wood", "four"]
 ])")
                 .ValueOrDie());
         ASSERT_OK_AND_ASSIGN(int64_t memory_use, InMemorySortBuffer::EstimateMemoryUse(array));
         int64_t expected_memory_use = 1 + (4 + 1) + (4 + 1) + (2 * 4 + 1) + (4 * 4 + 1) +
                                       (8 * 4 + 1) + (4 * 4 + 1) + (8 * 4 + 1) + (4 * 4 + 1) +
                                       (8 * 4 + 1) + (4 * 16 + 1) + (25 + 4 * 4 + 1) +
-                                      (16 + 4 * 4 + 1);
+                                      (16 + 4 * 4 + 1) + (15 + 8 * 4 + 1);
         ASSERT_EQ(memory_use, expected_memory_use);
     }
     {

@@ -25,6 +25,7 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/data/blob_defs.h"
 #include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/options/time_duration.h"
@@ -482,6 +483,8 @@ struct CoreOptions::Impl {
     double variant_shredding_adaptive_retention_ratio = 0.05;
     bool blob_view_resolve_enabled = true;
     bool blob_as_descriptor = false;
+    bool data_evolution_compaction_rewrite_row_ids = false;
+    bool pk_clustering_override = false;
     std::optional<bool> blob_split_by_file_size;
     bool legacy_partition_name_enabled = true;
     bool global_index_enabled = true;
@@ -538,6 +541,21 @@ struct CoreOptions::Impl {
         // Parse blob.target-file-size - target size of a blob file
         PAIMON_RETURN_NOT_OK(
             parser.ParseMemorySize(Options::BLOB_TARGET_FILE_SIZE, &blob_target_file_size));
+        // Validate blob.copy-buffer-size. The value itself is not kept here: the blob format
+        // lives in a plugin library, so the writer is always built through the format factory
+        // and BlobWriterBuilder reads the option from the raw option map. Only the bounds are
+        // checked, and at parse time rather than at first use, so a table carrying an
+        // out-of-range value fails to open instead of failing on its first blob write.
+        int64_t blob_copy_buffer_size = BlobDefs::kDefaultCopyBufferSize;
+        PAIMON_RETURN_NOT_OK(
+            parser.ParseMemorySize(Options::BLOB_COPY_BUFFER_SIZE, &blob_copy_buffer_size));
+        if (blob_copy_buffer_size <= 0 ||
+            blob_copy_buffer_size > std::numeric_limits<int32_t>::max()) {
+            return Status::Invalid(
+                fmt::format("'{}' must be between 1 byte and {} bytes, but was {} bytes.",
+                            Options::BLOB_COPY_BUFFER_SIZE, std::numeric_limits<int32_t>::max(),
+                            blob_copy_buffer_size));
+        }
         // Parse source.split.target-size - target size of a source split when scanning a bucket
         PAIMON_RETURN_NOT_OK(
             parser.ParseMemorySize(Options::SOURCE_SPLIT_TARGET_SIZE, &source_split_target_size));
@@ -622,6 +640,14 @@ struct CoreOptions::Impl {
             parser.Parse<bool>(Options::BLOB_VIEW_RESOLVE_ENABLED, &blob_view_resolve_enabled));
         // Parse blob-as-descriptor - read blob field as descriptor rather than blob bytes
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::BLOB_AS_DESCRIPTOR, &blob_as_descriptor));
+        // Parse data-evolution.compaction.rewrite-row-ids - legacy row-id rewriting mode,
+        // kept only so a table carrying it fails loudly instead of being mis-compacted
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::DATA_EVOLUTION_COMPACTION_REWRITE_ROW_IDS,
+                                                &data_evolution_compaction_rewrite_row_ids));
+        // Parse pk-clustering-override - unsupported clustering override; parsed so an
+        // explicit false can be told apart from true (only true is rejected)
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::PK_CLUSTERING_OVERRIDE, &pk_clustering_override));
         // Parse blob.split-by-file-size - whether blob file size counts in scan splitting
         PAIMON_RETURN_NOT_OK(
             parser.Parse(Options::BLOB_SPLIT_BY_FILE_SIZE, &blob_split_by_file_size));
@@ -1135,6 +1161,18 @@ int64_t CoreOptions::GetBlobTargetFileSize() const {
 
 bool CoreOptions::BlobSplitByFileSize() const {
     return impl_->blob_split_by_file_size.value_or(!impl_->blob_as_descriptor);
+}
+
+bool CoreOptions::BlobAsDescriptor() const {
+    return impl_->blob_as_descriptor;
+}
+
+bool CoreOptions::DataEvolutionCompactionRewriteRowIds() const {
+    return impl_->data_evolution_compaction_rewrite_row_ids;
+}
+
+bool CoreOptions::PkClusteringOverride() const {
+    return impl_->pk_clustering_override;
 }
 
 int64_t CoreOptions::GetCompactionFileSize(bool has_primary_key) const {

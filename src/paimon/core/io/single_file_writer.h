@@ -61,11 +61,21 @@ class Metrics;
 template <typename T, typename R>
 class SingleFileWriter : public FileWriter<T, R> {
  public:
-    /// Abort executor to just have reference of path instead of whole writer.
+    /// Abort executor to just have reference of paths instead of whole writer. Besides the
+    /// data file itself it may carry companion files written next to it (e.g. a managed blob
+    /// reference sidecar), which an abort removes together.
     class AbortExecutor {
      public:
         AbortExecutor(const std::shared_ptr<FileSystem>& fs, const std::string& path)
             : paths_({{fs, path}}), logger_(Logger::GetLogger("AbortExecutor")) {}
+
+        AbortExecutor(const std::shared_ptr<FileSystem>& fs, const std::vector<std::string>& paths)
+            : logger_(Logger::GetLogger("AbortExecutor")) {
+            paths_.reserve(paths.size());
+            for (const std::string& path : paths) {
+                paths_.emplace_back(fs, path);
+            }
+        }
 
         void Add(const std::shared_ptr<FileSystem>& fs, const std::string& path) {
             paths_.emplace_back(fs, path);
@@ -77,7 +87,9 @@ class SingleFileWriter : public FileWriter<T, R> {
                     continue;
                 }
                 auto status = fs->Delete(path);
-                if (!status.ok()) {
+                // A path already removed by another cleanup (e.g. the writer's own Abort) is
+                // fine; only a real failure is worth a warning.
+                if (!status.ok() && !status.IsNotExist()) {
                     PAIMON_LOG_WARN(logger_, "Exception occurs when deleting %s: %s", path.c_str(),
                                     status.ToString().c_str());
                 }

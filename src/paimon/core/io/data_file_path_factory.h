@@ -27,6 +27,7 @@
 #include "paimon/common/fs/external_path_provider.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/managed_blob_reference_file.h"
 #include "paimon/core/utils/path_factory.h"
 
 namespace paimon {
@@ -62,6 +63,14 @@ class DataFilePathFactory : public PathFactory {
 
     std::string NewBlobPath() const {
         return NewPathFromName(NewFileName(data_file_prefix_, ".blob"));
+    }
+
+    /// A new managed blob pack path for primary-key managed blob storage. Managed packs stay
+    /// in the default bucket directory: external data paths are rejected for primary-key
+    /// managed blob tables.
+    std::string NewManagedBlobPath() const {
+        return PathUtil::JoinPath(
+            parent_, NewFileName(data_file_prefix_, ManagedBlobReferenceFile::kManagedBlobSuffix));
     }
 
     std::string NewPathFromName(const std::string& file_name) const {

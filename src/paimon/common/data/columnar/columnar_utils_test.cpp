@@ -36,6 +36,21 @@ TEST(ColumnarUtilsTest, TestGetViewAndBytes) {
     ASSERT_EQ(*std::make_shared<Bytes>("def", pool.get()), *bytes);
 }
 
+TEST(ColumnarUtilsTest, TestGetViewAndBytesOfLargeBinary) {
+    auto pool = GetDefaultPool();
+    // Large binary and large string carry 64-bit offsets, so they have to be read through the
+    // large accessors: a managed blob descriptor column is stored as large binary, and reading
+    // it as a 32-bit-offset binary array would take the offsets apart at the wrong stride.
+    for (const auto& type : {arrow::large_binary(), arrow::large_utf8()}) {
+        auto array =
+            arrow::ipc::internal::json::ArrayFromJSON(type, R"(["abc", "def", "hi"])").ValueOrDie();
+        ASSERT_EQ(std::string(ColumnarUtils::GetView(array.get(), 0)), "abc");
+        ASSERT_EQ(std::string(ColumnarUtils::GetView(array.get(), 2)), "hi");
+        auto bytes = ColumnarUtils::GetBytes<arrow::LargeBinaryType>(array.get(), 1, pool.get());
+        ASSERT_EQ(*std::make_shared<Bytes>("def", pool.get()), *bytes);
+    }
+}
+
 TEST(ColumnarUtilsTest, TestGetViewAndBytesOfDict) {
     auto pool = GetDefaultPool();
     auto dict = arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["foo", "bar", "baz"])")

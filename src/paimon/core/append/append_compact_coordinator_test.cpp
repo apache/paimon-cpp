@@ -289,6 +289,83 @@ TEST_F(AppendCompactCoordinatorTest, TestRunCompactsAllPartitions) {
     ScanAndVerify(table_path, fields, expected_datas);
 }
 
+/// Test that AppendCompactCoordinator::RunAndCommit commits its own results on a plain append
+/// table, which has no row id space to split into rounds.
+TEST_F(AppendCompactCoordinatorTest, TestRunAndCommitOnPlainAppendTable) {
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::COMPACTION_MIN_FILE_NUM, "2"},
+    };
+
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
+        arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
+    CreateTable(fields, /*partition_keys=*/{"f1"}, options);
+
+    auto table_path = TablePath();
+    auto data_type = arrow::struct_(fields);
+
+    {
+        auto array = arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
+            ["Alice", 10, 1, 11.1],
+            ["Bob", 10, 0, 12.1],
+            ["Emily", 10, 0, 13.1],
+            ["Tony", 10, 0, 14.1]
+        ])")
+                         .ValueOrDie();
+        ASSERT_OK(WriteAndCommit(table_path, {{"f1", "10"}}, /*bucket=*/0, array,
+                                 /*commit_identifier=*/0));
+    }
+    {
+        auto array = arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
+            ["Emily", 10, 0, 15.1],
+            ["Bob", 10, 0, 12.1],
+            ["Alex", 10, 0, 16.1]
+        ])")
+                         .ValueOrDie();
+        ASSERT_OK(WriteAndCommit(table_path, {{"f1", "10"}}, /*bucket=*/0, array,
+                                 /*commit_identifier=*/1));
+    }
+
+    // One round, committed here rather than by the caller.
+    ASSERT_OK_AND_ASSIGN(int32_t commits,
+                         AppendCompactCoordinator::RunAndCommit(
+                             table_path, options, /*partitions=*/{},
+                             /*commit_user=*/"commit_user_1", /*file_system=*/nullptr, pool_));
+    ASSERT_EQ(commits, 1);
+
+    // The compaction is visible without the caller committing anything.
+    std::map<std::pair<std::string, int32_t>, std::string> expected_datas;
+    // Files are sorted by file_size ascending in PackFiles, so the smaller file (3 rows) comes
+    // before the larger one (4 rows).
+    expected_datas[std::make_pair("f1=10/", 0)] = R"([
+[0, "Emily", 10, 0, 15.1],
+[0, "Bob", 10, 0, 12.1],
+[0, "Alex", 10, 0, 16.1],
+[0, "Alice", 10, 1, 11.1],
+[0, "Bob", 10, 0, 12.1],
+[0, "Emily", 10, 0, 13.1],
+[0, "Tony", 10, 0, 14.1]
+])";
+    ScanAndVerify(table_path, fields, expected_datas);
+
+    // Only the rewritten file is left, which is fewer than 'compaction.min.file-num': there is
+    // nothing to compact and nothing to commit.
+    ASSERT_OK_AND_ASSIGN(
+        commits, AppendCompactCoordinator::RunAndCommit(table_path, options, /*partitions=*/{},
+                                                        /*commit_user=*/"commit_user_1",
+                                                        /*file_system=*/nullptr, pool_));
+    ASSERT_EQ(commits, 0);
+
+    // A commit needs a user to record on the snapshot.
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::RunAndCommit(table_path, options, /*partitions=*/{},
+                                               /*commit_user=*/"", /*file_system=*/nullptr, pool_),
+        "needs a commit user");
+}
+
 /// Test that AppendCompactCoordinator::Run only compacts the specified partition.
 ///
 /// Steps:
@@ -508,7 +585,28 @@ TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnDvTable) {
 
     ASSERT_NOK_WITH_MSG(AppendCompactCoordinator::Run(TablePath(), options, /*partitions=*/{},
                                                       /*file_system=*/nullptr, pool_),
-                        "not support for dv in UNAWARE_BUCKET mode");
+                        "does not support deletion vectors in UNAWARE_BUCKET mode");
+}
+
+/// Test that materializing deletion vectors is refused on a table that has none to materialize.
+TEST_F(AppendCompactCoordinatorTest, TestMaterializeFailsOnPlainAppendTable) {
+    // Materializing rewrites row ranges and lets the commit assign fresh row ids, which only a
+    // data-evolution table can absorb. On a plain append table the entry point must refuse
+    // rather than rewrite files for nothing.
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::FILE_SYSTEM, "local"}};
+
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
+        arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
+    CreateTable(fields, /*partition_keys=*/{"f1"}, options);
+
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::MaterializeDeletionVectors(
+            TablePath(), options, /*partitions=*/{}, /*commit_user=*/"commit_user_1",
+            /*file_system=*/nullptr, pool_),
+        "Materializing deletion vectors is only supported for data-evolution tables");
 }
 
 /// Test that compact output files are written to external path when configured.
