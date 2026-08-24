@@ -33,6 +33,22 @@
 
 namespace paimon::avro {
 
+const AvroDirectDecoder::DecodeContext::BuilderMetadata&
+AvroDirectDecoder::DecodeContext::GetBuilderMetadata(const arrow::ArrayBuilder* builder) {
+    auto iter = builder_metadata_.find(builder);
+    if (iter != builder_metadata_.end()) {
+        return iter->second;
+    }
+
+    std::shared_ptr<arrow::DataType> data_type = builder->type();
+    BuilderMetadata metadata{data_type->id(), std::nullopt};
+    if (data_type->id() == arrow::Type::TIMESTAMP) {
+        metadata.timestamp_unit =
+            checked_cast<const arrow::TimestampType*>(data_type.get())->unit();
+    }
+    return builder_metadata_.emplace(builder, metadata).first->second;
+}
+
 namespace {
 
 /// Forward declaration for mutual recursion.
@@ -266,8 +282,8 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
 
         case ::avro::AVRO_INT: {
             int32_t value = decoder->decodeInt();
-            auto arrow_type = array_builder->type();
-            switch (arrow_type->id()) {
+            const auto& builder_metadata = ctx->GetBuilderMetadata(array_builder);
+            switch (builder_metadata.type) {
                 case arrow::Type::INT8: {
                     auto* builder = checked_cast<arrow::Int8Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
@@ -287,7 +303,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                     if (logical_type.type() != ::avro::LogicalType::Type::DATE) {
                         return Status::TypeError(
                             fmt::format("Unexpected avro type [{}] with arrow type [{}].",
-                                        ::avro::toString(type), arrow_type->ToString()));
+                                        ::avro::toString(type), array_builder->type()->ToString()));
                     }
                     auto* builder = checked_cast<arrow::Date32Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
@@ -296,7 +312,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                 default:
                     return Status::TypeError(
                         fmt::format("Unexpected avro type [{}] with arrow type [{}].",
-                                    ::avro::toString(type), arrow_type->ToString()));
+                                    ::avro::toString(type), array_builder->type()->ToString()));
             }
         }
 
@@ -315,9 +331,9 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                 case ::avro::LogicalType::Type::LOCAL_TIMESTAMP_MICROS:
                 case ::avro::LogicalType::Type::LOCAL_TIMESTAMP_NANOS: {
                     auto* builder = checked_cast<arrow::TimestampBuilder*>(array_builder);
-                    auto ts_type = checked_cast<arrow::TimestampType*>(builder->type().get());
                     // for arrow second, we need to convert it from avro millisecond
-                    if (ts_type->unit() == arrow::TimeUnit::type::SECOND) {
+                    const auto& builder_metadata = ctx->GetBuilderMetadata(builder);
+                    if (builder_metadata.timestamp_unit == arrow::TimeUnit::type::SECOND) {
                         value /= DateTimeUtils::CONVERSION_FACTORS[DateTimeUtils::MILLISECOND];
                     }
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));

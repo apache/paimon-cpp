@@ -22,7 +22,11 @@
 
 #pragma once
 
+#include <optional>
 #include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "arrow/array/builder_base.h"
 #include "avro/Decoder.hh"
@@ -41,10 +45,26 @@ class AvroDirectDecoder {
     /// Avoids frequent small allocations by reusing temporary buffers across multiple decode
     /// operations. This is particularly important for string, binary, and decimal data types.
     struct DecodeContext {
+        struct BuilderMetadata {
+            arrow::Type::type type;
+            std::optional<arrow::TimeUnit::type> timestamp_unit;
+        };
+
+        /// Returns immutable type metadata without repeatedly copying the builder's DataType.
+        const BuilderMetadata& GetBuilderMetadata(const arrow::ArrayBuilder* builder);
+
+        /// Clears metadata before the builder tree is replaced or destroyed.
+        void ClearBuilderMetadata() {
+            builder_metadata_.clear();
+        }
+
         // Scratch buffer for string decoding (reused across rows)
         std::string string_scratch;
         // Scratch buffer for binary/decimal data (reused across rows)
         std::vector<uint8_t> bytes_scratch;
+
+     private:
+        std::unordered_map<const arrow::ArrayBuilder*, BuilderMetadata> builder_metadata_;
     };
 
     /// Directly decode Avro data to Arrow array builders without GenericDatum

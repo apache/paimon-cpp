@@ -172,6 +172,7 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     }
     reader_ = std::move(reader);
     array_builder_ = std::move(array_builder);
+    decode_context_.ClearBuilderMetadata();
     previous_first_row_ = std::numeric_limits<uint64_t>::max();
     previous_batch_row_count_ = 0;
     next_row_to_read_ = std::numeric_limits<uint64_t>::max();
