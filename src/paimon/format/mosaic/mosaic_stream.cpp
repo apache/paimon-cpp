@@ -57,8 +57,8 @@ int32_t MosaicInputContext::ReadAt(void* context, uint64_t offset, uint8_t* buff
         input_context->SetCallbackStatus(status);
         return -1;
     }
-    int64_t read_length = static_cast<int64_t>(length);
-    int64_t read_offset = static_cast<int64_t>(offset);
+    auto read_length = static_cast<int64_t>(length);
+    auto read_offset = static_cast<int64_t>(offset);
     Result<int64_t> result =
         input_context->input_->Read(reinterpret_cast<char*>(buffer), read_length, read_offset);
     if (!result.ok()) {
@@ -103,7 +103,7 @@ int32_t MosaicOutputContext::Write(void* context, const uint8_t* data, size_t le
         output_context->SetCallbackStatus(status);
         return -1;
     }
-    int64_t write_length = static_cast<int64_t>(length);
+    auto write_length = static_cast<int64_t>(length);
     Result<int64_t> result =
         output_context->output_->Write(reinterpret_cast<const char*>(data), write_length);
     if (!result.ok()) {

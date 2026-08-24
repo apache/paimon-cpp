@@ -197,6 +197,49 @@ TEST_F(MosaicFileFormatTest, WriteThenRead) {
     AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 5, 8});
 }
 
+TEST_F(MosaicFileFormatTest, SetReadSchemaResetsReaderToFirstRow) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "reset-reader.mosaic");
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+                                 arrow::field("name", arrow::utf8())};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[1,"one"],[2,"two"],[3,"three"]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/2));
+    reader_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, reader_builder->Build(input));
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch first_batch, reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(uint64_t first_row, reader->GetPreviousBatchFileRowId(/*batch_row_id=*/0));
+    ASSERT_EQ(first_row, 0);
+    std::shared_ptr<arrow::Array> first_array =
+        arrow::ImportArray(first_batch.first.get(), first_batch.second.get()).ValueOrDie();
+    ASSERT_TRUE(first_array->Equals(data->Slice(/*offset=*/0, /*length=*/2)));
+
+    std::shared_ptr<arrow::Schema> projected_schema = arrow::schema({fields[1]});
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*projected_schema, &ffi_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, /*predicate=*/nullptr,
+                                    /*selection_bitmap=*/std::nullopt));
+    ASSERT_NOK(reader->GetPreviousBatchFileRowId(/*batch_row_id=*/0));
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch projected_batch, reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(first_row, reader->GetPreviousBatchFileRowId(/*batch_row_id=*/0));
+    ASSERT_EQ(first_row, 0);
+    std::shared_ptr<arrow::Array> projected_array =
+        arrow::ImportArray(projected_batch.first.get(), projected_batch.second.get()).ValueOrDie();
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}),
+                                                  R"([["one"],["two"]])")
+            .ValueOrDie();
+    ASSERT_TRUE(projected_array->Equals(expected)) << projected_array->ToString();
+}
+
 TEST_F(MosaicFileFormatTest, WriterOptions) {
     std::map<std::string, std::string> options = {
         {"file.format", "mosaic"},

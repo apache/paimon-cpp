@@ -70,6 +70,7 @@ class MosaicFileBatchReader : public FileBatchReader {
                           const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<std::shared_ptr<arrow::Array>> ReadNextRowGroup();
+    void CloseInternal();
 
     std::shared_ptr<InputStream> input_;
     int32_t batch_size_;

@@ -63,8 +63,8 @@ Result<std::unique_ptr<MosaicFileBatchReader>> MosaicFileBatchReader::Create(
     }
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
     PAIMON_ASSIGN_OR_RAISE(int64_t signed_length, input->Length());
-    PAIMON_RETURN_NOT_OK(ValidateValueInRange<uint64_t>(signed_length, "Mosaic input length"));
-    uint64_t length = static_cast<uint64_t>(signed_length);
+    PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(signed_length, "Mosaic input length"));
+    auto length = static_cast<uint64_t>(signed_length);
     auto input_context = std::make_unique<MosaicInputContext>(input, length);
     MosaicInputFile input_file = {};
     input_file.ctx = input_context.get();
@@ -112,7 +112,7 @@ Result<std::unique_ptr<MosaicFileBatchReader>> MosaicFileBatchReader::Create(
 }
 
 MosaicFileBatchReader::~MosaicFileBatchReader() {
-    Close();
+    CloseInternal();
 }
 
 Result<std::shared_ptr<arrow::Array>> MosaicFileBatchReader::ReadNextRowGroup() {
@@ -143,12 +143,8 @@ Result<std::shared_ptr<arrow::Array>> MosaicFileBatchReader::ReadNextRowGroup() 
         if (export_result != 0) {
             return MosaicFfiError("export Mosaic row group", input_context_->GetCallbackStatus());
         }
-        arrow::Result<std::shared_ptr<arrow::Array>> result =
-            arrow::ImportArray(&ffi_array, &ffi_schema);
-        if (!result.ok()) {
-            return ToPaimonStatus(result.status());
-        }
-        std::shared_ptr<arrow::Array> batch = std::move(result).ValueOrDie();
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> batch,
+                                          arrow::ImportArray(&ffi_array, &ffi_schema));
         if (batch->length() != row_count) {
             return Status::Invalid("Mosaic row group row count mismatch");
         }
@@ -176,7 +172,7 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
         std::min<int64_t>(batch_size_, current_batch_->length() - current_batch_offset_);
     std::shared_ptr<arrow::Array> slice = current_batch_->Slice(current_batch_offset_, row_count);
     std::shared_ptr<arrow::RecordBatch> normalized_batch;
-    if (current_batch_offset_ != 0 || row_count != current_batch_->length()) {
+    if (current_batch_offset_ != 0) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> schema,
                                ArrowUtils::DataTypeToSchema(slice->type()));
         std::shared_ptr<arrow::StructArray> struct_slice =
@@ -263,6 +259,10 @@ std::shared_ptr<Metrics> MosaicFileBatchReader::GetReaderMetrics() const {
 }
 
 void MosaicFileBatchReader::Close() {
+    CloseInternal();
+}
+
+void MosaicFileBatchReader::CloseInternal() {
     if (!closed_) {
         if (reader_ != nullptr) {
             mosaic_reader_free(reader_);
