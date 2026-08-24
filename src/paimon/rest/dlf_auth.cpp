@@ -40,6 +40,7 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/url_utils.h"
 #include "paimon/common/utils/uuid.h"
+#include "paimon/rest/rest_http_client.h"
 #include "rapidjson/document.h"
 
 namespace paimon {
@@ -786,8 +787,8 @@ std::string DlfAuthProvider::ParseSigningAlgorithmFromUri(const std::string& uri
 }
 
 Result<std::string> DlfAuthProvider::ExtractHost(const std::string& uri) {
-    std::string host = uri;
-    std::string lower_uri = StringUtils::ToLowerCase(uri);
+    std::string host = RestHttpClient::NormalizeUri(uri);
+    std::string lower_uri = StringUtils::ToLowerCase(host);
     if (StringUtils::StartsWith(lower_uri, "http://")) {
         host.erase(0, 7);
     } else if (StringUtils::StartsWith(lower_uri, "https://")) {

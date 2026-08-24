@@ -388,6 +388,18 @@ TEST(DlfAuthProviderTest, SelectsEndpointSignerAndCredentialSource) {
     ASSERT_EQ("example.com:8443", host);
 }
 
+TEST(DlfAuthProviderTest, NormalizesSigningHostLikeTransport) {
+    std::map<std::string, std::string> options = {
+        {CatalogOptions::URI, " https://dlfnext.cn-hangzhou.aliyuncs.com "},
+        {CatalogOptions::TOKEN_PROVIDER, "dlf"},
+        {CatalogOptions::DLF_ACCESS_KEY_ID, "ak"},
+        {CatalogOptions::DLF_ACCESS_KEY_SECRET, "sk"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AuthProvider> provider, AuthProvider::Create(options));
+    RestAuthParameter parameter = RestAuthParameter::Create("GET", "/v1/config", {}, "");
+    ASSERT_OK_AND_ASSIGN(StringMap headers, provider->MergeAuthHeader({}, parameter));
+    ASSERT_EQ("dlfnext.cn-hangzhou.aliyuncs.com", headers.at("Host"));
+}
+
 TEST(DlfAuthProviderTest, RejectsIncompleteOrUnknownConfiguration) {
     const std::map<std::string, std::string> base = {
         {CatalogOptions::URI, "https://dlfnext.cn-hangzhou.aliyuncs.com"},
