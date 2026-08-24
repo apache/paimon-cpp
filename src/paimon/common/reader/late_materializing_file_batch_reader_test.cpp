@@ -67,7 +67,7 @@ class LmReaderBuilder : public ReaderBuilder {
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& /*stream*/) const override {
-        auto mock = std::make_unique<ProjectingMockFileBatchReader>(data_, type_, batch_size_);
+        auto mock = std::make_unique<MockFileBatchReader>(data_, type_, batch_size_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LateMaterializingFileBatchReader> reader,
                                LateMaterializingFileBatchReader::Create(std::move(mock)));
         return std::unique_ptr<FileBatchReader>(std::move(reader));
@@ -248,7 +248,7 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
 // No predicate: the reader must pass through the inner reader unchanged (all rows, all columns).
 TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenNoPredicate) {
     auto data = BuildData({0, 1, 2, 3, 4});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), /*predicate=*/nullptr,
                             std::nullopt));
@@ -266,7 +266,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenNoPredicate) {
 // materialization, plain pass-through.
 TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenPayloadEmpty) {
     auto data = BuildData({0, 1, 2, 3, 4});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     // read schema is just {k}; the predicate on k covers all columns -> payload empty
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
@@ -280,7 +280,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenPayloadEmpty) {
 // Contiguous matched subset spanning multiple batches.
 TEST_F(LateMaterializingFileBatchReaderTest, ContiguousSubsetAcrossBatches) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/3);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
                                                    FieldType::BIGINT, Literal(4l));
@@ -304,7 +304,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ScatteredAlternatingMatch) {
         ks.push_back(i % 2);
     }
     auto data = BuildData(ks);
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/3);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k",
                                              FieldType::BIGINT, Literal(1l));
@@ -327,7 +327,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, MatchedIntersectsSelection) {
         ks.push_back(i % 2);
     }
     auto data = BuildData(ks);
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/4);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/4);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k",
                                              FieldType::BIGINT, Literal(1l));
@@ -352,7 +352,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, MatchedIntersectsSelection) {
 // No matched rows: the reader returns EOF immediately.
 TEST_F(LateMaterializingFileBatchReaderTest, EmptyMatchReturnsEof) {
     auto data = BuildData({0, 1, 2, 3, 4});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
                                                    FieldType::BIGINT, Literal(100l));
@@ -365,7 +365,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, EmptyMatchReturnsEof) {
 // SeekToRow during payload emission must re-align the probe cursor so probe/payload stay matched.
 TEST_F(LateMaterializingFileBatchReaderTest, SeekToRowRealignsProbeCursor) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/4);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/4);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
                                                       FieldType::BIGINT, Literal(5l));
@@ -392,7 +392,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, SeekToRowRealignsProbeCursor) {
 // schema switches (SetReadSchema resets the inner reader's ranges).
 TEST_F(LateMaterializingFileBatchReaderTest, ReadRangesForwardedAcrossPhases) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/4);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/4);
     auto* mock_ptr = mock.get();
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
@@ -415,7 +415,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReadRangesForwardedAcrossPhases) {
 // SetReadSchema is re-entrant: a second call with a different predicate resets probe state.
 TEST_F(LateMaterializingFileBatchReaderTest, ReentrantSetReadSchema) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/3);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
 
     auto predicate1 = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
@@ -438,7 +438,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReentrantSetReadSchema) {
 // Forwarded metadata accessors should reflect the inner reader.
 TEST_F(LateMaterializingFileBatchReaderTest, ForwardsRowCountAndFileSchema) {
     auto data = BuildData({0, 1, 2, 3});
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
 
     ASSERT_OK_AND_ASSIGN(uint64_t num_rows, reader->GetNumberOfRows());
@@ -454,7 +454,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ForwardsRowCountAndFileSchema) {
 TEST_F(LateMaterializingFileBatchReaderTest, MultiFieldPreservesColumnOrder) {
     auto data = BuildMultiFieldData(10);
     auto type = data->type();
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, type, /*batch_size=*/3);
+    auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     // probe columns = {a (idx0), c (idx2)}; payload columns = {b, d, e}
     auto pred_a = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "a", FieldType::BIGINT,
@@ -496,7 +496,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, MultiFieldPreservesColumnOrder) {
 TEST_F(LateMaterializingFileBatchReaderTest, NestedPayloadColumn) {
     auto data = BuildNestedData(8);
     auto type = data->type();
-    auto mock = std::make_unique<ProjectingMockFileBatchReader>(data, type, /*batch_size=*/3);
+    auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(std::move(mock)));
     // probe = {k}; payload = {arr (list<int64>), tag}
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT,
