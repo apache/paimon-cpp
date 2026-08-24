@@ -836,7 +836,7 @@ TEST_F(RealtimeWriteInteTest, TestCommitOrdersPreparedOffsetRanges) {
     ASSERT_EQ(expected_rows, actual_rows);
 }
 
-TEST_F(RealtimeWriteInteTest, TestCommitWithProgressRetryIsIdempotent) {
+TEST_F(RealtimeWriteInteTest, TestCommitWithProgressRetryReturnsLatestSnapshot) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter());
     std::vector<Row> expected_rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
@@ -849,9 +849,24 @@ TEST_F(RealtimeWriteInteTest, TestCommitWithProgressRetryIsIdempotent) {
     ASSERT_OK_AND_ASSIGN(int64_t first_snapshot_id, Commit(commits, /*commit_identifier=*/0));
     ASSERT_OK_AND_ASSIGN(int64_t retry_snapshot_id, Commit(commits, /*commit_identifier=*/0));
     ASSERT_EQ(first_snapshot_id, retry_snapshot_id);
-    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets, ReadCommittedOffsets());
-    ASSERT_EQ(3, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
 
+    ASSERT_OK(writer->RefreshCommittedSnapshot(first_snapshot_id));
+    std::vector<Row> second_rows = MakeRows(/*first_id=*/3, /*count=*/2, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_batch,
+                         MakeBatch(second_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(second_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(int64_t second_snapshot_id,
+                         Commit(second_commits, /*commit_identifier=*/1));
+
+    ASSERT_OK_AND_ASSIGN(retry_snapshot_id, Commit(commits, /*commit_identifier=*/0));
+    ASSERT_EQ(second_snapshot_id, retry_snapshot_id);
+    ASSERT_NE(first_snapshot_id, retry_snapshot_id);
+    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets, ReadCommittedOffsets());
+    ASSERT_EQ(5, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
+
+    expected_rows.insert(expected_rows.end(), second_rows.begin(), second_rows.end());
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows());
     ASSERT_EQ(expected_rows, actual_rows);
     ASSERT_OK(writer->Close());

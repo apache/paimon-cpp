@@ -80,15 +80,16 @@ class PAIMON_EXPORT FileStoreCommit {
     /// snapshot atomically publishes the data files and the updated offset map.
     ///
     /// If this method returns an error, the caller may retry with the same arguments. Each call
-    /// reloads the latest committed state. A retry is treated as committed only when both its
-    /// commit identity (`commit_user`, `commit_identifier`) and its requested offset ranges
-    /// identify committed progress.
+    /// reloads the latest committed state. As in `FilterAndCommit`, a retry's identifier is
+    /// considered committed when it is not newer than the latest identifier for `commit_user`.
+    /// The requested offset ranges must also be covered by the latest committed progress.
     ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.
     /// @param commit_identifier Identifier of the streaming commit operation.
     /// @param watermark Optional event-time watermark.
-    /// @return The id of the final snapshot produced by this commit.
+    /// @return The id of the latest snapshot containing the committed progress. On retry, this may
+    /// be a snapshot produced by a later commit and is suitable for refreshing a real-time context.
     virtual Result<int64_t> CommitWithProgress(
         const std::vector<RealtimeCommitProgress>& realtime_commits, int64_t commit_identifier,
         std::optional<int64_t> watermark) = 0;
