@@ -414,7 +414,7 @@ TEST_F(RestCatalogTest, CreateRejectsInvalidOptions) {
     ASSERT_NOK_WITH_MSG(CreateRestCatalog().status(), "'token.provider' must be configured");
 
     options_ = valid_options;
-    options_[CatalogOptions::TOKEN_PROVIDER] = "dlf";
+    options_[CatalogOptions::TOKEN_PROVIDER] = "unsupported";
     Status unsupported_provider = CreateRestCatalog().status();
     ASSERT_TRUE(unsupported_provider.IsNotImplemented()) << unsupported_provider.ToString();
     ASSERT_NOK_WITH_MSG(unsupported_provider, "unsupported token provider");

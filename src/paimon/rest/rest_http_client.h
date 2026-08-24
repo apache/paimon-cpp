@@ -50,8 +50,8 @@ struct HttpStatus {
 /// response header (delta-seconds or HTTP-date form). A backoff sleep is bounded by
 /// `retry_max_delay_ms` and the whole request by `retry_timeout_ms`; a `Retry-After`
 /// beyond the remaining budget stops retrying rather than shortening the sleep.
-/// Redirects to http(s) targets are followed transparently, keeping the method and
-/// body of POST/DELETE requests.
+/// Redirects to http(s) targets are followed by default, keeping the method and body
+/// of POST/DELETE requests; callers can disable them for request-bound signatures.
 class RestHttpClient {
  public:
     struct Config {
@@ -96,11 +96,12 @@ class RestHttpClient {
     /// final response, which may carry a non-2xx code, or an error status when the
     /// request could not be transported at all. Only transient transport errors (an
     /// established connection breaking mid-request or a truncated response body) are
-    /// retried; every other transport failure fails immediately.
+    /// retried; every other transport failure fails immediately. `follow_redirects`
+    /// must be false when authentication headers are bound to the original request.
     Result<Response> Execute(const std::string& method, const std::string& path,
                              const std::map<std::string, std::string>& query_params,
                              const std::map<std::string, std::string>& headers,
-                             const std::string& body) const;
+                             const std::string& body, bool follow_redirects = true) const;
 
     const std::string& GetBaseUri() const {
         return base_uri_;
@@ -135,7 +136,8 @@ class RestHttpClient {
     /// may be retried; see `Execute` for which kinds are not.
     Result<Response> ExecuteOnce(const std::string& method, const std::string& url,
                                  const std::map<std::string, std::string>& headers,
-                                 const std::string& body, bool* transport_retriable) const;
+                                 const std::string& body, bool follow_redirects,
+                                 bool* transport_retriable) const;
 
     std::optional<int64_t> GetRetryDelayMs(int32_t execution_count, const Response* response,
                                            int64_t remaining_budget_ms) const;

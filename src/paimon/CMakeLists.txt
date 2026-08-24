@@ -196,6 +196,10 @@ if(PAIMON_ENABLE_S3 OR PAIMON_ENABLE_REST)
     list(APPEND PAIMON_COMMON_SRCS common/utils/http_client.cpp)
     set(PAIMON_CURL_LINK_LIBS CURL::libcurl)
 endif()
+set(PAIMON_REST_LINK_LIBS)
+if(PAIMON_ENABLE_REST)
+    set(PAIMON_REST_LINK_LIBS OpenSSL::Crypto)
+endif()
 if(PAIMON_ENABLE_S3)
     list(APPEND PAIMON_COMMON_SRCS common/fs/object_store_file_system.cpp)
 endif()
@@ -449,6 +453,7 @@ if(PAIMON_ENABLE_REST)
          rest/resource_paths.cpp
          rest/rest_api.cpp
          rest/rest_auth.cpp
+         rest/dlf_auth.cpp
          rest/rest_catalog.cpp
          rest/rest_messages.cpp
          rest/rest_util.cpp)
@@ -468,6 +473,7 @@ add_paimon_lib(paimon
                Threads::Threads
                RapidJSON
                ${PAIMON_CURL_LINK_LIBS}
+               ${PAIMON_REST_LINK_LIBS}
                DataSketches
                STATIC_LINK_LIBS
                arrow
@@ -480,6 +486,7 @@ add_paimon_lib(paimon
                RapidJSON
                DataSketches
                ${PAIMON_CURL_LINK_LIBS}
+               ${PAIMON_REST_LINK_LIBS}
                SHARED_LINK_FLAGS
                ${PAIMON_VERSION_SCRIPT_FLAGS})
 
@@ -965,6 +972,7 @@ if(PAIMON_BUILD_TESTS)
                         rest/rest_http_client_test.cpp
                         rest/mock_rest_server.cpp
                         rest/resource_paths_test.cpp
+                        rest/dlf_auth_test.cpp
                         rest/rest_catalog_test.cpp
                         rest/rest_messages_test.cpp
                         rest/rest_util_test.cpp

@@ -52,6 +52,11 @@ class AuthProvider {
         const std::map<std::string, std::string>& base_header,
         const RestAuthParameter& parameter) const = 0;
 
+    /// Whether the transport may follow a redirect without regenerating auth headers.
+    virtual bool AllowsRedirects() const {
+        return true;
+    }
+
     /// Creates the provider configured by `CatalogOptions::TOKEN_PROVIDER`.
     static Result<std::unique_ptr<AuthProvider>> Create(
         const std::map<std::string, std::string>& options);

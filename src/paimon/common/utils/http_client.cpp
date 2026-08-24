@@ -164,6 +164,9 @@ CurlHttpClient::~CurlHttpClient() = default;
 
 Result<HttpResponse> CurlHttpClient::Execute(const HttpRequest& request,
                                              const HttpBodyConsumer& consumer) const {
+    if (request.request_timeout_ms < 0) {
+        return Status::Invalid("HTTP request timeout must not be negative");
+    }
     for (int32_t attempt = 0; attempt < kMaxAttempts; ++attempt) {
         CURL* handle = impl_->Acquire();
         if (handle == nullptr) {
@@ -184,6 +187,8 @@ Result<HttpResponse> CurlHttpClient::Execute(const HttpRequest& request,
         curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT_MS, 30000L);
+        curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS,
+                         static_cast<long>(request.request_timeout_ms));  // NOLINT(runtime/int)
         curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(handle, CURLOPT_WRITEDATA, &context);
         curl_easy_setopt(handle, CURLOPT_HEADERFUNCTION, HeaderCallback);

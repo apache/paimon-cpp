@@ -81,9 +81,9 @@ Result<std::unique_ptr<RestApi>> RestApi::Create(const std::map<std::string, std
             RestAuthParameter::Create("GET", ResourcePaths::Config(), query_params, "");
         PAIMON_ASSIGN_OR_RAISE(StringMap headers,
                                auth_provider->MergeAuthHeader(base_headers, auth_parameter));
-        PAIMON_ASSIGN_OR_RAISE(
-            RestHttpClient::Response response,
-            client->Execute("GET", ResourcePaths::Config(), query_params, headers, ""));
+        PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
+                               client->Execute("GET", ResourcePaths::Config(), query_params,
+                                               headers, "", auth_provider->AllowsRedirects()));
         if (!response.IsSuccessful()) {
             return ErrorToStatus(response);
         }
@@ -189,7 +189,8 @@ Result<RestHttpClient::Response> RestApi::Execute(
     PAIMON_ASSIGN_OR_RAISE(StringMap headers,
                            auth_provider_->MergeAuthHeader(request_headers, auth_parameter));
     PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
-                           client_->Execute(method, path, query_params, headers, body));
+                           client_->Execute(method, path, query_params, headers, body,
+                                            auth_provider_->AllowsRedirects()));
     if (!response.IsSuccessful()) {
         return ErrorToStatus(response);
     }

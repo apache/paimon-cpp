@@ -489,6 +489,25 @@ TEST(RestHttpClientTest, RedirectIsFollowed) {
     ASSERT_EQ(0, response.headers.count("location"));
 }
 
+TEST(RestHttpClientTest, RedirectCanBeDisabledForSignedRequests) {
+    std::atomic<int32_t> request_count{0};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                         MockRestServer::Start([&](const MockRestServer::Request& request) {
+                             request_count++;
+                             MockRestServer::Response response;
+                             response.code = 302;
+                             response.headers["Location"] = "/v1/config";
+                             return response;
+                         }));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestHttpClient> client,
+                         RestHttpClient::Create(server->GetBaseUri()));
+    ASSERT_OK_AND_ASSIGN(RestHttpClient::Response response,
+                         client->Execute("GET", "/old", {}, {{"x-acs-security-token", "secret"}},
+                                         "", /*follow_redirects=*/false));
+    ASSERT_EQ(302, response.code);
+    ASSERT_EQ(1, request_count.load());
+}
+
 TEST(RestHttpClientTest, PostRedirectKeepsMethodAndBody) {
     std::mutex mutex;
     MockRestServer::Request last_request;

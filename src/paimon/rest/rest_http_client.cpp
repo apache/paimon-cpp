@@ -249,7 +249,7 @@ std::string RestHttpClient::BuildQueryString(
 Result<RestHttpClient::Response> RestHttpClient::ExecuteOnce(
     const std::string& method, const std::string& url,
     const std::map<std::string, std::string>& headers, const std::string& body,
-    bool* transport_retriable) const {
+    bool follow_redirects, bool* transport_retriable) const {
     CURL* curl = handle_pool_->Acquire();
     if (curl == nullptr) {
         return Status::IOError("failed to create curl handle");
@@ -271,10 +271,11 @@ Result<RestHttpClient::Response> RestHttpClient::ExecuteOnce(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, WriteHeaderCallback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
-    // Follow redirects transparently, restricted to http(s) targets. Without
+    // Redirects can be disabled for auth headers whose signatures are bound to the
+    // original request. Otherwise they are restricted to http(s) targets. Without
     // CURLOPT_POSTREDIR a 301/302 would replay a body-carrying request as a bodyless
     // GET. A 303 is left to become a GET, which is what it is defined to mean.
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, follow_redirects ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 50L);
     curl_easy_setopt(curl, CURLOPT_POSTREDIR,
                      static_cast<long>(CURL_REDIR_POST_301 |  // NOLINT(runtime/int)
@@ -399,7 +400,8 @@ std::optional<int64_t> RestHttpClient::GetRetryDelayMs(int32_t execution_count,
 Result<RestHttpClient::Response> RestHttpClient::Execute(
     const std::string& method, const std::string& path,
     const std::map<std::string, std::string>& query_params,
-    const std::map<std::string, std::string>& headers, const std::string& body) const {
+    const std::map<std::string, std::string>& headers, const std::string& body,
+    bool follow_redirects) const {
     if (method != "GET" && method != "POST" && method != "DELETE") {
         return Status::Invalid(fmt::format("unsupported http method: {}", method));
     }
@@ -423,7 +425,8 @@ Result<RestHttpClient::Response> RestHttpClient::Execute(
     while (true) {
         execution_count++;
         bool transport_retriable = false;
-        Result<Response> result = ExecuteOnce(method, url, headers, body, &transport_retriable);
+        Result<Response> result =
+            ExecuteOnce(method, url, headers, body, follow_redirects, &transport_retriable);
         bool retriable;
         if (result.ok()) {
             retriable = IsRetriableCode(result.value().code);
