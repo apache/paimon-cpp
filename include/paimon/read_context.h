@@ -51,7 +51,7 @@ class PAIMON_EXPORT ReadContext {
                 const std::vector<std::string>& read_field_names,
                 const std::vector<int32_t>& read_field_ids,
                 const std::shared_ptr<Predicate>& predicate, bool enable_predicate_filter,
-                bool enable_prefetch, uint32_t prefetch_batch_count,
+                bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
                 uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
                 uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
                 const std::shared_ptr<MemoryPool>& memory_pool,
@@ -96,6 +96,11 @@ class PAIMON_EXPORT ReadContext {
     }
     bool EnablePrefetch() const {
         return enable_prefetch_;
+    }
+    /// Whether late materialization (probe/payload two-phase reads) is enabled for the
+    /// prefetch read path. Defaults to false.
+    bool EnableLateMaterializing() const {
+        return enable_late_materializing_;
     }
     uint32_t GetPrefetchBatchCount() const {
         return prefetch_batch_count_;
@@ -163,6 +168,7 @@ class PAIMON_EXPORT ReadContext {
     std::shared_ptr<Predicate> predicate_;
     bool enable_predicate_filter_;
     bool enable_prefetch_;
+    bool enable_late_materializing_;
     uint32_t prefetch_batch_count_;
     uint32_t prefetch_max_parallel_num_;
     bool enable_multi_thread_row_to_batch_;
@@ -305,6 +311,15 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @param enabled Whether to enable prefetching (default: false)
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& EnablePrefetch(bool enabled);
+
+    /// Enable or disable late materialization (probe/payload two-phase reads) for the prefetch
+    /// read path. When enabled, each parallel reader under the prefetch layer performs a probe
+    /// read of predicate columns first and only materializes payload columns for matched rows.
+    /// @param enabled Whether to enable late materialization (default: false)
+    /// @return Reference to this builder for method chaining.
+    /// @note Only takes effect when prefetch is enabled; without a pushed-down predicate the
+    /// late-materializing reader degrades to a plain passthrough.
+    ReadContextBuilder& EnableLateMaterializing(bool enabled);
 
     /// Enable or disable the read-ahead cache for read operations.
     ///

@@ -35,6 +35,7 @@ ReadContext::ReadContext(
     const std::string& path, const std::string& branch,
     const std::vector<std::string>& read_field_names, const std::vector<int32_t>& read_field_ids,
     const std::shared_ptr<Predicate>& predicate, bool enable_predicate_filter, bool enable_prefetch,
+    bool enable_late_materializing,
     uint32_t prefetch_batch_count, uint32_t prefetch_max_parallel_num,
     bool enable_multi_thread_row_to_batch, uint32_t row_to_batch_thread_number,
     const std::optional<std::string>& table_schema, const std::shared_ptr<MemoryPool>& memory_pool,
@@ -51,6 +52,7 @@ ReadContext::ReadContext(
       predicate_(predicate),
       enable_predicate_filter_(enable_predicate_filter),
       enable_prefetch_(enable_prefetch),
+      enable_late_materializing_(enable_late_materializing),
       prefetch_batch_count_(prefetch_batch_count),
       prefetch_max_parallel_num_(prefetch_max_parallel_num),
       enable_multi_thread_row_to_batch_(enable_multi_thread_row_to_batch),
@@ -97,6 +99,7 @@ class ReadContextBuilder::Impl {
         predicate_.reset();
         enable_predicate_filter_ = false;
         enable_prefetch_ = false;
+        enable_late_materializing_ = false;
         read_ahead_cache_enabled_ = true;
         prefetch_batch_count_ = 600;
         prefetch_max_parallel_num_ = 3;
@@ -122,6 +125,7 @@ class ReadContextBuilder::Impl {
     std::shared_ptr<Predicate> predicate_;
     bool enable_predicate_filter_ = false;
     bool enable_prefetch_ = false;
+    bool enable_late_materializing_ = false;
     uint32_t prefetch_batch_count_ = 600;
     uint32_t prefetch_max_parallel_num_ = 3;
     bool enable_multi_thread_row_to_batch_ = false;
@@ -188,6 +192,11 @@ ReadContextBuilder& ReadContextBuilder::EnablePredicateFilter(bool enabled) {
 
 ReadContextBuilder& ReadContextBuilder::EnablePrefetch(bool enabled) {
     impl_->enable_prefetch_ = enabled;
+    return *this;
+}
+
+ReadContextBuilder& ReadContextBuilder::EnableLateMaterializing(bool enabled) {
+    impl_->enable_late_materializing_ = enabled;
     return *this;
 }
 
@@ -297,6 +306,7 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     auto ctx = std::make_unique<ReadContext>(
         impl_->path_, impl_->branch_, impl_->read_field_names_, impl_->read_field_ids_,
         impl_->predicate_, impl_->enable_predicate_filter_, impl_->enable_prefetch_,
+        impl_->enable_late_materializing_,
         impl_->prefetch_batch_count_, impl_->prefetch_max_parallel_num_,
         impl_->enable_multi_thread_row_to_batch_, impl_->row_to_batch_thread_number_,
         impl_->table_schema_, impl_->memory_pool_, impl_->executor_, impl_->specific_file_system_,

@@ -156,14 +156,13 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReade
     int64_t data_file_size, std::unique_ptr<ReaderBuilder> reader_builder) const {
     if (context_->EnablePrefetch() && file_format_identifier != "blob" &&
         file_format_identifier != "avro") {
-        // Wrap the format builder so each parallel reader under the prefetch layer performs
-        // probe/payload two-phase reads when a predicate is pushed down; without a predicate
-        // the late-materializing reader degrades to a plain passthrough.
-        LateMaterializingReaderBuilder lm_builder(std::move(reader_builder), pool_);
+        if (context_->EnableLateMaterializing()) {
+            reader_builder = std::make_unique<LateMaterializingReaderBuilder>(std::move(reader_builder), pool_);
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<PrefetchFileBatchReaderImpl> prefetch_reader,
             PrefetchFileBatchReaderImpl::Create(
-                data_file_path, data_file_size, &lm_builder, options_.GetFileSystem(),
+                data_file_path, data_file_size, reader_builder.get(), options_.GetFileSystem(),
                 context_->GetPrefetchMaxParallelNum(), options_.GetReadBatchSize(),
                 context_->GetPrefetchBatchCount(), options_.EnableAdaptivePrefetchStrategy(),
                 executor_,
