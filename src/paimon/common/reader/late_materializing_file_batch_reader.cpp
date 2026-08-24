@@ -59,12 +59,6 @@ arrow::MemoryPool* LateMaterializingFileBatchReader::ArrowPool() const {
 }
 
 Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch() {
-    return Status::Invalid(
-        "paimon inner reader PrefetchFileBatchReader should use NextBatchWithBitmap");
-}
-
-Result<FileBatchReader::ReadBatchWithBitmap>
-LateMaterializingFileBatchReader::NextBatchWithBitmap() {
     if (state_ == kProbing) {
         PAIMON_RETURN_NOT_OK(ReadAndFilterProbeData());
         if (matched_bitmap_.IsEmpty()) {
@@ -78,11 +72,11 @@ LateMaterializingFileBatchReader::NextBatchWithBitmap() {
     }
 
     if (state_ == kNoLatMat) {
-        return inner_->NextBatchWithBitmap();
+        return inner_->NextBatch();
     } else if (state_ == kRunning) {
         return ReadPayloadBatch();
     } else if (state_ == kEOF) {
-        return MakeEofBatchWithBitmap();
+        return MakeEofBatch();
     }
     return Status::Invalid("invalid state when calling NextBatchWithBitmap: " +
                            std::to_string(state_));
@@ -166,13 +160,13 @@ Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
     return Status::OK();
 }
 
-Result<FileBatchReader::ReadBatchWithBitmap> LateMaterializingFileBatchReader::ReadPayloadBatch() {
+Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayloadBatch() {
     while (true) {
         PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatchWithBitmap batch_with_bitmap,
                                inner_->NextBatchWithBitmap());
         if (BatchReader::IsEofBatch(batch_with_bitmap)) {
             state_ = kEOF;
-            return MakeEofBatchWithBitmap();
+            return MakeEofBatch();
         }
         auto& [batch, bitmap] = batch_with_bitmap;
         if (bitmap.IsEmpty()) {
@@ -217,7 +211,7 @@ Result<FileBatchReader::ReadBatchWithBitmap> LateMaterializingFileBatchReader::R
 
         PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch assembled,
                                AssembleFullBatch(payload_compacted, probe_selected));
-        return ReaderUtils::AddAllValidBitmap(std::move(assembled));
+        return assembled;
     }
 }
 

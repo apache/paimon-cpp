@@ -40,7 +40,6 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
         std::unique_ptr<PrefetchFileBatchReader> inner, std::shared_ptr<MemoryPool> pool);
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
-    Result<FileBatchReader::ReadBatchWithBitmap> NextBatchWithBitmap() override;
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
     void Close() override;
@@ -82,7 +81,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
                                              const std::shared_ptr<PredicateFilter>& bound_filter);
 
     /// Read one payload batch with bitmap (matched rows only)
-    Result<FileBatchReader::ReadBatchWithBitmap> ReadPayloadBatch();
+    Result<FileBatchReader::ReadBatch> ReadPayloadBatch();
 
     /// Combine the compacted payload columns and the selected probe columns into a single struct
     /// array following full_schema_'s field order.
