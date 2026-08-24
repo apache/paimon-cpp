@@ -49,7 +49,11 @@ bool BloomFilter64::BitSet::Get(int32_t index) const {
 }
 
 int32_t BloomFilter64::BitSet::BitSize() const {
-    return (bytes_->size() - offset_) * BloomFilter64::BYTE_SIZE;
+    return ByteLength() * BloomFilter64::BYTE_SIZE;
+}
+
+int32_t BloomFilter64::BitSet::ByteLength() const {
+    return static_cast<int32_t>(bytes_->size() - offset_);
 }
 
 void BloomFilter64::BitSet::ToByteArray(int32_t offset, int32_t length, char* bytes) const {
@@ -80,12 +84,19 @@ Result<BloomFilter64> BloomFilter64::Create(int64_t items, double fpp,
         1, static_cast<int32_t>(std::round(static_cast<double>(num_bits) / items * log_two)));
     auto bytes = std::make_shared<Bytes>(num_bits / BYTE_SIZE, pool.get());
     auto bit_set = std::make_unique<BitSet>(bytes, /*offset=*/0);
-    return BloomFilter64(num_hash_functions, std::move(bit_set));
+    return BloomFilter64(num_hash_functions, std::move(bit_set), pool);
 }
 
 BloomFilter64::BloomFilter64(int32_t num_hash_functions, std::unique_ptr<BitSet>&& bit_set)
     : num_bits_(bit_set->BitSize()),
       num_hash_functions_(num_hash_functions),
+      bit_set_(std::move(bit_set)) {}
+
+BloomFilter64::BloomFilter64(int32_t num_hash_functions, std::unique_ptr<BitSet>&& bit_set,
+                             const std::shared_ptr<MemoryPool>& pool)
+    : num_bits_(bit_set->BitSize()),
+      num_hash_functions_(num_hash_functions),
+      pool_(pool),
       bit_set_(std::move(bit_set)) {}
 
 void BloomFilter64::AddHash(int64_t hash64) {

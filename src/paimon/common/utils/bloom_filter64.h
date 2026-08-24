@@ -57,6 +57,7 @@ class PAIMON_EXPORT BloomFilter64 {
         void Set(int32_t index);
         bool Get(int32_t index) const;
         int32_t BitSize() const;
+        int32_t ByteLength() const;
         void ToByteArray(int32_t offset, int32_t length, char* bytes) const;
 
      private:
@@ -67,11 +68,15 @@ class PAIMON_EXPORT BloomFilter64 {
         std::shared_ptr<Bytes> bytes_;
     };
 
+ private:
+    BloomFilter64(int32_t num_hash_functions, std::unique_ptr<BitSet>&& bit_set,
+                  const std::shared_ptr<MemoryPool>& pool);
+
     static constexpr int32_t BYTE_SIZE = 8;
 
- private:
     int32_t num_bits_ = -1;
     int32_t num_hash_functions_ = -1;
+    std::shared_ptr<MemoryPool> pool_;
     std::unique_ptr<BitSet> bit_set_;
 };
 }  // namespace paimon

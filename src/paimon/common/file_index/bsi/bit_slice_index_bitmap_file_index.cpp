@@ -81,7 +81,10 @@ BitSliceIndexBitmapFileIndexWriter::BitSliceIndexBitmapFileIndexWriter(
     const std::shared_ptr<arrow::Field>& field,
     const BitSliceIndexBitmapFileIndex::ValueMapperType& value_mapper,
     const std::shared_ptr<MemoryPool>& pool)
-    : struct_type_(arrow::struct_({field})), value_mapper_(value_mapper), pool_(pool) {}
+    : struct_type_(arrow::struct_({field})),
+      field_name_(field->name()),
+      value_mapper_(value_mapper),
+      pool_(pool) {}
 
 Status BitSliceIndexBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
@@ -102,7 +105,7 @@ Status BitSliceIndexBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<Literal> literals,
-        LiteralConverter::ConvertLiteralsFromArray(*struct_array->field(0), /*own_data=*/true));
+        LiteralConverter::ConvertLiteralsFromArray(*struct_array->field(0), /*own_data=*/false));
     values_.reserve(values_.size() + literals.size());
     for (const Literal& literal : literals) {
         if (literal.IsNull()) {
@@ -110,6 +113,10 @@ Status BitSliceIndexBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
             continue;
         }
         PAIMON_ASSIGN_OR_RAISE(int64_t value, value_mapper_(literal));
+        if (value == std::numeric_limits<int64_t>::min()) {
+            return Status::Invalid(
+                fmt::format("bsi index does not support INT64_MIN for field '{}'", field_name_));
+        }
         values_.emplace_back(value);
         if (value < 0) {
             const int64_t absolute_value = SafeAbs(value);

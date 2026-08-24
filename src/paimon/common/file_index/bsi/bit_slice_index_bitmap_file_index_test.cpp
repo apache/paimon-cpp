@@ -161,7 +161,7 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestMix) {
 
 TEST_F(BitSliceIndexBitmapIndexReaderTest, TestWriterRejectsInt64MinAndUnsupportedType) {
     ASSERT_NOK_WITH_MSG(WriteIndex(arrow::int64(), R"([[-9223372036854775808]])"),
-                        "values should be non-negative");
+                        "bsi index does not support INT64_MIN for field 'f0'");
 
     BitSliceIndexBitmapFileIndex file_index({});
     ASSERT_NOK_WITH_MSG(file_index.CreateWriter(CreateArrowSchema(arrow::boolean()).get(), pool_),

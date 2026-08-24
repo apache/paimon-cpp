@@ -87,6 +87,7 @@ class BitSliceIndexBitmapFileIndexWriter : public FileIndexWriter {
 
  private:
     std::shared_ptr<arrow::DataType> struct_type_;
+    std::string field_name_;
     BitSliceIndexBitmapFileIndex::ValueMapperType value_mapper_;
     std::vector<std::optional<int64_t>> values_;
     int64_t positive_min_ = 0;

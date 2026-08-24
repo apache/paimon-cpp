@@ -119,7 +119,7 @@ Status BloomFilterFileIndexWriter::AddBatch(::ArrowArray* batch) {
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<Literal> values,
-        LiteralConverter::ConvertLiteralsFromArray(*struct_array->field(0), /*own_data=*/true));
+        LiteralConverter::ConvertLiteralsFromArray(*struct_array->field(0), /*own_data=*/false));
     for (const Literal& value : values) {
         if (!value.IsNull()) {
             filter_.AddHash(hash_function_(value));
@@ -130,7 +130,7 @@ Status BloomFilterFileIndexWriter::AddBatch(::ArrowArray* batch) {
 
 Result<PAIMON_UNIQUE_PTR<Bytes>> BloomFilterFileIndexWriter::SerializedBytes() const {
     constexpr int32_t kHeaderLength = sizeof(int32_t);
-    const int32_t bit_set_length = filter_.GetBitSet().BitSize() / BloomFilter64::BYTE_SIZE;
+    const int32_t bit_set_length = filter_.GetBitSet().ByteLength();
     PAIMON_UNIQUE_PTR<Bytes> bytes =
         Bytes::AllocateBytes(kHeaderLength + bit_set_length, pool_.get());
     const auto num_hash_functions = static_cast<uint32_t>(filter_.GetNumHashFunctions());

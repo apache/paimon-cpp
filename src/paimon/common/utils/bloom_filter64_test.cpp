@@ -82,6 +82,19 @@ TEST(BloomFilter64Test, TestInvalidItemsAndFpp) {
         "bloom filter size exceeds the supported range");
 }
 
+TEST(BloomFilter64Test, TestKeepMemoryPoolAlive) {
+    std::weak_ptr<MemoryPool> weak_pool;
+    {
+        std::shared_ptr<MemoryPool> pool(GetMemoryPool());
+        weak_pool = pool;
+        ASSERT_OK_AND_ASSIGN(BloomFilter64 bloom_filter,
+                             BloomFilter64::Create(/*items=*/100, /*fpp=*/0.1, pool));
+        pool.reset();
+        ASSERT_FALSE(weak_pool.expired());
+    }
+    ASSERT_TRUE(weak_pool.expired());
+}
+
 TEST(BloomFilter64Test, TestCompatibleWithJava) {
     // data: -10, -5, 0, 13, 100, 200, 500
     std::vector<uint8_t> se_bytes = {241, 255, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -97,8 +110,8 @@ TEST(BloomFilter64Test, TestCompatibleWithJava) {
 
     ASSERT_OK_AND_ASSIGN(BloomFilter64 bloom_filter2, BloomFilter64::Create(10, 0.01, pool));
     ASSERT_EQ(7, bloom_filter2.GetNumHashFunctions());
-    ASSERT_EQ(se_bytes.size() * BloomFilter64::BYTE_SIZE, bloom_filter2.num_bits_);
-    ASSERT_EQ(se_bytes.size(), bloom_filter2.GetBitSet().bytes_->size());
+    ASSERT_EQ(se_bytes.size() * 8, bloom_filter2.GetBitSet().BitSize());
+    ASSERT_EQ(se_bytes.size(), bloom_filter2.GetBitSet().ByteLength());
 }
 
 }  // namespace paimon::test
