@@ -243,12 +243,19 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::AssembleFul
     return std::make_pair(std::move(c_array), std::move(c_schema));
 }
 
+Status LateMaterializingFileBatchReader::ReapplyReadRanges() {
+    if (read_ranges_.empty()) {
+        return Status::OK();
+    }
+    return inner_->SetReadRanges(read_ranges_);
+}
+
 Status LateMaterializingFileBatchReader::SetInnerProbeSchema() {
     ::ArrowSchema c_probe_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*probe_schema_, &c_probe_schema));
     PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_probe_schema, predicate_, selection_));
-    // SetReadSchema may refresh the read ranges of the inner reader, so we set it again.
-    PAIMON_RETURN_NOT_OK(SetReadRanges(read_ranges_));
+    // SetReadSchema may refresh the read ranges of the inner reader, so we set them again.
+    PAIMON_RETURN_NOT_OK(ReapplyReadRanges());
     return Status::OK();
 }
 
@@ -259,7 +266,7 @@ Status LateMaterializingFileBatchReader::SetInnerPayloadSchema() {
         return Status::Invalid("late materialization bitmap is empty. Should return EOF.");
     }
     PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_payload_schema, /*predicate=*/nullptr, matched_bitmap_));
-    PAIMON_RETURN_NOT_OK(SetReadRanges(read_ranges_));
+    PAIMON_RETURN_NOT_OK(ReapplyReadRanges());
     return Status::OK();
 }
 
@@ -267,7 +274,7 @@ Status LateMaterializingFileBatchReader::SetInnerFullSchema() {
     ::ArrowSchema c_full_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*full_schema_, &c_full_schema));
     PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_full_schema, predicate_, selection_));
-    PAIMON_RETURN_NOT_OK(SetReadRanges(read_ranges_));
+    PAIMON_RETURN_NOT_OK(ReapplyReadRanges());
     return Status::OK();
 }
 

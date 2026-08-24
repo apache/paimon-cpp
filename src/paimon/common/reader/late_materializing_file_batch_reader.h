@@ -95,6 +95,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Status SetInnerProbeSchema();
     Status SetInnerPayloadSchema();
     Status SetInnerFullSchema();
+    Status ReapplyReadRanges();
 
     LatMatState state_ = kInit;
     std::unique_ptr<PrefetchFileBatchReader> inner_;
