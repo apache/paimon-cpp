@@ -435,7 +435,9 @@ Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schem
                            OptionsUtils::GetValueFromMap<bool>(
                                schema.Options(), Options::PK_CLUSTERING_OVERRIDE, false));
     if (pk_clustering_override) {
-        return Status::Invalid("Primary-key BTree indexes do not support pk-clustering-override.");
+        return Status::Invalid(
+            "pk-clustering-override is currently unsupported by the C++ commit path, including "
+            "tables with primary-key BTree indexes.");
     }
 
     for (const std::string& column : index_columns) {

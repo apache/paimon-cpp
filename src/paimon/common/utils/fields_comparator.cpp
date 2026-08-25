@@ -144,6 +144,8 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::FLOAT:
+            // The legacy branch does not define a strict order for NaN. Primary-key BTree index
+            // construction opts into the Java floating-point order instead.
             return FieldsComparator::FieldComparatorFunc(
                 [field_idx, use_java_floating_point_order](const InternalRow& lhs,
                                                            const InternalRow& rhs) -> int32_t {

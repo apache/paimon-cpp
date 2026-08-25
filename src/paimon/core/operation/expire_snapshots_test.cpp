@@ -51,10 +51,30 @@
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/format/file_format.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+class DeleteFailingFileSystem : public LocalFileSystem {
+ public:
+    explicit DeleteFailingFileSystem(std::string failed_path)
+        : failed_path_(std::move(failed_path)) {}
+
+    Status Delete(const std::string& path, bool recursive = true) const override {
+        if (path == failed_path_) {
+            return Status::IOError("injected delete failure");
+        }
+        return LocalFileSystem::Delete(path, recursive);
+    }
+
+ private:
+    std::string failed_path_;
+};
+
+}  // namespace
 
 class ExpireSnapshotsTest : public testing::Test {
  public:
@@ -325,6 +345,53 @@ TEST_F(ExpireSnapshotsTest, TestExpireSourceBackedBTreeIndexFiles) {
     std::set<std::string> missing_skipping_set;
     ASSERT_NOK(expire.AddIndexManifestToSkippingSet(std::string("missing-index-manifest"),
                                                     &missing_skipping_set));
+}
+
+TEST_F(ExpireSnapshotsTest, TestExternalIndexDeleteFailureKeepsManifestForRetry) {
+    auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+
+    std::string external_path = test_data_path_ + "/retry-external-btree.index";
+    ASSERT_OK_AND_ASSIGN(
+        IndexManifestEntry external_index,
+        CreateSourceBackedBTreeEntry("retry-btree.index", /*bucket=*/0, external_path));
+    ASSERT_OK(fs_->WriteFile(external_path, "payload", /*overwrite=*/false));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> index_manifest,
+                         index_manifest_file_->WriteIndexFiles(std::nullopt, {external_index}));
+    ASSERT_TRUE(index_manifest);
+
+    auto failing_fs = std::make_shared<DeleteFailingFileSystem>(external_path);
+    ExpireSnapshots failing_expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                                   index_manifest_file_, failing_fs, options.GetExpireConfig(),
+                                   options.RealtimeEnabled(), executor_);
+    std::set<std::string> skipping_set;
+    ASSERT_NOK_WITH_MSG(failing_expire.CleanUnusedIndexManifest(index_manifest, &skipping_set),
+                        "injected delete failure");
+    ASSERT_OK_AND_ASSIGN(bool payload_exists, fs_->Exists(external_path));
+    ASSERT_TRUE(payload_exists);
+    std::string manifest_path = path_factory_->ToManifestFilePath(index_manifest.value());
+    ASSERT_OK_AND_ASSIGN(bool manifest_exists, fs_->Exists(manifest_path));
+    ASSERT_TRUE(manifest_exists);
+
+    ExpireSnapshots retry_expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                                 index_manifest_file_, fs_, options.GetExpireConfig(),
+                                 options.RealtimeEnabled(), executor_);
+    ASSERT_OK(retry_expire.CleanUnusedIndexManifest(index_manifest, &skipping_set));
+    ASSERT_OK_AND_ASSIGN(payload_exists, fs_->Exists(external_path));
+    ASSERT_FALSE(payload_exists);
+    ASSERT_OK_AND_ASSIGN(manifest_exists, fs_->Exists(manifest_path));
+    ASSERT_FALSE(manifest_exists);
+}
+
+TEST_F(ExpireSnapshotsTest, TestRejectExpirationWhileAnotherBranchExists) {
+    auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, index_manifest_file_,
+                           fs_, options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+    ASSERT_OK(fs_->Mkdirs(PathUtil::JoinPath(test_data_path_, "branch/branch-dev")));
+    ASSERT_NOK_WITH_MSG(expire.ExpireUntil(/*earliest_snapshot_id=*/1,
+                                           /*end_exclusive_id=*/2),
+                        "cross-branch file retention is not supported");
 }
 
 TEST_F(ExpireSnapshotsTest, TestExpireKeepsSourceBackedBTreeIndexReferencedByTag) {

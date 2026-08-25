@@ -61,7 +61,8 @@ Semantics
   rebuild the payload. Structural commit-increment errors are still rejected.
 - Snapshot expiration retains payloads referenced by the snapshots in its retention set and
   current-branch live tags, and removes retired payloads before their index manifests, including
-  payloads on an external index path. Orphan cleanup covers table-local index manifests and
+  payloads on an external index path. Expiration is rejected while another branch exists until
+  cross-branch file retention is supported. Orphan cleanup covers table-local index manifests and
   payloads; it does not enumerate a potentially shared global-index external path.
 - ``AND`` predicates narrow with any safely evaluable indexed child; ``OR`` predicates
   only use the index when every branch is evaluable. Files whose evaluation fails, whose

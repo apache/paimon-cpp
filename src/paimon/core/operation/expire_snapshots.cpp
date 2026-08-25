@@ -24,6 +24,7 @@
 #include <functional>
 #include <future>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 #include "fmt/format.h"
@@ -43,6 +44,7 @@
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/core/utils/tag_manager.h"
@@ -129,6 +131,13 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
         // TODO(jinli.zjw): write earliest hint
         return 0;
     }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> branches,
+                           BranchManager::ListBranches(fs_, snapshot_manager_->RootPath()));
+    if (branches.size() > 1) {
+        return Status::NotImplemented(
+            "Snapshot expiration is disabled while another branch exists because cross-branch "
+            "file retention is not supported.");
+    }
     int64_t begin_inclusive_id = earliest_snapshot_id;
     for (int64_t id = end_exclusive_id - 1; id >= earliest_snapshot_id; id--) {
         PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(id));
@@ -168,7 +177,9 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
             if (!tagged_data_files_result.ok()) {
                 PAIMON_LOG_WARN(logger_,
                                 "Skip cleaning data files of snapshot #%ld because the data files "
-                                "referenced by tag snapshot #%ld could not be loaded. %s",
+                                "referenced by tag snapshot #%ld could not be loaded. Snapshot "
+                                "metadata expiration will continue, so skipped data files may "
+                                "remain for orphan cleanup. %s",
                                 id, previous_tag->Id(),
                                 tagged_data_files_result.status().ToString().c_str());
                 tagged_data_files.reset();
@@ -351,7 +362,7 @@ Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string
     }
     PAIMON_RETURN_NOT_OK(read_status);
 
-    std::vector<std::pair<std::string, std::string>> index_files_to_delete;
+    std::vector<std::tuple<std::string, std::string, bool>> index_files_to_delete;
     std::set<std::string> planned_file_names;
     for (const IndexManifestEntry& entry : entries) {
         const std::string& file_name = entry.index_file->FileName();
@@ -362,14 +373,20 @@ Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<IndexPathFactory> index_path_factory,
             path_factory_->CreateIndexFileFactory(entry.partition, entry.bucket));
-        index_files_to_delete.emplace_back(file_name, index_path_factory->ToPath(entry.index_file));
+        index_files_to_delete.emplace_back(file_name, index_path_factory->ToPath(entry.index_file),
+                                           entry.index_file->ExternalPath().has_value());
     }
 
-    for (const auto& [file_name, file_path] : index_files_to_delete) {
+    for (const auto& [file_name, file_path, is_external_path] : index_files_to_delete) {
+        Status delete_status = fs_->Delete(file_path);
+        if (!delete_status.ok() && is_external_path) {
+            PAIMON_ASSIGN_OR_RAISE(bool exists, fs_->Exists(file_path));
+            if (exists) {
+                return delete_status.WithMessage("Failed to delete external index payload '",
+                                                 file_path, "': ", delete_status.message());
+            }
+        }
         skipping_manifest_set->insert(file_name);
-        auto delete_status = fs_->Delete(file_path);
-        // Index payload cleanup is best effort, consistent with data file expiration.
-        (void)delete_status;
     }
 
     skipping_manifest_set->insert(index_manifest.value());
