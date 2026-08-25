@@ -1299,7 +1299,7 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
 [0, "Bob", 10, 1, 12.1],
 [0, "Bob", 10, 1, 16.1]
     ])"},
-                                                                        &expected_array);
+                                                                         &expected_array);
     ASSERT_TRUE(array_status.ok());
     ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
 }

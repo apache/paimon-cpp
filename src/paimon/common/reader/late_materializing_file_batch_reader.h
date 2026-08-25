@@ -43,25 +43,48 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
 
-    std::shared_ptr<Metrics> GetReaderMetrics() const override;
-    void Close() override;
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return inner_->GetReaderMetrics();
+    };
 
-    Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override;
+    void Close() override {
+        inner_->Close();
+    }
+
+    Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override {
+        return inner_->GetFileSchema();
+    }
+
     Status SetReadSchema(::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
                          const std::optional<RoaringBitmap32>& selection_bitmap) override;
+
     Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override;
-    Result<uint64_t> GetNumberOfRows() const override;
-    bool SupportPreciseBitmapSelection() const override;
+
+    Result<uint64_t> GetNumberOfRows() const override {
+        return inner_->GetNumberOfRows();
+    }
+
+    bool SupportPreciseBitmapSelection() const override {
+        return inner_->SupportPreciseBitmapSelection();
+    }
 
     Status SeekToRow(uint64_t row_number) override;
-    uint64_t GetNextRowToRead() const override;
+
+    uint64_t GetNextRowToRead() const override {
+        return inner_->GetNextRowToRead();
+    }
+
     Result<std::vector<std::pair<uint64_t, uint64_t>>> GenReadRanges(
-        bool* need_prefetch) const override;
+        bool* need_prefetch) const override {
+        return inner_->GenReadRanges(need_prefetch);
+    }
+
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
         return inner_->PreBufferRange();
     }
+
  private:
     explicit LateMaterializingFileBatchReader(std::unique_ptr<PrefetchFileBatchReader> inner,
                                               std::shared_ptr<arrow::MemoryPool> arrow_pool)
@@ -97,10 +120,6 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Status SetInnerReadSchema(const std::shared_ptr<arrow::Schema>& read_schema,
                               const std::shared_ptr<Predicate>& predicate,
                               const std::optional<RoaringBitmap32>& selection);
-
-    // Arrow pool for this reader's own allocations (probe/payload compaction). Falls back to the
-    // arrow default pool when no pool was provided.
-    arrow::MemoryPool* ArrowPool() const;
 
     std::unique_ptr<PrefetchFileBatchReader> inner_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;

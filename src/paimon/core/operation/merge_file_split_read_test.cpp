@@ -866,7 +866,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
     context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
                                 {Options::MERGE_ENGINE, "deduplicate"},
                                 {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);                            
+    AddOptions(&context_builder);
     context_builder.EnableLateMaterializing(true);
     // key predicate, always pushed down into the data files
     auto greater_or_equal = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k1",
@@ -900,7 +900,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
                         [0, 1, 1, "you",    "zoo",    130.0, false]
 
     ])"},
-                                                        &expected_array);
+                                                         &expected_array);
     ASSERT_TRUE(array_status.ok());
     CheckResult(result_array, expected_array, read_schema);
 }

@@ -724,8 +724,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate)
-        .EnableLateMaterializing(false);
+    read_context_builder.SetPredicate(predicate).EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
@@ -1296,8 +1295,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate)
-        .EnableLateMaterializing(false);
+    read_context_builder.SetPredicate(predicate).EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 

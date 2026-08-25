@@ -46,17 +46,13 @@ Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileB
     std::unique_ptr<PrefetchFileBatchReader> inner, std::shared_ptr<MemoryPool> pool) {
     // The reader's own compaction allocations go through an arrow pool; bridge the paimon pool
     // once here so the accounting matches the rest of the read path.
-    std::shared_ptr<arrow::MemoryPool> arrow_pool;
-    if (pool != nullptr) {
-        arrow_pool = GetArrowPool(pool);
+    if (pool == nullptr) {
+        return Status::Invalid("pool could not be nullptr.");
     }
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
     auto reader = std::unique_ptr<LateMaterializingFileBatchReader>(
         new LateMaterializingFileBatchReader(std::move(inner), std::move(arrow_pool)));
     return reader;
-}
-
-arrow::MemoryPool* LateMaterializingFileBatchReader::ArrowPool() const {
-    return arrow_pool_ ? arrow_pool_.get() : arrow::default_memory_pool();
 }
 
 Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch() {
@@ -161,7 +157,7 @@ Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
             probe_array, arrow::MakeEmptyArray(arrow::struct_(probe_schema_->fields())));
     } else {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(probe_array,
-                                          arrow::Concatenate(probe_arrays, ArrowPool()));
+                                          arrow::Concatenate(probe_arrays, arrow_pool_.get()));
     }
     probe_data_ = arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_array);
     return Status::OK();
@@ -188,7 +184,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
         RoaringBitmap32 valid;
         row_mapping_.clear();
         for (auto it = bitmap.Begin(); it != bitmap.End(); ++it) {
-            uint64_t offset = static_cast<uint64_t>(*it);
+            auto offset = static_cast<uint64_t>(*it);
             PAIMON_ASSIGN_OR_RAISE(uint64_t file_row, inner_->GetPreviousBatchFileRowId(offset));
             if (!matched_bitmap_.Contains(file_row)) {
                 continue;
@@ -205,9 +201,9 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
                                ReaderUtils::GenerateFilteredArrayVector(payload_array, valid));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_compacted,
-                                          arrow::Concatenate(payload_slices, ArrowPool()));
+                                          arrow::Concatenate(payload_slices, arrow_pool_.get()));
 
-        int64_t card = static_cast<int64_t>(valid.Cardinality());
+        auto card = static_cast<int64_t>(valid.Cardinality());
         if (probe_cursor_ + card > probe_data_->length()) {
             return Status::Invalid(
                 fmt::format("probe cache underflow: cursor {} + {} exceeds probe rows {}",
@@ -263,18 +259,6 @@ Status LateMaterializingFileBatchReader::SetInnerReadSchema(
         PAIMON_RETURN_NOT_OK(inner_->SetReadRanges(read_ranges_));
     }
     return Status::OK();
-}
-
-std::shared_ptr<Metrics> LateMaterializingFileBatchReader::GetReaderMetrics() const {
-    return inner_->GetReaderMetrics();
-}
-
-void LateMaterializingFileBatchReader::Close() {
-    inner_->Close();
-}
-
-Result<std::unique_ptr<::ArrowSchema>> LateMaterializingFileBatchReader::GetFileSchema() const {
-    return inner_->GetFileSchema();
 }
 
 Status LateMaterializingFileBatchReader::SetReadSchema(
@@ -333,14 +317,6 @@ Result<uint64_t> LateMaterializingFileBatchReader::GetPreviousBatchFileRowId(
     return row_mapping_[batch_row_id];
 }
 
-Result<uint64_t> LateMaterializingFileBatchReader::GetNumberOfRows() const {
-    return inner_->GetNumberOfRows();
-}
-
-bool LateMaterializingFileBatchReader::SupportPreciseBitmapSelection() const {
-    return inner_->SupportPreciseBitmapSelection();
-}
-
 Status LateMaterializingFileBatchReader::SeekToRow(uint64_t row_number) {
     PAIMON_RETURN_NOT_OK(inner_->SeekToRow(row_number));
     if (state_ == kRunning || state_ == kEOF) {
@@ -356,15 +332,6 @@ Status LateMaterializingFileBatchReader::SeekToRow(uint64_t row_number) {
         state_ = kRunning;
     }
     return Status::OK();
-}
-
-uint64_t LateMaterializingFileBatchReader::GetNextRowToRead() const {
-    return inner_->GetNextRowToRead();
-}
-
-Result<std::vector<std::pair<uint64_t, uint64_t>>> LateMaterializingFileBatchReader::GenReadRanges(
-    bool* need_prefetch) const {
-    return inner_->GenReadRanges(need_prefetch);
 }
 
 Status LateMaterializingFileBatchReader::SetReadRanges(
