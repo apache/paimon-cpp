@@ -97,8 +97,6 @@ class PAIMON_EXPORT ReadContext {
     bool EnablePrefetch() const {
         return enable_prefetch_;
     }
-    /// Whether late materialization (probe/payload two-phase reads) is enabled for the
-    /// prefetch read path. Defaults to false.
     bool EnableLateMaterializing() const {
         return enable_late_materializing_;
     }
@@ -312,13 +310,13 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& EnablePrefetch(bool enabled);
 
-    /// Enable or disable late materialization (probe/payload two-phase reads) for the prefetch
-    /// read path. When enabled, each parallel reader under the prefetch layer performs a probe
-    /// read of predicate columns first and only materializes payload columns for matched rows.
+    /// Enable or disable late materialization (probe/payload two-phase reads). When enabled,
+    /// each parallel reader under the prefetch layer performs a probe read of predicate
+    /// columns first and only materializes payload columns for matched rows.
     /// @param enabled Whether to enable late materialization (default: false)
     /// @return Reference to this builder for method chaining.
-    /// @note Only takes effect when prefetch is enabled; without a pushed-down predicate the
-    /// late-materializing reader degrades to a plain passthrough.
+    /// @note Without a pushed-down predicate the late-materializing reader degrades to a
+    /// plain passthrough.
     ReadContextBuilder& EnableLateMaterializing(bool enabled);
 
     /// Enable or disable the read-ahead cache for read operations.

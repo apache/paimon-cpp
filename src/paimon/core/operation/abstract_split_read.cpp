@@ -154,28 +154,29 @@ Result<std::unique_ptr<ReaderBuilder>> AbstractSplitRead::PrepareReaderBuilder(
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReader(
     const std::string& file_format_identifier, const std::string& data_file_path,
     int64_t data_file_size, std::unique_ptr<ReaderBuilder> reader_builder) const {
-    if (context_->EnableLateMaterializing()) {
-        reader_builder =
-            std::make_unique<LateMaterializingReaderBuilder>(std::move(reader_builder), pool_);
+    // blob and avro do not support prefetch or late materializing
+    if (file_format_identifier != "blob" && file_format_identifier != "avro") {
+        if (context_->EnableLateMaterializing()) {
+            reader_builder =
+                std::make_unique<LateMaterializingReaderBuilder>(std::move(reader_builder), pool_);
+        }
+        if (context_->EnablePrefetch()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<PrefetchFileBatchReaderImpl> prefetch_reader,
+                PrefetchFileBatchReaderImpl::Create(
+                    data_file_path, data_file_size, reader_builder.get(), options_.GetFileSystem(),
+                    context_->GetPrefetchMaxParallelNum(), options_.GetReadBatchSize(),
+                    context_->GetPrefetchBatchCount(), options_.EnableAdaptivePrefetchStrategy(),
+                    executor_,
+                    /*initialize_read_ranges=*/false, context_->ReadAheadCacheEnabled(),
+                    context_->GetCacheConfig(), pool_));
+            return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
+        }
     }
-    if (context_->EnablePrefetch() && file_format_identifier != "blob" &&
-        file_format_identifier != "avro") {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<PrefetchFileBatchReaderImpl> prefetch_reader,
-            PrefetchFileBatchReaderImpl::Create(
-                data_file_path, data_file_size, reader_builder.get(), options_.GetFileSystem(),
-                context_->GetPrefetchMaxParallelNum(), options_.GetReadBatchSize(),
-                context_->GetPrefetchBatchCount(), options_.EnableAdaptivePrefetchStrategy(),
-                executor_,
-                /*initialize_read_ranges=*/false, context_->ReadAheadCacheEnabled(),
-                context_->GetCacheConfig(), pool_));
-        return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<InputStream> input_stream,
-            options_.GetFileSystem()->Open(FileStatus(data_file_path, data_file_size)));
-        return reader_builder->Build(input_stream);
-    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<InputStream> input_stream,
+        options_.GetFileSystem()->Open(FileStatus(data_file_path, data_file_size)));
+    return reader_builder->Build(input_stream);
 }
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingReader(
