@@ -33,6 +33,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/index/index_path_factory.h"
+#include "paimon/core/manifest/file_entry.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/index_manifest_file.h"
@@ -44,6 +45,7 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/core/utils/tag_manager.h"
 #include "paimon/fs/file_system.h"
 
 namespace paimon {
@@ -138,6 +140,12 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
     PAIMON_LOG_DEBUG(logger_, "Snapshot expire range is [%ld, %ld]", begin_inclusive_id,
                      end_exclusive_id);
 
+    PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> tagged_snapshots, GetTaggedSnapshots());
+    auto next_tag = tagged_snapshots.begin();
+    const Snapshot* previous_tag = nullptr;
+    std::optional<std::set<std::string>> tagged_data_files;
+    const std::set<std::string> no_retained_data_files;
+
     // Since the data file deletion information for each snapshot is recorded in the delta part of
     // the next snapshot, it is necessary to check the next snapshot. Otherwise, its data files will
     // not be deleted in this round.
@@ -148,7 +156,33 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
             continue;
         }
         PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(id));
-        PAIMON_RETURN_NOT_OK(CleanUnusedDataFiles(snapshot.DeltaManifestList()));
+        bool tag_changed = false;
+        while (next_tag != tagged_snapshots.end() && next_tag->Id() < id) {
+            previous_tag = &*next_tag;
+            ++next_tag;
+            tag_changed = true;
+        }
+        if (tag_changed) {
+            Result<std::set<std::string>> tagged_data_files_result =
+                GetTaggedDataFiles(*previous_tag);
+            if (!tagged_data_files_result.ok()) {
+                PAIMON_LOG_WARN(logger_,
+                                "Skip cleaning data files of snapshot #%ld because the data files "
+                                "referenced by tag snapshot #%ld could not be loaded. %s",
+                                id, previous_tag->Id(),
+                                tagged_data_files_result.status().ToString().c_str());
+                tagged_data_files.reset();
+            } else {
+                tagged_data_files = std::move(tagged_data_files_result).value();
+            }
+        }
+        if (previous_tag != nullptr && !tagged_data_files) {
+            continue;
+        }
+        const std::set<std::string>& retained_data_files =
+            tagged_data_files ? tagged_data_files.value() : no_retained_data_files;
+        PAIMON_RETURN_NOT_OK(
+            CleanUnusedDataFiles(snapshot.DeltaManifestList(), retained_data_files));
     }
     // TODO(jinli.zjw): support delete changelog files
 
@@ -163,6 +197,10 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
     std::vector<Snapshot> retained_snapshots;
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(end_exclusive_id));
     retained_snapshots.push_back(snapshot);
+    std::vector<Snapshot> retained_tag_snapshots =
+        GetTagSnapshotsToRetain(tagged_snapshots, begin_inclusive_id, end_exclusive_id);
+    retained_snapshots.insert(retained_snapshots.end(), retained_tag_snapshots.begin(),
+                              retained_tag_snapshots.end());
     std::set<std::string> retained_offset_files;
     if (realtime_enabled_) {
         PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> all_snapshots,
@@ -339,7 +377,8 @@ Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string
     return Status::OK();
 }
 
-Status ExpireSnapshots::CleanUnusedDataFiles(const std::string& manifest_list_name) {
+Status ExpireSnapshots::CleanUnusedDataFiles(const std::string& manifest_list_name,
+                                             const std::set<std::string>& retained_data_files) {
     std::vector<ManifestFileMeta> manifest_file_metas;
     auto status = manifest_list_->Read(manifest_list_name, nullptr, &manifest_file_metas);
     if (status.ok()) {
@@ -356,6 +395,9 @@ Status ExpireSnapshots::CleanUnusedDataFiles(const std::string& manifest_list_na
             } else {
                 PAIMON_RETURN_NOT_OK(GetDataFilesToDelete(manifest_entries, &data_files_to_delete));
             }
+        }
+        for (const std::string& retained_data_file : retained_data_files) {
+            data_files_to_delete.erase(retained_data_file);
         }
 
         std::vector<std::future<void>> futures;
@@ -410,6 +452,67 @@ Status ExpireSnapshots::GetManifestSkippingSet(const std::vector<Snapshot>& reta
         }
     }
     return Status::OK();
+}
+
+Result<std::vector<Snapshot>> ExpireSnapshots::GetTaggedSnapshots() const {
+    TagManager tag_manager(fs_, snapshot_manager_->RootPath(), snapshot_manager_->Branch());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> tag_names, tag_manager.ListTagNames());
+
+    std::vector<Snapshot> tagged_snapshots;
+    tagged_snapshots.reserve(tag_names.size());
+    for (const std::string& tag_name : tag_names) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Tag> tag, tag_manager.Get(tag_name));
+        if (!tag) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(Snapshot tagged_snapshot, tag->TrimToSnapshot());
+        tagged_snapshots.push_back(std::move(tagged_snapshot));
+    }
+    std::sort(tagged_snapshots.begin(), tagged_snapshots.end(),
+              [](const Snapshot& lhs, const Snapshot& rhs) { return lhs.Id() < rhs.Id(); });
+    return tagged_snapshots;
+}
+
+std::vector<Snapshot> ExpireSnapshots::GetTagSnapshotsToRetain(
+    const std::vector<Snapshot>& tagged_snapshots, int64_t begin_inclusive_id,
+    int64_t end_exclusive_id) const {
+    auto right = std::lower_bound(
+        tagged_snapshots.begin(), tagged_snapshots.end(), end_exclusive_id,
+        [](const Snapshot& snapshot, int64_t snapshot_id) { return snapshot.Id() < snapshot_id; });
+    if (right == tagged_snapshots.begin()) {
+        return std::vector<Snapshot>();
+    }
+    auto left = std::upper_bound(
+        tagged_snapshots.begin(), right, begin_inclusive_id,
+        [](int64_t snapshot_id, const Snapshot& snapshot) { return snapshot_id < snapshot.Id(); });
+    if (left != tagged_snapshots.begin()) {
+        --left;
+    }
+    return std::vector<Snapshot>(left, right);
+}
+
+Result<std::set<std::string>> ExpireSnapshots::GetTaggedDataFiles(
+    const Snapshot& tagged_snapshot) const {
+    std::vector<ManifestFileMeta> manifests;
+    PAIMON_RETURN_NOT_OK(manifest_list_->ReadDataManifests(tagged_snapshot, &manifests));
+
+    std::vector<ManifestEntry> unmerged_entries;
+    for (const ManifestFileMeta& manifest : manifests) {
+        std::vector<ManifestEntry> entries;
+        PAIMON_RETURN_NOT_OK(
+            manifest_file_->Read(manifest.FileName(), /*filter=*/nullptr, &entries));
+        unmerged_entries.insert(unmerged_entries.end(), entries.begin(), entries.end());
+    }
+    std::vector<ManifestEntry> merged_entries;
+    PAIMON_RETURN_NOT_OK(FileEntry::MergeEntries(unmerged_entries, &merged_entries));
+
+    std::set<std::string> tagged_data_files;
+    for (const ManifestEntry& entry : merged_entries) {
+        PAIMON_ASSIGN_OR_RAISE(std::string bucket_path,
+                               path_factory_->BucketPath(entry.Partition(), entry.Bucket()));
+        tagged_data_files.insert(PathUtil::JoinPath(bucket_path, entry.FileName()));
+    }
+    return tagged_data_files;
 }
 
 Status ExpireSnapshots::AddIndexManifestToSkippingSet(

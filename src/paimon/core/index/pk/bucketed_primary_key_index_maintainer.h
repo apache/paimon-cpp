@@ -46,7 +46,8 @@ class TableSchema;
 ///
 /// This initial implementation builds synchronously during prepare-commit. Synchronous execution
 /// deliberately omits Java's scheduling and retry policy while preserving the same source-level
-/// reconciliation, payload format, rollback, and atomic commit semantics.
+/// reconciliation and payload format. A build failure does not block the data-file commit; readers
+/// fall back to scanning the committed data files until a later maintenance attempt succeeds.
 class BucketedPrimaryKeyIndexMaintainer {
  public:
     class Factory {

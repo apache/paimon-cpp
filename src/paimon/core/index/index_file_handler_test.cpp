@@ -31,6 +31,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/index/deletion_vector_meta.h"
+#include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
@@ -286,6 +287,31 @@ TEST_F(IndexFileHandlerTest, TestScanWithNoIndexManifest) {
         index_file_handler->Scan(no_index_manifest_snapshot,
                                  [](const IndexManifestEntry&) -> Result<bool> { return true; }));
     ASSERT_TRUE(index_entries.empty());
+}
+
+TEST_F(IndexFileHandlerTest, TestScanSourceIndexesBySourceMetadata) {
+    std::string table_path =
+        paimon::test::GetDataDir() + "/orc/pk_btree_source_meta.db/pk_btree_source_meta/";
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                         CoreOptions::FromMap({{Options::MANIFEST_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
+                         CreateIndexFileHandler(table_path, core_options));
+
+    SnapshotManager snapshot_manager(core_options.GetFileSystem(), table_path);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshot_manager.LoadSnapshot(/*snapshot_id=*/5));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<IndexFileMeta>> source_indexes,
+        index_file_handler->ScanSourceIndexes(snapshot, BinaryRow::EmptyRow(), /*bucket=*/0));
+
+    ASSERT_EQ(source_indexes.size(), 1);
+    const std::optional<GlobalIndexMeta>& global_index_meta =
+        source_indexes[0]->GetGlobalIndexMeta();
+    ASSERT_TRUE(global_index_meta.has_value());
+    ASSERT_NE(global_index_meta->source_meta, nullptr);
+
+    ASSERT_OK_AND_ASSIGN(source_indexes, index_file_handler->ScanSourceIndexes(
+                                             snapshot, BinaryRow::EmptyRow(), /*bucket=*/1));
+    ASSERT_TRUE(source_indexes.empty());
 }
 
 TEST_F(IndexFileHandlerTest, TestScanByPartitionBucketAndReadAllDeletionVectors) {

@@ -28,6 +28,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/index/index_file_meta.h"
@@ -41,9 +42,11 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/stats/simple_stats.h"
+#include "paimon/core/tag/tag.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/core/utils/tag_manager.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -322,6 +325,100 @@ TEST_F(ExpireSnapshotsTest, TestExpireSourceBackedBTreeIndexFiles) {
     std::set<std::string> missing_skipping_set;
     ASSERT_NOK(expire.AddIndexManifestToSkippingSet(std::string("missing-index-manifest"),
                                                     &missing_skipping_set));
+}
+
+TEST_F(ExpireSnapshotsTest, TestExpireKeepsSourceBackedBTreeIndexReferencedByTag) {
+    auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::SNAPSHOT_NUM_RETAINED_MIN, "1"},
+                                               {Options::SNAPSHOT_NUM_RETAINED_MAX, "1"}}));
+    ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, index_manifest_file_,
+                           fs_, options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+
+    ASSERT_OK_AND_ASSIGN(IndexManifestEntry tagged_index,
+                         CreateSourceBackedBTreeEntry("tagged-btree.index", /*bucket=*/0));
+    ASSERT_OK_AND_ASSIGN(std::string tagged_index_path, IndexFilePath(tagged_index));
+    ASSERT_OK(fs_->WriteFile(tagged_index_path, "payload", /*overwrite=*/false));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::string> tagged_index_manifest,
+                         index_manifest_file_->WriteIndexFiles(std::nullopt, {tagged_index}));
+    ASSERT_TRUE(tagged_index_manifest);
+
+    using ManifestListMeta = std::pair<std::string, int64_t>;
+    ManifestEntry tagged_data = CreateManifestEntry("tagged.data", /*bucket=*/0, FileKind::Add());
+    ASSERT_OK_AND_ASSIGN(std::string tagged_bucket_path,
+                         path_factory_->BucketPath(tagged_data.Partition(), tagged_data.Bucket()));
+    ASSERT_OK(fs_->Mkdirs(tagged_bucket_path));
+    std::string tagged_data_path = PathUtil::JoinPath(tagged_bucket_path, tagged_data.FileName());
+    ASSERT_OK(fs_->WriteFile(tagged_data_path, "data", /*overwrite=*/false));
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> tagged_data_manifests,
+                         manifest_file_->Write({tagged_data}));
+    ASSERT_OK_AND_ASSIGN(ManifestListMeta tagged_base_manifest_list,
+                         manifest_list_->Write(tagged_data_manifests));
+    ASSERT_OK_AND_ASSIGN(ManifestListMeta tagged_delta_manifest_list, manifest_list_->Write({}));
+    ASSERT_OK_AND_ASSIGN(ManifestListMeta retained_base_manifest_list, manifest_list_->Write({}));
+    ManifestEntry deleted_tagged_data =
+        CreateManifestEntry(tagged_data.FileName(), /*bucket=*/0, FileKind::Delete());
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> retained_data_manifests,
+                         manifest_file_->Write({deleted_tagged_data}));
+    ASSERT_OK_AND_ASSIGN(ManifestListMeta retained_delta_manifest_list,
+                         manifest_list_->Write(retained_data_manifests));
+
+    Snapshot tagged_snapshot(
+        /*id=*/1, /*schema_id=*/0, tagged_base_manifest_list.first,
+        tagged_base_manifest_list.second, tagged_delta_manifest_list.first,
+        tagged_delta_manifest_list.second, /*changelog_manifest_list=*/std::nullopt,
+        /*changelog_manifest_list_size=*/std::nullopt, tagged_index_manifest,
+        /*commit_user=*/"test", /*commit_identifier=*/1, Snapshot::CommitKind::Append(),
+        /*time_millis=*/0, /*total_record_count=*/3, /*delta_record_count=*/3,
+        /*changelog_record_count=*/std::nullopt, /*watermark=*/std::nullopt,
+        /*statistics=*/std::nullopt, /*properties=*/std::nullopt, /*next_row_id=*/std::nullopt);
+    Snapshot retained_snapshot(
+        /*id=*/2, /*schema_id=*/0, retained_base_manifest_list.first,
+        retained_base_manifest_list.second, retained_delta_manifest_list.first,
+        retained_delta_manifest_list.second, /*changelog_manifest_list=*/std::nullopt,
+        /*changelog_manifest_list_size=*/std::nullopt, /*index_manifest=*/std::nullopt,
+        /*commit_user=*/"test", /*commit_identifier=*/2, Snapshot::CommitKind::Append(),
+        /*time_millis=*/0, /*total_record_count=*/3, /*delta_record_count=*/0,
+        /*changelog_record_count=*/std::nullopt, /*watermark=*/std::nullopt,
+        /*statistics=*/std::nullopt, /*properties=*/std::nullopt, /*next_row_id=*/std::nullopt);
+
+    ASSERT_OK(fs_->Mkdirs(mgr->SnapshotDirectory()));
+    ASSERT_OK_AND_ASSIGN(std::string tagged_snapshot_json, tagged_snapshot.ToJsonString());
+    ASSERT_OK(fs_->WriteFile(mgr->SnapshotPath(tagged_snapshot.Id()), tagged_snapshot_json,
+                             /*overwrite=*/false));
+    ASSERT_OK_AND_ASSIGN(std::string retained_snapshot_json, retained_snapshot.ToJsonString());
+    ASSERT_OK(fs_->WriteFile(mgr->SnapshotPath(retained_snapshot.Id()), retained_snapshot_json,
+                             /*overwrite=*/false));
+
+    Tag tag(tagged_snapshot.Version(), tagged_snapshot.Id(), tagged_snapshot.SchemaId(),
+            tagged_snapshot.BaseManifestList(), tagged_snapshot.BaseManifestListSize(),
+            tagged_snapshot.DeltaManifestList(), tagged_snapshot.DeltaManifestListSize(),
+            tagged_snapshot.ChangelogManifestList(), tagged_snapshot.ChangelogManifestListSize(),
+            tagged_snapshot.IndexManifest(), tagged_snapshot.CommitUser(),
+            tagged_snapshot.CommitIdentifier(), tagged_snapshot.GetCommitKind(),
+            tagged_snapshot.TimeMillis(), tagged_snapshot.TotalRecordCount(),
+            tagged_snapshot.DeltaRecordCount(), tagged_snapshot.ChangelogRecordCount(),
+            tagged_snapshot.Watermark(), tagged_snapshot.Statistics(), tagged_snapshot.Properties(),
+            tagged_snapshot.NextRowId(), /*tag_create_time=*/std::nullopt,
+            /*tag_time_retained=*/std::nullopt);
+    TagManager tag_manager(fs_, mgr->RootPath(), mgr->Branch());
+    ASSERT_OK(fs_->Mkdirs(tag_manager.TagDirectory()));
+    ASSERT_OK_AND_ASSIGN(std::string tag_json, tag.ToJsonString());
+    ASSERT_OK(fs_->WriteFile(tag_manager.TagPath("tagged"), tag_json, /*overwrite=*/false));
+
+    ASSERT_OK_AND_ASSIGN(int32_t expired_count, expire.Expire());
+    ASSERT_EQ(expired_count, 1);
+    ASSERT_OK_AND_ASSIGN(bool expired_snapshot_exists,
+                         fs_->Exists(mgr->SnapshotPath(tagged_snapshot.Id())));
+    ASSERT_FALSE(expired_snapshot_exists);
+    ASSERT_OK_AND_ASSIGN(
+        bool tagged_index_manifest_exists,
+        fs_->Exists(path_factory_->ToManifestFilePath(tagged_index_manifest.value())));
+    ASSERT_TRUE(tagged_index_manifest_exists);
+    ASSERT_OK_AND_ASSIGN(bool tagged_index_exists, fs_->Exists(tagged_index_path));
+    ASSERT_TRUE(tagged_index_exists);
+    ASSERT_OK_AND_ASSIGN(bool tagged_data_exists, fs_->Exists(tagged_data_path));
+    ASSERT_TRUE(tagged_data_exists);
 }
 
 TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {

@@ -274,9 +274,11 @@ TEST_F(KeyValueInMemoryRecordReaderTest, TestComparatorBackedFloatingPointSort) 
             .ValueOrDie();
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FieldsComparator> key_comparator,
-                         FieldsComparator::Create({fields[0]}, /*is_ascending_order=*/true));
+                         FieldsComparator::CreateWithJavaFloatingPointOrder(
+                             {fields[0]}, {0}, /*is_ascending_order=*/true));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FieldsComparator> sort_comparator,
-                         FieldsComparator::Create(fields, /*is_ascending_order=*/true));
+                         FieldsComparator::CreateWithJavaFloatingPointOrder(
+                             fields, {0, 1}, /*is_ascending_order=*/true));
     auto reader = std::make_unique<KeyValueInMemoryRecordReader>(
         /*last_sequence_num=*/0, source, std::vector<RecordBatch::RowKind>(),
         std::vector<std::string>{"key"}, std::vector<std::string>{"row_id"},

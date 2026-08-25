@@ -64,7 +64,6 @@ namespace paimon {
 namespace {
 
 constexpr char kDeletionVectorsMergeOnRead[] = "deletion-vectors.merge-on-read";
-constexpr char kPkClusteringOverride[] = "pk-clustering-override";
 
 bool ContainsBlobField(const std::shared_ptr<arrow::Field>& field) {
     if (BlobUtils::IsBlobField(field)) {
@@ -432,9 +431,9 @@ Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schem
         return Status::Invalid(
             "Primary-key BTree indexes require deletion-vectors.merge-on-read = false.");
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        bool pk_clustering_override,
-        OptionsUtils::GetValueFromMap<bool>(schema.Options(), kPkClusteringOverride, false));
+    PAIMON_ASSIGN_OR_RAISE(bool pk_clustering_override,
+                           OptionsUtils::GetValueFromMap<bool>(
+                               schema.Options(), Options::PK_CLUSTERING_OVERRIDE, false));
     if (pk_clustering_override) {
         return Status::Invalid("Primary-key BTree indexes do not support pk-clustering-override.");
     }
@@ -452,18 +451,11 @@ Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schem
                                                Options::PK_BTREE_INDEX_COLUMNS, column,
                                                field_iter->Type()->ToString()));
         }
-
-        auto definition_iter = std::find_if(
-            definitions.Definitions().begin(), definitions.Definitions().end(),
-            [&column](const PrimaryKeyIndexDefinition& definition) {
-                return definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE &&
-                       definition.Column() == column;
-            });
-        if (definition_iter == definitions.Definitions().end()) {
-            return Status::Invalid(
-                fmt::format("Failed to resolve primary-key BTree index column '{}'.", column));
+    }
+    for (const PrimaryKeyIndexDefinition& definition : definitions.Definitions()) {
+        if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE) {
+            PAIMON_RETURN_NOT_OK(ValidateBTreeIndexerOptions(definition.Options()));
         }
-        PAIMON_RETURN_NOT_OK(ValidateBTreeIndexerOptions(definition_iter->Options()));
     }
     return Status::OK();
 }

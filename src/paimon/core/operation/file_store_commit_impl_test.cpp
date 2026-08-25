@@ -2538,7 +2538,7 @@ TEST_F(FileStoreCommitImplTest, TestFixedBucketPKTableCommitAllowed) {
 TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsRejectsUnsupportedOptions) {
     const std::vector<std::string> unsupported_keys = {"commit.strict-mode.last-safe-snapshot",
                                                        "sequence.snapshot-ordering",
-                                                       "pk-clustering-override"};
+                                                       Options::PK_CLUSTERING_OVERRIDE};
     for (const auto& key : unsupported_keys) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({{key, "true"}}));
         ASSERT_NOK_WITH_MSG(FileStoreCommitImpl::ValidateCommitOptions(options),

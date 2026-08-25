@@ -32,9 +32,15 @@
 #include "paimon/core/index/pksorted/pk_sorted_index_builder.h"
 #include "paimon/core/index/pksorted/pk_sorted_index_group.h"
 #include "paimon/core/utils/commit_increment.h"
+#include "paimon/logging.h"
 
 namespace paimon {
 namespace {
+
+Logger* GetLogger() {
+    static std::unique_ptr<Logger> logger = Logger::GetLogger("BucketedPrimaryKeyIndexMaintainer");
+    return logger.get();
+}
 
 void RemoveDataFiles(const std::vector<std::shared_ptr<DataFileMeta>>& files,
                      std::map<std::string, std::shared_ptr<DataFileMeta>>* active) {
@@ -140,7 +146,6 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
         return Status::Invalid("Primary-key index commit increment is null.");
     }
     auto previous_data_files = active_data_files_;
-    auto previous_payloads = active_payloads_;
     const DataIncrement& data_increment = increment->GetNewFilesIncrement();
     const CompactIncrement& compact_increment = increment->GetCompactIncrement();
     PAIMON_RETURN_NOT_OK(ValidateAppendFiles(data_increment.NewFiles()));
@@ -163,6 +168,7 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
     std::unordered_set<std::string> new_identities;
 
     Status build_status = Status::OK();
+    std::string failed_column;
     for (const FieldMaintainer& field : fields_) {
         std::vector<std::shared_ptr<IndexFileMeta>> field_payloads;
         for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads_) {
@@ -203,6 +209,7 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
                 field.builder->Build(level_files.second);
             if (!build_result.ok()) {
                 build_status = build_result.status();
+                failed_column = field.definition.Column();
                 break;
             }
             AddUniquePayload(std::move(build_result).value(), &new_identities, &new_payloads);
@@ -222,9 +229,11 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
                 }
             }
         }
-        active_data_files_ = std::move(previous_data_files);
-        active_payloads_ = std::move(previous_payloads);
-        return build_status;
+        PAIMON_LOG_WARN(GetLogger(),
+                        "Failed to build primary-key BTree index for column %s; committing data "
+                        "files without new index payloads. %s",
+                        failed_column.c_str(), build_status.ToString().c_str());
+        return Status::OK();
     }
 
     std::vector<std::shared_ptr<IndexFileMeta>> next_payloads;

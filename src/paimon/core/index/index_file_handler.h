@@ -64,6 +64,10 @@ class IndexFileHandler {
                                                              const BinaryRow& partition,
                                                              int32_t bucket) const;
 
+    /// Scan source-backed index payloads for a partition and bucket.
+    Result<std::vector<std::shared_ptr<IndexFileMeta>>> ScanSourceIndexes(
+        const Snapshot& snapshot, const BinaryRow& partition, int32_t bucket) const;
+
     /// Scan specified all typed index.
     Result<std::vector<IndexManifestEntry>> Scan(
         const Snapshot& snapshot,

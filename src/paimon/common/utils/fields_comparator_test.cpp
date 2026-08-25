@@ -81,6 +81,29 @@ class FieldsComparatorTest : public ::testing::Test {
         }
         CheckResult(row1, row2, input_types, sort_fields, has_null);
     }
+
+    void CheckJavaFloatingPointResult(
+        const InternalRow& row1, const InternalRow& row2,
+        const std::vector<std::shared_ptr<arrow::DataType>>& input_types) {
+        std::vector<DataField> data_fields;
+        data_fields.reserve(input_types.size());
+        for (int32_t i = 0; i < static_cast<int32_t>(input_types.size()); ++i) {
+            data_fields.emplace_back(i, arrow::field("fake_name", input_types[i]));
+        }
+        for (int32_t i = 0; i < static_cast<int32_t>(input_types.size()); ++i) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldsComparator> ascending,
+                                 FieldsComparator::CreateWithJavaFloatingPointOrder(
+                                     data_fields, {i}, /*is_ascending_order=*/true));
+            ASSERT_EQ(-1, ascending->CompareTo(row1, row2));
+            ASSERT_EQ(1, ascending->CompareTo(row2, row1));
+
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldsComparator> descending,
+                                 FieldsComparator::CreateWithJavaFloatingPointOrder(
+                                     data_fields, {i}, /*is_ascending_order=*/false));
+            ASSERT_EQ(1, descending->CompareTo(row1, row2));
+            ASSERT_EQ(-1, descending->CompareTo(row2, row1));
+        }
+    }
 };
 
 TEST_F(FieldsComparatorTest, TestSimple) {
@@ -207,13 +230,20 @@ TEST_F(FieldsComparatorTest, TestFloatingPointTotalOrder) {
     auto pool = GetDefaultPool();
     BinaryRow negative_zero = BinaryRowGenerator::GenerateRow({-0.0F, -0.0}, pool.get());
     BinaryRow positive_zero = BinaryRowGenerator::GenerateRow({0.0F, 0.0}, pool.get());
-    CheckResult(negative_zero, positive_zero, {arrow::float32(), arrow::float64()});
+    CheckJavaFloatingPointResult(negative_zero, positive_zero,
+                                 {arrow::float32(), arrow::float64()});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FieldsComparator> default_comparator,
+        FieldsComparator::Create({DataField(0, arrow::field("float", arrow::float32())),
+                                  DataField(1, arrow::field("double", arrow::float64()))},
+                                 /*is_ascending_order=*/true));
+    ASSERT_EQ(0, default_comparator->CompareTo(negative_zero, positive_zero));
 
     const float float_nan = std::numeric_limits<float>::quiet_NaN();
     const double double_nan = std::numeric_limits<double>::quiet_NaN();
     BinaryRow finite = BinaryRowGenerator::GenerateRow({1.0F, 1.0}, pool.get());
     BinaryRow nan = BinaryRowGenerator::GenerateRow({float_nan, double_nan}, pool.get());
-    CheckResult(finite, nan, {arrow::float32(), arrow::float64()});
+    CheckJavaFloatingPointResult(finite, nan, {arrow::float32(), arrow::float64()});
 }
 
 TEST_F(FieldsComparatorTest, TestTimestampType) {
