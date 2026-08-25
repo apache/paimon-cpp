@@ -18,7 +18,6 @@
 
 #include "paimon/format/avro/avro_file_batch_reader.h"
 
-#include <cassert>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -128,7 +127,10 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           array_builder_->Finish());
-        assert(array->Validate().ok());
+#ifndef NDEBUG
+        // Keep structural validation in debug builds without adding its recursive cost to reads.
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
+#endif
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
