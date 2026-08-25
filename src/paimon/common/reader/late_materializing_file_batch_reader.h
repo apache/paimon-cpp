@@ -85,8 +85,8 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
-        // TODO(zhouhongfeng.zhf): PrebufferRange (called by PrefetchFileBatchReader) only read the probe data,
-        // consider read the payload data as well.
+        // TODO(zhouhongfeng.zhf): PrebufferRange (called by PrefetchFileBatchReader) only read the
+        // probe data, consider read the payload data as well.
         return inner_->PreBufferRange();
     }
 
