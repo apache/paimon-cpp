@@ -128,6 +128,13 @@ class MockEcsHttpClient : public HttpClient {
     mutable std::atomic<int64_t> last_request_timeout_ms_{-1};
 };
 
+class FailingEcsHttpClient : public HttpClient {
+ public:
+    Result<HttpResponse> Execute(const HttpRequest&, const HttpBodyConsumer&) const override {
+        return Status::IOError("connection refused");
+    }
+};
+
 }  // namespace
 
 TEST(DlfDefaultSignerTest, SignsJavaCompatibleRequest) {
@@ -153,6 +160,27 @@ TEST(DlfDefaultSignerTest, SignsJavaCompatibleRequest) {
         "DLF4-HMAC-SHA256 Credential=YourAccessKeyId/20250416/cn-beijing/"
         "DlfNext/aliyun_v4_request,Signature="
         "22594f8bbb8bb0ec296ced6003b7ffdf7022a8ca3815da5b53090daa11a06558",
+        authorization);
+}
+
+TEST(DlfDefaultSignerTest, MatchesJavaGoldenAuthorization) {
+    // Mirrors Java DLFAuthSignatureTest#testGetAuthorization.
+    DlfDefaultSigner signer("cn-hangzhou");
+    const std::string body = R"({"name":"database","options":{"a":"b"}})";
+    DlfToken token("access-key-id", "access-key-secret", "securityToken");
+    RestAuthParameter parameter = RestAuthParameter::Create("POST", "/v1/paimon/databases",
+                                                            {{"k1", "v1"}, {"k2", "v2"}}, body);
+    const std::chrono::system_clock::time_point signing_time =
+        std::chrono::system_clock::from_time_t(1701605532);
+
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders(body, signing_time, token.GetSecurityToken(), "host"));
+    ASSERT_OK_AND_ASSIGN(std::string authorization,
+                         signer.Authorization(parameter, token, "host", headers));
+    ASSERT_EQ(
+        "DLF4-HMAC-SHA256 Credential=access-key-id/20231203/cn-hangzhou/"
+        "DlfNext/aliyun_v4_request,Signature="
+        "c72caf1d40b55b1905d891ee3e3de48a2f8bebefa7e39e4f277acc93c269c5e3",
         authorization);
 }
 
@@ -298,6 +326,14 @@ TEST(DlfEcsTokenLoaderTest, ExplicitEmptyRoleUsesMetadataUrlAsTokenEndpoint) {
     ASSERT_EQ(0, http_client_ptr->GetRoleRequestCount());
     ASSERT_EQ(1, http_client_ptr->GetTokenRequestCount());
     ASSERT_EQ(180000, http_client_ptr->GetLastRequestTimeoutMillis());
+}
+
+TEST(DlfEcsTokenLoaderTest, PreservesTransportFailureDetail) {
+    DlfEcsTokenLoader loader("http://100.100.100.200/metadata/token", std::string(""),
+                             std::make_unique<FailingEcsHttpClient>());
+    Status status = loader.LoadToken().status();
+    ASSERT_NOK_WITH_MSG(status, "failed to request DLF credentials from ECS metadata service");
+    ASSERT_NOK_WITH_MSG(status, "connection refused");
 }
 
 TEST(DlfAuthProviderTest, RefreshesWithinSafeWindow) {

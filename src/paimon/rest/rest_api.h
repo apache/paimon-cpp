@@ -105,9 +105,11 @@ class RestApi {
 
     /// Maps a non-successful http response to a status: 404 becomes `NotExist`, 409
     /// becomes `Exist`, 400 becomes `Invalid`, 501 becomes `NotImplemented` and the
-    /// other codes become `IOError`. The status carries a `RestErrorDetail` with the
-    /// mapped code.
-    static Status ErrorToStatus(const RestHttpClient::Response& response);
+    /// other codes become `IOError`. A redirect returned while `follow_redirects` is
+    /// false is reported as deliberately rejected for a signed request. The status
+    /// carries a `RestErrorDetail` with the mapped code.
+    static Status ErrorToStatus(const RestHttpClient::Response& response,
+                                bool follow_redirects = true);
 
  private:
     RestApi(std::unique_ptr<RestHttpClient> client, std::unique_ptr<AuthProvider> auth_provider,

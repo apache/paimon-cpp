@@ -991,6 +991,12 @@ TEST(RestApiErrorTest, ErrorToStatus) {
     ASSERT_NOK_WITH_MSG(RestApi::ErrorToStatus(response), "rest request failed with code 429");
     response.code = 418;
     ASSERT_NOK_WITH_MSG(RestApi::ErrorToStatus(response), "rest request failed with code 418");
+
+    response.code = 302;
+    Status signed_redirect = RestApi::ErrorToStatus(response, /*follow_redirects=*/false);
+    ASSERT_NOK_WITH_MSG(signed_redirect, "redirect status 302");
+    ASSERT_NOK_WITH_MSG(signed_redirect, "not followed for signed requests");
+    ASSERT_EQ(302, checked_pointer_cast<RestErrorDetail>(signed_redirect.detail())->GetCode());
 }
 
 TEST(RestApiErrorTest, MalformedSuccessBodyFails) {

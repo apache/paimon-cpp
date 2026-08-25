@@ -125,15 +125,9 @@ Result<std::optional<std::string>> OptionalJsonString(const rapidjson::Value& ob
 Result<std::tm> ToUtc(std::chrono::system_clock::time_point time) {
     std::time_t seconds = std::chrono::system_clock::to_time_t(time);
     std::tm utc{};
-#if defined(_WIN32)
-    if (gmtime_s(&utc, &seconds) != 0) {
-        return Status::Invalid("failed to convert DLF signing time to UTC");
-    }
-#else
     if (gmtime_r(&seconds, &utc) == nullptr) {
         return Status::Invalid("failed to convert DLF signing time to UTC");
     }
-#endif
     return utc;
 }
 
@@ -181,15 +175,9 @@ Result<int64_t> ParseExpiration(const std::string& expiration) {
     int32_t second = utc.tm_sec;
     std::time_t timestamp = timegm(&utc);
     std::tm verified{};
-#if defined(_WIN32)
-    if (timestamp == static_cast<std::time_t>(-1) || gmtime_s(&verified, &timestamp) != 0) {
-        return Status::Invalid("invalid DLF token expiration");
-    }
-#else
     if (timestamp == static_cast<std::time_t>(-1) || gmtime_r(&timestamp, &verified) == nullptr) {
         return Status::Invalid("invalid DLF token expiration");
     }
-#endif
     if (verified.tm_year != year || verified.tm_mon != month || verified.tm_mday != day ||
         verified.tm_hour != hour || verified.tm_min != minute || verified.tm_sec != second) {
         return Status::Invalid("invalid DLF token expiration");
@@ -504,7 +492,8 @@ Result<std::string> DlfEcsTokenLoader::Get(const std::string& url) const {
             return Status::OK();
         });
     if (!response.ok()) {
-        return Status::IOError("failed to request DLF credentials from ECS metadata service");
+        return Status::IOError("failed to request DLF credentials from ECS metadata service: ",
+                               response.status().message());
     }
     HttpResponse http_response = std::move(response).value();
     if (http_response.status_code < 200 || http_response.status_code >= 300) {
