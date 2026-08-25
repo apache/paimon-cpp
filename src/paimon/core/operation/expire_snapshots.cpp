@@ -103,6 +103,57 @@ Result<int32_t> ExpireSnapshots::Expire() {
             "because the branches of a table share its data files",
             snapshot_manager_->RootPath(), snapshot_manager_->Branch()));
     }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> branches,
+                           BranchManager::ListBranches(fs_, snapshot_manager_->RootPath()));
+    branches.erase(
+        std::remove(branches.begin(), branches.end(), BranchManager::DEFAULT_MAIN_BRANCH),
+        branches.end());
+    if (!branches.empty()) {
+        return Status::NotImplemented(fmt::format(
+            "Expire failed: expiring snapshots of table {} is not supported, because the table "
+            "has branches other than main ({}), which share its data files",
+            snapshot_manager_->RootPath(), fmt::join(branches, ", ")));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest_snapshot_id,
+                           snapshot_manager_->LatestSnapshotIdFromFileSystem());
+    if (latest_snapshot_id == std::nullopt) {
+        // no snapshot, nothing to expire
+        return 0;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest_snapshot_id,
+                           snapshot_manager_->EarliestSnapshotId());
+    if (earliest_snapshot_id == std::nullopt) {
+        // no snapshot, nothing to expire
+        return 0;
+    }
+
+    // TODO(jinli.zjw): why not only use earliest snapshot id
+    int64_t min =
+        std::max(latest_snapshot_id.value() - retain_max + 1, earliest_snapshot_id.value());
+    int64_t max = latest_snapshot_id.value() - retain_min + 1;
+    max = std::min(max, earliest_snapshot_id.value() + max_deletes);
+    // TODO(jinli.zjw): support consumer manager
+    int64_t older_than_ms =
+        DateTimeUtils::GetCurrentUTCTimeUs() / 1000 - config_.GetSnapshotTimeRetainMs();
+    for (int64_t snapshot_id = min; snapshot_id < max; snapshot_id++) {
+        PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(snapshot_id));
+        if (exist) {
+            PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(snapshot_id));
+            if (older_than_ms <= snapshot.TimeMillis()) {
+                return ExpireUntil(earliest_snapshot_id.value(), snapshot_id,
+                                   latest_snapshot_id.value());
+            }
+        }
+    }
+    return ExpireUntil(earliest_snapshot_id.value(), max, latest_snapshot_id.value());
+}
+
+Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64_t end_exclusive_id,
+                                             int64_t latest_snapshot_id) {
+    if (end_exclusive_id <= earliest_snapshot_id) {
+        // TODO(jinli.zjw): write earliest hint
+        return 0;
+    }
     // Read the retained boundary before deleting files referenced by expired snapshots.
     PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(end_exclusive_id));
     if (!exist) {

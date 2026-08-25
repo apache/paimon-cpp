@@ -26,7 +26,9 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/core/index/global_index_meta.h"
+#include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
 #include "paimon/core/index/pksorted/pk_sorted_bucket_index_state.h"
 #include "paimon/core/index/pksorted/pk_sorted_index_builder.h"
@@ -91,6 +93,11 @@ void AddUniquePayload(const std::shared_ptr<IndexFileMeta>& payload,
     if (!identity.empty() && identities->insert(identity).second) {
         payloads->push_back(payload);
     }
+}
+
+bool IsPrimaryKeyBTreePayload(const std::shared_ptr<IndexFileMeta>& payload) {
+    return payload != nullptr && payload->IndexType() == BtreeDefs::kIdentifier &&
+           IndexFileHandler::IsPrimaryKeySourceIndex(*payload);
 }
 
 }  // namespace
@@ -167,12 +174,26 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
     std::unordered_set<std::string> deleted_identities;
     std::unordered_set<std::string> new_identities;
 
-    Status build_status = Status::OK();
-    std::string failed_column;
+    std::set<int32_t> owned_btree_field_ids;
+    for (const FieldMaintainer& field : fields_) {
+        owned_btree_field_ids.insert(field.definition.FieldId());
+    }
+    for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads_) {
+        if (!IsPrimaryKeyBTreePayload(payload)) {
+            continue;
+        }
+        const std::optional<GlobalIndexMeta>& meta = payload->GetGlobalIndexMeta();
+        if (meta != std::nullopt && meta->source_meta != nullptr &&
+            owned_btree_field_ids.count(meta->index_field_id) == 0) {
+            AddUniquePayload(payload, &deleted_identities, &deleted_payloads);
+        }
+    }
+
     for (const FieldMaintainer& field : fields_) {
         std::vector<std::shared_ptr<IndexFileMeta>> field_payloads;
         for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads_) {
-            if (payload == nullptr || payload->IndexType() != field.definition.IndexType()) {
+            if (!IsPrimaryKeyBTreePayload(payload) ||
+                payload->IndexType() != field.definition.IndexType()) {
                 continue;
             }
             const std::optional<GlobalIndexMeta>& meta = payload->GetGlobalIndexMeta();
@@ -208,32 +229,16 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
             Result<std::shared_ptr<IndexFileMeta>> build_result =
                 field.builder->Build(level_files.second);
             if (!build_result.ok()) {
-                build_status = build_result.status();
-                failed_column = field.definition.Column();
-                break;
+                PAIMON_LOG_WARN(
+                    GetLogger(),
+                    "Failed to build primary-key BTree index for column %s at data level %d; "
+                    "committing that level without an index payload. %s",
+                    field.definition.Column().c_str(), level_files.first,
+                    build_result.status().ToString().c_str());
+                continue;
             }
             AddUniquePayload(std::move(build_result).value(), &new_identities, &new_payloads);
         }
-        if (!build_status.ok()) {
-            break;
-        }
-    }
-
-    if (!build_status.ok()) {
-        for (const std::shared_ptr<IndexFileMeta>& payload : new_payloads) {
-            for (const FieldMaintainer& field : fields_) {
-                const std::optional<GlobalIndexMeta>& meta = payload->GetGlobalIndexMeta();
-                if (meta != std::nullopt && meta->index_field_id == field.definition.FieldId()) {
-                    [[maybe_unused]] Status cleanup_status = field.builder->DeletePayload(payload);
-                    break;
-                }
-            }
-        }
-        PAIMON_LOG_WARN(GetLogger(),
-                        "Failed to build primary-key BTree index for column %s; committing data "
-                        "files without new index payloads. %s",
-                        failed_column.c_str(), build_status.ToString().c_str());
-        return Status::OK();
     }
 
     std::vector<std::shared_ptr<IndexFileMeta>> next_payloads;
