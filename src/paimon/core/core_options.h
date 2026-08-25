@@ -238,6 +238,23 @@ class PAIMON_EXPORT CoreOptions {
 
     bool LegacyPartitionNameEnabled() const;
 
+    /// Whether a data file's name carries the compression it was written with, from
+    /// `file.suffix.include.compression`.
+    bool FileSuffixIncludeCompression() const;
+
+    /// Whether a format table names a partition directory by its value alone (`2025/01/`) instead
+    /// of `key=value` (`year=2025/month=01/`), from `format-table.partition-path-only-value`.
+    bool FormatTablePartitionOnlyValueInPath() const;
+
+    /// Whether the table's partitions are registered with the catalog rather than discovered from
+    /// the directory layout, from `metastore.partitioned-table`.
+    bool MetastorePartitionedTable() const;
+
+    /// Compression the data files of a format table are written with. It is resolved from
+    /// `file.compression`, then `format-table.file.compression`, then the bare `compression` key
+    /// an engine's own writer reads, then what the table's format writes by default.
+    std::string FormatTableFileCompression() const;
+
     bool GlobalIndexEnabled() const;
     Result<std::optional<std::string>> CreateGlobalIndexExternalPath() const;
 

@@ -61,7 +61,7 @@ bool StringUtils::EndsWith(const std::string& str, const std::string& suffix) {
     size_t s2 = suffix.size();
     return (s1 >= s2) && (str.compare(s1 - s2, s2, suffix) == 0);
 }
-bool StringUtils::IsNullOrWhitespaceOnly(const std::string& str) {
+bool StringUtils::IsNullOrWhitespaceOnly(std::string_view str) {
     if (str.empty()) {
         return true;
     }

@@ -29,6 +29,7 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/system_table.h"
@@ -36,6 +37,7 @@
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/rest/rest_util.h"
+#include "paimon/table/format/format_table.h"
 #include "rapidjson/document.h"
 
 namespace paimon {
@@ -194,6 +196,10 @@ Status RestCatalog::CreateTable(const Identifier& identifier, ArrowSchema* c_sch
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> table_schema,
                            TableSchema::Create(TableSchema::FIRST_SCHEMA_ID, schema, partition_keys,
                                                primary_keys, effective_options));
+    // The same checks the file system catalog runs, on the options this will actually send: the
+    // server takes schemas this library cannot open.
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateNewTableSchema(*table_schema));
+
     std::string schema_json;
     try {
         rapidjson::Document doc;
@@ -404,8 +410,28 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
     return checked_pointer_cast<Schema>(schema);
 }
 
+Result<std::shared_ptr<FormatTable>> RestCatalog::LoadFormatTable(
+    const Identifier& identifier) const {
+    PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
+    if (is_system_table || CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
+        return Status::Invalid(fmt::format("{} is a system table, so it cannot be a format table",
+                                           identifier.GetFullName()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+    branch = NormalizeBranch(std::move(branch));
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+    std::string location;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
+                           LoadDataTableSchema(load_identifier, branch, &location));
+    // A rest catalog holds the schema itself, so everything below the location is data.
+    return FormatTable::Create(fs_, location, identifier, checked_pointer_cast<DataSchema>(schema),
+                               /*location_carries_paimon_metadata=*/false);
+}
+
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, LoadTableSchema(identifier));
+    PAIMON_RETURN_NOT_OK(
+        CatalogUtils::CheckManagedTableType(identifier, schema, "Catalog::GetTable"));
     return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName());
 }
 

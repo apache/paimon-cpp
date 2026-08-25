@@ -41,6 +41,7 @@
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
 #include "paimon/schema/schema.h"
+#include "paimon/table/format/format_table.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -63,6 +64,12 @@ struct MockCatalogState {
     std::map<std::string, std::string> last_headers;
     // when set, every request except "/v1/config" fails with this http code
     std::optional<int32_t> force_error_code;
+    // how many times a single table has been fetched, so a caller that needs the path and the
+    // schema together can be held to one round trip
+    int32_t get_table_requests = 0;
+    // how many create-table requests reached the server, so a schema the client should have
+    // refused can be shown never to have been sent
+    int32_t create_table_requests = 0;
     // guards all fields above: the handler runs on the server's accept thread while
     // tests seed and inspect the state
     std::mutex mutex;
@@ -248,6 +255,7 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
             return JsonResponse(200, response.ToJsonString().value());
         }
         if (request.method == "POST") {
+            state->create_table_requests++;
             CreateTableRequest create_request("", "", "");
             if (!RapidJsonUtil::FromJsonString(request.body, &create_request).ok()) {
                 return MockError(400, "", "", "bad create table request");
@@ -290,6 +298,7 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
         return JsonResponse(200, fmt::format(R"({{"snapshots":[{}]}})", SnapshotJson(1)));
     }
     if (request.method == "GET") {
+        state->get_table_requests++;
         return JsonResponse(200, TableResponseJson(table_name, table_iter->second));
     }
     if (request.method == "DELETE") {
@@ -678,6 +687,204 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
                         "branch table");
 }
 
+TEST_F(RestCatalogTest, CreateRefusesAFormatTableThisClientCouldNotOpen) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+
+    // The server takes schemas this library cannot open. Without the same checks the file system
+    // catalog runs, creating through this client would succeed and opening the very same table
+    // through it would fail.
+    auto create = [&catalog](const std::string& name, const std::shared_ptr<arrow::Schema>& schema,
+                             const std::vector<std::string>& partition_keys,
+                             const std::map<std::string, std::string>& options) {
+        struct ArrowSchema c_schema;
+        EXPECT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+        Status status = catalog->CreateTable(Identifier("db1", name), &c_schema, partition_keys,
+                                             /*primary_keys=*/{}, options, false);
+        if (c_schema.release != nullptr) {
+            c_schema.release(&c_schema);
+        }
+        return status;
+    };
+    const std::map<std::string, std::string> format_table = {{Options::TYPE, "format-table"},
+                                                             {Options::FILE_FORMAT, "parquet"}};
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->create_table_requests = 0;
+    }
+
+    // Every column a partition column leaves the data files with nothing in them.
+    std::shared_ptr<arrow::Schema> only_partitions =
+        arrow::schema({arrow::field("dt", arrow::utf8())});
+    ASSERT_NOK_WITH_MSG(create("only_partitions", only_partitions, {"dt"}, format_table),
+                        "every one of its columns");
+
+    // A partition type this library does not support.
+    std::shared_ptr<arrow::Schema> timestamp_partition =
+        arrow::schema({arrow::field("f0", arrow::int32()),
+                       arrow::field("dt", arrow::timestamp(arrow::TimeUnit::MICRO))});
+    ASSERT_NOK_WITH_MSG(create("timestamp_partition", timestamp_partition, {"dt"}, format_table),
+                        "cannot be TIMESTAMP/DECIMAL/BLOB");
+
+    // A format table format with no reader here.
+    std::shared_ptr<arrow::Schema> good =
+        arrow::schema({arrow::field("f0", arrow::int32()), arrow::field("dt", arrow::utf8())});
+    std::map<std::string, std::string> csv_table = format_table;
+    csv_table[Options::FILE_FORMAT] = "csv";
+    ASSERT_NOK_WITH_MSG(create("csv_table", good, {"dt"}, csv_table),
+                        "not supported by paimon-cpp yet");
+
+    // None of them was sent: the table must not exist on the server for another client to find.
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(0, state_->create_table_requests);
+    }
+
+    // And a schema this library can open is created and opens.
+    ASSERT_OK(create("fine", good, {"dt"}, format_table));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
+                         catalog->GetFormatTable(Identifier("db1", "fine")));
+    ASSERT_EQ(FormatTable::Format::PARQUET, table->GetFormat());
+}
+
+TEST_F(RestCatalogTest, TableResponseWithoutAPathIsRejected) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+
+    MockCatalogState::TableData no_path;
+    no_path.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+                          R"( "partitionKeys": [], "primaryKeys": [],)"
+                          R"( "options": {"type": "format-table", "file.format": "parquet"}})";
+    no_path.path = "";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["no_path"] = no_path;
+    }
+
+    // Everything built from the response reads and writes below the path. A table whose paths
+    // would be checked against an empty one has no boundary at all, so the response is refused
+    // rather than turned into a table. What the response said is not repeated back: a body may
+    // carry credentials, so a failure to read one names the request and nothing else.
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "no_path")),
+                        "failed to deserialize the response");
+    ASSERT_NOK_WITH_MSG(catalog->GetTableLocation(Identifier("db1", "no_path")),
+                        "failed to deserialize the response");
+}
+
+TEST_F(RestCatalogTest, FormatTableIsLoadedInOneRequest) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+
+    MockCatalogState::TableData table_data;
+    table_data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"},)"
+                             R"( {"id": 1, "name": "dt", "type": "STRING"}],)"
+                             R"( "partitionKeys": ["dt"], "primaryKeys": [],)"
+                             R"( "options": {"type": "format-table", "file.format": "parquet"}})";
+    table_data.schema_id = 7;
+    table_data.path = "wh1/db1.db/fmt";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["fmt"] = table_data;
+        state_->get_table_requests = 0;
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
+                         catalog->GetFormatTable(Identifier("db1", "fmt")));
+    ASSERT_EQ("wh1/db1.db/fmt", table->Location());
+    ASSERT_EQ(FormatTable::Format::PARQUET, table->GetFormat());
+    ASSERT_EQ((std::vector<std::string>{"dt"}), table->PartitionKeys());
+    // The location and the schema come from one response, so they cannot describe two different
+    // states of the table.
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(1, state_->get_table_requests);
+    }
+
+    // This catalog holds the schema itself, so everything below the location is data - a
+    // directory named "schema" there is a partition value, not metadata to skip.
+    ASSERT_FALSE(table->LocationCarriesPaimonMetadata());
+
+    // And the other way round: a `Table` promises snapshots and manifests a format table never
+    // had, so it is refused there in the same words the file system catalog uses.
+    ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "fmt")), "Cannot open format table");
+
+    // A managed table stays out of this path, and so does a system table.
+    ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "t1")), "is not a format table");
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "t1$snapshots")),
+                        "is a system table");
+}
+
+TEST_F(RestCatalogTest, FormatTableWithAnUnusableSchemaIsRejectedOnLoad) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+
+    // A schema from a rest catalog never passed through table creation in this library, so the
+    // checks that run there have to run again on load. Without that these would be accepted here
+    // and fail only when the first reader or writer was built.
+    const std::string default_fields = R"([{"id": 0, "name": "f0", "type": "INT NOT NULL"},)"
+                                       R"( {"id": 1, "name": "dt", "type": "STRING"}])";
+    auto seed = [this](const std::string& name, const std::string& options,
+                       const std::string& partition_keys, const std::string& fields) {
+        MockCatalogState::TableData table_data;
+        table_data.schema_json = R"({"fields": )" + fields + R"(, "partitionKeys": )" +
+                                 partition_keys + R"(, "primaryKeys": [], "options": )" + options +
+                                 "}";
+        table_data.path = "wh1/db1.db/" + name;
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"][name] = table_data;
+    };
+
+    // A format table format with no reader here.
+    seed("csv_table", R"({"type": "format-table", "file.format": "csv"})", R"(["dt"])",
+         default_fields);
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "csv_table")),
+                        "not supported by paimon-cpp yet");
+
+    // A row count no file could ever reach.
+    seed("bad_rows",
+         R"({"type": "format-table", "file.format": "parquet", "target-file-row-num": "0"})",
+         R"(["dt"])", default_fields);
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "bad_rows")),
+                        "should be at least 1");
+
+    // The failure names the table, which is all a caller holding several has to go on.
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "bad_rows")), "db1.bad_rows");
+
+    // The structural rules run here too, not only the format-table ones: a partition key that is
+    // not a field of the schema is a table nothing could ever read.
+    seed("bad_partition_key", R"({"type": "format-table", "file.format": "parquet"})",
+         R"(["nosuchfield"])", default_fields);
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "bad_partition_key")),
+                        "should include all partition fields");
+
+    // Two schemas this library cannot open, refused when the table is opened rather than when a
+    // reader is first built. Both are in the user guide's list of limits.
+    seed("timestamp_partition", R"({"type": "format-table", "file.format": "parquet"})",
+         R"(["dt"])",
+         R"([{"id": 0, "name": "f0", "type": "INT NOT NULL"},)"
+         // Not a raw string: `TIMESTAMP(6)"` holds the sequence that would end one.
+         " {\"id\": 1, \"name\": \"dt\", \"type\": \"TIMESTAMP(6)\"}]");
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "timestamp_partition")),
+                        "cannot be TIMESTAMP/DECIMAL/BLOB");
+
+    seed("only_partitions", R"({"type": "format-table", "file.format": "parquet"})", R"(["dt"])",
+         R"([{"id": 0, "name": "dt", "type": "STRING"}])");
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "only_partitions")),
+                        "every one of its columns");
+
+    // An option this library does not honour keeps its own status code, so a caller can still
+    // tell "not supported yet" from "bad table".
+    seed("catalog_partitions",
+         R"({"type": "format-table", "file.format": "parquet",)"
+         R"( "metastore.partitioned-table": "true"})",
+         R"(["dt"])", default_fields);
+    Status not_implemented =
+        catalog->GetFormatTable(Identifier("db1", "catalog_partitions")).status();
+    ASSERT_TRUE(not_implemented.IsNotImplemented()) << not_implemented.ToString();
+}
+
 TEST_F(RestCatalogTest, NestedSchemaHighestFieldId) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
@@ -796,8 +1003,11 @@ TEST_F(RestCatalogTest, PartitionKeysRoundTrip) {
                        arrow::field("f1", arrow::utf8(), /*nullable=*/false)});
     struct ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    // The server's config sets a `table-default.bucket`, which would make this a bucketed append
+    // table - and one of those needs a bucket key it has not been given.
     ASSERT_OK(catalog->CreateTable(Identifier("db1", "pt"), &c_schema,
-                                   /*partition_keys=*/{"f1"}, /*primary_keys=*/{}, {},
+                                   /*partition_keys=*/{"f1"}, /*primary_keys=*/{},
+                                   {{"bucket", "-1"}},
                                    /*ignore_if_exists=*/false));
     // the partition keys survive both the create request and the load response conversion
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(Identifier("db1", "pt")));

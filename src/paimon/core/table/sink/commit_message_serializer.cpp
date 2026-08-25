@@ -39,6 +39,7 @@
 #include "paimon/core/io/data_file_meta_first_row_id_legacy_serializer.h"
 #include "paimon/core/io/data_file_meta_serializer.h"
 #include "paimon/core/io/data_increment.h"
+#include "paimon/core/table/format/format_commit_message.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/object_serializer.h"
 #include "paimon/io/data_input_stream.h"
@@ -57,6 +58,13 @@ CommitMessageSerializer::~CommitMessageSerializer() = default;
 
 Status CommitMessageSerializer::Serialize(const std::shared_ptr<CommitMessage>& obj,
                                           MemorySegmentOutputStream* out) {
+    if (std::dynamic_pointer_cast<FormatCommitMessage>(obj) != nullptr) {
+        // A format table's commit message names a staged path rather than files to record in a
+        // manifest, and has no cross-runtime encoding.
+        return Status::NotImplemented(
+            "a FormatCommitMessage cannot be serialized: a format table's write and its commit "
+            "belong to one process");
+    }
     auto message = std::dynamic_pointer_cast<CommitMessageImpl>(obj);
     if (message == nullptr) {
         return Status::Invalid("failed to cast commit message to commit message impl");

@@ -22,10 +22,12 @@
 #include <algorithm>
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_utils.h"
+#include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/status.h"
 
@@ -110,7 +112,8 @@ Result<std::unique_ptr<TableSchema>> SchemaManager::CreateTable(
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<TableSchema> table_schema,
             TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
-        PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+        // Shared with every other catalog, so a schema this one persists is one they all open.
+        PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateNewTableSchema(*table_schema));
         std::string schema_path = ToSchemaPath(0);
         PAIMON_ASSIGN_OR_RAISE(std::string content, table_schema->ToJsonString());
         auto status = file_system_->AtomicStore(schema_path, content);

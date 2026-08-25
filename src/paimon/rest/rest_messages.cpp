@@ -345,6 +345,11 @@ void GetTableResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
     database_ = RapidJsonUtil::DeserializeKeyValue<std::string>(obj, kFieldDatabase, std::string());
     name_ = RapidJsonUtil::DeserializeKeyValue<std::string>(obj, kFieldName, std::string());
     path_ = RapidJsonUtil::DeserializeKeyValue<std::string>(obj, kFieldPath);
+    // Everything built from this response reads and writes below the path, and an empty one
+    // bounds nothing.
+    if (path_.empty()) {
+        throw std::invalid_argument(std::string("member '") + kFieldPath + "' cannot be empty");
+    }
     is_external_ = RapidJsonUtil::DeserializeKeyValue<bool>(obj, kFieldIsExternal, false);
     schema_id_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldSchemaId);
     schema_json_ = DeserializeRawJsonMember(obj, kFieldSchema);

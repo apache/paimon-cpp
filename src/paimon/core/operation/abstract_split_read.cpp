@@ -33,6 +33,7 @@
 #include "paimon/common/data/shredding/shredding_file_reader.h"
 #include "paimon/common/data/variant/variant_shredding_read_plan_factory.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/reader/data_file_reader_factory.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
@@ -124,53 +125,33 @@ Result<std::unique_ptr<BatchReader>> AbstractSplitRead::ApplyPredicateFilterIfNe
     return PredicateBatchReader::Create(std::move(reader), predicate, pool_);
 }
 
+DataFileReadOptions AbstractSplitRead::DataFileReadOptionsFromContext() const {
+    DataFileReadOptions read_options;
+    read_options.cache = options_.GetCache();
+    read_options.read_batch_size = options_.GetReadBatchSize();
+    read_options.prefetch_enabled = context_->EnablePrefetch();
+    read_options.prefetch_max_parallel_num = context_->GetPrefetchMaxParallelNum();
+    read_options.prefetch_batch_count = context_->GetPrefetchBatchCount();
+    read_options.adaptive_prefetch_strategy = options_.EnableAdaptivePrefetchStrategy();
+    read_options.read_ahead_cache_enabled = context_->ReadAheadCacheEnabled();
+    read_options.cache_config = context_->GetCacheConfig();
+    return read_options;
+}
+
 Result<std::unique_ptr<ReaderBuilder>> AbstractSplitRead::PrepareReaderBuilder(
     const std::string& format_identifier,
     const std::map<std::string, std::string>& extra_format_options) const {
-    std::map<std::string, std::string> format_options = options_.ToMap();
-    // The blob placeholder channels are internal: strip user-supplied blob.internal.* table
-    // options so only the internal read path can enable them through extra_format_options.
-    BlobDefs::EraseInternalPlaceholderOptions(&format_options);
-    for (const auto& [key, value] : extra_format_options) {
-        format_options[key] = value;
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileFormat> file_format,
-                           FileFormatFactory::Get(format_identifier, format_options));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> reader_builder,
-                           file_format->CreateReaderBuilder(options_.GetReadBatchSize()));
-    reader_builder->WithMemoryPool(pool_);
-    reader_builder->WithCache(options_.GetCache());
-    // Propagate the framework runtime read state so each format can adapt its own
-    // behavior (e.g. parquet disabling its pre-buffer when the shared read-ahead cache
-    // takes over prefetching), instead of mutating format options here.
-    ReadHints read_hints;
-    read_hints.prefetch_enabled = context_->EnablePrefetch();
-    read_hints.read_ahead_cache_enabled = context_->ReadAheadCacheEnabled();
-    reader_builder->WithReadHints(read_hints);
-    return reader_builder;
+    return DataFileReaderFactory::CreateReaderBuilder(format_identifier, options_.ToMap(),
+                                                      extra_format_options,
+                                                      DataFileReadOptionsFromContext(), pool_);
 }
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReader(
     const std::string& file_format_identifier, const std::string& data_file_path,
     int64_t data_file_size, const ReaderBuilder* reader_builder) const {
-    if (context_->EnablePrefetch() && file_format_identifier != "blob" &&
-        file_format_identifier != "avro") {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<PrefetchFileBatchReaderImpl> prefetch_reader,
-            PrefetchFileBatchReaderImpl::Create(
-                data_file_path, data_file_size, reader_builder, options_.GetFileSystem(),
-                context_->GetPrefetchMaxParallelNum(), options_.GetReadBatchSize(),
-                context_->GetPrefetchBatchCount(), options_.EnableAdaptivePrefetchStrategy(),
-                executor_,
-                /*initialize_read_ranges=*/false, context_->ReadAheadCacheEnabled(),
-                context_->GetCacheConfig(), pool_));
-        return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<InputStream> input_stream,
-            options_.GetFileSystem()->Open(FileStatus(data_file_path, data_file_size)));
-        return reader_builder->Build(input_stream);
-    }
+    return DataFileReaderFactory::Open(file_format_identifier, data_file_path, data_file_size,
+                                       reader_builder, DataFileReadOptionsFromContext(),
+                                       options_.GetFileSystem(), executor_, pool_);
 }
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingReader(

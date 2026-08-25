@@ -568,6 +568,63 @@ TEST(CoreOptionsTest, TestLookupCompactMaxIntervalComputedValue) {
     ASSERT_EQ(13, core_options.GetLookupCompactMaxInterval());
 }
 
+TEST(CoreOptionsTest, TestFormatTableOptions) {
+    // A format table reads these through `CoreOptions` like every other option, so their defaults
+    // are asserted here rather than a second time in the format table tests.
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
+        ASSERT_FALSE(core_options.FileSuffixIncludeCompression());
+        ASSERT_FALSE(core_options.FormatTablePartitionOnlyValueInPath());
+        ASSERT_FALSE(core_options.MetastorePartitionedTable());
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions core_options,
+            CoreOptions::FromMap({{Options::FILE_SUFFIX_INCLUDE_COMPRESSION, "true"},
+                                  {Options::FORMAT_TABLE_PARTITION_PATH_ONLY_VALUE, "true"},
+                                  {Options::METASTORE_PARTITIONED_TABLE, "true"}}));
+        ASSERT_TRUE(core_options.FileSuffixIncludeCompression());
+        ASSERT_TRUE(core_options.FormatTablePartitionOnlyValueInPath());
+        ASSERT_TRUE(core_options.MetastorePartitionedTable());
+    }
+}
+
+TEST(CoreOptionsTest, TestFormatTableFileCompression) {
+    // One chain, in the order the rest of the paimon ecosystem resolves it: `file.compression`,
+    // then `format-table.file.compression`, then the bare `compression` key an engine's own
+    // writer reads, then what the format itself writes.
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{Options::FILE_COMPRESSION, "lz4"},
+                                                   {Options::FORMAT_TABLE_FILE_COMPRESSION, "none"},
+                                                   {"compression", "zstd"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "lz4");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{Options::FORMAT_TABLE_FILE_COMPRESSION, "lz4"},
+                                                   {"compression", "zstd"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "lz4");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{"compression", "lz4"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "lz4");
+    }
+    // Left to the format: parquet writes snappy, orc zstd. This differs from
+    // `GetFileCompression()`, a managed table's `file.compression`, which defaults to zstd.
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "snappy");
+        ASSERT_EQ(core_options.GetFileCompression(), "zstd");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "zstd");
+    }
+}
+
 TEST(CoreOptionsTest, TestDynamicPartitionOverwriteOption) {
     {
         ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));

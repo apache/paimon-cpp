@@ -19,7 +19,10 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "paimon/result.h"
 #include "paimon/table/source/plan.h"
@@ -44,5 +47,15 @@ class PAIMON_EXPORT TableScan {
     ///
     /// @return A Result containing a shared pointer to the created `Plan` or an error status.
     virtual Result<std::shared_ptr<Plan>> CreatePlan() = 0;
+
+    /// Lists the partitions the scan can see, each as its partition values keyed by field name,
+    /// in a stable order. A table with no partition keys has none.
+    ///
+    /// Only a format table answers it today: its partitions are the directories a scan descends,
+    /// so listing them costs no more than planning. Every other table type returns
+    /// `NotImplemented`.
+    ///
+    /// @return A Result containing the partitions, or an error status.
+    virtual Result<std::vector<std::map<std::string, std::string>>> ListPartitions() const;
 };
 }  // namespace paimon

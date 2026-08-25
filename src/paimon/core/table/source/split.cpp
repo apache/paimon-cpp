@@ -26,6 +26,7 @@
 #include "paimon/common/utils/serialization_utils.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta_serializer.h"
+#include "paimon/core/table/format/format_data_split.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/deletion_file.h"
 #include "paimon/core/table/source/fallback_data_split.h"
@@ -165,6 +166,12 @@ Result<std::string> Split::Serialize(const std::shared_ptr<Split>& split,
         } else {
             out.WriteValue<bool>(false);
         }
+    } else if (std::dynamic_pointer_cast<FormatDataSplit>(split) != nullptr) {
+        // A format table's plan has no cross-runtime encoding, and one of paimon-cpp's own would
+        // let a plan made here be handed to a runtime that cannot read it back.
+        return Status::NotImplemented(
+            "a FormatDataSplit cannot be serialized: a format table's plan is in-memory only, so "
+            "plan and read it within one process");
     } else {
         return Status::Invalid("invalid split, cannot cast to DataSplit or IndexedSplit");
     }

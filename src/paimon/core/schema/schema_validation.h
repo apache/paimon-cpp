@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,6 +37,8 @@ class Field;
 namespace paimon {
 class CoreOptions;
 class DataField;
+class DataSchema;
+class FileSystem;
 class TableSchema;
 
 /// Validation utils for `TableSchema`.
@@ -46,11 +49,52 @@ class SchemaValidation {
 
     static Status ValidateTableSchema(const TableSchema& schema);
 
+    /// Validates a schema a table is about to be created from, whichever catalog is creating it.
+    ///
+    /// It picks the rules by the schema's `type` option: a format table owns no bucket, manifest
+    /// or snapshot machinery, so only the structural invariants apply to it. A type this library
+    /// cannot load at all is refused rather than persisted, since the table would look created
+    /// and fail only when someone tried to open it.
+    static Status ValidateNewTableSchema(const TableSchema& schema);
+
+    /// Validates the structural invariants every table shares, whatever its type: partition and
+    /// primary key fields exist and are free of duplicates, key fields are primitive, and no field
+    /// takes a reserved name.
+    static Status ValidateGenericTableSchema(const TableSchema& schema);
+
+    /// The same rules as `ValidateGenericTableSchema()`, for a schema this library did not
+    /// create. A `DataSchema` names its field types through its arrow schema rather than through
+    /// `DataField`s, which is the only reason this is a second entry point.
+    static Status ValidateGenericDataSchema(const DataSchema& schema);
+
+    /// Validates what a format table additionally requires, on top of
+    /// `ValidateGenericTableSchema()`. It takes a `DataSchema` so that it can run both at creation
+    /// and at `FormatTable::Create()`, where the schema may never have passed through creation
+    /// here at all.
+    ///
+    /// @param effective_options The options the table will actually run with: the schema's own at
+    ///        creation, and those with anything given at the call merged on top at
+    ///        `FormatTable::Create()`. Passing the schema's alone would let an option given at the
+    ///        call reach a table that refuses it in its schema.
+    /// @param file_system The file system the caller already resolved, or null when it named one
+    ///        through the options. It only spares reading the options from resolving `file-system`
+    ///        a second time, which would fail for a caller that handed its own over instead of
+    ///        naming one.
+    static Status ValidateFormatTableSchema(
+        const DataSchema& schema, const std::map<std::string, std::string>& effective_options,
+        const std::shared_ptr<FileSystem>& file_system);
+
     static bool IsPostponeBucketTable(const TableSchema& schema, int32_t bucket);
 
  private:
     static Status ValidateNoDuplicateField(const std::vector<std::string>& field_names,
                                            const std::string& error_message_intro);
+    /// The rules `ValidateGenericTableSchema()` and `ValidateGenericDataSchema()` share, on the
+    /// fields both can hand over.
+    static Status ValidateGenericSchema(const std::vector<DataField>& fields,
+                                        const std::vector<std::string>& bucket_keys,
+                                        const std::vector<std::string>& primary_keys,
+                                        const std::vector<std::string>& partition_keys);
     static Status ValidateOnlyContainPrimitiveType(const std::vector<DataField>& fields,
                                                    const std::vector<std::string>& field_names,
                                                    const std::string& error_message_intro);

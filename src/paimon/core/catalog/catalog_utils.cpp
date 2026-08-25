@@ -16,11 +16,18 @@
 
 #include "paimon/core/catalog/catalog_utils.h"
 
+#include <map>
+#include <memory>
 #include <optional>
+#include <string>
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/core/options/table_type.h"
+#include "paimon/defs.h"
 #include "paimon/result.h"
+#include "paimon/schema/schema.h"
+#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 
@@ -66,6 +73,48 @@ Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::str
             action, identifier.ToString()));
     }
     return Status::OK();
+}
+
+Status CatalogUtils::CheckManagedTableType(const Identifier& identifier,
+                                           const std::shared_ptr<Schema>& schema,
+                                           const std::string& action) {
+    std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
+    if (data_schema == nullptr) {
+        // Only a data table carries table options, so nothing else declares a table type.
+        return Status::OK();
+    }
+    PAIMON_ASSIGN_OR_RAISE(TableType table_type,
+                           TableTypeDefine::FromOptions(data_schema->Options()));
+    if (table_type == TableType::FORMAT_TABLE) {
+        return Status::Invalid(
+            fmt::format("Cannot open format table '{}' as a Table in '{}', please use "
+                        "'Catalog::GetFormatTable' or 'FormatTable::Create'.",
+                        identifier.ToString(), action));
+    }
+    // A materialized table is a managed table that also carries the SQL it materializes.
+    if (table_type != TableType::TABLE && table_type != TableType::MATERIALIZED_TABLE) {
+        const std::map<std::string, std::string>& options = data_schema->Options();
+        auto type_iter = options.find(Options::TYPE);
+        return Status::NotImplemented(fmt::format(
+            "Cannot open table '{}' in '{}': its '{}' is '{}', a table type paimon-cpp does not "
+            "implement, and a managed table would promise snapshots it never had.",
+            identifier.ToString(), action, Options::TYPE,
+            type_iter == options.end() ? std::string() : type_iter->second));
+    }
+    return Status::OK();
+}
+
+Result<std::shared_ptr<FormatTable>> CatalogUtils::LoadFormatTableInTwoRequests(
+    const Catalog& catalog, const Identifier& identifier, bool metadata_under_table_path) {
+    PAIMON_ASSIGN_OR_RAISE(std::string location, catalog.GetTableLocation(identifier));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema, catalog.LoadTableSchema(identifier));
+    std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
+    if (data_schema == nullptr) {
+        return Status::Invalid(fmt::format("{} is not a data table, so it cannot be a format table",
+                                           identifier.GetFullName()));
+    }
+    return FormatTable::Create(catalog.GetFileSystem(), location, identifier, data_schema,
+                               metadata_under_table_path);
 }
 
 }  // namespace paimon

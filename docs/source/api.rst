@@ -27,6 +27,7 @@ API Reference
    api/commit
    api/scan
    api/read
+   api/format_table
    api/predicate
    api/file_format
    api/file_system

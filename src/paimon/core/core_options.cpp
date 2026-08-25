@@ -377,6 +377,10 @@ class ConfigParser {
 
 // Impl is a private implementation of CoreOptions,
 // storing various configurable fields and their default values.
+// The fields are grouped by the option each one parses, so that a new option lands beside the
+// code that reads it. Ordering them by size instead would save a few dozen bytes in the one
+// instance a table holds and scatter that grouping across the struct.
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding)
 struct CoreOptions::Impl {
     int64_t page_size = 64 * 1024;
     std::optional<int64_t> target_file_size;
@@ -487,6 +491,9 @@ struct CoreOptions::Impl {
     bool blob_as_descriptor = false;
     std::optional<bool> blob_split_by_file_size;
     bool legacy_partition_name_enabled = true;
+    bool file_suffix_include_compression = false;
+    bool format_table_partition_only_value_in_path = false;
+    bool metastore_partitioned_table = false;
     bool global_index_enabled = true;
     std::optional<int32_t> global_index_thread_num;
     bool commit_force_compact = false;
@@ -645,6 +652,15 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseFileFormatPerLevel(&file_format_per_level));
         // Parse file.compression.per.level - different compression for different levels
         PAIMON_RETURN_NOT_OK(parser.ParseFileCompressionPerLevel(&file_compression_per_level));
+        // Parse file.suffix.include.compression - carry the compression in a data file's name
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::FILE_SUFFIX_INCLUDE_COMPRESSION,
+                                                &file_suffix_include_compression));
+        // Parse format-table.partition-path-only-value - name a partition directory by its value
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::FORMAT_TABLE_PARTITION_PATH_ONLY_VALUE,
+                                                &format_table_partition_only_value_in_path));
+        // Parse metastore.partitioned-table - partitions are registered with the catalog
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::METASTORE_PARTITIONED_TABLE, &metastore_partitioned_table));
         return Status::OK();
     }
 
@@ -1759,6 +1775,36 @@ bool CoreOptions::DataEvolutionEnabled() const {
 
 bool CoreOptions::LegacyPartitionNameEnabled() const {
     return impl_->legacy_partition_name_enabled;
+}
+
+bool CoreOptions::FileSuffixIncludeCompression() const {
+    return impl_->file_suffix_include_compression;
+}
+
+bool CoreOptions::FormatTablePartitionOnlyValueInPath() const {
+    return impl_->format_table_partition_only_value_in_path;
+}
+
+bool CoreOptions::MetastorePartitionedTable() const {
+    return impl_->metastore_partitioned_table;
+}
+
+std::string CoreOptions::FormatTableFileCompression() const {
+    // The resolution order the rest of the paimon ecosystem follows; both the compression suffix
+    // in a file's name and its contents derive from it, so they cannot disagree. `compression` is
+    // not a paimon option of its own but the key an engine's own writer reads: paimon-spark copies
+    // `format-table.file.compression` onto it, so a table written that way carries only that key.
+    const char* const keys[] = {Options::FILE_COMPRESSION, Options::FORMAT_TABLE_FILE_COMPRESSION,
+                                "compression"};
+    for (const char* key : keys) {
+        auto iter = impl_->raw_options.find(key);
+        if (iter != impl_->raw_options.end()) {
+            return iter->second;
+        }
+    }
+    // What the format writes by default, when no option names a compression.
+    return impl_->file_format != nullptr && impl_->file_format->Identifier() == "parquet" ? "snappy"
+                                                                                          : "zstd";
 }
 
 bool CoreOptions::GlobalIndexEnabled() const {

@@ -16,12 +16,18 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
+
+class Catalog;
+class FormatTable;
+class Schema;
 
 /// Checks shared by the catalog implementations. Every check takes an `action` naming
 /// the rejected operation in the error message, e.g. "dropTable".
@@ -41,6 +47,31 @@ class CatalogUtils {
 
     /// Fails when `identifier` carries a "$branch_" suffix.
     static Status CheckNotBranch(const Identifier& identifier, const std::string& action);
+
+    /// Fails when `schema` is not a table a `Table` can describe.
+    ///
+    /// Only a managed table is one: a format table is loaded through `GetFormatTable()`, and the
+    /// remaining table types are stored differently and are not implemented here, so handing one
+    /// back as a `Table` would promise snapshots it never had. A schema that is not a data
+    /// table's, such as a system table's, passes.
+    ///
+    /// @param action The call being refused, qualified as a caller would write it, e.g.
+    ///        `Catalog::GetTable`. It names the entry point in the message.
+    static Status CheckManagedTableType(const Identifier& identifier,
+                                        const std::shared_ptr<Schema>& schema,
+                                        const std::string& action);
+
+    /// Loads `identifier` as a format table by reading its location and its schema separately.
+    ///
+    /// What every catalog can do, so it is what `Catalog::GetFormatTable()` falls back to. A
+    /// catalog that can get both from one response should not use it, since two requests can
+    /// disagree.
+    ///
+    /// @param metadata_under_table_path Whether this catalog put the table's own metadata under
+    ///        the table path, which is what tells a `schema` or `branch` directory below the
+    ///        location from a partition directory of the same name.
+    static Result<std::shared_ptr<FormatTable>> LoadFormatTableInTwoRequests(
+        const Catalog& catalog, const Identifier& identifier, bool metadata_under_table_path);
 };
 
 }  // namespace paimon

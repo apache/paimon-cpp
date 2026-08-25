@@ -40,12 +40,15 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/table/format/format_table_file_store_write.h"
+#include "paimon/core/table/format/format_table_loader.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/format/file_format.h"
 #include "paimon/result.h"
+#include "paimon/table/format/format_table.h"
 #include "paimon/write_context.h"
 
 namespace arrow {
@@ -80,14 +83,50 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                            CoreOptions::FromMap(ctx->GetOptions(), ctx->GetSpecificFileSystem(),
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
     std::string branch = ctx->GetBranch();
+    // A format table writes plain data files into a directory, so it never reaches the manifest
+    // path below. One `FileStoreWrite` interface serves both, as Java Paimon serves both through
+    // one `BatchWriteBuilder`.
     auto schema_manager =
         std::make_shared<SchemaManager>(tmp_options.GetFileSystem(), ctx->GetRootPath(), branch);
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                           schema_manager->Latest());
-    if (table_schema == std::nullopt) {
+    std::shared_ptr<TableSchema> latest_schema;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FormatTable> format_table,
+        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), ctx->GetRootPath(), branch,
+                                   ctx->GetOptions(), /*specific_table_schema=*/std::nullopt,
+                                   schema_manager.get(), &latest_schema));
+    if (format_table != nullptr) {
+        // Anything the context carries that a format table cannot honour is refused rather than
+        // silently dropped.
+        if (ctx->IsStreamingMode()) {
+            return Status::NotImplemented(
+                "a format table has no snapshots, so there is nothing a streaming write could "
+                "commit against");
+        }
+        if (ctx->GetRealtimeContext() != nullptr) {
+            return Status::NotImplemented("a format table has no real-time store to write into");
+        }
+        if (!ctx->GetWriteSchema().empty()) {
+            return Status::NotImplemented(
+                "a format table write takes the table's own columns; a write schema naming a "
+                "subset of them is not supported yet");
+        }
+        // A write id prefixes a postpone-bucket writer's files so that one compaction reader can
+        // put them back in order. A format table has no buckets, so it would identify nothing.
+        if (ctx->GetWriteId().has_value()) {
+            return Status::NotImplemented(
+                "a format table has no buckets, so a write id would name nothing");
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FormatTableFileStoreWrite> format_write,
+            FormatTableFileStoreWrite::Create(format_table, ctx->GetMemoryPool()));
+        return std::unique_ptr<FileStoreWrite>(std::move(format_write));
+    }
+    // The schema the dispatch above already read through `schema_manager`, rather than a second
+    // read of the same file.
+    if (latest_schema == nullptr) {
         return Status::Invalid(fmt::format("cannot found latest schema in branch {}", branch));
     }
-    const auto& schema = table_schema.value();
+    const std::shared_ptr<TableSchema>& schema = latest_schema;
     auto opts = schema->Options();
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;

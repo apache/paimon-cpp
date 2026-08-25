@@ -34,9 +34,12 @@ namespace paimon {
 class MemoryPool;
 
 /// An input split for reading operation. Needed by most batch computation engines. Support
-/// Serialize and Deserialize, compatible with java version.
-/// This split can be either a `DataSplit` (for direct data file reads) or an `IndexedSplit`
-/// (for reads leveraging global indexes).
+/// Serialize and Deserialize.
+///
+/// This split can be a `DataSplit` (for direct data file reads), an `IndexedSplit` (for reads
+/// leveraging global indexes), or a `FormatDataSplit` (for a format table's plain data files).
+/// Only the first two are serializable; a `FormatDataSplit` is in-memory only and `Serialize()`
+/// refuses it.
 class PAIMON_EXPORT Split {
  public:
     virtual ~Split() = default;

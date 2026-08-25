@@ -31,6 +31,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -108,7 +109,9 @@ class PAIMON_EXPORT StringUtils {
 
     static bool EndsWith(const std::string& str, const std::string& suffix);
 
-    static bool IsNullOrWhitespaceOnly(const std::string& str);
+    /// Whether `str` is empty or holds nothing but whitespace, by ASCII rules. Takes a view so
+    /// that a caller checking one row of a column at a time does not allocate.
+    static bool IsNullOrWhitespaceOnly(std::string_view str);
 
     static void Trim(std::string* str);
 

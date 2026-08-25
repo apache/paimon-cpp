@@ -211,6 +211,15 @@ TEST(RestMessagesTest, UnknownFieldsAreIgnored) {
 TEST(RestMessagesTest, MissingRequiredFieldsFail) {
     // "path", "schemaId" and "schema" are required
     ASSERT_NOK(GetTableResponse::FromJsonString(R"({"id": "42", "name": "t1"})").status());
+    // A path that is there but empty is no path either: everything built from the response reads
+    // and writes below it, so a table whose paths were checked against an empty one would have no
+    // boundary at all.
+    ASSERT_NOK_WITH_MSG(GetTableResponse::FromJsonString(
+                            R"({"id": "42", "name": "t1", "path": "", "schemaId": 3, "schema": )"
+                            R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+                            R"( "partitionKeys": [], "primaryKeys": [], "options": {}}})")
+                            .status(),
+                        "cannot be empty");
     // a non-object identifier is rejected
     CreateTableRequest bad_identifier("", "", "");
     ASSERT_NOK(RapidJsonUtil::FromJsonString(R"({"identifier": "not-an-object", "schema": {}})",

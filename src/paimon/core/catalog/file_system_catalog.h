@@ -69,6 +69,13 @@ class FileSystemCatalog : public Catalog {
     Result<std::vector<SnapshotInfo>> ListSnapshots(const Identifier& identifier,
                                                     const std::string& branch) const override;
 
+ protected:
+    /// This catalog keeps a table's schema under the table's own path, so the `schema` and
+    /// `branch` directories there are metadata rather than table content. Nothing else differs,
+    /// so the location and the schema are still read separately.
+    Result<std::shared_ptr<FormatTable>> LoadFormatTable(
+        const Identifier& identifier) const override;
+
  private:
     static std::string NewDatabasePath(const std::string& warehouse, const std::string& db_name);
     static Result<std::string> NewDataTablePath(const std::string& warehouse,

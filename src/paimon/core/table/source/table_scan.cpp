@@ -46,6 +46,8 @@
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/table/format/format_table_loader.h"
+#include "paimon/core/table/format/format_table_scan.h"
 #include "paimon/core/table/source/abstract_table_scan.h"
 #include "paimon/core/table/source/append_only_split_generator.h"
 #include "paimon/core/table/source/data_evolution_batch_scan.h"
@@ -69,6 +71,7 @@
 #include "paimon/result.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/format/format_table.h"
 
 namespace arrow {
 class Schema;
@@ -183,9 +186,72 @@ class TableScanImpl {
     }
 };
 
-Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanContext>& context);
+/// @param loaded_schema The table's schema, when the caller already read it, or null when it has
+///        to be read here. `TableScan::Create()` reads one to dispatch on its table type.
+Result<std::unique_ptr<TableScan>> NewDataTableScan(
+    const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema);
 
 }  // namespace
+
+namespace {
+
+/// Maps a `ScanContext` onto `FormatTableScan`, which takes one partition filter and a limit and
+/// nothing else.
+///
+/// A format table has no buckets, so a bucket filter has nothing to act on. A predicate is refused
+/// too, which is narrower than Java: `FormatTableScan.withFilter` refuses one there as well, but
+/// `FormatReadBuilder.newScan()` splits a filter first and hands the partition half to the scan,
+/// so a predicate over partition columns prunes directories. Doing the same needs the scan to
+/// evaluate a predicate against a partition read out of the directory names rather than to match
+/// exact values, which it does not do yet.
+Result<std::unique_ptr<TableScan>> NewFormatTableScan(const std::shared_ptr<FormatTable>& table,
+                                                      const std::shared_ptr<ScanContext>& context) {
+    // Anything a `ScanContext` carries that a format table cannot honour is refused rather than
+    // silently dropped.
+    if (context->IsStreamingMode()) {
+        return Status::NotImplemented(
+            "a format table has no snapshots, so there is nothing for a streaming scan to follow");
+    }
+    if (context->GetRealtimeContext() != nullptr) {
+        return Status::NotImplemented(
+            "a format table has no real-time store to union with what is on disk");
+    }
+    if (context->GetGlobalIndexResult() != nullptr) {
+        return Status::NotImplemented("a format table carries no global index");
+    }
+    std::map<std::string, std::string> partition_filter;
+    std::shared_ptr<ScanFilter> filters = context->GetScanFilters();
+    if (filters != nullptr) {
+        if (filters->GetPredicate() != nullptr) {
+            return Status::NotImplemented(
+                "a format table scan does not take a predicate: its files carry no statistics to "
+                "skip by, and pruning by the partition columns a predicate names is not "
+                "implemented yet; give the partition values as a partition filter instead");
+        }
+        if (filters->GetBucketFilter()) {
+            return Status::NotImplemented("a format table has no buckets to filter by");
+        }
+        const std::vector<std::map<std::string, std::string>>& partition_filters =
+            filters->GetPartitionFilters();
+        if (partition_filters.size() > 1) {
+            return Status::NotImplemented("a format table scan takes at most one partition filter");
+        }
+        if (partition_filters.size() == 1) {
+            partition_filter = partition_filters.front();
+        }
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableScan> scan,
+                           FormatTableScan::Create(table, partition_filter, context->GetLimit()));
+    return std::unique_ptr<TableScan>(std::move(scan));
+}
+
+}  // namespace
+
+Result<std::vector<std::map<std::string, std::string>>> TableScan::ListPartitions() const {
+    // A managed table's partitions live in its manifests, and reading them is a scan of its own
+    // rather than a listing, so only the format table path answers this for now.
+    return Status::NotImplemented("this table does not list its partitions");
+}
 
 Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {
     if (context == nullptr) {
@@ -212,7 +278,22 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
                                             shared_context->GetOptions()));
         return system_table->NewScan(shared_context);
     }
-    return NewDataTableScan(shared_context);
+    // A format table is planned by listing directories, so it never reaches the manifest path
+    // below. One `TableScan` interface serves both, as Java Paimon serves both through one
+    // `ReadBuilder`.
+    std::shared_ptr<TableSchema> latest_schema;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FormatTable> format_table,
+        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), shared_context->GetPath(),
+                                   BranchManager::NormalizeBranch(tmp_options.GetBranch()),
+                                   shared_context->GetOptions(),
+                                   shared_context->GetSpecificTableSchema(),
+                                   /*schema_manager=*/nullptr, &latest_schema));
+    if (format_table != nullptr) {
+        return NewFormatTableScan(format_table, shared_context);
+    }
+    // With the schema the dispatch already read, so the managed path does not read it again.
+    return NewDataTableScan(shared_context, latest_schema);
 }
 
 namespace {
@@ -250,14 +331,18 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
     return Status::OK();
 }
 
-Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanContext>& context) {
+Result<std::unique_ptr<TableScan>> NewDataTableScan(
+    const std::shared_ptr<ScanContext>& context,
+    const std::shared_ptr<TableSchema>& loaded_schema) {
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions tmp_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(), {}));
     std::string branch = BranchManager::NormalizeBranch(tmp_options.GetBranch());
     std::shared_ptr<TableSchema> table_schema;
     const auto& specific_table_schema = context->GetSpecificTableSchema();
-    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
+    if (loaded_schema != nullptr) {
+        table_schema = loaded_schema;
+    } else if (branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
         PAIMON_ASSIGN_OR_RAISE(table_schema,
                                TableSchema::CreateFromJson(specific_table_schema.value()));
     } else {

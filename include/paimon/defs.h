@@ -118,9 +118,32 @@ struct PAIMON_EXPORT Options {
     /// "page-size" - Memory page size, default value 64 kb.
     static const char PAGE_SIZE[];
 
+    /// "type" - Type of the table. Default value is "table" (a managed paimon table);
+    /// "format-table" declares a directory of plain data files laid out like a Hive table.
+    static const char TYPE[];
+
     /// "file.format" - Specify the message format of data files.
     /// Default value is parquet.
     static const char FILE_FORMAT[];
+
+    /// "format-table.file.compression" - File compression of a format table. It is consulted
+    /// after "file.compression" and before the bare "compression" key an engine's own writer
+    /// reads; when none of the three is set, the format decides.
+    static const char FORMAT_TABLE_FILE_COMPRESSION[];
+
+    /// "format-table.partition-path-only-value" - Whether a format table names a partition
+    /// directory by its value alone ("2025/01/") instead of "key=value"
+    /// ("year=2025/month=01/"). Default false.
+    static const char FORMAT_TABLE_PARTITION_PATH_ONLY_VALUE[];
+
+    /// "metastore.partitioned-table" - Whether a table's partitions are registered with the
+    /// catalog, which then decides their visibility. Default false; paimon-cpp reads partitions
+    /// from the directory layout and rejects a table that sets it.
+    static const char METASTORE_PARTITIONED_TABLE[];
+
+    /// "file.suffix.include.compression" - Whether a data file's name carries the compression it
+    /// was written with, for a format that records it inside the file. Default false.
+    static const char FILE_SUFFIX_INCLUDE_COMPRESSION[];
 
     /// "file-system" - Specify the file system.
     /// Default value is local.

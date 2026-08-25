@@ -23,12 +23,14 @@
 #include <bitset>
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "paimon/result.h"
+#include "paimon/status.h"
 
 namespace paimon {
 
@@ -42,15 +44,47 @@ class PartitionPathUtils {
     /// Make partition path from partition spec.
     ///
     /// @param partition_spec The partition spec.
+    /// @param only_value Name each level by its escaped value alone (`2025/01/`) instead of
+    ///        `key=value` (`year=2025/month=01/`). That is the layout a format table takes when
+    ///        `format-table.partition-path-only-value` is on.
     /// @return An escaped, valid partition name.
     static Result<std::string> GeneratePartitionPath(
-        const std::vector<std::pair<std::string, std::string>>& partition_spec);
+        const std::vector<std::pair<std::string, std::string>>& partition_spec,
+        bool only_value = false);
 
     /// Escapes a path name.
     ///
     /// @param path The path to escape.
     /// @return An escaped path name.
     static Result<std::string> EscapePathName(const std::string& path);
+
+    /// Reverses `EscapePathName`, turning every `%XX` sequence back into the character it stands
+    /// for. A `%` that does not start a valid sequence is kept as written.
+    static std::string UnescapePathName(const std::string& path);
+
+    /// Splits a `key=value` partition directory name into its unescaped key and value.
+    ///
+    /// Returns nullopt when the name is not of that shape, which is how a directory that is not a
+    /// partition of this table is told apart from one that is.
+    ///
+    /// A name carrying a second unescaped `=` is not of that shape: `EscapePathName` escapes
+    /// `=`, so no directory paimon wrote looks like that, and one written by something else is
+    /// skipped rather than bound to a key it does not name.
+    static std::optional<std::pair<std::string, std::string>> ExtractPartitionKeyValue(
+        const std::string& directory_name);
+
+    /// Whether a path component is hidden by the `_` / `.` convention every engine writing a
+    /// Hive-style directory uses to mark output that is not committed table data.
+    static bool IsHiddenName(const std::string& name) {
+        return !name.empty() && (name[0] == '_' || name[0] == '.');
+    }
+
+    /// Fails when `value` cannot name a partition directory.
+    ///
+    /// A value-only directory is the bare value, so "." and ".." would name the directory itself
+    /// and its parent instead of a partition; under `key=value` the "=" already keeps them apart
+    /// from a relative path.
+    static Status ValidatePartitionValueForPath(const std::string& value, bool only_value);
 
     /// Generate all hierarchical paths from partition spec.
     ///

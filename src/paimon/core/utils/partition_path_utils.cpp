@@ -22,6 +22,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 #include "paimon/status.h"
 
@@ -49,8 +50,17 @@ const std::bitset<128>& PartitionPathUtils::CharToEscape() {
     return bitset;
 }
 
+Status PartitionPathUtils::ValidatePartitionValueForPath(const std::string& value,
+                                                         bool only_value) {
+    if (value.empty() || (only_value && (value == "." || value == ".."))) {
+        return Status::Invalid("Partition value '" + value +
+                               "' cannot be used as a partition path component.");
+    }
+    return Status::OK();
+}
+
 Result<std::string> PartitionPathUtils::GeneratePartitionPath(
-    const std::vector<std::pair<std::string, std::string>>& partition_spec) {
+    const std::vector<std::pair<std::string, std::string>>& partition_spec, bool only_value) {
     if (partition_spec.empty()) {
         return std::string();
     }
@@ -60,9 +70,13 @@ Result<std::string> PartitionPathUtils::GeneratePartitionPath(
         if (i > 0) {
             ss << PATH_SEPARATOR;
         }
-        PAIMON_ASSIGN_OR_RAISE(std::string key_esc, EscapePathName(key));
+        if (!only_value) {
+            PAIMON_ASSIGN_OR_RAISE(std::string key_esc, EscapePathName(key));
+            ss << key_esc << "=";
+        }
+        PAIMON_RETURN_NOT_OK(ValidatePartitionValueForPath(value, only_value));
         PAIMON_ASSIGN_OR_RAISE(std::string value_esc, EscapePathName(value));
-        ss << key_esc << "=" << value_esc;
+        ss << value_esc;
         i++;
     }
     ss << PATH_SEPARATOR;
@@ -93,6 +107,62 @@ Result<std::string> PartitionPathUtils::EscapePathName(const std::string& path) 
         return path;
     }
     return ss.value().str();
+}
+
+namespace {
+/// Value of one hexadecimal digit, or -1 when `c` is not one.
+///
+/// Written out rather than handed to `strtol`, which also accepts a leading sign or whitespace and
+/// so would read `"% 1"` and `"%+1"` as escape sequences that `EscapePathName` never produces.
+int32_t HexDigit(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+}  // namespace
+
+std::string PartitionPathUtils::UnescapePathName(const std::string& path) {
+    std::string result;
+    result.reserve(path.size());
+    for (size_t i = 0; i < path.size(); i++) {
+        // Not an off-by-one: a `%` among the last two characters starts no sequence and is left
+        // as written.
+        if (path[i] == '%' && i + 2 < path.size()) {
+            const int32_t high = HexDigit(path[i + 1]);
+            const int32_t low = HexDigit(path[i + 2]);
+            if (high >= 0 && low >= 0) {
+                result.push_back(static_cast<char>(high * 16 + low));
+                i += 2;
+                continue;
+            }
+        }
+        result.push_back(path[i]);
+    }
+    return result;
+}
+
+std::optional<std::pair<std::string, std::string>> PartitionPathUtils::ExtractPartitionKeyValue(
+    const std::string& directory_name) {
+    size_t separator = directory_name.find('=');
+    // Both halves must be non-empty: `=v` names no key and `k=` no value, and neither is a
+    // partition directory this table wrote.
+    if (separator == std::string::npos || separator == 0 ||
+        separator + 1 == directory_name.size()) {
+        return std::nullopt;
+    }
+    // A second `=` cannot appear unescaped, so the name belongs to something else.
+    if (directory_name.find('=', separator + 1) != std::string::npos) {
+        return std::nullopt;
+    }
+    return std::make_pair(UnescapePathName(directory_name.substr(0, separator)),
+                          UnescapePathName(directory_name.substr(separator + 1)));
 }
 
 void PartitionPathUtils::EscapeChar(char c, std::stringstream* ss_ptr) {

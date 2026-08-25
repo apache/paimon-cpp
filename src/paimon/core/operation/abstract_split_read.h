@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "arrow/type_fwd.h"
+#include "paimon/common/reader/data_file_reader_factory.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/io/field_mapping_reader.h"
@@ -101,6 +102,10 @@ class AbstractSplitRead : public SplitRead {
         const std::optional<std::vector<std::string>>& write_cols);
 
  private:
+    /// What a data file is opened with, gathered from the context and the table options once so
+    /// that the reader builder and the file reader cannot be built from different answers.
+    DataFileReadOptions DataFileReadOptionsFromContext() const;
+
     Result<std::unique_ptr<ReaderBuilder>> PrepareReaderBuilder(
         const std::string& format_identifier,
         const std::map<std::string, std::string>& extra_format_options) const;

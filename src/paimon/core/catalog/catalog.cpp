@@ -20,10 +20,14 @@
 
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/catalog_options.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"
+#include "paimon/schema/schema.h"
+#include "paimon/table/format/format_table.h"
 #ifdef PAIMON_ENABLE_REST
 #include "paimon/rest/rest_catalog.h"
 #endif
@@ -58,6 +62,17 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(const std::string& root_path,
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options, file_system));
     return std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options);
+}
+
+Result<std::shared_ptr<FormatTable>> Catalog::GetFormatTable(const Identifier& identifier) const {
+    return LoadFormatTable(identifier);
+}
+
+Result<std::shared_ptr<FormatTable>> Catalog::LoadFormatTable(const Identifier& identifier) const {
+    // The location and the schema are read separately, and every directory below the location is
+    // table content: a catalog that knows better overrides this and says so.
+    return CatalogUtils::LoadFormatTableInTwoRequests(*this, identifier,
+                                                      /*metadata_under_table_path=*/false);
 }
 
 }  // namespace paimon
