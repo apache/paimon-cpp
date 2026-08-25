@@ -65,6 +65,8 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     }
 
     bool SupportPreciseBitmapSelection() const override {
+        // When probe_schema_ or payload_schema_ is null, lat-mat does not take effect.
+        // Here we simply pass through the inner reader's support.
         return inner_->SupportPreciseBitmapSelection();
     }
 

@@ -80,8 +80,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch()
     } else if (state_ == kEOF) {
         return MakeEofBatch();
     }
-    return Status::Invalid("invalid state when calling NextBatchWithBitmap: " +
-                           std::to_string(state_));
+    return Status::Invalid("invalid state when calling NextBatch: " + std::to_string(state_));
 }
 
 Result<std::shared_ptr<PredicateFilter>> LateMaterializingFileBatchReader::BindProbeFilter() {
@@ -117,7 +116,7 @@ Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
         // map batch offset to file row id
         PAIMON_ASSIGN_OR_RAISE(uint64_t file_row,
                                inner_->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
-        if (selection_ && !selection_->Contains(file_row)) {
+        if (selection_ && !selection_->Contains(static_cast<int32_t>(file_row))) {
             continue;
         }
         batch_matched.Add(static_cast<uint32_t>(i));
@@ -169,6 +168,11 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
                                inner_->NextBatchWithBitmap());
         if (BatchReader::IsEofBatch(batch_with_bitmap)) {
             state_ = kEOF;
+            if (probe_cursor_ != probe_data_->length()) {
+                return Status::Invalid(
+                    fmt::format("probe cursor {} does not match probe data length {}",
+                                probe_cursor_, probe_data_->length()));
+            }
             return MakeEofBatch();
         }
         auto& [batch, bitmap] = batch_with_bitmap;
@@ -320,6 +324,10 @@ Result<uint64_t> LateMaterializingFileBatchReader::GetPreviousBatchFileRowId(
 Status LateMaterializingFileBatchReader::SeekToRow(uint64_t row_number) {
     PAIMON_RETURN_NOT_OK(inner_->SeekToRow(row_number));
     if (state_ == kRunning || state_ == kEOF) {
+        if (matched_bitmap_.IsEmpty()) {
+            state_ = kEOF;
+            return Status::OK();
+        }
         int64_t cursor = 0;
         for (auto it = matched_bitmap_.Begin(); it != matched_bitmap_.End(); ++it) {
             if (static_cast<uint64_t>(*it) >= row_number) {
