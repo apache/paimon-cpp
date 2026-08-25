@@ -37,6 +37,7 @@
 
 #include "fmt/format.h"
 #include "paimon/catalog_options.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/url_utils.h"
 #include "paimon/common/utils/uuid.h"
@@ -85,19 +86,16 @@ void TrimWhitespace(std::string* value) {
     *value = value->substr(begin, end - begin);
 }
 
-std::optional<std::string> FindOption(const std::map<std::string, std::string>& options,
-                                      const std::string& key) {
-    auto iter = options.find(key);
-    if (iter == options.end()) {
-        return std::nullopt;
-    }
-    return iter->second;
-}
-
 Result<std::string> RequiredNonEmptyOption(const std::map<std::string, std::string>& options,
                                            const std::string& key) {
-    std::optional<std::string> value = FindOption(options, key);
-    if (!value || value->empty()) {
+    Result<std::string> value = OptionsUtils::GetValueFromMap<std::string>(options, key);
+    if (!value.ok()) {
+        if (!value.status().IsNotExist()) {
+            return value.status();
+        }
+        return Status::Invalid(fmt::format("option '{}' must be configured for DLF auth", key));
+    }
+    if (value.value().empty()) {
         return Status::Invalid(fmt::format("option '{}' must be configured for DLF auth", key));
     }
     return value.value();
@@ -635,7 +633,9 @@ Result<std::unique_ptr<DlfAuthProvider>> DlfAuthProvider::Create(
     const std::map<std::string, std::string>& options) {
     PAIMON_ASSIGN_OR_RAISE(std::string uri, RequiredNonEmptyOption(options, CatalogOptions::URI));
     std::string region;
-    std::optional<std::string> configured_region = FindOption(options, CatalogOptions::DLF_REGION);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::optional<std::string> configured_region,
+        OptionsUtils::GetOptionalValueFromMap<std::string>(options, CatalogOptions::DLF_REGION));
     if (configured_region) {
         if (configured_region->empty()) {
             return Status::Invalid("option 'dlf.region' must not be empty");
@@ -646,31 +646,39 @@ Result<std::unique_ptr<DlfAuthProvider>> DlfAuthProvider::Create(
     }
 
     std::string algorithm;
-    std::optional<std::string> configured_algorithm =
-        FindOption(options, CatalogOptions::DLF_SIGNING_ALGORITHM);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> configured_algorithm,
+                           OptionsUtils::GetOptionalValueFromMap<std::string>(
+                               options, CatalogOptions::DLF_SIGNING_ALGORITHM));
     if (configured_algorithm) {
         algorithm = configured_algorithm.value();
     } else {
         algorithm = ParseSigningAlgorithmFromUri(uri);
     }
 
-    std::optional<std::string> loader_name = FindOption(options, CatalogOptions::DLF_TOKEN_LOADER);
-    std::optional<std::string> token_path = FindOption(options, CatalogOptions::DLF_TOKEN_PATH);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> loader_name,
+                           OptionsUtils::GetOptionalValueFromMap<std::string>(
+                               options, CatalogOptions::DLF_TOKEN_LOADER));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> token_path,
+                           OptionsUtils::GetOptionalValueFromMap<std::string>(
+                               options, CatalogOptions::DLF_TOKEN_PATH));
     if (loader_name) {
         if (loader_name.value() == "ecs") {
-            std::string metadata_url =
-                FindOption(options, CatalogOptions::DLF_TOKEN_ECS_METADATA_URL)
-                    .value_or(kDefaultEcsMetadataUrl);
-            std::optional<std::string> role_name =
-                FindOption(options, CatalogOptions::DLF_TOKEN_ECS_ROLE_NAME);
+            PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> configured_metadata_url,
+                                   OptionsUtils::GetOptionalValueFromMap<std::string>(
+                                       options, CatalogOptions::DLF_TOKEN_ECS_METADATA_URL));
+            std::string metadata_url = configured_metadata_url.value_or(kDefaultEcsMetadataUrl);
+            PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> role_name,
+                                   OptionsUtils::GetOptionalValueFromMap<std::string>(
+                                       options, CatalogOptions::DLF_TOKEN_ECS_ROLE_NAME));
             return FromTokenLoader(DlfEcsTokenLoader::Create(metadata_url, role_name), uri, region,
-                                   algorithm);
+                                   algorithm, std::chrono::system_clock::now);
         }
         if (loader_name.value() == "local_file") {
             PAIMON_ASSIGN_OR_RAISE(std::string path,
                                    RequiredNonEmptyOption(options, CatalogOptions::DLF_TOKEN_PATH));
-            return FromTokenLoader(std::make_unique<DlfLocalFileTokenLoader>(path), uri, region,
-                                   algorithm);
+            return FromTokenLoader(
+                std::make_unique<DlfLocalFileTokenLoader>(path, 5, std::chrono::seconds(1)), uri,
+                region, algorithm, std::chrono::system_clock::now);
         }
         return Status::NotImplemented(
             fmt::format("unsupported DLF token loader '{}', supported values are 'ecs' and "
@@ -681,19 +689,25 @@ Result<std::unique_ptr<DlfAuthProvider>> DlfAuthProvider::Create(
         if (token_path->empty()) {
             return Status::Invalid("option 'dlf.token-path' must not be empty");
         }
-        return FromTokenLoader(std::make_unique<DlfLocalFileTokenLoader>(token_path.value()), uri,
-                               region, algorithm);
+        return FromTokenLoader(std::make_unique<DlfLocalFileTokenLoader>(token_path.value(), 5,
+                                                                         std::chrono::seconds(1)),
+                               uri, region, algorithm, std::chrono::system_clock::now);
     }
 
-    std::optional<std::string> access_key_id =
-        FindOption(options, CatalogOptions::DLF_ACCESS_KEY_ID);
-    std::optional<std::string> access_key_secret =
-        FindOption(options, CatalogOptions::DLF_ACCESS_KEY_SECRET);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> access_key_id,
+                           OptionsUtils::GetOptionalValueFromMap<std::string>(
+                               options, CatalogOptions::DLF_ACCESS_KEY_ID));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> access_key_secret,
+                           OptionsUtils::GetOptionalValueFromMap<std::string>(
+                               options, CatalogOptions::DLF_ACCESS_KEY_SECRET));
     if (access_key_id && !access_key_id->empty() && access_key_secret &&
         !access_key_secret->empty()) {
-        DlfToken token(access_key_id.value(), access_key_secret.value(),
-                       FindOption(options, CatalogOptions::DLF_SECURITY_TOKEN));
-        return FromAccessKey(token, uri, region, algorithm);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> security_token,
+                               OptionsUtils::GetOptionalValueFromMap<std::string>(
+                                   options, CatalogOptions::DLF_SECURITY_TOKEN));
+        DlfToken token(access_key_id.value(), access_key_secret.value(), security_token,
+                       std::nullopt);
+        return FromAccessKey(token, uri, region, algorithm, std::chrono::system_clock::now);
     }
     return Status::Invalid("DLF token path or access key must be configured for DLF auth");
 }

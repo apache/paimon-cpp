@@ -76,6 +76,19 @@ class OptionsUtils {
         return value.value();
     }
 
+    template <typename T>
+    static Result<std::optional<T>> GetOptionalValueFromMap(
+        const std::map<std::string, std::string>& key_value_map, const std::string& key) {
+        Result<T> value = GetValueFromMap<T>(key_value_map, key);
+        if (value.ok()) {
+            return std::optional<T>(value.value());
+        }
+        if (value.status().IsNotExist()) {
+            return std::optional<T>();
+        }
+        return value.status();
+    }
+
     /// Fetch options with specific prefix and remove prefix for key.
     static std::map<std::string, std::string> FetchOptionsWithPrefix(
         const std::string& prefix, const std::map<std::string, std::string>& options) {

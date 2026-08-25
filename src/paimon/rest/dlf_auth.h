@@ -38,8 +38,8 @@ namespace paimon {
 class DlfToken {
  public:
     DlfToken(const std::string& access_key_id, const std::string& access_key_secret,
-             const std::optional<std::string>& security_token = std::nullopt,
-             const std::optional<int64_t>& expiration_at_millis = std::nullopt);
+             const std::optional<std::string>& security_token,
+             const std::optional<int64_t>& expiration_at_millis);
 
     static Result<DlfToken> FromJson(const std::string& json);
 
@@ -80,9 +80,8 @@ class DlfTokenLoader {
 /// Loads a DLF STS token from a JSON file.
 class DlfLocalFileTokenLoader : public DlfTokenLoader {
  public:
-    explicit DlfLocalFileTokenLoader(
-        const std::string& token_file_path, int32_t max_attempts = 5,
-        std::chrono::milliseconds retry_delay = std::chrono::seconds(1));
+    DlfLocalFileTokenLoader(const std::string& token_file_path, int32_t max_attempts,
+                            std::chrono::milliseconds retry_delay);
 
     Result<DlfToken> LoadToken() override;
     std::string Description() const override;
@@ -173,12 +172,11 @@ class DlfAuthProvider : public AuthProvider {
 
     static Result<std::unique_ptr<DlfAuthProvider>> FromAccessKey(
         const DlfToken& token, const std::string& uri, const std::string& region,
-        const std::string& signing_algorithm, Clock clock = std::chrono::system_clock::now);
+        const std::string& signing_algorithm, Clock clock);
 
     static Result<std::unique_ptr<DlfAuthProvider>> FromTokenLoader(
         std::unique_ptr<DlfTokenLoader> token_loader, const std::string& uri,
-        const std::string& region, const std::string& signing_algorithm,
-        Clock clock = std::chrono::system_clock::now);
+        const std::string& region, const std::string& signing_algorithm, Clock clock);
 
     Result<std::map<std::string, std::string>> MergeAuthHeader(
         const std::map<std::string, std::string>& base_header,

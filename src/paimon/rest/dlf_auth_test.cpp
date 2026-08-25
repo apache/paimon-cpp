@@ -140,7 +140,7 @@ class FailingEcsHttpClient : public HttpClient {
 TEST(DlfDefaultSignerTest, SignsJavaCompatibleRequest) {
     DlfDefaultSigner signer("cn-beijing");
     const std::string body = R"({"name":"t1"})";
-    DlfToken token("YourAccessKeyId", "YourAccessKeySecret", "securityToken");
+    DlfToken token("YourAccessKeyId", "YourAccessKeySecret", "securityToken", std::nullopt);
     RestAuthParameter parameter =
         RestAuthParameter::Create("POST", "/v1/wh/databases/db/tables",
                                   {{"warehouse", "my instance"}, {"branch", "main"}}, body);
@@ -167,7 +167,7 @@ TEST(DlfDefaultSignerTest, MatchesJavaGoldenAuthorization) {
     // Mirrors Java DLFAuthSignatureTest#testGetAuthorization.
     DlfDefaultSigner signer("cn-hangzhou");
     const std::string body = R"({"name":"database","options":{"a":"b"}})";
-    DlfToken token("access-key-id", "access-key-secret", "securityToken");
+    DlfToken token("access-key-id", "access-key-secret", "securityToken", std::nullopt);
     RestAuthParameter parameter = RestAuthParameter::Create("POST", "/v1/paimon/databases",
                                                             {{"k1", "v1"}, {"k2", "v2"}}, body);
     const std::chrono::system_clock::time_point signing_time =
@@ -198,7 +198,7 @@ TEST(DlfOpenApiSignerTest, SignsJavaCompatibleRequest) {
     DlfOpenApiSigner signer;
     const std::string body = R"({"CategoryName":"test","CategoryType":"UNSTRUCTURED"})";
     const std::string host = "dlfnext.cn-beijing.aliyuncs.com";
-    DlfToken token("YourAccessKeyId", "YourAccessKeySecret", "securityToken");
+    DlfToken token("YourAccessKeyId", "YourAccessKeySecret", "securityToken", std::nullopt);
     RestAuthParameter parameter =
         RestAuthParameter::Create("POST", "/llm-p2e4XXXXXXXXsvtn/datacenter/category", {}, body);
 
@@ -222,7 +222,7 @@ TEST(DlfOpenApiSignerTest, SignsJavaCompatibleRequest) {
 
 TEST(DlfOpenApiSignerTest, DecodesPathAndQueryValuesBeforeSigning) {
     DlfOpenApiSigner signer;
-    DlfToken token("ak", "sk");
+    DlfToken token("ak", "sk", std::nullopt, std::nullopt);
     RestAuthParameter parameter = RestAuthParameter::Create(
         "GET", "/v1/%24snapshots", {{"z", ""}, {"name", "hello world"}}, "");
     ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
@@ -249,7 +249,7 @@ TEST(DlfTokenTest, ParsesExpirationAndRefreshBoundary) {
     ASSERT_TRUE(
         token.ShouldRefresh(FixedTime() + std::chrono::hours(1) + std::chrono::milliseconds(1)));
 
-    DlfToken permanent("ak", "sk");
+    DlfToken permanent("ak", "sk", std::nullopt, std::nullopt);
     ASSERT_FALSE(permanent.ShouldRefresh(FixedTime() + std::chrono::hours(100000)));
 }
 
@@ -340,7 +340,7 @@ TEST(DlfAuthProviderTest, RefreshesWithinSafeWindow) {
     std::atomic<int64_t> now_seconds{1744775086};
     std::vector<DlfToken> tokens;
     tokens.emplace_back("ak-1", "sk-1", std::nullopt, 1744782286000);
-    tokens.emplace_back("ak-2", "sk-2");
+    tokens.emplace_back("ak-2", "sk-2", std::nullopt, std::nullopt);
     auto loader = std::make_unique<SequenceTokenLoader>(tokens);
     SequenceTokenLoader* loader_ptr = loader.get();
     ASSERT_OK_AND_ASSIGN(
@@ -363,7 +363,8 @@ TEST(DlfAuthProviderTest, RefreshesWithinSafeWindow) {
 
 TEST(DlfAuthProviderTest, ConcurrentFirstUseLoadsTokenOnce) {
     auto loader = std::make_unique<SequenceTokenLoader>(
-        std::vector<DlfToken>{DlfToken("concurrent-ak", "concurrent-sk")},
+        std::vector<DlfToken>{
+            DlfToken("concurrent-ak", "concurrent-sk", std::nullopt, std::nullopt)},
         std::chrono::milliseconds(10));
     SequenceTokenLoader* loader_ptr = loader.get();
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<DlfAuthProvider> provider,
