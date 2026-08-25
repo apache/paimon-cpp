@@ -132,8 +132,6 @@ Status PkSortedDataFileReader::ReadFile(const BinaryRow& partition, int32_t buck
                 fmt::format("Source file {} was filtered while building a physical-row index.",
                             file->file_name));
         }
-        std::vector<int64_t> positions;
-        positions.reserve(static_cast<size_t>(struct_array->length()));
         for (int64_t index = 0; index < struct_array->length(); ++index) {
             PAIMON_ASSIGN_OR_RAISE(uint64_t physical_position,
                                    reader->GetPreviousBatchFileRowId(static_cast<uint64_t>(index)));
@@ -143,9 +141,8 @@ Status PkSortedDataFileReader::ReadFile(const BinaryRow& partition, int32_t buck
                     "Source file {} returned non-contiguous physical row position {} at row {}.",
                     file->file_name, physical_position, rows_read + index));
             }
-            positions.push_back(static_cast<int64_t>(physical_position));
         }
-        PAIMON_RETURN_NOT_OK(consumer(struct_array, positions));
+        PAIMON_RETURN_NOT_OK(consumer(struct_array));
         if (__builtin_add_overflow(rows_read, struct_array->length(), &rows_read)) {
             return Status::Invalid("Physical source row count overflows int64.");
         }

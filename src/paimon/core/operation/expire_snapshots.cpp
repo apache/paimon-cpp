@@ -24,9 +24,8 @@
 #include <functional>
 #include <future>
 #include <optional>
-#include <string>
+#include <tuple>
 #include <utility>
-#include <vector>
 
 #include "fmt/format.h"
 #include "fmt/ranges.h"
@@ -36,9 +35,9 @@
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/index/index_path_factory.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/file_entry.h"
-#include "paimon/core/index/index_path_factory.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/index_manifest_file.h"
@@ -51,6 +50,7 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/core/utils/tag_manager.h"
 #include "paimon/fs/file_system.h"
 
 namespace paimon {
@@ -102,57 +102,6 @@ Result<int32_t> ExpireSnapshots::Expire() {
             "Expire failed: expiring snapshots of table {} on branch '{}' is not supported, "
             "because the branches of a table share its data files",
             snapshot_manager_->RootPath(), snapshot_manager_->Branch()));
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> branches,
-                           BranchManager::ListBranches(fs_, snapshot_manager_->RootPath()));
-    branches.erase(
-        std::remove(branches.begin(), branches.end(), BranchManager::DEFAULT_MAIN_BRANCH),
-        branches.end());
-    if (!branches.empty()) {
-        return Status::NotImplemented(fmt::format(
-            "Expire failed: expiring snapshots of table {} is not supported, because the table "
-            "has branches other than main ({}), which share its data files",
-            snapshot_manager_->RootPath(), fmt::join(branches, ", ")));
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest_snapshot_id,
-                           snapshot_manager_->LatestSnapshotIdFromFileSystem());
-    if (latest_snapshot_id == std::nullopt) {
-        // no snapshot, nothing to expire
-        return 0;
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest_snapshot_id,
-                           snapshot_manager_->EarliestSnapshotId());
-    if (earliest_snapshot_id == std::nullopt) {
-        // no snapshot, nothing to expire
-        return 0;
-    }
-
-    // TODO(jinli.zjw): why not only use earliest snapshot id
-    int64_t min =
-        std::max(latest_snapshot_id.value() - retain_max + 1, earliest_snapshot_id.value());
-    int64_t max = latest_snapshot_id.value() - retain_min + 1;
-    max = std::min(max, earliest_snapshot_id.value() + max_deletes);
-    // TODO(jinli.zjw): support consumer manager
-    int64_t older_than_ms =
-        DateTimeUtils::GetCurrentUTCTimeUs() / 1000 - config_.GetSnapshotTimeRetainMs();
-    for (int64_t snapshot_id = min; snapshot_id < max; snapshot_id++) {
-        PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(snapshot_id));
-        if (exist) {
-            PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(snapshot_id));
-            if (older_than_ms <= snapshot.TimeMillis()) {
-                return ExpireUntil(earliest_snapshot_id.value(), snapshot_id,
-                                   latest_snapshot_id.value());
-            }
-        }
-    }
-    return ExpireUntil(earliest_snapshot_id.value(), max, latest_snapshot_id.value());
-}
-
-Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64_t end_exclusive_id,
-                                             int64_t latest_snapshot_id) {
-    if (end_exclusive_id <= earliest_snapshot_id) {
-        // TODO(jinli.zjw): write earliest hint
-        return 0;
     }
     // Read the retained boundary before deleting files referenced by expired snapshots.
     PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(end_exclusive_id));
@@ -217,6 +166,14 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64
     PAIMON_LOG_DEBUG(logger_, "Snapshot expire range of table %s is [%ld, %ld]",
                      snapshot_manager_->RootPath().c_str(), begin_inclusive_id, end_exclusive_id);
 
+    PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> tagged_snapshots, GetTaggedSnapshots());
+    std::vector<Snapshot> retained_tag_snapshots =
+        GetTagSnapshotsToRetain(tagged_snapshots, begin_inclusive_id, end_exclusive_id);
+    PAIMON_RETURN_NOT_OK(GetManifestSkippingSet(retained_tag_snapshots, &skipping_sets));
+    auto next_tag = tagged_snapshots.begin();
+    const Snapshot* previous_tag = nullptr;
+    std::optional<std::set<std::string>> tagged_data_files;
+
     // Since the data file deletion information for each snapshot is recorded in the delta part of
     // the next snapshot, it is necessary to check the next snapshot. Otherwise, its data files will
     // not be deleted in this round.
@@ -227,7 +184,36 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64
             continue;
         }
         PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(id));
-        PAIMON_RETURN_NOT_OK(CleanUnusedDataFiles(snapshot.DeltaManifestList(), skipping_data_files,
+        bool tag_changed = false;
+        while (next_tag != tagged_snapshots.end() && next_tag->Id() < id) {
+            previous_tag = &*next_tag;
+            ++next_tag;
+            tag_changed = true;
+        }
+        if (tag_changed) {
+            Result<std::set<std::string>> tagged_data_files_result =
+                GetTaggedDataFiles(*previous_tag);
+            if (!tagged_data_files_result.ok()) {
+                PAIMON_LOG_WARN(logger_,
+                                "Skip cleaning data files of snapshot #%ld because the data files "
+                                "referenced by tag snapshot #%ld could not be loaded. Snapshot "
+                                "metadata expiration will continue, so skipped data files may "
+                                "remain for orphan cleanup. %s",
+                                id, previous_tag->Id(),
+                                tagged_data_files_result.status().ToString().c_str());
+                tagged_data_files.reset();
+            } else {
+                tagged_data_files = std::move(tagged_data_files_result).value();
+            }
+        }
+        if (previous_tag != nullptr && !tagged_data_files) {
+            continue;
+        }
+        auto retained_data_files = skipping_data_files;
+        if (tagged_data_files) {
+            retained_data_files.insert(tagged_data_files->begin(), tagged_data_files->end());
+        }
+        PAIMON_RETURN_NOT_OK(CleanUnusedDataFiles(snapshot.DeltaManifestList(), retained_data_files,
                                                   &data_file_path_factory_cache));
     }
     // TODO(jinli.zjw): support delete changelog files
@@ -335,8 +321,7 @@ bool ExpireSnapshots::TryDeleteEmptyDirectory(const std::string& path) const {
 Status ExpireSnapshots::CleanUnusedManifests(const std::string& manifest_list_name,
                                              const std::set<std::string>& skipping_sets) {
     std::vector<ManifestFileMeta> manifest_file_metas;
-    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt,
-                                       &manifest_file_metas);
+    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt, &manifest_file_metas);
     if (status.ok()) {
         std::vector<std::string> to_delete_manifests;
         // TODO(jinli.zjw): optimize for async
@@ -364,13 +349,13 @@ Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string
 
     std::vector<IndexManifestEntry> entries;
     Status read_status =
-        index_manifest_file_->ReadIfFileExist(index_manifest.value(), /*filter=*/nullptr, &entries);
+        index_manifest_file_->ReadIfFileExist(index_manifest.value(), /*filter=*/nullptr, /*file_size=*/std::nullopt, &entries);
     if (read_status.IsNotExist()) {
         return Status::OK();
     }
     PAIMON_RETURN_NOT_OK(read_status);
 
-    std::vector<std::pair<std::string, std::string>> index_files_to_delete;
+    std::vector<std::tuple<std::string, std::string, bool>> index_files_to_delete;
     std::set<std::string> planned_file_names;
     for (const IndexManifestEntry& entry : entries) {
         const std::string& file_name = entry.index_file->FileName();
@@ -381,14 +366,20 @@ Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<IndexPathFactory> index_path_factory,
             path_factory_->CreateIndexFileFactory(entry.partition, entry.bucket));
-        index_files_to_delete.emplace_back(file_name, index_path_factory->ToPath(entry.index_file));
+        index_files_to_delete.emplace_back(file_name, index_path_factory->ToPath(entry.index_file),
+                                           entry.index_file->ExternalPath().has_value());
     }
 
-    for (const auto& [file_name, file_path] : index_files_to_delete) {
+    for (const auto& [file_name, file_path, is_external_path] : index_files_to_delete) {
+        Status delete_status = fs_->Delete(file_path);
+        if (!delete_status.ok() && is_external_path) {
+            PAIMON_ASSIGN_OR_RAISE(bool exists, fs_->Exists(file_path));
+            if (exists) {
+                return delete_status.WithMessage("Failed to delete external index payload '",
+                                                 file_path, "': ", delete_status.message());
+            }
+        }
         skipping_manifest_set->insert(file_name);
-        auto delete_status = fs_->Delete(file_path);
-        // Index payload cleanup is best effort, consistent with data file expiration.
-        (void)delete_status;
     }
 
     skipping_manifest_set->insert(index_manifest.value());
@@ -400,14 +391,13 @@ Status ExpireSnapshots::CleanUnusedDataFiles(
     const std::string& manifest_list_name, const std::set<std::string>& skipping_data_files,
     DataFilePathFactoryCache* data_file_path_factory_cache) {
     std::vector<ManifestFileMeta> manifest_file_metas;
-    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt,
-                                       &manifest_file_metas);
+    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt, &manifest_file_metas);
     if (status.ok()) {
         std::map<std::string, ManifestEntry> data_files_to_delete;
         for (const auto& manifest_file_meta : manifest_file_metas) {
             std::vector<ManifestEntry> manifest_entries;
-            auto status = manifest_file_->Read(manifest_file_meta.FileName(), nullptr,
-                                               /*file_size=*/std::nullopt, &manifest_entries);
+            auto status =
+                manifest_file_->Read(manifest_file_meta.FileName(), nullptr, /*file_size=*/std::nullopt, &manifest_entries);
             if (!status.ok()) {
                 // cancel deletion if any exception occurs
                 PAIMON_LOG_WARN(logger_, "Failed to read some manifest files. Cancel deletion. %s",
@@ -483,8 +473,7 @@ Status ExpireSnapshots::GetDataFileSkippingSet(
         LinkedHashMap<FileEntry::Identifier, ManifestEntry> boundary_entries;
         for (const ManifestFileMeta& manifest : manifests) {
             std::vector<ManifestEntry> entries;
-            PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest.FileName(), nullptr,
-                                                      /*file_size=*/std::nullopt, &entries));
+            PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest.FileName(), nullptr, /*file_size=*/std::nullopt, &entries));
             if (i == 0) {
                 PAIMON_RETURN_NOT_OK(FileEntry::MergeEntries(entries, &boundary_entries));
             } else {
@@ -538,6 +527,51 @@ Status ExpireSnapshots::GetManifestSkippingSet(const std::vector<Snapshot>& reta
     return Status::OK();
 }
 
+Result<std::vector<Snapshot>> ExpireSnapshots::GetTaggedSnapshots() const {
+    TagManager tag_manager(fs_, snapshot_manager_->RootPath(), snapshot_manager_->Branch());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> tag_names, tag_manager.ListTagNames());
+
+    std::vector<Snapshot> tagged_snapshots;
+    tagged_snapshots.reserve(tag_names.size());
+    for (const std::string& tag_name : tag_names) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Tag> tag, tag_manager.Get(tag_name));
+        if (!tag) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(Snapshot tagged_snapshot, tag->TrimToSnapshot());
+        tagged_snapshots.push_back(std::move(tagged_snapshot));
+    }
+    std::sort(tagged_snapshots.begin(), tagged_snapshots.end(),
+              [](const Snapshot& lhs, const Snapshot& rhs) { return lhs.Id() < rhs.Id(); });
+    return tagged_snapshots;
+}
+
+std::vector<Snapshot> ExpireSnapshots::GetTagSnapshotsToRetain(
+    const std::vector<Snapshot>& tagged_snapshots, int64_t begin_inclusive_id,
+    int64_t end_exclusive_id) const {
+    auto right = std::lower_bound(
+        tagged_snapshots.begin(), tagged_snapshots.end(), end_exclusive_id,
+        [](const Snapshot& snapshot, int64_t snapshot_id) { return snapshot.Id() < snapshot_id; });
+    if (right == tagged_snapshots.begin()) {
+        return std::vector<Snapshot>();
+    }
+    auto left = std::upper_bound(
+        tagged_snapshots.begin(), right, begin_inclusive_id,
+        [](int64_t snapshot_id, const Snapshot& snapshot) { return snapshot_id < snapshot.Id(); });
+    if (left != tagged_snapshots.begin()) {
+        --left;
+    }
+    return std::vector<Snapshot>(left, right);
+}
+
+Result<std::set<std::string>> ExpireSnapshots::GetTaggedDataFiles(
+    const Snapshot& tagged_snapshot) const {
+    DataFilePathFactoryCache cache;
+    std::set<std::string> tagged_data_files;
+    PAIMON_RETURN_NOT_OK(GetDataFileSkippingSet({tagged_snapshot}, &cache, &tagged_data_files));
+    return tagged_data_files;
+}
+
 Status ExpireSnapshots::AddIndexManifestToSkippingSet(
     const std::optional<std::string>& index_manifest,
     std::set<std::string>* skipping_manifest_set) const {
@@ -551,7 +585,7 @@ Status ExpireSnapshots::AddIndexManifestToSkippingSet(
     skipping_manifest_set->insert(index_manifest.value());
     std::vector<IndexManifestEntry> entries;
     PAIMON_RETURN_NOT_OK(
-        index_manifest_file_->Read(index_manifest.value(), /*filter=*/nullptr, &entries));
+        index_manifest_file_->Read(index_manifest.value(), /*filter=*/nullptr, /*file_size=*/std::nullopt, &entries));
     for (const IndexManifestEntry& entry : entries) {
         skipping_manifest_set->insert(entry.index_file->FileName());
     }

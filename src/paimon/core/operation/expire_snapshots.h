@@ -79,13 +79,18 @@ class ExpireSnapshots {
                                 std::map<std::string, ManifestEntry>* data_files_to_delete) const;
     Status GetManifestSkippingSet(const std::vector<Snapshot>& retained_snapshots,
                                   std::set<std::string>* skipping_manifest_set) const;
+    Result<std::vector<Snapshot>> GetTaggedSnapshots() const;
+    std::vector<Snapshot> GetTagSnapshotsToRetain(const std::vector<Snapshot>& tagged_snapshots,
+                                                  int64_t begin_inclusive_id,
+                                                  int64_t end_exclusive_id) const;
+    Result<std::set<std::string>> GetTaggedDataFiles(const Snapshot& tagged_snapshot) const;
+    Status AddIndexManifestToSkippingSet(const std::optional<std::string>& index_manifest,
+                                         std::set<std::string>* skipping_manifest_set) const;
     Status GetDataFileSkippingSet(const std::vector<Snapshot>& retained_snapshots,
                                   DataFilePathFactoryCache* data_file_path_factory_cache,
                                   std::set<std::string>* skipping_data_files) const;
     Result<std::shared_ptr<DataFilePathFactory>> GetDataFilePathFactory(
         const ManifestEntry& entry, DataFilePathFactoryCache* data_file_path_factory_cache) const;
-    Status AddIndexManifestToSkippingSet(const std::optional<std::string>& index_manifest,
-                                         std::set<std::string>* skipping_manifest_set) const;
     bool TryDeleteEmptyDirectory(const std::string& path) const;
 
     std::shared_ptr<SnapshotManager> snapshot_manager_;
