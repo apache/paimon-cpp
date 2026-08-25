@@ -91,7 +91,7 @@ class FileSystemWriteRestore : public WriteRestore {
             }
             PAIMON_ASSIGN_OR_RAISE(
                 primary_key_index_payloads,
-                index_file_handler_->ScanSourceIndexes(snapshot.value(), partition, bucket));
+                index_file_handler_->ScanPrimaryKeyIndexes(snapshot.value(), partition, bucket));
         }
 
         return std::make_shared<RestoreFiles>(snapshot, total_buckets, restore_data_files,

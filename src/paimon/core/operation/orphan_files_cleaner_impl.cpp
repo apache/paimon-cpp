@@ -301,10 +301,6 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
         PAIMON_RETURN_NOT_OK(index_manifest_file_->ReadIfFileExist(
             index_manifest_name.value(), /*filter=*/nullptr, &index_entries));
         for (const IndexManifestEntry& index_entry : index_entries) {
-            if (index_entry.index_file == nullptr) {
-                return Status::Invalid(fmt::format("Index manifest {} contains a null index file.",
-                                                   index_manifest_name.value()));
-            }
             used_files.insert(index_entry.index_file->FileName());
         }
     }

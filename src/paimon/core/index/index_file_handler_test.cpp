@@ -289,7 +289,7 @@ TEST_F(IndexFileHandlerTest, TestScanWithNoIndexManifest) {
     ASSERT_TRUE(index_entries.empty());
 }
 
-TEST_F(IndexFileHandlerTest, TestScanSourceIndexesBySourceMetadata) {
+TEST_F(IndexFileHandlerTest, TestScanPrimaryKeyIndexesBySourceMetadata) {
     std::string table_path =
         paimon::test::GetDataDir() + "/orc/pk_btree_source_meta.db/pk_btree_source_meta/";
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
@@ -301,7 +301,7 @@ TEST_F(IndexFileHandlerTest, TestScanSourceIndexesBySourceMetadata) {
     ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshot_manager.LoadSnapshot(/*snapshot_id=*/5));
     ASSERT_OK_AND_ASSIGN(
         std::vector<std::shared_ptr<IndexFileMeta>> source_indexes,
-        index_file_handler->ScanSourceIndexes(snapshot, BinaryRow::EmptyRow(), /*bucket=*/0));
+        index_file_handler->ScanPrimaryKeyIndexes(snapshot, BinaryRow::EmptyRow(), /*bucket=*/0));
 
     ASSERT_EQ(source_indexes.size(), 1);
     const std::optional<GlobalIndexMeta>& global_index_meta =
@@ -309,7 +309,7 @@ TEST_F(IndexFileHandlerTest, TestScanSourceIndexesBySourceMetadata) {
     ASSERT_TRUE(global_index_meta.has_value());
     ASSERT_NE(global_index_meta->source_meta, nullptr);
 
-    ASSERT_OK_AND_ASSIGN(source_indexes, index_file_handler->ScanSourceIndexes(
+    ASSERT_OK_AND_ASSIGN(source_indexes, index_file_handler->ScanPrimaryKeyIndexes(
                                              snapshot, BinaryRow::EmptyRow(), /*bucket=*/1));
     ASSERT_TRUE(source_indexes.empty());
 }

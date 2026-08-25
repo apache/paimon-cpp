@@ -41,8 +41,10 @@
 #include "paimon/core/index/pk/primary_key_index_source_meta.h"
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/utils/commit_increment.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
 #include "paimon/predicate/literal.h"
@@ -107,7 +109,89 @@ int64_t TotalRows(const std::vector<PrimaryKeyIndexSourceFile>& sources) {
     return result;
 }
 
+Result<std::shared_ptr<IndexFileMeta>> MakeSourceBackedBTreePayload(
+    const std::string& file_name, int32_t field_id, const std::shared_ptr<MemoryPool>& pool) {
+    constexpr int64_t kRowCount = 1;
+    PAIMON_ASSIGN_OR_RAISE(
+        PrimaryKeyIndexSourceMeta source_meta,
+        PrimaryKeyIndexSourceMeta::Create(/*data_level=*/1, {{"source.data", kRowCount}}));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> source_meta_bytes, source_meta.Serialize(pool));
+    return std::make_shared<IndexFileMeta>(
+        "btree", file_name, /*file_size=*/1, kRowCount, /*dv_ranges=*/std::nullopt,
+        /*external_path=*/std::nullopt,
+        GlobalIndexMeta(/*row_range_start=*/0, /*row_range_end=*/0, field_id,
+                        /*extra_field_ids=*/std::nullopt, /*index_meta=*/nullptr,
+                        source_meta_bytes));
+}
+
+std::shared_ptr<IndexFileMeta> MakeDataEvolutionBTreePayload(
+    const std::string& file_name, int32_t field_id, const std::shared_ptr<MemoryPool>& pool) {
+    constexpr char kSourceMeta[] =
+        "\x44\x45\x49\x58\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x07";
+    auto source_meta =
+        std::make_shared<Bytes>(std::string(kSourceMeta, sizeof(kSourceMeta) - 1), pool.get());
+    return std::make_shared<IndexFileMeta>(
+        "btree", file_name, /*file_size=*/1, /*row_count=*/1, /*dv_ranges=*/std::nullopt,
+        /*external_path=*/std::nullopt,
+        GlobalIndexMeta(/*row_range_start=*/0, /*row_range_end=*/0, field_id,
+                        /*extra_field_ids=*/std::nullopt, /*index_meta=*/nullptr, source_meta));
+}
+
+std::shared_ptr<IndexFileMeta> MakeMalformedPrimaryKeyBTreePayload(
+    const std::string& file_name, int32_t field_id, const std::shared_ptr<MemoryPool>& pool) {
+    auto source_meta = std::make_shared<Bytes>("malformed", pool.get());
+    return std::make_shared<IndexFileMeta>(
+        "btree", file_name, /*file_size=*/1, /*row_count=*/1, /*dv_ranges=*/std::nullopt,
+        /*external_path=*/std::nullopt,
+        GlobalIndexMeta(/*row_range_start=*/0, /*row_range_end=*/0, field_id,
+                        /*extra_field_ids=*/std::nullopt, /*index_meta=*/nullptr, source_meta));
+}
+
 }  // namespace
+
+TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest,
+     DeletesRestoredBTreePayloadWhenNoDefinitionRemains) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory> factory,
+        BucketedPrimaryKeyIndexMaintainer::Factory::Create(
+            /*root_path=*/"", /*branch=*/"main", /*table_schema=*/nullptr,
+            /*definitions=*/{}, /*path_factory=*/nullptr, /*index_file_handler=*/nullptr, options,
+            /*io_manager=*/nullptr, /*enable_multi_thread_spill=*/false, /*executor=*/nullptr,
+            GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<IndexFileMeta> stale_payload,
+        MakeSourceBackedBTreePayload("stale-btree.index", /*field_id=*/7, GetDefaultPool()));
+    std::shared_ptr<IndexFileMeta> data_evolution_payload = MakeDataEvolutionBTreePayload(
+        "data-evolution-btree.index", /*field_id=*/7, GetDefaultPool());
+    std::shared_ptr<IndexFileMeta> malformed_pk_payload = MakeMalformedPrimaryKeyBTreePayload(
+        "malformed-pk-btree.index", /*field_id=*/7, GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BucketedPrimaryKeyIndexMaintainer> maintainer,
+        factory->CreateMaintainer(BinaryRow::EmptyRow(), /*bucket=*/0,
+                                  /*restored_data_files=*/{},
+                                  {stale_payload, data_evolution_payload, malformed_pk_payload}));
+    CommitIncrement increment(DataIncrement({}, {}, {}), CompactIncrement({}, {}, {}), nullptr);
+    ASSERT_OK(maintainer->PrepareCommit(&increment));
+    ASSERT_EQ(increment.GetNewFilesIncrement().DeletedIndexFiles(),
+              (std::vector<std::shared_ptr<IndexFileMeta>>{stale_payload, malformed_pk_payload}));
+}
+
+TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest,
+     PreservesDataEvolutionBTreePayloadForOwnedField) {
+    constexpr int32_t kFieldId = 7;
+    PrimaryKeyIndexDefinition definition("value", kFieldId, "btree",
+                                         PrimaryKeyIndexDefinition::Family::BTREE, {});
+    std::vector<BucketedPrimaryKeyIndexMaintainer::FieldMaintainer> fields = {
+        {std::move(definition), /*builder=*/nullptr}};
+    std::shared_ptr<IndexFileMeta> data_evolution_payload =
+        MakeDataEvolutionBTreePayload("data-evolution-btree.index", kFieldId, GetDefaultPool());
+    BucketedPrimaryKeyIndexMaintainer maintainer(std::move(fields), /*active_data_files=*/{},
+                                                 {data_evolution_payload});
+    CommitIncrement increment(DataIncrement({}, {}, {}), CompactIncrement({}, {}, {}), nullptr);
+    ASSERT_OK(maintainer.PrepareCommit(&increment));
+    ASSERT_TRUE(increment.GetNewFilesIncrement().DeletedIndexFiles().empty());
+}
 
 class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<std::string> {
  protected:
@@ -405,6 +489,58 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ContinuesCompactionWhenIndexBuildF
     ASSERT_NE(nullptr, repair);
     ASSERT_EQ(1, BTreeIndexFiles(*repair, /*added=*/true).size());
     ASSERT_TRUE(BTreeIndexFiles(*repair, /*added=*/false).empty());
+}
+
+TEST_P(BucketedPrimaryKeyIndexMaintainerTest, DeletesPayloadAfterLastDefinitionIsRemoved) {
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
+                         WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
+                                         /*commit_identifier=*/0));
+    ASSERT_OK(Commit(initial_messages, /*commit_identifier=*/0));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> compact_messages,
+                         CompactAndPrepare(/*full_compaction=*/true,
+                                           /*commit_identifier=*/1));
+    ASSERT_EQ(1, compact_messages.size());
+    std::shared_ptr<CommitMessageImpl> compact =
+        std::dynamic_pointer_cast<CommitMessageImpl>(compact_messages[0]);
+    ASSERT_NE(nullptr, compact);
+    std::vector<std::shared_ptr<IndexFileMeta>> payloads =
+        BTreeIndexFiles(*compact, /*added=*/true);
+    ASSERT_EQ(1, payloads.size());
+    ASSERT_OK(Commit(compact_messages, /*commit_identifier=*/1));
+
+    std::map<std::string, std::string> evolved_options = options_;
+    evolved_options.erase(Options::PK_BTREE_INDEX_COLUMNS);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> evolved_schema,
+                         TableSchema::Create(/*schema_id=*/1, schema_, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"id"}, evolved_options));
+    ASSERT_OK_AND_ASSIGN(std::string schema_json, evolved_schema->ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CoreOptions evolved_core_options, CoreOptions::FromMap(evolved_options));
+    ASSERT_OK(evolved_core_options.GetFileSystem()->WriteFile(
+        PathUtil::JoinPath(table_path_, "schema/schema-1"), schema_json,
+        /*overwrite=*/false));
+
+    WriteContextBuilder builder(table_path_, kCommitUser);
+    builder.SetOptions(evolved_options)
+        .WithStreamingMode(true)
+        .WithTempDirectory(directory_->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         FileStoreWrite::Create(std::move(context)));
+    ASSERT_OK(writer->Compact(/*partition=*/{}, /*bucket=*/0, /*full_compaction=*/true));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> cleanup_messages,
+                         writer->PrepareCommit(/*wait_compaction=*/true,
+                                               /*commit_identifier=*/2));
+    ASSERT_OK(writer->Close());
+    ASSERT_EQ(1, cleanup_messages.size());
+    std::shared_ptr<CommitMessageImpl> cleanup =
+        std::dynamic_pointer_cast<CommitMessageImpl>(cleanup_messages[0]);
+    ASSERT_NE(nullptr, cleanup);
+    std::vector<std::shared_ptr<IndexFileMeta>> deleted_payloads =
+        BTreeIndexFiles(*cleanup, /*added=*/false);
+    ASSERT_EQ(1, deleted_payloads.size());
+    ASSERT_EQ(payloads[0]->FileName(), deleted_payloads[0]->FileName());
+    ASSERT_TRUE(BTreeIndexFiles(*cleanup, /*added=*/true).empty());
 }
 
 INSTANTIATE_TEST_SUITE_P(FileFormats, BucketedPrimaryKeyIndexMaintainerTest,

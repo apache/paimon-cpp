@@ -725,7 +725,7 @@ TEST(SchemaValidationTest, ValidatePrimaryKeyBTreeIndexes) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
                              MakePrimaryKeyBTreeSchema(options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
-                            "do not support pk-clustering-override");
+                            "unsupported by the C++ commit path");
     }
 }
 
