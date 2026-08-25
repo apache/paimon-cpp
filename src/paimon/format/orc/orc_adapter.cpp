@@ -940,10 +940,9 @@ Result<std::shared_ptr<arrow::Array>> OrcAdapter::AppendBatch(
                            MakeArrowBuilder(type, batch, pool));
     std::shared_ptr<arrow::Array> array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Finish(&array));
-#ifndef NDEBUG
-    // Keep structural validation in debug builds without adding its recursive cost to reads.
+    // Keep this check in release builds so malformed nested arrays return a Status before they
+    // reach Arrow constructors that enforce their invariants with a process-terminating check.
     PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
-#endif
     return array;
 }
 
