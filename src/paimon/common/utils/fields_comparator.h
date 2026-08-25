@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
