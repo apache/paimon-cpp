@@ -844,10 +844,6 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     CheckResult(result_array, expected_array, read_schema);
 }
 
-// Late materialization reads the predicate columns first and only materializes the remaining
-// columns for matched rows. Combined with the top-level predicate filter the read path returns
-// the exact user-predicate match set: in a section with several sorted runs only the key part of
-// the predicate reaches the data files, and the merge result is filtered afterwards.
 TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";

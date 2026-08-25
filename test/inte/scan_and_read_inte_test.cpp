@@ -744,9 +744,6 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
-// Late materialization reads the predicate columns first and only materializes the remaining
-// columns for matched rows. Combined with the top-level predicate filter, the read path returns
-// the exact user-predicate match set (deletion vectors stay applied per data file).
 TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLateMaterializing) {
     auto file_format = FileFormat();
     std::string table_path = paimon::test::GetDataDir() + file_format +

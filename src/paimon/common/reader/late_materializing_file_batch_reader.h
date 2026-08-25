@@ -92,9 +92,9 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
 
     enum LatMatState {
         kInit,
-        kProbing,   // schema is set
+        kProbing,   // schema is set, probing is in progress
         kNoLatMat,  // no need to late materialization
-        kRunning,   // Lat-mat is enable an is reading data
+        kRunning,   // Lat-mat is enabled and the payload reader is reading data
         kEOF
     };
 

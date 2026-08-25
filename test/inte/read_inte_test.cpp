@@ -3252,9 +3252,6 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateOnlyPush
     ASSERT_TRUE(result_array->Equals(*expected_array));
 }
 
-// Same coverage for the primary-key path with schema evolution and a deletion vector: late
-// materialization runs below the prefetch layer per data file, so the deletion vector and the
-// schema-evolution field mapping keep working.
 TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithLateMaterializing) {
     std::vector<DataField> read_fields = {DataField(1, arrow::field("key1", arrow::int32())),
                                           DataField(7, arrow::field("k", arrow::utf8())),

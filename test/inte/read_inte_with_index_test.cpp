@@ -1233,9 +1233,6 @@ TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
     CheckResultForBitmapWithSingleRowGroup(path, arrow_data_type, split);
 }
 
-// Late materialization reads the predicate columns first and only materializes the remaining
-// columns for matched rows. The bitmap index selection is pushed into the same reader, so
-// combined with the top-level predicate filter the read path returns the exact match set.
 TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
     auto [file_format, enable_prefetch] = GetParam();
     std::string path = GetDataDir() + "/" + file_format +
