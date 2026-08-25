@@ -20,6 +20,7 @@
 #pragma once
 
 #include <arrow/array/array_nested.h>
+#include <arrow/c/abi.h>
 
 #include <cstdint>
 #include <memory>
