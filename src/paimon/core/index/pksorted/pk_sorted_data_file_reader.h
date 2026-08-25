@@ -24,7 +24,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "arrow/type_fwd.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
@@ -49,13 +48,12 @@ struct DataFileMeta;
 
 /// Reads one indexed column from primary-key data files without applying deletion vectors.
 ///
-/// The callback receives each projected batch together with its file-local physical row
-/// positions. The reader rejects filtered, short, or overlong input so group row ids remain
-/// identical to the Java source-backed index contract.
+/// The reader validates that projected batches contain every physical row in file order before
+/// passing them to the callback, so group row ids remain identical to the Java source-backed index
+/// contract.
 class PkSortedDataFileReader : public RawFileSplitRead {
  public:
-    using BatchConsumer = std::function<Status(const std::shared_ptr<arrow::StructArray>&,
-                                               const std::vector<int64_t>&)>;
+    using BatchConsumer = std::function<Status(const std::shared_ptr<arrow::StructArray>&)>;
 
     static Result<std::unique_ptr<PkSortedDataFileReader>> Create(
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,

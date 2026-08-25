@@ -90,6 +90,7 @@ const char Options::FALLBACK_DEDUPLICATE_IGNORE_DELETE[] = "deduplicate.ignore-d
 const char Options::FALLBACK_PARTIAL_UPDATE_IGNORE_DELETE[] = "partial-update.ignore-delete";
 const char Options::FIELDS_DEFAULT_AGG_FUNC[] = "fields.default-aggregate-function";
 const char Options::DELETION_VECTORS_ENABLED[] = "deletion-vectors.enabled";
+const char Options::PK_CLUSTERING_OVERRIDE[] = "pk-clustering-override";
 const char Options::DELETION_VECTOR_INDEX_FILE_TARGET_SIZE[] =
     "deletion-vector.index-file.target-size";
 const char Options::DELETION_VECTOR_BITMAP64[] = "deletion-vectors.bitmap64";

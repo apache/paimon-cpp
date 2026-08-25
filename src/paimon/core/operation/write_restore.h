@@ -44,7 +44,7 @@ class WriteRestore {
 
     virtual Result<std::shared_ptr<RestoreFiles>> GetRestoreFiles(
         const BinaryRow& partition, int32_t bucket, bool scan_delete_vectors_index,
-        bool scan_primary_key_indexes = false) const = 0;
+        bool scan_source_index_payloads) const = 0;
 };
 
 }  // namespace paimon

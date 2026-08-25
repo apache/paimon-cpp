@@ -151,9 +151,15 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
         return builder.SetBucket(0).Finish();
     }
 
-    Result<std::unique_ptr<FileStoreWrite>> CreateWriter() const {
+    Result<std::unique_ptr<FileStoreWrite>> CreateWriter(bool with_temp_directory = true,
+                                                         bool write_buffer_spillable = true) const {
         WriteContextBuilder builder(table_path_, kCommitUser);
-        builder.SetOptions(options_).WithStreamingMode(true).WithTempDirectory(directory_->Str());
+        std::map<std::string, std::string> writer_options = options_;
+        writer_options[Options::WRITE_BUFFER_SPILLABLE] = write_buffer_spillable ? "true" : "false";
+        builder.SetOptions(writer_options).WithStreamingMode(true);
+        if (with_temp_directory) {
+            builder.WithTempDirectory(directory_->Str());
+        }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context, builder.Finish());
         return FileStoreWrite::Create(std::move(context));
     }
@@ -322,6 +328,83 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
                          PrimaryKeyIndexSourceMeta::FromIndexFile(*replacement_payloads[0]));
     ASSERT_EQ(second_expected_sources, second_source_meta.SourceFiles());
     ASSERT_EQ(TotalRows(second_expected_sources), replacement_payloads[0]->RowCount());
+}
+
+TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ContinuesCompactionWhenIndexBuildFails) {
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
+                         WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
+                                         /*commit_identifier=*/0));
+    ASSERT_OK(Commit(initial_messages, /*commit_identifier=*/0));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateWriter(/*with_temp_directory=*/true,
+                                      /*write_buffer_spillable=*/false));
+    ASSERT_OK(writer->Compact(/*partition=*/{}, /*bucket=*/0, /*full_compaction=*/true));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> compact_messages,
+                         writer->PrepareCommit(/*wait_compaction=*/true,
+                                               /*commit_identifier=*/1));
+    ASSERT_OK(writer->Close());
+
+    ASSERT_EQ(1, compact_messages.size());
+    std::shared_ptr<CommitMessageImpl> compact =
+        std::dynamic_pointer_cast<CommitMessageImpl>(compact_messages[0]);
+    ASSERT_NE(nullptr, compact);
+    ASSERT_FALSE(compact->GetCompactIncrement().CompactBefore().empty());
+    ASSERT_FALSE(compact->GetCompactIncrement().CompactAfter().empty());
+    ASSERT_TRUE(BTreeIndexFiles(*compact, /*added=*/true).empty());
+    ASSERT_TRUE(BTreeIndexFiles(*compact, /*added=*/false).empty());
+    ASSERT_OK(Commit(compact_messages, /*commit_identifier=*/1));
+
+    const std::string indexed_value = "a";
+    std::shared_ptr<Predicate> value_predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, "value", FieldType::STRING,
+        Literal(FieldType::STRING, indexed_value.data(), indexed_value.size()));
+    ScanContextBuilder scan_builder(table_path_);
+    scan_builder.SetPredicate(value_predicate).AddOption(Options::GLOBAL_INDEX_ENABLED, "true");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+    int32_t indexed_split_count = 0;
+    int32_t data_split_count = 0;
+    for (const std::shared_ptr<Split>& split : plan->Splits()) {
+        if (std::dynamic_pointer_cast<IndexedSplitImpl>(split) != nullptr) {
+            indexed_split_count++;
+        } else if (std::dynamic_pointer_cast<DataSplitImpl>(split) != nullptr) {
+            data_split_count++;
+        }
+    }
+    ASSERT_EQ(0, indexed_split_count);
+    ASSERT_GT(data_split_count, 0);
+
+    ReadContextBuilder read_builder(table_path_);
+    read_builder.SetReadFieldNames({"id", "value"})
+        .SetPredicate(value_predicate)
+        .AddOption("orc.read.enable-lazy-decoding", "false")
+        .EnablePredicateFilter(true);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         table_read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_NE(nullptr, result);
+    std::shared_ptr<arrow::ChunkedArray> expected;
+    ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(result->type(),
+                                                                 {R"([[0, 3, "a"]])"}, &expected)
+                    .ok());
+    ASSERT_TRUE(result->Equals(expected)) << result->ToString();
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> repair_messages,
+                         CompactAndPrepare(/*full_compaction=*/false,
+                                           /*commit_identifier=*/2));
+    ASSERT_EQ(1, repair_messages.size());
+    std::shared_ptr<CommitMessageImpl> repair =
+        std::dynamic_pointer_cast<CommitMessageImpl>(repair_messages[0]);
+    ASSERT_NE(nullptr, repair);
+    ASSERT_EQ(1, BTreeIndexFiles(*repair, /*added=*/true).size());
+    ASSERT_TRUE(BTreeIndexFiles(*repair, /*added=*/false).empty());
 }
 
 INSTANTIATE_TEST_SUITE_P(FileFormats, BucketedPrimaryKeyIndexMaintainerTest,

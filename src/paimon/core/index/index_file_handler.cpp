@@ -73,4 +73,22 @@ Result<std::vector<std::shared_ptr<IndexFileMeta>>> IndexFileHandler::Scan(
     return std::vector<std::shared_ptr<IndexFileMeta>>{};
 }
 
+Result<std::vector<std::shared_ptr<IndexFileMeta>>> IndexFileHandler::ScanSourceIndexes(
+    const Snapshot& snapshot, const BinaryRow& partition, int32_t bucket) const {
+    std::function<Result<bool>(const IndexManifestEntry&)> filter =
+        [&partition, bucket](const IndexManifestEntry& entry) -> bool {
+        const std::optional<GlobalIndexMeta>& global_index_meta =
+            entry.index_file->GetGlobalIndexMeta();
+        return entry.partition == partition && entry.bucket == bucket &&
+               global_index_meta.has_value() && global_index_meta->source_meta != nullptr;
+    };
+    PAIMON_ASSIGN_OR_RAISE(std::vector<IndexManifestEntry> entries, Scan(snapshot, filter));
+    std::vector<std::shared_ptr<IndexFileMeta>> result;
+    result.reserve(entries.size());
+    for (const IndexManifestEntry& entry : entries) {
+        result.push_back(entry.index_file);
+    }
+    return result;
+}
+
 }  // namespace paimon

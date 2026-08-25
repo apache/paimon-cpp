@@ -721,7 +721,7 @@ TEST(SchemaValidationTest, ValidatePrimaryKeyBTreeIndexes) {
     {
         std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
                                                       {Options::DELETION_VECTORS_ENABLED, "true"},
-                                                      {"pk-clustering-override", "true"}};
+                                                      {Options::PK_CLUSTERING_OVERRIDE, "true"}};
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
                              MakePrimaryKeyBTreeSchema(options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),

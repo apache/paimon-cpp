@@ -56,10 +56,13 @@ Semantics
   snapshot.
 - The builder uses the existing write-buffer and spill settings. A write context needs a
   temporary directory when a level exceeds the in-memory write buffer and spill is enabled.
+- If payload construction fails, the data-file transition is still committed and the affected
+  level remains uncovered; scans fall back to the data files and a later maintenance attempt can
+  rebuild the payload. Structural commit-increment errors are still rejected.
 - Snapshot expiration retains payloads referenced by the snapshots in its retention set and
-  removes retired payloads before their index manifests, including payloads on an external
-  index path. Orphan cleanup covers table-local index manifests and payloads; it does not
-  enumerate a potentially shared global-index external path.
+  current-branch live tags, and removes retired payloads before their index manifests, including
+  payloads on an external index path. Orphan cleanup covers table-local index manifests and
+  payloads; it does not enumerate a potentially shared global-index external path.
 - ``AND`` predicates narrow with any safely evaluable indexed child; ``OR`` predicates
   only use the index when every branch is evaluable. Files whose evaluation fails, whose
   positions are out of range, or whose result needs more than 4096 ranges fall back to a
