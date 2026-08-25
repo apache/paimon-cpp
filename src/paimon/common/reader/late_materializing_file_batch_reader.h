@@ -59,6 +59,9 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
         bool* need_prefetch) const override;
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
 
+    Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
+        return inner_->PreBufferRange();
+    }
  private:
     explicit LateMaterializingFileBatchReader(std::unique_ptr<PrefetchFileBatchReader> inner,
                                               std::shared_ptr<arrow::MemoryPool> arrow_pool)
