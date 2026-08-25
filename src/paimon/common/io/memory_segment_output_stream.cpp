@@ -54,11 +54,7 @@ void MemorySegmentOutputStream::WriteString(const std::string& str) {
 }
 
 void MemorySegmentOutputStream::Write(const char* data, uint32_t size) {
-    auto bytes = std::make_shared<Bytes>(size, pool_.get());
-    if (size != 0) {
-        memcpy(bytes->data(), data, size);
-    }
-    auto segment = MemorySegment::Wrap(bytes);
+    MemorySegment segment = MemorySegment::WrapView(data, size);
     Write(segment, 0, segment.Size());
 }
 

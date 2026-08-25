@@ -464,7 +464,8 @@ TEST(TestReadAheadCache, TestPreBufferWindowLimit) {
 
     auto io_hook = paimon::IOHook::GetInstance();
     paimon::ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
-    io_hook->Clear();
+    // IOCount() only counts while armed; INT64_MAX never triggers the error mode.
+    io_hook->Reset(INT64_MAX, paimon::IOHook::Mode::RETURN_ERROR);
 
     AssertReadEquals({0, 10}, "abcdefghij", &cache);
     // The second range did not fit into the window: only one prefetch IO.
@@ -475,7 +476,7 @@ TEST(TestReadAheadCache, TestPreBufferWindowLimit) {
     ASSERT_EQ(io_hook->IOCount(), 2);
 
     // The range is cached now: re-reading it issues no IO at all.
-    io_hook->Clear();
+    io_hook->Reset(INT64_MAX, paimon::IOHook::Mode::RETURN_ERROR);
     AssertReadEquals({16, 10}, "qrstuvwxyz", &cache);
     ASSERT_EQ(io_hook->IOCount(), 0);
 }

@@ -33,6 +33,7 @@
 
 namespace paimon {
 
+class BinaryRowPartitionComputer;
 class FileSystem;
 
 class RealtimeCommitProperties {
@@ -46,16 +47,35 @@ class RealtimeCommitProperties {
 
     static std::string OffsetsDirectory(const std::string& table_root, const std::string& branch);
 
+    /// Returns the offset file referenced by `snapshot`, if present.
+    static std::optional<std::string> GetOffsetsPath(const Snapshot& snapshot);
+
     static Result<RealtimeOffsetMap> ReadOffsets(const std::optional<Snapshot>& snapshot,
                                                  const std::shared_ptr<FileSystem>& file_system);
+
+    /// Returns whether all ranges are already covered by committed offsets.
+    ///
+    /// Ranges must either all immediately follow committed offsets or all be fully covered.
+    /// Mixed states, gaps, and partial overlaps are rejected.
+    static Result<bool> AreRangesCommitted(
+        const RealtimeOffsetMap& committed_offsets,
+        const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges);
 
     static Result<std::string> SerializeOffsets(const RealtimeOffsetMap& offsets);
 
     /// Builds snapshot properties against `latest_snapshot` and applies real-time progress.
+    ///
+    /// A full-table replacement sets `reset_all_realtime_progress`. A partition overwrite or
+    /// drop lists only the affected partition specs in `removed_realtime_partitions`; offsets for
+    /// all other partitions are retained. The two reset forms are independent of the snapshot's
+    /// commit kind because an ordinary commit may also use `OVERWRITE` for conflict handling.
     static Result<std::map<std::string, std::string>> Build(
         const std::map<std::string, std::string>& properties,
         const std::optional<Snapshot>& latest_snapshot,
         const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
+        bool reset_all_realtime_progress,
+        const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
+        const BinaryRowPartitionComputer& partition_computer,
         const std::shared_ptr<FileSystem>& file_system, const std::string& table_root,
         const std::string& branch);
 

@@ -23,7 +23,6 @@
 #include <string_view>
 #include <utility>
 
-#include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
 #include "arrow/memory_pool.h"
 #include "arrow/record_batch.h"
@@ -32,9 +31,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_output_stream_adapter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/checked_cast.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
-#include "paimon/format/parquet/parquet_vector_converter.h"
 #include "parquet/arrow/writer.h"
 #include "parquet/properties.h"
 
@@ -58,33 +55,17 @@ Result<std::unique_ptr<ParquetFormatWriter>> ParquetFormatWriter::Create(
     ::parquet::ArrowWriterProperties::Builder arrow_properties_builder;
     auto arrow_writer_properties =
         arrow_properties_builder.enable_deprecated_int96_timestamps()->build();
-    auto logical_type = arrow::struct_(schema->fields());
-    auto write_type =
-        checked_pointer_cast<arrow::StructType>(ParquetVectorConverter::GetWriteType(logical_type));
-    auto write_schema = arrow::schema(write_type->fields(), schema->metadata());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::unique_ptr<::parquet::arrow::FileWriter> file_writer,
-        ::parquet::arrow::FileWriter::Open(*write_schema, pool.get(), out, writer_properties,
+        ::parquet::arrow::FileWriter::Open(*schema, pool.get(), out, writer_properties,
                                            arrow_writer_properties));
-    return std::unique_ptr<ParquetFormatWriter>(new ParquetFormatWriter(
-        std::move(file_writer), out, schema, max_memory_use,
-        /*needs_vector_conversion=*/!logical_type->Equals(write_type), pool));
+    return std::unique_ptr<ParquetFormatWriter>(
+        new ParquetFormatWriter(std::move(file_writer), out, schema, max_memory_use, pool));
 }
 
 Status ParquetFormatWriter::AddBatch(ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<::arrow::RecordBatch> record_batch,
                                       arrow::ImportRecordBatch(batch, schema_));
-    if (needs_vector_conversion_) {
-        // TODO(ChaomingZhangCN): Remove this conversion after upgrading Arrow. Arrow 17
-        // mishandles nullable FixedSizeList values when writing them as Parquet LIST.
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
-                                          record_batch->ToStructArray());
-        std::shared_ptr<arrow::Array> array = struct_array;
-        PAIMON_ASSIGN_OR_RAISE(array,
-                               ParquetVectorConverter::ConvertToWriteType(array, pool_.get()));
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(record_batch,
-                                          arrow::RecordBatch::FromStructArray(array, pool_.get()));
-    }
     if (static_cast<uint64_t>(pool_->bytes_allocated()) > max_memory_use_) {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(writer_->NewBufferedRowGroup());
     }
@@ -132,14 +113,13 @@ Result<uint64_t> ParquetFormatWriter::GetEstimateLength() const {
 ParquetFormatWriter::ParquetFormatWriter(std::unique_ptr<::parquet::arrow::FileWriter> writer,
                                          const std::shared_ptr<ArrowOutputStreamAdapter>& out,
                                          const std::shared_ptr<arrow::Schema>& schema,
-                                         uint64_t max_memory_use, bool needs_vector_conversion,
+                                         uint64_t max_memory_use,
                                          const std::shared_ptr<arrow::MemoryPool>& pool)
     : pool_(pool),
       out_(out),
       writer_(std::move(writer)),
       schema_(schema),
       metrics_(std::make_shared<MetricsImpl>()),
-      max_memory_use_(max_memory_use),
-      needs_vector_conversion_(needs_vector_conversion) {}
+      max_memory_use_(max_memory_use) {}
 
 }  // namespace paimon::parquet

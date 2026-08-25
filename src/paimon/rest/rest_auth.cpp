@@ -1,11 +1,13 @@
 /*
- * Copyright 2026-present Alibaba Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +22,7 @@
 #include "paimon/catalog_options.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/url_utils.h"
+#include "paimon/rest/dlf_auth.h"
 
 namespace paimon {
 
@@ -52,8 +55,8 @@ Result<std::unique_ptr<AuthProvider>> AuthProvider::Create(
         return Status::Invalid(fmt::format("option '{}' must be configured for the rest catalog",
                                            CatalogOptions::TOKEN_PROVIDER));
     }
-    // Matched leniently in lower case; other clients may match the provider name
-    // case-sensitively, so only the exact "bear" spelling is portable.
+    // Matched leniently in lower case; other clients may match provider names
+    // case-sensitively, so the exact "bear" and "dlf" spellings are portable.
     std::string provider = StringUtils::ToLowerCase(provider_iter->second);
     if (provider == "bear") {
         auto token_iter = options.find(CatalogOptions::TOKEN);
@@ -64,8 +67,11 @@ Result<std::unique_ptr<AuthProvider>> AuthProvider::Create(
         }
         return std::make_unique<BearTokenAuthProvider>(token_iter->second);
     }
-    return Status::NotImplemented(
-        fmt::format("unsupported token provider: {}, only 'bear' is supported for now", provider));
+    if (provider == "dlf") {
+        return DlfAuthProvider::Create(options);
+    }
+    return Status::NotImplemented(fmt::format(
+        "unsupported token provider: {}, supported providers are 'bear' and 'dlf'", provider));
 }
 
 }  // namespace paimon

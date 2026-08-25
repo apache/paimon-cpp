@@ -65,18 +65,16 @@ class RangeBitmapIoTest : public ::testing::Test {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Finish(&arrow_array));
 
         // Wrap in StructArray
-        arrow::FieldVector fields = {arrow::field("test_field", arrow_type)};
+        const std::shared_ptr<arrow::Field> field = arrow::field("test_field", arrow_type);
+        arrow::FieldVector fields = {field};
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
                                           arrow::StructArray::Make({arrow_array}, fields));
         auto c_array = std::make_unique<::ArrowArray>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*struct_array, c_array.get()));
 
-        // Create schema
-        const auto schema = arrow::schema({arrow::field("test_field", arrow_type)});
-
         // Create writer and write data
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RangeBitmapFileIndexWriter> writer,
-                               RangeBitmapFileIndexWriter::Create(schema, "test_field", {}, pool_));
+                               RangeBitmapFileIndexWriter::Create(field, {}, pool_));
 
         PAIMON_RETURN_NOT_OK(writer->AddBatch(c_array.get()));
         return writer->SerializedBytes();

@@ -258,6 +258,45 @@ TEST_F(ParquetVectorIoTest, WriteAndReadVector) {
                   R"([[1, [1.0, 2.0, 3.0]], [2, null], [3, [4.0, 5.0, 6.0]]])");
 }
 
+TEST_F(ParquetVectorIoTest, WriteAndReadAllNullVector) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto struct_type = checked_pointer_cast<arrow::StructType>(arrow::struct_(
+        {arrow::field("id", arrow::int32()), arrow::field("embedding", vector_type)}));
+    WriteAndCheck("all-null-vector-list.parquet", struct_type, struct_type,
+                  R"([[1, null], [2, null], [3, null]])");
+}
+
+TEST_F(ParquetVectorIoTest, WriteAndReadAllNullFixedSizeListWithArrowSchema) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto logical_type = checked_pointer_cast<arrow::StructType>(arrow::struct_({
+        arrow::field("id", arrow::int32()),
+        arrow::field("embedding", vector_type),
+    }));
+    const std::string json = R"([[1, null], [2, null], [3, null]])";
+    std::string file_path = dir_->Str() + "/all-null-vector.parquet";
+    WriteWithArrowWriter(file_path, logical_type, json);
+
+    std::shared_ptr<arrow::StructType> file_type;
+    ReadFileType(file_path, &file_type);
+    std::shared_ptr<arrow::Field> file_vector_field = file_type->GetFieldByName("embedding");
+    ASSERT_TRUE(file_vector_field);
+    ASSERT_EQ(file_vector_field->type()->id(), arrow::Type::FIXED_SIZE_LIST);
+
+    std::unique_ptr<FileBatchReader> reader;
+    CreateVectorReader(file_path, arrow::schema(logical_type->fields()), /*predicate=*/nullptr,
+                       /*options=*/{}, /*batch_size=*/10, &reader);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+    arrow::Result<std::shared_ptr<arrow::Array>> expected_result =
+        arrow::ipc::internal::json::ArrayFromJSON(logical_type, json);
+    ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(std::move(expected_result).ValueOrDie())
+                    ->Equals(actual))
+        << actual->ToString();
+}
+
 TEST_F(ParquetVectorIoTest, ReadOrdinaryParquetListAsVector) {
     auto physical_type = checked_pointer_cast<arrow::StructType>(
         arrow::struct_({arrow::field("id", arrow::int32()),
@@ -370,6 +409,13 @@ TEST_F(ParquetVectorIoTest, ReadNullableJavaFixture) {
                         {{{1.0f, 2.0f, 3.0f}}, std::nullopt, {{4.0f, 5.0f, 6.0f}}});
 }
 
+TEST_F(ParquetVectorIoTest, ReadNullableRustFixture) {
+    ReadFixtureAndCheck("rust_vector_nullable.parquet", arrow::Type::FIXED_SIZE_LIST,
+                        /*vector_length=*/3, /*expected_ids=*/{1, 2, 3},
+                        /*expected_vectors=*/
+                        {{{1.0f, 2.0f, 3.0f}}, std::nullopt, {{4.0f, 5.0f, 6.0f}}});
+}
+
 // A table can hold files from several writers, and Paimon Java stores VECTOR as Parquet LIST
 // while Paimon Rust stores it as FixedSizeList. Reading both with the table schema must produce
 // batches of one Arrow type, otherwise they cannot be combined into a single result.
@@ -386,7 +432,7 @@ TEST_F(ParquetVectorIoTest, ReadMixedListAndFixedSizeListFixtures) {
     // the whole result has been consumed.
     std::vector<std::unique_ptr<FileBatchReader>> readers;
     arrow::ArrayVector chunks;
-    for (const char* file_name : {"java_vector_nullable.parquet", "rust_vector.parquet"}) {
+    for (const char* file_name : {"java_vector_nullable.parquet", "rust_vector_nullable.parquet"}) {
         std::string file_path =
             paimon::test::GetDataDir() + "/parquet/vector_compatibility/" + file_name;
         std::unique_ptr<FileBatchReader> reader;
@@ -406,34 +452,12 @@ TEST_F(ParquetVectorIoTest, ReadMixedListAndFixedSizeListFixtures) {
     arrow::Result<std::shared_ptr<arrow::Array>> expected_result =
         arrow::ipc::internal::json::ArrayFromJSON(
             logical_type, R"([[1, [1.0, 2.0, 3.0]], [2, null], [3, [4.0, 5.0, 6.0]],
-                              [1, [1.0, 2.0, 3.0]], [2, [7.0, 8.0, 9.0]], [3, [4.0, 5.0, 6.0]]])");
+                              [1, [1.0, 2.0, 3.0]], [2, null], [3, [4.0, 5.0, 6.0]]])");
     ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
     std::shared_ptr<arrow::ChunkedArray> merged = std::move(merged_result).ValueOrDie();
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(std::move(expected_result).ValueOrDie())
                     ->Equals(merged))
         << merged->ToString();
-}
-
-// A writer that stores the Arrow schema, such as Paimon Rust or Python, exposes the VECTOR column
-// as FixedSizeList. Arrow 17 cannot read a null value from such a column: Parquet stores a null
-// list slot with no values, while FixedSizeListReader::AssembleArray in
-// parquet/arrow/reader.cc requires every slot to span exactly `list_size` values.
-//
-// TODO(ChaomingZhangCN): Turn this into a read check once Arrow is upgraded.
-TEST_F(ParquetVectorIoTest, ReadNullableRustFixtureIsUnsupported) {
-    std::string file_path =
-        paimon::test::GetDataDir() + "/parquet/vector_compatibility/rust_vector_nullable.parquet";
-    std::shared_ptr<arrow::StructType> file_type;
-    ReadFileType(file_path, &file_type);
-    std::shared_ptr<arrow::Field> file_vector_field = file_type->GetFieldByName("embedding");
-    ASSERT_TRUE(file_vector_field);
-    ASSERT_EQ(file_vector_field->type()->id(), arrow::Type::FIXED_SIZE_LIST);
-
-    std::unique_ptr<FileBatchReader> reader;
-    CreateVectorReader(file_path, arrow::schema(file_type->fields()), /*predicate=*/nullptr,
-                       /*options=*/{}, /*batch_size=*/10, &reader);
-    ASSERT_NOK_WITH_MSG(paimon::test::ReadResultCollector::CollectResult(reader.get()),
-                        "Expected all lists to be of size=3");
 }
 
 }  // namespace paimon::parquet::test

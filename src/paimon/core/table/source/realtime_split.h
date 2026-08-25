@@ -31,7 +31,10 @@
 
 namespace paimon {
 
-/// Split combining committed disk splits and a ticket for one immutable memory view.
+/// Split combining disk splits and one immutable memory view.
+///
+/// Append scans keep earlier disk splits independently schedulable and place only the tail disk
+/// split in this wrapper. Other table semantics may choose a different disk grouping policy.
 ///
 /// `committed_end_offset` and `memory_end_offset` are exclusive bounds. Disk covers the committed
 /// prefix and memory readers return the remaining `[committed_end_offset, memory_end_offset)`

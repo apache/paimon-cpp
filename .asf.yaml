@@ -54,39 +54,7 @@ github:
         dismiss_stale_reviews: true
         require_last_push_approval: true
         required_approving_review_count: 1
-      required_status_checks:
-        - name: "pre-commit"
-          app_slug: -1
-        - name: "rat-license-check"
-          app_slug: -1
-        - name: "script-tests"
-          app_slug: -1
-        - name: "asan-ubsan-x86_64"
-          app_slug: -1
-        - name: "tsan-x86_64"
-          app_slug: -1
-        - name: "clang-debug-x86_64"
-          app_slug: -1
-        - name: "clang-release-x86_64"
-          app_slug: -1
-        - name: "gcc-debug-x86_64"
-          app_slug: -1
-        - name: "gcc-release-x86_64"
-          app_slug: -1
-        - name: "gcc-debug-aarch64"
-          app_slug: -1
-        - name: "gcc-release-aarch64"
-          app_slug: -1
-        - name: "clang-debug-aarch64"
-          app_slug: -1
-        - name: "asan-ubsan-aarch64"
-          app_slug: -1
-        - name: "clang-release-aarch64"
-          app_slug: -1
-        - name: "tsan-aarch64"
-          app_slug: -1
-        - name: "gcc8-test"
-          app_slug: -1
+
   pull_requests:
     allow_auto_merge: false
     allow_update_branch: true

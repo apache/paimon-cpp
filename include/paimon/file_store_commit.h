@@ -79,11 +79,17 @@ class PAIMON_EXPORT FileStoreCommit {
     /// orders them by partition, bucket, and offset before validating continuity. The resulting
     /// snapshot atomically publishes the data files and the updated offset map.
     ///
+    /// If this method returns an error, the caller may retry with the same arguments. Each call
+    /// reloads the latest committed state. As in `FilterAndCommit`, a retry's identifier is
+    /// considered committed when it is not newer than the latest identifier for `commit_user`.
+    /// The requested offset ranges must also be covered by the latest committed progress.
+    ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.
     /// @param commit_identifier Identifier of the streaming commit operation.
     /// @param watermark Optional event-time watermark.
-    /// @return The id of the final snapshot produced by this commit.
+    /// @return The id of the latest snapshot containing the committed progress. On retry, this may
+    /// be a snapshot produced by a later commit and is suitable for refreshing a real-time context.
     virtual Result<int64_t> CommitWithProgress(
         const std::vector<RealtimeCommitProgress>& realtime_commits, int64_t commit_identifier,
         std::optional<int64_t> watermark) = 0;
@@ -117,6 +123,10 @@ class PAIMON_EXPORT FileStoreCommit {
     /// @param watermark An optional event-time watermark used to indicate the progress of data
     ///     processing. Default is std::nullopt.
     /// @return Result of the operation.
+    /// @note A full-table overwrite clears all committed real-time progress. A partition
+    ///     overwrite removes progress only for matching partitions. In either case, active
+    ///     real-time writers and their `RealtimeContext` instances must be recreated before
+    ///     further real-time operations.
     virtual Status Overwrite(const std::map<std::string, std::string>& partition,
                              const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
                              int64_t commit_identifier,
@@ -131,6 +141,10 @@ class PAIMON_EXPORT FileStoreCommit {
     /// @param watermark An optional event-time watermark used to indicate the progress of data
     ///     processing. Default is std::nullopt.
     /// @return Result of the operation.
+    /// @note A full-table overwrite clears all committed real-time progress. A partition
+    ///     overwrite removes progress only for matching partitions. In either case, active
+    ///     real-time writers and their `RealtimeContext` instances must be recreated before
+    ///     further real-time operations.
     virtual Result<int32_t> FilterAndOverwrite(
         const std::map<std::string, std::string>& partition,
         const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
@@ -157,6 +171,9 @@ class PAIMON_EXPORT FileStoreCommit {
     /// @param partitions A vector of partitions to be dropped.
     /// @param commit_identifier An identifier for the commit operation.
     /// @return Status indicating the success or failure of the drop partition operation.
+    /// @note A partition drop removes committed real-time progress only for matching partitions.
+    ///     Active real-time writers and their `RealtimeContext` instances must be recreated before
+    ///     further real-time operations.
     virtual Status DropPartition(const std::vector<std::map<std::string, std::string>>& partitions,
                                  int64_t commit_identifier) = 0;
 
@@ -165,6 +182,9 @@ class PAIMON_EXPORT FileStoreCommit {
     ///
     /// @param commit_identifier An identifier for the commit operation.
     /// @return Status indicating the success or failure of the truncate operation.
+    /// @note Truncation clears all committed real-time progress. Active real-time writers and
+    ///     their `RealtimeContext` instances must be recreated before further real-time
+    ///     operations.
     virtual Status TruncateTable(int64_t commit_identifier) = 0;
 
     /// Abort an unsuccessful commit. The data and index files described by the given commit
@@ -182,6 +202,9 @@ class PAIMON_EXPORT FileStoreCommit {
     /// @param target_snapshot_id The snapshot id to roll back to.
     /// @return Result<bool>; true if the atomic commit succeeded. Returns an error status if
     ///     there is no latest snapshot or the target snapshot does not exist.
+    /// @note Rollback restores the real-time progress recorded by the target snapshot. Active
+    ///     real-time writers and their `RealtimeContext` instances must be recreated before
+    ///     further real-time operations.
     virtual Result<bool> RollbackToAsLatest(int64_t target_snapshot_id) = 0;
 
     /// Configure row-id conflict checking from a specific snapshot id.

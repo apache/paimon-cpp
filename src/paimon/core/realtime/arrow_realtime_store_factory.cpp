@@ -30,8 +30,8 @@
 namespace paimon {
 
 Result<std::shared_ptr<RealtimeStore>> ArrowRealtimeStoreFactory::Create(
-    std::unique_ptr<ArrowSchema> write_schema, const std::map<std::string, std::string>&,
-    const std::shared_ptr<MemoryPool>& memory_pool) {
+    std::unique_ptr<ArrowSchema> write_schema, StatisticsMode statistics_mode,
+    const std::map<std::string, std::string>&, const std::shared_ptr<MemoryPool>& memory_pool) {
     if (!write_schema || !write_schema->release) {
         return Status::Invalid("real-time store write schema is null");
     }
@@ -42,7 +42,8 @@ Result<std::shared_ptr<RealtimeStore>> ArrowRealtimeStoreFactory::Create(
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> imported_schema,
                                       arrow::ImportSchema(write_schema.get()));
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(memory_pool);
-    return std::make_shared<ArrowRealtimeStore>(imported_schema, memory_pool, arrow_pool);
+    return std::make_shared<ArrowRealtimeStore>(imported_schema, statistics_mode, memory_pool,
+                                                arrow_pool);
 }
 
 }  // namespace paimon

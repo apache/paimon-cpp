@@ -103,24 +103,18 @@ Result<std::shared_ptr<FileIndexWriter>> BitmapFileIndex::CreateWriter(
             "invalid schema for BitmapFileIndexWriter, supposed to have single "
             "field.");
     }
-    auto arrow_field = arrow_schema->field(0);
-    return BitmapFileIndexWriter::Create(arrow_schema, arrow_field->name(), options_, pool);
+    return BitmapFileIndexWriter::Create(arrow_schema->field(0), options_, pool);
 }
 
 Result<std::shared_ptr<BitmapFileIndexWriter>> BitmapFileIndexWriter::Create(
-    const std::shared_ptr<arrow::Schema>& arrow_schema, const std::string& field_name,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<arrow::Field>& field, const std::map<std::string, std::string>& options,
+    const std::shared_ptr<MemoryPool>& pool) {
     PAIMON_ASSIGN_OR_RAISE(int8_t version,
                            OptionsUtils::GetValueFromMap<int8_t>(options, BitmapFileIndex::VERSION,
                                                                  BitmapFileIndex::VERSION_2));
-    auto arrow_field = arrow_schema->GetFieldByName(field_name);
-    if (!arrow_field) {
-        return Status::Invalid(
-            fmt::format("field {} not in arrow_schema for BitmapFileIndexWriter", field_name));
-    }
-    auto struct_type = arrow::struct_({arrow_field});
+    std::shared_ptr<arrow::DataType> struct_type = arrow::struct_({field});
     return std::shared_ptr<BitmapFileIndexWriter>(
-        new BitmapFileIndexWriter(version, struct_type, arrow_field->type(), options, pool));
+        new BitmapFileIndexWriter(version, struct_type, field->type(), options, pool));
 }
 
 BitmapFileIndexWriter::BitmapFileIndexWriter(int8_t version,
@@ -137,15 +131,7 @@ BitmapFileIndexWriter::BitmapFileIndexWriter(int8_t version,
 Status BitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(batch, struct_type_));
-    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
-        return Status::Invalid("invalid batch for BitmapFileIndexWriter, expected a struct array");
-    }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
-    if (struct_array->num_fields() != 1) {
-        return Status::Invalid(
-            "invalid batch for BitmapFileIndexWriter, expected a struct array with exactly one "
-            "field");
-    }
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<Literal> array_values,
         LiteralConverter::ConvertLiteralsFromArray(*(struct_array->field(0)), /*own_data=*/true));

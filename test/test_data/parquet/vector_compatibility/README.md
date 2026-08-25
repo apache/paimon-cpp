@@ -22,11 +22,9 @@ VECTOR columns, with and without null vectors.
   `(2, null)` and `(3, [4, 5, 6])`.
 
 A file that stores the Arrow schema, as the Rust writer does, is read back as
-`fixed_size_list`. Arrow 17 cannot read a null value from such a column, because Parquet stores a
-null list slot with no values while `FixedSizeListReader::AssembleArray` in
-`parquet/arrow/reader.cc` requires every slot to span exactly `list_size` values. Reading
-`rust_vector_nullable.parquet` therefore fails until Arrow is upgraded, which
-`ParquetVectorIoTest.ReadNullableRustFixtureIsUnsupported` pins.
+`fixed_size_list`. The bundled Arrow 17 patch backports the Arrow community fix that pads the
+decoded child array for null fixed-size-list slots, so `rust_vector_nullable.parquet` is readable
+as a nullable VECTOR.
 
 SHA-256 checksums:
 

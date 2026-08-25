@@ -19,6 +19,7 @@
 
 #include "paimon/core/realtime/arrow_realtime_store.h"
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,7 +29,11 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
+#include "paimon/realtime/arrow_realtime_store_factory.h"
 #include "paimon/record_batch.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -56,7 +61,11 @@ class ArrowRealtimeStoreTest : public testing::Test {
             {arrow::field("id", arrow::int64()), arrow::field("value", arrow::utf8())});
         pool_ = GetDefaultPool();
         arrow_pool_ = GetArrowPool(pool_);
-        store_ = std::make_shared<ArrowRealtimeStore>(schema_, pool_, arrow_pool_);
+        store_ = CreateStore(StatisticsMode::NONE);
+    }
+
+    std::shared_ptr<ArrowRealtimeStore> CreateStore(StatisticsMode statistics_mode) const {
+        return std::make_shared<ArrowRealtimeStore>(schema_, statistics_mode, pool_, arrow_pool_);
     }
 
     std::unique_ptr<RecordBatch> MakeBatch(const std::string& json) const {
@@ -84,6 +93,21 @@ class ArrowRealtimeStoreTest : public testing::Test {
         auto c_schema = std::make_unique<ArrowSchema>();
         EXPECT_TRUE(arrow::ExportSchema(*schema, c_schema.get()).ok());
         return c_schema;
+    }
+
+    std::vector<int64_t> ReadIds(const BatchReader::ReadBatchWithBitmap& batch) const {
+        std::shared_ptr<arrow::Array> array =
+            arrow::ImportArray(batch.first.first.get(), batch.first.second.get()).ValueOrDie();
+        std::shared_ptr<arrow::StructArray> struct_array =
+            checked_pointer_cast<arrow::StructArray>(array);
+        std::shared_ptr<arrow::Int64Array> ids =
+            checked_pointer_cast<arrow::Int64Array>(struct_array->field(/*pos=*/1));
+        std::vector<int64_t> result;
+        for (RoaringBitmap32::Iterator iter = batch.second.Begin(); iter != batch.second.End();
+             ++iter) {
+            result.push_back(ids->Value(*iter));
+        }
+        return result;
     }
 
  protected:
@@ -203,6 +227,66 @@ TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
             .ValueOrDie();
     ASSERT_TRUE(actual_array->Equals(*expected_array))
         << "expected: " << expected_array->ToString() << ", actual: " << actual_array->ToString();
+}
+
+TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
+    ArrowRealtimeStoreFactory factory;
+    std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeStore> realtime_store,
+                         factory.Create(std::move(write_schema), StatisticsMode::FULL, {}, pool_));
+    std::shared_ptr<ArrowRealtimeStore> store =
+        std::dynamic_pointer_cast<ArrowRealtimeStore>(realtime_store);
+    ASSERT_NE(nullptr, store);
+    ASSERT_OK(
+        store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, "a"], [1, "b"]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[10, "c"], [11, "d"]])"), OffsetRange(2, 4)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
+
+    std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
+    RealtimeQueryContext context{read_schema.get(), predicate, /*enable_predicate_pushdown=*/true};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                         store->CreateQueryReaders(view, /*offset_begin=*/0, context));
+    ASSERT_EQ(1, readers.size());
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, readers[0]->NextBatchWithBitmap());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    ASSERT_EQ(std::vector<int64_t>({10, 11}), ReadIds(batch));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap eof, readers[0]->NextBatchWithBitmap());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+
+    std::unique_ptr<ArrowSchema> unfiltered_read_schema = MakeReadSchema(schema_);
+    RealtimeQueryContext unfiltered_context{unfiltered_read_schema.get(), predicate,
+                                            /*enable_predicate_pushdown=*/false};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> unfiltered_readers,
+                         store->CreateQueryReaders(view, /*offset_begin=*/0, unfiltered_context));
+    ASSERT_EQ(1, unfiltered_readers.size());
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap unfiltered_batch,
+                         unfiltered_readers[0]->NextBatchWithBitmap());
+    ASSERT_EQ(std::vector<int64_t>({0, 1}), ReadIds(unfiltered_batch));
+}
+
+TEST_F(ArrowRealtimeStoreTest, TestMissingStatisticsRetainsNonMatchingBatch) {
+    ASSERT_OK(
+        store_->Write(RealtimeWriteBatch{MakeBatch(R"([[0, "a"], [1, "b"]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store_->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[10, "c"], [11, "d"]])"), OffsetRange(2, 4)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store_->AcquireReadView());
+
+    std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
+        /*field_index=*/0, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
+    RealtimeQueryContext context{read_schema.get(), predicate,
+                                 /*enable_predicate_pushdown=*/true};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                         store_->CreateQueryReaders(view, /*offset_begin=*/0, context));
+    ASSERT_EQ(1, readers.size());
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, readers[0]->NextBatchWithBitmap());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    ASSERT_EQ(std::vector<int64_t>({0, 1}), ReadIds(batch));
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestRejectsHandlesFromAnotherStoreImplementation) {

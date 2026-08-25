@@ -51,7 +51,7 @@ class ExpireSnapshots {
                     const std::shared_ptr<ManifestList>& manifest_list,
                     const std::shared_ptr<ManifestFile>& manifest_file,
                     const std::shared_ptr<FileSystem>& fs, const ExpireConfig& config,
-                    const std::shared_ptr<Executor>& executor);
+                    bool realtime_enabled, const std::shared_ptr<Executor>& executor);
 
     Result<int32_t> Expire();
 
@@ -74,6 +74,7 @@ class ExpireSnapshots {
     std::shared_ptr<ManifestFile> manifest_file_;
     std::shared_ptr<FileSystem> fs_;
     ExpireConfig config_;
+    bool realtime_enabled_;
     std::shared_ptr<Executor> executor_;
     std::unordered_map<BinaryRow, std::set<std::int32_t>> deletion_buckets_;
 

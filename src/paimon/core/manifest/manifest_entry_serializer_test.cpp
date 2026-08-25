@@ -55,10 +55,20 @@ TEST_F(ManifestEntrySerializerTest, TestToFromRow) {
     ManifestEntrySerializer serializer(pool);
     for (const auto& entry : entries) {
         ASSERT_OK_AND_ASSIGN(auto row, serializer.ToRow(entry));
+        ASSERT_EQ(entry.Bucket(), ManifestEntrySerializer::GetBucket(row));
         ASSERT_OK_AND_ASSIGN(auto result_entry, serializer.FromRow(row));
         ASSERT_EQ(entry, result_entry);
         ASSERT_EQ(entry.ToString(), result_entry.ToString());
     }
+}
+
+TEST_F(ManifestEntrySerializerTest, TestValidateVersion) {
+    ASSERT_OK(ManifestEntrySerializer::ValidateVersion(/*version=*/2));
+    ASSERT_NOK_WITH_MSG(ManifestEntrySerializer::ValidateVersion(/*version=*/1),
+                        "The current version 2 is not compatible with the version 1, please "
+                        "recreate the table.");
+    ASSERT_NOK_WITH_MSG(ManifestEntrySerializer::ValidateVersion(/*version=*/3),
+                        "Unsupported version: 3");
 }
 
 TEST_F(ManifestEntrySerializerTest, TestNullableRecordCount) {

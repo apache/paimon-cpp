@@ -46,6 +46,8 @@ struct HttpRequest {
     HttpMethod method = HttpMethod::GET;
     std::string url;
     HttpHeaders headers;
+    /// Overall request timeout in milliseconds; zero keeps libcurl's no-timeout default.
+    int32_t request_timeout_ms = 0;
 };
 
 struct HttpResponse {

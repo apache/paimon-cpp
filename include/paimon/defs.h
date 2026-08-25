@@ -200,6 +200,10 @@ struct PAIMON_EXPORT Options {
     /// cache. Default value is 0.
     static const char SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[];
 
+    /// "scan.manifest-entry.lazy-decode.enabled" - Whether to deserialize only manifest entries
+    /// for the target bucket when rebuilding the cache. Default value is true.
+    static const char SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[];
+
     /// "read.batch-size" - Read batch size for any file format if it supports.
     /// The default value is 1024.
     static const char READ_BATCH_SIZE[];
@@ -405,6 +409,10 @@ struct PAIMON_EXPORT Options {
     /// "file-index.read.enabled" - Whether enabled read file index. Default value is "true".
     static const char FILE_INDEX_READ_ENABLED[];
 
+    /// "file-index.in-manifest-threshold" - The threshold to store file index bytes in the
+    /// manifest. Default value is 500B.
+    static const char FILE_INDEX_IN_MANIFEST_THRESHOLD[];
+
     /// "data-file.external-paths" - The external paths where the data of this table will be
     /// written, multiple elements separated by commas.
     static const char DATA_FILE_EXTERNAL_PATHS[];
@@ -554,9 +562,17 @@ struct PAIMON_EXPORT Options {
     /// "scan.timestamp" can be used as an alternative string input for the same mode.
     static const char SCAN_TIMESTAMP_MILLIS[];
 
+    /// "realtime.enabled" - Whether real-time write, commit, and read operations are enabled.
+    /// Default value is "false".
+    static const char REALTIME_ENABLED[];
+
     /// "realtime.read-view-ttl" - Lifetime of a real-time memory view pinned by scan planning
     /// before reader creation. Default value is "5 min".
     static const char REALTIME_READ_VIEW_TTL[];
+
+    /// "realtime.store.stats-mode" - Statistics collected by the default real-time store.
+    /// Supported values are "none" and "full". Default value is "none".
+    static const char REALTIME_STORE_STATS_MODE[];
 
     /// "scan.timestamp" - Optional timestamp string used in case of "from-timestamp" scan mode,
     /// as an alternative to "scan.timestamp-millis".

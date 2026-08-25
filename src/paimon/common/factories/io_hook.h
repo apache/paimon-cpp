@@ -45,7 +45,8 @@ class PAIMON_EXPORT IOHook : public Singleton<IOHook> {
     };
 
     /// Reset the IO exception position and behavior mode to handle the exception.
-    /// IOCount will be reset to 0.
+    /// IOCount will be reset to 0. Arms the hook: Try() switches from its lock-free
+    /// disabled fast path to the synchronized armed path.
     ///
     /// @params pos The position where the IO exception occurs.
     /// @params mode The mode of behavior for handling the exception.
@@ -56,12 +57,14 @@ class PAIMON_EXPORT IOHook : public Singleton<IOHook> {
     Status Try(const std::string& path);
 
     /// Get the count of IO operations that have already occurred.
+    /// IOs are only counted while the hook is armed (after Reset(), before Clear());
+    /// the disabled fast path does not count.
     ///
     /// @return The number of IO operations executed.
     int64_t IOCount() const;
 
     /// Clear the state of the IOHook, including resetting IO count and
-    /// any stored exception state.
+    /// any stored exception state. Disarms the hook back to the lock-free fast path.
     void Clear();
 
  private:

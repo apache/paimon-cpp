@@ -73,6 +73,11 @@ using RealtimeOffsetMap = std::map<RealtimePartitionBucket, int64_t>;
 /// reads. `RealtimeContext` itself is not a customization interface and must not be implemented by
 /// applications. Customize real-time storage and retrieval through `RealtimeStoreFactory` and
 /// `RealtimeStore` instead.
+///
+/// A context is valid only for one uninterrupted committed-progress history. Overwrite, truncate,
+/// partition drop, and rollback operations do not automatically clear process-local real-time
+/// state. Applications must coordinate these operations with active real-time writers and recreate
+/// the `RealtimeContext` and writers before continuing.
 class PAIMON_EXPORT RealtimeContext {
  public:
     /// Creates a context backed by Paimon's default in-memory Arrow `RealtimeStore`.

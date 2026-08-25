@@ -31,6 +31,7 @@
 #include "paimon/realtime/offset_range.h"
 #include "paimon/record_batch.h"
 #include "paimon/result.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/visibility.h"
 
 struct ArrowSchema;
@@ -156,13 +157,14 @@ class PAIMON_EXPORT RealtimeStoreFactory {
  public:
     virtual ~RealtimeStoreFactory() = default;
 
-    /// Creates a store configured with the supplied schema, options, and memory pool.
+    /// Creates a store configured with the supplied schema, statistics, options, and memory pool.
     /// @param write_schema Complete table write schema whose ownership is transferred to the
     /// factory. The factory may consume it or retain it in the created store.
+    /// @param statistics_mode Framework-parsed statistics collection mode.
     /// @param options Effective table options available to the store.
     /// @param memory_pool Memory pool provided by the write context.
     virtual Result<std::shared_ptr<RealtimeStore>> Create(
-        std::unique_ptr<::ArrowSchema> write_schema,
+        std::unique_ptr<::ArrowSchema> write_schema, StatisticsMode statistics_mode,
         const std::map<std::string, std::string>& options,
         const std::shared_ptr<MemoryPool>& memory_pool) = 0;
 };

@@ -64,7 +64,6 @@ struct DeletionFile;
 /// ->(ConcatBatchReader across blob files | BlobFallbackBatchReader across blob sequence layers)
 /// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ApplyBitmapIndexBatchReader)
 /// ->(CompleteRowTrackingFieldsBatchReader)->(ShreddingFileReader)
-/// ->(MapSharedShreddingFileReader)
 /// ->(VectorFileBatchReader)->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)
 /// ->(LateMaterializingFileBatchReader)->FormatReader
 ///

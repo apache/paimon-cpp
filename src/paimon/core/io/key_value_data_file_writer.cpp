@@ -25,7 +25,6 @@
 #include <utility>
 #include <variant>
 
-#include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_array.h"
 #include "paimon/common/data/binary_array_writer.h"
@@ -53,7 +52,7 @@ KeyValueDataFileWriter::KeyValueDataFileWriter(
     const std::shared_ptr<FormatStatsExtractor>& stats_extractor,
     const std::shared_ptr<arrow::Schema>& write_schema, bool is_external_path,
     const std::shared_ptr<MemoryPool>& pool)
-    : SingleFileWriter(compression, converter),
+    : DataFileWriterBase(compression, std::move(converter)),
       pool_(pool),
       schema_id_(schema_id),
       level_(level),
@@ -63,10 +62,6 @@ KeyValueDataFileWriter::KeyValueDataFileWriter(
       write_schema_(write_schema),
       is_external_path_(is_external_path),
       disable_stats_(stats_extractor == nullptr) {}
-
-void KeyValueDataFileWriter::SetMetadataFinalizer(MetadataFinalizer finalizer) {
-    metadata_finalizer_ = std::move(finalizer);
-}
 
 Status KeyValueDataFileWriter::Write(KeyValueBatch batch) {
     // update min and max key
@@ -80,19 +75,7 @@ Status KeyValueDataFileWriter::Write(KeyValueBatch batch) {
     // update delete row count
     delete_row_count_ += batch.delete_row_count;
 
-    PAIMON_RETURN_NOT_OK(SingleFileWriter::Write(std::move(batch)));
-    return Status::OK();
-}
-
-Status KeyValueDataFileWriter::BeforeFinish() {
-    if (metadata_finalizer_) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> updated_schema,
-                               metadata_finalizer_());
-        if (updated_schema) {
-            PAIMON_RETURN_NOT_OK(UpdateSchema(updated_schema));
-        }
-    }
-    return Status::OK();
+    return WriteRecordWithFileIndex(std::move(batch));
 }
 
 Result<std::shared_ptr<DataFileMeta>> KeyValueDataFileWriter::GetResult() {
@@ -120,14 +103,14 @@ Result<std::shared_ptr<DataFileMeta>> KeyValueDataFileWriter::GetResult() {
         final_path = external_path.ToString();
     }
     PAIMON_ASSIGN_OR_RAISE(int64_t local_micro, DateTimeUtils::GetCurrentLocalTimeUs());
+    const FileIndexWriteResult& file_index = GetFileIndexWriteResult();
     return std::make_shared<DataFileMeta>(
         PathUtil::GetName(path_), output_bytes_, RecordCount(), min_key, max_key, key_stats,
         value_stats, min_sequence_number_, max_sequence_number_, schema_id_, level_,
-        /*extra_files=*/std::vector<std::optional<std::string>>(),
+        file_index.extra_files,
         Timestamp(/*millisecond=*/local_micro / 1000, /*nano_of_millisecond=*/0), delete_row_count_,
-        /*embedded_index=*/nullptr, file_source_,
-        /*value_stats_cols=*/std::nullopt, final_path, /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        file_index.embedded_index, file_source_, /*value_stats_cols=*/std::nullopt, final_path,
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
 }
 
 Status KeyValueDataFileWriter::GenerateMinMaxKey(BinaryRow* min_key, BinaryRow* max_key) const {

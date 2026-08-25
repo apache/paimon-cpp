@@ -29,6 +29,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/io/cache/lru_cache.h"
+#include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/partition_entry.h"
 #include "paimon/core/operation/metrics/scan_metrics.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -186,11 +187,14 @@ namespace {
 std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
                                          const std::shared_ptr<Cache>& cache,
                                          const std::optional<int32_t>& bucket = std::nullopt,
-                                         const std::shared_ptr<Predicate>& predicate = nullptr) {
+                                         const std::shared_ptr<Predicate>& predicate = nullptr,
+                                         bool manifest_entry_lazy_decode_enabled = true) {
     ScanContextBuilder context_builder(table_path);
     context_builder.AddOption(Options::FILE_FORMAT, "orc")
         .AddOption(Options::MANIFEST_FORMAT, "orc")
         .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "8")
+        .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
+                   manifest_entry_lazy_decode_enabled ? "true" : "false")
         .WithCache(cache);
     if (bucket) {
         context_builder.SetBucketFilter(bucket.value());
@@ -203,6 +207,16 @@ std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
     auto typed_table_scan = dynamic_cast<AbstractTableScan*>(table_scan.get());
     EXPECT_TRUE(typed_table_scan);
     return typed_table_scan->snapshot_reader_->scan_;
+}
+
+std::vector<std::string> SortedFileNames(std::vector<ManifestEntry>&& entries) {
+    std::vector<std::string> file_names;
+    file_names.reserve(entries.size());
+    for (const auto& entry : entries) {
+        file_names.push_back(entry.FileName());
+    }
+    std::sort(file_names.begin(), file_names.end());
+    return file_names;
 }
 
 }  // namespace
@@ -253,13 +267,13 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
                          scan_first->GetSnapshotManager()->LoadSnapshot(/*snapshot_id=*/5));
     scan_first->WithSnapshot(snapshot_5);
     ASSERT_OK_AND_ASSIGN(auto plan_first, scan_first->CreatePlan());
-    size_t first_size = plan_first->Files().size();
+    std::vector<std::string> first_file_names = SortedFileNames(plan_first->Files());
 
     // Second scan on the same snapshot should read the same bucket live entries from cache.
     auto scan_second = BuildScan(table_path, cache, /*bucket=*/0);
     scan_second->WithSnapshot(snapshot_5);
     ASSERT_OK_AND_ASSIGN(auto plan_second, scan_second->CreatePlan());
-    ASSERT_EQ(first_size, plan_second->Files().size());
+    ASSERT_EQ(first_file_names, SortedFileNames(plan_second->Files()));
 }
 
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {
@@ -285,6 +299,24 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {
     auto scan_expected = BuildScan(table_path, /*cache=*/nullptr, /*bucket=*/0);
     scan_expected->WithSnapshot(snapshot_5);
     ASSERT_OK_AND_ASSIGN(auto plan_expected, scan_expected->CreatePlan());
-    ASSERT_EQ(plan_expected->Files().size(), plan_next->Files().size());
+    ASSERT_EQ(SortedFileNames(plan_expected->Files()), SortedFileNames(plan_next->Files()));
+}
+
+TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheFallbackWithoutLazyDecode) {
+    TimezoneGuard guard("Asia/Shanghai");
+    std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
+    auto cache = std::make_shared<LruCache>(/*max_weight=*/16 * 1024 * 1024);
+
+    auto scan_fallback = BuildScan(table_path, cache, /*bucket=*/0, /*predicate=*/nullptr,
+                                   /*manifest_entry_lazy_decode_enabled=*/false);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot_5,
+                         scan_fallback->GetSnapshotManager()->LoadSnapshot(/*snapshot_id=*/5));
+    scan_fallback->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto plan_fallback, scan_fallback->CreatePlan());
+
+    auto scan_expected = BuildScan(table_path, /*cache=*/nullptr, /*bucket=*/0);
+    scan_expected->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto plan_expected, scan_expected->CreatePlan());
+    ASSERT_EQ(SortedFileNames(plan_expected->Files()), SortedFileNames(plan_fallback->Files()));
 }
 }  // namespace paimon::test

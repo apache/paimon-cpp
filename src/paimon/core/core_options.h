@@ -40,6 +40,7 @@
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/table/source/startup_mode.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
@@ -106,8 +107,12 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetSourceSplitOpenFileCost() const;
     std::optional<int64_t> GetScanSnapshotId() const;
     std::optional<int64_t> GetScanTimestampMillis() const;
+    bool RealtimeEnabled() const;
     int64_t GetRealtimeReadViewTtlMillis() const;
+    /// Returns the statistics mode used by the real-time store.
+    StatisticsMode GetRealtimeStoreStatisticsMode() const;
     int32_t GetScanManifestEntryCacheMaxSnapshots() const;
+    bool ScanManifestEntryLazyDecodeEnabled() const;
 
     int64_t GetManifestTargetFileSize() const;
     std::shared_ptr<Cache> GetCache() const;
@@ -207,6 +212,7 @@ class PAIMON_EXPORT CoreOptions {
     bool NeedLookup() const;
     bool PrepareCommitWaitCompaction() const;
     bool FileIndexReadEnabled() const;
+    int64_t FileIndexInManifestThreshold() const;
 
     std::map<std::string, std::string> GetFieldsSequenceGroups() const;
     bool PartialUpdateRemoveRecordOnDelete() const;

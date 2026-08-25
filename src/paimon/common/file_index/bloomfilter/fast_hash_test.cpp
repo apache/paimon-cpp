@@ -18,6 +18,9 @@
 
 #include "paimon/common/file_index/bloomfilter/fast_hash.h"
 
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -162,6 +165,34 @@ TEST_F(FastHashTest, TestCompatibleWithJava) {
         ASSERT_NOK_WITH_MSG(FastHash::GetHashFunction(arrow::boolean()),
                             "bloom filter index does not support BOOLEAN");
     }
+}
+
+TEST_F(FastHashTest, TestNaNCompatibleWithJava) {
+    auto float_from_bits = [](uint32_t bits) {
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const float float_nan = float_from_bits(0x7fc12345);
+    const float negative_float_nan = float_from_bits(0xffc54321);
+    ASSERT_TRUE(std::isnan(float_nan));
+    ASSERT_TRUE(std::isnan(negative_float_nan));
+    ASSERT_OK_AND_ASSIGN(auto float_hash_function, FastHash::GetHashFunction(arrow::float32()));
+    CheckResult(float_hash_function, {Literal(float_nan), Literal(negative_float_nan)},
+                {0x67c27c6d9936ae63, 0x67c27c6d9936ae63});
+
+    auto double_from_bits = [](uint64_t bits) {
+        double value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const double double_nan = double_from_bits(0x7ff8123456789abc);
+    const double negative_double_nan = double_from_bits(0xfff8abcdef012345);
+    ASSERT_TRUE(std::isnan(double_nan));
+    ASSERT_TRUE(std::isnan(negative_double_nan));
+    ASSERT_OK_AND_ASSIGN(auto double_hash_function, FastHash::GetHashFunction(arrow::float64()));
+    CheckResult(double_hash_function, {Literal(double_nan), Literal(negative_double_nan)},
+                {0x13d2d3f2cc0e846e, 0x13d2d3f2cc0e846e});
 }
 
 }  // namespace paimon::test

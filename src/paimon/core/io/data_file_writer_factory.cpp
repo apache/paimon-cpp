@@ -24,6 +24,9 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/io/data_file_index_writer.h"
+#include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/io/file_index_options.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/writer_builder.h"
 
@@ -56,6 +59,18 @@ Result<DataFileWriterFactory::WriterResources> DataFileWriterFactory::CreateWrit
                                format.CreateStatsExtractor(&arrow_schema));
     }
     return resources;
+}
+
+Result<std::unique_ptr<DataFileIndexWriter>> DataFileWriterFactory::CreateFileIndexWriter(
+    const std::shared_ptr<arrow::Schema>& logical_schema,
+    const std::shared_ptr<DataFilePathFactory>& path_factory) const {
+    PAIMON_ASSIGN_OR_RAISE(FileIndexOptions file_index_options,
+                           FileIndexOptions::FromCoreOptions(options_));
+    if (file_index_options.Empty()) {
+        return std::unique_ptr<DataFileIndexWriter>();
+    }
+    return DataFileIndexWriter::Create(logical_schema, file_index_options, options_.GetFileSystem(),
+                                       path_factory, pool_);
 }
 
 }  // namespace paimon

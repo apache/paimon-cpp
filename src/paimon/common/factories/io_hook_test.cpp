@@ -19,9 +19,13 @@
 
 #include "paimon/common/factories/io_hook.h"
 
+#include <atomic>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -61,6 +65,83 @@ TEST(IOHookTest, TestThrowExceptionMode) {
     EXPECT_THROW(Try(), std::runtime_error);
     EXPECT_THROW(Try(), std::runtime_error);
     ASSERT_EQ(2, hook->IOCount());
+    hook->Clear();
+}
+
+// The disabled state is the production default: Try() must take the lock-free fast
+// path, always return OK, and not count IOs (see IOCount()'s contract). Clear() first
+// so the test does not depend on execution order.
+TEST(IOHookTest, TestDisabledFastPath) {
+    auto hook = IOHook::GetInstance();
+    hook->Clear();
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_EQ(0, hook->IOCount());
+
+    // Re-arming and disarming must restore the exact disabled behavior.
+    hook->Reset(0, IOHook::Mode::RETURN_ERROR);
+    ASSERT_NOK(hook->Try("path"));
+    ASSERT_EQ(1, hook->IOCount());
+    hook->Clear();
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_OK(hook->Try("path"));
+    ASSERT_EQ(0, hook->IOCount());
+}
+
+// Regression test for torn IOHook configurations: Reset()/Clear() run on one thread
+// while other threads call Try() concurrently. A shared start barrier releases all
+// threads together, and the reset thread keeps hammering until every worker has
+// finished, so overlap is structural rather than timing-dependent. The continuous
+// arm/disarm cycling also keeps workers switching between the disabled fast path and
+// the synchronized armed path. Under a ThreadSanitizer build this deterministically
+// reports any unsynchronized access; functionally every Try() must return OK.
+TEST(IOHookTest, TestConcurrentResetAndTry) {
+    auto hook = IOHook::GetInstance();
+
+    constexpr int32_t kTryIterations = 50000;
+    constexpr int32_t kNumWorkers = 4;
+
+    std::atomic<bool> start{false};
+    std::atomic<int32_t> workers_done{0};
+    std::atomic<bool> observed_error{false};
+
+    std::thread reset_thread([hook, &start, &workers_done]() {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        while (workers_done.load(std::memory_order_relaxed) < kNumWorkers) {
+            hook->Reset(INT64_MAX, IOHook::Mode::RETURN_ERROR);
+            hook->Clear();
+        }
+    });
+
+    std::vector<std::thread> workers;
+    workers.reserve(kNumWorkers);
+    for (int32_t t = 0; t < kNumWorkers; t++) {
+        workers.emplace_back([hook, &start, &workers_done, &observed_error]() {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int32_t i = 0; i < kTryIterations; i++) {
+                Status status = hook->Try("concurrent_path");
+                // Reset() arms an unreachable position, while Clear() uses SILENT mode,
+                // so both complete states return OK. An IOError exposes a torn state.
+                if (!status.ok()) {
+                    observed_error.store(true, std::memory_order_relaxed);
+                }
+            }
+            workers_done.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    start.store(true, std::memory_order_release);
+    reset_thread.join();
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    ASSERT_FALSE(observed_error.load(std::memory_order_relaxed));
+    // Leave the process-wide singleton in its default SILENT state for later tests.
     hook->Clear();
 }
 

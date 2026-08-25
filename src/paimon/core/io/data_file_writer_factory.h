@@ -32,6 +32,8 @@ class Schema;
 namespace paimon {
 
 class FileFormat;
+class DataFileIndexWriter;
+class DataFilePathFactory;
 class FormatStatsExtractor;
 class MemoryPool;
 class WriterBuilder;
@@ -51,6 +53,10 @@ class DataFileWriterFactory {
     Result<WriterResources> CreateWriterResources(const FileFormat& format,
                                                   const std::shared_ptr<arrow::Schema>& file_schema,
                                                   bool create_stats_extractor) const;
+
+    Result<std::unique_ptr<DataFileIndexWriter>> CreateFileIndexWriter(
+        const std::shared_ptr<arrow::Schema>& logical_schema,
+        const std::shared_ptr<DataFilePathFactory>& path_factory) const;
 
     CoreOptions options_;
     int64_t schema_id_;

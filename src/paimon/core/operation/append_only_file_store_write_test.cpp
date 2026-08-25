@@ -273,6 +273,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange)
         {"write-only", "true"},
         {"bucket", "1"},
         {"bucket-key", "id"},
+        {Options::REALTIME_ENABLED, "true"},
     };
     auto logical_schema =
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("name", arrow::utf8())});

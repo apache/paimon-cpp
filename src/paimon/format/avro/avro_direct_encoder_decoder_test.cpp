@@ -62,6 +62,7 @@ class AvroDirectEncoderDecoderTest : public ::testing::Test {
         auto decoder = ::avro::binaryDecoder();
         decoder->init(*input_stream);
 
+        decode_ctx_.ClearBuilderMetadata();
         for (int32_t i = 0; i < expected_count; ++i) {
             PAIMON_RETURN_NOT_OK(AvroDirectDecoder::DecodeAvroToBuilder(
                 avro_node, projection, decoder.get(), builder, &decode_ctx_));
@@ -157,6 +158,18 @@ TEST_F(AvroDirectEncoderDecoderTest, TestIntegerTypes) {
         CheckResult(schema_json, input_array, &builder);
     }
 
+    // Test INT16
+    {
+        std::string schema_json = R"({"type": "int"})";
+        arrow::Int16Builder builder;
+        ASSERT_TRUE(builder.Append(1).ok());
+        ASSERT_TRUE(builder.Append(-32768).ok());
+        ASSERT_TRUE(builder.Append(32767).ok());
+        std::shared_ptr<arrow::Array> input_array;
+        ASSERT_TRUE(builder.Finish(&input_array).ok());
+        CheckResult(schema_json, input_array, &builder);
+    }
+
     // Test INT32
     {
         std::string schema_json = R"({"type": "int"})";
@@ -180,6 +193,16 @@ TEST_F(AvroDirectEncoderDecoderTest, TestIntegerTypes) {
         ASSERT_TRUE(builder.Finish(&input_array).ok());
         CheckResult(schema_json, input_array, &builder);
     }
+}
+
+TEST_F(AvroDirectEncoderDecoderTest, TestDecodeContextBuilderMetadataLifecycle) {
+    arrow::Int8Builder int8_builder;
+    ASSERT_EQ(decode_ctx_.GetBuilderMetadata(&int8_builder).type, arrow::Type::INT8);
+
+    decode_ctx_.ClearBuilderMetadata();
+
+    arrow::Int16Builder int16_builder;
+    ASSERT_EQ(decode_ctx_.GetBuilderMetadata(&int16_builder).type, arrow::Type::INT16);
 }
 
 TEST_F(AvroDirectEncoderDecoderTest, TestFloatingPointTypes) {

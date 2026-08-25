@@ -23,7 +23,6 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <variant>
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
@@ -100,10 +99,10 @@ class CountingFileSystem : public FileSystem {
 
 class ManifestFileTest : public testing::Test {
  public:
-    std::vector<ManifestEntry> ReadManifestEntry(const std::string& file_format_str,
-                                                 const std::string& root_path,
-                                                 const std::string& file_name,
-                                                 const std::shared_ptr<MemoryPool>& pool) const {
+    std::vector<ManifestEntry> ReadManifestEntry(
+        const std::string& file_format_str, const std::string& root_path,
+        const std::string& file_name, const std::shared_ptr<MemoryPool>& pool,
+        const std::optional<int32_t>& bucket = std::nullopt) const {
         std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
                              FileFormatFactory::Get(file_format_str, {}));
@@ -124,7 +123,12 @@ class ManifestFileTest : public testing::Test {
             ManifestFile::Create(file_system, file_format, "zstd", path_factory,
                                  /*target_file_size=*/1024, pool, options, unused_schema));
         std::vector<ManifestEntry> manifest_entries;
-        EXPECT_OK(manifest_file->Read(file_name, /*filter=*/nullptr, &manifest_entries));
+        if (bucket) {
+            EXPECT_OK(
+                manifest_file->ReadBucketEntries(file_name, bucket.value(), &manifest_entries));
+        } else {
+            EXPECT_OK(manifest_file->Read(file_name, /*filter=*/nullptr, &manifest_entries));
+        }
 
         return manifest_entries;
     }
@@ -316,6 +320,104 @@ TEST_F(ManifestFileTest, TestManifestCacheReusesCachedBytes) {
     ASSERT_EQ(1, manifest_cache->Size());
 }
 
+TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
+    auto pool = GetDefaultPool();
+    auto counting_file_system = std::make_shared<CountingFileSystem>();
+    auto manifest_cache =
+        std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 64 * 1024 * 1024);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
+                         FileFormatFactory::Get("orc", {}));
+    std::string root_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        FileStorePathFactory::Create(root_path, unused_schema, /*partition_keys=*/{},
+                                     /*default_part_value=*/"", file_format->Identifier(),
+                                     /*data_file_prefix=*/"data-",
+                                     /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                     /*global_index_external_path=*/std::nullopt,
+                                     /*index_file_in_data_file_dir=*/false, pool));
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}}));
+    options.WithCache(manifest_cache);
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ManifestFile> manifest_file,
+        ManifestFile::Create(counting_file_system, file_format, "zstd", path_factory,
+                             /*target_file_size=*/1024, pool, options, unused_schema));
+
+    const std::string manifest_name = "manifest-3a44a0da-1008-463c-914e-28d271375e24-0";
+    std::vector<ManifestEntry> all_entries;
+    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, &all_entries));
+    ASSERT_EQ(2, all_entries.size());
+
+    std::vector<ManifestEntry> bucket_one_entries;
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, &bucket_one_entries));
+    ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
+
+    std::vector<ManifestEntry> bucket_zero_entries;
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/0, &bucket_zero_entries));
+    ASSERT_EQ(std::vector<ManifestEntry>({all_entries[1]}), bucket_zero_entries);
+
+    std::vector<ManifestEntry> missing_bucket_entries;
+    ASSERT_OK(
+        manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/2, &missing_bucket_entries));
+    ASSERT_TRUE(missing_bucket_entries.empty());
+
+    ASSERT_EQ(1, counting_file_system->open_count);
+    ASSERT_EQ(4, manifest_cache->GetCount());
+    ASSERT_EQ(1, manifest_cache->SupplierCallCount());
+}
+
+TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
+    auto pool = GetDefaultPool();
+    std::vector<ManifestEntry> source_entries =
+        ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
+                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+    ASSERT_EQ(2, source_entries.size());
+
+    auto test_dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(test_dir);
+    std::shared_ptr<FileSystem> file_system = test_dir->GetFileSystem();
+    ASSERT_OK(file_system->Mkdirs(FileStorePathFactory::ManifestPath(test_dir->Str())));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
+                         FileFormatFactory::Get("orc", {}));
+    auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        FileStorePathFactory::Create(test_dir->Str(), unused_schema, /*partition_keys=*/{},
+                                     /*default_part_value=*/"", file_format->Identifier(),
+                                     /*data_file_prefix=*/"data-",
+                                     /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                     /*global_index_external_path=*/std::nullopt,
+                                     /*index_file_in_data_file_dir=*/false, pool));
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ManifestFile> manifest_file,
+        ManifestFile::Create(file_system, file_format, "zstd", path_factory,
+                             /*target_file_size=*/1024, pool, options, unused_schema));
+
+    ManifestEntry invalid_other_bucket(FileKind(static_cast<int8_t>(2)),
+                                       source_entries[0].Partition(), /*bucket=*/1,
+                                       /*total_buckets=*/2, source_entries[0].File());
+    ManifestEntry valid_target_bucket(FileKind::Add(), source_entries[1].Partition(), /*bucket=*/0,
+                                      /*total_buckets=*/2, source_entries[1].File());
+    using WrittenFile = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(
+        WrittenFile written_file,
+        manifest_file->WriteWithoutRolling({invalid_other_bucket, valid_target_bucket}));
+
+    std::vector<ManifestEntry> all_entries;
+    ASSERT_NOK_WITH_MSG(manifest_file->Read(written_file.first, /*filter=*/nullptr, &all_entries),
+                        "Unsupported byte value 2 for file kind.");
+
+    std::vector<ManifestEntry> bucket_entries;
+    ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0, &bucket_entries));
+    ASSERT_EQ(std::vector<ManifestEntry>({valid_target_bucket}), bucket_entries);
+}
+
 TEST_F(ManifestFileTest, TestWithNullCount) {
     auto pool = GetDefaultPool();
     auto manifest_entries =
@@ -406,6 +508,9 @@ TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon09) {
     std::vector<ManifestEntry> expected_manifest_entries;
     expected_manifest_entries.emplace_back(manifest_entry);
     ASSERT_EQ(expected_manifest_entries, manifest_entries);
+    ASSERT_EQ(expected_manifest_entries,
+              ReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro", "avro_manifest_09",
+                                pool, /*bucket=*/0));
 }
 
 TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon11) {
@@ -442,6 +547,9 @@ TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon11) {
     std::vector<ManifestEntry> expected_manifest_entries;
     expected_manifest_entries.emplace_back(manifest_entry);
     ASSERT_EQ(expected_manifest_entries, manifest_entries);
+    ASSERT_EQ(expected_manifest_entries,
+              ReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro", "avro_manifest_11",
+                                pool, /*bucket=*/0));
 }
 
 }  // namespace paimon::test

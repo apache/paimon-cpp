@@ -218,7 +218,7 @@ class PAIMON_EXPORT WriteContextBuilder {
     WriteContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
     /// Enables the real-time write path with the provided shared context.
-    /// @param realtime_context Non-null context that owns the real-time indexers.
+    /// @param realtime_context Non-null context that owns the real-time stores.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);

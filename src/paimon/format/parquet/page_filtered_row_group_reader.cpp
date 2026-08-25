@@ -284,9 +284,9 @@ Status PageFilteredRowGroupReader::WaitForPreBuffer(
 
 Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFilteredField(
     const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-    int32_t row_group_index, int32_t field_index, const std::vector<int32_t>& column_indices,
-    const RowRanges& row_ranges, int64_t row_group_row_count,
-    ::parquet::arrow::FileReader* arrow_file_reader) {
+    int32_t row_group_index, int32_t field_index,
+    std::shared_ptr<std::unordered_set<int>> column_indices, const RowRanges& row_ranges,
+    int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader) {
     // Factory: set a direct data page read plan on every leaf (per-leaf OffsetIndex).
     // The plan lets Arrow jump over unselected page headers as well as page bodies.
     auto factory =
@@ -397,12 +397,14 @@ Result<std::unique_ptr<arrow::RecordBatchReader>> PageFilteredRowGroupReader::Re
     std::vector<std::shared_ptr<arrow::ChunkedArray>> result_arrays;
     result_arrays.reserve(field_indices.size());
 
+    std::shared_ptr<std::unordered_set<int>> col_indices_set =
+        std::make_shared<std::unordered_set<int>>(column_indices.begin(), column_indices.end());
     // TODO(zhouhongfeng.zhf): This loop could be parallelized.
     for (int field_idx : field_indices) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<arrow::ChunkedArray> chunked_array,
             ReadFilteredField(row_group_page_index_reader, row_group_index, field_idx,
-                              column_indices, row_ranges, row_group_row_count, arrow_file_reader));
+                              col_indices_set, row_ranges, row_group_row_count, arrow_file_reader));
 
         if (chunked_array->length() != expected_rows) {
             return Status::Invalid(

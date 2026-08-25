@@ -82,4 +82,16 @@ TEST_P(MemorySegmentOutputStreamTest, TestSimple) {
     ASSERT_EQ(out.CurrentSize(), input_stream->GetPos().value());
 }
 
+TEST(MemorySegmentOutputStreamTest, TestRawWriteDoesNotAllocateTemporaryBuffer) {
+    std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    MemorySegmentOutputStream out(/*segment_size=*/8, pool);
+    uint64_t allocated_before_write = pool->CurrentUsage();
+
+    out.Write("abc", 3);
+
+    ASSERT_EQ(allocated_before_write, pool->CurrentUsage());
+    ASSERT_EQ(pool->CurrentUsage(), pool->MaxMemoryUsage());
+    ASSERT_EQ(3, out.CurrentSize());
+}
+
 }  // namespace paimon::test

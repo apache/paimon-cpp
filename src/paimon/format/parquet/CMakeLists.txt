@@ -20,7 +20,6 @@ set(PAIMON_PARQUET_FILE_FORMAT
     file_reader_wrapper.cpp
     page_filtered_row_group_reader.cpp
     parquet_timestamp_converter.cpp
-    parquet_vector_converter.cpp
     parquet_file_batch_reader.cpp
     parquet_file_format_factory.cpp
     parquet_format_writer.cpp
@@ -56,7 +55,6 @@ if(PAIMON_BUILD_TESTS)
                     file_reader_wrapper_test.cpp
                     page_filtered_row_group_reader_test.cpp
                     parquet_timestamp_converter_test.cpp
-                    parquet_vector_converter_test.cpp
                     parquet_vector_io_test.cpp
                     parquet_field_id_converter_test.cpp
                     parquet_file_batch_reader_test.cpp

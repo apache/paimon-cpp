@@ -17,6 +17,7 @@
  */
 
 #pragma once
+
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -25,7 +26,7 @@
 #include <vector>
 
 #include "paimon/core/io/data_file_meta.h"
-#include "paimon/core/io/single_file_writer.h"
+#include "paimon/core/io/data_file_writer_base.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/result.h"
@@ -44,14 +45,8 @@ class InternalRow;
 class MemoryPool;
 class SimpleStats;
 
-class KeyValueDataFileWriter
-    : public SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>> {
+class KeyValueDataFileWriter : public DataFileWriterBase<KeyValueBatch> {
  public:
-    /// Callback invoked during BeforeFinish() to finalize file metadata.
-    /// Produces an updated schema with per-field metadata (e.g. shredding metadata)
-    /// and may perform other finalization work (e.g. reporting stats to cross-file context).
-    using MetadataFinalizer = std::function<Result<std::shared_ptr<arrow::Schema>>()>;
-
     KeyValueDataFileWriter(const std::string& compression,
                            std::function<Status(KeyValueBatch&&, ::ArrowArray*)> converter,
                            int64_t schema_id, int32_t level, FileSource file_source,
@@ -60,16 +55,9 @@ class KeyValueDataFileWriter
                            const std::shared_ptr<arrow::Schema>& write_schema,
                            bool is_external_path, const std::shared_ptr<MemoryPool>& pool);
 
-    /// Sets the metadata finalizer. Called during BeforeFinish() to produce an updated
-    /// schema and perform finalization callbacks. Must be set before Close().
-    void SetMetadataFinalizer(MetadataFinalizer finalizer);
-
     Status Write(KeyValueBatch batch) override;
 
     Result<std::shared_ptr<DataFileMeta>> GetResult() override;
-
- protected:
-    Status BeforeFinish() override;
 
  private:
     Result<std::vector<std::shared_ptr<ColumnStats>>> GetFieldStats();
@@ -96,7 +84,6 @@ class KeyValueDataFileWriter
     int64_t max_sequence_number_ = std::numeric_limits<int64_t>::min();
     std::shared_ptr<InternalRow> min_key_;
     std::shared_ptr<InternalRow> max_key_;
-    MetadataFinalizer metadata_finalizer_;
 };
 
 }  // namespace paimon

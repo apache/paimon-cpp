@@ -25,6 +25,7 @@
 #include "paimon/cache/cache.h"
 #include "paimon/common/io/cache/cache_key.h"
 #include "paimon/common/io/cache/lru_cache.h"
+#include "paimon/common/utils/saturating_cast.h"
 #include "paimon/memory/memory_segment.h"
 #include "paimon/result.h"
 
@@ -59,9 +60,13 @@ class PAIMON_EXPORT CacheManager {
     /// @param high_priority_pool_ratio Ratio of capacity reserved for index cache [0.0, 1.0).
     ///        If 0, index and data share the same cache.
     CacheManager(int64_t max_memory_bytes, double high_priority_pool_ratio) {
-        auto index_cache_bytes = static_cast<int64_t>(max_memory_bytes * high_priority_pool_ratio);
+        // Both factors are config-validated non-negative values, so the products are finite;
+        // saturation is only a defense against the undefined double->int64_t conversion when
+        // max_memory_bytes is close enough to INT64_MAX that the product rounds to 2^63.
+        auto index_cache_bytes =
+            SaturatingDoubleToInteger<int64_t>(max_memory_bytes * high_priority_pool_ratio);
         auto data_cache_bytes =
-            static_cast<int64_t>(max_memory_bytes * (1.0 - high_priority_pool_ratio));
+            SaturatingDoubleToInteger<int64_t>(max_memory_bytes * (1.0 - high_priority_pool_ratio));
         data_cache_ = std::make_shared<LruCache>(data_cache_bytes);
         if (high_priority_pool_ratio == 0.0) {
             index_cache_ = data_cache_;

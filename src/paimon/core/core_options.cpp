@@ -38,6 +38,7 @@
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
+#include "paimon/statistics_mode.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -386,11 +387,14 @@ struct CoreOptions::Impl {
     int64_t manifest_target_file_size = 8 * 1024 * 1024;
     int64_t deletion_vector_target_file_size = 2 * 1024 * 1024;
     int64_t manifest_full_compaction_file_size = 16 * 1024 * 1024;
+    int64_t file_index_in_manifest_threshold = 500;
     int64_t write_buffer_size = 256 * 1024 * 1024;
     int64_t commit_timeout = std::numeric_limits<int64_t>::max();
     int64_t commit_min_retry_wait = 10;
     int64_t commit_max_retry_wait = 10 * 1000;
+    bool realtime_enabled = false;
     int64_t realtime_read_view_ttl_millis = 5 * 60 * 1000;
+    StatisticsMode realtime_store_statistics_mode = StatisticsMode::NONE;
 
     std::shared_ptr<FileFormat> file_format;
     std::shared_ptr<FileSystem> file_system;
@@ -425,6 +429,7 @@ struct CoreOptions::Impl {
 
     int32_t manifest_merge_min_count = 30;
     int32_t scan_manifest_entry_cache_max_snapshots = 0;
+    bool scan_manifest_entry_lazy_decode_enabled = true;
     int32_t read_batch_size = 1024;
     int32_t write_batch_size = 1024;
     int32_t local_sort_max_num_file_handles = 128;
@@ -803,12 +808,6 @@ struct CoreOptions::Impl {
         std::string scan_timestamp_str;
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_TIMESTAMP, &scan_timestamp_str));
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_TIMESTAMP_MILLIS, &scan_timestamp_millis));
-        PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
-                                                      &realtime_read_view_ttl_millis));
-        if (realtime_read_view_ttl_millis <= 0) {
-            return Status::Invalid(
-                fmt::format("{} must be positive", Options::REALTIME_READ_VIEW_TTL));
-        }
         if (scan_timestamp_millis != std::nullopt && !scan_timestamp_str.empty()) {
             return Status::Invalid(
                 "scan.timestamp-millis and scan.timestamp cannot be set at the same time");
@@ -827,6 +826,8 @@ struct CoreOptions::Impl {
             return Status::Invalid(fmt::format("{} must be non-negative",
                                                Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS));
         }
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
+                                                &scan_manifest_entry_lazy_decode_enabled));
         // Parse scan.fallback-branch - fallback branch when partition not found
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_FALLBACK_BRANCH, &scan_fallback_branch));
         // Parse branch - branch name, default "main"
@@ -836,8 +837,39 @@ struct CoreOptions::Impl {
         return Status::OK();
     }
 
+    // Parse statistics collected by real-time stores.
+    Status ParseRealtimeStoreStatisticsMode(const ConfigParser& parser) {
+        std::string statistics_mode = "none";
+        PAIMON_RETURN_NOT_OK(parser.Parse(Options::REALTIME_STORE_STATS_MODE, &statistics_mode));
+        statistics_mode = StringUtils::ToLowerCase(statistics_mode);
+        if (statistics_mode == "none") {
+            realtime_store_statistics_mode = StatisticsMode::NONE;
+        } else if (statistics_mode == "full") {
+            realtime_store_statistics_mode = StatisticsMode::FULL;
+        } else {
+            return Status::Invalid(
+                fmt::format("{} must be 'none' or 'full'", Options::REALTIME_STORE_STATS_MODE));
+        }
+        return Status::OK();
+    }
+
+    // Parse real-time write and read configurations.
+    Status ParseRealtimeOptions(const ConfigParser& parser) {
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::REALTIME_ENABLED, &realtime_enabled));
+        PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
+                                                      &realtime_read_view_ttl_millis));
+        if (realtime_read_view_ttl_millis <= 0) {
+            return Status::Invalid(
+                fmt::format("{} must be positive", Options::REALTIME_READ_VIEW_TTL));
+        }
+        return ParseRealtimeStoreStatisticsMode(parser);
+    }
+
     // Parse index-related configurations: file index, global index.
     Status ParseIndexOptions(const ConfigParser& parser) {
+        // Parse file-index.in-manifest-threshold - max inline file index size, default 500B
+        PAIMON_RETURN_NOT_OK(parser.ParseMemorySize(Options::FILE_INDEX_IN_MANIFEST_THRESHOLD,
+                                                    &file_index_in_manifest_threshold));
         // Parse file-index.read.enabled - whether to enable reading file index, default true
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::FILE_INDEX_READ_ENABLED, &file_index_read_enabled));
@@ -1046,6 +1078,7 @@ Result<CoreOptions> CoreOptions::FromMap(
     PAIMON_RETURN_NOT_OK(impl->ParseCommitOptions(parser));
     PAIMON_RETURN_NOT_OK(impl->ParseMergeAndSequenceOptions(parser));
     PAIMON_RETURN_NOT_OK(impl->ParseDeletionVectorOptions(parser));
+    PAIMON_RETURN_NOT_OK(impl->ParseRealtimeOptions(parser));
     PAIMON_RETURN_NOT_OK(impl->ParseScanAndBranchOptions(parser));
     PAIMON_RETURN_NOT_OK(impl->ParseIndexOptions(parser));
     PAIMON_RETURN_NOT_OK(impl->ParseCompactionOptions(parser));
@@ -1158,12 +1191,24 @@ std::optional<int64_t> CoreOptions::GetScanTimestampMillis() const {
     return impl_->scan_timestamp_millis;
 }
 
+bool CoreOptions::RealtimeEnabled() const {
+    return impl_->realtime_enabled;
+}
+
 int64_t CoreOptions::GetRealtimeReadViewTtlMillis() const {
     return impl_->realtime_read_view_ttl_millis;
 }
 
+StatisticsMode CoreOptions::GetRealtimeStoreStatisticsMode() const {
+    return impl_->realtime_store_statistics_mode;
+}
+
 int32_t CoreOptions::GetScanManifestEntryCacheMaxSnapshots() const {
     return impl_->scan_manifest_entry_cache_max_snapshots;
+}
+
+bool CoreOptions::ScanManifestEntryLazyDecodeEnabled() const {
+    return impl_->scan_manifest_entry_lazy_decode_enabled;
 }
 
 int64_t CoreOptions::GetManifestTargetFileSize() const {
@@ -1652,6 +1697,10 @@ std::string CoreOptions::GetBranch() const {
 
 bool CoreOptions::FileIndexReadEnabled() const {
     return impl_->file_index_read_enabled;
+}
+
+int64_t CoreOptions::FileIndexInManifestThreshold() const {
+    return impl_->file_index_in_manifest_threshold;
 }
 
 std::optional<std::string> CoreOptions::GetDataFileExternalPaths() const {
