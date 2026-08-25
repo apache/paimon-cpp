@@ -20,6 +20,7 @@
 #include "paimon/common/utils/fields_comparator.h"
 
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <variant>
 
@@ -200,6 +201,19 @@ TEST_F(FieldsComparatorTest, TestSimple) {
             pool.get());
         CheckResult(row1, row2, {arrow::decimal128(38, 10), arrow::date32()});
     }
+}
+
+TEST_F(FieldsComparatorTest, TestFloatingPointTotalOrder) {
+    auto pool = GetDefaultPool();
+    BinaryRow negative_zero = BinaryRowGenerator::GenerateRow({-0.0F, -0.0}, pool.get());
+    BinaryRow positive_zero = BinaryRowGenerator::GenerateRow({0.0F, 0.0}, pool.get());
+    CheckResult(negative_zero, positive_zero, {arrow::float32(), arrow::float64()});
+
+    const float float_nan = std::numeric_limits<float>::quiet_NaN();
+    const double double_nan = std::numeric_limits<double>::quiet_NaN();
+    BinaryRow finite = BinaryRowGenerator::GenerateRow({1.0F, 1.0}, pool.get());
+    BinaryRow nan = BinaryRowGenerator::GenerateRow({float_nan, double_nan}, pool.get());
+    CheckResult(finite, nan, {arrow::float32(), arrow::float64()});
 }
 
 TEST_F(FieldsComparatorTest, TestTimestampType) {

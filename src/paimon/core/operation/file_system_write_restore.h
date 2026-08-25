@@ -58,8 +58,8 @@ class FileSystemWriteRestore : public WriteRestore {
     }
 
     Result<std::shared_ptr<RestoreFiles>> GetRestoreFiles(
-        const BinaryRow& partition, int32_t bucket,
-        bool scan_deletion_vectors_index) const override {
+        const BinaryRow& partition, int32_t bucket, bool scan_deletion_vectors_index,
+        bool scan_primary_key_indexes = false) const override {
         // TODO(yonghao.fyh): java paimon doesn't use snapshot_manager.LatestSnapshot() here,
         // because they don't want to flood the catalog with high concurrency
         PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
@@ -84,9 +84,19 @@ class FileSystemWriteRestore : public WriteRestore {
                     partition, bucket));
         }
 
+        std::vector<std::shared_ptr<IndexFileMeta>> primary_key_index_payloads;
+        if (scan_primary_key_indexes) {
+            if (index_file_handler_ == nullptr) {
+                return Status::Invalid("Primary-key index restore requires an index file handler.");
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                primary_key_index_payloads,
+                index_file_handler_->Scan(snapshot.value(), "btree", partition, bucket));
+        }
+
         return std::make_shared<RestoreFiles>(snapshot, total_buckets, restore_data_files,
                                               /*dynamic_bucket_index=*/nullptr,
-                                              deletion_vectors_index);
+                                              deletion_vectors_index, primary_key_index_payloads);
     }
 
  private:

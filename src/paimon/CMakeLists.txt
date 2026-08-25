@@ -262,8 +262,11 @@ set(PAIMON_CORE_SRCS
     core/index/index_file_meta_serializer.cpp
     core/index/pk/primary_key_index_source_meta.cpp
     core/index/pk/primary_key_index_definitions.cpp
+    core/index/pk/bucketed_primary_key_index_maintainer.cpp
     core/index/pksorted/pk_sorted_index_group.cpp
     core/index/pksorted/pk_sorted_bucket_index_state.cpp
+    core/index/pksorted/pk_sorted_data_file_reader.cpp
+    core/index/pksorted/pk_sorted_index_builder.cpp
     core/index/pksorted/pk_sorted_index_file.cpp
     core/io/generic_row_to_arrow_array_converter.cpp
     core/io/meta_to_arrow_array_converter.cpp
@@ -750,6 +753,7 @@ if(PAIMON_BUILD_TESTS)
                     core/index/index_file_meta_serializer_test.cpp
                     core/index/pk/primary_key_index_source_meta_test.cpp
                     core/index/pk/primary_key_index_definitions_test.cpp
+                    core/index/pk/bucketed_primary_key_index_maintainer_test.cpp
                     core/index/pksorted/pk_sorted_bucket_index_state_test.cpp
                     core/index/index_file_handler_test.cpp
                     core/io/compact_increment_test.cpp

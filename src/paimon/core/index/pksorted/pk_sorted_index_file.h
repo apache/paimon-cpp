@@ -34,6 +34,7 @@
 #include "paimon/result.h"
 
 namespace paimon {
+class SortMergeReader;
 /// Builds one source-backed primary-key index payload for an ordered set of physical data
 /// files of a single data level.
 ///
@@ -68,6 +69,16 @@ class PkSortedIndexFile {
         const std::shared_ptr<arrow::Array>& sorted_values, std::vector<int64_t> sorted_ordinals,
         const std::shared_ptr<GlobalIndexFileWriter>& file_writer, bool is_external_path,
         const std::shared_ptr<MemoryPool>& pool);
+
+    /// Builds a payload from a bounded, globally sorted stream. The stream's key contains the
+    /// indexed field and its sequence number contains the source-group physical row id.
+    static Result<std::shared_ptr<IndexFileMeta>> BuildFromSortedReader(
+        const DataField& field, const std::string& index_type,
+        const std::map<std::string, std::string>& options, int32_t data_level,
+        const std::vector<PrimaryKeyIndexSourceFile>& source_files,
+        std::unique_ptr<SortMergeReader>&& sorted_reader,
+        const std::shared_ptr<GlobalIndexFileWriter>& file_writer, bool is_external_path,
+        int32_t write_batch_size, const std::shared_ptr<MemoryPool>& pool);
 };
 
 }  // namespace paimon

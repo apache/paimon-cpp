@@ -18,6 +18,7 @@
 
 #include "paimon/core/io/key_value_in_memory_record_reader.h"
 
+#include <limits>
 #include <map>
 #include <utility>
 #include <variant>
@@ -252,6 +253,47 @@ TEST_F(KeyValueInMemoryRecordReaderTest, TestUserDefinedSequenceFieldsDescending
                                                                   KeyValueRecordReader::Iterator>(
                           record_reader.get())));
     KeyValueChecker::CheckResult(expected, results, /*key_arity=*/2, /*value_arity=*/5);
+}
+
+TEST_F(KeyValueInMemoryRecordReaderTest, TestComparatorBackedFloatingPointSort) {
+    std::vector<DataField> fields = {
+        DataField(0, arrow::field("key", arrow::float32(), /*nullable=*/false)),
+        DataField(1, arrow::field("row_id", arrow::int64(), /*nullable=*/false))};
+    arrow::FloatBuilder key_builder;
+    ASSERT_TRUE(key_builder
+                    .AppendValues({std::numeric_limits<float>::quiet_NaN(), 0.0F, 1.0F, -0.0F,
+                                   -std::numeric_limits<float>::infinity(),
+                                   std::numeric_limits<float>::infinity()})
+                    .ok());
+    arrow::Int64Builder row_id_builder;
+    ASSERT_TRUE(row_id_builder.AppendValues({0, 1, 2, 3, 4, 5}).ok());
+    std::shared_ptr<arrow::Array> keys = key_builder.Finish().ValueOrDie();
+    std::shared_ptr<arrow::Array> row_ids = row_id_builder.Finish().ValueOrDie();
+    std::shared_ptr<arrow::StructArray> source =
+        arrow::StructArray::Make({keys, row_ids}, {fields[0].ArrowField(), fields[1].ArrowField()})
+            .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FieldsComparator> key_comparator,
+                         FieldsComparator::Create({fields[0]}, /*is_ascending_order=*/true));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FieldsComparator> sort_comparator,
+                         FieldsComparator::Create(fields, /*is_ascending_order=*/true));
+    auto reader = std::make_unique<KeyValueInMemoryRecordReader>(
+        /*last_sequence_num=*/0, source, std::vector<RecordBatch::RowKind>(),
+        std::vector<std::string>{"key"}, std::vector<std::string>{"row_id"},
+        /*sequence_fields_ascending=*/true, key_comparator, pool_, sort_comparator);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader::Iterator> iterator,
+                         reader->NextBatch());
+    std::vector<int64_t> sequence_numbers;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(bool has_next, iterator->HasNext());
+        if (!has_next) {
+            break;
+        }
+        ASSERT_OK_AND_ASSIGN(KeyValue key_value, iterator->Next());
+        sequence_numbers.push_back(key_value.sequence_number);
+    }
+    ASSERT_EQ((std::vector<int64_t>{4, 3, 1, 2, 5, 0}), sequence_numbers);
 }
 
 TEST_F(KeyValueInMemoryRecordReaderTest, TestNonExistPK) {

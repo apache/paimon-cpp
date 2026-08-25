@@ -19,7 +19,6 @@
 #include "paimon/core/operation/expire_snapshots.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -33,7 +32,10 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/index/index_path_factory.h"
 #include "paimon/core/manifest/file_kind.h"
+#include "paimon/core/manifest/index_manifest_entry.h"
+#include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
@@ -50,12 +52,14 @@ ExpireSnapshots::ExpireSnapshots(const std::shared_ptr<SnapshotManager>& snapsho
                                  const std::shared_ptr<FileStorePathFactory>& path_factory,
                                  const std::shared_ptr<ManifestList>& manifest_list,
                                  const std::shared_ptr<ManifestFile>& manifest_file,
+                                 const std::shared_ptr<IndexManifestFile>& index_manifest_file,
                                  const std::shared_ptr<FileSystem>& fs, const ExpireConfig& config,
                                  bool realtime_enabled, const std::shared_ptr<Executor>& executor)
     : snapshot_manager_(snapshot_manager),
       path_factory_(path_factory),
       manifest_list_(manifest_list),
       manifest_file_(manifest_file),
+      index_manifest_file_(index_manifest_file),
       fs_(fs),
       config_(config),
       realtime_enabled_(realtime_enabled),
@@ -185,6 +189,7 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
             continue;
         }
         PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(id));
+        PAIMON_RETURN_NOT_OK(CleanUnusedIndexManifest(snapshot.IndexManifest(), &skipping_sets));
         PAIMON_RETURN_NOT_OK(CleanUnusedManifests(snapshot.BaseManifestList(), skipping_sets));
         PAIMON_RETURN_NOT_OK(CleanUnusedManifests(snapshot.DeltaManifestList(), skipping_sets));
         if (realtime_enabled_) {
@@ -290,6 +295,50 @@ Status ExpireSnapshots::CleanUnusedManifests(const std::string& manifest_list_na
     return Status::OK();
 }
 
+Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string>& index_manifest,
+                                                 std::set<std::string>* skipping_manifest_set) {
+    if (!index_manifest || index_manifest->empty() ||
+        skipping_manifest_set->count(index_manifest.value()) > 0) {
+        return Status::OK();
+    }
+    if (index_manifest_file_ == nullptr) {
+        return Status::Invalid("index manifest file is null");
+    }
+
+    std::vector<IndexManifestEntry> entries;
+    Status read_status =
+        index_manifest_file_->ReadIfFileExist(index_manifest.value(), /*filter=*/nullptr, &entries);
+    if (read_status.IsNotExist()) {
+        return Status::OK();
+    }
+    PAIMON_RETURN_NOT_OK(read_status);
+
+    std::vector<std::pair<std::string, std::string>> index_files_to_delete;
+    std::set<std::string> planned_file_names;
+    for (const IndexManifestEntry& entry : entries) {
+        const std::string& file_name = entry.index_file->FileName();
+        if (skipping_manifest_set->count(file_name) > 0 ||
+            !planned_file_names.insert(file_name).second) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<IndexPathFactory> index_path_factory,
+            path_factory_->CreateIndexFileFactory(entry.partition, entry.bucket));
+        index_files_to_delete.emplace_back(file_name, index_path_factory->ToPath(entry.index_file));
+    }
+
+    for (const auto& [file_name, file_path] : index_files_to_delete) {
+        skipping_manifest_set->insert(file_name);
+        auto delete_status = fs_->Delete(file_path);
+        // Index payload cleanup is best effort, consistent with data file expiration.
+        (void)delete_status;
+    }
+
+    skipping_manifest_set->insert(index_manifest.value());
+    index_manifest_file_->DeleteQuietly(index_manifest.value());
+    return Status::OK();
+}
+
 Status ExpireSnapshots::CleanUnusedDataFiles(const std::string& manifest_list_name) {
     std::vector<ManifestFileMeta> manifest_file_metas;
     auto status = manifest_list_->Read(manifest_list_name, nullptr, &manifest_file_metas);
@@ -354,14 +403,31 @@ Status ExpireSnapshots::GetManifestSkippingSet(const std::vector<Snapshot>& reta
         for (const auto& manifest : manifests) {
             skipping_manifest_set->insert(manifest.FileName());
         }
-        // TODO(jinli.zjw): skip index manifests
-        if (snapshot.IndexManifest() && snapshot.IndexManifest().value() != "") {
-            assert(false);
-            return Status::NotImplemented("do not support expire snapshot with index manifest");
-        }
+        PAIMON_RETURN_NOT_OK(
+            AddIndexManifestToSkippingSet(snapshot.IndexManifest(), skipping_manifest_set));
         if (snapshot.Statistics()) {
             skipping_manifest_set->insert(snapshot.Statistics().value());
         }
+    }
+    return Status::OK();
+}
+
+Status ExpireSnapshots::AddIndexManifestToSkippingSet(
+    const std::optional<std::string>& index_manifest,
+    std::set<std::string>* skipping_manifest_set) const {
+    if (!index_manifest || index_manifest->empty()) {
+        return Status::OK();
+    }
+    if (index_manifest_file_ == nullptr) {
+        return Status::Invalid("index manifest file is null");
+    }
+
+    skipping_manifest_set->insert(index_manifest.value());
+    std::vector<IndexManifestEntry> entries;
+    PAIMON_RETURN_NOT_OK(
+        index_manifest_file_->Read(index_manifest.value(), /*filter=*/nullptr, &entries));
+    for (const IndexManifestEntry& entry : entries) {
+        skipping_manifest_set->insert(entry.index_file->FileName());
     }
     return Status::OK();
 }

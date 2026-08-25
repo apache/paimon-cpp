@@ -31,6 +31,9 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/index/index_file_meta.h"
+#include "paimon/core/manifest/index_manifest_entry.h"
+#include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
@@ -54,7 +57,8 @@ OrphanFilesCleanerImpl::OrphanFilesCleanerImpl(
     const CoreOptions& options, const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::vector<std::string>& partition_keys,
     const std::shared_ptr<ManifestFile>& manifest_file,
-    const std::shared_ptr<ManifestList>& manifest_list, int64_t older_than_ms,
+    const std::shared_ptr<ManifestList>& manifest_list,
+    const std::shared_ptr<IndexManifestFile>& index_manifest_file, int64_t older_than_ms,
     std::function<bool(const std::string&)> should_be_retained)
     : memory_pool_(memory_pool),
       executor_(executor),
@@ -66,13 +70,18 @@ OrphanFilesCleanerImpl::OrphanFilesCleanerImpl(
       partition_keys_(partition_keys),
       manifest_file_(manifest_file),
       manifest_list_(manifest_list),
+      index_manifest_file_(index_manifest_file),
       older_than_ms_(older_than_ms),
       should_be_retained_(should_be_retained),
       metrics_(std::make_shared<MetricsImpl>()) {}
 
 bool OrphanFilesCleanerImpl::SupportToClean(const std::string& file_name) {
     static std::vector<std::pair<std::string, std::string>> supported_pattern = {
-        {"manifest-", ""}, {"manifest-list-", ""}, {".", ".tmp"}};
+        {"manifest-", ""},
+        {"manifest-list-", ""},
+        {"index-manifest-", ""},
+        {"index-", ""},
+        {".", ".tmp"}};
     for (const auto& pattern : supported_pattern) {
         if (StringUtils::StartsWith(file_name, pattern.first) &&
             StringUtils::EndsWith(file_name, pattern.second)) {
@@ -86,7 +95,9 @@ bool OrphanFilesCleanerImpl::SupportToClean(const std::string& file_name) {
             return true;
         }
     }
-    return StringUtils::EndsWith(file_name, ".offsets");
+    return StringUtils::EndsWith(file_name, ".offsets") ||
+           (file_name.find("-global-index-") != std::string::npos &&
+            StringUtils::EndsWith(file_name, ".index"));
 }
 
 Result<std::set<std::string>> OrphanFilesCleanerImpl::Clean() {
@@ -157,12 +168,12 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::ListPaimonFileDirs() const
     std::set<std::string> paimon_file_dirs;
     paimon_file_dirs.insert(snapshot_manager_->SnapshotDirectory());
     paimon_file_dirs.insert(FileStorePathFactory::ManifestPath(root_path_));
+    paimon_file_dirs.insert(FileStorePathFactory::IndexPath(root_path_));
     if (options_.RealtimeEnabled()) {
         paimon_file_dirs.insert(
             RealtimeCommitProperties::OffsetsDirectory(root_path_, options_.GetBranch()));
     }
-    // TODO(jinli.zjw): support clean index, stats, changelog in the future
-    // paimon_file_dirs.insert(FileStorePathFactory::IndexPath(root_path_));
+    // TODO(jinli.zjw): support clean stats and changelog in the future
     // paimon_file_dirs.insert(FileStorePathFactory::StatisticsPath(root_path_));
     std::set<std::string> file_dirs = ListFileDirs(root_path_, partition_keys_.size());
     paimon_file_dirs.insert(file_dirs.begin(), file_dirs.end());
@@ -173,14 +184,6 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::ListPaimonFileDirs() const
         return Status::Invalid(
             "OrphanFilesCleaner do not support cleaning table with external paths");
     }
-    // TODO(liancheng): support clean external paths in the future
-    // PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
-    // options_.CreateExternalPaths());
-    // for (const auto& external_path : external_paths) {
-    //     std::set<std::string> external_file_dirs =
-    //         ListFileDirs(external_path, partition_keys_.size());
-    //     paimon_file_dirs.insert(external_file_dirs.begin(), external_file_dirs.end());
-    // }
     metrics_->SetCounter(CleanMetrics::CLEAN_LIST_DIRECTORIES_DURATION, duration.Get());
     metrics_->SetCounter(CleanMetrics::CLEAN_LIST_DIRECTORIES,
                          static_cast<uint64_t>(paimon_file_dirs.size()));
@@ -267,14 +270,6 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFiles() const {
                 used_files.insert(changelog_manifest_list.value());
                 return Status::NotImplemented("OrphanFilesCleaner do not support clean changelog");
             }
-            const std::optional<std::string>& index_manifest_name = snapshot.IndexManifest();
-            if (index_manifest_name) {
-                return Status::NotImplemented(
-                    "OrphanFilesCleaner do not support clean index manifest");
-                // TODO(jinli.zjw): support IndexManifestEntry and add tests
-                // used_files.insert(index_manifest_name.value());
-            }
-
             used_files_futures.emplace_back(Via(
                 executor_.get(), [this, snapshot] { return GetUsedFilesBySnapshot(snapshot); }));
         }
@@ -299,6 +294,20 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
     used_files.insert(SnapshotManager::SNAPSHOT_PREFIX + std::to_string(snapshot.Id()));
     used_files.insert(snapshot.BaseManifestList());
     used_files.insert(snapshot.DeltaManifestList());
+    const std::optional<std::string>& index_manifest_name = snapshot.IndexManifest();
+    if (index_manifest_name) {
+        used_files.insert(index_manifest_name.value());
+        std::vector<IndexManifestEntry> index_entries;
+        PAIMON_RETURN_NOT_OK(index_manifest_file_->ReadIfFileExist(
+            index_manifest_name.value(), /*filter=*/nullptr, &index_entries));
+        for (const IndexManifestEntry& index_entry : index_entries) {
+            if (index_entry.index_file == nullptr) {
+                return Status::Invalid(fmt::format("Index manifest {} contains a null index file.",
+                                                   index_manifest_name.value()));
+            }
+            used_files.insert(index_entry.index_file->FileName());
+        }
+    }
     if (options_.RealtimeEnabled()) {
         std::optional<std::string> offsets_path =
             RealtimeCommitProperties::GetOffsetsPath(snapshot);
@@ -319,6 +328,12 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
             manifest.FileName(), /*filter=*/nullptr, &manifest_entries));
         for (const auto& manifest_entry : manifest_entries) {
             used_files.insert(manifest_entry.FileName());
+            for (const std::optional<std::string>& extra_file :
+                 manifest_entry.File()->extra_files) {
+                if (extra_file) {
+                    used_files.insert(extra_file.value());
+                }
+            }
         }
     }
 

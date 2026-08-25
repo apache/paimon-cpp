@@ -24,11 +24,11 @@ Paimon 2.0 primary-key tables support *source-backed* global scalar indexes
 covers the complete active source set of one positive data level of one bucket, and its
 results are group ordinals that are localized back to per-file physical row positions.
 
-paimon-cpp supports the read path of this protocol: ordinary batch scans of a
-primary-key table with scalar index definitions automatically evaluate the part of the
-scan predicate that touches indexed fields against the validated payload groups of the
-scanned snapshot, and narrow covered files to indexed splits carrying file-local row
-ranges. No dedicated query API is required.
+paimon-cpp supports the BTree build, maintenance, and read lifecycle of this protocol for
+fixed-bucket primary-key tables. Compaction automatically builds one immutable payload for
+each indexed field and positive data level. Ordinary batch scans evaluate the indexed part
+of the predicate against validated payload groups and narrow covered files to indexed
+splits carrying file-local row ranges. No dedicated build or query API is required.
 
 Table requirements
 ------------------
@@ -37,7 +37,8 @@ The definitions follow the Java table options:
 
 - ``'pk-btree.index.columns' = 'price'`` with optional
   ``'fields.price.pk-btree.index.options' = '{"block-size":"64 kb"}'``
-- fixed bucket (``bucket > 0``) or postpone bucket mode
+- fixed bucket (``bucket > 0``) for automatic C++ maintenance; Java-compatible postpone
+  bucket schemas remain readable, but the C++ postpone writer does not build payloads
 - ``'deletion-vectors.enabled' = 'true'`` and ``'deletion-vectors.merge-on-read' = 'false'``
 
 Semantics
@@ -48,6 +49,17 @@ Semantics
   identical to the active COMPACT files of that level, matching index type and field id,
   and a row range of exactly ``[0, total source rows - 1]``. Anything else is treated as
   uncovered and scanned normally.
+- Index construction reads every physical source row without applying deletion vectors,
+  orders source files by file name, and externally sorts ``(value, group row id)``. Missing,
+  duplicate, malformed, or stale payloads cause their complete level to be rebuilt. Data
+  files and the corresponding index ADD / DELETE entries are committed in the same
+  snapshot.
+- The builder uses the existing write-buffer and spill settings. A write context needs a
+  temporary directory when a level exceeds the in-memory write buffer and spill is enabled.
+- Snapshot expiration retains payloads referenced by the snapshots in its retention set and
+  removes retired payloads before their index manifests, including payloads on an external
+  index path. Orphan cleanup covers table-local index manifests and payloads; it does not
+  enumerate a potentially shared global-index external path.
 - ``AND`` predicates narrow with any safely evaluable indexed child; ``OR`` predicates
   only use the index when every branch is evaluable. Files whose evaluation fails, whose
   positions are out of range, or whose result needs more than 4096 ranges fall back to a
@@ -68,6 +80,6 @@ Current scope
   currently use the existing C++ length-prefixed UTF-8 streams; ASCII and non-null BMP
   names are compatible with Java ``writeUTF``, while complete modified UTF-8 support for
   supplementary code points will be handled by a shared stream-level change.
-- ``PkSortedIndexFile::Build`` can build one payload for an ordered source group from
-  value-sorted input, which supports tooling and tests; automatic build and maintenance
-  during compaction is not included yet.
+- Automatic maintenance is synchronous during prepare-commit. Java's asynchronous build
+  scheduling, retries, fairness metrics, and manual rebuild actions are not part of the C++
+  API. Realtime and postpone-bucket writers do not build source-backed payloads.

@@ -54,6 +54,8 @@ KeyValueFileStoreWrite::KeyValueFileStoreWrite(
     const std::shared_ptr<arrow::Schema>& schema,
     const std::shared_ptr<arrow::Schema>& partition_schema,
     const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
+    const std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>&
+        primary_key_index_maintainer_factory,
     const std::shared_ptr<IOManager>& io_manager,
     const std::shared_ptr<FieldsComparator>& key_comparator,
     const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
@@ -61,11 +63,11 @@ KeyValueFileStoreWrite::KeyValueFileStoreWrite(
     const CoreOptions& options, bool ignore_previous_files, bool is_streaming_mode,
     bool ignore_num_bucket_check, bool enable_multi_thread_spill,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
-    : AbstractFileStoreWrite(file_store_path_factory, snapshot_manager, schema_manager, commit_user,
-                             root_path, table_schema, schema, /*write_schema=*/schema,
-                             partition_schema, dv_maintainer_factory, io_manager, options,
-                             ignore_previous_files, is_streaming_mode, ignore_num_bucket_check,
-                             executor, pool),
+    : AbstractFileStoreWrite(
+          file_store_path_factory, snapshot_manager, schema_manager, commit_user, root_path,
+          table_schema, schema, /*write_schema=*/schema, partition_schema, dv_maintainer_factory,
+          primary_key_index_maintainer_factory, io_manager, options, ignore_previous_files,
+          is_streaming_mode, ignore_num_bucket_check, executor, pool),
       enable_multi_thread_spill_(enable_multi_thread_spill),
       key_comparator_(key_comparator),
       user_defined_seq_comparator_(user_defined_seq_comparator),
