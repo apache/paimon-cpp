@@ -33,6 +33,7 @@
 #include "arrow/util/checked_cast.h"
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -83,20 +84,6 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch()
     return Status::Invalid("invalid state when calling NextBatch: " + std::to_string(state_));
 }
 
-Result<std::shared_ptr<PredicateFilter>> LateMaterializingFileBatchReader::BindProbeFilter() {
-    std::map<std::string, int32_t> name_to_idx;
-    for (int32_t i = 0; i < probe_schema_->num_fields(); ++i) {
-        name_to_idx.emplace(probe_schema_->field(i)->name(), i);
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> bound_predicate,
-                           PredicateUtils::CreatePickedFieldFilter(predicate_, name_to_idx));
-    auto bound_filter = std::dynamic_pointer_cast<PredicateFilter>(bound_predicate);
-    if (!bound_filter) {
-        return Status::Invalid("failed to bind predicate to probe schema");
-    }
-    return bound_filter;
-}
-
 Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
     const std::shared_ptr<arrow::Array>& array,
     const std::shared_ptr<PredicateFilter>& bound_filter) {
@@ -126,7 +113,6 @@ Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
 }
 
 Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<PredicateFilter> bound_filter, BindProbeFilter());
     matched_bitmap_ = RoaringBitmap32();
     probe_cursor_ = 0;
     arrow::ArrayVector probe_arrays;
@@ -139,7 +125,7 @@ Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
         PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 batch_matched,
-                               FilterProbeBatch(array, bound_filter));
+                               FilterProbeBatch(array, probe_filter_));
         // Compact each probe batch down to its matched rows so probe_data_ aligns row-for-row
         // (ascending file order) with matched_bitmap_ and the later payload output.
         if (!batch_matched.IsEmpty()) {
@@ -277,6 +263,7 @@ Status LateMaterializingFileBatchReader::SetReadSchema(
     row_mapping_.clear();
     probe_schema_.reset();
     payload_schema_.reset();
+    probe_filter_.reset();
     if (predicate_ != nullptr) {
         std::set<std::string> probe_names;
         PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate_, &probe_names));
@@ -293,6 +280,19 @@ Status LateMaterializingFileBatchReader::SetReadSchema(
         if (!probe_fields.empty() && !payload_fields.empty()) {
             probe_schema_ = arrow::schema(probe_fields, full_schema_->metadata());
             payload_schema_ = arrow::schema(payload_fields, full_schema_->metadata());
+            PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+                *probe_schema_, predicate_, /*validate_field_idx=*/false));
+            std::map<std::string, int32_t> name_to_idx;
+            for (int32_t i = 0; i < probe_schema_->num_fields(); ++i) {
+                name_to_idx.emplace(probe_schema_->field(i)->name(), i);
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<Predicate> bound_predicate,
+                PredicateUtils::CreatePickedFieldFilter(predicate_, name_to_idx));
+            probe_filter_ = std::dynamic_pointer_cast<PredicateFilter>(bound_predicate);
+            if (!probe_filter_) {
+                return Status::Invalid("failed to bind predicate to probe schema");
+            }
         }
     }
 

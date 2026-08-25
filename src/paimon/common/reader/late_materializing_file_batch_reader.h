@@ -105,8 +105,6 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     /// TODO(zhouhongfeng.zhf): Read the probe data batch by batch to save memory.
     Status ReadAndFilterProbeData();
 
-    Result<std::shared_ptr<PredicateFilter>> BindProbeFilter();
-
     Result<RoaringBitmap32> FilterProbeBatch(const std::shared_ptr<arrow::Array>& array,
                                              const std::shared_ptr<PredicateFilter>& bound_filter);
 
@@ -133,6 +131,8 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     // projection holding the payload (non-probe) fields; nullptr when probing is not applicable
     std::shared_ptr<arrow::Schema> payload_schema_;
     std::shared_ptr<Predicate> predicate_;
+    // predicate bound to probe_schema_'s field indices; null when probing is not applicable
+    std::shared_ptr<PredicateFilter> probe_filter_;
     std::optional<RoaringBitmap32> selection_;
     // the probe_data_ is sliced and compacted with the matched_bitmap_
     std::shared_ptr<arrow::StructArray> probe_data_;

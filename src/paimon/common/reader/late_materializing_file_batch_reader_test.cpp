@@ -639,4 +639,20 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerParallelReadersWithSee
     impl->Close();
 }
 
+// When the predicate's field type does not match the probe schema, the
+// ValidatePredicateWithSchema check must fail with a clear error instead
+// of silently producing incorrect results.
+TEST_F(LateMaterializingFileBatchReaderTest, FailsOnPredicateTypeMismatch) {
+    auto data = BuildData({0, 1, 2, 3, 4});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, LateMaterializingFileBatchReader::Create(std::move(mock), GetDefaultPool()));
+    // k is int64 in the schema, but the predicate claims FieldType::INT (int32).
+    auto predicate =
+        PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k", FieldType::INT, Literal(10));
+    ASSERT_NOK_WITH_MSG(
+        SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt),
+        "mismatches");
+}
+
 }  // namespace paimon::test
