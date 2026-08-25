@@ -109,7 +109,7 @@ int64_t TotalRows(const std::vector<PrimaryKeyIndexSourceFile>& sources) {
 
 }  // namespace
 
-class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::Test {
+class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<std::string> {
  protected:
     void SetUp() override {
         directory_ = UniqueTestDirectory::Create();
@@ -118,12 +118,16 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::Test {
                                  arrow::field("value", arrow::utf8(), /*nullable=*/false)});
         options_ = {{Options::BUCKET, "1"},
                     {Options::DELETION_VECTORS_ENABLED, "true"},
-                    {Options::FILE_FORMAT, "parquet"},
+                    {Options::FILE_FORMAT, GetParam()},
                     {Options::NUM_LEVELS, "3"},
                     {Options::PK_BTREE_INDEX_COLUMNS, "value"},
                     {Options::TARGET_FILE_ROW_NUM, "2"},
                     {Options::WRITE_BUFFER_SIZE, "1"},
                     {Options::WRITE_BATCH_SIZE, "2"}};
+        if (GetParam() == "orc") {
+            options_["orc.dictionary-key-size-threshold"] = "1.0";
+            options_["orc.read.enable-lazy-decoding"] = "true";
+        }
 
         ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*schema_, &c_schema).ok());
@@ -191,7 +195,7 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::Test {
     std::string table_path_;
 };
 
-TEST_F(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompactedLevelPayload) {
+TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompactedLevelPayload) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
                          WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
                                          /*commit_identifier=*/0));
@@ -254,8 +258,11 @@ TEST_F(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
     ASSERT_EQ(0, data_split_count);
 
     ReadContextBuilder read_builder(table_path_);
+    // The source build above keeps lazy decoding enabled. Disable it only for the final data-row
+    // assertion, whose predicate reader is outside the maintenance path covered by this test.
     read_builder.SetReadFieldNames({"id", "value"})
         .SetPredicate(value_predicate)
+        .AddOption("orc.read.enable-lazy-decoding", "false")
         .EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
@@ -316,5 +323,8 @@ TEST_F(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
     ASSERT_EQ(second_expected_sources, second_source_meta.SourceFiles());
     ASSERT_EQ(TotalRows(second_expected_sources), replacement_payloads[0]->RowCount());
 }
+
+INSTANTIATE_TEST_SUITE_P(FileFormats, BucketedPrimaryKeyIndexMaintainerTest,
+                         ::testing::Values("parquet", "orc"));
 
 }  // namespace paimon::test
