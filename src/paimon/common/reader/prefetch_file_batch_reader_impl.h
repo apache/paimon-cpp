@@ -45,8 +45,13 @@
 
 struct ArrowSchema;
 
+namespace arrow {
+class MemoryPool;
+}  // namespace arrow
+
 namespace paimon {
 
+class MemoryPool;
 class ReaderBuilder;
 class FileSystem;
 class Executor;
@@ -113,7 +118,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     PrefetchFileBatchReaderImpl(
         const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
-        const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache);
+        const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
+        const std::shared_ptr<MemoryPool>& pool);
 
     Status CleanUp();
     void Workloop();
@@ -160,6 +166,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     std::condition_variable cv_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<ReadAheadCache> cache_;
+    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
 
     mutable std::shared_mutex rw_mutex_;
     std::unique_ptr<std::thread> background_thread_;

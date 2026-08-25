@@ -32,7 +32,6 @@
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/stats/simple_stats_converter.h"
@@ -118,7 +117,7 @@ MosaicFileBatchReader::~MosaicFileBatchReader() {
     CloseInternal();
 }
 
-Result<std::shared_ptr<arrow::Array>> MosaicFileBatchReader::ReadNextRowGroup() {
+Result<std::shared_ptr<arrow::RecordBatch>> MosaicFileBatchReader::ReadNextRowGroup() {
     while (next_row_group_ < num_row_groups_) {
         uint32_t row_group = next_row_group_++;
         uint32_t row_count = 0;
@@ -150,16 +149,16 @@ Result<std::shared_ptr<arrow::Array>> MosaicFileBatchReader::ReadNextRowGroup() 
         if (export_result != 0) {
             return MosaicFfiError("export Mosaic row group", input_context_->GetCallbackStatus());
         }
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> batch,
-                                          arrow::ImportArray(&ffi_array, &ffi_schema));
-        if (batch->length() != row_count) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::RecordBatch> batch,
+                                          arrow::ImportRecordBatch(&ffi_array, &ffi_schema));
+        if (batch->num_rows() != row_count) {
             return Status::Invalid("Mosaic row group row count mismatch");
         }
-        if (batch->length() != 0) {
+        if (batch->num_rows() != 0) {
             return batch;
         }
     }
-    return std::shared_ptr<arrow::Array>();
+    return std::shared_ptr<arrow::RecordBatch>();
 }
 
 Result<bool> MosaicFileBatchReader::MatchesRowGroup(uint32_t row_group, uint32_t row_count) {
@@ -189,7 +188,7 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
     if (closed_) {
         return Status::Invalid("Mosaic reader is closed");
     }
-    if (current_batch_ == nullptr || current_batch_offset_ == current_batch_->length()) {
+    if (current_batch_ == nullptr || current_batch_offset_ == current_batch_->num_rows()) {
         PAIMON_ASSIGN_OR_RAISE(current_batch_, ReadNextRowGroup());
         current_batch_offset_ = 0;
     }
@@ -199,32 +198,20 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
     }
 
     int64_t row_count =
-        std::min<int64_t>(batch_size_, current_batch_->length() - current_batch_offset_);
-    std::shared_ptr<arrow::Array> slice = current_batch_->Slice(current_batch_offset_, row_count);
-    std::shared_ptr<arrow::RecordBatch> normalized_batch;
-    if (current_batch_offset_ != 0) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> schema,
-                               ArrowUtils::DataTypeToSchema(slice->type()));
-        std::shared_ptr<arrow::StructArray> struct_slice =
-            checked_pointer_cast<arrow::StructArray>(slice);
-        std::shared_ptr<arrow::RecordBatch> batch =
-            arrow::RecordBatch::Make(schema, row_count, struct_slice->fields());
-        PAIMON_ASSIGN_OR_RAISE(normalized_batch,
-                               ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow_pool_.get()));
-    }
+        std::min<int64_t>(batch_size_, current_batch_->num_rows() - current_batch_offset_);
+    std::shared_ptr<arrow::RecordBatch> sliced_batch =
+        current_batch_->Slice(current_batch_offset_, row_count);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<arrow::RecordBatch> normalized_batch,
+        ArrowUtils::NormalizeRecordBatchOffsets(sliced_batch, arrow_pool_.get()));
 
     previous_first_row_ = current_row_group_first_row_ + current_batch_offset_;
     previous_batch_row_count_ = row_count;
     current_batch_offset_ += row_count;
     auto ffi_array = std::make_unique<::ArrowArray>();
     auto ffi_schema = std::make_unique<::ArrowSchema>();
-    if (normalized_batch != nullptr) {
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(
-            arrow::ExportRecordBatch(*normalized_batch, ffi_array.get(), ffi_schema.get()));
-    } else {
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(
-            arrow::ExportArray(*slice, ffi_array.get(), ffi_schema.get()));
-    }
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::ExportRecordBatch(*normalized_batch, ffi_array.get(), ffi_schema.get()));
     return std::make_pair(std::move(ffi_array), std::move(ffi_schema));
 }
 

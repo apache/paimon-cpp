@@ -29,8 +29,8 @@
 #include "paimon/result.h"
 
 namespace arrow {
-class Array;
 class MemoryPool;
+class RecordBatch;
 class Schema;
 }  // namespace arrow
 namespace paimon {
@@ -71,7 +71,7 @@ class MosaicFileBatchReader : public FileBatchReader {
                           const std::shared_ptr<MemoryPool>& pool,
                           const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
-    Result<std::shared_ptr<arrow::Array>> ReadNextRowGroup();
+    Result<std::shared_ptr<arrow::RecordBatch>> ReadNextRowGroup();
     Result<bool> MatchesRowGroup(uint32_t row_group, uint32_t row_count);
     void CloseInternal();
 
@@ -85,7 +85,7 @@ class MosaicFileBatchReader : public FileBatchReader {
     uint32_t next_row_group_ = 0;
     uint64_t next_row_group_first_row_ = 0;
     uint64_t current_row_group_first_row_ = 0;
-    std::shared_ptr<arrow::Array> current_batch_;
+    std::shared_ptr<arrow::RecordBatch> current_batch_;
     int64_t current_batch_offset_ = 0;
     uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
     uint64_t previous_batch_row_count_ = 0;

@@ -31,6 +31,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -238,11 +239,9 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleRowIdRun(
             break;
         }
     }
-    if (pieces.size() == 1 && pieces[0]->offset() == 0) {
+    if (pieces.size() == 1) {
         return pieces[0];
     }
-    // Concatenate flattens non-zero offsets left by Slice, so the exported batch honors the
-    // zero-offset BatchReader contract.
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concat_array,
                                       arrow::Concatenate(pieces, arrow_pool_.get()));
     return concat_array;
@@ -303,11 +302,9 @@ Result<std::shared_ptr<arrow::Array>> BlobFallbackBatchReader::AssembleColumn(
         }
         run_start = run_end;
     }
-    if (pieces.size() == 1 && pieces[0]->offset() == 0) {
+    if (pieces.size() == 1) {
         return pieces[0];
     }
-    // Concatenate flattens non-zero offsets left by Slice, so the exported batch honors the
-    // zero-offset BatchReader contract.
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concat_array,
                                       arrow::Concatenate(pieces, arrow_pool_.get()));
     return concat_array;
@@ -360,12 +357,14 @@ Result<BatchReader::ReadBatch> BlobFallbackBatchReader::NextBatch() {
                                AssembleColumn(field_idx, group_choice, group_chunks));
         columns.push_back(std::move(column));
     }
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> target_array,
-                                      arrow::StructArray::Make(columns, read_schema_->fields()));
+    std::shared_ptr<arrow::RecordBatch> batch =
+        arrow::RecordBatch::Make(read_schema_, row_count, std::move(columns));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::RecordBatch> normalized_batch,
+                           ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow_pool_.get()));
     std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportArray(*target_array, c_array.get(), c_schema.get()));
+        arrow::ExportRecordBatch(*normalized_batch, c_array.get(), c_schema.get()));
     return std::make_pair(std::move(c_array), std::move(c_schema));
 }
 

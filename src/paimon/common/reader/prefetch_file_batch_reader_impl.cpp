@@ -30,6 +30,8 @@
 #include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -121,7 +123,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 
     auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(
         new PrefetchFileBatchReaderImpl(readers, batch_size, prefetch_queue_capacity,
-                                        enable_adaptive_prefetch_strategy, executor, cache));
+                                        enable_adaptive_prefetch_strategy, executor, cache, pool));
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read
         // ranges, and set read schema will always be called before read.
@@ -133,11 +135,13 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
     const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
     uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache)
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
+    const std::shared_ptr<MemoryPool>& pool)
     : readers_(std::move(readers)),
       batch_size_(batch_size),
       executor_(executor),
       cache_(cache),
+      arrow_pool_(GetArrowPool(pool)),
       prefetch_queue_capacity_(prefetch_queue_capacity),
       enable_adaptive_prefetch_strategy_(enable_adaptive_prefetch_strategy) {
     for (size_t i = 0; i < readers_.size(); i++) {
@@ -470,12 +474,17 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
         } else if (slice_end < c_array->length) {
             // partially out of range, data before read_range.second has been effectively consumed
             readers_pos_[reader_idx]->store(read_range.second);
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> src_array,
-                                              arrow::ImportArray(c_array.get(), c_schema.get()));
-            auto array = src_array->Slice(0, slice_end);
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                std::shared_ptr<arrow::RecordBatch> record_batch,
+                arrow::ImportRecordBatch(c_array.get(), c_schema.get()));
+            std::shared_ptr<arrow::RecordBatch> sliced_batch =
+                record_batch->Slice(/*offset=*/0, slice_end);
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::RecordBatch> normalized_batch,
+                ArrowUtils::NormalizeRecordBatchOffsets(sliced_batch, arrow_pool_.get()));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                arrow::ExportArray(*array, c_array.get(), c_schema.get()));
-            bitmap.RemoveRange(slice_end, src_array->length());
+                arrow::ExportRecordBatch(*normalized_batch, c_array.get(), c_schema.get()));
+            bitmap.RemoveRange(slice_end, record_batch->num_rows());
             global_row_ids =
                 std::vector<uint64_t>(global_row_ids.begin(), global_row_ids.begin() + slice_end);
         } else {

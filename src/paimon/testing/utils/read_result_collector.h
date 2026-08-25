@@ -138,7 +138,7 @@ class ReadResultCollector {
             return std::shared_ptr<arrow::Array>();
         }
         auto& [c_array, c_schema] = batch;
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(auto array,
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
         return DictArrayConverter::ConvertDictArray(array, arrow::default_memory_pool());
     }
@@ -202,11 +202,17 @@ class ReadResultCollector {
             }
             PAIMON_RETURN_NOT_OK(CheckBatchOffset(batch));
         }
+        assert(batch.first->length > 0);
+        return ImportReadBatch(std::move(batch));
+    }
+
+    static Result<std::shared_ptr<arrow::Array>> ImportReadBatch(BatchReader::ReadBatch&& batch) {
         auto& [c_array, c_schema] = batch;
-        assert(c_array->length > 0);
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(auto result_array,
-                                          arrow::ImportArray(c_array.get(), c_schema.get()));
-        return result_array;
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::RecordBatch> record_batch,
+                                          arrow::ImportRecordBatch(c_array.get(), c_schema.get()));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
+                                          record_batch->ToStructArray());
+        return struct_array;
     }
 
     static Status CheckArrayOffset(const ArrowArray* array) {
