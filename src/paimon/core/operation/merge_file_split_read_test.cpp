@@ -99,8 +99,6 @@ class MergeFileSplitReadTest : public ::testing::Test,
 
     void AddOptions(ReadContextBuilder* context_builder) const {
         auto [use_min_heap, enable_io_prefetch, enable_multi_thread_row_to_batch] = GetParam();
-        // disable late materializing by default
-        context_builder->EnableLateMaterializing(false);
         if (use_min_heap) {
             context_builder->AddOption(Options::SORT_ENGINE, "min-heap");
         } else {
@@ -800,6 +798,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
                                 {Options::MERGE_ENGINE, "deduplicate"},
                                 {Options::IGNORE_DELETE, "true"}});
+    context_builder.EnableLateMaterializing(false);
     AddOptions(&context_builder);
 
     // less_than will be ignore as it is partition predicate
