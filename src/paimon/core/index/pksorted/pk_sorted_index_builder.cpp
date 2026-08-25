@@ -31,8 +31,10 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/global_index/global_index_file_manager.h"
 #include "paimon/core/index/pk/primary_key_index_source_file.h"
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
@@ -203,11 +205,28 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(row_id_builder.AppendValues(group_ordinals));
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> row_ids,
                                                   row_id_builder.Finish());
+                std::shared_ptr<arrow::Array> indexed_values = batch->field(0);
+                if (indexed_values->type_id() == arrow::Type::DICTIONARY) {
+                    const auto* dictionary_type =
+                        checked_cast<const arrow::DictionaryType*>(indexed_values->type().get());
+                    arrow::Type::type value_type = dictionary_type->value_type()->id();
+                    if (value_type != arrow::Type::STRING &&
+                        value_type != arrow::Type::LARGE_STRING) {
+                        return Status::Invalid(fmt::format(
+                            "Cannot decode dictionary-backed primary-key index field with value "
+                            "type {}.",
+                            dictionary_type->value_type()->ToString()));
+                    }
+                    PAIMON_ASSIGN_OR_RAISE(
+                        indexed_values,
+                        CastingUtils::Cast(indexed_values, field_.ArrowField()->type(),
+                                           arrow::compute::CastOptions::Safe(), arrow_pool.get()));
+                }
                 // The physical reader owns the pool adapter behind its batch buffers. Copy the
                 // indexed values into the Build-scoped pool before retaining them in sort_buffer.
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                     std::shared_ptr<arrow::Array> values,
-                    arrow::Concatenate({batch->field(0)}, arrow_pool.get()));
+                    arrow::Concatenate({indexed_values}, arrow_pool.get()));
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                     std::shared_ptr<arrow::StructArray> sort_batch,
                     arrow::StructArray::Make({values, row_ids}, {field_.Name(), kRowIdFieldName}));
