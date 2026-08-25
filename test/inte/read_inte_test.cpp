@@ -2209,6 +2209,7 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateOnlyPushdown) {
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy)
         .SetPredicate(predicate)
+        .EnableLateMaterializing(false)
         .EnablePrefetch(param.enable_prefetch);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
@@ -2259,6 +2260,90 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateOnlyPushdown) {
     auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
         [0, 15.1, "Emily", 10], [0, 12.1, "Bob", 10],  [0, 16.1, "Alex", 10],
         [0, 17.1, "David", 10], [0, 17.1, "Lily", 10],  [0, null, "Paul", 20]
+    ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
+}
+
+// Late materialization reads the predicate columns first and only materializes the remaining
+// columns for matched rows. Combined with the top-level predicate filter, the read path returns
+// the exact user-predicate match set.
+TEST_P(ReadInteTest, TestAppendReadWithLateMaterializing) {
+    std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
+                                          DataField(0, arrow::field("f0", arrow::utf8())),
+                                          DataField(1, arrow::field("f1", arrow::int32()))};
+    ASSERT_OK_AND_ASSIGN(
+        auto predicate,
+        PredicateBuilder::Or(
+            {PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"f3",
+                                           FieldType::DOUBLE, Literal(static_cast<double>(15.0))),
+             PredicateBuilder::IsNull(/*field_index=*/0, /*field_name=*/"f3", FieldType::DOUBLE)}));
+
+    auto param = GetParam();
+    std::string path =
+        paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
+
+    ReadContextBuilder context_builder(path);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
+    context_builder.SetReadFieldNames({"f3", "f0", "f1"});
+    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
+        .AddOption("read.batch-size", "2")
+        .AddOption("test.enable-adaptive-prefetch-strategy",
+                   param.enable_adaptive_prefetch_strategy)
+        .SetPredicate(predicate)
+        .EnablePredicateFilter(true)
+        .EnableLateMaterializing(true)
+        .EnablePrefetch(param.enable_prefetch);
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+
+    std::vector<std::string> file_list_0;
+    std::vector<std::string> file_list_1;
+    std::vector<std::string> file_list_2;
+    if (param.file_format == "orc") {
+        file_list_0 = {"data-d41fd7d1-b3e4-4905-aad9-b20a780e90a2-0.orc"};
+        file_list_1 = {"data-4e30d6c0-f109-4300-a010-4ba03047dd9d-0.orc",
+                       "data-10b9eea8-241d-4e4b-8ab8-2a82d72d79a2-0.orc",
+                       "data-e2bb59ee-ae25-4e5b-9bcc-257250bc5fdd-0.orc",
+                       "data-2d5ea1ea-77c1-47ff-bb87-19a509962a37-0.orc"};
+        file_list_2 = {"data-db2b44c0-0d73-449d-82a0-4075bd2cb6e3-0.orc",
+                       "data-b913a160-a4d1-4084-af2a-18333c35668e-0.orc"};
+    } else if (param.file_format == "parquet") {
+        file_list_0 = {"data-46e27d5b-4850-4d1e-abb6-b3aabbbc08cb-0.parquet"};
+        file_list_1 = {"data-864a052b-a938-4e04-b32c-6c72699a0c92-0.parquet",
+                       "data-c0401350-64a3-4a54-a143-dd125ad9a8e5-0.parquet",
+                       "data-7a912f84-04b7-4bbb-8dc6-53f4a292ea25-0.parquet",
+                       "data-bb891df7-ea12-4b7e-9017-41aabe08c8ec-0.parquet"};
+        file_list_2 = {"data-b446f78a-2cfb-4b3b-add8-31295d24a277-0.parquet",
+                       "data-fd72a479-53ae-42f7-aec0-e982ee555928-0.parquet"};
+    }
+
+    DataSplitsSimple input_data_splits = {
+        {paimon::test::GetDataDir() + "/" + param.file_format +
+             "/append_09.db/append_09/f1=10/bucket-0",
+         BinaryRowGenerator::GenerateRow({10}, pool_.get()), file_list_0},
+        {paimon::test::GetDataDir() + "/" + param.file_format +
+             "/append_09.db/append_09/f1=10/bucket-1",
+         BinaryRowGenerator::GenerateRow({10}, pool_.get()), file_list_1},
+        {paimon::test::GetDataDir() + "/" + param.file_format +
+             "/append_09.db/append_09/f1=20/bucket-0",
+         BinaryRowGenerator::GenerateRow({20}, pool_.get()), file_list_2}};
+
+    auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/4);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    auto fields_with_row_kind = read_fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
+    std::shared_ptr<arrow::DataType> arrow_data_type =
+        DataField::ConvertDataFieldsToArrowStructType(fields_with_row_kind);
+
+    // "Bob" (f3 = 12.1) is the only row that does not match the predicate.
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
+        [0, 15.1, "Emily", 10], [0, 16.1, "Alex", 10],  [0, 17.1, "David", 10],
+        [0, 17.1, "Lily", 10],  [0, null, "Paul", 20]
     ])"},
                                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
@@ -3109,6 +3194,7 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateOnlyPush
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetPredicate(predicate);
     context_builder.EnablePrefetch(param.enable_prefetch)
+        .EnableLateMaterializing(false)
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
@@ -3164,6 +3250,91 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateOnlyPush
                                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
     ASSERT_TRUE(result_array->Equals(*expected_array));
+}
+
+// Same coverage for the primary-key path with schema evolution and a deletion vector: late
+// materialization runs below the prefetch layer per data file, so the deletion vector and the
+// schema-evolution field mapping keep working.
+TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithLateMaterializing) {
+    std::vector<DataField> read_fields = {DataField(1, arrow::field("key1", arrow::int32())),
+                                          DataField(7, arrow::field("k", arrow::utf8())),
+                                          DataField(2, arrow::field("key_2", arrow::int32())),
+                                          DataField(4, arrow::field("c", arrow::int32())),
+                                          DataField(8, arrow::field("d", arrow::int32())),
+                                          DataField(6, arrow::field("a", arrow::int32())),
+                                          DataField(0, arrow::field("key0", arrow::int32())),
+                                          DataField(9, arrow::field("e", arrow::int32()))};
+    auto param = GetParam();
+    std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
+                       "/pk_table_with_alter_table.db/pk_table_with_alter_table/";
+    // equal is a partition filter and is not pushed into the data files; less_than is pushed down
+    // and only matches the column added by schema evolution, where the older files yield nulls.
+    auto equal = PredicateBuilder::Equal(/*field_index=*/6, /*field_name=*/"key0", FieldType::INT,
+                                         Literal(0));
+    auto less_than = PredicateBuilder::LessThan(/*field_index=*/7, /*field_name=*/"e",
+                                                FieldType::INT, Literal(510));
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({equal, less_than}));
+
+    ReadContextBuilder context_builder(path);
+    context_builder.SetReadFieldNames({{"key1", "k", "key_2", "c", "d", "a", "key0", "e"}});
+    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
+        .AddOption("read.batch-size", "2");
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
+    context_builder.SetPredicate(predicate);
+    context_builder.EnablePredicateFilter(true)
+        .EnableLateMaterializing(true)
+        .EnablePrefetch(param.enable_prefetch)
+        .AddOption("test.enable-adaptive-prefetch-strategy",
+                   param.enable_adaptive_prefetch_strategy);
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+
+    std::vector<std::string> file_list_0;
+    std::vector<std::string> file_list_1;
+    std::string deletion_file;
+    if (param.file_format == "orc") {
+        file_list_0 = {"data-3842c1d6-6b34-4b2c-a648-9e95b4fb941b-0.orc",
+                       "data-d6d370f3-242b-45c9-8739-44bf31b2b449-0.orc"};
+        file_list_1 = {"data-7b538b91-5dbb-4e16-a639-1b5c0696db8c-0.orc"};
+        deletion_file = "index-51804749-ed6c-4e7b-b3e9-337cfe38499c-1";
+    } else if (param.file_format == "parquet") {
+        file_list_0 = {"data-8969384c-d715-4113-b663-2248c9a8c8d9-0.parquet",
+                       "data-f2f38e80-7d28-4d51-90b3-c28951e5cdc0-0.parquet"};
+        file_list_1 = {"data-d7a33230-223e-4d65-8e39-bc7ed26bdd32-0.parquet"};
+        deletion_file = "index-c93829f3-1a72-4d88-8401-70663ce46426-1";
+    }
+
+    DataSplitsSchemaDv input_data_splits = {
+        {path + "key0=1/key1=1/bucket-0",
+         BinaryRowGenerator::GenerateRow({1, 1}, pool_.get()),
+         file_list_0,
+         /*schema ids*/ {0, 1},
+         /*deletion file*/
+         {DeletionFile(path + "index/" + deletion_file,
+                       /*offset=*/1, /*length=*/26, /*cardinality=*/std::nullopt),
+          std::nullopt}},
+        {path + "key0=0/key1=1/bucket-0", BinaryRowGenerator::GenerateRow({0, 1}, pool_.get()),
+         file_list_1,
+         /*schema ids*/ {1},
+         /*deletion file*/ {std::nullopt}}};
+
+    auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/6);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    auto fields_with_row_kind = read_fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
+    std::shared_ptr<arrow::DataType> arrow_data_type =
+        DataField::ConvertDataFieldsToArrowStructType(fields_with_row_kind);
+
+    // "Paul" is the only row in partition key0 = 0 whose e is not null and matches e < 510.
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
+      [0, 1, "Paul", 502, 504, 508, 506, 0, 509]
+])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
 }
 
 TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateFilter) {

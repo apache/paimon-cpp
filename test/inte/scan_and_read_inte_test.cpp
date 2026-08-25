@@ -724,7 +724,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate);
+    read_context_builder.SetPredicate(predicate)
+        .EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
@@ -737,6 +738,50 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
     auto expected = std::make_shared<arrow::ChunkedArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
 [0, "Lucy", 20, 1, 14.1],
+[0, "Paul", 20, 1, 18.1]
+   ])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected);
+    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
+// Late materialization reads the predicate columns first and only materializes the remaining
+// columns for matched rows. Combined with the top-level predicate filter, the read path returns
+// the exact user-predicate match set (deletion vectors stay applied per data file).
+TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLateMaterializing) {
+    auto file_format = FileFormat();
+    std::string table_path = paimon::test::GetDataDir() + file_format +
+                             "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
+
+    std::string literal_str = "Alice";
+    auto not_equal = PredicateBuilder::NotEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+        Literal(FieldType::STRING, literal_str.data(), literal_str.size()));
+    auto greater_than = PredicateBuilder::GreaterThan(/*field_index=*/3, /*field_name=*/"f3",
+                                                      FieldType::DOUBLE, Literal(18.0));
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({not_equal, greater_than}));
+    scan_context_builder.SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+
+    ReadContextBuilder read_context_builder(table_path);
+    AddReadOptionsForPrefetch(&read_context_builder);
+    read_context_builder.SetPredicate(predicate)
+        .EnablePredicateFilter(true)
+        .EnableLateMaterializing(true);
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    ASSERT_EQ(result_plan->SnapshotId().value(), 6);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    // check result: "Lucy" (f3 = 14.1) does not match f3 > 18 and is filtered out.
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
 [0, "Paul", 20, 1, 18.1]
    ])")
             .ValueOrDie());
@@ -1251,7 +1296,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate);
+    read_context_builder.SetPredicate(predicate)
+        .EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
@@ -1273,6 +1319,57 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
 [0, "Tony", 10, 0, 14.1],
 [0, "Alice", 10, 1, 19.1],
 [0, "Two roads diverged in a wood, and I took the one less traveled by, And that has made all the difference.", 10, 1, 11.0]
+   ])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected);
+    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
+// Same coverage as the deletion-vector case above, for the merge-on-read path where only the
+// key part of the predicate is pushed down into the data files.
+TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithLateMaterializing) {
+    auto file_format = FileFormat();
+    std::string table_path = paimon::test::GetDataDir() + file_format +
+                             "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
+
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "5");
+
+    std::string literal_str = "Alice";
+    auto not_equal = PredicateBuilder::NotEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+        Literal(FieldType::STRING, literal_str.data(), literal_str.size()));
+    std::string literal_str2 = "Lucy";
+    auto less_than = PredicateBuilder::LessThan(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+        Literal(FieldType::STRING, literal_str2.data(), literal_str2.size()));
+    auto less_or_equal = PredicateBuilder::LessOrEqual(/*field_index=*/3, /*field_name=*/"f3",
+                                                       FieldType::DOUBLE, Literal(30.0));
+    ASSERT_OK_AND_ASSIGN(auto predicate,
+                         PredicateBuilder::And({not_equal, less_than, less_or_equal}));
+    scan_context_builder.SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+
+    ReadContextBuilder read_context_builder(table_path);
+    AddReadOptionsForPrefetch(&read_context_builder);
+    read_context_builder.SetPredicate(predicate)
+        .EnablePredicateFilter(true)
+        .EnableLateMaterializing(true);
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    ASSERT_EQ(result_plan->SnapshotId().value(), 5);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    // check result: only the rows before "Lucy" with f3 <= 30.0 remain.
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
+[0, "Bob", 10, 0, 12.1],
+[0, "David", 10, 0, 17.1],
+[0, "Emily", 10, 0, 13.1]
    ])")
             .ValueOrDie());
     ASSERT_TRUE(expected);

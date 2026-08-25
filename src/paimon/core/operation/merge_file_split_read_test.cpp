@@ -99,6 +99,8 @@ class MergeFileSplitReadTest : public ::testing::Test,
 
     void AddOptions(ReadContextBuilder* context_builder) const {
         auto [use_min_heap, enable_io_prefetch, enable_multi_thread_row_to_batch] = GetParam();
+        // disable late materializing by default
+        context_builder->EnableLateMaterializing(false);
         if (use_min_heap) {
             context_builder->AddOption(Options::SORT_ENGINE, "min-heap");
         } else {
@@ -838,6 +840,67 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
 
     ])"},
                                                          &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    CheckResult(result_array, expected_array, read_schema);
+}
+
+// Late materialization reads the predicate columns first and only materializes the remaining
+// columns for matched rows. Combined with the top-level predicate filter the read path returns
+// the exact user-predicate match set: in a section with several sorted runs only the key part of
+// the predicate reaches the data files, and the merge result is filtered afterwards.
+TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
+    std::string path =
+        paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
+    ReadContextBuilder context_builder(path);
+
+    std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
+                                              DataField(3, arrow::field("p1", arrow::int32())),
+                                              DataField(5, arrow::field("s1", arrow::utf8())),
+                                              DataField(4, arrow::field("s0", arrow::utf8())),
+                                              DataField(6, arrow::field("v0", arrow::float64())),
+                                              DataField(7, arrow::field("v1", arrow::boolean()))};
+    auto read_schema = DataField::ConvertDataFieldsToArrowSchema(raw_read_fields);
+    ASSERT_TRUE(read_schema);
+
+    context_builder.SetReadFieldNames({"k1", "p1", "s1", "s0", "v0", "v1"});
+    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
+                                {Options::MERGE_ENGINE, "deduplicate"},
+                                {Options::IGNORE_DELETE, "true"}});
+    AddOptions(&context_builder);                            
+    context_builder.EnableLateMaterializing(true);
+    // key predicate, always pushed down into the data files
+    auto greater_or_equal = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k1",
+                                                             FieldType::INT, Literal(1));
+    // value predicate, only pushed down when a section holds a single sorted run
+    auto greater_than = PredicateBuilder::GreaterThan(/*field_index=*/4, /*field_name=*/"v0",
+                                                      FieldType::DOUBLE, Literal(12.0));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate_result,
+                         PredicateBuilder::And({greater_or_equal, greater_than}));
+    context_builder.SetPredicate(predicate_result);
+    context_builder.EnablePredicateFilter(true).EnableLateMaterializing(true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
+
+    auto internal_context = CreateInternalReadContext(read_context);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
+                         ReadResultCollector::CollectResult(batch_reader.get()));
+
+    auto fields_with_row_kind = read_schema->fields();
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+
+    // Only the merged rows with k1 >= 1 and v0 > 12.0 remain.
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status =
+        arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(fields_with_row_kind), {R"([
+                        [0, 1, 0, "!",      "driver", 13.3, false],
+                        [0, 2, 0, "!",      "driver", 13.3, false],
+                        [0, 200, 0, "number", "max",  140.4, false],
+                        [0, 1, 1, "you",    "zoo",    130.0, false]
+
+    ])"},
+                                                        &expected_array);
     ASSERT_TRUE(array_status.ok());
     CheckResult(result_array, expected_array, read_schema);
 }
