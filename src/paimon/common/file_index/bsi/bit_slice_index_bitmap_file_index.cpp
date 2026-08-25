@@ -89,16 +89,7 @@ BitSliceIndexBitmapFileIndexWriter::BitSliceIndexBitmapFileIndexWriter(
 Status BitSliceIndexBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                       arrow::ImportArray(batch, struct_type_));
-    if (!array || array->type_id() != arrow::Type::STRUCT) {
-        return Status::Invalid(
-            "invalid batch for BitSliceIndexBitmapFileIndexWriter, expected a struct array");
-    }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
-    if (struct_array->num_fields() != 1) {
-        return Status::Invalid(
-            "invalid batch for BitSliceIndexBitmapFileIndexWriter, expected a struct array with "
-            "exactly one field");
-    }
     if (struct_array->length() > static_cast<int64_t>(std::numeric_limits<int32_t>::max()) -
                                      static_cast<int64_t>(values_.size())) {
         return Status::Invalid("bsi index row count exceeds the supported int32 range");

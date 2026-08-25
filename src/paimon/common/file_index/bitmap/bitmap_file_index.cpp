@@ -131,15 +131,7 @@ BitmapFileIndexWriter::BitmapFileIndexWriter(int8_t version,
 Status BitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(batch, struct_type_));
-    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
-        return Status::Invalid("invalid batch for BitmapFileIndexWriter, expected a struct array");
-    }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
-    if (struct_array->num_fields() != 1) {
-        return Status::Invalid(
-            "invalid batch for BitmapFileIndexWriter, expected a struct array with exactly one "
-            "field");
-    }
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<Literal> array_values,
         LiteralConverter::ConvertLiteralsFromArray(*(struct_array->field(0)), /*own_data=*/true));

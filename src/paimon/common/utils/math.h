@@ -36,6 +36,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/io/byte_order.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -134,6 +135,32 @@ inline T EndianSwapValue(T v) {
         }
         return ret_val;
     }
+}
+
+template <typename T>
+inline T ToBigEndian(T value) {
+    if constexpr (SystemByteOrder() == ByteOrder::PAIMON_LITTLE_ENDIAN) {
+        return EndianSwapValue(value);
+    }
+    return value;
+}
+
+template <typename T>
+inline T ToLittleEndian(T value) {
+    if constexpr (SystemByteOrder() == ByteOrder::PAIMON_BIG_ENDIAN) {
+        return EndianSwapValue(value);
+    }
+    return value;
+}
+
+template <typename T>
+inline T FromBigEndian(T value) {
+    return ToBigEndian(value);
+}
+
+template <typename T>
+inline T FromLittleEndian(T value) {
+    return ToLittleEndian(value);
 }
 
 }  // namespace paimon

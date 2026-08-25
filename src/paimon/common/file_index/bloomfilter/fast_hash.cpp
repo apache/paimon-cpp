@@ -19,6 +19,7 @@
 #include "paimon/common/file_index/bloomfilter/fast_hash.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -34,6 +35,11 @@
 #include "xxhash.h"  // NOLINT(build/include_subdir)
 
 namespace paimon {
+namespace {
+constexpr int32_t kCanonicalFloatNaNBits = 0x7fc00000;
+constexpr int64_t kCanonicalDoubleNaNBits = 0x7ff8000000000000L;
+}  // namespace
+
 Result<FastHash::HashFunction> FastHash::GetHashFunction(
     const std::shared_ptr<arrow::DataType>& arrow_type) {
     PAIMON_ASSIGN_OR_RAISE(FieldType field_type,
@@ -58,14 +64,20 @@ Result<FastHash::HashFunction> FastHash::GetHashFunction(
             });
         case FieldType::FLOAT:
             return HashFunction([](const Literal& literal) -> int64_t {
-                auto raw_value = literal.GetValue<float>();
+                const auto raw_value = literal.GetValue<float>();
+                if (std::isnan(raw_value)) {
+                    return GetLongHash(kCanonicalFloatNaNBits);
+                }
                 int32_t bits = 0;
                 std::memcpy(&bits, &raw_value, sizeof(raw_value));
                 return GetLongHash(bits);
             });
         case FieldType::DOUBLE:
             return HashFunction([](const Literal& literal) -> int64_t {
-                auto raw_value = literal.GetValue<double>();
+                const auto raw_value = literal.GetValue<double>();
+                if (std::isnan(raw_value)) {
+                    return GetLongHash(kCanonicalDoubleNaNBits);
+                }
                 int64_t bits;
                 std::memcpy(&bits, &raw_value, sizeof(raw_value));
                 return GetLongHash(bits);

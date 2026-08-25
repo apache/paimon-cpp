@@ -87,16 +87,7 @@ Result<std::shared_ptr<RangeBitmapFileIndexWriter>> RangeBitmapFileIndexWriter::
 Status RangeBitmapFileIndexWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                       arrow::ImportArray(batch, struct_type_));
-    if (!array || array->type_id() != arrow::Type::STRUCT) {
-        return Status::Invalid(
-            "invalid batch for RangeBitmapFileIndexWriter, expected a struct array");
-    }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
-    if (struct_array->num_fields() != 1) {
-        return Status::Invalid(
-            "invalid batch for RangeBitmapFileIndexWriter, expected a struct array with exactly "
-            "one field");
-    }
     PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> array_values,
                            LiteralConverter::ConvertLiteralsFromArray(*(struct_array->field(0)),
                                                                       /*own_data=*/true));
