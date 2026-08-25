@@ -32,6 +32,7 @@
 #include "paimon/common/io/cache/cache_manager.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
+#include "paimon/core/index/pk/bucketed_primary_key_index_maintainer.h"
 #include "paimon/core/memory/writer_memory_manager.h"
 #include "paimon/file_store_write.h"
 #include "paimon/logging.h"
@@ -79,6 +80,8 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         const std::shared_ptr<arrow::Schema>& write_schema,
         const std::shared_ptr<arrow::Schema>& partition_schema,
         const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
+        const std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>&
+            primary_key_index_maintainer_factory,
         const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
         bool ignore_previous_files, bool is_streaming_mode, bool ignore_num_bucket_check,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
@@ -102,11 +105,16 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     struct WriterContainer {
      public:
         WriterContainer() = default;
-        WriterContainer(const std::shared_ptr<T>& writer, int32_t total_buckets)
-            : writer(writer), total_buckets(total_buckets) {}
+        WriterContainer(
+            const std::shared_ptr<T>& writer, int32_t total_buckets,
+            const std::shared_ptr<BucketedPrimaryKeyIndexMaintainer>& primary_key_index_maintainer)
+            : writer(writer),
+              total_buckets(total_buckets),
+              primary_key_index_maintainer(primary_key_index_maintainer) {}
         std::shared_ptr<T> writer;
         int64_t last_modified_commit_identifier = std::numeric_limits<int64_t>::min();
         int32_t total_buckets = -1;
+        std::shared_ptr<BucketedPrimaryKeyIndexMaintainer> primary_key_index_maintainer;
     };
 
  protected:
@@ -139,6 +147,8 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<arrow::Schema> partition_schema_;
     std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory_;
+    std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>
+        primary_key_index_maintainer_factory_;
     std::shared_ptr<IOManager> io_manager_;
     std::shared_ptr<CacheManager> cache_manager_;
     std::unique_ptr<WriterMemoryManager> writer_memory_manager_;

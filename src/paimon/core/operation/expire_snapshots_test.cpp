@@ -20,15 +20,23 @@
 
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/index/global_index_meta.h"
+#include "paimon/core/index/index_file_meta.h"
+#include "paimon/core/index/index_path_factory.h"
+#include "paimon/core/index/pk/primary_key_index_source_meta.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_kind.h"
+#include "paimon/core/manifest/index_manifest_entry.h"
+#include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
@@ -40,7 +48,6 @@
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/format/file_format.h"
-#include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -70,9 +77,11 @@ class ExpireSnapshotsTest : public testing::Test {
         schema_ = arrow::schema(fields);
         ASSERT_OK_AND_ASSIGN(partition_schema_,
                              FieldMapping::GetPartitionSchema(schema_, partition_keys_));
-        fs_ = std::make_shared<LocalFileSystem>();
+        dir_ = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir_);
+        fs_ = dir_->GetFileSystem();
 
-        test_data_path_ = "tmp";
+        test_data_path_ = dir_->Str();
         path_factory_ = CreateFactory(test_data_path_);
 
         ASSERT_OK_AND_ASSIGN(
@@ -85,6 +94,11 @@ class ExpireSnapshotsTest : public testing::Test {
             ManifestFile::Create(fs_, options.GetManifestFormat(), options.GetManifestCompression(),
                                  path_factory_, options.GetManifestTargetFileSize(), mem_pool_,
                                  options, partition_schema_));
+
+        ASSERT_OK_AND_ASSIGN(index_manifest_file_,
+                             IndexManifestFile::Create(
+                                 fs_, options.GetManifestFormat(), options.GetManifestCompression(),
+                                 path_factory_, options.GetBucket(), mem_pool_, options));
     }
     void TearDown() override {}
 
@@ -152,7 +166,36 @@ class ExpireSnapshotsTest : public testing::Test {
         return ManifestEntry(kind, row, bucket, /*total_buckets=*/3, data_file_meta);
     }
 
+    Result<IndexManifestEntry> CreateSourceBackedBTreeEntry(
+        const std::string& file_name, int32_t bucket,
+        const std::optional<std::string>& external_path = std::nullopt) const {
+        constexpr int64_t kRowCount = 3;
+        PAIMON_ASSIGN_OR_RAISE(
+            PrimaryKeyIndexSourceMeta source_meta,
+            PrimaryKeyIndexSourceMeta::Create(
+                /*data_level=*/2, {{fmt::format("{}.data", file_name), kRowCount}}));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> source_meta_bytes,
+                               source_meta.Serialize(mem_pool_));
+        auto index_file = std::make_shared<IndexFileMeta>(
+            "btree", file_name, /*file_size=*/7, kRowCount, /*dv_ranges=*/std::nullopt,
+            external_path,
+            GlobalIndexMeta(/*row_range_start=*/0, /*row_range_end=*/kRowCount - 1,
+                            /*index_field_id=*/5, /*extra_field_ids=*/std::nullopt,
+                            /*index_meta=*/nullptr, source_meta_bytes));
+        BinaryRow partition =
+            CreateManifestEntry("partition-source.data", bucket, FileKind::Add()).Partition();
+        return IndexManifestEntry(FileKind::Add(), partition, bucket, index_file);
+    }
+
+    Result<std::string> IndexFilePath(const IndexManifestEntry& entry) const {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<IndexPathFactory> index_path_factory,
+            path_factory_->CreateIndexFileFactory(entry.partition, entry.bucket));
+        return index_path_factory->ToPath(entry.index_file);
+    }
+
  private:
+    std::unique_ptr<UniqueTestDirectory> dir_;
     std::string test_data_path_;
     std::vector<std::string> partition_keys_;
     std::shared_ptr<arrow::Schema> schema_;
@@ -161,6 +204,7 @@ class ExpireSnapshotsTest : public testing::Test {
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<ManifestList> manifest_list_;
     std::shared_ptr<ManifestFile> manifest_file_;
+    std::shared_ptr<IndexManifestFile> index_manifest_file_;
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
 };
@@ -169,32 +213,36 @@ TEST_F(ExpireSnapshotsTest, TestInvalidInput) {
     auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
     {
         ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         ASSERT_OK_AND_ASSIGN(int32_t count, expire.Expire());
         ASSERT_EQ(count, 0);
     }
     {
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::SNAPSHOT_NUM_RETAINED_MIN, "0"}}));
-        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         ASSERT_NOK(expire.Expire());
     }
     {
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::SNAPSHOT_NUM_RETAINED_MIN, "10"},
                                                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "9"}}));
-        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         ASSERT_NOK(expire.Expire());
     }
     {
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::SNAPSHOT_NUM_RETAINED_MIN, "10"},
                                                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "10"}}));
-        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         ASSERT_OK_AND_ASSIGN(int32_t count, expire.Expire());
         ASSERT_EQ(count, 0);
     }
@@ -203,26 +251,86 @@ TEST_F(ExpireSnapshotsTest, TestInvalidInput) {
                              CoreOptions::FromMap({{Options::SNAPSHOT_EXPIRE_LIMIT, "-1"},
                                                    {Options::SNAPSHOT_NUM_RETAINED_MIN, "10"},
                                                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "10"}}));
-        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         ASSERT_NOK(expire.Expire());
     }
     {
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::SNAPSHOT_NUM_RETAINED_MIN, "10"},
                                                    {Options::SNAPSHOT_NUM_RETAINED_MAX, "10"}}));
-        ExpireSnapshots expire(nullptr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(nullptr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         ASSERT_NOK(expire.Expire());
     }
+}
+
+TEST_F(ExpireSnapshotsTest, TestExpireSourceBackedBTreeIndexFiles) {
+    auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, index_manifest_file_,
+                           fs_, options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+
+    ASSERT_OK_AND_ASSIGN(IndexManifestEntry shared_index,
+                         CreateSourceBackedBTreeEntry("shared-btree.index", /*bucket=*/0));
+    std::string expired_external_path = test_data_path_ + "/external-expired-btree.index";
+    ASSERT_OK_AND_ASSIGN(
+        IndexManifestEntry expired_index,
+        CreateSourceBackedBTreeEntry("expired-btree.index", /*bucket=*/0, expired_external_path));
+    ASSERT_OK_AND_ASSIGN(IndexManifestEntry retained_index,
+                         CreateSourceBackedBTreeEntry("retained-btree.index", /*bucket=*/0));
+    ASSERT_OK_AND_ASSIGN(std::string shared_path, IndexFilePath(shared_index));
+    ASSERT_OK_AND_ASSIGN(std::string expired_path, IndexFilePath(expired_index));
+    ASSERT_OK_AND_ASSIGN(std::string retained_path, IndexFilePath(retained_index));
+    ASSERT_OK(fs_->WriteFile(shared_path, "payload", /*overwrite=*/false));
+    ASSERT_OK(fs_->WriteFile(expired_path, "payload", /*overwrite=*/false));
+    ASSERT_OK(fs_->WriteFile(retained_path, "payload", /*overwrite=*/false));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::optional<std::string> expired_manifest,
+        index_manifest_file_->WriteIndexFiles(std::nullopt, {shared_index, expired_index}));
+    ASSERT_TRUE(expired_manifest);
+    ASSERT_OK_AND_ASSIGN(
+        std::optional<std::string> retained_manifest,
+        index_manifest_file_->WriteIndexFiles(std::nullopt, {shared_index, retained_index}));
+    ASSERT_TRUE(retained_manifest);
+
+    std::set<std::string> skipping_set;
+    ASSERT_OK(expire.AddIndexManifestToSkippingSet(retained_manifest, &skipping_set));
+    ASSERT_GT(skipping_set.count(retained_manifest.value()), 0);
+    ASSERT_GT(skipping_set.count(shared_index.index_file->FileName()), 0);
+    ASSERT_GT(skipping_set.count(retained_index.index_file->FileName()), 0);
+
+    ASSERT_OK(expire.CleanUnusedIndexManifest(expired_manifest, &skipping_set));
+    ASSERT_OK_AND_ASSIGN(bool shared_exists, fs_->Exists(shared_path));
+    ASSERT_TRUE(shared_exists);
+    ASSERT_OK_AND_ASSIGN(bool expired_exists, fs_->Exists(expired_path));
+    ASSERT_FALSE(expired_exists);
+    ASSERT_OK_AND_ASSIGN(bool retained_exists, fs_->Exists(retained_path));
+    ASSERT_TRUE(retained_exists);
+    ASSERT_OK_AND_ASSIGN(bool expired_manifest_exists,
+                         fs_->Exists(path_factory_->ToManifestFilePath(expired_manifest.value())));
+    ASSERT_FALSE(expired_manifest_exists);
+    ASSERT_OK_AND_ASSIGN(bool retained_manifest_exists,
+                         fs_->Exists(path_factory_->ToManifestFilePath(retained_manifest.value())));
+    ASSERT_TRUE(retained_manifest_exists);
+
+    ASSERT_OK(
+        expire.CleanUnusedIndexManifest(std::string("missing-index-manifest"), &skipping_set));
+    std::set<std::string> missing_skipping_set;
+    ASSERT_NOK(expire.AddIndexManifestToSkippingSet(std::string("missing-index-manifest"),
+                                                    &missing_skipping_set));
 }
 
 TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {
     auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
     {
-        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         std::map<std::string, ManifestEntry> data_file_to_delete;
         std::vector<ManifestEntry> data_file_entries;
         data_file_entries.push_back(CreateManifestEntry("file1", /*bucket=*/0, FileKind::Delete()));
@@ -236,8 +344,9 @@ TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {
                         {test_data_path_ + "/f0=true/f3=3/bucket-2/file3", data_file_entries[3]}}));
     }
     {
-        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
-                               options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+        ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_,
+                               index_manifest_file_, fs_, options.GetExpireConfig(),
+                               options.RealtimeEnabled(), executor_);
         std::map<std::string, ManifestEntry> data_file_to_delete;
         std::vector<ManifestEntry> data_file_entries;
         data_file_entries.push_back(CreateManifestEntry("file1", /*bucket=*/0, FileKind::Add()));

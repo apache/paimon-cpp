@@ -165,9 +165,9 @@ class PAIMON_EXPORT CleanContextBuilder {
 /// by Paimon C++, we implemented a strong pattern-matching validation, deleting only files in
 /// patterns we recognize.
 ///
-/// @note `OrphanFilesCleaner` in Paimon C++ only support cleaning append table, do not support
-/// cleaning table with tag, table with external paths, table with branch, table with index, table
-/// with changelog, and primary key table.
+/// @note `OrphanFilesCleaner` in Paimon C++ does not support cleaning tables with tags, branches,
+/// external data paths, or changelog manifests. Global-index external paths are not enumerated;
+/// snapshot expiration owns deletion of external index payloads.
 class PAIMON_EXPORT OrphanFilesCleaner {
  public:
     virtual ~OrphanFilesCleaner() = default;

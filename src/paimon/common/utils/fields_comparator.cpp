@@ -128,21 +128,18 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::FLOAT:
-            // TODO(xinyu.lxy):
-            // currently in java KeyComparatorSupplier: -inf < -0.0 == +0.0 < +inf = nan
-            // paimon-cpp: -inf < -0.0 == +0.0 < +inf and nan cannot be compared
             return FieldsComparator::FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     float lvalue = lhs.GetFloat(field_idx);
                     float rvalue = rhs.GetFloat(field_idx);
-                    return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
+                    return CompareFloatingPoint(lvalue, rvalue);
                 });
         case arrow::Type::type::DOUBLE:
             return FieldsComparator::FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     double lvalue = lhs.GetDouble(field_idx);
                     double rvalue = rhs.GetDouble(field_idx);
-                    return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
+                    return CompareFloatingPoint(lvalue, rvalue);
                 });
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY: {

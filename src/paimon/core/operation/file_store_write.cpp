@@ -27,6 +27,8 @@
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/disk/io_manager.h"
+#include "paimon/core/index/pk/bucketed_primary_key_index_maintainer.h"
+#include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/mergetree/compact/lookup_merge_function.h"
 #include "paimon/core/mergetree/compact/merge_function.h"
@@ -234,26 +236,50 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             PrimaryKeyTableUtils::CreateSequenceFieldsComparator(schema->Fields(), options));
 
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
-        if (options.DeletionVectorsEnabled()) {
+        PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexDefinitions primary_key_index_definitions,
+                               PrimaryKeyIndexDefinitions::Create(*schema));
+        bool has_btree_index = false;
+        for (const PrimaryKeyIndexDefinition& definition :
+             primary_key_index_definitions.Definitions()) {
+            if (definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE) {
+                has_btree_index = true;
+                break;
+            }
+        }
+        std::shared_ptr<IndexFileHandler> index_file_handler;
+        if (options.DeletionVectorsEnabled() || has_btree_index) {
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
                 IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
                                           options.GetBucket(), ctx->GetMemoryPool(), options));
-            auto index_file_handler = std::make_shared<IndexFileHandler>(
+            index_file_handler = std::make_shared<IndexFileHandler>(
                 options.GetFileSystem(), std::move(index_manifest_file),
                 std::make_shared<IndexFilePathFactories>(file_store_path_factory),
                 options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
+        }
+        if (options.DeletionVectorsEnabled()) {
             dv_maintainer_factory =
                 std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
+        }
+        std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>
+            primary_key_index_maintainer_factory;
+        if (has_btree_index) {
+            PAIMON_ASSIGN_OR_RAISE(
+                primary_key_index_maintainer_factory,
+                BucketedPrimaryKeyIndexMaintainer::Factory::Create(
+                    ctx->GetRootPath(), branch, schema, primary_key_index_definitions.Definitions(),
+                    file_store_path_factory, index_file_handler, options, io_manager,
+                    ctx->EnableMultiThreadSpill(), ctx->GetExecutor(), ctx->GetMemoryPool()));
         }
 
         return std::make_unique<KeyValueFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
             ctx->GetRootPath(), schema, arrow_schema, partition_schema, dv_maintainer_factory,
-            io_manager, key_comparator, sequence_fields_comparator, merge_function_wrapper, options,
-            ignore_previous_files, ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(),
-            ctx->EnableMultiThreadSpill(), ctx->GetExecutor(), ctx->GetMemoryPool());
+            primary_key_index_maintainer_factory, io_manager, key_comparator,
+            sequence_fields_comparator, merge_function_wrapper, options, ignore_previous_files,
+            ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(),
+            ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 }
 

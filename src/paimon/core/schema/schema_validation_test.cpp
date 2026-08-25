@@ -29,6 +29,20 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+Result<std::unique_ptr<TableSchema>> MakePrimaryKeyBTreeSchema(
+    std::map<std::string, std::string> options,
+    const std::vector<std::string>& primary_keys = {"id"},
+    const std::shared_ptr<arrow::DataType>& value_type = arrow::int32()) {
+    options.emplace(Options::PK_BTREE_INDEX_COLUMNS, "value");
+    auto schema = arrow::schema({arrow::field("id", arrow::int64(), /*nullable=*/false),
+                                 arrow::field("value", value_type)});
+    return TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{}, primary_keys,
+                               options);
+}
+
+}  // namespace
 
 TEST(SchemaValidationTest, TestSimple) {
     auto f0 = arrow::field("f0", arrow::utf8());
@@ -651,6 +665,102 @@ TEST(SchemaValidationTest, ValidateDeletionVector) {
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                             "First row merge engine does not need deletion vectors because there "
                             "is no deletion of old data in this merge engine.");
+    }
+}
+
+TEST(SchemaValidationTest, ValidatePrimaryKeyBTreeIndexes) {
+    {
+        std::map<std::string, std::string> options = {
+            {Options::BUCKET, "1"},
+            {Options::DELETION_VECTORS_ENABLED, "true"},
+            {"fields.value.pk-btree.index.options", R"({"cache-size":"16 mb"})"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*schema));
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "-2"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*schema));
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require deletion-vectors.enabled = true");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::BUCKET_KEY, "id"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options, /*primary_keys=*/{}));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require a primary-key table");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require fixed or postpone bucket mode");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"},
+                                                      {"deletion-vectors.merge-on-read", "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "require deletion-vectors.merge-on-read = false");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "1"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"},
+                                                      {"pk-clustering-override", "true"}};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "do not support pk-clustering-override");
+    }
+}
+
+TEST(SchemaValidationTest, ValidatePrimaryKeyBTreeIndexColumnsAndOptions) {
+    std::map<std::string, std::string> valid_options = {
+        {Options::BUCKET, "1"}, {Options::DELETION_VECTORS_ENABLED, "true"}};
+    {
+        std::map<std::string, std::string> options = valid_options;
+        options.emplace(Options::PK_BTREE_INDEX_COLUMNS, "missing");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "entry 'missing' must reference an existing column");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> schema,
+            MakePrimaryKeyBTreeSchema(valid_options, /*primary_keys=*/{"id"}, arrow::binary()));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "entry 'value' has unsupported type binary");
+    }
+    {
+        std::map<std::string, std::string> options = valid_options;
+        options.emplace(Options::PK_BTREE_INDEX_COLUMNS, "value,value");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema),
+                            "contains duplicate column 'value'");
+    }
+    {
+        std::map<std::string, std::string> options = valid_options;
+        options.emplace("fields.value.pk-btree.index.options", R"({"cache-size":"not-a-size"})");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             MakePrimaryKeyBTreeSchema(options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*schema), "not-a-size");
     }
 }
 

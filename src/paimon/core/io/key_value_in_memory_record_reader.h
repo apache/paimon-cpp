@@ -45,14 +45,14 @@ class Metrics;
 
 class KeyValueInMemoryRecordReader : public KeyValueRecordReader {
  public:
-    KeyValueInMemoryRecordReader(int64_t last_sequence_num,
-                                 const std::shared_ptr<arrow::StructArray>& struct_array,
-                                 const std::vector<RecordBatch::RowKind>& row_kinds,
-                                 const std::vector<std::string>& primary_keys,
-                                 const std::vector<std::string>& user_defined_sequence_fields,
-                                 bool sequence_fields_ascending,
-                                 const std::shared_ptr<FieldsComparator>& key_comparator,
-                                 const std::shared_ptr<MemoryPool>& pool);
+    KeyValueInMemoryRecordReader(
+        int64_t last_sequence_num, const std::shared_ptr<arrow::StructArray>& struct_array,
+        const std::vector<RecordBatch::RowKind>& row_kinds,
+        const std::vector<std::string>& primary_keys,
+        const std::vector<std::string>& user_defined_sequence_fields,
+        bool sequence_fields_ascending, const std::shared_ptr<FieldsComparator>& key_comparator,
+        const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<FieldsComparator>& sort_comparator = nullptr);
 
     class Iterator : public KeyValueRecordReader::Iterator {
      public:
@@ -89,6 +89,7 @@ class KeyValueInMemoryRecordReader : public KeyValueRecordReader {
     std::shared_ptr<arrow::StructArray> value_struct_array_;
     std::vector<RecordBatch::RowKind> row_kinds_;
     std::shared_ptr<FieldsComparator> key_comparator_;
+    std::shared_ptr<FieldsComparator> sort_comparator_;
 
     std::shared_ptr<arrow::NumericArray<arrow::UInt64Type>> sort_indices_;
     std::shared_ptr<ColumnarBatchContext> key_ctx_;

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <optional>
@@ -36,14 +37,19 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/global_index/btree/btree_defs.h"
+#include "paimon/common/options/memory_size.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/index/pk/primary_key_index_definition.h"
+#include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/options/changelog_producer.h"
 #include "paimon/core/options/expire_config.h"
 #include "paimon/core/options/map_storage_layout.h"
@@ -56,6 +62,9 @@
 
 namespace paimon {
 namespace {
+
+constexpr char kDeletionVectorsMergeOnRead[] = "deletion-vectors.merge-on-read";
+constexpr char kPkClusteringOverride[] = "pk-clustering-override";
 
 bool ContainsBlobField(const std::shared_ptr<arrow::Field>& field) {
     if (BlobUtils::IsBlobField(field)) {
@@ -122,6 +131,58 @@ Status ValidatePerLevelOption(
             PAIMON_RETURN_NOT_OK(
                 validator(option_key + "." + level_and_value[0], level_and_value[1]));
         }
+    }
+    return Status::OK();
+}
+
+std::vector<std::string> PrimaryKeyBTreeIndexColumns(
+    const std::map<std::string, std::string>& options) {
+    auto iter = options.find(Options::PK_BTREE_INDEX_COLUMNS);
+    if (iter == options.end()) {
+        return {};
+    }
+    std::vector<std::string> columns = StringUtils::Split(iter->second, ",", false);
+    for (std::string& column : columns) {
+        StringUtils::Trim(&column);
+    }
+    return columns;
+}
+
+bool IsSupportedBTreeIndexType(const std::shared_ptr<arrow::DataType>& type) {
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::STRING:
+        case arrow::Type::DATE32:
+        case arrow::Type::TIMESTAMP:
+        case arrow::Type::DECIMAL128:
+            return true;
+        default:
+            return false;
+    }
+}
+
+Status ValidateBTreeIndexerOptions(const std::map<std::string, std::string>& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::string cache_size, OptionsUtils::GetValueFromMap<std::string>(
+                                                       options, BtreeDefs::kBtreeIndexCacheSize,
+                                                       BtreeDefs::kDefaultBtreeIndexCacheSize));
+    Result<int64_t> parsed_cache_size = MemorySize::ParseBytes(cache_size);
+    if (!parsed_cache_size.ok()) {
+        return parsed_cache_size.status().WithMessage(fmt::format(
+            "Invalid BTree cache size '{}': {}", cache_size, parsed_cache_size.status().message()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        double high_priority_pool_ratio,
+        OptionsUtils::GetValueFromMap<double>(options, BtreeDefs::kBtreeIndexHighPriorityPoolRatio,
+                                              BtreeDefs::kDefaultBtreeIndexHighPriorityPoolRatio));
+    if (!std::isfinite(high_priority_pool_ratio) || high_priority_pool_ratio < 0.0 ||
+        high_priority_pool_ratio >= 1.0) {
+        return Status::Invalid("The BTree high priority pool ratio should be in the range [0, 1).");
     }
     return Status::OK();
 }
@@ -194,6 +255,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     if (options.DeletionVectorsEnabled()) {
         PAIMON_RETURN_NOT_OK(ValidateForDeletionVectors(options));
     }
+    PAIMON_RETURN_NOT_OK(ValidatePrimaryKeyBTreeIndexes(schema, options));
 
     PAIMON_RETURN_NOT_OK(ValidateRowTracking(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
@@ -339,6 +401,71 @@ Status SchemaValidation::ValidateForDeletionVectors(const CoreOptions& options) 
         options.GetMergeEngine() != MergeEngine::FIRST_ROW,
         "First row merge engine does not need deletion vectors because there is "
         "no deletion of old data in this merge engine.");
+}
+
+Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schema,
+                                                        const CoreOptions& options) {
+    std::vector<std::string> index_columns = PrimaryKeyBTreeIndexColumns(schema.Options());
+    if (index_columns.empty()) {
+        return Status::OK();
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexDefinitions definitions,
+                           PrimaryKeyIndexDefinitions::Create(schema));
+    if (!options.DeletionVectorsEnabled()) {
+        return Status::Invalid(
+            "Primary-key BTree indexes require deletion-vectors.enabled = true.");
+    }
+    if (schema.PrimaryKeys().empty()) {
+        return Status::Invalid("Primary-key BTree indexes require a primary-key table.");
+    }
+    if (options.GetBucket() <= 0 && !IsPostponeBucketTable(schema, options.GetBucket())) {
+        return Status::Invalid(
+            fmt::format("Primary-key BTree indexes require fixed or postpone bucket mode "
+                        "(bucket > 0 or bucket = -2), but bucket is {}.",
+                        options.GetBucket()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        bool deletion_vectors_merge_on_read,
+        OptionsUtils::GetValueFromMap<bool>(schema.Options(), kDeletionVectorsMergeOnRead, false));
+    if (deletion_vectors_merge_on_read) {
+        return Status::Invalid(
+            "Primary-key BTree indexes require deletion-vectors.merge-on-read = false.");
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        bool pk_clustering_override,
+        OptionsUtils::GetValueFromMap<bool>(schema.Options(), kPkClusteringOverride, false));
+    if (pk_clustering_override) {
+        return Status::Invalid("Primary-key BTree indexes do not support pk-clustering-override.");
+    }
+
+    for (const std::string& column : index_columns) {
+        auto field_iter =
+            std::find_if(schema.Fields().begin(), schema.Fields().end(),
+                         [&column](const DataField& field) { return field.Name() == column; });
+        if (field_iter == schema.Fields().end()) {
+            return Status::Invalid(fmt::format("{} entry '{}' must reference an existing column.",
+                                               Options::PK_BTREE_INDEX_COLUMNS, column));
+        }
+        if (!IsSupportedBTreeIndexType(field_iter->Type())) {
+            return Status::Invalid(fmt::format("{} entry '{}' has unsupported type {}.",
+                                               Options::PK_BTREE_INDEX_COLUMNS, column,
+                                               field_iter->Type()->ToString()));
+        }
+
+        auto definition_iter = std::find_if(
+            definitions.Definitions().begin(), definitions.Definitions().end(),
+            [&column](const PrimaryKeyIndexDefinition& definition) {
+                return definition.GetFamily() == PrimaryKeyIndexDefinition::Family::BTREE &&
+                       definition.Column() == column;
+            });
+        if (definition_iter == definitions.Definitions().end()) {
+            return Status::Invalid(
+                fmt::format("Failed to resolve primary-key BTree index column '{}'.", column));
+        }
+        PAIMON_RETURN_NOT_OK(ValidateBTreeIndexerOptions(definition_iter->Options()));
+    }
+    return Status::OK();
 }
 
 Status SchemaValidation::ValidateSequenceGroup(const TableSchema& schema,

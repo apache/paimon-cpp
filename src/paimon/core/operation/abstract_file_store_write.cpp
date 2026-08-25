@@ -60,6 +60,8 @@ AbstractFileStoreWrite::AbstractFileStoreWrite(
     const std::shared_ptr<arrow::Schema>& write_schema,
     const std::shared_ptr<arrow::Schema>& partition_schema,
     const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
+    const std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>&
+        primary_key_index_maintainer_factory,
     const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
     bool ignore_previous_files, bool is_streaming_mode, bool ignore_num_bucket_check,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
@@ -75,6 +77,7 @@ AbstractFileStoreWrite::AbstractFileStoreWrite(
       table_schema_(table_schema),
       partition_schema_(partition_schema),
       dv_maintainer_factory_(dv_maintainer_factory),
+      primary_key_index_maintainer_factory_(primary_key_index_maintainer_factory),
       io_manager_(io_manager),
       options_(options),
       compact_executor_(CreateDefaultExecutor()),
@@ -206,6 +209,29 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AbstractFileStoreWrite::Prep
                     compact_deletion_file->GetOrCompute());
                 if (dv_index_file_meta) {
                     compact_increment.AddNewIndexFiles({dv_index_file_meta.value()});
+                }
+            }
+            if (writer_container.primary_key_index_maintainer) {
+                Status index_status =
+                    writer_container.primary_key_index_maintainer->PrepareCommit(&increment);
+                if (!index_status.ok()) {
+                    if (compact_deletion_file) {
+                        const auto& new_index_files =
+                            increment.GetCompactIncrement().NewIndexFiles();
+                        for (const std::shared_ptr<IndexFileMeta>& index_file : new_index_files) {
+                            if (index_file != nullptr &&
+                                index_file->IndexType() ==
+                                    DeletionVectorsIndexFile::DELETION_VECTORS_INDEX) {
+                                PAIMON_ASSIGN_OR_RAISE(
+                                    std::string index_path,
+                                    dv_maintainer_factory_->GetIndexFileHandler()->FilePath(
+                                        partition, bucket, index_file));
+                                [[maybe_unused]] Status cleanup_status =
+                                    options_.GetFileSystem()->Delete(index_path);
+                            }
+                        }
+                    }
+                    return index_status;
                 }
             }
 
@@ -375,6 +401,8 @@ Result<std::shared_ptr<RestoreFiles>> AbstractFileStoreWrite::ScanExistingFileMe
     std::shared_ptr<IndexFileHandler> index_file_handler;
     if (dv_maintainer_factory_) {
         index_file_handler = dv_maintainer_factory_->GetIndexFileHandler();
+    } else if (primary_key_index_maintainer_factory_) {
+        index_file_handler = primary_key_index_maintainer_factory_->GetIndexFileHandler();
     }
     // Paimon Java currently drops value stats during writer restore. This is a known bug: a
     // restored file can become a compact-after ADD via metadata-only level upgrade and lose its
@@ -383,7 +411,8 @@ Result<std::shared_ptr<RestoreFiles>> AbstractFileStoreWrite::ScanExistingFileMe
     FileSystemWriteRestore restore(snapshot_manager_, std::move(scan), index_file_handler);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<RestoreFiles> restore_files,
-        restore.GetRestoreFiles(partition, bucket, dv_maintainer_factory_ != nullptr));
+        restore.GetRestoreFiles(partition, bucket, dv_maintainer_factory_ != nullptr,
+                                primary_key_index_maintainer_factory_ != nullptr));
 
     std::optional<int32_t> restored_total_buckets = restore_files->TotalBuckets();
     int32_t total_buckets = GetDefaultBucketNum();
@@ -427,17 +456,28 @@ Result<std::shared_ptr<BatchWriter>> AbstractFileStoreWrite::GetWriter(const Bin
             dv_maintainer_factory_->Create(partition, bucket, restored->DeleteVectorsIndex()));
     }
 
+    std::shared_ptr<BucketedPrimaryKeyIndexMaintainer> primary_key_index_maintainer;
+    if (primary_key_index_maintainer_factory_) {
+        PAIMON_ASSIGN_OR_RAISE(
+            primary_key_index_maintainer,
+            primary_key_index_maintainer_factory_->CreateMaintainer(
+                partition, bucket, restore_data_files, restored->PrimaryKeyIndexPayloads()));
+    }
+
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<BatchWriter> writer,
         CreateWriter(partition, bucket, restore_data_files, max_sequence_number, dv_maintainer));
     int32_t total_buckets = restored->TotalBuckets().value_or(GetDefaultBucketNum());
 
     if (partition_iter == writers_.end()) {
-        writers_.emplace(partition,
-                         std::unordered_map<int32_t, WriterContainer<BatchWriter>>(
-                             {{bucket, WriterContainer<BatchWriter>(writer, total_buckets)}}));
+        writers_.emplace(
+            partition, std::unordered_map<int32_t, WriterContainer<BatchWriter>>(
+                           {{bucket, WriterContainer<BatchWriter>(writer, total_buckets,
+                                                                  primary_key_index_maintainer)}}));
     } else {
-        partition_iter->second.emplace(bucket, WriterContainer<BatchWriter>(writer, total_buckets));
+        partition_iter->second.emplace(
+            bucket,
+            WriterContainer<BatchWriter>(writer, total_buckets, primary_key_index_maintainer));
     }
     writer_memory_manager_->RegisterWriter(writer.get());
 
