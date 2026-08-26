@@ -115,7 +115,7 @@ TEST_F(SequenceSnapshotPropertiesTest, MaxSequenceNumberTrailingCharacters) {
     std::map<std::string, std::string> properties{
         {SequenceSnapshotProperties::kMaxSequenceNumberKey, "123abc"}};
     ASSERT_NOK_WITH_MSG(SequenceSnapshotProperties::MaxSequenceNumber(MakeSnapshot(properties)),
-                        "trailing characters are not allowed");
+                        "Invalid sequence.generation.max-sequence-number value '123abc'");
 }
 
 TEST_F(SequenceSnapshotPropertiesTest, MaxSequenceNumberNotANumber) {

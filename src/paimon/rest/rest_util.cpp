@@ -21,6 +21,7 @@
 #include <stdexcept>
 
 #include "fmt/format.h"
+#include "paimon/common/utils/options_utils.h"
 #include "rapidjson/error/en.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -29,13 +30,7 @@ namespace paimon {
 
 std::map<std::string, std::string> RestUtil::ExtractPrefixMap(
     const std::map<std::string, std::string>& options, const std::string& prefix) {
-    std::map<std::string, std::string> result;
-    for (const auto& [key, value] : options) {
-        if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0) {
-            result[key.substr(prefix.size())] = value;
-        }
-    }
-    return result;
+    return OptionsUtils::FetchOptionsWithPrefix(prefix, options, /*ignore_empty_key=*/true);
 }
 
 std::string RestUtil::ExtractRequestId(const std::map<std::string, std::string>& headers) {

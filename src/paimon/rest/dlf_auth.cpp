@@ -22,7 +22,6 @@
 #include <openssl/evp.h>
 
 #include <array>
-#include <cctype>
 #include <climits>
 #include <ctime>
 #include <fstream>
@@ -74,28 +73,10 @@ constexpr const char kAcsSignatureVersionHeader[] = "x-acs-signature-version";
 constexpr const char kAcsVersionHeader[] = "x-acs-version";
 constexpr const char kAcsSecurityTokenHeader[] = "x-acs-security-token";
 
-void TrimWhitespace(std::string* value) {
-    size_t begin = 0;
-    while (begin < value->size() && std::isspace(static_cast<unsigned char>((*value)[begin]))) {
-        ++begin;
-    }
-    size_t end = value->size();
-    while (end > begin && std::isspace(static_cast<unsigned char>((*value)[end - 1]))) {
-        --end;
-    }
-    *value = value->substr(begin, end - begin);
-}
-
 Result<std::string> RequiredNonEmptyOption(const std::map<std::string, std::string>& options,
                                            const std::string& key) {
-    Result<std::string> value = OptionsUtils::GetValueFromMap<std::string>(options, key);
+    Result<std::string> value = OptionsUtils::GetNonEmptyValueFromMap(options, key);
     if (!value.ok()) {
-        if (!value.status().IsNotExist()) {
-            return value.status();
-        }
-        return Status::Invalid(fmt::format("option '{}' must be configured for DLF auth", key));
-    }
-    if (value.value().empty()) {
         return Status::Invalid(fmt::format("option '{}' must be configured for DLF auth", key));
     }
     return value.value();
@@ -267,7 +248,7 @@ Result<std::string> Md5Base64(const std::string& value) {
 
 std::string Trimmed(const std::string& value) {
     std::string trimmed = value;
-    TrimWhitespace(&trimmed);
+    StringUtils::Trim(&trimmed);
     return trimmed;
 }
 
@@ -510,7 +491,7 @@ Result<DlfToken> DlfEcsTokenLoader::LoadToken() {
     }
     if (!role_name_) {
         PAIMON_ASSIGN_OR_RAISE(std::string role, Get(metadata_url_));
-        TrimWhitespace(&role);
+        StringUtils::Trim(&role);
         if (role.empty()) {
             return Status::Invalid("DLF ECS metadata service returned an empty role name");
         }

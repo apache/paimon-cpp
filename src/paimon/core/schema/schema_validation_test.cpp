@@ -56,6 +56,12 @@ TEST(SchemaValidationTest, TestVectorType) {
                                              /*primary_keys=*/{}, parquet_options));
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 
+    parquet_options[Options::FILE_FORMAT] = "PARQUET";
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, parquet_options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
     std::map<std::string, std::string> orc_options = {{Options::BUCKET, "-1"},
                                                       {Options::FILE_FORMAT, "orc"}};
     ASSERT_OK_AND_ASSIGN(table_schema,

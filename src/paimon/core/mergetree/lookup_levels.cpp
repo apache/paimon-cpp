@@ -66,14 +66,9 @@ Result<std::unique_ptr<LookupLevels<T>>> LookupLevels<T>::Create(
         .WithMemoryPool(pool);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
-    // TODO(xinyu.lxy): temporarily disabled pre-buffer for parquet, which may cause high memory
-    // usage during compaction. Will fix via parquet format refactor.
-    auto new_options = options.ToMap();
-    if (new_options.find("parquet.read.enable-pre-buffer") == new_options.end()) {
-        new_options["parquet.read.enable-pre-buffer"] = "false";
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_read_context,
-                           InternalReadContext::Create(read_context, table_schema, new_options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<InternalReadContext> internal_read_context,
+        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
     auto split_read = std::make_unique<RawFileSplitRead>(path_factory, internal_read_context, pool,
                                                          CreateDefaultExecutor());
 

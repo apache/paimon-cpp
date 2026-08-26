@@ -100,7 +100,7 @@ Status ValidateSharedShreddingFileFormat(const std::string& option_key,
 }
 
 Status ValidateVectorFileFormat(const std::string& option_key, const std::string& file_format) {
-    if (StringUtils::ToLowerCase(file_format) != "parquet") {
+    if (!StringUtils::EqualsIgnoreCase(file_format, "parquet")) {
         return Status::Invalid(
             fmt::format("VECTOR currently only supports parquet data files, but {} is {}.",
                         option_key, file_format));

@@ -89,13 +89,29 @@ class OptionsUtils {
         return value.status();
     }
 
+    static Result<std::string> GetNonEmptyValueFromMap(
+        const std::map<std::string, std::string>& key_value_map, const std::string& key) {
+        Result<std::string> value = GetValueFromMap<std::string>(key_value_map, key);
+        if (!value.ok()) {
+            return value.status();
+        }
+        if (value.value().empty()) {
+            return Status::Invalid(fmt::format("value for key {} must not be empty", key));
+        }
+        return value.value();
+    }
+
     /// Fetch options with specific prefix and remove prefix for key.
+    ///
+    /// If `ignore_empty_key` is true, an option whose key equals `prefix` is ignored.
     static std::map<std::string, std::string> FetchOptionsWithPrefix(
-        const std::string& prefix, const std::map<std::string, std::string>& options) {
+        const std::string& prefix, const std::map<std::string, std::string>& options,
+        bool ignore_empty_key = false) {
         std::map<std::string, std::string> options_with_prefix;
-        int64_t prefix_len = prefix.size();
+        const std::string::size_type prefix_len = prefix.size();
         for (const auto& [key, value] : options) {
-            if (StringUtils::StartsWith(key, prefix)) {
+            if (StringUtils::StartsWith(key, prefix) &&
+                (!ignore_empty_key || key.size() > prefix_len)) {
                 options_with_prefix[key.substr(prefix_len)] = value;
             }
         }

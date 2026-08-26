@@ -34,7 +34,6 @@
 #include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/table/special_fields.h"
-#include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -55,27 +54,12 @@ namespace paimon {
 class InternalRow;
 class MemoryPool;
 
-namespace {
-
-std::shared_ptr<arrow::Schema> BuildPostponeBucketWriteSchema(
-    const std::shared_ptr<arrow::Schema>& value_schema) {
-    arrow::FieldVector target_fields;
-    target_fields.push_back(
-        DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
-    target_fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind()));
-    target_fields.insert(target_fields.end(), value_schema->fields().begin(),
-                         value_schema->fields().end());
-    return arrow::schema(target_fields);
-}
-
-}  // namespace
-
 Result<std::unique_ptr<PostponeBucketWriter>> PostponeBucketWriter::Create(
     const std::vector<std::string>& trimmed_primary_keys,
     const std::shared_ptr<DataFilePathFactory>& path_factory, int64_t schema_id,
     const std::shared_ptr<arrow::Schema>& value_schema, const CoreOptions& options,
     const std::shared_ptr<MemoryPool>& pool) {
-    auto write_schema = BuildPostponeBucketWriteSchema(value_schema);
+    auto write_schema = SpecialFields::CompleteSequenceAndValueKindField(value_schema);
     return std::unique_ptr<PostponeBucketWriter>(new PostponeBucketWriter(
         trimmed_primary_keys, path_factory, schema_id, value_schema, write_schema, options, pool));
 }
