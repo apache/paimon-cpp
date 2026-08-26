@@ -239,6 +239,12 @@ TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenPayloadEmpty) {
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
     ASSERT_EQ(rows.size(), 5u);
+    for (size_t idx = 0; idx < rows.size(); ++idx) {
+        EXPECT_EQ(rows[idx].k, static_cast<int64_t>(idx));
+        // v is outside the read schema, so the pass-through output must not carry it
+        EXPECT_EQ(rows[idx].v, "");
+        EXPECT_EQ(rows[idx].file_row, static_cast<uint64_t>(idx));
+    }
 }
 
 // Contiguous matched subset spanning multiple batches.
@@ -308,12 +314,12 @@ TEST_F(LateMaterializingFileBatchReaderTest, MatchedIntersectsSelection) {
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
     ASSERT_EQ(rows.size(), 3u);
-    EXPECT_EQ(rows[0].file_row, 1u);
-    EXPECT_EQ(rows[1].file_row, 5u);
-    EXPECT_EQ(rows[2].file_row, 9u);
-    EXPECT_EQ(rows[0].v, "v_1");
-    EXPECT_EQ(rows[1].v, "v_5");
-    EXPECT_EQ(rows[2].v, "v_9");
+    const std::vector<uint64_t> expected_rows = {1u, 5u, 9u};
+    for (size_t idx = 0; idx < rows.size(); ++idx) {
+        EXPECT_EQ(rows[idx].k, 1);
+        EXPECT_EQ(rows[idx].v, "v_" + std::to_string(expected_rows[idx]));
+        EXPECT_EQ(rows[idx].file_row, expected_rows[idx]);
+    }
 }
 
 // No matched rows: the reader returns EOF immediately.
@@ -375,6 +381,12 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReadRangesForwardedAcrossPhases) {
     // Drive to EOF; this performs the probe pass and the payload schema switch.
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
     ASSERT_EQ(rows.size(), 6u);  // k = 2..7
+    for (size_t idx = 0; idx < rows.size(); ++idx) {
+        int64_t expected = 2 + static_cast<int64_t>(idx);
+        EXPECT_EQ(rows[idx].k, expected);
+        EXPECT_EQ(rows[idx].v, "v_" + std::to_string(expected));
+        EXPECT_EQ(rows[idx].file_row, static_cast<uint64_t>(expected));
+    }
 
     // The inner reader must have received the cached ranges again after the payload switch.
     // SetReadSchema (invoked on the payload switch) clears the inner reader's ranges, so the
@@ -394,6 +406,12 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReentrantSetReadSchema) {
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate1, std::nullopt));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows1, Collect(reader.get()));
     ASSERT_EQ(rows1.size(), 2u);  // k = 8,9
+    for (size_t idx = 0; idx < rows1.size(); ++idx) {
+        int64_t expected = 8 + static_cast<int64_t>(idx);
+        EXPECT_EQ(rows1[idx].k, expected);
+        EXPECT_EQ(rows1[idx].v, "v_" + std::to_string(expected));
+        EXPECT_EQ(rows1[idx].file_row, static_cast<uint64_t>(expected));
+    }
 
     auto predicate2 = PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"k",
                                                  FieldType::BIGINT, Literal(3l));
@@ -402,6 +420,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReentrantSetReadSchema) {
     ASSERT_EQ(rows2.size(), 3u);  // k = 0,1,2
     for (size_t idx = 0; idx < rows2.size(); ++idx) {
         EXPECT_EQ(rows2[idx].k, static_cast<int64_t>(idx));
+        EXPECT_EQ(rows2[idx].v, "v_" + std::to_string(idx));
         EXPECT_EQ(rows2[idx].file_row, static_cast<uint64_t>(idx));
     }
 }
@@ -562,8 +581,12 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerReentrantSetReadSchema
     ASSERT_EQ(result1->length(), 3);  // k = 7,8,9
     auto k1 =
         arrow::internal::checked_pointer_cast<arrow::Int64Array>(result1->GetFieldByName("k"));
+    auto v1 =
+        arrow::internal::checked_pointer_cast<arrow::StringArray>(result1->GetFieldByName("v"));
+    ASSERT_TRUE(k1 && v1);
     for (int64_t j = 0; j < result1->length(); ++j) {
         EXPECT_EQ(k1->Value(j), 7 + j);
+        EXPECT_EQ(v1->GetString(j), "v_" + std::to_string(7 + j));
     }
 
     auto predicate2 =
