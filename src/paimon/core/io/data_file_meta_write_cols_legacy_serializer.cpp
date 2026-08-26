@@ -23,7 +23,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <utility>
 
 #include "arrow/type.h"
 #include "paimon/common/data/binary_row_writer.h"
@@ -42,13 +41,35 @@ class Bytes;
 class InternalArray;
 
 const std::shared_ptr<arrow::DataType>& DataFileMetaWriteColsLegacySerializer::DataType() {
-    static const std::shared_ptr<arrow::DataType> legacy_type = []() {
-        auto current_type = std::static_pointer_cast<arrow::StructType>(DataFileMeta::DataType());
-        auto fields = current_type->fields();
-        fields.pop_back();
-        return arrow::struct_(std::move(fields));
-    }();
-    return legacy_type;
+    static std::shared_ptr<arrow::DataType> schema = arrow::struct_(
+        {arrow::field("_FILE_NAME", arrow::utf8(), /*nullable=*/false),
+         arrow::field("_FILE_SIZE", arrow::int64(), /*nullable=*/false),
+         arrow::field("_ROW_COUNT", arrow::int64(), /*nullable=*/false),
+         arrow::field("_MIN_KEY", arrow::binary(), /*nullable=*/false),
+         arrow::field("_MAX_KEY", arrow::binary(), /*nullable=*/false),
+         arrow::field("_KEY_STATS", SimpleStats::DataType(), /*nullable=*/false),
+         arrow::field("_VALUE_STATS", SimpleStats::DataType(), /*nullable=*/false),
+         arrow::field("_MIN_SEQUENCE_NUMBER", arrow::int64(), /*nullable=*/false),
+         arrow::field("_MAX_SEQUENCE_NUMBER", arrow::int64(), /*nullable=*/false),
+         arrow::field("_SCHEMA_ID", arrow::int64(), /*nullable=*/false),
+         arrow::field("_LEVEL", arrow::int32(), /*nullable=*/false),
+         arrow::field("_EXTRA_FILES",
+                      arrow::list(arrow::field("item", arrow::utf8(), /*nullable=*/false)),
+                      /*nullable=*/false),
+         arrow::field("_CREATION_TIME", arrow::timestamp(arrow::TimeUnit::MILLI),
+                      /*nullable=*/true),
+         arrow::field("_DELETE_ROW_COUNT", arrow::int64(), /*nullable=*/true),
+         arrow::field("_EMBEDDED_FILE_INDEX", arrow::binary(), /*nullable=*/true),
+         arrow::field("_FILE_SOURCE", arrow::int8(), /*nullable=*/true),
+         arrow::field("_VALUE_STATS_COLS",
+                      arrow::list(arrow::field("item", arrow::utf8(), /*nullable=*/false)),
+                      /*nullable=*/true),
+         arrow::field("_EXTERNAL_PATH", arrow::utf8(), /*nullable=*/true),
+         arrow::field("_FIRST_ROW_ID", arrow::int64(), /*nullable=*/true),
+         arrow::field("_WRITE_COLS",
+                      arrow::list(arrow::field("item", arrow::utf8(), /*nullable=*/false)),
+                      /*nullable=*/true)});
+    return schema;
 }
 
 Result<BinaryRow> DataFileMetaWriteColsLegacySerializer::ToRow(

@@ -85,6 +85,10 @@ TEST_F(DataFileMetaSerializerTest, TestToFromRow) {
 TEST_F(DataFileMetaSerializerTest, TestLegacySerializerDropsColumnMaxSequenceNumbers) {
     DataFileMetaWriteColsLegacySerializer serializer(memory_pool_);
     ASSERT_EQ(serializer.NumFields(), 20);
+    auto legacy_type = std::static_pointer_cast<arrow::StructType>(
+        DataFileMetaWriteColsLegacySerializer::DataType());
+    ASSERT_EQ(legacy_type->num_fields(), 20);
+    ASSERT_EQ(legacy_type->field(19)->name(), "_WRITE_COLS");
     auto expected = GetDataFileMeta();
     auto expected_without_column_sequences = GetDataFileMeta(std::nullopt);
     ASSERT_OK_AND_ASSIGN(auto row, serializer.ToRow(expected));
