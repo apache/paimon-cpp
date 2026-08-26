@@ -242,7 +242,7 @@ TEST(ParquetWriterBuilderTest, TestInvalidWriterVersion) {
 TEST(ParquetWriterBuilderTest, TestInvalidPageRowCountLimit) {
     arrow::FieldVector fields;
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
-    for (const std::string& invalid_value : {"0", "-1"}) {
+    for (const char* invalid_value : {"0", "-1"}) {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
         options[Options::MANIFEST_FORMAT] = "parquet";
