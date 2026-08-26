@@ -87,8 +87,12 @@ Prefetch I/O
 ------------
 
 ``PrefetchIoMetrics`` describes only I/O that passes through the prefetch reader's instrumented
-input streams. It is not a whole-query or whole-table I/O total. All counters and histograms
-accumulate for the reader lifetime and are retained across ``SetReadSchema()`` and cache reset.
+input streams. It is not a whole-query or whole-table I/O total. All counters accumulate for the
+reader lifetime and are retained across ``SetReadSchema()`` and cache reset. Latency uses relaxed
+atomic count and sum counters instead of per-I/O histograms to reduce hot-path cost. Collection is
+disabled by default; set ``prefetch.io-metrics.enabled`` to ``true`` in the read options to enable
+it. When disabled, these per-I/O metrics are absent and the input streams have no metrics
+instrumentation.
 ``io.async.pending`` is current state and returns to zero when all callbacks complete.
 These metrics are C++-only and have no counterparts in Java Paimon.
 
@@ -100,11 +104,13 @@ These metrics are C++-only and have no counterparts in Java Paimon.
    "io.read.requested-bytes", "counter", "bytes", "Bytes requested by synchronous reads"
    "io.read.physical-bytes", "counter", "bytes", "Bytes returned by successful synchronous reads"
    "io.read.failed", "counter", "requests", "Failed synchronous reads"
-   "io.read.latency-us", "histogram", "microseconds", "Synchronous read latency"
+   "io.read.latency.count", "counter", "requests", "Completed synchronous read latency samples"
+   "io.read.latency.sum-us", "counter", "microseconds", "Sum of synchronous read latency"
    "io.async.requests", "counter", "requests", "Asynchronous read requests"
    "io.async.requested-bytes", "counter", "bytes", "Bytes requested by asynchronous reads"
    "io.async.physical-bytes", "counter", "bytes", "Bytes attributed to successful asynchronous reads"
    "io.async.completed", "counter", "requests", "Successful asynchronous reads"
    "io.async.failed", "counter", "requests", "Failed asynchronous reads"
    "io.async.pending", "gauge", "requests", "Asynchronous callbacks not yet completed"
-   "io.async.latency-us", "histogram", "microseconds", "Asynchronous callback latency"
+   "io.async.latency.count", "counter", "requests", "Completed asynchronous callback latency samples"
+   "io.async.latency.sum-us", "counter", "microseconds", "Sum of asynchronous callback latency"

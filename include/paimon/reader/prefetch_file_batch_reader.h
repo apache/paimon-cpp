@@ -56,14 +56,16 @@ class PAIMON_EXPORT PrefetchIoMetrics {
     static constexpr char READ_REQUESTED_BYTES[] = "io.read.requested-bytes";
     static constexpr char READ_PHYSICAL_BYTES[] = "io.read.physical-bytes";
     static constexpr char READ_FAILED[] = "io.read.failed";
-    static constexpr char READ_LATENCY_US[] = "io.read.latency-us";
+    static constexpr char READ_LATENCY_COUNT[] = "io.read.latency.count";
+    static constexpr char READ_LATENCY_SUM_US[] = "io.read.latency.sum-us";
     static constexpr char ASYNC_REQUESTS[] = "io.async.requests";
     static constexpr char ASYNC_REQUESTED_BYTES[] = "io.async.requested-bytes";
     static constexpr char ASYNC_PHYSICAL_BYTES[] = "io.async.physical-bytes";
     static constexpr char ASYNC_COMPLETED[] = "io.async.completed";
     static constexpr char ASYNC_FAILED[] = "io.async.failed";
     static constexpr char ASYNC_PENDING[] = "io.async.pending";
-    static constexpr char ASYNC_LATENCY_US[] = "io.async.latency-us";
+    static constexpr char ASYNC_LATENCY_COUNT[] = "io.async.latency.count";
+    static constexpr char ASYNC_LATENCY_SUM_US[] = "io.async.latency.sum-us";
 };
 
 /// The prefetch file batch reader extends the basic FileBatchReader interface for prefetch read,

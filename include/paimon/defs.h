@@ -208,6 +208,10 @@ struct PAIMON_EXPORT Options {
     /// for the target bucket when rebuilding the cache. Default value is true.
     static const char SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[];
 
+    /// "prefetch.io-metrics.enabled" - Whether to collect per-I/O metrics for prefetch reads.
+    /// Default value is false.
+    static const char PREFETCH_IO_METRICS_ENABLED[];
+
     /// "read.batch-size" - Read batch size for any file format if it supports.
     /// The default value is 1024.
     static const char READ_BATCH_SIZE[];

@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <chrono>
 #include <future>
+#include <limits>
 #include <thread>
 
 #include "arrow/array/array_base.h"
@@ -65,16 +66,22 @@ struct PrefetchIoMetricsState {
     std::atomic<uint64_t> read_requested_bytes{0};
     std::atomic<uint64_t> read_physical_bytes{0};
     std::atomic<uint64_t> read_failed{0};
+    std::atomic<uint64_t> read_latency_count{0};
+    std::atomic<uint64_t> read_latency_sum_us{0};
     std::atomic<uint64_t> async_requests{0};
     std::atomic<uint64_t> async_requested_bytes{0};
     std::atomic<uint64_t> async_physical_bytes{0};
     std::atomic<uint64_t> async_completed{0};
     std::atomic<uint64_t> async_failed{0};
     std::atomic<uint64_t> async_pending{0};
-    std::shared_ptr<MetricsImpl> histograms = std::make_shared<MetricsImpl>();
+    std::atomic<uint64_t> async_latency_count{0};
+    std::atomic<uint64_t> async_latency_sum_us{0};
 };
 
 namespace {
+
+// Metrics do not synchronize reader state. A concurrently collected snapshot may be approximate.
+constexpr std::memory_order kMetricsMemoryOrder = std::memory_order_relaxed;
 
 uint64_t ElapsedMicros(const std::chrono::steady_clock::time_point& start) {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -83,9 +90,16 @@ uint64_t ElapsedMicros(const std::chrono::steady_clock::time_point& start) {
 }
 
 void UpdateMax(std::atomic<uint64_t>* target, uint64_t value) {
-    uint64_t current = target->load();
-    while (current < value && !target->compare_exchange_weak(current, value)) {
+    uint64_t current = target->load(kMetricsMemoryOrder);
+    while (current < value && !target->compare_exchange_weak(current, value, kMetricsMemoryOrder,
+                                                             kMetricsMemoryOrder)) {
     }
+}
+
+void RecordLatency(uint64_t latency_us, std::atomic<uint64_t>* count,
+                   std::atomic<uint64_t>* sum_us) {
+    count->fetch_add(1, kMetricsMemoryOrder);
+    sum_us->fetch_add(latency_us, kMetricsMemoryOrder);
 }
 
 class MetricsInputStream : public InputStream {
@@ -116,25 +130,25 @@ class MetricsInputStream : public InputStream {
 
     void ReadAsync(char* buffer, int64_t size, int64_t offset,
                    std::function<void(Status)>&& callback) override {
-        metrics_->async_requests.fetch_add(1);
-        metrics_->async_requested_bytes.fetch_add(
-            static_cast<uint64_t>(std::max<int64_t>(0, size)));
-        metrics_->async_pending.fetch_add(1);
+        metrics_->async_requests.fetch_add(1, kMetricsMemoryOrder);
+        metrics_->async_requested_bytes.fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, size)),
+                                                  kMetricsMemoryOrder);
+        metrics_->async_pending.fetch_add(1, kMetricsMemoryOrder);
         std::shared_ptr<PrefetchIoMetricsState> metrics = metrics_;
         const auto start = std::chrono::steady_clock::now();
         stream_->ReadAsync(
             buffer, size, offset,
             [metrics, size, start, callback = std::move(callback)](Status status) mutable {
-                metrics->async_pending.fetch_sub(1);
+                metrics->async_pending.fetch_sub(1, kMetricsMemoryOrder);
                 if (status.ok()) {
-                    metrics->async_completed.fetch_add(1);
+                    metrics->async_completed.fetch_add(1, kMetricsMemoryOrder);
                     metrics->async_physical_bytes.fetch_add(
-                        static_cast<uint64_t>(std::max<int64_t>(0, size)));
+                        static_cast<uint64_t>(std::max<int64_t>(0, size)), kMetricsMemoryOrder);
                 } else {
-                    metrics->async_failed.fetch_add(1);
+                    metrics->async_failed.fetch_add(1, kMetricsMemoryOrder);
                 }
-                metrics->histograms->ObserveHistogram(PrefetchIoMetrics::ASYNC_LATENCY_US,
-                                                      ElapsedMicros(start));
+                RecordLatency(ElapsedMicros(start), &metrics->async_latency_count,
+                              &metrics->async_latency_sum_us);
                 callback(status);
             });
     }
@@ -154,18 +168,19 @@ class MetricsInputStream : public InputStream {
  private:
     template <typename ReadFunction>
     Result<int64_t> RecordRead(ReadFunction&& read, int64_t size) {
-        metrics_->read_requests.fetch_add(1);
-        metrics_->read_requested_bytes.fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, size)));
+        metrics_->read_requests.fetch_add(1, kMetricsMemoryOrder);
+        metrics_->read_requested_bytes.fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, size)),
+                                                 kMetricsMemoryOrder);
         const auto start = std::chrono::steady_clock::now();
         Result<int64_t> result = read();
         if (result.ok()) {
             metrics_->read_physical_bytes.fetch_add(
-                static_cast<uint64_t>(std::max<int64_t>(0, result.value())));
+                static_cast<uint64_t>(std::max<int64_t>(0, result.value())), kMetricsMemoryOrder);
         } else {
-            metrics_->read_failed.fetch_add(1);
+            metrics_->read_failed.fetch_add(1, kMetricsMemoryOrder);
         }
-        metrics_->histograms->ObserveHistogram(PrefetchIoMetrics::READ_LATENCY_US,
-                                               ElapsedMicros(start));
+        RecordLatency(ElapsedMicros(start), &metrics_->read_latency_count,
+                      &metrics_->read_latency_sum_us);
         return result;
     }
 
@@ -189,7 +204,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     const std::shared_ptr<FileSystem>& fs, uint32_t prefetch_max_parallel_num, int32_t batch_size,
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
-    bool read_ahead_cache_enabled, const CacheConfig& cache_config,
+    bool read_ahead_cache_enabled, const CacheConfig& cache_config, bool enable_io_metrics,
     const std::shared_ptr<MemoryPool>& pool) {
     if (prefetch_max_parallel_num == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0.");
@@ -210,28 +225,35 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         return Status::Invalid("executor should not be nullptr.");
     }
 
-    auto io_metrics = std::make_shared<PrefetchIoMetricsState>();
+    std::shared_ptr<PrefetchIoMetricsState> io_metrics;
+    if (enable_io_metrics) {
+        io_metrics = std::make_shared<PrefetchIoMetricsState>();
+    }
     std::shared_ptr<ReadAheadCache> cache;
     if (read_ahead_cache_enabled) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                                fs->Open(FileStatus(data_file_path, data_file_size)));
-        auto metrics_input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics);
-        cache = std::make_shared<ReadAheadCache>(metrics_input_stream, cache_config, pool);
+        if (io_metrics) {
+            input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics);
+        }
+        cache = std::make_shared<ReadAheadCache>(input_stream, cache_config, pool);
     }
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
     for (uint32_t i = 0; i < prefetch_max_parallel_num; i++) {
-        futures.push_back(
-            Via(executor.get(),
-                [&fs, &data_file_path, data_file_size, &reader_builder, &cache,
-                 &io_metrics]() -> Result<std::unique_ptr<FileBatchReader>> {
-                    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                                           fs->Open(FileStatus(data_file_path, data_file_size)));
-                    auto metrics_input_stream =
+        futures.push_back(Via(
+            executor.get(),
+            [&fs, &data_file_path, data_file_size, &reader_builder, &cache,
+             io_metrics]() -> Result<std::unique_ptr<FileBatchReader>> {
+                PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
+                                       fs->Open(FileStatus(data_file_path, data_file_size)));
+                if (io_metrics) {
+                    input_stream =
                         std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
-                    auto cache_input_stream =
-                        std::make_shared<CacheInputStream>(std::move(metrics_input_stream), cache);
-                    return reader_builder->Build(cache_input_stream);
-                }));
+                }
+                auto cache_input_stream =
+                    std::make_shared<CacheInputStream>(std::move(input_stream), cache);
+                return reader_builder->Build(cache_input_stream);
+            }));
     }
     std::vector<std::shared_ptr<PrefetchFileBatchReader>> readers;
     for (auto& file_batch_reader : CollectAll(futures)) {
@@ -333,14 +355,15 @@ Status PrefetchFileBatchReaderImpl::RefreshReadRangesAfterCleanUp() {
     }
 
     if (format_requested_prefetch && !need_prefetch) {
-        prefetch_metrics_->adaptive_disabled_count.fetch_add(1);
+        prefetch_metrics_->adaptive_disabled_count.fetch_add(1, kMetricsMemoryOrder);
     }
     need_prefetch_ = need_prefetch;
-    prefetch_metrics_->enabled.store(need_prefetch_);
-    prefetch_metrics_->read_ranges_total.fetch_add(read_ranges.size());
+    prefetch_metrics_->enabled.store(need_prefetch_, kMetricsMemoryOrder);
+    prefetch_metrics_->read_ranges_total.fetch_add(read_ranges.size(), kMetricsMemoryOrder);
     std::vector<std::pair<uint64_t, uint64_t>> filtered_ranges =
         FilterReadRanges(read_ranges, selection_bitmap_);
-    prefetch_metrics_->read_ranges_after_bitmap.fetch_add(filtered_ranges.size());
+    prefetch_metrics_->read_ranges_after_bitmap.fetch_add(filtered_ranges.size(),
+                                                          kMetricsMemoryOrder);
     PAIMON_RETURN_NOT_OK(SetReadRanges(filtered_ranges));
     return Status::OK();
 }
@@ -415,7 +438,7 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
                 if (batch == std::nullopt) {
                     break;
                 }
-                prefetch_metrics_->discarded_batches.fetch_add(1);
+                prefetch_metrics_->discarded_batches.fetch_add(1, kMetricsMemoryOrder);
                 ReaderUtils::ReleaseReadBatch(std::move(batch.value().batch.first));
             }
         }
@@ -441,7 +464,7 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
     current_batch_global_row_ids_.clear();
     read_ranges_freshed_ = false;
     clean_prefetch_queue();
-    prefetch_metrics_->queue_depth.store(0);
+    prefetch_metrics_->queue_depth.store(0, kMetricsMemoryOrder);
     for (size_t i = 0; i < readers_pos_.size(); i++) {
         readers_pos_[i]->store(0);
         reader_is_working_[i] = false;
@@ -502,7 +525,7 @@ void PrefetchFileBatchReaderImpl::Workloop() {
                 }
                 if (prefetch_queues_[reader_idx]->size() >= prefetch_queue_capacity_) {
                     // queue is full, skip
-                    prefetch_metrics_->queue_full_count.fetch_add(1);
+                    prefetch_metrics_->queue_full_count.fetch_add(1, kMetricsMemoryOrder);
                     continue;
                 }
                 if (readers_pos_[reader_idx]->load() != std::numeric_limits<uint64_t>::max()) {
@@ -563,7 +586,7 @@ Status PrefetchFileBatchReaderImpl::EnsureReaderPosition(
     uint64_t pos = std::max(readers_pos_[reader_idx]->load(), current_read_range.first);
     PAIMON_ASSIGN_OR_RAISE(uint64_t next_row_to_read, readers_[reader_idx]->GetNextRowToRead());
     if (next_row_to_read != pos) {
-        prefetch_metrics_->seek_count.fetch_add(1);
+        prefetch_metrics_->seek_count.fetch_add(1, kMetricsMemoryOrder);
         return readers_[reader_idx]->SeekToRow(pos);
     }
     return Status::OK();
@@ -594,7 +617,7 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
             global_row_ids.push_back(global_row_id);
         }
         if (global_row_ids.empty()) {
-            prefetch_metrics_->discarded_batches.fetch_add(1);
+            prefetch_metrics_->discarded_batches.fetch_add(1, kMetricsMemoryOrder);
             ReaderUtils::ReleaseReadBatch(std::move(read_batch));
             return Status::OK();
         }
@@ -612,7 +635,7 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
                 FindReadRangeContaining(reader_idx, global_row_ids[0]);
             if (owner_range == std::nullopt) {
                 readers_pos_[reader_idx]->store(global_row_ids[0]);
-                prefetch_metrics_->discarded_batches.fetch_add(1);
+                prefetch_metrics_->discarded_batches.fetch_add(1, kMetricsMemoryOrder);
                 ReaderUtils::ReleaseReadBatch(std::move(read_batch));
                 return Status::OK();
             }
@@ -642,20 +665,22 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
             readers_pos_[reader_idx]->store(next_row_to_read);
         }
         if (bitmap.IsEmpty()) {
-            prefetch_metrics_->discarded_batches.fetch_add(1);
+            prefetch_metrics_->discarded_batches.fetch_add(1, kMetricsMemoryOrder);
             ReaderUtils::ReleaseReadBatch(std::move(read_batch));
             return Status::OK();
         }
         prefetch_queue->push(
             {read_range, std::move(read_batch_with_bitmap), std::move(global_row_ids)});
-        prefetch_metrics_->produced_batches.fetch_add(1);
-        const uint64_t queue_depth = prefetch_metrics_->queue_depth.fetch_add(1) + 1;
+        prefetch_metrics_->produced_batches.fetch_add(1, kMetricsMemoryOrder);
+        const uint64_t queue_depth =
+            prefetch_metrics_->queue_depth.fetch_add(1, kMetricsMemoryOrder) + 1;
         UpdateMax(&prefetch_metrics_->queue_depth_max, queue_depth);
     } else {
         std::pair<uint64_t, uint64_t> eof_range;
         PAIMON_ASSIGN_OR_RAISE(eof_range, EofRange());
         prefetch_queue->push({eof_range, std::move(read_batch_with_bitmap), {}});
-        const uint64_t queue_depth = prefetch_metrics_->queue_depth.fetch_add(1) + 1;
+        const uint64_t queue_depth =
+            prefetch_metrics_->queue_depth.fetch_add(1, kMetricsMemoryOrder) + 1;
         UpdateMax(&prefetch_metrics_->queue_depth_max, queue_depth);
         readers_pos_[reader_idx]->store(std::numeric_limits<uint64_t>::max());
     }
@@ -744,8 +769,8 @@ Result<BatchReader::ReadBatchWithBitmap> PrefetchFileBatchReaderImpl::NextBatchW
                     cv_.notify_one();
                 }
                 current_batch_global_row_ids_ = std::move(prefetch_batch.value().global_row_ids);
-                prefetch_metrics_->consumed_batches.fetch_add(1);
-                prefetch_metrics_->queue_depth.fetch_sub(1);
+                prefetch_metrics_->consumed_batches.fetch_add(1, kMetricsMemoryOrder);
+                prefetch_metrics_->queue_depth.fetch_sub(1, kMetricsMemoryOrder);
                 prefetch_metrics_->histograms->ObserveHistogram(
                     PrefetchMetrics::CONSUMER_WAIT_LATENCY_US, ElapsedMicros(wait_start));
                 return std::move(prefetch_batch).value().batch;
@@ -793,7 +818,7 @@ std::shared_ptr<Metrics> PrefetchFileBatchReaderImpl::GetReaderMetrics() const {
     }
 
     auto set_prefetch_counter = [&result](const char* name, const std::atomic<uint64_t>& value) {
-        result->SetCounter(name, value.load());
+        result->SetCounter(name, value.load(kMetricsMemoryOrder));
     };
     set_prefetch_counter(PrefetchMetrics::READ_RANGES_TOTAL, prefetch_metrics_->read_ranges_total);
     set_prefetch_counter(PrefetchMetrics::READ_RANGES_AFTER_BITMAP,
@@ -806,13 +831,17 @@ std::shared_ptr<Metrics> PrefetchFileBatchReaderImpl::GetReaderMetrics() const {
     set_prefetch_counter(PrefetchMetrics::ADAPTIVE_DISABLED_COUNT,
                          prefetch_metrics_->adaptive_disabled_count);
     set_prefetch_counter(PrefetchMetrics::QUEUE_FULL_COUNT, prefetch_metrics_->queue_full_count);
-    result->SetGauge(PrefetchMetrics::ENABLED, prefetch_metrics_->enabled.load() ? 1.0 : 0.0);
+    result->SetGauge(PrefetchMetrics::ENABLED,
+                     prefetch_metrics_->enabled.load(kMetricsMemoryOrder) ? 1.0 : 0.0);
     result->SetGauge(PrefetchMetrics::PARALLELISM,
-                     prefetch_metrics_->enabled.load() ? static_cast<double>(parallel_num_) : 1.0);
+                     prefetch_metrics_->enabled.load(kMetricsMemoryOrder)
+                         ? static_cast<double>(parallel_num_)
+                         : 1.0);
     result->SetGauge(PrefetchMetrics::QUEUE_DEPTH,
-                     static_cast<double>(prefetch_metrics_->queue_depth.load()));
-    result->SetGauge(PrefetchMetrics::QUEUE_DEPTH_MAX,
-                     static_cast<double>(prefetch_metrics_->queue_depth_max.load()));
+                     static_cast<double>(prefetch_metrics_->queue_depth.load(kMetricsMemoryOrder)));
+    result->SetGauge(
+        PrefetchMetrics::QUEUE_DEPTH_MAX,
+        static_cast<double>(prefetch_metrics_->queue_depth_max.load(kMetricsMemoryOrder)));
     result->Merge(prefetch_metrics_->histograms);
     if (cache_) {
         // PR #209 owns the read-ahead cache metrics. Keep collecting its file-level
@@ -822,21 +851,27 @@ std::shared_ptr<Metrics> PrefetchFileBatchReaderImpl::GetReaderMetrics() const {
         result->Merge(cache_metrics);
     }
 
+    if (!io_metrics_) {
+        return result;
+    }
     auto set_io_counter = [&result](const char* name, const std::atomic<uint64_t>& value) {
-        result->SetCounter(name, value.load());
+        result->SetCounter(name, value.load(kMetricsMemoryOrder));
     };
     set_io_counter(PrefetchIoMetrics::READ_REQUESTS, io_metrics_->read_requests);
     set_io_counter(PrefetchIoMetrics::READ_REQUESTED_BYTES, io_metrics_->read_requested_bytes);
     set_io_counter(PrefetchIoMetrics::READ_PHYSICAL_BYTES, io_metrics_->read_physical_bytes);
     set_io_counter(PrefetchIoMetrics::READ_FAILED, io_metrics_->read_failed);
+    set_io_counter(PrefetchIoMetrics::READ_LATENCY_COUNT, io_metrics_->read_latency_count);
+    set_io_counter(PrefetchIoMetrics::READ_LATENCY_SUM_US, io_metrics_->read_latency_sum_us);
     set_io_counter(PrefetchIoMetrics::ASYNC_REQUESTS, io_metrics_->async_requests);
     set_io_counter(PrefetchIoMetrics::ASYNC_REQUESTED_BYTES, io_metrics_->async_requested_bytes);
     set_io_counter(PrefetchIoMetrics::ASYNC_PHYSICAL_BYTES, io_metrics_->async_physical_bytes);
     set_io_counter(PrefetchIoMetrics::ASYNC_COMPLETED, io_metrics_->async_completed);
     set_io_counter(PrefetchIoMetrics::ASYNC_FAILED, io_metrics_->async_failed);
+    set_io_counter(PrefetchIoMetrics::ASYNC_LATENCY_COUNT, io_metrics_->async_latency_count);
+    set_io_counter(PrefetchIoMetrics::ASYNC_LATENCY_SUM_US, io_metrics_->async_latency_sum_us);
     result->SetGauge(PrefetchIoMetrics::ASYNC_PENDING,
-                     static_cast<double>(io_metrics_->async_pending.load()));
-    result->Merge(io_metrics_->histograms);
+                     static_cast<double>(io_metrics_->async_pending.load(kMetricsMemoryOrder)));
     return result;
 }
 
@@ -872,7 +907,7 @@ Result<uint64_t> PrefetchFileBatchReaderImpl::GetNextRowToRead() const {
 
 void PrefetchFileBatchReaderImpl::SetReadStatus(const Status& status) {
     if (!status.ok()) {
-        prefetch_metrics_->errors.fetch_add(1);
+        prefetch_metrics_->errors.fetch_add(1, kMetricsMemoryOrder);
     }
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
     read_status_ = status;

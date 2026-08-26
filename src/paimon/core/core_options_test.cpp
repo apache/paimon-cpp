@@ -142,6 +142,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(std::nullopt, core_options.GetDataFileExternalPaths());
     ASSERT_EQ(ExternalPathStrategy::NONE, core_options.GetExternalPathStrategy());
     ASSERT_TRUE(core_options.EnableAdaptivePrefetchStrategy());
+    ASSERT_FALSE(core_options.PrefetchIoMetricsEnabled());
     ASSERT_EQ(core_options.DataFilePrefix(), "data-");
     ASSERT_FALSE(core_options.IndexFileInDataFileDir());
     ASSERT_FALSE(core_options.RowTrackingEnabled());
@@ -223,6 +224,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::SCAN_MODE, "from-snapshot-full"},
         {Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "7"},
         {Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED, "false"},
+        {Options::PREFETCH_IO_METRICS_ENABLED, "true"},
         {Options::SNAPSHOT_NUM_RETAINED_MIN, "15"},
         {Options::SNAPSHOT_NUM_RETAINED_MAX, "30"},
         {Options::SNAPSHOT_EXPIRE_LIMIT, "20"},
@@ -362,6 +364,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(5, core_options.GetScanSnapshotId().value_or(-1));
     ASSERT_EQ(7, core_options.GetScanManifestEntryCacheMaxSnapshots());
     ASSERT_FALSE(core_options.ScanManifestEntryLazyDecodeEnabled());
+    ASSERT_TRUE(core_options.PrefetchIoMetricsEnabled());
     ExpireConfig expire_config = core_options.GetExpireConfig();
     ASSERT_EQ(15, expire_config.GetSnapshotRetainMin());
     ASSERT_EQ(30, expire_config.GetSnapshotRetainMax());

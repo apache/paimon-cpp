@@ -421,6 +421,7 @@ struct CoreOptions::Impl {
     bool key_value_sequence_number_enabled = false;
     bool file_index_read_enabled = true;
     bool enable_adaptive_prefetch_strategy = true;
+    bool prefetch_io_metrics_enabled = false;
     bool index_file_in_data_file_dir = false;
     bool row_tracking_enabled = false;
     bool row_tracking_partition_group_on_commit = true;
@@ -779,6 +780,8 @@ struct CoreOptions::Impl {
         }
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
                                                 &scan_manifest_entry_lazy_decode_enabled));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::PREFETCH_IO_METRICS_ENABLED, &prefetch_io_metrics_enabled));
         // Parse scan.fallback-branch - fallback branch when partition not found
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_FALLBACK_BRANCH, &scan_fallback_branch));
         // Parse branch - branch name, default "main"
@@ -1374,6 +1377,10 @@ std::optional<std::string> CoreOptions::GetFieldsDefaultFunc() const {
 
 bool CoreOptions::EnableAdaptivePrefetchStrategy() const {
     return impl_->enable_adaptive_prefetch_strategy;
+}
+
+bool CoreOptions::PrefetchIoMetricsEnabled() const {
+    return impl_->prefetch_io_metrics_enabled;
 }
 
 Result<std::optional<std::string>> CoreOptions::GetFieldAggFunc(
