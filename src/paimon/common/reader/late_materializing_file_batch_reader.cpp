@@ -164,7 +164,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
         auto& [batch, bitmap] = batch_with_bitmap;
         if (bitmap.IsEmpty()) {
             ReaderUtils::ReleaseReadBatch(std::move(batch));
-            continue;
+            return Status::Invalid("inner read bitmap is empty.");
         }
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_array,
