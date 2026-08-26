@@ -104,8 +104,7 @@ class WriteAndReadInteTest
     }
 
     Result<std::unique_ptr<TestHelper>> CreateLookupTestHelper(
-        const std::string& table_path,
-        const std::map<std::string, std::string>& options) const {
+        const std::string& table_path, const std::map<std::string, std::string>& options) const {
         return TestHelper::Create(table_path, options, /*is_streaming_mode=*/true,
                                   LookupTempDirectory());
     }
@@ -169,9 +168,8 @@ class WriteAndReadInteTest
             return Status::Invalid("expected lookup compaction commit messages");
         }
         CommitContextBuilder commit_context_builder(table_path, "commit_user");
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.SetOptions(options).Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
+                               commit_context_builder.SetOptions(options).Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
                                FileStoreCommit::Create(std::move(commit_context)));
         return file_store_commit->Commit(compact_messages, commit_identifier);
@@ -747,8 +745,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogStreamRead) {
                                      /*expected_commit_messages=*/std::nullopt));
 
     std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
-    auto compact_and_commit = [this, &options,
-                               &table_path](int64_t commit_identifier) -> Status {
+    auto compact_and_commit = [this, &options, &table_path](int64_t commit_identifier) -> Status {
         WriteContextBuilder write_context_builder(table_path, "commit_user");
         write_context_builder.WithTempDirectory(LookupTempDirectory());
         PAIMON_ASSIGN_OR_RAISE(
@@ -766,9 +763,8 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogStreamRead) {
             return Status::Invalid("expected lookup compaction commit messages");
         }
         CommitContextBuilder commit_context_builder(table_path, "commit_user");
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.SetOptions(options).Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
+                               commit_context_builder.SetOptions(options).Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
                                FileStoreCommit::Create(std::move(commit_context)));
         return file_store_commit->Commit(compact_messages, commit_identifier);
@@ -852,9 +848,8 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInitialFullScanExcludesLevelZero
     ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/2,
                                      /*expected_commit_messages=*/std::nullopt));
 
-    ASSERT_OK_AND_ASSIGN(
-        std::vector<std::shared_ptr<Split>> initial_full_splits,
-        helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> initial_full_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
     ASSERT_FALSE(initial_full_splits.empty());
     for (const auto& split : initial_full_splits) {
         auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
@@ -869,9 +864,9 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInitialFullScanExcludesLevelZero
         fields[0],
         fields[1],
     });
-    ASSERT_OK_AND_ASSIGN(bool success,
-                         helper->ReadAndCheckResult(expected_type, initial_full_splits,
-                                                    R"([[0, "Alice", 10]])"));
+    ASSERT_OK_AND_ASSIGN(
+        bool success,
+        helper->ReadAndCheckResult(expected_type, initial_full_splits, R"([[0, "Alice", 10]])"));
     ASSERT_TRUE(success);
 
     WriteContextBuilder changelog_write_context_builder(table_path, "commit_user");
@@ -883,10 +878,9 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInitialFullScanExcludesLevelZero
                          FileStoreWrite::Create(std::move(changelog_write_context)));
     ASSERT_OK(changelog_file_store_write->Compact(/*partition=*/{}, /*bucket=*/0,
                                                   /*full_compaction=*/true));
-    ASSERT_OK_AND_ASSIGN(
-        std::vector<std::shared_ptr<CommitMessage>> changelog_compact_messages,
-        changelog_file_store_write->PrepareCommit(/*wait_compaction=*/true,
-                                                  /*commit_identifier=*/3));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> changelog_compact_messages,
+                         changelog_file_store_write->PrepareCommit(/*wait_compaction=*/true,
+                                                                   /*commit_identifier=*/3));
     ASSERT_OK(changelog_file_store_write->Close());
     ASSERT_FALSE(changelog_compact_messages.empty());
     ASSERT_OK(file_store_commit->Commit(changelog_compact_messages, /*commit_identifier=*/3));
@@ -894,9 +888,8 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInitialFullScanExcludesLevelZero
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
     ASSERT_OK_AND_ASSIGN(bool changelog_success,
-                         helper->ReadAndCheckResult(
-                             expected_type, changelog_splits,
-                             R"([[1, "Alice", 10], [2, "Alice", 20]])"));
+                         helper->ReadAndCheckResult(expected_type, changelog_splits,
+                                                    R"([[1, "Alice", 10], [2, "Alice", 20]])"));
     ASSERT_TRUE(changelog_success);
 }
 
@@ -914,8 +907,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInsertUpdateDelete) {
     ASSERT_OK_AND_ASSIGN(auto helper, CreateLookupTestHelper(arrow::schema(fields), options));
     ASSERT_OK_AND_ASSIGN(
         auto initial_batch,
-        TestHelper::MakeRecordBatch(arrow::struct_(fields),
-                                    R"([["Alice", 10], ["Bob", 20]])",
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["Alice", 10], ["Bob", 20]])",
                                     /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
                                      /*expected_commit_messages=*/std::nullopt));
@@ -929,24 +921,22 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInsertUpdateDelete) {
     ASSERT_TRUE(initial_splits.empty());
     ASSERT_OK_AND_ASSIGN(
         auto change_batch,
-        TestHelper::MakeRecordBatch(
-            arrow::struct_(fields),
-            R"([["Alice", 11], ["Bob", 0], ["Carol", 30], ["Dave", 0]])",
-            /*partition_map=*/{}, /*bucket=*/0,
-            {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE,
-             RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE}));
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([["Alice", 11], ["Bob", 0], ["Carol", 30], ["Dave", 0]])",
+                                    /*partition_map=*/{}, /*bucket=*/0,
+                                    {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE,
+                                     RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE}));
     ASSERT_OK(helper->WriteAndCommit(std::move(change_batch), /*commit_identifier=*/2,
                                      /*expected_commit_messages=*/std::nullopt));
     ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/3));
 
     ASSERT_OK_AND_ASSIGN(auto changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0],
-                                         fields[1]});
-    ASSERT_OK_AND_ASSIGN(
-        bool success,
-        helper->ReadAndCheckResult(expected_type, changelog_splits,
-                                   R"([[1, "Alice", 10], [2, "Alice", 11],
+    auto expected_type =
+        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1]});
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(expected_type, changelog_splits,
+                                                    R"([[1, "Alice", 10], [2, "Alice", 11],
                                        [3, "Bob", 20], [0, "Carol", 30]])"));
     ASSERT_TRUE(success);
 }
@@ -956,7 +946,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithFirstRow) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"}, {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
         {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"},
         {Options::MERGE_ENGINE, "first-row"}};
@@ -979,8 +969,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithFirstRow) {
     ASSERT_TRUE(initial_splits.empty());
     ASSERT_OK_AND_ASSIGN(
         auto change_batch,
-        TestHelper::MakeRecordBatch(arrow::struct_(fields),
-                                    R"([["Alice", 20], ["Bob", 30]])",
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["Alice", 20], ["Bob", 30]])",
                                     /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(helper->WriteAndCommit(std::move(change_batch), /*commit_identifier=*/2,
                                      /*expected_commit_messages=*/std::nullopt));
@@ -988,11 +977,10 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithFirstRow) {
 
     ASSERT_OK_AND_ASSIGN(auto changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0],
-                                         fields[1]});
-    ASSERT_OK_AND_ASSIGN(bool success,
-                         helper->ReadAndCheckResult(expected_type, changelog_splits,
-                                                    R"([[0, "Bob", 30]])"));
+    auto expected_type =
+        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1]});
+    ASSERT_OK_AND_ASSIGN(bool success, helper->ReadAndCheckResult(expected_type, changelog_splits,
+                                                                  R"([[0, "Bob", 30]])"));
     ASSERT_TRUE(success);
 }
 
@@ -1001,9 +989,9 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithDeletionVector) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"}, {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"},
+        {Options::MANIFEST_FORMAT, "avro"},         {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},        {Options::CHANGELOG_PRODUCER, "lookup"},
         {Options::DELETION_VECTORS_ENABLED, "true"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
@@ -1031,20 +1019,18 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithDeletionVector) {
 
     ASSERT_OK_AND_ASSIGN(auto changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0],
-                                         fields[1]});
-    ASSERT_OK_AND_ASSIGN(
-        bool changelog_success,
-        helper->ReadAndCheckResult(expected_type, changelog_splits,
-                                   R"([[1, "Alice", 10], [2, "Alice", 20]])"));
+    auto expected_type =
+        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1]});
+    ASSERT_OK_AND_ASSIGN(bool changelog_success,
+                         helper->ReadAndCheckResult(expected_type, changelog_splits,
+                                                    R"([[1, "Alice", 10], [2, "Alice", 20]])"));
     ASSERT_TRUE(changelog_success);
 
     ASSERT_OK_AND_ASSIGN(auto batch_splits,
                          helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt,
                                          /*is_streaming=*/false));
-    ASSERT_OK_AND_ASSIGN(bool batch_success,
-                         helper->ReadAndCheckResult(expected_type, batch_splits,
-                                                    R"([[0, "Alice", 20]])"));
+    ASSERT_OK_AND_ASSIGN(bool batch_success, helper->ReadAndCheckResult(expected_type, batch_splits,
+                                                                        R"([[0, "Alice", 20]])"));
     ASSERT_TRUE(batch_success);
 }
 
@@ -1053,9 +1039,12 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogRowDeduplicate) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"}, {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"},
+        {Options::MANIFEST_FORMAT, "avro"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::CHANGELOG_PRODUCER, "lookup"},
         {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE, "true"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
@@ -1094,12 +1083,11 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogRowDeduplicate) {
     ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/5));
     ASSERT_OK_AND_ASSIGN(auto changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0],
-                                         fields[1]});
-    ASSERT_OK_AND_ASSIGN(
-        bool success,
-        helper->ReadAndCheckResult(expected_type, changelog_splits,
-                                   R"([[1, "Alice", 10], [2, "Alice", 20]])"));
+    auto expected_type =
+        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1]});
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(expected_type, changelog_splits,
+                                                    R"([[1, "Alice", 10], [2, "Alice", 20]])"));
     ASSERT_TRUE(success);
 }
 
@@ -1109,19 +1097,21 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogRowDeduplicateIgnoreFields) {
                                  arrow::field("value", arrow::int32()),
                                  arrow::field("ignored", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"}, {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"},
+        {Options::MANIFEST_FORMAT, "avro"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::CHANGELOG_PRODUCER, "lookup"},
         {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE, "true"},
         {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, "ignored"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
     ASSERT_OK_AND_ASSIGN(auto helper, CreateLookupTestHelper(arrow::schema(fields), options));
-    ASSERT_OK_AND_ASSIGN(auto initial_batch,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields),
-                                                     R"([["Alice", 10, 100]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(auto initial_batch, TestHelper::MakeRecordBatch(
+                                                 arrow::struct_(fields), R"([["Alice", 10, 100]])",
+                                                 /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
                                      /*expected_commit_messages=*/std::nullopt));
     std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
@@ -1133,10 +1123,10 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogRowDeduplicateIgnoreFields) {
                          helper->NewScan(StartupMode::Latest(), /*snapshot_id=*/std::nullopt));
     ASSERT_TRUE(initial_splits.empty());
     ASSERT_OK_AND_ASSIGN(auto write_helper, CreateLookupTestHelper(table_path, options));
-    ASSERT_OK_AND_ASSIGN(auto ignored_change_batch,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields),
-                                                     R"([["Alice", 10, 200]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(
+        auto ignored_change_batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["Alice", 10, 200]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(write_helper->WriteAndCommit(std::move(ignored_change_batch),
                                            /*commit_identifier=*/2,
                                            /*expected_commit_messages=*/std::nullopt));
@@ -1146,22 +1136,20 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogRowDeduplicateIgnoreFields) {
 
     write_helper.reset();
     ASSERT_OK_AND_ASSIGN(write_helper, CreateLookupTestHelper(table_path, options));
-    ASSERT_OK_AND_ASSIGN(auto real_change_batch,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields),
-                                                     R"([["Alice", 20, 300]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(
+        auto real_change_batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["Alice", 20, 300]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(write_helper->WriteAndCommit(std::move(real_change_batch), /*commit_identifier=*/4,
                                            /*expected_commit_messages=*/std::nullopt));
     ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/5));
     ASSERT_OK_AND_ASSIGN(auto changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0],
-                                         fields[1], fields[2]});
-    ASSERT_OK_AND_ASSIGN(
-        bool success,
-        helper->ReadAndCheckResult(
-            expected_type, changelog_splits,
-            R"([[1, "Alice", 10, 200], [2, "Alice", 20, 300]])"));
+    auto expected_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1], fields[2]});
+    ASSERT_OK_AND_ASSIGN(bool success, helper->ReadAndCheckResult(
+                                           expected_type, changelog_splits,
+                                           R"([[1, "Alice", 10, 200], [2, "Alice", 20, 300]])"));
     ASSERT_TRUE(success);
 }
 
@@ -1178,10 +1166,9 @@ TEST_P(WriteAndReadInteTest, TestChangelogWithSchemaEvolution) {
     }
     ASSERT_OK_AND_ASSIGN(auto write_helper,
                          CreateLookupTestHelper(arrow::schema(fields_v0), options));
-    ASSERT_OK_AND_ASSIGN(auto initial_batch,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields_v0),
-                                                     R"([["Alice", 10]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(auto initial_batch, TestHelper::MakeRecordBatch(
+                                                 arrow::struct_(fields_v0), R"([["Alice", 10]])",
+                                                 /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(write_helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
                                            /*expected_commit_messages=*/std::nullopt));
     std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
@@ -1194,10 +1181,9 @@ TEST_P(WriteAndReadInteTest, TestChangelogWithSchemaEvolution) {
 
     write_helper.reset();
     ASSERT_OK_AND_ASSIGN(write_helper, CreateLookupTestHelper(table_path, options));
-    ASSERT_OK_AND_ASSIGN(auto batch_v0,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields_v0),
-                                                     R"([["Alice", 11]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(
+        auto batch_v0, TestHelper::MakeRecordBatch(arrow::struct_(fields_v0), R"([["Alice", 11]])",
+                                                   /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(write_helper->WriteAndCommit(std::move(batch_v0), /*commit_identifier=*/2,
                                            /*expected_commit_messages=*/std::nullopt));
     ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/3));
@@ -1205,15 +1191,14 @@ TEST_P(WriteAndReadInteTest, TestChangelogWithSchemaEvolution) {
     arrow::FieldVector fields_v1 = {arrow::field("pk", arrow::utf8()),
                                     arrow::field("value", arrow::int32()),
                                     arrow::field("extra", arrow::utf8())};
-    ASSERT_OK(WriteNextSchema({DataField(0, fields_v1[0]), DataField(1, fields_v1[1]),
-                               DataField(2, fields_v1[2])},
-                              /*highest_field_id=*/2, options));
+    ASSERT_OK(WriteNextSchema(
+        {DataField(0, fields_v1[0]), DataField(1, fields_v1[1]), DataField(2, fields_v1[2])},
+        /*highest_field_id=*/2, options));
     write_helper.reset();
     ASSERT_OK_AND_ASSIGN(write_helper, CreateLookupTestHelper(table_path, options));
-    ASSERT_OK_AND_ASSIGN(auto batch_v1,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields_v1),
-                                                     R"([["Alice", 12, "v1"]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(auto batch_v1, TestHelper::MakeRecordBatch(
+                                            arrow::struct_(fields_v1), R"([["Alice", 12, "v1"]])",
+                                            /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(write_helper->WriteAndCommit(std::move(batch_v1), /*commit_identifier=*/4,
                                            /*expected_commit_messages=*/std::nullopt));
     ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/5));
@@ -1221,15 +1206,14 @@ TEST_P(WriteAndReadInteTest, TestChangelogWithSchemaEvolution) {
     arrow::FieldVector fields_v2 = {arrow::field("pk", arrow::utf8()),
                                     arrow::field("value", arrow::int32()),
                                     arrow::field("renamed_extra", arrow::utf8())};
-    ASSERT_OK(WriteNextSchema({DataField(0, fields_v2[0]), DataField(1, fields_v2[1]),
-                               DataField(2, fields_v2[2])},
-                              /*highest_field_id=*/2, options));
+    ASSERT_OK(WriteNextSchema(
+        {DataField(0, fields_v2[0]), DataField(1, fields_v2[1]), DataField(2, fields_v2[2])},
+        /*highest_field_id=*/2, options));
     write_helper.reset();
     ASSERT_OK_AND_ASSIGN(write_helper, CreateLookupTestHelper(table_path, options));
-    ASSERT_OK_AND_ASSIGN(auto batch_v2,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields_v2),
-                                                     R"([["Alice", 13, "v2"]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(auto batch_v2, TestHelper::MakeRecordBatch(
+                                            arrow::struct_(fields_v2), R"([["Alice", 13, "v2"]])",
+                                            /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(write_helper->WriteAndCommit(std::move(batch_v2), /*commit_identifier=*/6,
                                            /*expected_commit_messages=*/std::nullopt));
     ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/7));
@@ -1237,21 +1221,20 @@ TEST_P(WriteAndReadInteTest, TestChangelogWithSchemaEvolution) {
     arrow::FieldVector fields_v3 = {arrow::field("pk", arrow::utf8()),
                                     arrow::field("value", arrow::int64()),
                                     arrow::field("renamed_extra", arrow::utf8())};
-    ASSERT_OK(WriteNextSchema({DataField(0, fields_v3[0]), DataField(1, fields_v3[1]),
-                               DataField(2, fields_v3[2])},
-                              /*highest_field_id=*/2, options));
+    ASSERT_OK(WriteNextSchema(
+        {DataField(0, fields_v3[0]), DataField(1, fields_v3[1]), DataField(2, fields_v3[2])},
+        /*highest_field_id=*/2, options));
     write_helper.reset();
     ASSERT_OK_AND_ASSIGN(write_helper, CreateLookupTestHelper(table_path, options));
-    ASSERT_OK_AND_ASSIGN(auto batch_v3,
-                         TestHelper::MakeRecordBatch(arrow::struct_(fields_v3),
-                                                     R"([["Alice", 14, "v3"]])",
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK_AND_ASSIGN(auto batch_v3, TestHelper::MakeRecordBatch(
+                                            arrow::struct_(fields_v3), R"([["Alice", 14, "v3"]])",
+                                            /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(write_helper->WriteAndCommit(std::move(batch_v3), /*commit_identifier=*/8,
                                            /*expected_commit_messages=*/std::nullopt));
     ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/9));
 
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields_v3[0],
-                                         fields_v3[1], fields_v3[2]});
+    auto expected_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), fields_v3[0], fields_v3[1], fields_v3[2]});
     std::vector<std::string> expected_data = {
         R"([[1, "Alice", 10, null], [2, "Alice", 11, null]])",
         R"([[1, "Alice", 11, null], [2, "Alice", 12, "v1"]])",
@@ -1268,10 +1251,9 @@ TEST_P(WriteAndReadInteTest, TestChangelogWithSchemaEvolution) {
                 ASSERT_EQ(file->schema_id, schema_id);
             }
         }
-        ASSERT_OK_AND_ASSIGN(
-            bool success,
-            scan_helper->ReadAndCheckResult(expected_type, changelog_splits,
-                                            expected_data[static_cast<size_t>(schema_id)]));
+        ASSERT_OK_AND_ASSIGN(bool success, scan_helper->ReadAndCheckResult(
+                                               expected_type, changelog_splits,
+                                               expected_data[static_cast<size_t>(schema_id)]));
         ASSERT_TRUE(success);
     }
 }
@@ -1281,8 +1263,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithExternalPath) {
     if (file_system == "jindo") {
         return;
     }
-    std::unique_ptr<UniqueTestDirectory> external_dir =
-        UniqueTestDirectory::Create(file_system);
+    std::unique_ptr<UniqueTestDirectory> external_dir = UniqueTestDirectory::Create(file_system);
     ASSERT_TRUE(external_dir);
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
@@ -1326,20 +1307,18 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithExternalPath) {
             ASSERT_TRUE(file->external_path.has_value());
             ASSERT_TRUE(StringUtils::StartsWith(PathUtil::GetName(file->file_name), "changelog-"));
             ASSERT_OK_AND_ASSIGN(
-                bool exists,
-                external_dir->GetFileSystem()->Exists(file->external_path.value()));
+                bool exists, external_dir->GetFileSystem()->Exists(file->external_path.value()));
             ASSERT_TRUE(exists);
             found_external_changelog = true;
         }
     }
     ASSERT_TRUE(found_external_changelog);
 
-    auto expected_type = arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0],
-                                         fields[1]});
-    ASSERT_OK_AND_ASSIGN(
-        bool success,
-        helper->ReadAndCheckResult(expected_type, changelog_splits,
-                                   R"([[1, "Alice", 10], [2, "Alice", 20]])"));
+    auto expected_type =
+        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1]});
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(expected_type, changelog_splits,
+                                                    R"([[1, "Alice", 10], [2, "Alice", 20]])"));
     ASSERT_TRUE(success);
 }
 
