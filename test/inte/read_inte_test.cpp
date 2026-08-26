@@ -2292,7 +2292,6 @@ TEST_P(ReadInteTest, TestAppendReadWithLateMaterializing) {
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy)
         .SetPredicate(predicate)
-        .EnablePredicateFilter(true)
         .EnableLateMaterializing(true)
         .EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
@@ -3278,8 +3277,7 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithLateMaterializing
         .AddOption("read.batch-size", "2");
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetPredicate(predicate);
-    context_builder.EnablePredicateFilter(true)
-        .EnableLateMaterializing(true)
+    context_builder.EnableLateMaterializing(true)
         .EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy",
                    param.enable_adaptive_prefetch_strategy);
@@ -3327,6 +3325,10 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithLateMaterializing
     // "Paul" is the only row in partition key0 = 0 whose e is not null and matches e < 510.
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
+      [0, 1, "Bob", 22, 24, null, 26, 1, null],
+      [0, 1, "Emily", 32, 34, null, 36, 1, null],
+      [0, 1, "David", 62, 64, null, 66, 1, null],
+      [0, 1, "Whether I shall turn out to be the hero of my own life.", 72, 74, null, 76, 1, null],
       [0, 1, "Paul", 502, 504, 508, 506, 0, 509]
 ])"},
                                                                          &expected_array);

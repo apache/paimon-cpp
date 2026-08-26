@@ -49,6 +49,7 @@
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
@@ -128,28 +129,16 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
         return reader->SetReadSchema(&c_schema, predicate, selection);
     }
 
-    // Collect all output rows as a single concatenated struct array (for schema/nested checks).
+    // Collect all output rows as a single concatenated struct array (for schema/nested checks),
+    // reusing the shared collector so the batch-offset and bitmap contracts are checked too.
     Result<std::shared_ptr<arrow::StructArray>> CollectStruct(FileBatchReader* reader) {
-        arrow::ArrayVector chunks;
-        while (true) {
-            PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
-                                   reader->NextBatchWithBitmap());
-            if (BatchReader::IsEofBatch(batch_with_bitmap)) {
-                break;
-            }
-            PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch,
-                                   ReaderUtils::ApplyBitmapToReadBatch(
-                                       std::move(batch_with_bitmap), arrow::default_memory_pool()));
-            auto& [c_array, c_schema] = batch;
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
-                                              arrow::ImportArray(c_array.get(), c_schema.get()));
-            chunks.push_back(array);
-        }
-        if (chunks.empty()) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> chunked,
+                               ReadResultCollector::CollectResult(reader));
+        if (chunked == nullptr) {
             return std::shared_ptr<arrow::StructArray>();
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> combined,
-                                          arrow::Concatenate(chunks));
+                                          arrow::Concatenate(chunked->chunks()));
         return arrow::internal::checked_pointer_cast<arrow::StructArray>(combined);
     }
 
