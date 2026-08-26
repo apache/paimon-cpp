@@ -245,7 +245,7 @@ TEST_F(StringUtilsTest, TestEqualsIgnoreCase) {
     ASSERT_TRUE(StringUtils::EqualsIgnoreCase("", ""));
     ASSERT_TRUE(StringUtils::EqualsIgnoreCase("AbC-123", "aBc-123"));
     ASSERT_FALSE(StringUtils::EqualsIgnoreCase("abc", "abcd"));
-    ASSERT_FALSE(StringUtils::EqualsIgnoreCase("abc", "abD"));
+    ASSERT_FALSE(StringUtils::EqualsIgnoreCase("abc", "abx"));
 }
 
 TEST_F(StringUtilsTest, TestStartsWith) {
