@@ -100,6 +100,9 @@ class MergeTreeWriter : public BatchWriter {
     Result<std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
     CreateRollingRowWriter() const;
 
+    Result<std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
+    CreateRollingChangelogWriter() const;
+
     Status TrySyncLatestCompaction(bool blocking);
     Status UpdateCompactResult(const std::shared_ptr<CompactResult>& compact_result);
     Status UpdateCompactDeletionFile(const std::shared_ptr<CompactDeletionFile>& new_deletion_file);
@@ -134,9 +137,11 @@ class MergeTreeWriter : public BatchWriter {
     std::shared_ptr<Metrics> metrics_;
 
     std::vector<std::shared_ptr<DataFileMeta>> new_files_;
+    std::vector<std::shared_ptr<DataFileMeta>> new_changelog_files_;
     std::vector<std::shared_ptr<DataFileMeta>> deleted_files_;
     std::vector<std::shared_ptr<DataFileMeta>> compact_before_;
     std::vector<std::shared_ptr<DataFileMeta>> compact_after_;
+    std::vector<std::shared_ptr<DataFileMeta>> compact_changelog_files_;
 
     std::shared_ptr<CompactDeletionFile> compact_deletion_file_;
 };

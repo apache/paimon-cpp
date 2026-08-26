@@ -103,6 +103,12 @@ class MergeFileSplitRead : public AbstractSplitRead {
         DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory, bool drop_delete);
 
+    /// Creates a min-heap reader which only sorts records and preserves duplicate keys.
+    Result<std::unique_ptr<SortMergeReader>> CreateRawSortMergeReaderForSection(
+        const std::vector<SortedRun>& section, const BinaryRow& partition,
+        DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory);
+
     std::shared_ptr<FileStorePathFactory> GetPathFactory() const {
         return path_factory_;
     }

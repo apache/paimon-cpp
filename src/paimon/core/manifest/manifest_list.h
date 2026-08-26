@@ -113,8 +113,7 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
         const std::optional<std::string>& changelog_manifest_list =
             snapshot.ChangelogManifestList();
         if (changelog_manifest_list) {
-            return Status::NotImplemented("do not support read changelog manifest list");
-            // return Read(changelog_manifest_list.value(), /*filter=*/nullptr, manifests);
+            return Read(changelog_manifest_list.value(), /*filter=*/nullptr, manifests);
         } else {
             return Status::OK();
         }

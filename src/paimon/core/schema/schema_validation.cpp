@@ -52,6 +52,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/defs.h"
+#include "paimon/format/file_format.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -163,14 +164,8 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateFieldsPrefix(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateSequenceField(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateSequenceGroup(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateChangelogProducer(schema, options));
 
-    ChangelogProducer changelog_producer = options.GetChangelogProducer();
-    if (schema.PrimaryKeys().empty() && changelog_producer != ChangelogProducer::NONE) {
-        return Status::Invalid(
-            fmt::format("Can not set {} on table without primary keys, please define primary keys.",
-                        Options::CHANGELOG_PRODUCER));
-    }
-    PAIMON_RETURN_NOT_OK(ValidateChangelogProducer(options));
     PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
         options.GetExpireConfig().GetSnapshotRetainMin() > 0,
         std::string(Options::SNAPSHOT_NUM_RETAINED_MIN) + " should be at least 1"));
@@ -323,10 +318,41 @@ Status SchemaValidation::ValidateBucket(const TableSchema& schema, const CoreOpt
     return Status::OK();
 }
 
-Status SchemaValidation::ValidateChangelogProducer(const CoreOptions& options) {
-    return Preconditions::CheckState(options.GetChangelogProducer() == ChangelogProducer::NONE,
-                                     "C++ Paimon does not support changelog-producer yet. Please "
-                                     "keep changelog-producer as 'none'.");
+Status SchemaValidation::ValidateChangelogProducer(const TableSchema& schema,
+                                                   const CoreOptions& options) {
+    ChangelogProducer changelog_producer = options.GetChangelogProducer();
+    if (schema.PrimaryKeys().empty() && changelog_producer != ChangelogProducer::NONE) {
+        return Status::Invalid(
+            fmt::format("Can not set {} on table without primary keys, please define primary keys.",
+                        Options::CHANGELOG_PRODUCER));
+    }
+
+    bool row_deduplicate = options.ChangelogRowDeduplicate();
+    const std::vector<std::string>& ignore_fields =
+        options.GetChangelogRowDeduplicateIgnoreFields();
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        ignore_fields.empty() || row_deduplicate, "'{}' is only valid when '{}' is true.",
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS,
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        ObjectUtils::ContainsAll(schema.FieldNames(), ignore_fields),
+        "Fields {} configured in '{}' can not be found in table schema.", ignore_fields,
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        !row_deduplicate || changelog_producer == ChangelogProducer::LOOKUP ||
+            changelog_producer == ChangelogProducer::FULL_COMPACTION,
+        "'{}' is only valid for 'lookup' or 'full-compaction' changelog producer.",
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        changelog_producer == ChangelogProducer::NONE ||
+            changelog_producer == ChangelogProducer::INPUT ||
+            changelog_producer == ChangelogProducer::LOOKUP,
+        "C++ Paimon only supports 'none', 'input' and 'lookup' changelog-producer now."));
+    return Preconditions::CheckState(
+        options.GetMergeEngine() != MergeEngine::FIRST_ROW ||
+            changelog_producer == ChangelogProducer::NONE ||
+            changelog_producer == ChangelogProducer::LOOKUP,
+        "Only support 'none' and 'lookup' changelog-producer on FIRST_ROW merge engine");
 }
 
 Status SchemaValidation::ValidateForDeletionVectors(const CoreOptions& options) {
@@ -654,10 +680,20 @@ Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
                                                            options.GetFileFormat()->Identifier()));
     PAIMON_RETURN_NOT_OK(ValidatePerLevelOption(options_map, Options::FILE_FORMAT_PER_LEVEL,
                                                 ValidateSharedShreddingFileFormat));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(ValidateSharedShreddingFileFormat(Options::CHANGELOG_FILE_FORMAT,
+                                                               changelog_format->Identifier()));
+    }
     PAIMON_RETURN_NOT_OK(ValidateSharedShreddingCompression(Options::FILE_COMPRESSION,
                                                             options.GetFileCompression()));
     PAIMON_RETURN_NOT_OK(ValidatePerLevelOption(options_map, Options::FILE_COMPRESSION_PER_LEVEL,
                                                 ValidateSharedShreddingCompression));
+    std::optional<std::string> changelog_compression = options.GetChangelogFileCompression();
+    if (changelog_compression) {
+        PAIMON_RETURN_NOT_OK(ValidateSharedShreddingCompression(Options::CHANGELOG_FILE_COMPRESSION,
+                                                                changelog_compression.value()));
+    }
 
     return Status::OK();
 }

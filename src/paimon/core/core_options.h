@@ -207,6 +207,11 @@ class PAIMON_EXPORT CoreOptions {
     bool DeletionVectorsBitmap64() const;
     int64_t DeletionVectorTargetFileSize() const;
     ChangelogProducer GetChangelogProducer() const;
+    bool ChangelogRowDeduplicate() const;
+    const std::vector<std::string>& GetChangelogRowDeduplicateIgnoreFields() const;
+    std::string ChangelogFilePrefix() const;
+    std::shared_ptr<FileFormat> GetChangelogFileFormat() const;
+    std::optional<std::string> GetChangelogFileCompression() const;
     LookupStrategy GetLookupStrategy() const;
 
     bool NeedLookup() const;

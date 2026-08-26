@@ -176,9 +176,10 @@ Result<bool> KeyValueFileStoreScan::IsValueFilterEnabled() const {
         case ScanMode::ALL:
             return value_filter_force_enabled_;
         case ScanMode::DELTA:
+        case ScanMode::CHANGELOG:
             return false;
         default:
-            return Status::NotImplemented("only support ALL and DELTA scan mode");
+            return Status::NotImplemented("unknown scan mode");
     }
 }
 

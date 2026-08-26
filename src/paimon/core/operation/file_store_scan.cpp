@@ -245,6 +245,8 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
             return manifest_list_->ReadDataManifests(snapshot, manifests);
         case ScanMode::DELTA:
             return manifest_list_->ReadDeltaManifests(snapshot, manifests);
+        case ScanMode::CHANGELOG:
+            return manifest_list_->ReadChangelogManifests(snapshot, manifests);
         default:
             return Status::NotImplemented("Unknown scan mode ",
                                           std::to_string(static_cast<int32_t>(scan_mode_)));

@@ -378,13 +378,33 @@ struct PAIMON_EXPORT Options {
     /// @note: bitmap64 dv is not supported.
     static const char DELETION_VECTOR_BITMAP64[];
 
-    ///  @note `CHANGELOG_PRODUCER` currently only support `none`
-    ///
     /// "changelog-producer" - Whether to double write to a changelog file. This changelog file
     /// keeps the details of data changes, it can be read directly during stream reads. This can be
     /// applied to tables with primary keys. Values can be "none", "input", "lookup",
     /// "full-compaction". Default value is "none".
+    /// @note C++ Paimon currently supports "none" and "input".
     static const char CHANGELOG_PRODUCER[];
+
+    /// "changelog-producer.row-deduplicate" - Whether to generate update-before and update-after
+    /// changelog records when the row has not changed. This option is only valid for "lookup" or
+    /// "full-compaction" changelog producers. Default value is "false".
+    static const char CHANGELOG_PRODUCER_ROW_DEDUPLICATE[];
+
+    /// "changelog-producer.row-deduplicate-ignore-fields" - Comma-separated fields to ignore when
+    /// comparing rows for changelog deduplication. This option is only valid when
+    /// "changelog-producer.row-deduplicate" is "true".
+    static const char CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[];
+
+    /// "changelog-file.prefix" - Specify the file name prefix of changelog files. Default value is
+    /// "changelog-".
+    static const char CHANGELOG_FILE_PREFIX[];
+
+    /// "changelog-file.format" - Specify the file format of changelog files. No default value.
+    static const char CHANGELOG_FILE_FORMAT[];
+
+    /// "changelog-file.compression" - Specify the compression of changelog files. No default
+    /// value.
+    static const char CHANGELOG_FILE_COMPRESSION[];
 
     /// "force-lookup" - Whether to force the use of lookup for compaction. Default value is
     /// "false".

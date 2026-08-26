@@ -20,8 +20,10 @@
 #include "paimon/common/utils/fields_comparator.h"
 
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
@@ -79,6 +81,44 @@ class FieldsComparatorTest : public ::testing::Test {
             sort_fields.push_back(i);
         }
         CheckResult(row1, row2, input_types, sort_fields, has_null);
+    }
+
+    template <typename T>
+    void CheckFloatingPointOrder(const std::shared_ptr<arrow::DataType>& type) {
+        std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+        std::vector<DataField> data_fields = {DataField(0, arrow::field("f0", type))};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldsComparator> ascending_comparator,
+                             FieldsComparator::Create(data_fields,
+                                                      /*is_ascending_order=*/true));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldsComparator> descending_comparator,
+                             FieldsComparator::Create(data_fields,
+                                                      /*is_ascending_order=*/false));
+
+        const T nan = std::numeric_limits<T>::quiet_NaN();
+        const std::vector<T> values = {-std::numeric_limits<T>::infinity(),
+                                       static_cast<T>(-1),
+                                       static_cast<T>(-0.0),
+                                       static_cast<T>(0.0),
+                                       static_cast<T>(1),
+                                       std::numeric_limits<T>::infinity(),
+                                       nan};
+        std::vector<BinaryRow> rows;
+        rows.reserve(values.size());
+        for (T value : values) {
+            rows.emplace_back(BinaryRowGenerator::GenerateRow({value}, pool.get()));
+        }
+
+        for (size_t i = 0; i < rows.size(); ++i) {
+            for (size_t j = 0; j < rows.size(); ++j) {
+                int32_t expected = i == j ? 0 : (i < j ? -1 : 1);
+                ASSERT_EQ(expected, ascending_comparator->CompareTo(rows[i], rows[j]));
+                ASSERT_EQ(-expected, descending_comparator->CompareTo(rows[i], rows[j]));
+            }
+        }
+
+        BinaryRow negative_nan_row = BinaryRowGenerator::GenerateRow({-nan}, pool.get());
+        ASSERT_EQ(0, ascending_comparator->CompareTo(rows.back(), negative_nan_row));
+        ASSERT_EQ(0, ascending_comparator->CompareTo(negative_nan_row, rows.back()));
     }
 };
 
@@ -200,6 +240,11 @@ TEST_F(FieldsComparatorTest, TestSimple) {
             pool.get());
         CheckResult(row1, row2, {arrow::decimal128(38, 10), arrow::date32()});
     }
+}
+
+TEST_F(FieldsComparatorTest, TestFloatingPointOrder) {
+    CheckFloatingPointOrder<float>(arrow::float32());
+    CheckFloatingPointOrder<double>(arrow::float64());
 }
 
 TEST_F(FieldsComparatorTest, TestTimestampType) {

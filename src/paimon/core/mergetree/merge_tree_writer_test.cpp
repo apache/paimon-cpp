@@ -37,6 +37,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/compact/noop_compact_manager.h"
 #include "paimon/core/disk/io_manager.h"
 #include "paimon/core/io/compact_increment.h"
@@ -144,11 +145,13 @@ class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
     }
 
     void CheckFileContent(const std::string& data_file_name,
-                          const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
+                          const std::shared_ptr<arrow::ChunkedArray>& expected_array,
+                          const std::string& file_format_name = "orc") const {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
                              file_system_->Open(data_file_name));
         ASSERT_TRUE(input_stream);
-        ASSERT_OK_AND_ASSIGN(auto file_format, FileFormatFactory::Get("orc", /*options=*/{}));
+        ASSERT_OK_AND_ASSIGN(auto file_format,
+                             FileFormatFactory::Get(file_format_name, /*options=*/{}));
         ASSERT_OK_AND_ASSIGN(auto reader_builder,
                              file_format->CreateReaderBuilder(/*batch_size=*/10));
         ASSERT_OK_AND_ASSIGN(auto orc_batch_reader, reader_builder->Build(input_stream));
@@ -160,11 +163,13 @@ class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
     void CheckShreddingFileSchema(const std::string& data_file_name,
                                   const std::shared_ptr<arrow::Schema>& expected_physical_schema,
                                   int32_t field_index,
-                                  const MapSharedShreddingFieldMeta& expected_meta) const {
+                                  const MapSharedShreddingFieldMeta& expected_meta,
+                                  const std::string& file_format_name = "orc") const {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
                              file_system_->Open(data_file_name));
         ASSERT_TRUE(input_stream);
-        ASSERT_OK_AND_ASSIGN(auto file_format, FileFormatFactory::Get("orc", /*options=*/{}));
+        ASSERT_OK_AND_ASSIGN(auto file_format,
+                             FileFormatFactory::Get(file_format_name, /*options=*/{}));
         ASSERT_OK_AND_ASSIGN(auto reader_builder,
                              file_format->CreateReaderBuilder(/*batch_size=*/10));
         ASSERT_OK_AND_ASSIGN(auto orc_batch_reader, reader_builder->Build(input_stream));
@@ -293,6 +298,182 @@ TEST_P(MergeTreeWriterTest, TestSimple) {
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
+}
+
+TEST_P(MergeTreeWriterTest, TestInputChangelog) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::CHANGELOG_PRODUCER, "input"},
+                                               {Options::CHANGELOG_FILE_PREFIX, "changes-"},
+                                               {Options::CHANGELOG_FILE_FORMAT, "parquet"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/1, options));
+
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Bob", 20, 0, 20.0],
+      ["Alice", 10, 0, 10.0],
+      ["Alice", 11, 0, 11.0],
+      ["Bob", 21, 0, 21.0]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array,
+               {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::UPDATE_BEFORE,
+                RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE},
+               merge_writer.get());
+    if (GetParam()) {
+        ASSERT_OK(merge_writer->FlushMemory());
+    }
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    const DataIncrement& data_increment = commit_increment.GetNewFilesIncrement();
+    ASSERT_EQ(1, data_increment.NewFiles().size());
+    ASSERT_EQ(1, data_increment.ChangelogFiles().size());
+    ASSERT_EQ("data-" + uuid + "-1.orc", data_increment.NewFiles()[0]->file_name);
+    ASSERT_EQ("changes-" + uuid + "-0.parquet", data_increment.ChangelogFiles()[0]->file_name);
+    ASSERT_EQ(2, data_increment.NewFiles()[0]->row_count);
+    ASSERT_EQ(4, data_increment.ChangelogFiles()[0]->row_count);
+
+    std::shared_ptr<arrow::ChunkedArray> expected_data;
+    auto data_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [2, 2, "Alice", 11, 0, 11.0],
+      [3, 3, "Bob", 21, 0, 21.0]
+    ])"},
+                                                                        &expected_data);
+    ASSERT_TRUE(data_status.ok());
+    CheckFileContent(dir->Str() + "/" + data_increment.NewFiles()[0]->file_name, expected_data);
+
+    std::shared_ptr<arrow::ChunkedArray> expected_changelog;
+    auto changelog_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [1, 1, "Alice", 10, 0, 10.0],
+      [2, 2, "Alice", 11, 0, 11.0],
+      [0, 0, "Bob", 20, 0, 20.0],
+      [3, 3, "Bob", 21, 0, 21.0]
+    ])"},
+                                                                             &expected_changelog);
+    ASSERT_TRUE(changelog_status.ok());
+    CheckFileContent(dir->Str() + "/" + data_increment.ChangelogFiles()[0]->file_name,
+                     expected_changelog, "parquet");
+}
+
+TEST_P(MergeTreeWriterTest, TestInputChangelogIgnoresTargetFileRowNum) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {Options::CHANGELOG_PRODUCER, "input"},
+                                               {Options::TARGET_FILE_ROW_NUM, "1"},
+                                               {Options::WRITE_BATCH_SIZE, "1"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory,
+                                           /*schema_id=*/1, options));
+
+    std::shared_ptr<arrow::Array> array =
+        arrow::ipc::internal::json::ArrayFromJSON(value_type_, R"([
+      ["Bob", 20, 0, 20.0],
+      ["Alice", 10, 0, 10.0],
+      ["Alice", 11, 0, 11.0],
+      ["Bob", 21, 0, 21.0]
+    ])")
+            .ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+    if (GetParam()) {
+        ASSERT_OK(merge_writer->FlushMemory());
+    }
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    const std::vector<std::shared_ptr<DataFileMeta>>& changelog_files =
+        commit_increment.GetNewFilesIncrement().ChangelogFiles();
+    ASSERT_EQ(1, changelog_files.size());
+    ASSERT_EQ(4, changelog_files[0]->row_count);
+}
+
+TEST_P(MergeTreeWriterTest, TestInputChangelogWithSharedShredding) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({
+                             {Options::FILE_FORMAT, "orc"},
+                             {Options::CHANGELOG_PRODUCER, "input"},
+                             {Options::CHANGELOG_FILE_PREFIX, "changes-"},
+                             {Options::CHANGELOG_FILE_FORMAT, "parquet"},
+                             {"fields.tags.map.storage-layout", "shared-shredding"},
+                             {"fields.tags.map.shared-shredding.max-columns", "3"},
+                             {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
+                             {Options::WRITE_ONLY, "true"},
+                         }));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    std::vector<DataField> value_fields = {
+        DataField(0, arrow::field("id", arrow::int32())),
+        DataField(1, arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64()))),
+    };
+    auto value_schema = DataField::ConvertDataFieldsToArrowSchema(value_fields);
+    auto value_type = DataField::ConvertDataFieldsToArrowStructType(value_fields);
+    auto write_schema = SpecialFields::CompleteSequenceAndValueKindField(value_schema);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FieldsComparator> key_comparator,
+                         FieldsComparator::Create({value_fields[0]},
+                                                  /*is_ascending_order=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        MergeTreeWriter::Create(
+            /*last_sequence_number=*/-1, /*trimmed_primary_keys=*/{"id"}, path_factory,
+            key_comparator,
+            /*user_defined_seq_comparator=*/nullptr, merge_function_wrapper_, /*schema_id=*/5,
+            value_schema, options, noop_compact_manager_,
+            GetParam() ? std::make_shared<IOManager>(dir->Str() + "/tmp", file_system_) : nullptr,
+            /*enable_multi_thread_spill=*/false, pool_));
+
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(value_type, R"([
+      [1, [["a", 10], ["b", 20]]],
+      [2, [["c", 30]]],
+      [1, [["a", 11], ["c", 31]]]
+    ])")
+                     .ValueOrDie();
+    WriteBatch(array, /*row_kinds=*/{}, merge_writer.get());
+    if (GetParam()) {
+        ASSERT_OK(merge_writer->FlushMemory());
+    }
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment,
+                         merge_writer->PrepareCommit(/*wait_compaction=*/false));
+    ASSERT_OK(merge_writer->Close());
+
+    const std::vector<std::shared_ptr<DataFileMeta>>& changelog_files =
+        commit_increment.GetNewFilesIncrement().ChangelogFiles();
+    ASSERT_EQ(1, changelog_files.size());
+    ASSERT_EQ(3, changelog_files[0]->row_count);
+    ASSERT_TRUE(StringUtils::EndsWith(changelog_files[0]->file_name, ".parquet"));
+
+    std::map<std::string, int32_t> column_to_k = {{"tags", 3}};
+    ASSERT_OK_AND_ASSIGN(auto physical_schema, MapSharedShreddingUtils::LogicalToPhysicalSchema(
+                                                   write_schema, column_to_k));
+    MapSharedShreddingFieldMeta expected_shredding_meta;
+    expected_shredding_meta.name_to_id = {{"a", 0}, {"b", 1}, {"c", 2}};
+    expected_shredding_meta.field_to_columns = {{0, {0}}, {1, {1}}, {2, {0, 1}}};
+    expected_shredding_meta.num_columns = 3;
+    expected_shredding_meta.max_row_width = 2;
+    CheckShreddingFileSchema(path_factory->ToPath(changelog_files[0]->file_name), physical_schema,
+                             /*field_index=*/3, expected_shredding_meta, "parquet");
 }
 
 TEST_P(MergeTreeWriterTest, TestWriteMultiBatch) {
@@ -1191,6 +1372,31 @@ TEST_P(MergeTreeWriterTest, TestUpdateCompactResultDeleteIntermediateFile) {
     ASSERT_OK(merge_writer->UpdateCompactResult(compact_result));
     ASSERT_EQ(merge_writer->compact_before_, std::vector<std::shared_ptr<DataFileMeta>>({file_a}));
     ASSERT_EQ(merge_writer->compact_after_, std::vector<std::shared_ptr<DataFileMeta>>({file_y}));
+}
+
+TEST_P(MergeTreeWriterTest, TestUpdateCompactResultPropagatesChangelog) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    auto fake_compact_manager = std::make_shared<FakeCompactManager>();
+    ASSERT_OK_AND_ASSIGN(
+        auto merge_writer,
+        CreateMergeWriter(/*last_sequence_number=*/-1, dir->Str(), path_factory, /*schema_id=*/0,
+                          options, /*user_defined_seq_comparator=*/nullptr, fake_compact_manager));
+
+    auto changelog = CreateMeta("changelog", /*level=*/0);
+    auto compact_result = std::make_shared<CompactResult>(
+        std::vector<std::shared_ptr<DataFileMeta>>(), std::vector<std::shared_ptr<DataFileMeta>>(),
+        std::vector<std::shared_ptr<DataFileMeta>>({changelog}));
+    ASSERT_OK(merge_writer->UpdateCompactResult(compact_result));
+
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment, merge_writer->DrainIncrement());
+    ASSERT_EQ(commit_increment.GetCompactIncrement().ChangelogFiles(),
+              std::vector<std::shared_ptr<DataFileMeta>>({changelog}));
 }
 
 TEST_P(MergeTreeWriterTest, TestUpdateCompactResultWithFileInCompactAfter) {

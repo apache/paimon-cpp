@@ -266,11 +266,12 @@ PostponeBucketWriter::CreateRollingRowWriter() const {
         factory = std::make_shared<ShreddingKeyValueDataFileWriterFactory>(
             options_, schema_id_, write_schema_, /*level=*/0, FileSource::Append(),
             trimmed_primary_keys_, path_factory_, /*create_stats_extractor=*/false, plan_factory,
-            pool_);
+            /*is_changelog=*/false, pool_);
     } else {
         factory = std::make_shared<KeyValueDataFileWriterFactory>(
             options_, schema_id_, write_schema_, /*level=*/0, FileSource::Append(),
-            trimmed_primary_keys_, path_factory_, /*create_stats_extractor=*/false, pool_);
+            trimmed_primary_keys_, path_factory_, /*create_stats_extractor=*/false,
+            /*is_changelog=*/false, pool_);
     }
     return std::make_unique<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>(
         options_.GetTargetFileSize(/*has_primary_key=*/true), options_.GetTargetFileRowNum(),

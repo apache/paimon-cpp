@@ -26,10 +26,10 @@ enum class ScanMode {
     ALL = 0,
 
     /// Only scan newly changed files of a snapshot.
-    DELTA = 1
+    DELTA = 1,
 
     /// Only scan changelog files of a snapshot.
-    /* CHANGELOG = 2 */
+    CHANGELOG = 2
 };
 
 }  // namespace paimon

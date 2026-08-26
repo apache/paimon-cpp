@@ -146,11 +146,40 @@ MergeTreeCompactRewriter::CreateRollingRowWriter(int32_t level) {
         factory = std::make_shared<ShreddingKeyValueDataFileWriterFactory>(
             options_, schema_id_, write_schema_, level, FileSource::Compact(),
             trimmed_primary_keys_, data_file_path_factory, /*create_stats_extractor=*/true,
-            plan_factory, pool_);
+            plan_factory, /*is_changelog=*/false, pool_);
     } else {
         factory = std::make_shared<KeyValueDataFileWriterFactory>(
             options_, schema_id_, write_schema_, level, FileSource::Compact(),
-            trimmed_primary_keys_, data_file_path_factory, /*create_stats_extractor=*/true, pool_);
+            trimmed_primary_keys_, data_file_path_factory, /*create_stats_extractor=*/true,
+            /*is_changelog=*/false, pool_);
+    }
+    return std::make_unique<MergeTreeCompactRewriter::KeyValueRollingFileWriter>(
+        options_.GetTargetFileSize(/*has_primary_key=*/true),
+        /*target_file_row_num=*/std::numeric_limits<int64_t>::max(), factory);
+}
+
+Result<std::unique_ptr<MergeTreeCompactRewriter::KeyValueRollingFileWriter>>
+MergeTreeCompactRewriter::CreateRollingChangelogWriter(int32_t level) {
+    std::shared_ptr<FileFormat> format = options_.GetChangelogFileFormat();
+    if (!format) {
+        format = options_.GetWriteFileFormat(level);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
+                           CreateDataFilePathFactory(format->Identifier()));
+    std::shared_ptr<SingleFileWriterFactory<KeyValueBatch, std::shared_ptr<DataFileMeta>>> factory;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<ShreddingWritePlanFactory> plan_factory,
+        ShreddingWritePlanFactories::SelectActive(options_, write_schema_, pool_));
+    if (plan_factory != nullptr) {
+        factory = std::make_shared<ShreddingKeyValueDataFileWriterFactory>(
+            options_, schema_id_, write_schema_, level, FileSource::Append(), trimmed_primary_keys_,
+            data_file_path_factory, /*create_stats_extractor=*/true, plan_factory,
+            /*is_changelog=*/true, pool_);
+    } else {
+        factory = std::make_shared<KeyValueDataFileWriterFactory>(
+            options_, schema_id_, write_schema_, level, FileSource::Append(), trimmed_primary_keys_,
+            data_file_path_factory, /*create_stats_extractor=*/true,
+            /*is_changelog=*/true, pool_);
     }
     return std::make_unique<MergeTreeCompactRewriter::KeyValueRollingFileWriter>(
         options_.GetTargetFileSize(/*has_primary_key=*/true),
@@ -181,6 +210,19 @@ Result<std::shared_ptr<DataFilePathFactory>> MergeTreeCompactRewriter::CreateDat
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
                            path_factory_cache_->GetOrCreatePathFactory(format));
     return path_factory->CreateDataFilePathFactory(partition_, bucket_);
+}
+
+Result<std::unique_ptr<SortMergeReader>>
+MergeTreeCompactRewriter::CreateRawSortMergeReaderForSection(
+    const std::vector<SortedRun>& section) {
+    if (!merge_file_split_read_) {
+        return Status::Invalid(
+            "merge_file_split_read in MergeTreeCompactRewriter cannot be nullptr");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
+                           CreateDataFilePathFactory(options_.GetFileFormat()->Identifier()));
+    return merge_file_split_read_->CreateRawSortMergeReaderForSection(
+        section, partition_, dv_factory_, /*predicate=*/nullptr, data_file_path_factory);
 }
 
 Status MergeTreeCompactRewriter::MergeReadAndWrite(

@@ -19,10 +19,12 @@
 #pragma once
 
 #include "arrow/api.h"
+#include "paimon/common/data/serializer/row_compacted_serializer.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/mergetree/compact/changelog_merge_tree_rewriter.h"
 #include "paimon/core/mergetree/compact/first_row_merge_function.h"
+#include "paimon/core/mergetree/compact/lookup_changelog_merge_function_wrapper.h"
 #include "paimon/core/mergetree/compact/lookup_merge_function.h"
 #include "paimon/core/mergetree/lookup/remote_lookup_file_manager.h"
 #include "paimon/core/mergetree/lookup_levels.h"
@@ -38,10 +40,11 @@ class LookupMergeTreeCompactRewriter : public ChangelogMergeTreeRewriter {
     static Result<std::unique_ptr<LookupMergeTreeCompactRewriter>> Create(
         int32_t max_level, std::unique_ptr<LookupLevels<T>>&& lookup_levels,
         const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer,
-        MergeFunctionWrapperFactory merge_function_wrapper_factory, int32_t bucket,
-        const BinaryRow& partition, const std::shared_ptr<TableSchema>& table_schema,
+        ChangelogMergeFunctionWrapperFactory changelog_merge_function_wrapper_factory,
+        int32_t bucket, const BinaryRow& partition,
+        const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<FileStorePathFactoryCache>& path_factory_cache,
-        const CoreOptions& options,
+        const CoreOptions& options, bool produce_changelog,
         const std::shared_ptr<CancellationController>& cancellation_controller,
         const std::shared_ptr<RemoteLookupFileManager>& remote_lookup_file_manager,
         const std::shared_ptr<MemoryPool>& pool);
@@ -50,16 +53,19 @@ class LookupMergeTreeCompactRewriter : public ChangelogMergeTreeRewriter {
         return lookup_levels_->Close();
     }
 
-    static std::shared_ptr<MergeFunctionWrapper<KeyValue>> CreateFirstRowMergeFunctionWrapper(
-        std::unique_ptr<FirstRowMergeFunction>&& merge_func, int32_t output_level,
-        LookupLevels<bool>* lookup_levels);
+    static std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>
+    CreateFirstRowMergeFunctionWrapper(std::unique_ptr<FirstRowMergeFunction>&& merge_func,
+                                       int32_t output_level, LookupLevels<bool>* lookup_levels,
+                                       std::unique_ptr<RowCompactedSerializer>&& value_serializer);
 
-    static Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>> CreateLookupMergeFunctionWrapper(
+    static Result<std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>>
+    CreateLookupMergeFunctionWrapper(
         std::unique_ptr<LookupMergeFunction>&& merge_func, int32_t output_level,
         const std::shared_ptr<BucketedDvMaintainer>& deletion_vectors_maintainer,
-        const LookupStrategy& lookup_strategy,
+        const LookupStrategy& lookup_strategy, bool should_produce_changelog,
         const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
-        LookupLevels<T>* lookup_levels);
+        LookupLevels<T>* lookup_levels, std::unique_ptr<RowCompactedSerializer>&& value_serializer,
+        typename LookupChangelogMergeFunctionWrapper<T>::ValueEqualizer value_equalizer);
 
  private:
     LookupMergeTreeCompactRewriter(
@@ -72,6 +78,8 @@ class LookupMergeTreeCompactRewriter : public ChangelogMergeTreeRewriter {
         const std::shared_ptr<FileStorePathFactoryCache>& path_factory_cache,
         std::unique_ptr<MergeFileSplitRead>&& merge_file_split_read,
         MergeFunctionWrapperFactory merge_function_wrapper_factory,
+        ChangelogMergeFunctionWrapperFactory changelog_merge_function_wrapper_factory,
+        bool produce_changelog,
         const std::shared_ptr<CancellationController>& cancellation_controller,
         const std::shared_ptr<RemoteLookupFileManager>& remote_lookup_file_manager,
         const std::shared_ptr<MemoryPool>& pool);

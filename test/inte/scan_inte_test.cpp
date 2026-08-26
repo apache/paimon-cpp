@@ -1273,9 +1273,9 @@ TEST_P(ScanInteTest, TestScanAppendWithStreamWithAndPredicate) {
                                                      .value());
 
     std::vector<std::vector<std::shared_ptr<DataSplitImpl>>> expected_data_splits = {
-        {}, {expected_data_split1_2}, {expected_data_split2_1}, {}, {expected_data_split4_1}};
+        {}, {expected_data_split1_2}, {expected_data_split2_1}, {expected_data_split4_1}};
 
-    std::vector<std::optional<int64_t>> expected_snapshot_ids = {std::nullopt, 1, 2, 3, 4};
+    std::vector<std::optional<int64_t>> expected_snapshot_ids = {std::nullopt, 1, 2, 4};
     CheckStreamScanResult(table_scan.get(), expected_snapshot_ids, expected_data_splits);
 }
 

@@ -406,6 +406,7 @@ struct CoreOptions::Impl {
     ExpireConfig expire_config;
     std::vector<std::string> sequence_field;
     std::vector<std::string> remove_record_on_sequence_group;
+    std::vector<std::string> changelog_row_deduplicate_ignore_fields;
     std::vector<std::string> blob_fields;
     std::vector<std::string> blob_descriptor_fields;
     std::vector<std::string> blob_view_fields;
@@ -416,12 +417,14 @@ struct CoreOptions::Impl {
     std::string manifest_compression = "zstd";
     std::string branch = BranchManager::DEFAULT_MAIN_BRANCH;
     std::string data_file_prefix = "data-";
+    std::string changelog_file_prefix = "changelog-";
     std::string file_system_scheme_to_identifier_map_str;
 
     std::optional<std::string> field_default_func;
     std::optional<std::string> scan_fallback_branch;
     std::optional<std::string> data_file_external_paths;
     std::optional<std::string> blob_view_upstream_warehouse;
+    std::optional<std::string> changelog_file_compression;
 
     std::map<std::string, std::string> raw_options;
 
@@ -464,6 +467,7 @@ struct CoreOptions::Impl {
     bool deletion_vectors_bitmap64 = false;
     bool force_lookup = false;
     bool lookup_wait = true;
+    bool changelog_row_deduplicate = false;
     bool partial_update_remove_record_on_delete = false;
     bool aggregation_remove_record_on_delete = false;
     bool table_read_sequence_number_enabled = false;
@@ -513,6 +517,7 @@ struct CoreOptions::Impl {
     int64_t cache_page_size = 64 * 1024;  // 64KB
     std::map<int32_t, std::shared_ptr<FileFormat>> file_format_per_level;
     std::map<int32_t, std::string> file_compression_per_level;
+    std::shared_ptr<FileFormat> changelog_file_format;
     int64_t lookup_cache_max_memory = 256 * 1024 * 1024;
     double lookup_cache_high_prio_pool_ratio = 0.25;
     int64_t lookup_cache_file_retention_ms = 1 * 3600 * 1000;  // 1 hour
@@ -590,6 +595,8 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseExternalPathStrategy(&external_path_strategy));
         // Parse data-file.prefix - file name prefix of data files, default "data-"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::DATA_FILE_PREFIX, &data_file_prefix));
+        // Parse changelog-file.prefix - file name prefix of changelog files, default "changelog-"
+        PAIMON_RETURN_NOT_OK(parser.Parse(Options::CHANGELOG_FILE_PREFIX, &changelog_file_prefix));
         // Parse row-tracking.enabled - whether to enable unique row id for append table
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::ROW_TRACKING_ENABLED, &row_tracking_enabled));
@@ -638,6 +645,14 @@ struct CoreOptions::Impl {
             Options::FILE_FORMAT, /*default_identifier=*/"parquet", &file_format));
         // Parse file.compression - default file compression, default "zstd"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::FILE_COMPRESSION, &file_compression));
+        // Parse changelog-file.format - no default value
+        if (parser.ContainsKey(Options::CHANGELOG_FILE_FORMAT)) {
+            PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
+                Options::CHANGELOG_FILE_FORMAT, file_format->Identifier(), &changelog_file_format));
+        }
+        // Parse changelog-file.compression - no default value
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse(Options::CHANGELOG_FILE_COMPRESSION, &changelog_file_compression));
         // Parse file.compression.zstd-level - zstd compression level, default 1
         PAIMON_RETURN_NOT_OK(
             parser.Parse(Options::FILE_COMPRESSION_ZSTD_LEVEL, &file_compression_zstd_level));
@@ -768,6 +783,13 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::FIELDS_DEFAULT_AGG_FUNC, &field_default_func));
         // Parse changelog-producer - whether to double write to a changelog file, default "none"
         PAIMON_RETURN_NOT_OK(parser.ParseChangelogProducer(&changelog_producer));
+        // Parse changelog-producer.row-deduplicate - skip unchanged row changelogs
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE,
+                                                &changelog_row_deduplicate));
+        // Parse changelog-producer.row-deduplicate-ignore-fields - ignored comparison fields
+        PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(
+            Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, Options::FIELDS_SEPARATOR,
+            &changelog_row_deduplicate_ignore_fields, /*need_trim=*/true));
         // Parse partial-update.remove-record-on-delete - remove whole row on delete
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
                                                 &partial_update_remove_record_on_delete));
@@ -1618,6 +1640,26 @@ int64_t CoreOptions::DeletionVectorTargetFileSize() const {
 
 ChangelogProducer CoreOptions::GetChangelogProducer() const {
     return impl_->changelog_producer;
+}
+
+bool CoreOptions::ChangelogRowDeduplicate() const {
+    return impl_->changelog_row_deduplicate;
+}
+
+const std::vector<std::string>& CoreOptions::GetChangelogRowDeduplicateIgnoreFields() const {
+    return impl_->changelog_row_deduplicate_ignore_fields;
+}
+
+std::string CoreOptions::ChangelogFilePrefix() const {
+    return impl_->changelog_file_prefix;
+}
+
+std::shared_ptr<FileFormat> CoreOptions::GetChangelogFileFormat() const {
+    return impl_->changelog_file_format;
+}
+
+std::optional<std::string> CoreOptions::GetChangelogFileCompression() const {
+    return impl_->changelog_file_compression;
 }
 
 LookupStrategy CoreOptions::GetLookupStrategy() const {

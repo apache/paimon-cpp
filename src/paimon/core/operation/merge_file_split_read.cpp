@@ -491,6 +491,23 @@ Result<std::unique_ptr<SortMergeReader>> MergeFileSplitRead::CreateSortMergeRead
     return sort_merge_reader;
 }
 
+Result<std::unique_ptr<SortMergeReader>> MergeFileSplitRead::CreateRawSortMergeReaderForSection(
+    const std::vector<SortedRun>& section, const BinaryRow& partition,
+    DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) {
+    std::vector<std::unique_ptr<KeyValueRecordReader>> record_readers;
+    record_readers.reserve(section.size());
+    for (const auto& run : section) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<KeyValueRecordReader> run_reader,
+            CreateReaderForRun(partition, run, dv_factory, predicate, data_file_path_factory));
+        record_readers.emplace_back(std::move(run_reader));
+    }
+    return std::make_unique<SortMergeReaderWithMinHeap>(std::move(record_readers), key_comparator_,
+                                                        user_defined_seq_comparator_,
+                                                        /*merge_function_wrapper=*/nullptr);
+}
+
 Result<std::unique_ptr<KeyValueRecordReader>> MergeFileSplitRead::CreateReaderForRun(
     const BinaryRow& partition, const SortedRun& sorted_run, DeletionVector::Factory dv_factory,
     const std::shared_ptr<Predicate>& predicate,

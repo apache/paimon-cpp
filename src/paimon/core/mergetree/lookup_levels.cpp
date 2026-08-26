@@ -162,8 +162,8 @@ LookupLevels<T>::LookupLevels(
       lookup_store_factory_(lookup_store_factory),
       lookup_file_cache_(lookup_file_cache),
       remote_lookup_file_manager_(remote_lookup_file_manager) {
-    if constexpr (std::is_same_v<T, FilePosition>) {
-        // if T is FilePosition, only read key fields to create sst file is enough
+    if constexpr (std::is_same_v<T, FilePosition> || std::is_same_v<T, bool>) {
+        // FilePosition and first-row lookup do not persist values, so reading key fields is enough.
         value_schema_ = key_schema_;
     } else {
         value_schema_ = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
@@ -332,16 +332,6 @@ std::optional<std::string> LookupLevels<T>::TryToDownloadRemoteSst(
 template <typename T>
 Status LookupLevels<T>::CreateSstFileFromDataFile(const std::shared_ptr<DataFileMeta>& file,
                                                   const std::string& kv_file_path) {
-    if constexpr (std::is_same_v<T, bool>) {
-        // Short-circuit logic: if T is bool, just write empty lookup file.
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<BloomFilter> bloom_filter,
-            LookupStoreFactory::BfGenerator(file->row_count, options_, pool_.get()));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<LookupStoreWriter> kv_writer,
-            lookup_store_factory_->CreateWriter(fs_, kv_file_path, bloom_filter, pool_));
-        return kv_writer->Close();
-    }
     // Prepare reader to iterate KeyValue
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<FileBatchReader>> raw_readers,
