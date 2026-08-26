@@ -200,6 +200,39 @@ TEST_F(MosaicFileFormatTest, WriteThenRead) {
     AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 5, 8});
 }
 
+TEST_F(MosaicFileFormatTest, EmptyProjectionPreservesRowCount) {
+    std::string path = PathUtil::JoinPath(directory_->Str(), "empty-projection.mosaic");
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),
+                                 arrow::field("name", arrow::utf8())};
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                  R"([[1,"one"],[2,"two"],[3,"three"]])")
+            .ValueOrDie();
+    ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/2));
+    reader_builder->WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, reader_builder->Build(input));
+    ::ArrowSchema ffi_schema = {};
+    ASSERT_TRUE(arrow::ExportSchema(*arrow::schema({}), &ffi_schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&ffi_schema, /*predicate=*/nullptr,
+                                    /*selection_bitmap=*/std::nullopt));
+
+    for (int64_t expected_rows : {2, 1}) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        std::shared_ptr<arrow::RecordBatch> record_batch =
+            arrow::ImportRecordBatch(batch.first.get(), batch.second.get()).ValueOrDie();
+        ASSERT_EQ(record_batch->num_columns(), 0);
+        ASSERT_EQ(record_batch->num_rows(), expected_rows);
+    }
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof_batch, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof_batch));
+}
+
 TEST_F(MosaicFileFormatTest, SetReadSchemaResetsReaderToFirstRow) {
     std::string path = PathUtil::JoinPath(directory_->Str(), "reset-reader.mosaic");
     arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false),

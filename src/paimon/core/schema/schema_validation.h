@@ -73,6 +73,10 @@ class SchemaValidation {
 
     static Status ValidateBlobFields(const TableSchema& schema, const CoreOptions& options);
 
+    static Status ValidateMosaicDataFields(const TableSchema& schema, const CoreOptions& options);
+
+    static Status ValidateMosaicDataField(const std::shared_ptr<arrow::Field>& field);
+
     static Status ValidateMapStorageLayout(const TableSchema& schema, const CoreOptions& options);
 
     static Status ValidateVectorFields(const TableSchema& schema, const CoreOptions& options);

@@ -24,6 +24,7 @@
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
@@ -114,6 +115,74 @@ TEST(SchemaValidationTest, TestVectorType) {
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                         "VECTOR fields in data-evolution tables are not implemented yet.");
 }
+
+#ifdef PAIMON_ENABLE_MOSAIC
+TEST(SchemaValidationTest, TestMosaicDataTypes) {
+    std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                  {Options::FILE_FORMAT, "mosaic"}};
+    arrow::FieldVector supported_fields = {
+        arrow::field("f0", arrow::boolean()),
+        arrow::field("f1", arrow::int8()),
+        arrow::field("f2", arrow::int16()),
+        arrow::field("f3", arrow::int32()),
+        arrow::field("f4", arrow::int64()),
+        arrow::field("f5", arrow::float32()),
+        arrow::field("f6", arrow::float64()),
+        arrow::field("f7", arrow::utf8()),
+        arrow::field("f8", arrow::binary()),
+        arrow::field("f9", arrow::date32()),
+        arrow::field("f10", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f11", arrow::decimal128(38, 2)),
+        arrow::field("f12", arrow::list(arrow::float32())),
+        arrow::field("f13", arrow::map(arrow::int8(), arrow::int16())),
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(/*schema_id=*/0, arrow::schema(supported_fields),
+                                             /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    arrow::FieldVector unsupported_fields = {
+        arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())})),
+        VariantTypeUtils::ToArrowField("variant"),
+        arrow::field("vector", arrow::fixed_size_list(arrow::float32(), 3)),
+        arrow::field("nested_row",
+                     arrow::list(arrow::struct_({arrow::field("value", arrow::int32())}))),
+    };
+    std::vector<std::string> expected_errors = {"type ROW", "type VARIANT", "type VECTOR",
+                                                "type ROW"};
+    for (size_t i = 0; i < unsupported_fields.size(); ++i) {
+        SCOPED_TRACE("field=" + unsupported_fields[i]->name());
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(/*schema_id=*/0, arrow::schema({unsupported_fields[i]}),
+                                /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            expected_errors[i]);
+    }
+
+    std::shared_ptr<arrow::Field> blob_field = BlobUtils::ToArrowField("blob", false);
+    std::map<std::string, std::string> blob_options = {
+        {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, "mosaic"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        TableSchema::Create(/*schema_id=*/0,
+                            arrow::schema({arrow::field("id", arrow::int32()), blob_field}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, blob_options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    blob_options[Options::BLOB_DESCRIPTOR_FIELD] = "blob";
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        TableSchema::Create(/*schema_id=*/0,
+                            arrow::schema({arrow::field("id", arrow::int32()), blob_field}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, blob_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type BLOB");
+}
+#endif
 
 TEST(SchemaValidationTest, TestRowTracking) {
     auto f0 = arrow::field("f0", arrow::utf8());

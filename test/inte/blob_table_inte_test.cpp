@@ -3427,6 +3427,9 @@ TEST_P(BlobTableInteTest, TestDataEvolutionWithBlobDescriptorField) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobDescriptorFieldWriteRawBytesDirectly) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     // Similar to TestBlobDescriptorField but writes raw bytes directly without converting to
     // descriptor first. Descriptor fields reject values without the descriptor magic header.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),

@@ -72,45 +72,34 @@ Result<std::unique_ptr<MosaicFileBatchReader>> MosaicFileBatchReader::Create(
     input_file.ctx = input_context.get();
     input_file.read_at_fn = MosaicInputContext::ReadAt;
     input_file.length_fn = MosaicInputContext::Length;
-    MosaicReaderHandle* reader = mosaic_reader_open(input_file);
+    std::unique_ptr<MosaicReaderHandle, decltype(&mosaic_reader_free)> reader(
+        mosaic_reader_open(input_file), mosaic_reader_free);
     if (reader == nullptr) {
         return MosaicFfiError("open Mosaic reader", input_context->GetCallbackStatus());
     }
 
     ::ArrowSchema ffi_schema = {};
-    if (mosaic_reader_export_schema(reader, &ffi_schema) != 0) {
-        Status status = MosaicFfiError("read Mosaic schema", input_context->GetCallbackStatus());
-        mosaic_reader_free(reader);
-        return status;
+    if (mosaic_reader_export_schema(reader.get(), &ffi_schema) != 0) {
+        return MosaicFfiError("read Mosaic schema", input_context->GetCallbackStatus());
     }
-    arrow::Result<std::shared_ptr<arrow::Schema>> schema_result = arrow::ImportSchema(&ffi_schema);
-    if (!schema_result.ok()) {
-        mosaic_reader_free(reader);
-        return ToPaimonStatus(schema_result.status());
-    }
-    std::shared_ptr<arrow::Schema> file_schema = std::move(schema_result).ValueOrDie();
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_schema,
+                                      arrow::ImportSchema(&ffi_schema));
 
     uint32_t num_row_groups = 0;
-    if (mosaic_reader_num_row_groups(reader, &num_row_groups) != 0) {
-        Status status =
-            MosaicFfiError("read Mosaic row group count", input_context->GetCallbackStatus());
-        mosaic_reader_free(reader);
-        return status;
+    if (mosaic_reader_num_row_groups(reader.get(), &num_row_groups) != 0) {
+        return MosaicFfiError("read Mosaic row group count", input_context->GetCallbackStatus());
     }
     uint64_t total_rows = 0;
     for (uint32_t row_group = 0; row_group < num_row_groups; ++row_group) {
         uint32_t row_count = 0;
-        if (mosaic_reader_row_group_num_rows(reader, row_group, &row_count) != 0) {
-            Status status =
-                MosaicFfiError("read Mosaic row count", input_context->GetCallbackStatus());
-            mosaic_reader_free(reader);
-            return status;
+        if (mosaic_reader_row_group_num_rows(reader.get(), row_group, &row_count) != 0) {
+            return MosaicFfiError("read Mosaic row count", input_context->GetCallbackStatus());
         }
         total_rows += row_count;
     }
     return std::unique_ptr<MosaicFileBatchReader>(
-        new MosaicFileBatchReader(input, batch_size, std::move(input_context), reader, file_schema,
-                                  num_row_groups, total_rows, pool, arrow_pool));
+        new MosaicFileBatchReader(input, batch_size, std::move(input_context), reader.release(),
+                                  file_schema, num_row_groups, total_rows, pool, arrow_pool));
 }
 
 MosaicFileBatchReader::~MosaicFileBatchReader() {

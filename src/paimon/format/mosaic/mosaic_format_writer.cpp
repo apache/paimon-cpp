@@ -66,6 +66,9 @@ Result<std::unique_ptr<MosaicFormatWriter>> MosaicFormatWriter::Create(
 
 MosaicFormatWriter::~MosaicFormatWriter() {
     if (writer_ != nullptr) {
+        if (!finished_) {
+            mosaic_writer_close(writer_);
+        }
         mosaic_writer_free(writer_);
     }
 }

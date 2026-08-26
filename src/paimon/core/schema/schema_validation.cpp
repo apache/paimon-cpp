@@ -197,6 +197,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
 
     PAIMON_RETURN_NOT_OK(ValidateRowTracking(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateMosaicDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     return Status::OK();
@@ -557,6 +558,70 @@ Status SchemaValidation::ValidateBlobFields(const TableSchema& schema, const Cor
                                                blob_view_name, Options::BLOB_VIEW_FIELD,
                                                Options::BLOB_DESCRIPTOR_FIELD));
         }
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateMosaicDataField(const std::shared_ptr<arrow::Field>& field) {
+    if (VariantTypeUtils::IsVariantField(field)) {
+        return Status::Invalid("Mosaic file format does not support type VARIANT");
+    }
+    if (BlobUtils::IsBlobField(field)) {
+        return Status::Invalid("Mosaic file format does not support type BLOB");
+    }
+
+    const std::shared_ptr<arrow::DataType>& type = field->type();
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::DATE32:
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+        case arrow::Type::TIME32:
+        case arrow::Type::TIMESTAMP:
+        case arrow::Type::DECIMAL128:
+            return Status::OK();
+        case arrow::Type::LIST:
+            return ValidateMosaicDataField(type->field(0));
+        case arrow::Type::MAP: {
+            const auto& map_type = checked_cast<const arrow::MapType&>(*type);
+            PAIMON_RETURN_NOT_OK(ValidateMosaicDataField(map_type.key_field()));
+            return ValidateMosaicDataField(map_type.item_field());
+        }
+        case arrow::Type::FIXED_SIZE_LIST:
+            return Status::Invalid("Mosaic file format does not support type VECTOR");
+        case arrow::Type::STRUCT:
+            return Status::Invalid("Mosaic file format does not support type ROW");
+        default:
+            break;
+    }
+    return Status::Invalid(
+        fmt::format("Mosaic file format does not support type {}", type->ToString()));
+}
+
+Status SchemaValidation::ValidateMosaicDataFields(const TableSchema& schema,
+                                                  const CoreOptions& options) {
+    if (StringUtils::ToLowerCase(options.GetFileFormat()->Identifier()) != "mosaic") {
+        return Status::OK();
+    }
+
+    const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
+    const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
+                                                      inline_blob_fields.end());
+    // Match Java SchemaValidation by validating only fields stored in the normal data file. C++
+    // permits BLOB only as a top-level field; descriptor and view fields are inline, so Mosaic
+    // must reject them here.
+    for (const DataField& field : schema.Fields()) {
+        if (BlobUtils::IsBlobField(field.ArrowField()) &&
+            inline_blob_field_set.count(field.Name()) == 0) {
+            continue;
+        }
+        PAIMON_RETURN_NOT_OK(ValidateMosaicDataField(field.ArrowField()));
     }
     return Status::OK();
 }
