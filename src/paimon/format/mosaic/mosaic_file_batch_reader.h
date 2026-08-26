@@ -23,16 +23,12 @@
 #include <limits>
 #include <memory>
 
+#include "arrow/type_fwd.h"
 #include "paimon/format/mosaic/mosaic_ffi.h"
 #include "paimon/format/mosaic/mosaic_stream.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/result.h"
 
-namespace arrow {
-class MemoryPool;
-class RecordBatch;
-class Schema;
-}  // namespace arrow
 namespace paimon {
 class InputStream;
 class MemoryPool;
