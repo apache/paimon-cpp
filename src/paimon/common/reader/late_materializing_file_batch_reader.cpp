@@ -254,16 +254,10 @@ Status LateMaterializingFileBatchReader::SetInnerReadSchema(
 Status LateMaterializingFileBatchReader::SetReadSchema(
     ::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
     const std::optional<RoaringBitmap32>& selection_bitmap) {
+    Reset();
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(full_schema_, arrow::ImportSchema(read_schema));
     predicate_ = predicate;
     selection_ = selection_bitmap;
-    matched_bitmap_ = RoaringBitmap32();
-    probe_data_.reset();
-    probe_cursor_ = 0;
-    row_mapping_.clear();
-    probe_schema_.reset();
-    payload_schema_.reset();
-    probe_filter_.reset();
     if (predicate_ != nullptr) {
         std::set<std::string> probe_names;
         PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate_, &probe_names));
@@ -347,6 +341,23 @@ Status LateMaterializingFileBatchReader::SetReadRanges(
     read_ranges_ = read_ranges;
     PAIMON_RETURN_NOT_OK(inner_->SetReadRanges(read_ranges_));
     return Status::OK();
+}
+
+void LateMaterializingFileBatchReader::Reset() {
+    state_ = kInit;
+    read_ranges_.clear();
+    matched_bitmap_ = RoaringBitmap32();
+    probe_data_.reset();
+    probe_cursor_ = 0;
+    row_mapping_.clear();
+    probe_schema_.reset();
+    payload_schema_.reset();
+    full_schema_.reset();
+    probe_filter_.reset();
+    predicate_.reset();
+    selection_.reset();
+    probe_cursor_ = 0;
+    row_mapping_.clear();
 }
 
 }  // namespace paimon

@@ -49,6 +49,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     };
 
     void Close() override {
+        Reset();
         inner_->Close();
     }
 
@@ -94,6 +95,9 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     explicit LateMaterializingFileBatchReader(std::unique_ptr<PrefetchFileBatchReader> inner,
                                               std::shared_ptr<arrow::MemoryPool> arrow_pool)
         : inner_(std::move(inner)), arrow_pool_(std::move(arrow_pool)) {}
+
+    /// Reset the state of the late materializing reader, does not close inner reader.
+    void Reset();
 
     enum LatMatState {
         kInit,
