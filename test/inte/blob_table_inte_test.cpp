@@ -299,6 +299,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         auto splits = plan->Splits();
         ReadContextBuilder read_context_builder(table_path);
         read_context_builder.SetReadFieldNames(read_schema).SetPredicate(predicate);
+        read_context_builder.EnableLateMaterializing(false);
         if (!options.empty()) {
             read_context_builder.SetOptions(options);
         }
