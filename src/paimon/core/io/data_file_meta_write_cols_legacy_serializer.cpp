@@ -7,16 +7,17 @@
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
-#include "paimon/core/io/data_file_meta_serializer.h"
+#include "paimon/core/io/data_file_meta_write_cols_legacy_serializer.h"
 
 #include <cassert>
 #include <cstdint>
@@ -24,7 +25,7 @@
 #include <string>
 #include <utility>
 
-#include "paimon/common/data/binary_array.h"
+#include "arrow/type.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/data/internal_row.h"
@@ -39,9 +40,19 @@ namespace paimon {
 
 class Bytes;
 class InternalArray;
-class MemoryPool;
 
-Result<BinaryRow> DataFileMetaSerializer::ToRow(const std::shared_ptr<DataFileMeta>& meta) const {
+const std::shared_ptr<arrow::DataType>& DataFileMetaWriteColsLegacySerializer::DataType() {
+    static const std::shared_ptr<arrow::DataType> legacy_type = []() {
+        auto current_type = std::static_pointer_cast<arrow::StructType>(DataFileMeta::DataType());
+        auto fields = current_type->fields();
+        fields.pop_back();
+        return arrow::struct_(std::move(fields));
+    }();
+    return legacy_type;
+}
+
+Result<BinaryRow> DataFileMetaWriteColsLegacySerializer::ToRow(
+    const std::shared_ptr<DataFileMeta>& meta) const {
     BinaryRow row(NumFields());
     BinaryRowWriter writer(&row, 32 * 1024, pool_.get());
     writer.WriteString(0, BinaryString::FromString(meta->file_name, pool_.get()));
@@ -96,17 +107,11 @@ Result<BinaryRow> DataFileMetaSerializer::ToRow(const std::shared_ptr<DataFileMe
         writer.WriteArray(
             19, InternalRowUtils::ToNotNullStringArrayData(meta->write_cols.value(), pool_));
     }
-    if (meta->column_max_sequence_numbers == std::nullopt) {
-        writer.SetNullAt(20);
-    } else {
-        writer.WriteArray(
-            20, BinaryArray::FromLongArray(meta->column_max_sequence_numbers.value(), pool_.get()));
-    }
     writer.Complete();
     return row;
 }
 
-Result<std::shared_ptr<DataFileMeta>> DataFileMetaSerializer::FromRow(
+Result<std::shared_ptr<DataFileMeta>> DataFileMetaWriteColsLegacySerializer::FromRow(
     const InternalRow& row) const {
     auto file_name = row.GetString(0);
     auto file_size = row.GetLong(1);
@@ -168,14 +173,6 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMetaSerializer::FromRow(
         write_cols = InternalRowUtils::FromNotNullStringArrayData(array.get());
     }
 
-    std::optional<std::vector<int64_t>> column_max_sequence_numbers;
-    if (!row.IsNullAt(20)) {
-        std::shared_ptr<InternalArray> array = row.GetArray(20);
-        if (array == nullptr) {
-            return Status::Invalid("invalid column max sequence numbers");
-        }
-        PAIMON_ASSIGN_OR_RAISE(column_max_sequence_numbers, array->ToLongArray());
-    }
     PAIMON_ASSIGN_OR_RAISE(BinaryRow min_values, SerializationUtils::DeserializeBinaryRow(min_key));
     PAIMON_ASSIGN_OR_RAISE(BinaryRow max_values, SerializationUtils::DeserializeBinaryRow(max_key));
     PAIMON_ASSIGN_OR_RAISE(SimpleStats key_stats,
@@ -187,7 +184,8 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMetaSerializer::FromRow(
         min_sequence_number, max_sequence_number, schema_id, level,
         InternalRowUtils::FromStringArrayData(extra_files.get()), creation_time, delete_row_count,
         embedded_file_index, file_source, std::optional<std::vector<std::string>>(value_stats_cols),
-        external_path, first_row_id, write_cols, column_max_sequence_numbers);
+        external_path, first_row_id, write_cols,
+        /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 }  // namespace paimon

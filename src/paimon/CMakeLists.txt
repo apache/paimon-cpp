@@ -275,6 +275,7 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_meta_first_row_id_legacy_serializer.cpp
     core/io/data_file_meta.cpp
     core/io/data_file_meta_serializer.cpp
+    core/io/data_file_meta_write_cols_legacy_serializer.cpp
     core/io/data_file_path_factory.cpp
     core/io/data_file_index_writer.cpp
     core/io/file_index_options.cpp

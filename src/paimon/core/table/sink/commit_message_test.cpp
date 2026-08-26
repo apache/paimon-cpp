@@ -95,7 +95,13 @@ TEST(CommitMessageTest, TestCompatibleWithVersion12) {
 
     // check result
     ASSERT_OK_AND_ASSIGN(std::string serialized_bytes, CommitMessage::Serialize(ret, pool));
-    ASSERT_EQ(serialized_bytes, std::string(reinterpret_cast<char*>(buffer.data()), buffer.size()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CommitMessage> roundtrip,
+        CommitMessage::Deserialize(CommitMessage::CurrentVersion(), serialized_bytes.data(),
+                                   serialized_bytes.size(), pool));
+    auto roundtrip_message = std::dynamic_pointer_cast<CommitMessageImpl>(roundtrip);
+    ASSERT_NE(roundtrip_message, nullptr);
+    ASSERT_EQ(*roundtrip_message, *res_msg);
 }
 
 TEST(CommitMessageTest, TestCompatibleWithVersion11) {

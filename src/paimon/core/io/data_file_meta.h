@@ -47,18 +47,20 @@ struct DataFileMeta {
     static const BinaryRow& EmptyMaxKey();
     static constexpr int32_t DUMMY_LEVEL = 0;
 
-    DataFileMeta(const std::string& _file_name, int64_t _file_size, int64_t _row_count,
-                 const BinaryRow& _min_key, const BinaryRow& _max_key,
-                 const SimpleStats& _key_stats, const SimpleStats& _value_stats,
-                 int64_t _min_sequence_number, int64_t _max_sequence_number, int64_t _schema_id,
-                 int32_t _level, const std::vector<std::optional<std::string>>& _extra_files,
-                 const Timestamp& _creation_time, const std::optional<int64_t>& _delete_row_count,
-                 const std::shared_ptr<Bytes>& _embedded_index,
-                 const std::optional<FileSource>& _file_source,
-                 const std::optional<std::vector<std::string>>& _value_stats_cols,
-                 const std::optional<std::string>& _external_path,
-                 const std::optional<int64_t>& _first_row_id,
-                 const std::optional<std::vector<std::string>>& _write_cols);
+    DataFileMeta(
+        const std::string& _file_name, int64_t _file_size, int64_t _row_count,
+        const BinaryRow& _min_key, const BinaryRow& _max_key, const SimpleStats& _key_stats,
+        const SimpleStats& _value_stats, int64_t _min_sequence_number, int64_t _max_sequence_number,
+        int64_t _schema_id, int32_t _level,
+        const std::vector<std::optional<std::string>>& _extra_files,
+        const Timestamp& _creation_time, const std::optional<int64_t>& _delete_row_count,
+        const std::shared_ptr<Bytes>& _embedded_index,
+        const std::optional<FileSource>& _file_source,
+        const std::optional<std::vector<std::string>>& _value_stats_cols,
+        const std::optional<std::string>& _external_path,
+        const std::optional<int64_t>& _first_row_id,
+        const std::optional<std::vector<std::string>>& _write_cols,
+        const std::optional<std::vector<int64_t>>& _column_max_sequence_numbers = std::nullopt);
 
     static Result<std::shared_ptr<DataFileMeta>> ForAppend(
         const std::string& file_name, int64_t file_size, int64_t row_count,
@@ -82,6 +84,9 @@ struct DataFileMeta {
     /// Create a copy of this DataFileMeta with the given extra files.
     std::shared_ptr<DataFileMeta> CopyWithExtraFiles(
         const std::vector<std::optional<std::string>>& new_extra_files) const;
+
+    std::shared_ptr<DataFileMeta> CopyWithColumnMaxSequenceNumbers(
+        const std::optional<std::vector<int64_t>>& new_column_max_sequence_numbers) const;
 
     /// Create a copy without value statistics. All other metadata is preserved.
     ///
@@ -167,5 +172,9 @@ struct DataFileMeta {
     std::optional<int64_t> first_row_id;
 
     std::optional<std::vector<std::string>> write_cols;
+
+    // Maximum sequence number per physical table field. Values follow write_cols when present,
+    // or the file schema field order otherwise.
+    std::optional<std::vector<int64_t>> column_max_sequence_numbers;
 };
 }  // namespace paimon

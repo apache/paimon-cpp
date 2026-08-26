@@ -108,7 +108,10 @@ TEST(DataSplitTest, TestDeserializeVersion8WithWriteColsAndExternalPath) {
             .value());
     ASSERT_EQ(*result_data_split, *expected_data_split) << result_data_split->ToString();
     ASSERT_OK_AND_ASSIGN(std::string serialize_bytes, Split::Serialize(result_data_split, pool));
-    ASSERT_EQ(serialize_bytes, std::string(split_bytes.data(), split_bytes.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> roundtrip,
+                         Split::Deserialize(serialize_bytes.data(), serialize_bytes.size(), pool));
+    auto roundtrip_data_split = std::dynamic_pointer_cast<DataSplitImpl>(roundtrip);
+    ASSERT_EQ(*roundtrip_data_split, *expected_data_split) << roundtrip_data_split->ToString();
 }
 
 TEST(DataSplitTest, TestDeserializeVersion8WithWriteCols) {
@@ -172,7 +175,10 @@ TEST(DataSplitTest, TestDeserializeVersion8WithWriteCols) {
             .value());
     ASSERT_EQ(*result_data_split, *expected_data_split) << result_data_split->ToString();
     ASSERT_OK_AND_ASSIGN(std::string serialize_bytes, Split::Serialize(result_data_split, pool));
-    ASSERT_EQ(serialize_bytes, std::string(split_bytes.data(), split_bytes.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> roundtrip,
+                         Split::Deserialize(serialize_bytes.data(), serialize_bytes.size(), pool));
+    auto roundtrip_data_split = std::dynamic_pointer_cast<DataSplitImpl>(roundtrip);
+    ASSERT_EQ(*roundtrip_data_split, *expected_data_split) << roundtrip_data_split->ToString();
 }
 
 TEST(DataSplitTest, TestDeserializeVersion7WithFirstRowId) {
