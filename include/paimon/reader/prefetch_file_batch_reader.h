@@ -40,7 +40,7 @@ class PAIMON_EXPORT PrefetchFileBatchReader : public FileBatchReader {
     /// Retrieves the row number of the next row to be read.
     /// This method indicates the current read position within the file.
     /// @return The row number of the next row to read.
-    virtual uint64_t GetNextRowToRead() const = 0;
+    virtual Result<uint64_t> GetNextRowToRead() const = 0;
 
     /// Generates a list of row ranges to be read in batches.
     /// Each range specifies the start and end row numbers for a batch,

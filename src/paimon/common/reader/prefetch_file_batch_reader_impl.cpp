@@ -411,7 +411,8 @@ std::optional<std::pair<uint64_t, uint64_t>> PrefetchFileBatchReaderImpl::GetCur
 Status PrefetchFileBatchReaderImpl::EnsureReaderPosition(
     size_t reader_idx, const std::pair<uint64_t, uint64_t>& current_read_range) const {
     uint64_t pos = std::max(readers_pos_[reader_idx]->load(), current_read_range.first);
-    if (readers_[reader_idx]->GetNextRowToRead() != pos) {
+    PAIMON_ASSIGN_OR_RAISE(uint64_t next_row_to_read, readers_[reader_idx]->GetNextRowToRead());
+    if (next_row_to_read != pos) {
         return readers_[reader_idx]->SeekToRow(pos);
     }
     return Status::OK();
@@ -480,7 +481,9 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
         } else {
             // all within the range, data before readers_[reader_idx]->GetNextRowToRead() has been
             // effectively consumed
-            readers_pos_[reader_idx]->store(readers_[reader_idx]->GetNextRowToRead());
+            PAIMON_ASSIGN_OR_RAISE(uint64_t next_row_to_read,
+                                   readers_[reader_idx]->GetNextRowToRead());
+            readers_pos_[reader_idx]->store(next_row_to_read);
         }
         if (bitmap.IsEmpty()) {
             ReaderUtils::ReleaseReadBatch(std::move(read_batch));
@@ -646,7 +649,7 @@ Result<uint64_t> PrefetchFileBatchReaderImpl::GetNumberOfRows() const {
     return readers_[0]->GetNumberOfRows();
 }
 
-uint64_t PrefetchFileBatchReaderImpl::GetNextRowToRead() const {
+Result<uint64_t> PrefetchFileBatchReaderImpl::GetNextRowToRead() const {
     assert(false);
     return -1;
 }

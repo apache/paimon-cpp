@@ -87,7 +87,6 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
         // late-materialization reader moving from its probe pass to its payload pass, rely on it.
         current_pos_ = 0;
         previous_batch_first_row_num_ = std::numeric_limits<uint64_t>::max();
-        read_ranges_.clear();
         return Status::OK();
     }
 
@@ -196,7 +195,7 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
     Result<uint64_t> GetNumberOfRows() const override {
         return ToReaderRowNumber(read_end_pos_);
     }
-    uint64_t GetNextRowToRead() const override {
+    Result<uint64_t> GetNextRowToRead() const override {
         return ToReaderRowNumber(current_pos_);
     }
     void Close() override {}

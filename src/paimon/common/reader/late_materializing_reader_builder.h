@@ -54,15 +54,11 @@ class LateMaterializingReaderBuilder : public ReaderBuilder {
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& stream) const override {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> base, inner_->Build(stream));
-        auto* prefetch = dynamic_cast<PrefetchFileBatchReader*>(base.get());
-        if (prefetch == nullptr) {
-            return Status::Invalid("Late materialization requires prefetch interface");
-        }
-        base.release();
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LateMaterializingFileBatchReader> reader,
-                               LateMaterializingFileBatchReader::Create(
-                                   std::unique_ptr<PrefetchFileBatchReader>(prefetch), pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> format_reader,
+                               inner_->Build(stream));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<LateMaterializingFileBatchReader> reader,
+            LateMaterializingFileBatchReader::Create(std::move(format_reader), pool_));
         return std::unique_ptr<FileBatchReader>(std::move(reader));
     }
 

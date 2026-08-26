@@ -24,9 +24,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "paimon/reader/prefetch_file_batch_reader.h"
 
 namespace paimon {
@@ -40,7 +42,7 @@ class PredicateFilter;
 class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
  public:
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
-        std::unique_ptr<PrefetchFileBatchReader> inner, std::shared_ptr<MemoryPool> pool);
+        std::unique_ptr<FileBatchReader> inner, std::shared_ptr<MemoryPool> pool);
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
 
@@ -74,13 +76,17 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
 
     Status SeekToRow(uint64_t row_number) override;
 
-    uint64_t GetNextRowToRead() const override {
-        return inner_->GetNextRowToRead();
+    Result<uint64_t> GetNextRowToRead() const override {
+        PAIMON_ASSIGN_OR_RAISE(PrefetchFileBatchReader * prefetch_reader,
+                               GetPrefetchReaderOrRaise("GetNextRowToRead"));
+        return prefetch_reader->GetNextRowToRead();
     }
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> GenReadRanges(
         bool* need_prefetch) const override {
-        return inner_->GenReadRanges(need_prefetch);
+        PAIMON_ASSIGN_OR_RAISE(PrefetchFileBatchReader * prefetch_reader,
+                               GetPrefetchReaderOrRaise("GenReadRanges"));
+        return prefetch_reader->GenReadRanges(need_prefetch);
     }
 
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
@@ -88,13 +94,19 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
         // TODO(zhouhongfeng.zhf): PrebufferRange (called by PrefetchFileBatchReader) only read the
         // probe data, consider read the payload data as well.
-        return inner_->PreBufferRange();
+        if (prefetch_inner_ == nullptr) {
+            return std::vector<std::pair<uint64_t, uint64_t>>{};
+        }
+        return prefetch_inner_->PreBufferRange();
     }
 
  private:
-    explicit LateMaterializingFileBatchReader(std::unique_ptr<PrefetchFileBatchReader> inner,
-                                              std::shared_ptr<arrow::MemoryPool> arrow_pool)
-        : inner_(std::move(inner)), arrow_pool_(std::move(arrow_pool)) {}
+    LateMaterializingFileBatchReader(std::unique_ptr<FileBatchReader> inner,
+                                     PrefetchFileBatchReader* prefetch_inner,
+                                     std::shared_ptr<arrow::MemoryPool> arrow_pool)
+        : inner_(std::move(inner)),
+          prefetch_inner_(prefetch_inner),
+          arrow_pool_(std::move(arrow_pool)) {}
 
     /// Reset the state of the late materializing reader, does not close inner reader.
     void Reset();
@@ -128,10 +140,29 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
                               const std::shared_ptr<Predicate>& predicate,
                               const std::optional<RoaringBitmap32>& selection);
 
-    std::unique_ptr<PrefetchFileBatchReader> inner_;
+    /// Returns the inner reader's prefetch interface, or an error when the format reader does not
+    /// implement it (avro and blob do not).
+    Result<PrefetchFileBatchReader*> GetPrefetchReaderOrRaise(
+        std::string_view function_name) const {
+        if (prefetch_inner_ == nullptr) {
+            return Status::NotImplemented(
+                fmt::format("format reader is not a prefetch reader, function {} not supported",
+                            function_name));
+        }
+        return prefetch_inner_;
+    }
+
+    /// The probe/payload logic needs nothing beyond FileBatchReader, so the inner reader is held as
+    /// the base type: parquet and orc readers implement PrefetchFileBatchReader, while avro and
+    /// blob readers only implement FileBatchReader. The prefetch-only methods are rejected for the
+    /// latter; AbstractSplitRead::CreateFileBatchReader keeps those formats out of the prefetch
+    /// layer so nothing calls them.
+    std::unique_ptr<FileBatchReader> inner_;
+    /// Non-owning view of inner_ when it implements the prefetch interface, nullptr otherwise.
+    /// inner_ is never reassigned, so the cast is resolved once in Create().
+    PrefetchFileBatchReader* prefetch_inner_ = nullptr;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     LatMatState state_ = kInit;
-    std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
     std::shared_ptr<arrow::Schema> full_schema_;
     // projection holding only the predicate fields; nullptr when probing is not applicable
     std::shared_ptr<arrow::Schema> probe_schema_;

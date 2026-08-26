@@ -85,7 +85,7 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
         return reader_->GetNumberOfRows();
     }
 
-    uint64_t GetNextRowToRead() const override {
+    Result<uint64_t> GetNextRowToRead() const override {
         return reader_->GetNextRowToRead();
     }
 

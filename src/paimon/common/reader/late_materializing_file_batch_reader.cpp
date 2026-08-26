@@ -19,6 +19,7 @@
 
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 
+#include <cassert>
 #include <map>
 #include <set>
 #include <string>
@@ -44,15 +45,20 @@
 namespace paimon {
 
 Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
-    std::unique_ptr<PrefetchFileBatchReader> inner, std::shared_ptr<MemoryPool> pool) {
+    std::unique_ptr<FileBatchReader> inner, std::shared_ptr<MemoryPool> pool) {
     // The reader's own compaction allocations go through an arrow pool; bridge the paimon pool
     // once here so the accounting matches the rest of the read path.
     if (pool == nullptr) {
         return Status::Invalid("pool could not be nullptr.");
     }
+    if (inner == nullptr) {
+        return Status::Invalid("inner could not be nullptr.");
+    }
+    auto* prefetch_inner = dynamic_cast<PrefetchFileBatchReader*>(inner.get());
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
-    auto reader = std::unique_ptr<LateMaterializingFileBatchReader>(
-        new LateMaterializingFileBatchReader(std::move(inner), std::move(arrow_pool)));
+    auto reader =
+        std::unique_ptr<LateMaterializingFileBatchReader>(new LateMaterializingFileBatchReader(
+            std::move(inner), prefetch_inner, std::move(arrow_pool)));
     return reader;
 }
 
@@ -243,11 +249,7 @@ Status LateMaterializingFileBatchReader::SetInnerReadSchema(
     const std::optional<RoaringBitmap32>& selection) {
     ::ArrowSchema c_read_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
-    /// Note: calling inner->SetReadSchema may refresh the read ranges of the inner reader.
     PAIMON_RETURN_NOT_OK(inner_->SetReadSchema(&c_read_schema, predicate, selection));
-    if (!read_ranges_.empty()) {
-        PAIMON_RETURN_NOT_OK(inner_->SetReadRanges(read_ranges_));
-    }
     return Status::OK();
 }
 
@@ -316,7 +318,9 @@ Result<uint64_t> LateMaterializingFileBatchReader::GetPreviousBatchFileRowId(
 }
 
 Status LateMaterializingFileBatchReader::SeekToRow(uint64_t row_number) {
-    PAIMON_RETURN_NOT_OK(inner_->SeekToRow(row_number));
+    PAIMON_ASSIGN_OR_RAISE(PrefetchFileBatchReader * prefetch_reader,
+                           GetPrefetchReaderOrRaise("SeekToRow"));
+    PAIMON_RETURN_NOT_OK(prefetch_reader->SeekToRow(row_number));
     if (state_ == kRunning || state_ == kEOF) {
         if (matched_bitmap_.IsEmpty()) {
             state_ = kEOF;
@@ -338,14 +342,16 @@ Status LateMaterializingFileBatchReader::SeekToRow(uint64_t row_number) {
 
 Status LateMaterializingFileBatchReader::SetReadRanges(
     const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) {
-    read_ranges_ = read_ranges;
-    PAIMON_RETURN_NOT_OK(inner_->SetReadRanges(read_ranges_));
-    return Status::OK();
+    if (prefetch_inner_ == nullptr) {
+        // Only the format reader can act on this hint, and the PrefetchFileBatchReader contract
+        // lets an implementation that cannot honor it ignore the hint.
+        return Status::OK();
+    }
+    return prefetch_inner_->SetReadRanges(read_ranges);
 }
 
 void LateMaterializingFileBatchReader::Reset() {
     state_ = kInit;
-    read_ranges_.clear();
     matched_bitmap_ = RoaringBitmap32();
     probe_data_.reset();
     probe_cursor_ = 0;

@@ -80,7 +80,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     Status SeekToRow(uint64_t row_number) override;
     Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override;
     Result<uint64_t> GetNumberOfRows() const override;
-    uint64_t GetNextRowToRead() const override;
+    Result<uint64_t> GetNextRowToRead() const override;
     void Close() override;
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
 
