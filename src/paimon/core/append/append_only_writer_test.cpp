@@ -56,9 +56,11 @@
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/defs.h"
+#include "paimon/file_index/file_index_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/record_batch.h"
 #include "paimon/testing/utils/binary_row_generator.h"
@@ -401,6 +403,41 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndPrepareCommit) {
     std::string path = path_factory->ToPath(inc.GetNewFilesIncrement().NewFiles()[0]->file_name);
     ASSERT_OK_AND_ASSIGN(bool exist, options.GetFileSystem()->Exists(path));
     ASSERT_TRUE(exist);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(AppendOnlyWriterTest, TestWritePublishesEmbeddedBitmapIndex) {
+    CoreOptions options = CreateOptions(
+        {{"file-index.bitmap.columns", "f0"}, {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}});
+    auto schema =
+        arrow::schema({arrow::field("f0", arrow::int32()), arrow::field("f1", arrow::int32())});
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = CreatePathFactory(dir->Str(), "mock_format", options);
+    ASSERT_OK_AND_ASSIGN(
+        auto writer, CreateAppendOnlyWriter(
+                         options, /*schema_id=*/0, schema, /*write_cols=*/std::nullopt,
+                         /*max_sequence_number=*/-1, path_factory, compact_manager_, memory_pool_));
+
+    ASSERT_OK(writer->Write(CreateBatch(schema, R"([{"f0": 1, "f1": 10},
+                                                     {"f0": 2, "f1": 20},
+                                                     {"f0": 1, "f1": 30}])")));
+    ASSERT_OK_AND_ASSIGN(CommitIncrement increment,
+                         writer->PrepareCommit(/*wait_compaction=*/true));
+    const auto& files = increment.GetNewFilesIncrement().NewFiles();
+    ASSERT_EQ(1, files.size());
+    ASSERT_TRUE(files[0]->embedded_index);
+    ASSERT_TRUE(files[0]->extra_files.empty());
+
+    auto input = std::make_shared<ByteArrayInputStream>(files[0]->embedded_index->data(),
+                                                        files[0]->embedded_index->size());
+    ASSERT_OK_AND_ASSIGN(auto index_reader, FileIndexFormat::CreateReader(input, memory_pool_));
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ASSERT_OK_AND_ASSIGN(auto column_readers, index_reader->ReadColumnIndex("f0", &c_schema));
+    ASSERT_EQ(1, column_readers.size());
+    ASSERT_OK_AND_ASSIGN(auto result, column_readers[0]->VisitEqual(Literal(1)));
+    ASSERT_EQ("{0,2}", result->ToString());
     ASSERT_OK(writer->Close());
 }
 

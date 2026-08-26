@@ -296,7 +296,9 @@ ParquetStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fi
             // nested type do not have parquet stats
             const auto& logical_type = node->logical_type();
             FieldType nested_type = FieldType::UNKNOWN;
-            if (logical_type->is_list()) {
+            if (write_schema_->field(field_idx)->type()->id() == arrow::Type::FIXED_SIZE_LIST) {
+                nested_type = FieldType::VECTOR;
+            } else if (logical_type->is_list()) {
                 nested_type = FieldType::ARRAY;
             } else if (logical_type->is_map()) {
                 nested_type = FieldType::MAP;

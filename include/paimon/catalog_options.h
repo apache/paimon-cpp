@@ -1,11 +1,13 @@
 /*
- * Copyright 2026-present Alibaba Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,9 +34,36 @@ struct PAIMON_EXPORT CatalogOptions {
     /// "token" - Token of the "bear" token provider of the REST catalog.
     static const char TOKEN[];
 
-    /// "token.provider" - Authentication provider of the REST catalog. Only "bear" is
-    /// supported ("bear" is the protocol's historical spelling of "bearer", do not "fix" it).
+    /// "token.provider" - Authentication provider of the REST catalog. Supported values are
+    /// "bear" (the protocol's historical spelling of "bearer") and "dlf".
     static const char TOKEN_PROVIDER[];
+
+    /// "dlf.region" - Region used by DLF request signing. Inferred from URI when absent.
+    static const char DLF_REGION[];
+
+    /// "dlf.token-path" - Path of a JSON file containing refreshable DLF credentials.
+    static const char DLF_TOKEN_PATH[];
+
+    /// "dlf.access-key-id" - DLF access key id.
+    static const char DLF_ACCESS_KEY_ID[];
+
+    /// "dlf.access-key-secret" - DLF access key secret.
+    static const char DLF_ACCESS_KEY_SECRET[];
+
+    /// "dlf.security-token" - Optional STS security token used with a DLF access key.
+    static const char DLF_SECURITY_TOKEN[];
+
+    /// "dlf.token-loader" - Refreshable DLF token loader ("ecs" or "local_file").
+    static const char DLF_TOKEN_LOADER[];
+
+    /// "dlf.token-ecs-metadata-url" - ECS RAM role metadata endpoint.
+    static const char DLF_TOKEN_ECS_METADATA_URL[];
+
+    /// "dlf.token-ecs-role-name" - Optional ECS RAM role name.
+    static const char DLF_TOKEN_ECS_ROLE_NAME[];
+
+    /// "dlf.signing-algorithm" - DLF signer ("default" or "openapi").
+    static const char DLF_SIGNING_ALGORITHM[];
 
     /// "table-default." - Prefix of the catalog options that provide table option
     /// defaults: "table-default.<key>=<value>" applies "<key>=<value>" to a created

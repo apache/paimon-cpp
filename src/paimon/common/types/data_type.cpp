@@ -29,6 +29,7 @@
 #include "paimon/common/types/array_type.h"
 #include "paimon/common/types/map_type.h"
 #include "paimon/common/types/row_type.h"
+#include "paimon/common/types/vector_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/decimal_utils.h"
@@ -52,6 +53,8 @@ std::unique_ptr<DataType> DataType::Create(
             return std::make_unique<MapType>(type, nullable, metadata);
         case arrow::Type::type::LIST:
             return std::make_unique<ArrayType>(type, nullable, metadata);
+        case arrow::Type::type::FIXED_SIZE_LIST:
+            return std::make_unique<VectorType>(type, nullable, metadata);
         case arrow::Type::type::STRUCT:
             if (VariantTypeUtils::IsVariantMetadata(metadata)) {
                 // A variant field is physically a struct<value, metadata> but is a scalar

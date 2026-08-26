@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -32,6 +33,8 @@ struct ArrowSchema;
 namespace paimon {
 class InputStream;
 class MemoryPool;
+class Bytes;
+class OutputStream;
 
 /// Defines the on-disk format and versioning for Paimon file-level indexes.
 /// File index file format. Put all column and offset in the header.
@@ -88,9 +91,15 @@ class MemoryPool;
 class PAIMON_EXPORT FileIndexFormat {
  public:
     class Reader;
+    class Writer;
+
+    /// Serialized file indexes grouped as column name -> index type -> index bytes. A null bytes
+    /// pointer represents an empty index for that column and index type.
+    /// For example, indexes["col1"]["bsi"] = <bytes>;
+    using ColumnIndexes = std::map<std::string, std::map<std::string, std::shared_ptr<Bytes>>>;
+
     /// Creates a `Reader` to parse a index file (may contain multiple indexes) from the given input
     /// stream.
-    ///
     /// @param input_stream Input stream containing serialized index data.
     /// @param pool Memory pool for temporary allocations during reading.
     /// @return A unique pointer to a `Reader` on success, or an error if the stream is invalid
@@ -98,10 +107,31 @@ class PAIMON_EXPORT FileIndexFormat {
     static Result<std::unique_ptr<Reader>> CreateReader(
         const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool);
 
+    /// Creates a `Writer` which serializes a complete V1 file index container.
+    ///
+    /// @param output_stream Destination stream for serialized index data.
+    /// @param pool Memory pool for writer-side allocations.
+    /// @return A unique pointer to a `Writer` on success.
+    static Result<std::unique_ptr<Writer>> CreateWriter(
+        const std::shared_ptr<OutputStream>& output_stream,
+        const std::shared_ptr<MemoryPool>& pool);
+
  public:
     static const int64_t MAGIC;
     static const int32_t EMPTY_INDEX_FLAG;
     static const int32_t V_1;
+};
+
+/// Writer for file index file.
+class FileIndexFormat::Writer {
+ public:
+    virtual ~Writer() = default;
+
+    /// Writes all column indexes. This is a terminal, one-shot operation.
+    virtual Status WriteColumnIndexes(const FileIndexFormat::ColumnIndexes& indexes) = 0;
+
+    /// Flushes and closes the output stream supplied to `CreateWriter()`.
+    virtual Status Close() = 0;
 };
 
 /// Reader for file index file.
@@ -109,7 +139,6 @@ class FileIndexFormat::Reader {
  public:
     virtual ~Reader() = default;
     /// Reads index data for a specific column from the index file.
-    ///
     /// @param column_name Name of the column to retrieve index data for.
     /// @param arrow_schema Arrow schema that must contain a field corresponding to `column_name`.
     /// @return A vector of shared pointers to FileIndexReader objects, each corresponding to a

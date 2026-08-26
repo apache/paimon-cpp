@@ -78,6 +78,12 @@ class ColumnarRow : public InternalRow {
         row_kind_ = kind;
     }
 
+    /// Update the row represented by this view without rebuilding its column pointers.
+    /// @param row_id Zero-based row index in the underlying arrays.
+    void SetRowId(int64_t row_id) {
+        row_id_ = row_id;
+    }
+
     int32_t GetFieldCount() const override {
         return array_vec_.size();
     }

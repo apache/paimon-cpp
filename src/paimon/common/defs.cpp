@@ -59,6 +59,8 @@ const char Options::SCAN_SNAPSHOT_ID[] = "scan.snapshot-id";
 const char Options::SCAN_MODE[] = "scan.mode";
 const char Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[] =
     "scan.manifest-entry-cache.max-snapshots";
+const char Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[] =
+    "scan.manifest-entry.lazy-decode.enabled";
 const char Options::READ_BATCH_SIZE[] = "read.batch-size";
 const char Options::WRITE_BATCH_SIZE[] = "write.batch-size";
 const char Options::WRITE_BUFFER_SIZE[] = "write-buffer-size";
@@ -100,6 +102,7 @@ const char Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_SEQUENCE_GROUP[] =
 const char Options::SCAN_FALLBACK_BRANCH[] = "scan.fallback-branch";
 const char Options::BRANCH[] = "branch";
 const char Options::FILE_INDEX_READ_ENABLED[] = "file-index.read.enabled";
+const char Options::FILE_INDEX_IN_MANIFEST_THRESHOLD[] = "file-index.in-manifest-threshold";
 const char Options::DATA_FILE_EXTERNAL_PATHS[] = "data-file.external-paths";
 const char Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY[] = "data-file.external-paths.strategy";
 const char Options::DATA_FILE_PREFIX[] = "data-file.prefix";
@@ -147,7 +150,9 @@ const char Options::AGGREGATION_REMOVE_RECORD_ON_DELETE[] = "aggregation.remove-
 const char Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED[] = "table-read.sequence-number.enabled";
 const char Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED[] = "key-value.sequence_number.enabled";
 const char Options::SCAN_TIMESTAMP_MILLIS[] = "scan.timestamp-millis";
+const char Options::REALTIME_ENABLED[] = "realtime.enabled";
 const char Options::REALTIME_READ_VIEW_TTL[] = "realtime.read-view-ttl";
+const char Options::REALTIME_STORE_STATS_MODE[] = "realtime.store.stats-mode";
 const char Options::SCAN_TIMESTAMP[] = "scan.timestamp";
 const char Options::SCAN_TAG_NAME[] = "scan.tag-name";
 const char Options::WRITE_ONLY[] = "write-only";

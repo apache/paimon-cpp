@@ -19,26 +19,14 @@
 
 #include "paimon/factories/singleton.h"
 
-#include <mutex>
-
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/factories/factory_creator.h"
 
 namespace paimon {
 
-template <typename T, typename InstPolicy>
-T* Singleton<T, InstPolicy>::GetInstance() {
-    static T* ptr;
-    static std::mutex mutex;
-    if (PAIMON_UNLIKELY(!ptr)) {
-        std::lock_guard<std::mutex> lg(mutex);
-        if (!ptr) {
-            InstPolicy::Create(ptr);
-        }
-    }
-    return const_cast<T*>(ptr);
-}
-
+// The single definition point for the two cross-library singletons. See the
+// extern template declarations in singleton.h for why implicit instantiation
+// must stay suppressed for these types.
 template class Singleton<FactoryCreator>;
 template class Singleton<IOHook>;
 

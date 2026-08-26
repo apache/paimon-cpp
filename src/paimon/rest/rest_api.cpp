@@ -1,11 +1,13 @@
 /*
- * Copyright 2026-present Alibaba Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -81,11 +83,12 @@ Result<std::unique_ptr<RestApi>> RestApi::Create(const std::map<std::string, std
             RestAuthParameter::Create("GET", ResourcePaths::Config(), query_params, "");
         PAIMON_ASSIGN_OR_RAISE(StringMap headers,
                                auth_provider->MergeAuthHeader(base_headers, auth_parameter));
-        PAIMON_ASSIGN_OR_RAISE(
-            RestHttpClient::Response response,
-            client->Execute("GET", ResourcePaths::Config(), query_params, headers, ""));
+        bool follow_redirects = auth_provider->AllowsRedirects();
+        PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
+                               client->Execute("GET", ResourcePaths::Config(), query_params,
+                                               headers, "", follow_redirects));
         if (!response.IsSuccessful()) {
-            return ErrorToStatus(response);
+            return ErrorToStatus(response, follow_redirects);
         }
         ConfigResponse config;
         PAIMON_RETURN_NOT_OK(ParseResponseBody(response.body, ResourcePaths::Config(), &config));
@@ -109,7 +112,19 @@ Result<std::unique_ptr<RestApi>> RestApi::Create(const std::map<std::string, std
                                                 ResourcePaths(prefix)));
 }
 
-Status RestApi::ErrorToStatus(const RestHttpClient::Response& response) {
+Status RestApi::ErrorToStatus(const RestHttpClient::Response& response, bool follow_redirects) {
+    if (!follow_redirects && response.code >= 300 && response.code < HttpStatus::kBadRequest) {
+        std::string message = fmt::format(
+            "rest endpoint returned redirect status {}, which is not followed for "
+            "signed requests",
+            response.code);
+        std::string request_id = RestUtil::ExtractRequestId(response.headers);
+        if (request_id != RestUtil::kUnknownRequestId) {
+            message += fmt::format(" requestId:{}", request_id);
+        }
+        return Status::IOError(message).WithDetail(
+            std::make_shared<RestErrorDetail>(response.code));
+    }
     // The code of the parsed error body takes precedence over the http status, which
     // a gateway may have rewritten.
     int64_t code = response.code;
@@ -188,10 +203,12 @@ Result<RestHttpClient::Response> RestApi::Execute(
     }
     PAIMON_ASSIGN_OR_RAISE(StringMap headers,
                            auth_provider_->MergeAuthHeader(request_headers, auth_parameter));
-    PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
-                           client_->Execute(method, path, query_params, headers, body));
+    bool follow_redirects = auth_provider_->AllowsRedirects();
+    PAIMON_ASSIGN_OR_RAISE(
+        RestHttpClient::Response response,
+        client_->Execute(method, path, query_params, headers, body, follow_redirects));
     if (!response.IsSuccessful()) {
-        return ErrorToStatus(response);
+        return ErrorToStatus(response, follow_redirects);
     }
     return response;
 }

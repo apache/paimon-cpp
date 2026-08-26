@@ -1,11 +1,13 @@
 /*
- * Copyright 2026-present Alibaba Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -105,9 +107,11 @@ class RestApi {
 
     /// Maps a non-successful http response to a status: 404 becomes `NotExist`, 409
     /// becomes `Exist`, 400 becomes `Invalid`, 501 becomes `NotImplemented` and the
-    /// other codes become `IOError`. The status carries a `RestErrorDetail` with the
-    /// mapped code.
-    static Status ErrorToStatus(const RestHttpClient::Response& response);
+    /// other codes become `IOError`. A redirect returned while `follow_redirects` is
+    /// false is reported as deliberately rejected for a signed request. The status
+    /// carries a `RestErrorDetail` with the mapped code.
+    static Status ErrorToStatus(const RestHttpClient::Response& response,
+                                bool follow_redirects = true);
 
  private:
     RestApi(std::unique_ptr<RestHttpClient> client, std::unique_ptr<AuthProvider> auth_provider,

@@ -50,6 +50,12 @@ class ManifestEntrySerializer : public VersionedObjectSerializer<ManifestEntry> 
         return VERSION_2;
     }
 
+    /// Validate the serialization version before reading fields that may vary by version.
+    static Status ValidateVersion(int32_t version);
+
+    /// Get the bucket from a versioned manifest entry row without fully deserializing it.
+    static int32_t GetBucket(const InternalRow& row);
+
     Result<ManifestEntry> ConvertFrom(int32_t version, const InternalRow& row) const override;
 
     Result<BinaryRow> ToRow(const ManifestEntry& record) const override;

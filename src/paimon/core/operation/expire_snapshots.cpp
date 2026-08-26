@@ -38,6 +38,7 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -50,13 +51,14 @@ ExpireSnapshots::ExpireSnapshots(const std::shared_ptr<SnapshotManager>& snapsho
                                  const std::shared_ptr<ManifestList>& manifest_list,
                                  const std::shared_ptr<ManifestFile>& manifest_file,
                                  const std::shared_ptr<FileSystem>& fs, const ExpireConfig& config,
-                                 const std::shared_ptr<Executor>& executor)
+                                 bool realtime_enabled, const std::shared_ptr<Executor>& executor)
     : snapshot_manager_(snapshot_manager),
       path_factory_(path_factory),
       manifest_list_(manifest_list),
       manifest_file_(manifest_file),
       fs_(fs),
       config_(config),
+      realtime_enabled_(realtime_enabled),
       executor_(executor),
       logger_(Logger::GetLogger("ExpireSnapshots")) {}
 
@@ -157,8 +159,24 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
     std::vector<Snapshot> retained_snapshots;
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(end_exclusive_id));
     retained_snapshots.push_back(snapshot);
+    std::set<std::string> retained_offset_files;
+    if (realtime_enabled_) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> all_snapshots,
+                               snapshot_manager_->GetAllSnapshots());
+        for (const Snapshot& retained_snapshot : all_snapshots) {
+            if (retained_snapshot.Id() < end_exclusive_id) {
+                continue;
+            }
+            std::optional<std::string> offsets_path =
+                RealtimeCommitProperties::GetOffsetsPath(retained_snapshot);
+            if (offsets_path) {
+                retained_offset_files.insert(offsets_path.value());
+            }
+        }
+    }
     std::set<std::string> skipping_sets;
     PAIMON_RETURN_NOT_OK(GetManifestSkippingSet(retained_snapshots, &skipping_sets));
+    std::set<std::string> expired_offset_files;
     for (int64_t id = begin_inclusive_id; id < end_exclusive_id; id++) {
         PAIMON_LOG_DEBUG(logger_, "Ready to delete manifests in snapshot #%ld", id);
         PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(id));
@@ -169,9 +187,23 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
         PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(id));
         PAIMON_RETURN_NOT_OK(CleanUnusedManifests(snapshot.BaseManifestList(), skipping_sets));
         PAIMON_RETURN_NOT_OK(CleanUnusedManifests(snapshot.DeltaManifestList(), skipping_sets));
+        if (realtime_enabled_) {
+            std::optional<std::string> offsets_path =
+                RealtimeCommitProperties::GetOffsetsPath(snapshot);
+            if (offsets_path) {
+                expired_offset_files.insert(offsets_path.value());
+            }
+        }
         auto status = fs_->Delete(snapshot_manager_->SnapshotPath(id));
         // delete quietly will ignore any status error
         (void)status;
+    }
+    for (const std::string& offsets_path : expired_offset_files) {
+        if (retained_offset_files.count(offsets_path) == 0) {
+            auto status = fs_->Delete(offsets_path);
+            // Orphan cleanup can retry offset files that fail to delete here.
+            (void)status;
+        }
     }
     PAIMON_RETURN_NOT_OK(snapshot_manager_->CommitEarliestHint(end_exclusive_id));
     return end_exclusive_id - begin_inclusive_id;

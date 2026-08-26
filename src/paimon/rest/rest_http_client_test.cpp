@@ -1,11 +1,13 @@
 /*
- * Copyright 2026-present Alibaba Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -487,6 +489,25 @@ TEST(RestHttpClientTest, RedirectIsFollowed) {
     ASSERT_EQ(2, request_count.load());
     // only the final response's headers are reported, not the redirect's
     ASSERT_EQ(0, response.headers.count("location"));
+}
+
+TEST(RestHttpClientTest, RedirectCanBeDisabledForSignedRequests) {
+    std::atomic<int32_t> request_count{0};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                         MockRestServer::Start([&](const MockRestServer::Request& request) {
+                             request_count++;
+                             MockRestServer::Response response;
+                             response.code = 302;
+                             response.headers["Location"] = "/v1/config";
+                             return response;
+                         }));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestHttpClient> client,
+                         RestHttpClient::Create(server->GetBaseUri()));
+    ASSERT_OK_AND_ASSIGN(RestHttpClient::Response response,
+                         client->Execute("GET", "/old", {}, {{"x-acs-security-token", "secret"}},
+                                         "", /*follow_redirects=*/false));
+    ASSERT_EQ(302, response.code);
+    ASSERT_EQ(1, request_count.load());
 }
 
 TEST(RestHttpClientTest, PostRedirectKeepsMethodAndBody) {

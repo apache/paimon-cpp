@@ -38,6 +38,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/preconditions.h"
@@ -94,6 +95,15 @@ Status ValidateSharedShreddingFileFormat(const std::string& option_key,
         return Status::Invalid(fmt::format(
             "MAP shared-shredding only supports parquet/orc file formats, but {} is {}.",
             option_key, file_format));
+    }
+    return Status::OK();
+}
+
+Status ValidateVectorFileFormat(const std::string& option_key, const std::string& file_format) {
+    if (StringUtils::ToLowerCase(file_format) != "parquet") {
+        return Status::Invalid(
+            fmt::format("VECTOR currently only supports parquet data files, but {} is {}.",
+                        option_key, file_format));
     }
     return Status::OK();
 }
@@ -188,6 +198,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateRowTracking(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     return Status::OK();
 }
 
@@ -622,6 +633,9 @@ Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
         if (ContainsBlobField(map_type->item_field())) {
             return Status::Invalid("MAP shared-shredding currently cannot contain BLOB fields.");
         }
+        if (VectorUtils::ContainsVectorField(map_type->item_field())) {
+            return Status::Invalid("MAP shared-shredding currently cannot contain VECTOR fields.");
+        }
         // Validate max-columns config
         PAIMON_RETURN_NOT_OK(options.GetMapSharedShreddingMaxColumns(field_name));
         // Validate placement policy config
@@ -646,6 +660,32 @@ Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
                                                 ValidateSharedShreddingCompression));
 
     return Status::OK();
+}
+
+Status SchemaValidation::ValidateVectorFields(const TableSchema& schema,
+                                              const CoreOptions& options) {
+    bool has_vector = false;
+    for (const auto& field : schema.Fields()) {
+        if (VectorUtils::ContainsVectorField(field.ArrowField())) {
+            has_vector = true;
+            break;
+        }
+    }
+    if (!has_vector) {
+        return Status::OK();
+    }
+    if (!schema.PrimaryKeys().empty()) {
+        return Status::NotImplemented(
+            "VECTOR fields in primary-key tables are not implemented yet.");
+    }
+    if (options.DataEvolutionEnabled()) {
+        return Status::NotImplemented(
+            "VECTOR fields in data-evolution tables are not implemented yet.");
+    }
+    PAIMON_RETURN_NOT_OK(
+        ValidateVectorFileFormat(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));
+    return ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL,
+                                  ValidateVectorFileFormat);
 }
 
 }  // namespace paimon

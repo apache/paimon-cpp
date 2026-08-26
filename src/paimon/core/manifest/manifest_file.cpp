@@ -24,6 +24,7 @@
 
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/manifest/manifest_entry.h"
@@ -84,6 +85,26 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
     return std::unique_ptr<ManifestFile>(
         new ManifestFile(file_system, reader_builder, writer_builder, compression,
                          manifest_file_factory, target_file_size, pool, options, partition_type));
+}
+
+Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
+                                       std::vector<ManifestEntry>* entries) const {
+    return ReadArrowBatches(
+        file_name,
+        [this, bucket, entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+            const arrow::ArrayVector& fields = batch->fields();
+            ColumnarRow row(fields, pool_, /*row_id=*/0);
+            for (int64_t i = 0; i < batch->length(); i++) {
+                row.SetRowId(i);
+                PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(row.GetInt(0)));
+                if (ManifestEntrySerializer::GetBucket(row) != bucket) {
+                    continue;
+                }
+                PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
+                entries->push_back(std::move(entry));
+            }
+            return Status::OK();
+        });
 }
 
 Result<std::vector<ManifestFileMeta>> ManifestFile::Write(

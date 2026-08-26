@@ -93,6 +93,8 @@ class FieldTypeUtils {
                 return FieldType::MAP;
             case arrow::Type::type::STRUCT:
                 return FieldType::STRUCT;
+            case arrow::Type::type::FIXED_SIZE_LIST:
+                return FieldType::VECTOR;
             default:
                 return Status::Invalid(
                     fmt::format("Not support arrow type {}", static_cast<int32_t>(arrow_type)));
@@ -135,6 +137,8 @@ class FieldTypeUtils {
                 return "STRUCT";
             case FieldType::VARIANT:
                 return "VARIANT";
+            case FieldType::VECTOR:
+                return "VECTOR";
             default:
                 return "UNKNOWN, type id:" + std::to_string(static_cast<int32_t>(type));
         }

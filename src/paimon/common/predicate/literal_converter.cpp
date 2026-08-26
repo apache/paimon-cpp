@@ -166,6 +166,7 @@ Result<Literal> LiteralConverter::ConvertLiteralsFromRow(
         case FieldType::DATE:
             return Literal(FieldType::DATE, row.GetInt(field_idx));
         case FieldType::ARRAY:
+        case FieldType::VECTOR:
         case FieldType::MAP:
         case FieldType::STRUCT:
         default:

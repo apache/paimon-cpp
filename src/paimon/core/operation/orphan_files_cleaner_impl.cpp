@@ -35,6 +35,7 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/metrics/clean_metrics.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/duration.h"
@@ -85,7 +86,7 @@ bool OrphanFilesCleanerImpl::SupportToClean(const std::string& file_name) {
             return true;
         }
     }
-    return false;
+    return StringUtils::EndsWith(file_name, ".offsets");
 }
 
 Result<std::set<std::string>> OrphanFilesCleanerImpl::Clean() {
@@ -156,6 +157,10 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::ListPaimonFileDirs() const
     std::set<std::string> paimon_file_dirs;
     paimon_file_dirs.insert(snapshot_manager_->SnapshotDirectory());
     paimon_file_dirs.insert(FileStorePathFactory::ManifestPath(root_path_));
+    if (options_.RealtimeEnabled()) {
+        paimon_file_dirs.insert(
+            RealtimeCommitProperties::OffsetsDirectory(root_path_, options_.GetBranch()));
+    }
     // TODO(jinli.zjw): support clean index, stats, changelog in the future
     // paimon_file_dirs.insert(FileStorePathFactory::IndexPath(root_path_));
     // paimon_file_dirs.insert(FileStorePathFactory::StatisticsPath(root_path_));
@@ -294,6 +299,13 @@ Result<std::set<std::string>> OrphanFilesCleanerImpl::GetUsedFilesBySnapshot(
     used_files.insert(SnapshotManager::SNAPSHOT_PREFIX + std::to_string(snapshot.Id()));
     used_files.insert(snapshot.BaseManifestList());
     used_files.insert(snapshot.DeltaManifestList());
+    if (options_.RealtimeEnabled()) {
+        std::optional<std::string> offsets_path =
+            RealtimeCommitProperties::GetOffsetsPath(snapshot);
+        if (offsets_path) {
+            used_files.insert(PathUtil::GetName(offsets_path.value()));
+        }
+    }
     std::vector<ManifestFileMeta> manifests;
     PAIMON_RETURN_NOT_OK(manifest_list_->ReadIfFileExist(snapshot.BaseManifestList(),
                                                          /*filter=*/nullptr, &manifests));

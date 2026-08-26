@@ -33,6 +33,22 @@
 
 namespace paimon::avro {
 
+const AvroDirectDecoder::DecodeContext::BuilderMetadata&
+AvroDirectDecoder::DecodeContext::GetBuilderMetadata(const arrow::ArrayBuilder* builder) {
+    auto iter = builder_metadata_.find(builder);
+    if (iter != builder_metadata_.end()) {
+        return iter->second;
+    }
+
+    std::shared_ptr<arrow::DataType> data_type = builder->type();
+    BuilderMetadata metadata{data_type->id(), std::nullopt};
+    if (data_type->id() == arrow::Type::TIMESTAMP) {
+        metadata.timestamp_unit =
+            checked_cast<const arrow::TimestampType*>(data_type.get())->unit();
+    }
+    return builder_metadata_.emplace(builder, metadata).first->second;
+}
+
 namespace {
 
 /// Forward declaration for mutual recursion.
@@ -40,6 +56,20 @@ Status DecodeFieldToBuilder(const ::avro::NodePtr& avro_node,
                             const std::optional<std::set<size_t>>& projection,
                             ::avro::Decoder* decoder, arrow::ArrayBuilder* array_builder,
                             AvroDirectDecoder::DecodeContext* ctx);
+
+Status ReserveBuilderCapacityImpl(int64_t capacity, arrow::ArrayBuilder* array_builder) {
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(array_builder->Reserve(capacity));
+    if (array_builder->type()->id() != arrow::Type::STRUCT) {
+        return Status::OK();
+    }
+
+    auto* struct_builder = checked_cast<arrow::StructBuilder*>(array_builder);
+    for (int32_t i = 0; i < struct_builder->num_fields(); ++i) {
+        PAIMON_RETURN_NOT_OK(
+            ReserveBuilderCapacityImpl(capacity, struct_builder->field_builder(i)));
+    }
+    return Status::OK();
+}
 
 /// \brief Skip an Avro value based on its schema without decoding
 Status SkipAvroValue(const ::avro::NodePtr& avro_node, ::avro::Decoder* decoder) {
@@ -177,6 +207,7 @@ Status DecodeListToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* de
     // Read array block count
     int64_t block_count = decoder->arrayStart();
     while (block_count != 0) {
+        PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, value_builder));
         for (int64_t i = 0; i < block_count; ++i) {
             PAIMON_RETURN_NOT_OK(DecodeFieldToBuilder(element_node, /*projection=*/std::nullopt,
                                                       decoder, value_builder, ctx));
@@ -205,6 +236,8 @@ Status DecodeMapToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* dec
         // Read map block count
         int64_t block_count = decoder->mapStart();
         while (block_count != 0) {
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, key_builder));
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, item_builder));
             for (int64_t i = 0; i < block_count; ++i) {
                 PAIMON_RETURN_NOT_OK(DecodeFieldToBuilder(key_node, /*projection=*/std::nullopt,
                                                           decoder, key_builder, ctx));
@@ -232,6 +265,8 @@ Status DecodeMapToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* dec
         // Read array block count
         int64_t block_count = decoder->arrayStart();
         while (block_count != 0) {
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, key_builder));
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, item_builder));
             for (int64_t i = 0; i < block_count; ++i) {
                 PAIMON_RETURN_NOT_OK(DecodeFieldToBuilder(key_node, /*projection=*/std::nullopt,
                                                           decoder, key_builder, ctx));
@@ -266,8 +301,8 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
 
         case ::avro::AVRO_INT: {
             int32_t value = decoder->decodeInt();
-            auto arrow_type = array_builder->type();
-            switch (arrow_type->id()) {
+            const auto& builder_metadata = ctx->GetBuilderMetadata(array_builder);
+            switch (builder_metadata.type) {
                 case arrow::Type::INT8: {
                     auto* builder = checked_cast<arrow::Int8Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
@@ -287,7 +322,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                     if (logical_type.type() != ::avro::LogicalType::Type::DATE) {
                         return Status::TypeError(
                             fmt::format("Unexpected avro type [{}] with arrow type [{}].",
-                                        ::avro::toString(type), arrow_type->ToString()));
+                                        ::avro::toString(type), array_builder->type()->ToString()));
                     }
                     auto* builder = checked_cast<arrow::Date32Builder*>(array_builder);
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
@@ -296,7 +331,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                 default:
                     return Status::TypeError(
                         fmt::format("Unexpected avro type [{}] with arrow type [{}].",
-                                    ::avro::toString(type), arrow_type->ToString()));
+                                    ::avro::toString(type), array_builder->type()->ToString()));
             }
         }
 
@@ -315,9 +350,9 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                 case ::avro::LogicalType::Type::LOCAL_TIMESTAMP_MICROS:
                 case ::avro::LogicalType::Type::LOCAL_TIMESTAMP_NANOS: {
                     auto* builder = checked_cast<arrow::TimestampBuilder*>(array_builder);
-                    auto ts_type = checked_cast<arrow::TimestampType*>(builder->type().get());
                     // for arrow second, we need to convert it from avro millisecond
-                    if (ts_type->unit() == arrow::TimeUnit::type::SECOND) {
+                    const auto& builder_metadata = ctx->GetBuilderMetadata(builder);
+                    if (builder_metadata.timestamp_unit == arrow::TimeUnit::type::SECOND) {
                         value /= DateTimeUtils::CONVERSION_FACTORS[DateTimeUtils::MILLISECOND];
                     }
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
@@ -429,6 +464,11 @@ Status AvroDirectDecoder::DecodeAvroToBuilder(const ::avro::NodePtr& avro_node,
                                               arrow::ArrayBuilder* array_builder,
                                               DecodeContext* ctx) {
     return DecodeFieldToBuilder(avro_node, projection, decoder, array_builder, ctx);
+}
+
+Status AvroDirectDecoder::ReserveBuilderCapacity(int64_t capacity,
+                                                 arrow::ArrayBuilder* array_builder) {
+    return ReserveBuilderCapacityImpl(capacity, array_builder);
 }
 
 }  // namespace paimon::avro

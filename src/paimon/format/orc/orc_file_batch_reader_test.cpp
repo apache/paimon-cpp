@@ -368,8 +368,9 @@ TEST_F(OrcFileBatchReaderTest, TestCreateRowReaderOptions) {
                              OrcFileBatchReader::CreateRowReaderOptions(
                                  src_type.get(), target_type.get(),
                                  /*search_arg=*/nullptr, options, &target_column_ids));
-        // Struct IDs (0, 1) not included. Selected: sub1(2), sub2-list(3), sub3(6), col3-map(8).
-        ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{2, 3, 6, 8}));
+        // Struct IDs (0, 1) are not included. LIST/MAP containers include their complete
+        // subtrees: sub1(2), sub2(3, 4, 5), sub3(6), col3(8, 9, 10).
+        ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{2, 3, 4, 5, 6, 8, 9, 10}));
     }
     {
         // read with type mismatch in nested field
@@ -482,6 +483,98 @@ TEST_F(OrcFileBatchReaderTest, TestCreateRowReaderOptions) {
                                 src_type.get(), target_type.get(),
                                 /*search_arg=*/nullptr, options, &target_column_ids),
                             "type mismatch");
+    }
+}
+
+TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsPrimitiveList) {
+    std::unique_ptr<::orc::Type> src_type =
+        ::orc::Type::buildTypeFromString("struct<items:array<int>,ignored:string>");
+    std::unique_ptr<::orc::Type> target_type =
+        ::orc::Type::buildTypeFromString("struct<items:array<int>>");
+    std::vector<uint64_t> target_column_ids;
+
+    ASSERT_OK(OrcFileBatchReader::CollectTargetColumnIds(src_type.get(), target_type.get(),
+                                                         &target_column_ids));
+    // root struct(0), items-list(1), element(2), ignored(3)
+    ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{1, 2}));
+}
+
+TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsDeeplyNestedList) {
+    std::string schema = "struct<items:array<array<struct<value:double,label:string>>>>";
+    std::unique_ptr<::orc::Type> src_type = ::orc::Type::buildTypeFromString(schema);
+    std::unique_ptr<::orc::Type> target_type = ::orc::Type::buildTypeFromString(schema);
+    std::vector<uint64_t> target_column_ids;
+
+    ASSERT_OK(OrcFileBatchReader::CollectTargetColumnIds(src_type.get(), target_type.get(),
+                                                         &target_column_ids));
+    // root struct(0), outer list(1), inner list(2), element struct(3), value(4), label(5)
+    ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{1, 2, 3, 4, 5}));
+}
+
+TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsPrimitiveMap) {
+    std::unique_ptr<::orc::Type> src_type =
+        ::orc::Type::buildTypeFromString("struct<attributes:map<string,int>,ignored:double>");
+    std::unique_ptr<::orc::Type> target_type =
+        ::orc::Type::buildTypeFromString("struct<attributes:map<string,int>>");
+    std::vector<uint64_t> target_column_ids;
+
+    ASSERT_OK(OrcFileBatchReader::CollectTargetColumnIds(src_type.get(), target_type.get(),
+                                                         &target_column_ids));
+    // root struct(0), attributes-map(1), key(2), value(3), ignored(4)
+    ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{1, 2, 3}));
+}
+
+TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsDeeplyNestedMap) {
+    std::string schema =
+        "struct<attributes:map<string,array<struct<score:double,tags:array<string>>>>>";
+    std::unique_ptr<::orc::Type> src_type = ::orc::Type::buildTypeFromString(schema);
+    std::unique_ptr<::orc::Type> target_type = ::orc::Type::buildTypeFromString(schema);
+    std::vector<uint64_t> target_column_ids;
+
+    ASSERT_OK(OrcFileBatchReader::CollectTargetColumnIds(src_type.get(), target_type.get(),
+                                                         &target_column_ids));
+    // root struct(0), map(1), key(2), value-list(3), element struct(4), score(5),
+    // tags-list(6), tag element(7)
+    ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{1, 2, 3, 4, 5, 6, 7}));
+}
+
+TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsStructProjectionWithListAndMap) {
+    std::unique_ptr<::orc::Type> src_type = ::orc::Type::buildTypeFromString(
+        "struct<outer:struct<items:array<int>,plain:double,attributes:map<string,int>>,"
+        "ignored:string>");
+    std::unique_ptr<::orc::Type> target_type = ::orc::Type::buildTypeFromString(
+        "struct<outer:struct<items:array<int>,attributes:map<string,int>>>");
+    std::vector<uint64_t> target_column_ids;
+
+    ASSERT_OK(OrcFileBatchReader::CollectTargetColumnIds(src_type.get(), target_type.get(),
+                                                         &target_column_ids));
+    // root struct(0) and outer struct(1) are not included. Selected: items(2, 3) and
+    // attributes(5, 6, 7). plain(4) and ignored(8) are skipped.
+    ASSERT_EQ(target_column_ids, (std::vector<uint64_t>{2, 3, 5, 6, 7}));
+}
+
+TEST_F(OrcFileBatchReaderTest, TestCollectTargetColumnIdsRejectsPartialListAndMapProjection) {
+    {
+        std::unique_ptr<::orc::Type> src_type =
+            ::orc::Type::buildTypeFromString("struct<items:array<struct<a:int,b:double>>>");
+        std::unique_ptr<::orc::Type> target_type =
+            ::orc::Type::buildTypeFromString("struct<items:array<struct<a:int>>>");
+        std::vector<uint64_t> target_column_ids;
+        ASSERT_NOK_WITH_MSG(OrcFileBatchReader::CollectTargetColumnIds(
+                                src_type.get(), target_type.get(), &target_column_ids),
+                            "type mismatch");
+        ASSERT_TRUE(target_column_ids.empty());
+    }
+    {
+        std::unique_ptr<::orc::Type> src_type = ::orc::Type::buildTypeFromString(
+            "struct<attributes:map<string,struct<a:int,b:double>>>");
+        std::unique_ptr<::orc::Type> target_type =
+            ::orc::Type::buildTypeFromString("struct<attributes:map<string,struct<a:int>>>");
+        std::vector<uint64_t> target_column_ids;
+        ASSERT_NOK_WITH_MSG(OrcFileBatchReader::CollectTargetColumnIds(
+                                src_type.get(), target_type.get(), &target_column_ids),
+                            "type mismatch");
+        ASSERT_TRUE(target_column_ids.empty());
     }
 }
 

@@ -118,6 +118,14 @@ Result<std::shared_ptr<arrow::Field>> TableSchema::AssignFieldIdsRecursively(
                                                          /*set_field_id=*/false, field_id));
         return arrow::field(field->name(), arrow::list(new_value_field), field->nullable(),
                             metadata);
+    } else if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
+        auto vector_type = checked_pointer_cast<arrow::FixedSizeListType>(field->type());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> new_value_field,
+                               AssignFieldIdsRecursively(vector_type->value_field(),
+                                                         /*set_field_id=*/false, field_id));
+        return arrow::field(field->name(),
+                            arrow::fixed_size_list(new_value_field, vector_type->list_size()),
+                            field->nullable(), metadata);
     } else if (field->type()->id() == arrow::Type::MAP) {
         auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
         std::shared_ptr<arrow::Field> key_field = map_type->key_field();

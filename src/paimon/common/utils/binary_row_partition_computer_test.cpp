@@ -268,6 +268,36 @@ TEST(BinaryRowPartitionComputerTest, TestNullOrWhitespaceOnlyStr) {
     ASSERT_EQ(partition_key_values, expected);
 }
 
+TEST(BinaryRowPartitionComputerTest, TestNormalizePartialPartitionSpec) {
+    using PartitionSpec = std::map<std::string, std::string>;
+
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("pt", arrow::date32()), arrow::field("region", arrow::utf8())});
+    std::vector<std::string> partition_keys = {"pt", "region"};
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<BinaryRowPartitionComputer> legacy_computer,
+        BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
+                                           /*legacy_partition_name_enabled=*/true, pool));
+    ASSERT_OK_AND_ASSIGN(PartitionSpec legacy_partition,
+                         legacy_computer->NormalizePartitionSpec({{"pt", "2024-01-01"}}));
+    PartitionSpec expected_legacy_partition = {{"pt", "19723"}};
+    ASSERT_EQ(expected_legacy_partition, legacy_partition);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<BinaryRowPartitionComputer> non_legacy_computer,
+        BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
+                                           /*legacy_partition_name_enabled=*/false, pool));
+    ASSERT_OK_AND_ASSIGN(PartitionSpec non_legacy_partition,
+                         non_legacy_computer->NormalizePartitionSpec({{"pt", "2024-01-01"}}));
+    PartitionSpec expected_non_legacy_partition = {{"pt", "2024-01-01"}};
+    ASSERT_EQ(expected_non_legacy_partition, non_legacy_partition);
+
+    ASSERT_NOK_WITH_MSG(non_legacy_computer->NormalizePartitionSpec({{"unknown", "value"}}),
+                        "field unknown does not exist in partition keys");
+}
+
 TEST(BinaryRowPartitionComputerTest, TestPartToSimpleString) {
     auto pool = GetDefaultPool();
     {

@@ -62,6 +62,10 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// @note This method is atomic.
     Result<std::vector<ManifestFileMeta>> Write(const std::vector<ManifestEntry>& entries);
 
+    /// Read a manifest file and deserialize only entries for the specified bucket.
+    Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
+                             std::vector<ManifestEntry>* entries) const;
+
  private:
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,

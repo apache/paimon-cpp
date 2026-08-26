@@ -77,29 +77,66 @@ Result<std::unique_ptr<BinaryRowPartitionComputer>> BinaryRowPartitionComputer::
 
 Result<BinaryRow> BinaryRowPartitionComputer::ToBinaryRow(
     const std::map<std::string, std::string>& partition) const {
+    return ConvertToBinaryRow(partition, /*included_fields=*/nullptr);
+}
+
+Result<BinaryRow> BinaryRowPartitionComputer::ConvertToBinaryRow(
+    const std::map<std::string, std::string>& partition, std::vector<bool>* included_fields) const {
     BinaryRow binary_row(partition_converters_.size());
     BinaryRowWriter writer(&binary_row, /*initial_size=*/0, memory_pool_.get());
-    for (size_t field_idx = 0; field_idx < partition_converters_.size(); field_idx++) {
-        const auto& partition_extractor = partition_converters_[field_idx];
-        const auto& partition_key = partition_extractor.partition_key;
-        const auto& to_binary_row = partition_extractor.converter;
-        auto input_iter = partition.find(partition_key);
+    if (included_fields != nullptr) {
+        included_fields->assign(partition_converters_.size(), false);
+    }
+    for (size_t field_idx = 0; field_idx < partition_converters_.size(); ++field_idx) {
+        const PartitionConverter& partition_converter = partition_converters_[field_idx];
+        auto input_iter = partition.find(partition_converter.partition_key);
         if (input_iter == partition.end()) {
+            if (included_fields != nullptr) {
+                writer.SetNullAt(field_idx);
+                continue;
+            }
             return Status::Invalid(
                 fmt::format("can not find partition key '{}' in input partition '{}'",
-                            partition_key, partition));
+                            partition_converter.partition_key, partition));
         }
-        const auto& value_str = input_iter->second;
-        if (value_str == default_part_value_) {
+        if (included_fields != nullptr) {
+            (*included_fields)[field_idx] = true;
+        }
+        if (input_iter->second == default_part_value_) {
             // TODO(yonghao.fyh): when support decimal/ timestamp in partition, use
             // WriteTimestamp(null) for non compact precision
             writer.SetNullAt(field_idx);
         } else {
-            PAIMON_RETURN_NOT_OK(to_binary_row(value_str, field_idx, &writer));
+            PAIMON_RETURN_NOT_OK(
+                partition_converter.converter(input_iter->second, field_idx, &writer));
         }
     }
     writer.Complete();
     return binary_row;
+}
+
+Result<std::map<std::string, std::string>> BinaryRowPartitionComputer::NormalizePartitionSpec(
+    const std::map<std::string, std::string>& partition) const {
+    for (const auto& [partition_key, _] : partition) {
+        if (std::find(partition_keys_.begin(), partition_keys_.end(), partition_key) ==
+            partition_keys_.end()) {
+            return Status::Invalid(
+                fmt::format("field {} does not exist in partition keys", partition_key));
+        }
+    }
+
+    std::vector<bool> included_fields;
+    PAIMON_ASSIGN_OR_RAISE(BinaryRow binary_row, ConvertToBinaryRow(partition, &included_fields));
+
+    std::vector<std::pair<std::string, std::string>> normalized_values;
+    PAIMON_ASSIGN_OR_RAISE(normalized_values, GeneratePartitionVector(binary_row));
+    std::map<std::string, std::string> normalized_partition;
+    for (size_t field_idx = 0; field_idx < normalized_values.size(); ++field_idx) {
+        if (included_fields[field_idx]) {
+            normalized_partition.insert(normalized_values[field_idx]);
+        }
+    }
+    return normalized_partition;
 }
 
 Result<std::vector<std::pair<std::string, std::string>>>

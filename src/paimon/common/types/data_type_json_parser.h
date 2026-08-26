@@ -50,6 +50,8 @@ class DataTypeJsonParser {
 
     static Result<std::shared_ptr<arrow::Field>> ParseArrayType(
         const std::string& name, const rapidjson::Value& type_json_value, bool nullable);
+    static Result<std::shared_ptr<arrow::Field>> ParseVectorType(
+        const std::string& name, const rapidjson::Value& type_json_value, bool nullable);
     static Result<std::shared_ptr<arrow::Field>> ParseMapType(
         const std::string& name, const rapidjson::Value& type_json_value, bool nullable);
     static Result<std::shared_ptr<arrow::Field>> ParseRowType(

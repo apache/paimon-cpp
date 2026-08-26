@@ -105,6 +105,12 @@ arrow::Result<std::shared_ptr<Field>> ParquetFieldIdConverter::ProcessField(
                               ProcessField(list_type->value_field(), convert_type));
         auto new_type = arrow::list(new_value_field);
         return field->WithType(new_type)->WithMergedMetadata(updated_metadata);
+    } else if (type->id() == arrow::Type::FIXED_SIZE_LIST) {
+        auto vector_type = checked_pointer_cast<arrow::FixedSizeListType>(type);
+        ARROW_ASSIGN_OR_RAISE(auto new_value_field,
+                              ProcessField(vector_type->value_field(), convert_type));
+        auto new_type = arrow::fixed_size_list(new_value_field, vector_type->list_size());
+        return field->WithType(new_type)->WithMergedMetadata(updated_metadata);
     } else if (type->id() == arrow::Type::MAP) {
         auto map_type = checked_pointer_cast<arrow::MapType>(type);
         ARROW_ASSIGN_OR_RAISE(auto new_key_field,

@@ -90,6 +90,9 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor) {
     const auto& core_options = internal_context->GetCoreOptions();
     const auto& table_schema = internal_context->GetTableSchema();
+    if (internal_context->GetRealtimeContext() && !core_options.RealtimeEnabled()) {
+        return Status::Invalid("real-time read requires realtime.enabled=true");
+    }
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                            core_options.CreateExternalPaths());

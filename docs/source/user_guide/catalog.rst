@@ -50,9 +50,25 @@ registered on the REST server. The catalog is configured through the
 
 * ``metastore``: must be ``rest`` to select the REST catalog.
 * ``uri``: server url of the REST catalog server.
-* ``token.provider``: authentication provider of the REST catalog; currently only
-  ``bear`` is supported (the protocol's historical spelling of "bearer").
+* ``token.provider``: authentication provider of the REST catalog. ``bear``
+  (the protocol's historical spelling of "bearer") and ``dlf`` are supported.
 * ``token``: token of the ``bear`` token provider.
+* ``dlf.region``: region used by DLF request signing. It is inferred from the
+  endpoint URI when omitted.
+* ``dlf.access-key-id`` and ``dlf.access-key-secret``: static DLF access key.
+* ``dlf.security-token``: optional STS security token used with a static access
+  key.
+* ``dlf.token-path``: path to a JSON file containing refreshable DLF credentials.
+* ``dlf.token-loader``: refreshable credential loader. ``local_file`` reads
+  ``dlf.token-path`` and ``ecs`` obtains an STS token from an ECS RAM role.
+* ``dlf.token-ecs-metadata-url``: ECS RAM role metadata endpoint. It defaults to
+  ``http://100.100.100.200/latest/meta-data/Ram/security-credentials/``.
+* ``dlf.token-ecs-role-name``: optional ECS RAM role name. The loader discovers
+  the role from the metadata endpoint when it is omitted.
+* ``dlf.signing-algorithm``: ``default`` selects DLF4-HMAC-SHA256 for DLF VPC
+  endpoints and ``openapi`` selects ROA HMAC-SHA1 for DlfNext OpenAPI endpoints.
+  When omitted, an endpoint containing ``dlfnext`` selects ``openapi`` and other
+  endpoints select ``default``.
 * ``table-default.<key>``: table option defaults applied when a created table
   left ``<key>`` unset.
 * ``header.<name>``: sent as the ``<name>`` http header on every request to the
@@ -70,6 +86,25 @@ registered on the REST server. The catalog is configured through the
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::Catalog> catalog,
                           paimon::Catalog::Create(/*root_path=*/"my_instance", options));
 
+For DLF, configure one credential source. Static AK/SK credentials, an optional
+STS token, a refreshable local token file, and ECS RAM role credentials are
+supported. A local or ECS token has the Java-compatible JSON fields
+``AccessKeyId``, ``AccessKeySecret``, ``SecurityToken`` and ``Expiration``. The
+last field uses UTC ``yyyy-MM-dd'T'HH:mm:ss'Z'`` format. Refreshable credentials
+are reloaded when less than one hour of validity remains.
+
+.. code-block:: cpp
+
+   std::map<std::string, std::string> options = {
+       {"metastore", "rest"},
+       {"uri", "https://dlfnext.cn-hangzhou.aliyuncs.com"},
+       {"token.provider", "dlf"},
+       {"dlf.access-key-id", "<access-key-id>"},
+       {"dlf.access-key-secret", "<access-key-secret>"},
+       // Optional for temporary credentials:
+       {"dlf.security-token", "<security-token>"},
+   };
+
 On creation the catalog queries the server's ``/v1/config`` endpoint and merges
 its response with the options above: the server's overrides win over the client
 options, which in turn win over the server's defaults.
@@ -81,5 +116,4 @@ through the regular ``Catalog`` API, and table snapshots can be listed through
 The C++ REST catalog covers the database, table and snapshot operations of the
 ``Catalog`` API. The parts of the Java REST catalog that have no C++ counterpart
 yet — altering a database or a table, views, functions, partitions, tags, branch
-management and consumers — are not supported, and neither is the ``dlf`` token
-provider.
+management and consumers — are not supported.

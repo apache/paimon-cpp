@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -33,6 +34,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/vector_type.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
@@ -148,6 +150,7 @@ enum class Keyword : int32_t {
     ROW,
     BLOB,
     VARIANT,
+    VECTOR,
     // NULL is keyword in c++
     NULL_,
     RAW,
@@ -197,6 +200,7 @@ const std::map<std::string, Keyword>& Keywords() {
         {"ROW", Keyword::ROW},
         {"BLOB", Keyword::BLOB},
         {"VARIANT", Keyword::VARIANT},
+        {"VECTOR", Keyword::VECTOR},
         {"NULL", Keyword::NULL_},
         {"RAW", Keyword::RAW},
         {"LEGACY", Keyword::LEGACY},
@@ -249,6 +253,7 @@ class TokenParser {
     Result<std::shared_ptr<arrow::DataType>> ParseDoubleType();
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampType();
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampLtzType();
+    Result<std::shared_ptr<arrow::DataType>> ParseVectorType();
     Result<int32_t> ParseOptionalPrecision(int32_t default_precision);
 
  private:
@@ -526,6 +531,8 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTypeByKeyword(
             return ParseTimestampType();
         case Keyword::TIMESTAMP_LTZ:
             return ParseTimestampLtzType();
+        case Keyword::VECTOR:
+            return ParseVectorType();
         default:
             return Status::Invalid(fmt::format("Unsupported type: {}", GetToken().value));
     }
@@ -607,6 +614,31 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimestampLtzType() {
     return ts_type;
 }
 
+Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseVectorType() {
+    PAIMON_RETURN_NOT_OK(NextToken(TokenType::BEGIN_SUBTYPE));
+    bool element_nullable = true;
+    AtomicTypeAttributes element_attributes;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> element_type,
+                           ParseTypeWithNullability(&element_nullable, &element_attributes));
+    if (element_attributes.is_blob || element_attributes.is_variant ||
+        !VectorType::IsValidElementType(element_type)) {
+        return Status::Invalid(
+            fmt::format("Invalid element type for vector: {}", element_type->ToString()));
+    }
+    PAIMON_RETURN_NOT_OK(NextToken(TokenType::LIST_SEPARATOR));
+    PAIMON_RETURN_NOT_OK(NextToken(TokenType::LITERAL_INT));
+    const std::string& length_token = GetToken().value;
+    std::optional<int32_t> length = StringUtils::StringToValue<int32_t>(length_token);
+    if (!length || length.value() < 1) {
+        return Status::Invalid(
+            fmt::format("Vector length must be between 1 and {} (both inclusive), but was {}",
+                        std::numeric_limits<int32_t>::max(), length_token));
+    }
+    PAIMON_RETURN_NOT_OK(NextToken(TokenType::END_SUBTYPE));
+    return arrow::fixed_size_list(arrow::field("item", element_type, element_nullable),
+                                  length.value());
+}
+
 Result<int32_t> TokenParser::ParseOptionalPrecision(int32_t default_precision) {
     auto precision = default_precision;
     if (HasNextToken({TokenType::BEGIN_PARAMETER})) {
@@ -659,6 +691,8 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseComplexTypeField(
 
     if (StringUtils::StartsWith(type_str, "ARRAY")) {
         return ParseArrayType(name, type_json_value, nullable);
+    } else if (StringUtils::StartsWith(type_str, "VECTOR")) {
+        return ParseVectorType(name, type_json_value, nullable);
     } else if (StringUtils::StartsWith(type_str, "MAP")) {
         return ParseMapType(name, type_json_value, nullable);
     } else if (StringUtils::StartsWith(type_str, "ROW")) {
@@ -679,6 +713,27 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseArrayType(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> element_field,
                            ParseType("item", type_json_value["element"]));
     return arrow::field(name, arrow::list(element_field), nullable);
+}
+
+Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseVectorType(
+    const std::string& name, const rapidjson::Value& type_json_value, bool nullable) {
+    if (!type_json_value.HasMember("element") || !type_json_value.HasMember("length")) {
+        return Status::Invalid("vector data type must have element and length");
+    }
+    if (!type_json_value["length"].IsInt()) {
+        return Status::Invalid("vector length must be an integer");
+    }
+    int32_t length = type_json_value["length"].GetInt();
+    if (length < 1) {
+        return Status::Invalid("Vector length must be between 1 and 2147483647 (both inclusive)");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> element_field,
+                           ParseType("item", type_json_value["element"]));
+    if (!VectorType::IsValidElementType(element_field->type())) {
+        return Status::Invalid(
+            fmt::format("Invalid element type for vector: {}", element_field->type()->ToString()));
+    }
+    return arrow::field(name, arrow::fixed_size_list(element_field, length), nullable);
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseMapType(

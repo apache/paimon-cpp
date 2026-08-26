@@ -186,6 +186,25 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
 
        The type can be declared using ``ARRAY<t>`` where t is the data type of the contained elements.
 
+   * - ``VECTOR<t, n>``
+     - FixedSizeList
+     - Data type of a dense vector containing exactly ``n`` elements of type ``t``.
+
+       ``n`` must be positive. ``t`` can be ``BOOLEAN``, ``TINYINT``,
+       ``SMALLINT``, ``INT``, ``BIGINT``, ``FLOAT``, or ``DOUBLE``. A VECTOR
+       value may be NULL, but its elements cannot be NULL.
+
+       Paimon C++ currently supports VECTOR columns only in append-only tables
+       backed by Parquet data files. They use the standard Parquet LIST
+       representation on disk and are restored as Arrow ``FixedSizeList``
+       values on read. Primary-key tables and data-evolution tables containing
+       VECTOR fields are rejected. VECTOR columns also cannot be partition or
+       bucket keys. Dedicated vector storage is not included yet.
+
+       Paimon C++ also reads Parquet files written by Paimon Rust or Python whose
+       embedded Arrow schema restores VECTOR columns as ``FixedSizeList``,
+       including NULL vector values.
+
    * - ``MAP<kt, vt>``
      - Map
      - Data type of an associative array that maps keys (including NULL) to values (including NULL). A map cannot contain duplicate keys; each key can map to at most one value.

@@ -185,7 +185,7 @@ Result<std::vector<std::shared_ptr<CastExecutor>>> FieldMappingBuilder::CreateDa
         if (!read_fields[i].Type()->Equals(data_fields[i].Type())) {
             auto read_type_id = read_fields[i].Type()->id();
             if (read_type_id == arrow::Type::STRUCT || read_type_id == arrow::Type::LIST ||
-                read_type_id == arrow::Type::MAP) {
+                read_type_id == arrow::Type::MAP || read_type_id == arrow::Type::FIXED_SIZE_LIST) {
                 // Nested type differs by pruning/evolution; the reader's reshape
                 // handles it, no scalar cast.
                 cast_executors.push_back(nullptr);

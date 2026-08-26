@@ -170,7 +170,7 @@ class PAIMON_EXPORT ScanContextBuilder {
     ScanContextBuilder& SetGlobalIndexResult(
         const std::shared_ptr<GlobalIndexResult>& global_index_result);
 
-    /// Enables process-local union reads with the memory indexers owned by `realtime_context`.
+    /// Enables process-local union reads with the real-time stores owned by `realtime_context`.
     ScanContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
 

@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -117,11 +118,13 @@ class PageFilteredRowGroupReader {
     /// Sets a direct page read plan on all leaves via factory, then drives each leaf
     /// independently via ResetLeaf/SkipRecords/ReadRecords using its own
     /// compressed_ranges.
+    /// `column_indices` holds `int` rather than `int32_t` because the set is
+    /// handed straight to Arrow's `FileReader::GetColumn` (to avoid reconstruction and deep copy)
     static Result<std::shared_ptr<arrow::ChunkedArray>> ReadFilteredField(
         const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-        int32_t row_group_index, int32_t field_index, const std::vector<int32_t>& column_indices,
-        const RowRanges& row_ranges, int64_t row_group_row_count,
-        ::parquet::arrow::FileReader* arrow_file_reader);
+        int32_t row_group_index, int32_t field_index,
+        std::shared_ptr<std::unordered_set<int>> column_indices, const RowRanges& row_ranges,
+        int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader);
 };
 
 }  // namespace paimon::parquet

@@ -20,6 +20,7 @@
 
 #include "paimon/common/utils/crc32c.h"
 #include "paimon/common/utils/murmurhash_utils.h"
+#include "paimon/common/utils/saturating_cast.h"
 
 namespace paimon {
 SstFileWriter::SstFileWriter(const std::shared_ptr<OutputStream>& out,
@@ -27,8 +28,10 @@ SstFileWriter::SstFileWriter(const std::shared_ptr<OutputStream>& out,
                              const std::shared_ptr<BlockCompressionFactory>& factory,
                              const std::shared_ptr<MemoryPool>& pool)
     : pool_(pool), out_(out), bloom_filter_(bloom_filter), block_size_(block_size) {
+    // block_size * 1.1 exceeds INT32_MAX for block_size above ~1.9GB; saturate instead of
+    // relying on the undefined double->int32_t conversion.
     data_block_writer_ =
-        std::make_unique<BlockWriter>(static_cast<int32_t>(block_size * 1.1), pool);
+        std::make_unique<BlockWriter>(SaturatingDoubleToInteger<int32_t>(block_size * 1.1), pool);
     index_block_writer_ =
         std::make_unique<BlockWriter>(BlockHandle::MAX_ENCODED_LENGTH * 1024, pool);
     compression_type_ = factory->GetCompressionType();

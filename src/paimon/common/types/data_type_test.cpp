@@ -148,4 +148,18 @@ TEST(DataTypeTest, NestedTypeSerializationUsesChildMetadata) {
               R"({"type":"ARRAY","element":"INT"})");
 }
 
+TEST(DataTypeTest, VectorTypeSerialization) {
+    auto vector_field = arrow::field(
+        "embedding", arrow::fixed_size_list(arrow::field("item", arrow::float32()), 3), false);
+    auto data_type =
+        DataType::Create(vector_field->type(), vector_field->nullable(), vector_field->metadata());
+    rapidjson::Document doc;
+    auto value = data_type->ToJson(&doc.GetAllocator());
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    value.Accept(writer);
+    ASSERT_EQ(std::string(buffer.GetString()),
+              R"({"type":"VECTOR NOT NULL","element":"FLOAT","length":3})");
+}
+
 }  // namespace paimon::test

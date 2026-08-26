@@ -19,7 +19,6 @@
 #pragma once
 
 #include <functional>
-#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -78,6 +77,10 @@ class ObjectsFile {
     Result<std::pair<std::string, int64_t>> WriteWithoutRolling(const std::vector<T>& records);
 
  protected:
+    Status ReadArrowBatches(
+        const std::string& file_name,
+        const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer) const;
+
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
     std::unique_ptr<ObjectSerializer<T>> serializer_;
@@ -127,6 +130,32 @@ template <typename T>
 Status ObjectsFile<T>::Read(const std::string& file_name,
                             const std::function<Result<bool>(const T&)>& filter,
                             std::vector<T>* result) const {
+    return ReadArrowBatches(
+        file_name,
+        [this, &filter, result](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
+            result->reserve(result->size() + struct_array->length());
+            const arrow::ArrayVector& fields = struct_array->fields();
+            ColumnarRow row(fields, pool_, /*row_id=*/0);
+            for (int64_t i = 0; i < struct_array->length(); i++) {
+                row.SetRowId(i);
+                PAIMON_ASSIGN_OR_RAISE(T obj, serializer_->FromRow(row));
+                if (filter) {
+                    PAIMON_ASSIGN_OR_RAISE(bool filter_res, filter(obj));
+                    if (filter_res) {
+                        result->push_back(std::move(obj));
+                    }
+                } else {
+                    result->push_back(std::move(obj));
+                }
+            }
+            return Status::OK();
+        });
+}
+
+template <typename T>
+Status ObjectsFile<T>::ReadArrowBatches(
+    const std::string& file_name,
+    const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer) const {
     std::string file_path = path_factory_->ToPath(file_name);
     std::shared_ptr<InputStream> file_input_stream;
     std::shared_ptr<Bytes> cached_bytes;
@@ -171,22 +200,10 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
         if (!typed_array || typed_array->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid(fmt::format("file {}, cannot cast to struct array", file_name));
         }
-        auto* struct_array = checked_cast<arrow::StructArray*>(typed_array.get());
-        result->reserve(struct_array->length());
-        for (int64_t i = 0; i < struct_array->length(); i++) {
-            ColumnarRow row(struct_array->fields(), pool_, i);
-            PAIMON_ASSIGN_OR_RAISE(T obj, serializer_->FromRow(row));
-            if (filter) {
-                PAIMON_ASSIGN_OR_RAISE(bool filter_res, filter(obj));
-                if (filter_res) {
-                    result->push_back(std::move(obj));
-                }
-            } else {
-                result->push_back(std::move(obj));
-            }
-        }
+        std::shared_ptr<arrow::StructArray> struct_array =
+            checked_pointer_cast<arrow::StructArray>(typed_array);
+        PAIMON_RETURN_NOT_OK(consumer(struct_array));
     }
-    reader->Close();
     return Status::OK();
 }
 

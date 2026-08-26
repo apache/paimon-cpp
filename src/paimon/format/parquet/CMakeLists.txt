@@ -55,6 +55,7 @@ if(PAIMON_BUILD_TESTS)
                     file_reader_wrapper_test.cpp
                     page_filtered_row_group_reader_test.cpp
                     parquet_timestamp_converter_test.cpp
+                    parquet_vector_io_test.cpp
                     parquet_field_id_converter_test.cpp
                     parquet_file_batch_reader_test.cpp
                     parquet_format_writer_test.cpp

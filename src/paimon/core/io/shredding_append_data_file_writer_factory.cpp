@@ -23,6 +23,7 @@
 
 #include "arrow/c/helpers.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/io/data_file_index_writer.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/data_file_writer.h"
 #include "paimon/core/io/infer_shredding_file_writer.h"
@@ -89,6 +90,11 @@ ShreddingAppendDataFileWriterFactory::CreateShreddedWriter(
         options_.GetFileCompression(), std::move(batch_converter), schema_id_, seq_num_counter,
         file_source_, resources.stats_extractor, path_factory_->IsExternalPath(), write_cols_,
         pool_);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
+                           CreateFileIndexWriter(write_schema_, path_factory_));
+    if (file_index_writer) {
+        writer->SetFileIndexWriter(std::move(file_index_writer), write_schema_);
+    }
     PAIMON_RETURN_NOT_OK(
         writer->Init(options_.GetFileSystem(), path_factory_->NewPath(), resources.writer_builder));
     ShreddingWritePlanFactory::MetadataFinalizer finalizer =

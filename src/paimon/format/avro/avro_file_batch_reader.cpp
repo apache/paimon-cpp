@@ -110,6 +110,10 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
             if (!reader_->hasMore()) {
                 break;
             }
+            if (array_builder_->length() == 0) {
+                PAIMON_RETURN_NOT_OK(
+                    AvroDirectDecoder::ReserveBuilderCapacity(batch_size_, array_builder_.get()));
+            }
             reader_->decr();
             PAIMON_RETURN_NOT_OK(AvroDirectDecoder::DecodeAvroToBuilder(
                 reader_->dataSchema().root(), read_fields_projection_, &reader_->decoder(),
@@ -123,7 +127,10 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           array_builder_->Finish());
+#ifndef NDEBUG
+        // Keep structural validation in debug builds without adding its recursive cost to reads.
         PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
+#endif
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
@@ -172,6 +179,7 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     }
     reader_ = std::move(reader);
     array_builder_ = std::move(array_builder);
+    decode_context_.ClearBuilderMetadata();
     previous_first_row_ = std::numeric_limits<uint64_t>::max();
     previous_batch_row_count_ = 0;
     next_row_to_read_ = std::numeric_limits<uint64_t>::max();

@@ -19,6 +19,8 @@
 
 #include "paimon/common/utils/math.h"
 
+#include <array>
+#include <cstring>
 #include <limits>
 
 #include "gtest/gtest.h"
@@ -42,6 +44,22 @@ TEST(MathTest, EndianSwapValue) {
     uint64_t value64 = 0x123456789ABCDEF0;
     uint64_t swapped64 = EndianSwapValue(value64);
     ASSERT_EQ(swapped64, 0xF0DEBC9A78563412);
+}
+
+TEST(MathTest, ToEndian) {
+    constexpr uint32_t kValue = 0x12345678;
+
+    const uint32_t big_endian = ToBigEndian(kValue);
+    std::array<uint8_t, sizeof(big_endian)> big_endian_bytes{};
+    std::memcpy(big_endian_bytes.data(), &big_endian, sizeof(big_endian));
+    ASSERT_EQ((std::array<uint8_t, 4>{0x12, 0x34, 0x56, 0x78}), big_endian_bytes);
+    ASSERT_EQ(kValue, FromBigEndian(big_endian));
+
+    const uint32_t little_endian = ToLittleEndian(kValue);
+    std::array<uint8_t, sizeof(little_endian)> little_endian_bytes{};
+    std::memcpy(little_endian_bytes.data(), &little_endian, sizeof(little_endian));
+    ASSERT_EQ((std::array<uint8_t, 4>{0x78, 0x56, 0x34, 0x12}), little_endian_bytes);
+    ASSERT_EQ(kValue, FromLittleEndian(little_endian));
 }
 
 TEST(MathTest, InRange) {

@@ -186,7 +186,8 @@ TEST_F(ParquetFieldIdConverterTest, TestNestedType) {
                                       arrow::field("sub2", arrow::timestamp(arrow::TimeUnit::NANO)),
                                       arrow::field("sub3", arrow::decimal128(23, 5)),
                                       arrow::field("sub4", arrow::binary()),
-                                      arrow::field("sub5", arrow::binary())})))};
+                                      arrow::field("sub5", arrow::binary())}))),
+        arrow::field("f3", arrow::fixed_size_list(arrow::float32(), 7))};
     auto schema = arrow::schema(fields);
     ASSERT_OK_AND_ASSIGN(
         auto table_schema,
@@ -211,8 +212,11 @@ TEST_F(ParquetFieldIdConverterTest, TestNestedType) {
         {"sub4", arrow::Type::BINARY, "16"},     {"sub5", arrow::Type::BINARY, "17"},
         {"sub1", arrow::Type::DATE32, "18"},     {"sub2", arrow::Type::TIMESTAMP, "19"},
         {"sub3", arrow::Type::DECIMAL128, "20"}, {"sub4", arrow::Type::BINARY, "21"},
-        {"sub5", arrow::Type::BINARY, "22"}};
+        {"sub5", arrow::Type::BINARY, "22"},     {"f3", arrow::Type::FIXED_SIZE_LIST, "23"}};
     ASSERT_EQ(expected_field_infos, field_infos);
+    auto new_vector =
+        checked_pointer_cast<arrow::FixedSizeListType>(new_schema->GetFieldByName("f3")->type());
+    ASSERT_EQ(new_vector->list_size(), 7);
     // convert to paimon.id
     ASSERT_OK_AND_ASSIGN(auto old_schema,
                          ParquetFieldIdConverter::GetPaimonIdsFromParquetIds(new_schema));
@@ -220,6 +224,9 @@ TEST_F(ParquetFieldIdConverterTest, TestNestedType) {
     PrintFieldMetadata(old_schema, ParquetFieldIdConverter::IdConvertType::PARQUET_TO_PAIMON_ID,
                        &old_field_infos);
     ASSERT_EQ(expected_field_infos, old_field_infos);
+    auto old_vector =
+        checked_pointer_cast<arrow::FixedSizeListType>(old_schema->GetFieldByName("f3")->type());
+    ASSERT_EQ(old_vector->list_size(), 7);
 }
 
 }  // namespace paimon::parquet::test

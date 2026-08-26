@@ -17,22 +17,16 @@
  * under the License.
  */
 
-#include "paimon/common/data/shredding/map_shared_shredding_file_reader.h"
+#include "paimon/common/data/shredding/map_shared_shredding_read_plan_factory.h"
 
-#include <optional>
 #include <set>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "arrow/c/bridge.h"
-#include "arrow/util/key_value_metadata.h"
 #include "fmt/format.h"
-#include "paimon/common/reader/reader_utils.h"
-#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 
 namespace paimon {
@@ -70,16 +64,35 @@ void CollectPhysicalColumns(
     }
 }
 
-class FullMapReadPlan : public MapFieldReadPlan {
+class MapShreddingColumnReadPlan : public ShreddingColumnReadPlan {
+ public:
+    MapShreddingColumnReadPlan(std::shared_ptr<arrow::Field> logical_field,
+                               std::shared_ptr<arrow::Field> physical_field)
+        : logical_field_(std::move(logical_field)), physical_field_(std::move(physical_field)) {}
+
+    const std::shared_ptr<arrow::Field>& LogicalField() const override {
+        return logical_field_;
+    }
+
+    const std::shared_ptr<arrow::Field>& PhysicalField() const override {
+        return physical_field_;
+    }
+
+ private:
+    std::shared_ptr<arrow::Field> logical_field_;
+    std::shared_ptr<arrow::Field> physical_field_;
+};
+
+class FullMapReadPlan : public MapShreddingColumnReadPlan {
  public:
     FullMapReadPlan(const std::shared_ptr<arrow::Field>& logical_field,
                     const std::shared_ptr<arrow::Field>& physical_read_field,
                     std::vector<std::pair<std::string, int32_t>>&& selected_key_ids)
-        : MapFieldReadPlan(logical_field, physical_read_field),
+        : MapShreddingColumnReadPlan(logical_field, physical_read_field),
           selected_key_ids_(std::move(selected_key_ids)),
           logical_map_type_(checked_pointer_cast<arrow::MapType>(logical_field->type())) {}
 
-    Result<std::shared_ptr<arrow::Array>> Materialize(
+    Result<std::shared_ptr<arrow::Array>> Assemble(
         const std::shared_ptr<arrow::Array>& physical_array,
         arrow::MemoryPool* arrow_pool) const override;
 
@@ -88,7 +101,7 @@ class FullMapReadPlan : public MapFieldReadPlan {
     std::shared_ptr<arrow::MapType> logical_map_type_;
 };
 
-class SharedSelectedKeysReadPlan : public MapFieldReadPlan {
+class SharedSelectedKeysReadPlan : public MapShreddingColumnReadPlan {
  public:
     struct SelectedKey {
         int32_t field_id = -1;
@@ -99,10 +112,10 @@ class SharedSelectedKeysReadPlan : public MapFieldReadPlan {
     SharedSelectedKeysReadPlan(const std::shared_ptr<arrow::Field>& logical_field,
                                const std::shared_ptr<arrow::Field>& physical_read_field,
                                std::vector<SelectedKey>&& selected_keys)
-        : MapFieldReadPlan(logical_field, physical_read_field),
+        : MapShreddingColumnReadPlan(logical_field, physical_read_field),
           selected_keys_(std::move(selected_keys)) {}
 
-    Result<std::shared_ptr<arrow::Array>> Materialize(
+    Result<std::shared_ptr<arrow::Array>> Assemble(
         const std::shared_ptr<arrow::Array>& physical_array,
         arrow::MemoryPool* arrow_pool) const override;
 
@@ -110,14 +123,65 @@ class SharedSelectedKeysReadPlan : public MapFieldReadPlan {
     std::vector<SelectedKey> selected_keys_;
 };
 
-class DefaultSelectedKeysReadPlan : public MapFieldReadPlan {
+Result<std::shared_ptr<arrow::Array>> MaskSinglePhysicalColumn(
+    const std::shared_ptr<arrow::StructArray>& physical_struct_array,
+    const std::shared_ptr<arrow::ListArray>& field_mapping_array,
+    const std::shared_ptr<arrow::Int32Array>& field_mapping_values,
+    const std::shared_ptr<arrow::Array>& physical_column_array, int32_t physical_column_id,
+    int32_t field_id, const std::string& field_name, arrow::MemoryPool* arrow_pool) {
+    int64_t row_count = physical_struct_array->length();
+    if (physical_column_array->length() != row_count) {
+        return Status::Invalid("shared-shredding physical column length does not match row count");
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Buffer> validity,
+                                      arrow::AllocateEmptyBitmap(row_count, arrow_pool));
+    int64_t valid_count = 0;
+    for (int64_t row = 0; row < row_count; ++row) {
+        if (physical_struct_array->IsNull(row)) {
+            continue;
+        }
+        if (field_mapping_array->IsNull(row)) {
+            return Status::Invalid(fmt::format(
+                "__field_mapping cannot be null in non-null shared-shredding row for field {}",
+                field_name));
+        }
+        int32_t mapping_offset = field_mapping_array->value_offset(row);
+        int32_t mapping_length = field_mapping_array->value_length(row);
+        if (physical_column_id < 0 || physical_column_id >= mapping_length) {
+            return Status::Invalid("physical column id is out of __field_mapping range");
+        }
+        int32_t mapping_index = mapping_offset + physical_column_id;
+        if (field_mapping_values->IsNull(mapping_index)) {
+            return Status::Invalid("__field_mapping element cannot be null");
+        }
+        if (field_mapping_values->Value(mapping_index) != field_id ||
+            physical_column_array->IsNull(row)) {
+            continue;
+        }
+        arrow::bit_util::SetBit(validity->mutable_data(), row);
+        ++valid_count;
+    }
+
+    // Replace only the top-level validity; offsets, values, and nested children stay shared.
+    std::shared_ptr<arrow::ArrayData> result_data = physical_column_array->data()->Copy();
+    if (result_data->buffers.empty()) {
+        return Status::Invalid("shared-shredding physical column has no validity buffer slot");
+    }
+    int64_t null_count = row_count - valid_count;
+    result_data->buffers[0] = null_count == 0 ? nullptr : std::move(validity);
+    result_data->SetNullCount(null_count);
+    return arrow::MakeArray(std::move(result_data));
+}
+
+class DefaultSelectedKeysReadPlan : public MapShreddingColumnReadPlan {
  public:
     DefaultSelectedKeysReadPlan(const std::shared_ptr<arrow::Field>& logical_field,
                                 const std::shared_ptr<arrow::Field>& physical_read_field,
                                 const std::vector<std::string>& selected_keys)
-        : MapFieldReadPlan(logical_field, physical_read_field), selected_keys_(selected_keys) {}
+        : MapShreddingColumnReadPlan(logical_field, physical_read_field),
+          selected_keys_(selected_keys) {}
 
-    Result<std::shared_ptr<arrow::Array>> Materialize(
+    Result<std::shared_ptr<arrow::Array>> Assemble(
         const std::shared_ptr<arrow::Array>& physical_array,
         arrow::MemoryPool* arrow_pool) const override;
 
@@ -127,7 +191,8 @@ class DefaultSelectedKeysReadPlan : public MapFieldReadPlan {
 
 }  // namespace
 
-Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateMapReadPlan(
+Result<std::shared_ptr<ShreddingColumnReadPlan>>
+MapSharedShreddingReadPlanFactory::CreateMapReadPlan(
     const std::shared_ptr<arrow::Field>& logical_map_field,
     const MapSharedShreddingFieldMeta& meta) {
     if (logical_map_field->type()->id() != arrow::Type::MAP) {
@@ -164,12 +229,13 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateMapRead
             logical_map_type->item_type(), selected_physical_column_ids,
             logical_map_type->item_field()->nullable(), include_overflow);
     auto physical_read_field = logical_map_field->WithType(physical_type);
-    std::unique_ptr<MapFieldReadPlan> read_plan = std::make_unique<FullMapReadPlan>(
+    std::shared_ptr<ShreddingColumnReadPlan> read_plan = std::make_shared<FullMapReadPlan>(
         logical_map_field, physical_read_field, ResolveSelectedKeyIds(meta, selected_keys));
     return read_plan;
 }
 
-Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(
+Result<std::shared_ptr<ShreddingColumnReadPlan>>
+MapSharedShreddingReadPlanFactory::CreateSharedSelectedKeysReadPlan(
     const std::shared_ptr<arrow::Field>& selected_keys_field,
     const MapSharedShreddingFieldMeta& meta) {
     PAIMON_ASSIGN_OR_RAISE(
@@ -204,13 +270,14 @@ Result<std::unique_ptr<MapFieldReadPlan>> MapFieldReadPlanFactory::CreateSharedS
             value_field->type(), selected_physical_column_ids, value_field->nullable(),
             include_overflow);
     auto physical_read_field = selected_keys_field->WithType(physical_type);
-    std::unique_ptr<MapFieldReadPlan> read_plan = std::make_unique<SharedSelectedKeysReadPlan>(
-        selected_keys_field, physical_read_field, std::move(selected_key_plans));
+    std::shared_ptr<ShreddingColumnReadPlan> read_plan =
+        std::make_shared<SharedSelectedKeysReadPlan>(selected_keys_field, physical_read_field,
+                                                     std::move(selected_key_plans));
     return read_plan;
 }
 
-Result<std::unique_ptr<MapFieldReadPlan>>
-MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
+Result<std::shared_ptr<ShreddingColumnReadPlan>>
+MapSharedShreddingReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
     const std::shared_ptr<arrow::Field>& file_map_field,
     const std::shared_ptr<arrow::Field>& selected_keys_field) {
     if (file_map_field->type()->id() != arrow::Type::MAP) {
@@ -222,145 +289,13 @@ MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
         std::vector<std::string> selected_keys,
         NestedProjectionUtils::ValidateMapSharedShreddingAccessField(selected_keys_field));
     auto physical_read_field = selected_keys_field->WithType(file_map_field->type());
-    std::unique_ptr<MapFieldReadPlan> read_plan = std::make_unique<DefaultSelectedKeysReadPlan>(
-        selected_keys_field, physical_read_field, selected_keys);
+    std::shared_ptr<ShreddingColumnReadPlan> read_plan =
+        std::make_shared<DefaultSelectedKeysReadPlan>(selected_keys_field, physical_read_field,
+                                                      selected_keys);
     return read_plan;
 }
 
-MapSharedShreddingFileReader::MapSharedShreddingFileReader(
-    std::unique_ptr<FileBatchReader>&& reader,
-    std::map<std::string, std::unique_ptr<MapFieldReadPlan>>&& field_read_plans,
-    const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)),
-      reader_(std::move(reader)),
-      field_read_plans_(std::move(field_read_plans)) {}
-
-Result<std::unique_ptr<::ArrowSchema>> MapSharedShreddingFileReader::GetFileSchema() const {
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> physical_schema,
-                           reader_->GetFileSchema());
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> physical_arrow_schema,
-                                      arrow::ImportSchema(physical_schema.get()));
-
-    arrow::FieldVector logical_fields = physical_arrow_schema->fields();
-    for (int32_t i = 0; i < physical_arrow_schema->num_fields(); ++i) {
-        const auto& field = physical_arrow_schema->field(i);
-        std::shared_ptr<arrow::KeyValueMetadata> metadata =
-            std::const_pointer_cast<arrow::KeyValueMetadata>(field->metadata());
-        if (!MapSharedShreddingUtils::HasShreddingMetadata(metadata)) {
-            continue;
-        }
-        PAIMON_ASSIGN_OR_RAISE(logical_fields[i], ToLogicalMapField(field));
-    }
-
-    auto logical_schema = arrow::schema(std::move(logical_fields));
-    auto c_logical_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*logical_schema, c_logical_schema.get()));
-    return c_logical_schema;
-}
-
-Result<std::shared_ptr<arrow::Field>> MapSharedShreddingFileReader::ToLogicalMapField(
-    const std::shared_ptr<arrow::Field>& physical_field) {
-    if (!physical_field || !physical_field->type() ||
-        physical_field->type()->id() != arrow::Type::STRUCT) {
-        return Status::Invalid(fmt::format("shared-shredding field {} is not a physical struct",
-                                           physical_field ? physical_field->name() : "<null>"));
-    }
-    auto physical_type = checked_pointer_cast<arrow::StructType>(physical_field->type());
-    std::shared_ptr<arrow::DataType> value_type;
-    bool value_nullable = true;
-    for (const auto& child : physical_type->fields()) {
-        if (child->name() == MapSharedShreddingDefine::kFieldMapping ||
-            child->name() == MapSharedShreddingDefine::kOverflow) {
-            continue;
-        }
-        value_type = child->type();
-        value_nullable = child->nullable();
-        break;
-    }
-    if (!value_type) {
-        return Status::Invalid(fmt::format("cannot infer shared-shredding value type for field {}",
-                                           physical_field->name()));
-    }
-    return arrow::field(
-        physical_field->name(),
-        arrow::map(arrow::utf8(), arrow::field("value", value_type, value_nullable)),
-        physical_field->nullable());
-}
-
-Status MapSharedShreddingFileReader::SetReadSchema(
-    ::ArrowSchema* read_schema, const std::shared_ptr<Predicate>& predicate,
-    const std::optional<RoaringBitmap32>& selection_bitmap) {
-    if (!read_schema) {
-        return Status::Invalid(
-            "invalid read schema in MapSharedShreddingFileReader, cannot be null");
-    }
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> logical_read_schema,
-                                      arrow::ImportSchema(read_schema));
-    bool converted = false;
-    arrow::FieldVector physical_read_fields = logical_read_schema->fields();
-    for (size_t i = 0; i < logical_read_schema->fields().size(); ++i) {
-        const auto& field = logical_read_schema->field(i);
-        auto plan_iter = field_read_plans_.find(field->name());
-        if (plan_iter != field_read_plans_.end()) {
-            physical_read_fields[i] = plan_iter->second->PhysicalReadField();
-            converted = true;
-        }
-    }
-    if (!converted) {
-        return Status::Invalid("suppose not fall into MapSharedShreddingFileReader");
-    }
-    auto physical_read_schema = arrow::schema(std::move(physical_read_fields));
-    std::unique_ptr<ArrowSchema> c_physical_read_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportSchema(*physical_read_schema, c_physical_read_schema.get()));
-    return reader_->SetReadSchema(c_physical_read_schema.get(), predicate, selection_bitmap);
-}
-
-Result<BatchReader::ReadBatch> MapSharedShreddingFileReader::NextBatch() {
-    return Status::Invalid(
-        "paimon inner reader MapSharedShreddingFileReader should use NextBatchWithBitmap");
-}
-
-Result<BatchReader::ReadBatchWithBitmap> MapSharedShreddingFileReader::NextBatchWithBitmap() {
-    PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
-                           reader_->NextBatchWithBitmap());
-    if (BatchReader::IsEofBatch(batch_with_bitmap)) {
-        return batch_with_bitmap;
-    }
-
-    auto& [batch, bitmap] = batch_with_bitmap;
-    auto& [c_array, c_schema] = batch;
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
-                                      arrow::ImportArray(c_array.get(), c_schema.get()));
-    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
-        return Status::Invalid("cannot cast batch to StructArray in MapSharedShreddingFileReader");
-    }
-    auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);
-
-    arrow::ArrayVector resolved_arrays = struct_array->fields();
-    arrow::FieldVector resolved_fields = struct_array->struct_type()->fields();
-    for (int32_t field_idx = 0; field_idx < struct_array->num_fields(); ++field_idx) {
-        const auto& physical_field = struct_array->struct_type()->field(field_idx);
-        auto plan_iter = field_read_plans_.find(physical_field->name());
-        if (plan_iter == field_read_plans_.end()) {
-            continue;
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            resolved_arrays[field_idx],
-            plan_iter->second->Materialize(struct_array->field(field_idx), arrow_pool_.get()));
-        resolved_fields[field_idx] = plan_iter->second->LogicalField();
-    }
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> new_struct_array,
-                                      arrow::StructArray::Make(resolved_arrays, resolved_fields));
-    auto new_c_array = std::make_unique<ArrowArray>();
-    auto new_c_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportArray(*new_struct_array, new_c_array.get(), new_c_schema.get()));
-    batch = std::make_pair(std::move(new_c_array), std::move(new_c_schema));
-    return batch_with_bitmap;
-}
-
-Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
+Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Assemble(
     const std::shared_ptr<arrow::Array>& physical_array, arrow::MemoryPool* arrow_pool) const {
     if (!physical_array || physical_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid(fmt::format("cannot cast physical shredding field {} to StructArray",
@@ -386,12 +321,10 @@ Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
     std::shared_ptr<arrow::MapArray> overflow_array;
     CollectPhysicalColumns(physical_struct_array, &physical_column_name_to_array, &overflow_array);
     for (auto& [_, physical_column_array] : physical_column_name_to_array) {
-        if (physical_column_array->type_id() == arrow::Type::DICTIONARY) {
-            PAIMON_ASSIGN_OR_RAISE(
-                physical_column_array,
-                CastingUtils::Cast(physical_column_array, logical_map_type_->item_type(),
-                                   arrow::compute::CastOptions::Safe(), arrow_pool));
-        }
+        PAIMON_ASSIGN_OR_RAISE(
+            physical_column_array,
+            NestedProjectionUtils::AlignArrayToReadType(
+                physical_column_array, logical_map_type_->item_type(), arrow_pool));
     }
 
     std::shared_ptr<arrow::Int32Array> overflow_keys;
@@ -406,12 +339,9 @@ Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
         if (!overflow_items) {
             return Status::Invalid("__overflow map item array is null");
         }
-        if (overflow_items->type_id() == arrow::Type::DICTIONARY) {
-            PAIMON_ASSIGN_OR_RAISE(
-                overflow_items,
-                CastingUtils::Cast(overflow_items, logical_map_type_->item_type(),
-                                   arrow::compute::CastOptions::Safe(), arrow_pool));
-        }
+        PAIMON_ASSIGN_OR_RAISE(overflow_items,
+                               NestedProjectionUtils::AlignArrayToReadType(
+                                   overflow_items, logical_map_type_->item_type(), arrow_pool));
     }
 
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> map_builder_base,
@@ -503,7 +433,7 @@ Result<std::shared_ptr<arrow::Array>> FullMapReadPlan::Materialize(
     return map_array;
 }
 
-Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
+Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Assemble(
     const std::shared_ptr<arrow::Array>& physical_array, arrow::MemoryPool* arrow_pool) const {
     if (!physical_array || physical_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid(fmt::format("cannot cast physical shredding field {} to StructArray",
@@ -530,12 +460,9 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
     std::shared_ptr<arrow::MapArray> overflow_array;
     CollectPhysicalColumns(physical_struct_array, &physical_column_name_to_array, &overflow_array);
     for (auto& [_, physical_column_array] : physical_column_name_to_array) {
-        if (physical_column_array->type_id() == arrow::Type::DICTIONARY) {
-            PAIMON_ASSIGN_OR_RAISE(
-                physical_column_array,
-                CastingUtils::Cast(physical_column_array, value_type,
-                                   arrow::compute::CastOptions::Safe(), arrow_pool));
-        }
+        PAIMON_ASSIGN_OR_RAISE(physical_column_array,
+                               NestedProjectionUtils::AlignArrayToReadType(physical_column_array,
+                                                                           value_type, arrow_pool));
     }
 
     std::shared_ptr<arrow::Int32Array> overflow_keys;
@@ -550,65 +477,89 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
         if (!overflow_items) {
             return Status::Invalid("__overflow map item array is null");
         }
-        if (overflow_items->type_id() == arrow::Type::DICTIONARY) {
-            PAIMON_ASSIGN_OR_RAISE(
-                overflow_items,
-                CastingUtils::Cast(overflow_items, value_type, arrow::compute::CastOptions::Safe(),
-                                   arrow_pool));
-        }
+        PAIMON_ASSIGN_OR_RAISE(overflow_items, NestedProjectionUtils::AlignArrayToReadType(
+                                                   overflow_items, value_type, arrow_pool));
     }
 
-    std::unique_ptr<arrow::ArrayBuilder> access_builder_base;
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(access_builder_base,
-                                      arrow::MakeBuilder(LogicalField()->type(), arrow_pool));
-    if (!access_builder_base || !access_builder_base->type() ||
-        access_builder_base->type()->id() != arrow::Type::STRUCT) {
-        return Status::Invalid(
-            fmt::format("selected-key MAP field {} is not a STRUCT", LogicalField()->name()));
-    }
-    auto* access_builder = checked_cast<arrow::StructBuilder*>(access_builder_base.get());
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->Reserve(physical_struct_array->length()));
-
-    for (int64_t row = 0; row < physical_struct_array->length(); ++row) {
-        if (physical_struct_array->IsNull(row)) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->AppendNull());
+    int64_t row_count = physical_struct_array->length();
+    arrow::ArrayVector selected_key_arrays;
+    selected_key_arrays.reserve(selected_keys_.size());
+    for (int32_t key_index = 0; key_index < selected_keys_type->num_fields(); ++key_index) {
+        const SelectedKey& selected_key = selected_keys_[key_index];
+        if (selected_key.field_id < 0) {
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                std::shared_ptr<arrow::Array> null_array,
+                arrow::MakeArrayOfNull(selected_keys_type->field(key_index)->type(), row_count,
+                                       arrow_pool));
+            selected_key_arrays.push_back(std::move(null_array));
             continue;
         }
-        if (field_mapping_array->IsNull(row)) {
-            return Status::Invalid(fmt::format(
-                "__field_mapping cannot be null in non-null shared-shredding row for field {}",
-                LogicalField()->name()));
-        }
-        int32_t mapping_offset = field_mapping_array->value_offset(row);
 
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->Append());
-        for (int32_t key_index = 0; key_index < selected_keys_type->num_fields(); ++key_index) {
-            arrow::ArrayBuilder* value_builder = access_builder->field_builder(key_index);
-            const SelectedKey& selected_key = selected_keys_[key_index];
+        if (selected_key.candidate_columns.size() == 1 && !selected_key.may_use_overflow) {
+            int32_t physical_column_id = selected_key.candidate_columns[0];
+            std::string physical_column_name =
+                MapSharedShreddingDefine::PhysicalColumnName(physical_column_id);
+            auto physical_column_iter = physical_column_name_to_array.find(physical_column_name);
+            if (physical_column_iter == physical_column_name_to_array.end()) {
+                return Status::Invalid(
+                    fmt::format("cannot find selected physical column {} for field {}",
+                                physical_column_name, LogicalField()->name()));
+            }
+            const std::shared_ptr<arrow::Array>& physical_column_array =
+                physical_column_iter->second;
+            if (physical_column_array->offset() == 0) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<arrow::Array> masked_array,
+                    MaskSinglePhysicalColumn(physical_struct_array, field_mapping_array,
+                                             field_mapping_values, physical_column_array,
+                                             physical_column_id, selected_key.field_id,
+                                             LogicalField()->name(), arrow_pool));
+                selected_key_arrays.push_back(std::move(masked_array));
+                continue;
+            } else {
+                return Status::Invalid("paimon only supports arrays with zero offset");
+            }
+        }
+
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::unique_ptr<arrow::ArrayBuilder> value_builder,
+            arrow::MakeBuilder(selected_keys_type->field(key_index)->type(), arrow_pool));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder->Reserve(row_count));
+        for (int64_t row = 0; row < row_count; ++row) {
+            if (physical_struct_array->IsNull(row)) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder->AppendNull());
+                continue;
+            }
+            if (field_mapping_array->IsNull(row)) {
+                return Status::Invalid(fmt::format(
+                    "__field_mapping cannot be null in non-null shared-shredding row for field {}",
+                    LogicalField()->name()));
+            }
+            int32_t mapping_offset = field_mapping_array->value_offset(row);
             bool appended = false;
-            if (selected_key.field_id >= 0) {
-                for (int32_t physical_column_id : selected_key.candidate_columns) {
-                    int32_t mapping_index = mapping_offset + physical_column_id;
-                    if (field_mapping_values->IsNull(mapping_index)) {
-                        return Status::Invalid("__field_mapping element cannot be null");
-                    }
-                    if (field_mapping_values->Value(mapping_index) != selected_key.field_id) {
-                        continue;
-                    }
-                    std::string physical_column_name =
-                        MapSharedShreddingDefine::PhysicalColumnName(physical_column_id);
-                    auto physical_column_iter =
-                        physical_column_name_to_array.find(physical_column_name);
-                    if (physical_column_iter == physical_column_name_to_array.end()) {
-                        return Status::Invalid(
-                            fmt::format("cannot find selected physical column {} for field {}",
-                                        physical_column_name, LogicalField()->name()));
-                    }
-                    PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder->AppendArraySlice(
-                        *physical_column_iter->second->data(), row, 1));
-                    appended = true;
-                    break;
+            for (int32_t physical_column_id : selected_key.candidate_columns) {
+                int32_t mapping_index = mapping_offset + physical_column_id;
+                if (field_mapping_values->IsNull(mapping_index)) {
+                    return Status::Invalid("__field_mapping element cannot be null");
                 }
+                if (field_mapping_values->Value(mapping_index) != selected_key.field_id) {
+                    continue;
+                }
+                std::string physical_column_name =
+                    MapSharedShreddingDefine::PhysicalColumnName(physical_column_id);
+                auto physical_column_iter =
+                    physical_column_name_to_array.find(physical_column_name);
+                if (physical_column_iter == physical_column_name_to_array.end()) {
+                    return Status::Invalid(
+                        fmt::format("cannot find selected physical column {} for field {}",
+                                    physical_column_name, LogicalField()->name()));
+                }
+                const std::shared_ptr<arrow::Array>& physical_column_array =
+                    physical_column_iter->second;
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                    value_builder->AppendArraySlice(*physical_column_array->data(), row, 1));
+                appended = true;
+                break;
             }
 
             if (!appended && selected_key.may_use_overflow && overflow_array &&
@@ -630,13 +581,28 @@ Result<std::shared_ptr<arrow::Array>> SharedSelectedKeysReadPlan::Materialize(
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder->AppendNull());
             }
         }
+        std::shared_ptr<arrow::Array> selected_key_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder->Finish(&selected_key_array));
+        selected_key_arrays.push_back(std::move(selected_key_array));
     }
-    std::shared_ptr<arrow::Array> result;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->Finish(&result));
+
+    std::shared_ptr<arrow::Buffer> parent_validity;
+    int64_t parent_null_count = physical_struct_array->null_count();
+    if (parent_null_count > 0) {
+        if (physical_struct_array->offset() == 0) {
+            parent_validity = physical_struct_array->null_bitmap();
+        } else {
+            return Status::Invalid("paimon only supports arrays with zero offset");
+        }
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::StructArray> result,
+        arrow::StructArray::Make(selected_key_arrays, selected_keys_type->fields(),
+                                 std::move(parent_validity), parent_null_count));
     return result;
 }
 
-Result<std::shared_ptr<arrow::Array>> DefaultSelectedKeysReadPlan::Materialize(
+Result<std::shared_ptr<arrow::Array>> DefaultSelectedKeysReadPlan::Assemble(
     const std::shared_ptr<arrow::Array>& physical_array, arrow::MemoryPool* arrow_pool) const {
     if (!physical_array || physical_array->type_id() != arrow::Type::MAP) {
         return Status::Invalid(
@@ -646,14 +612,10 @@ Result<std::shared_ptr<arrow::Array>> DefaultSelectedKeysReadPlan::Materialize(
     }
     auto map_array = checked_pointer_cast<arrow::MapArray>(physical_array);
     auto selected_keys_type = checked_pointer_cast<arrow::StructType>(LogicalField()->type());
-    auto physical_map_type = checked_pointer_cast<arrow::MapType>(PhysicalReadField()->type());
 
     std::shared_ptr<arrow::Array> items = map_array->items();
-    if (items->type_id() == arrow::Type::DICTIONARY) {
-        PAIMON_ASSIGN_OR_RAISE(items,
-                               CastingUtils::Cast(items, physical_map_type->item_type(),
-                                                  arrow::compute::CastOptions::Safe(), arrow_pool));
-    }
+    PAIMON_ASSIGN_OR_RAISE(items, NestedProjectionUtils::AlignArrayToReadType(
+                                      items, selected_keys_type->field(0)->type(), arrow_pool));
     std::shared_ptr<arrow::Array> keys = map_array->keys();
     std::unique_ptr<arrow::ArrayBuilder> access_builder_base;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(access_builder_base,
@@ -696,27 +658,6 @@ Result<std::shared_ptr<arrow::Array>> DefaultSelectedKeysReadPlan::Materialize(
     std::shared_ptr<arrow::Array> result;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(access_builder->Finish(&result));
     return result;
-}
-
-std::shared_ptr<Metrics> MapSharedShreddingFileReader::GetReaderMetrics() const {
-    return reader_->GetReaderMetrics();
-}
-
-void MapSharedShreddingFileReader::Close() {
-    reader_->Close();
-}
-
-Result<uint64_t> MapSharedShreddingFileReader::GetPreviousBatchFileRowId(
-    uint64_t batch_row_id) const {
-    return reader_->GetPreviousBatchFileRowId(batch_row_id);
-}
-
-Result<uint64_t> MapSharedShreddingFileReader::GetNumberOfRows() const {
-    return reader_->GetNumberOfRows();
-}
-
-bool MapSharedShreddingFileReader::SupportPreciseBitmapSelection() const {
-    return reader_->SupportPreciseBitmapSelection();
 }
 
 }  // namespace paimon

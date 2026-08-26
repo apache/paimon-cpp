@@ -62,7 +62,8 @@ class ParquetStatsExtractorTest : public ::testing::Test {
     void TearDown() override {}
 
     void CheckStats(const arrow::FieldVector& fields, const std::string& input,
-                    const std::vector<std::string>& expected_stats, int64_t expect_row_count) {
+                    const std::vector<std::string>& expected_stats, int64_t expect_row_count,
+                    const std::vector<FieldType>& expected_types = {}) {
         auto arrow_schema = arrow::schema(fields);
         auto struct_type = arrow::struct_(fields);
         std::map<std::string, std::string> options;
@@ -94,6 +95,12 @@ class ParquetStatsExtractorTest : public ::testing::Test {
         ASSERT_EQ(col_stats_vec.size(), expected_stats.size());
         for (size_t i = 0; i < expected_stats.size(); i++) {
             ASSERT_EQ(expected_stats[i], col_stats_vec[i]->ToString());
+        }
+        if (!expected_types.empty()) {
+            ASSERT_EQ(col_stats_vec.size(), expected_types.size());
+            for (size_t i = 0; i < expected_types.size(); ++i) {
+                ASSERT_EQ(col_stats_vec[i]->GetFieldType(), expected_types[i]);
+            }
         }
         auto row_count = result.second.GetRowCount();
         ASSERT_EQ(row_count, expect_row_count);
@@ -235,6 +242,13 @@ TEST_F(ParquetStatsExtractorTest, TestExtractStatsComplexType) {
         "min 24, max 2456, null count 0",      "min 0.12, max 0.78, null count 0",
     };
     CheckStats(fields, data_str, expected_stats_str, /*expect_row_count=*/6);
+}
+
+TEST_F(ParquetStatsExtractorTest, TestExtractVectorStats) {
+    arrow::FieldVector fields = {
+        arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3))};
+    CheckStats(fields, R"([[[1.0, 2.0, 3.0]], [null]])", {"min null, max null, null count null"},
+               /*expect_row_count=*/2, {FieldType::VECTOR});
 }
 
 TEST_F(ParquetStatsExtractorTest, TestNullForAllType) {
