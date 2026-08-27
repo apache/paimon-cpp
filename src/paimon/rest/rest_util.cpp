@@ -30,7 +30,7 @@ namespace paimon {
 
 std::map<std::string, std::string> RestUtil::ExtractPrefixMap(
     const std::map<std::string, std::string>& options, const std::string& prefix) {
-    return OptionsUtils::FetchOptionsWithPrefix(prefix, options, /*ignore_empty_key=*/true);
+    return OptionsUtils::FetchOptionsWithPrefix(prefix, options);
 }
 
 std::string RestUtil::ExtractRequestId(const std::map<std::string, std::string>& headers) {

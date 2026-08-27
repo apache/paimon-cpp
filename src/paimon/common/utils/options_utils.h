@@ -102,16 +102,16 @@ class OptionsUtils {
     }
 
     /// Fetch options with specific prefix and remove prefix for key.
-    ///
-    /// If `ignore_empty_key` is true, an option whose key equals `prefix` is ignored.
+    /// @param prefix Prefix used to select options and removed from the returned keys.
+    /// @param options Options to select from.
+    /// @return Options whose keys start with and are longer than `prefix`, with the prefix removed
+    /// from each key.
     static std::map<std::string, std::string> FetchOptionsWithPrefix(
-        const std::string& prefix, const std::map<std::string, std::string>& options,
-        bool ignore_empty_key = false) {
+        const std::string& prefix, const std::map<std::string, std::string>& options) {
         std::map<std::string, std::string> options_with_prefix;
         const std::string::size_type prefix_len = prefix.size();
         for (const auto& [key, value] : options) {
-            if (StringUtils::StartsWith(key, prefix) &&
-                (!ignore_empty_key || key.size() > prefix_len)) {
+            if (key.size() > prefix_len && StringUtils::StartsWith(key, prefix)) {
                 options_with_prefix[key.substr(prefix_len)] = value;
             }
         }

@@ -40,7 +40,6 @@
 #include "orc/Writer.hh"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/metrics/metrics_impl.h"
-#include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/string_utils.h"
@@ -236,18 +235,6 @@ Status OrcFormatWriter::AddMetadata(const std::map<std::string, std::string>& me
     return Status::OK();
 }
 
-namespace {
-
-Result<uint64_t> GetMemorySizeOption(const std::map<std::string, std::string>& options,
-                                     const std::string& key, uint64_t default_value) {
-    PAIMON_ASSIGN_OR_RAISE(std::string value, OptionsUtils::GetValueFromMap<std::string>(
-                                                  options, key, std::to_string(default_value)));
-    PAIMON_ASSIGN_OR_RAISE(int64_t bytes, MemorySize::ParseBytes(value));
-    return static_cast<uint64_t>(bytes);
-}
-
-}  // namespace
-
 Result<::orc::WriterOptions> OrcFormatWriter::PrepareWriterOptions(
     const std::map<std::string, std::string>& options, const std::string& file_compression,
     const std::shared_ptr<arrow::DataType>& data_type) {
@@ -261,15 +248,16 @@ Result<::orc::WriterOptions> OrcFormatWriter::PrepareWriterOptions(
         }
     }
     ::orc::WriterOptions writer_options;
-    PAIMON_ASSIGN_OR_RAISE(uint64_t stripe_size,
-                           GetMemorySizeOption(options, ORC_STRIPE_SIZE, DEFAULT_STRIPE_SIZE));
+    PAIMON_ASSIGN_OR_RAISE(
+        uint64_t stripe_size,
+        OptionsUtils::GetValueFromMap<uint64_t>(options, ORC_STRIPE_SIZE, DEFAULT_STRIPE_SIZE));
     writer_options.setStripeSize(stripe_size);
     PAIMON_ASSIGN_OR_RAISE(::orc::CompressionKind compression,
                            ToOrcCompressionKind(StringUtils::ToLowerCase(file_compression)));
     writer_options.setCompression(compression);
-    PAIMON_ASSIGN_OR_RAISE(
-        uint64_t compression_block_size,
-        GetMemorySizeOption(options, ORC_COMPRESSION_BLOCK_SIZE, DEFAULT_COMPRESSION_BLOCK_SIZE));
+    PAIMON_ASSIGN_OR_RAISE(uint64_t compression_block_size, OptionsUtils::GetValueFromMap<uint64_t>(
+                                                                options, ORC_COMPRESSION_BLOCK_SIZE,
+                                                                DEFAULT_COMPRESSION_BLOCK_SIZE));
     writer_options.setCompressionBlockSize(compression_block_size);
     PAIMON_ASSIGN_OR_RAISE(
         double dictionary_key_threshold,

@@ -87,12 +87,7 @@ TEST(OptionsUtilsTest, TestFetchOptionsWithPrefix) {
     std::map<std::string, std::string> options = {
         {"key1", "value1"}, {"test.", "empty-key"}, {"test.key2", "value2"}};
     auto new_options = OptionsUtils::FetchOptionsWithPrefix("test.", options);
-    std::map<std::string, std::string> expected = {{"", "empty-key"}, {"key2", "value2"}};
-    ASSERT_EQ(expected, new_options);
-
-    new_options = OptionsUtils::FetchOptionsWithPrefix("test.", options,
-                                                       /*ignore_empty_key=*/true);
-    expected = {{"key2", "value2"}};
+    std::map<std::string, std::string> expected = {{"key2", "value2"}};
     ASSERT_EQ(expected, new_options);
 }
 
