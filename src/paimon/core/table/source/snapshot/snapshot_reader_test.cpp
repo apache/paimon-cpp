@@ -52,7 +52,7 @@ class SnapshotReaderTest : public testing::Test {
             /*min_sequence_number=*/0, /*max_sequence_number=*/0, /*schema_id=*/0,
             DataFileMeta::DUMMY_LEVEL, std::vector<std::optional<std::string>>{}, Timestamp(0, 0),
             std::nullopt, nullptr, FileSource::Append(), std::nullopt, std::nullopt, std::nullopt,
-            std::nullopt);
+            std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     std::shared_ptr<IndexFileMeta> CreateIndexFileMeta(const std::string& index_file_name,

@@ -460,7 +460,8 @@ TEST_F(LookupMergeTreeCompactRewriterTest, TestFirstRowRewrite) {
         BinaryRowGenerator::GenerateStats({1, 5}, {5, 33}, {0, 0}, pool_.get()),
         /*min_sequence_number=*/0l, /*max_sequence_number=*/3l, /*schema_id=*/0, /*level=*/5,
         std::vector<std::optional<std::string>>(), Timestamp(0l, 0), /*delete_row_count=*/0,
-        nullptr, FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        nullptr, FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_TRUE(expected_file_meta->TEST_Equal(*compact_file_meta));
 
     // check compact file exist
@@ -564,7 +565,8 @@ TEST_F(LookupMergeTreeCompactRewriterTest, TestFirstRowUpgrade) {
         BinaryRowGenerator::GenerateStats({1, 5}, {5, 33}, {0, 0}, pool_.get()),
         /*min_sequence_number=*/0l, /*max_sequence_number=*/2l, /*schema_id=*/0, /*level=*/5,
         std::vector<std::optional<std::string>>(), Timestamp(0l, 0), /*delete_row_count=*/0,
-        nullptr, FileSource::Append(), std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        nullptr, FileSource::Append(), std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_TRUE(expected_file_meta->TEST_Equal(*compact_file_meta))
         << compact_file_meta->ToString();
 }
@@ -1108,7 +1110,8 @@ TEST_F(LookupMergeTreeCompactRewriterTest, TestGenerateUpgradeStrategy) {
             BinaryRowGenerator::GenerateStats({1, 5}, {5, 33}, {0, 0}, pool_.get()),
             /*min_sequence_number=*/0l, /*max_sequence_number=*/3l, /*schema_id=*/0, level,
             std::vector<std::optional<std::string>>(), Timestamp(0l, 0), delete_row_count, nullptr,
-            FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+            FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
     };
     {
         std::map<std::string, std::string> options = {};

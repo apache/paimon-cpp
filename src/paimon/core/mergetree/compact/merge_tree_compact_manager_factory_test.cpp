@@ -60,7 +60,8 @@ class MergeTreeCompactManagerFactoryStrategyTest : public ::testing::Test {
             /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
-            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
         return {level, SortedRun::FromSingle(file_meta)};
     }
 

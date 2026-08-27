@@ -127,7 +127,8 @@ TEST(DataSplitTest, TestDeserializeVersion8WithWriteColsAndExternalPath) {
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/
         "FILE:/tmp/external/f1=10/bucket-1/data-72b62a5f-d698-4db5-b51a-04c0dc027702-0.orc",
-        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -193,7 +194,8 @@ TEST(DataSplitTest, TestDeserializeVersion8WithWriteCols) {
         /*creation_time=*/Timestamp(1757349273246ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -256,7 +258,8 @@ TEST(DataSplitTest, TestDeserializeVersion7WithFirstRowId) {
         /*creation_time=*/Timestamp(1754073518741ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/5, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/5, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
@@ -308,7 +311,8 @@ TEST(DataSplitTest, TestDeserializeVersion7WithNullFirstRowId) {
         /*creation_time=*/Timestamp(1754068646844ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -359,7 +363,8 @@ TEST(DataSplitTest, TestDeserializeVersion6PkWithTotalBuckets) {
         /*creation_time=*/Timestamp(1743525392885ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -405,7 +410,8 @@ TEST(DataSplitTest, TestDeserializeVersion5PkWithExternalPath) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/"file:/tmp/bucket-0/data-80110e15-97b5-4bcf-ac09-6ca2659a4950-0.orc",
-        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
@@ -454,7 +460,8 @@ TEST(DataSplitTest, TestDeserializeVersion5PkWithEmptyExternalPath) {
         /*creation_time=*/Timestamp(1737052260143ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
@@ -510,7 +517,8 @@ TEST(DataSplitTest, TestDeserializeVersion4PkWithSnapshot4WithDvCardinality) {
         /*creation_time=*/Timestamp(1734707235578ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
         /*bucket=*/1, /*bucket_path=*/
@@ -563,7 +571,7 @@ TEST(DataSplitTest, TestDeserializeVersion3AppendWithSnapshot1) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(/*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
                                    /*bucket=*/1, /*bucket_path=*/
                                    "data/append_10.db/append_10/f1=10/bucket-1", {file_meta});
@@ -602,7 +610,8 @@ TEST(DataSplitTest, TestDeserializeVersion3AppendWithSnapshot1WithStatsDenseStor
         /*creation_time=*/Timestamp(1731412938891ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
         /*bucket=*/1, /*bucket_path=*/
@@ -643,7 +652,7 @@ TEST(DataSplitTest, TestDeserializeAppendWithSnapshot1) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
         /*bucket=*/1, /*bucket_path=*/
@@ -683,7 +692,7 @@ TEST(DataSplitTest, TestDeserializeAppendWithSnapshot3) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-b913a160-a4d1-4084-af2a-18333c35668e-0.orc", /*file_size=*/506, /*row_count=*/1,
@@ -698,7 +707,7 @@ TEST(DataSplitTest, TestDeserializeAppendWithSnapshot3) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({20}, pool.get()),
@@ -756,7 +765,7 @@ TEST(DataSplitTest, TestDeserializeAppendWithSnapshot5) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Compact(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -806,7 +815,7 @@ TEST(DataSplitTest, TestDeserializePkWithSnapshot2) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
         /*bucket=*/0, /*bucket_path=*/
@@ -855,7 +864,7 @@ TEST(DataSplitTest, TestDeserializePkWithSnapshot6OfSingleFile) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(/*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
                                    /*bucket=*/1, /*bucket_path=*/
                                    "data/pk_09.db/pk_09/f1=10/bucket-1", {file_meta});
@@ -913,7 +922,7 @@ TEST(DataSplitTest, TestDeserializePkWithSnapshot6OfMultiFiles) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1c7a85f1-55bd-424f-b503-34a33be0fb96-0.orc", /*file_size=*/1148, /*row_count=*/2,
@@ -935,7 +944,7 @@ TEST(DataSplitTest, TestDeserializePkWithSnapshot6OfMultiFiles) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta3 = std::make_shared<DataFileMeta>(
         "data-8cdb8b8d-5830-4b3b-aa94-8a30c449277a-0.orc", /*file_size=*/810, /*row_count=*/1,
@@ -954,7 +963,7 @@ TEST(DataSplitTest, TestDeserializePkWithSnapshot6OfMultiFiles) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Compact(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1014,7 +1023,7 @@ TEST(DataSplitTest, TestDeserializePkWithSnapshot8) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Compact(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(/*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
                                    /*bucket=*/0, /*bucket_path=*/
                                    "data/pk_09.db/pk_09/f1=10/bucket-0", {file_meta});
@@ -1065,7 +1074,7 @@ TEST(DataSplitTest, TestDeserializePk10WithSnapshot6) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-d6d370f3-242b-45c9-8739-44bf31b2b449-0.orc", /*file_size=*/924, /*row_count=*/1,
         /*min_key=*/BinaryRowGenerator::GenerateRow({52}, pool.get()), /*max_key=*/
@@ -1082,7 +1091,7 @@ TEST(DataSplitTest, TestDeserializePk10WithSnapshot6) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({1, 1}, pool.get()), /*bucket=*/0,
@@ -1115,7 +1124,7 @@ TEST(DataSplitTest, TestPartialMergedRowCount) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/2, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1125,7 +1134,7 @@ TEST(DataSplitTest, TestPartialMergedRowCount) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
         /*bucket=*/0, /*bucket_path=*/
@@ -1159,7 +1168,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithoutDeletionFiles)
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/4, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1169,7 +1178,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithoutDeletionFiles)
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1194,7 +1203,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithCardinality) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/2, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1204,7 +1213,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithCardinality) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta3 = std::make_shared<DataFileMeta>(
         "data-2.orc", /*file_size=*/100, /*row_count=*/3, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1214,7 +1223,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithCardinality) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1249,7 +1258,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountMixedCardinalityReturnsNullopt) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/2, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1259,7 +1268,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountMixedCardinalityReturnsNullopt) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1292,7 +1301,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountUnknownDeleteRowCountDoesNotBlockRa
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/2, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1302,7 +1311,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountUnknownDeleteRowCountDoesNotBlockRa
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1331,7 +1340,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountFallsBackToDataEvolution) {
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/100,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/5, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1341,7 +1350,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountFallsBackToDataEvolution) {
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/100,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta3 = std::make_shared<DataFileMeta>(
         "data-2.orc", /*file_size=*/100, /*row_count=*/2, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1351,7 +1360,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountFallsBackToDataEvolution) {
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/200,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1382,7 +1391,7 @@ TEST(DataSplitTest, TestDataEvolutionMergedRowCountSubtractsDeletionFileCardinal
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/100,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/5, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1392,7 +1401,7 @@ TEST(DataSplitTest, TestDataEvolutionMergedRowCountSubtractsDeletionFileCardinal
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/100,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1427,7 +1436,7 @@ TEST(DataSplitTest, TestSerializeDataEvolutionSplitWithDeletionFiles) {
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/0,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/10, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1437,7 +1446,7 @@ TEST(DataSplitTest, TestSerializeDataEvolutionSplitWithDeletionFiles) {
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/0,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1485,7 +1494,7 @@ TEST(DataSplitTest, TestDataEvolutionMergedRowCountUnavailableWithoutCardinality
         /*delete_row_count=*/std::nullopt, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/100,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
@@ -1518,7 +1527,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountResolvesMissingCardinalityViaFactor
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1.orc", /*file_size=*/100, /*row_count=*/5, DataFileMeta::EmptyMinKey(),
         DataFileMeta::EmptyMaxKey(), SimpleStats::EmptyStats(), SimpleStats::EmptyStats(),
@@ -1528,7 +1537,7 @@ TEST(DataSplitTest, TestPartialMergedRowCountResolvesMissingCardinalityViaFactor
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),

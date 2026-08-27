@@ -25,8 +25,6 @@
 #include <string>
 
 #include "arrow/type.h"
-#include "paimon/common/data/binary_row_writer.h"
-#include "paimon/common/data/binary_string.h"
 #include "paimon/common/data/internal_row.h"
 #include "paimon/common/utils/internal_row_utils.h"
 #include "paimon/common/utils/serialization_utils.h"
@@ -73,63 +71,9 @@ const std::shared_ptr<arrow::DataType>& DataFileMetaWriteColsLegacySerializer::D
 }
 
 Result<BinaryRow> DataFileMetaWriteColsLegacySerializer::ToRow(
-    const std::shared_ptr<DataFileMeta>& meta) const {
-    BinaryRow row(NumFields());
-    BinaryRowWriter writer(&row, 32 * 1024, pool_.get());
-    writer.WriteString(0, BinaryString::FromString(meta->file_name, pool_.get()));
-    writer.WriteLong(1, meta->file_size);
-    writer.WriteLong(2, meta->row_count);
-    auto min_key_bytes = SerializationUtils::SerializeBinaryRow(meta->min_key, pool_.get());
-    writer.WriteBinary(3, *min_key_bytes);
-    auto max_key_bytes = SerializationUtils::SerializeBinaryRow(meta->max_key, pool_.get());
-    writer.WriteBinary(4, *max_key_bytes);
-    writer.WriteRow(5, meta->key_stats.ToRow());
-    writer.WriteRow(6, meta->value_stats.ToRow());
-    writer.WriteLong(7, meta->min_sequence_number);
-    writer.WriteLong(8, meta->max_sequence_number);
-    writer.WriteLong(9, meta->schema_id);
-    writer.WriteInt(10, meta->level);
-    writer.WriteArray(11, InternalRowUtils::ToStringArrayData(meta->extra_files, pool_));
-    writer.WriteTimestamp(12, meta->creation_time, 3);
-    if (meta->delete_row_count == std::nullopt) {
-        writer.SetNullAt(13);
-    } else {
-        writer.WriteLong(13, meta->delete_row_count.value());
-    }
-    if (meta->embedded_index == nullptr) {
-        writer.SetNullAt(14);
-    } else {
-        writer.WriteBinary(14, *meta->embedded_index);
-    }
-    if (meta->file_source == std::nullopt) {
-        writer.SetNullAt(15);
-    } else {
-        writer.WriteByte(15, meta->file_source.value().ToByteValue());
-    }
-    if (meta->value_stats_cols == std::nullopt) {
-        writer.SetNullAt(16);
-    } else {
-        writer.WriteArray(
-            16, InternalRowUtils::ToNotNullStringArrayData(meta->value_stats_cols.value(), pool_));
-    }
-    if (meta->external_path == std::nullopt) {
-        writer.SetNullAt(17);
-    } else {
-        writer.WriteString(17, BinaryString::FromString(meta->external_path.value(), pool_.get()));
-    }
-    if (meta->first_row_id == std::nullopt) {
-        writer.SetNullAt(18);
-    } else {
-        writer.WriteLong(18, meta->first_row_id.value());
-    }
-    if (meta->write_cols == std::nullopt) {
-        writer.SetNullAt(19);
-    } else {
-        writer.WriteArray(
-            19, InternalRowUtils::ToNotNullStringArrayData(meta->write_cols.value(), pool_));
-    }
-    writer.Complete();
-    return row;
+    const std::shared_ptr<DataFileMeta>&) const {
+    assert(false);
+    return Status::Invalid("to row for DataFileMetaWriteColsLegacySerializer is invalid");
 }
 
 Result<std::shared_ptr<DataFileMeta>> DataFileMetaWriteColsLegacySerializer::FromRow(

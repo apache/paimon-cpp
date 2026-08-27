@@ -945,7 +945,8 @@ TEST_P(ReadInteWithIndexTest, TestSimple) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -1019,7 +1020,8 @@ TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -1123,7 +1125,8 @@ TEST_P(ReadInteWithIndexTest, TestEmbeddingBitmapIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/embedded_index, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -1186,7 +1189,8 @@ TEST_P(ReadInteWithIndexTest, TestBitmapWithV1) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/embedded_index, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -1225,7 +1229,8 @@ TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -1339,7 +1344,7 @@ TEST_P(ReadInteWithIndexTest, TestNoEmbeddingBitmapIndexWithExternalPath) {
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/external_file_path, /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -1381,7 +1386,8 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithDv) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DeletionFile deletion_file(deletion_file_path,
                                /*offset=*/1, /*length=*/24, /*cardinality=*/2);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
@@ -1487,7 +1493,7 @@ TEST_P(ReadInteWithIndexTest, TestWithAlterTable) {
             /*embedded_index=*/embedded_index, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     };
 
     std::vector<uint8_t> embedded_bytes1 = {
@@ -1870,7 +1876,8 @@ TEST_P(ReadInteWithIndexTest, TestWithBsiIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -1930,7 +1937,8 @@ TEST_P(ReadInteWithIndexTest, TestWithBloomFilterIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -2136,7 +2144,8 @@ TEST_P(ReadInteWithIndexTest, TestBitmapPushDownWithMultiStripes) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -2246,7 +2255,8 @@ TEST_P(ReadInteWithIndexTest, TestWithBitmapAndBsiAndBloomFilterIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -2328,7 +2338,8 @@ TEST_P(ReadInteWithIndexTest, TestWithIndexWithoutRegistered) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
@@ -2465,7 +2476,8 @@ TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
@@ -2510,7 +2522,8 @@ TEST_P(ReadInteWithIndexTest, TestRangeBitmapIndexMultiChunk) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
@@ -2552,7 +2565,8 @@ TEST_P(ReadInteWithIndexTest, TestWithIOException) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,

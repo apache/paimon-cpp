@@ -72,7 +72,8 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMeta::ForAppend(
         file_name, file_size, row_count, EmptyMinKey(), EmptyMaxKey(), SimpleStats::EmptyStats(),
         row_stats, min_sequence_number, max_sequence_number, schema_id, DUMMY_LEVEL, extra_files,
         Timestamp(/*millisecond=*/local_micro / 1000, /*nano_of_millisecond=*/0), 0ll,
-        embedded_index, file_source, value_stats_cols, external_path, first_row_id, write_cols);
+        embedded_index, file_source, value_stats_cols, external_path, first_row_id, write_cols,
+        /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 Result<std::shared_ptr<DataFileMeta>> DataFileMeta::Upgrade(int32_t new_level) const {

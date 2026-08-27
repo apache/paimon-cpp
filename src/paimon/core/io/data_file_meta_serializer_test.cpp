@@ -28,6 +28,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_meta_write_cols_legacy_serializer.h"
 #include "paimon/core/stats/simple_stats.h"
@@ -82,19 +83,13 @@ TEST_F(DataFileMetaSerializerTest, TestToFromRow) {
     }
 }
 
-TEST_F(DataFileMetaSerializerTest, TestLegacySerializerDropsColumnMaxSequenceNumbers) {
+TEST_F(DataFileMetaSerializerTest, TestLegacySerializerSchema) {
     DataFileMetaWriteColsLegacySerializer serializer(memory_pool_);
     ASSERT_EQ(serializer.NumFields(), 20);
-    auto legacy_type = std::static_pointer_cast<arrow::StructType>(
-        DataFileMetaWriteColsLegacySerializer::DataType());
+    auto legacy_type =
+        checked_pointer_cast<arrow::StructType>(DataFileMetaWriteColsLegacySerializer::DataType());
     ASSERT_EQ(legacy_type->num_fields(), 20);
     ASSERT_EQ(legacy_type->field(19)->name(), "_WRITE_COLS");
-    auto expected = GetDataFileMeta();
-    auto expected_without_column_sequences = GetDataFileMeta(std::nullopt);
-    ASSERT_OK_AND_ASSIGN(auto row, serializer.ToRow(expected));
-    ASSERT_OK_AND_ASSIGN(auto actual, serializer.FromRow(row));
-    ASSERT_EQ(actual->column_max_sequence_numbers, std::nullopt);
-    ASSERT_EQ(*actual, *expected_without_column_sequences);
 }
 
 TEST_F(DataFileMetaSerializerTest, TestSerialize) {

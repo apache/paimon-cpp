@@ -53,7 +53,7 @@ class PkSortedBucketIndexStateTest : public ::testing::Test {
             /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/std::nullopt,
             /*embedded_index=*/nullptr, file_source, /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     /// Builds a payload whose source metadata lists the given sources in the given order.

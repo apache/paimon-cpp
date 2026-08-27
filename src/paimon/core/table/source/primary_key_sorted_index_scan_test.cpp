@@ -220,7 +220,8 @@ class PrimaryKeySortedIndexScanTest : public ::testing::Test {
             /*creation_time=*/Timestamp(1721643142456LL, 0), delete_row_count,
             /*embedded_index=*/nullptr, file_source,
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
-            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     Result<std::shared_ptr<IndexFileMeta>> BuildPayload(std::vector<int64_t> ordinals,

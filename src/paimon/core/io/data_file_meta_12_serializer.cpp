@@ -128,7 +128,8 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMeta12Serializer::FromRow(
         min_sequence_number, max_sequence_number, schema_id, level,
         InternalRowUtils::FromStringArrayData(extra_files.get()), creation_time, delete_row_count,
         embedded_file_index, file_source, std::optional<std::vector<std::string>>(value_stats_cols),
-        external_path, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        external_path, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 }  // namespace paimon

@@ -137,7 +137,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta1_2 = std::make_shared<DataFileMeta>(
             "data-c80ccf0f-6387-4cbc-8889-ade8cef54c43-1.parquet", /*file_size=*/3370,
             /*row_count=*/4,
@@ -154,7 +154,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta1_3 = std::make_shared<DataFileMeta>(
             "data-c80ccf0f-6387-4cbc-8889-ade8cef54c43-2.parquet", /*file_size=*/3252,
             /*row_count=*/1,
@@ -173,7 +173,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder1(BinaryRowGenerator::GenerateRow({0, 0}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -200,7 +200,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta2_2 = std::make_shared<DataFileMeta>(
             "data-24f8588c-d950-4e44-9d99-a023ea65a136-1.parquet", /*file_size=*/3229,
             /*row_count=*/1,
@@ -218,7 +218,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder2(BinaryRowGenerator::GenerateRow({0, 1}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -246,7 +246,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta3_2 = std::make_shared<DataFileMeta>(
             "data-184f2304-49fd-4916-ba07-037757e904eb-1.parquet", /*file_size=*/3259,
             /*row_count=*/1,
@@ -264,7 +264,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder3(BinaryRowGenerator::GenerateRow({1, 0}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -296,7 +296,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta1_2 = std::make_shared<DataFileMeta>(
             "data-d03e13e5-5e2e-463a-b53a-8d44e4dc9141-1.parquet",
             /*file_size=*/2623, /*row_count=*/
@@ -314,7 +314,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder1(
             /*partition=*/BinaryRow::EmptyRow(),
             /*bucket=*/0, /*bucket_path=*/
@@ -1293,7 +1293,7 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
         /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto meta2 = std::make_shared<DataFileMeta>(
         "data-6871b960-edd9-40fc-9859-aaca9ea205cf-0.orc", /*file_size=*/887, /*row_count=*/5,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alex"), 0}, pool_.get()),
@@ -1311,7 +1311,7 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(
         BinaryRowGenerator::GenerateRow({10}, pool_.get()),
         /*bucket=*/1, /*bucket_path=*/

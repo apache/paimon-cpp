@@ -229,7 +229,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion10) {
         /*creation_time=*/Timestamp(1761242383412ll, 0),
         /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     LinkedHashMap<std::string, DeletionVectorMeta> dv_ranges;
     dv_ranges.insert_or_assign(
@@ -293,7 +294,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion9) {
         /*creation_time=*/Timestamp(1757349273600ll, 0),
         /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     LinkedHashMap<std::string, DeletionVectorMeta> dv_ranges;
     dv_ranges.insert_or_assign(
@@ -360,7 +362,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion9WithExternalPathForIndex) {
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/
         "FILE:/tmp/external/f1=10/bucket-1/data-72b62a5f-d698-4db5-b51a-04c0dc027702-1.orc",
-        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     LinkedHashMap<std::string, DeletionVectorMeta> dv_ranges;
     dv_ranges.insert_or_assign(
@@ -423,7 +426,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion8) {
         /*creation_time=*/Timestamp(1754068646844ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     expected_msgs.emplace_back(/*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
                                /*bucket=*/0, /*total_bucket=*/2, DataIncrement({file_meta}, {}, {}),
                                CompactIncrement({}, {}, {}));
@@ -442,7 +446,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion8) {
         /*creation_time=*/Timestamp(1754068646864ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     expected_msgs.emplace_back(/*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
                                /*bucket=*/1, /*total_bucket=*/2,
                                DataIncrement({file_meta2}, {}, {}), CompactIncrement({}, {}, {}));
@@ -492,7 +497,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion7) {
         /*creation_time=*/Timestamp(1743525392885ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     expected_msgs.emplace_back(/*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
                                /*bucket=*/0, /*total_bucket=*/2, DataIncrement({file_meta}, {}, {}),
                                CompactIncrement({}, {}, {}));
@@ -513,7 +519,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion7) {
         /*creation_time=*/Timestamp(1743525392921ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     expected_msgs.emplace_back(/*partition=*/BinaryRowGenerator::GenerateRow({10}, pool.get()),
                                /*bucket=*/1, /*total_bucket=*/2,
                                DataIncrement({file_meta2}, {}, {}), CompactIncrement({}, {}, {}));
@@ -559,7 +566,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion6) {
         /*creation_time=*/Timestamp(1737052260143ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     expected_msgs.emplace_back(BinaryRow::EmptyRow(), /*bucket=*/0, /*total_bucket=*/std::nullopt,
                                DataIncrement({file_meta}, {}, {}), CompactIncrement({}, {}, {}));
     // check result
@@ -606,7 +614,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion5) {
         /*creation_time=*/Timestamp(1734707236040ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta1_after_compact = std::make_shared<DataFileMeta>(
         "data-0d0f29cc-63c6-4fab-a594-71bd7d06fcde-1.orc", /*file_size=*/859, /*row_count=*/1,
         BinaryRowGenerator::GenerateRow({std::string("Alice"), 1}, pool.get()),
@@ -620,7 +629,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion5) {
         /*creation_time=*/Timestamp(1734707236040ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataIncrement data_increment1({file_meta1}, {}, {}, {}, {});
     LinkedHashMap<std::string, DeletionVectorMeta> dv_metas1;
@@ -649,7 +659,8 @@ TEST(CommitMessageTest, TestCompatibleWithVersion5) {
         /*creation_time=*/Timestamp(1734707236109ll, 0),
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment2({file_meta2}, {}, {}, {}, {});
     LinkedHashMap<std::string, DeletionVectorMeta> dv_metas2;
     dv_metas2.insert_or_assign(
@@ -707,7 +718,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion4) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment1({file_meta1}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/0,
                                /*total_bucket=*/std::nullopt, data_increment1,
@@ -726,7 +737,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion4) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment2({file_meta2}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/1,
                                /*total_bucket=*/std::nullopt, data_increment2,
@@ -745,7 +756,7 @@ TEST(CommitMessageTest, TestCompatibleWithVersion4) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment3({file_meta3}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({20}, pool.get()), /*bucket=*/0,
                                /*total_bucket=*/std::nullopt, data_increment3,
@@ -795,7 +806,8 @@ TEST(CommitMessageTest, TestCompatibleWithJavaPaimon10WithStatsDenseStore) {
         /*creation_time=*/Timestamp(1731412938869ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment1({file_meta1}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/0,
                                /*total_bucket=*/std::nullopt, data_increment1,
@@ -812,7 +824,8 @@ TEST(CommitMessageTest, TestCompatibleWithJavaPaimon10WithStatsDenseStore) {
         /*creation_time=*/Timestamp(1731412938891ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment2({file_meta2}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/1,
                                /*total_bucket=*/std::nullopt, data_increment2,
@@ -829,7 +842,8 @@ TEST(CommitMessageTest, TestCompatibleWithJavaPaimon10WithStatsDenseStore) {
         /*creation_time=*/Timestamp(1731412938908ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::optional<std::vector<std::string>>({"f0", "f1", "f2"}),
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment3({file_meta3}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({20}, pool.get()), /*bucket=*/0,
                                /*total_bucket=*/std::nullopt, data_increment3,
@@ -879,7 +893,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon1) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment1({file_meta1}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/0,
                                /*total_bucket=*/std::nullopt, data_increment1,
@@ -898,7 +912,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon1) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment2({file_meta2}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/1,
                                /*total_bucket=*/std::nullopt, data_increment2,
@@ -917,7 +931,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon1) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment3({file_meta3}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({20}, pool.get()), /*bucket=*/0,
                                /*total_bucket=*/std::nullopt, data_increment3,
@@ -967,7 +981,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon2) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment1({file_meta1}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/1,
                                /*total_bucket=*/std::nullopt, data_increment1,
@@ -987,7 +1001,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon2) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment2({file_meta2}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({20}, pool.get()), /*bucket=*/0,
                                /*total_bucket=*/std::nullopt, data_increment2,
@@ -1037,7 +1051,7 @@ TEST(CommitMessageTest, TestCompatibleWith09JavaPaimon3) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment1({file_meta1}, {}, {});
     expected_msgs.emplace_back(BinaryRowGenerator::GenerateRow({10}, pool.get()), /*bucket=*/1,
                                /*total_bucket=*/std::nullopt, data_increment1,
@@ -1090,7 +1104,7 @@ TEST(CommitMessageTest, TestPkTableCompatibleWithJavaPaimon09) {
         /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta_with_level = std::make_shared<DataFileMeta>(
         "data-2eb2a766-97e4-4fe4-88ce-eb606675c101-0.orc", /*file_size=*/789, /*row_count=*/1,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Bob"), 0}, pool.get()),
@@ -1107,7 +1121,7 @@ TEST(CommitMessageTest, TestPkTableCompatibleWithJavaPaimon09) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Compact(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment1({file_meta}, {}, {}, {}, {});
 
     LinkedHashMap<std::string, DeletionVectorMeta> dv_ranges;
@@ -1185,7 +1199,7 @@ TEST(CommitMessageTest, TestCompatibleWithComplexDataType) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment1({file_meta1}, {}, {});
     expected_msgs.emplace_back(BinaryRow::EmptyRow(), /*bucket=*/0, /*total_bucket=*/std::nullopt,
                                data_increment1, CompactIncrement({}, {}, {}));

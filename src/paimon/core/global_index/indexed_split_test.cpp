@@ -56,17 +56,20 @@ TEST(IndexedSplitTest, TestSimple) {
         "file1.orc", 100l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 50l, 249l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765535214349l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta2 = std::make_shared<DataFileMeta>(
         "file2.orc", 101l, 100l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 250l, 349l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765535214349l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta3 = std::make_shared<DataFileMeta>(
         "file3.orc", 102l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 1000l, 1199l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765535214349l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
@@ -110,17 +113,20 @@ TEST(IndexedSplitTest, TestIndexedSplitWithScore) {
         "file1.orc", 100l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 50l, 249l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765549435648l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta2 = std::make_shared<DataFileMeta>(
         "file2.orc", 101l, 100l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 250l, 349l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765549435649l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta3 = std::make_shared<DataFileMeta>(
         "file3.orc", 102l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 1000l, 1199l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765549435649l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
@@ -154,7 +160,8 @@ TEST(IndexedSplitTest, TestValidate) {
         "file.orc", 1l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 1000l, 1199l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(0l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
