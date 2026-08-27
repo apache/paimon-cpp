@@ -357,14 +357,14 @@ Result<BatchReader::ReadBatch> BlobFallbackBatchReader::NextBatch() {
                                AssembleColumn(field_idx, group_choice, group_chunks));
         columns.push_back(std::move(column));
     }
-    std::shared_ptr<arrow::RecordBatch> batch =
-        arrow::RecordBatch::Make(read_schema_, row_count, std::move(columns));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::RecordBatch> normalized_batch,
-                           ArrowUtils::NormalizeRecordBatchOffsets(batch, arrow_pool_.get()));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
+                                      arrow::StructArray::Make(columns, read_schema_->fields()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized_array,
+                           ArrowUtils::NormalizeArrayOffsets(array, arrow_pool_.get()));
     std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportRecordBatch(*normalized_batch, c_array.get(), c_schema.get()));
+        arrow::ExportArray(*normalized_array, c_array.get(), c_schema.get()));
     return std::make_pair(std::move(c_array), std::move(c_schema));
 }
 

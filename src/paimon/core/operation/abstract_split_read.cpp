@@ -157,6 +157,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReade
         reader_builder =
             std::make_unique<LateMaterializingReaderBuilder>(std::move(reader_builder), pool_);
     }
+    // TODO(xinyu.lxy): test format table for mosaic format
     if (context_->EnablePrefetch() && file_format_identifier != "blob" &&
         file_format_identifier != "avro" && file_format_identifier != "mosaic") {
         PAIMON_ASSIGN_OR_RAISE(

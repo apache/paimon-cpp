@@ -57,6 +57,8 @@ class PAIMON_EXPORT ArrowUtils {
     static Result<std::shared_ptr<arrow::RecordBatch>> NormalizeRecordBatchOffsets(
         const std::shared_ptr<arrow::RecordBatch>& record_batch, arrow::MemoryPool* pool);
 
+    /// Returns an Array with zero offsets. Struct children are also sliced to the parent's visible
+    /// range so the result can be exported and imported as a RecordBatch.
     static Result<std::shared_ptr<arrow::Array>> NormalizeArrayOffsets(
         const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool);
 

@@ -21,6 +21,7 @@
 
 namespace paimon::mosaic {
 
+/// Number of column buckets for parallel IO.
 static inline const char MOSAIC_NUM_BUCKETS[] = "mosaic.num-buckets";
 
 /// Max dict size per column.

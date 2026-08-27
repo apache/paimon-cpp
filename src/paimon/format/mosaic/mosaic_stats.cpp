@@ -20,6 +20,7 @@
 #include "paimon/format/mosaic/mosaic_stats.h"
 
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -27,6 +28,7 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
+#include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
@@ -56,9 +58,10 @@ Result<T> DecodeBigEndian(const std::vector<uint8_t>& bytes) {
     return value;
 }
 
-template <typename T, typename Decoder>
+template <typename T, typename Decoder, typename Less = std::less<T>>
 Result<std::pair<std::optional<T>, std::optional<T>>> CollectMinMax(
-    const std::vector<const MosaicStatsUtils::ColumnStatistics*>& stats, Decoder decoder) {
+    const std::vector<const MosaicStatsUtils::ColumnStatistics*>& stats, Decoder decoder,
+    Less less = Less()) {
     std::optional<T> min;
     std::optional<T> max;
     for (const MosaicStatsUtils::ColumnStatistics* stat : stats) {
@@ -70,10 +73,10 @@ Result<std::pair<std::optional<T>, std::optional<T>>> CollectMinMax(
         }
         PAIMON_ASSIGN_OR_RAISE(T row_group_min, decoder(stat->min.value()));
         PAIMON_ASSIGN_OR_RAISE(T row_group_max, decoder(stat->max.value()));
-        if (!min.has_value() || row_group_min < min.value()) {
+        if (!min.has_value() || less(row_group_min, min.value())) {
             min = std::move(row_group_min);
         }
-        if (!max.has_value() || max.value() < row_group_max) {
+        if (!max.has_value() || less(max.value(), row_group_max)) {
             max = std::move(row_group_max);
         }
     }
@@ -160,13 +163,19 @@ Result<std::unique_ptr<ColumnStats>> ConvertFieldStatistics(
             return ColumnStats::CreateBigIntColumnStats(min_max.first, min_max.second, null_count);
         }
         case arrow::Type::FLOAT: {
+            auto less = [](float lhs, float rhs) {
+                return FieldsComparator::CompareFloatingPoint(lhs, rhs) < 0;
+            };
             PAIMON_ASSIGN_OR_RAISE(OptionalMinMax<float> min_max,
-                                   CollectMinMax<float>(stats, DecodeBigEndian<float>));
+                                   CollectMinMax<float>(stats, DecodeBigEndian<float>, less));
             return ColumnStats::CreateFloatColumnStats(min_max.first, min_max.second, null_count);
         }
         case arrow::Type::DOUBLE: {
+            auto less = [](double lhs, double rhs) {
+                return FieldsComparator::CompareFloatingPoint(lhs, rhs) < 0;
+            };
             PAIMON_ASSIGN_OR_RAISE(OptionalMinMax<double> min_max,
-                                   CollectMinMax<double>(stats, DecodeBigEndian<double>));
+                                   CollectMinMax<double>(stats, DecodeBigEndian<double>, less));
             return ColumnStats::CreateDoubleColumnStats(min_max.first, min_max.second, null_count);
         }
         case arrow::Type::STRING: {
@@ -222,8 +231,6 @@ Result<std::unique_ptr<ColumnStats>> ConvertFieldStatistics(
             return ColumnStats::CreateNestedColumnStats(FieldType::MAP, null_count);
         case arrow::Type::STRUCT:
             return ColumnStats::CreateNestedColumnStats(FieldType::STRUCT, null_count);
-        case arrow::Type::FIXED_SIZE_LIST:
-            return ColumnStats::CreateNestedColumnStats(FieldType::VECTOR, null_count);
         default:
             return Status::Invalid(
                 fmt::format("cannot fetch Mosaic statistics for type {}", type->ToString()));

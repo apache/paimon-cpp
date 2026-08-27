@@ -38,12 +38,21 @@ namespace paimon {
 
 namespace {
 
-bool HasNonZeroOffset(const std::shared_ptr<arrow::ArrayData>& data) {
+bool NeedsNormalization(const std::shared_ptr<arrow::ArrayData>& data) {
     if (data->offset != 0) {
         return true;
     }
+    if (data->type->id() == arrow::Type::STRUCT) {
+        for (const auto& child : data->child_data) {
+            // StructArray::Slice(0, length) shortens only the parent ArrayData. Its children may
+            // still describe the full unsliced arrays, which cannot be imported as a RecordBatch.
+            if (child->length != data->length) {
+                return true;
+            }
+        }
+    }
     for (const auto& child : data->child_data) {
-        if (HasNonZeroOffset(child)) {
+        if (NeedsNormalization(child)) {
             return true;
         }
     }
@@ -234,7 +243,7 @@ Result<std::shared_ptr<arrow::ArrayData>> RebaseFixedWidth(
 /// proportional to the number of rows instead of the number of value bytes.
 Result<std::shared_ptr<arrow::ArrayData>> RebaseToZeroOffset(
     const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
-    if (!HasNonZeroOffset(data)) {
+    if (!NeedsNormalization(data)) {
         return data;
     }
     // An empty array may not carry the buffers the layouts below slice.
@@ -443,7 +452,7 @@ Result<std::shared_ptr<arrow::RecordBatch>> ArrowUtils::NormalizeRecordBatchOffs
     arrow::ArrayVector normalized_columns;
     for (int32_t i = 0; i < record_batch->num_columns(); ++i) {
         const std::shared_ptr<arrow::Array>& column = record_batch->column(i);
-        if (!HasNonZeroOffset(column->data())) {
+        if (!NeedsNormalization(column->data())) {
             continue;
         }
         if (normalized_columns.empty()) {

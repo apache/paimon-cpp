@@ -250,14 +250,14 @@ Result<::orc::WriterOptions> OrcFormatWriter::PrepareWriterOptions(
         }
     }
     ::orc::WriterOptions writer_options;
-    const std::string& stripe_size_key = options.find(Options::FILE_BLOCK_SIZE) == options.end()
-                                             ? ORC_STRIPE_SIZE
-                                             : Options::FILE_BLOCK_SIZE;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::string stripe_size_value,
-        OptionsUtils::GetValueFromMap<std::string>(options, stripe_size_key,
-                                                   std::to_string(DEFAULT_STRIPE_SIZE)));
-    PAIMON_ASSIGN_OR_RAISE(int64_t stripe_size, MemorySize::ParseBytes(stripe_size_value));
+    int64_t stripe_size = DEFAULT_STRIPE_SIZE;
+    auto file_block_size = options.find(Options::FILE_BLOCK_SIZE);
+    if (file_block_size != options.end()) {
+        PAIMON_ASSIGN_OR_RAISE(stripe_size, MemorySize::ParseBytes(file_block_size->second));
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(stripe_size, OptionsUtils::GetValueFromMap<int64_t>(
+                                                options, ORC_STRIPE_SIZE, DEFAULT_STRIPE_SIZE));
+    }
     writer_options.setStripeSize(stripe_size);
     PAIMON_ASSIGN_OR_RAISE(::orc::CompressionKind compression,
                            ToOrcCompressionKind(StringUtils::ToLowerCase(file_compression)));

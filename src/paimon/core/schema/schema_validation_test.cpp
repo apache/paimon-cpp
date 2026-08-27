@@ -145,11 +145,12 @@ TEST(SchemaValidationTest, TestMosaicDataTypes) {
         arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())})),
         VariantTypeUtils::ToArrowField("variant"),
         arrow::field("vector", arrow::fixed_size_list(arrow::float32(), 3)),
+        arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::SECOND)),
         arrow::field("nested_row",
                      arrow::list(arrow::struct_({arrow::field("value", arrow::int32())}))),
     };
     std::vector<std::string> expected_errors = {"type ROW", "type VARIANT", "type VECTOR",
-                                                "type ROW"};
+                                                "TIMESTAMP(0)", "type ROW"};
     for (size_t i = 0; i < unsupported_fields.size(); ++i) {
         SCOPED_TRACE("field=" + unsupported_fields[i]->name());
         ASSERT_OK_AND_ASSIGN(

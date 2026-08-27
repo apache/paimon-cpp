@@ -474,17 +474,15 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
         } else if (slice_end < c_array->length) {
             // partially out of range, data before read_range.second has been effectively consumed
             readers_pos_[reader_idx]->store(read_range.second);
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                std::shared_ptr<arrow::RecordBatch> record_batch,
-                arrow::ImportRecordBatch(c_array.get(), c_schema.get()));
-            std::shared_ptr<arrow::RecordBatch> sliced_batch =
-                record_batch->Slice(/*offset=*/0, slice_end);
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                              arrow::ImportArray(c_array.get(), c_schema.get()));
+            std::shared_ptr<arrow::Array> sliced_array = array->Slice(/*offset=*/0, slice_end);
             PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<arrow::RecordBatch> normalized_batch,
-                ArrowUtils::NormalizeRecordBatchOffsets(sliced_batch, arrow_pool_.get()));
+                std::shared_ptr<arrow::Array> normalized_array,
+                ArrowUtils::NormalizeArrayOffsets(sliced_array, arrow_pool_.get()));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(
-                arrow::ExportRecordBatch(*normalized_batch, c_array.get(), c_schema.get()));
-            bitmap.RemoveRange(slice_end, record_batch->num_rows());
+                arrow::ExportArray(*normalized_array, c_array.get(), c_schema.get()));
+            bitmap.RemoveRange(slice_end, array->length());
             global_row_ids =
                 std::vector<uint64_t>(global_row_ids.begin(), global_row_ids.begin() + slice_end);
         } else {

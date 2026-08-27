@@ -1658,10 +1658,10 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
 }
 
 TEST_P(DataEvolutionTableTest, TestAlterTable) {
-    if (FileFormat() == "mosaic") {
+    auto file_format = FileFormat();
+    if (file_format == "mosaic") {
         return;
     }
-    auto file_format = FileFormat();
     if (file_format == "avro") {
         return;
     }

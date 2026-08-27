@@ -106,7 +106,7 @@ MosaicFileBatchReader::~MosaicFileBatchReader() {
     CloseInternal();
 }
 
-Result<std::shared_ptr<arrow::RecordBatch>> MosaicFileBatchReader::ReadNextRowGroup() {
+Result<std::shared_ptr<arrow::Array>> MosaicFileBatchReader::ReadNextRowGroup() {
     while (next_row_group_ < num_row_groups_) {
         uint32_t row_group = next_row_group_++;
         uint32_t row_count = 0;
@@ -138,16 +138,16 @@ Result<std::shared_ptr<arrow::RecordBatch>> MosaicFileBatchReader::ReadNextRowGr
         if (export_result != 0) {
             return MosaicFfiError("export Mosaic row group", input_context_->GetCallbackStatus());
         }
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::RecordBatch> batch,
-                                          arrow::ImportRecordBatch(&ffi_array, &ffi_schema));
-        if (batch->num_rows() != row_count) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> batch,
+                                          arrow::ImportArray(&ffi_array, &ffi_schema));
+        if (batch->length() != row_count) {
             return Status::Invalid("Mosaic row group row count mismatch");
         }
-        if (batch->num_rows() != 0) {
+        if (batch->length() != 0) {
             return batch;
         }
     }
-    return std::shared_ptr<arrow::RecordBatch>();
+    return std::shared_ptr<arrow::Array>();
 }
 
 Result<bool> MosaicFileBatchReader::MatchesRowGroup(uint32_t row_group, uint32_t row_count) {
@@ -177,7 +177,7 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
     if (closed_) {
         return Status::Invalid("Mosaic reader is closed");
     }
-    if (current_batch_ == nullptr || current_batch_offset_ == current_batch_->num_rows()) {
+    if (current_batch_ == nullptr || current_batch_offset_ == current_batch_->length()) {
         PAIMON_ASSIGN_OR_RAISE(current_batch_, ReadNextRowGroup());
         current_batch_offset_ = 0;
     }
@@ -187,12 +187,11 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
     }
 
     int64_t row_count =
-        std::min<int64_t>(batch_size_, current_batch_->num_rows() - current_batch_offset_);
-    std::shared_ptr<arrow::RecordBatch> sliced_batch =
+        std::min<int64_t>(batch_size_, current_batch_->length() - current_batch_offset_);
+    std::shared_ptr<arrow::Array> sliced_array =
         current_batch_->Slice(current_batch_offset_, row_count);
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<arrow::RecordBatch> normalized_batch,
-        ArrowUtils::NormalizeRecordBatchOffsets(sliced_batch, arrow_pool_.get()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized_array,
+                           ArrowUtils::NormalizeArrayOffsets(sliced_array, arrow_pool_.get()));
 
     previous_first_row_ = current_row_group_first_row_ + current_batch_offset_;
     previous_batch_row_count_ = row_count;
@@ -200,7 +199,7 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
     auto ffi_array = std::make_unique<::ArrowArray>();
     auto ffi_schema = std::make_unique<::ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportRecordBatch(*normalized_batch, ffi_array.get(), ffi_schema.get()));
+        arrow::ExportArray(*normalized_array, ffi_array.get(), ffi_schema.get()));
     return std::make_pair(std::move(ffi_array), std::move(ffi_schema));
 }
 
@@ -274,6 +273,11 @@ void MosaicFileBatchReader::CloseInternal() {
             mosaic_reader_free(reader_);
             reader_ = nullptr;
         }
+        if (input_ != nullptr) {
+            (void)input_->Close();
+        }
+        input_context_.reset();
+        input_.reset();
         current_batch_.reset();
         closed_ = true;
     }

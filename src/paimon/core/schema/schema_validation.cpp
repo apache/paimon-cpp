@@ -583,9 +583,15 @@ Status SchemaValidation::ValidateMosaicDataField(const std::shared_ptr<arrow::Fi
         case arrow::Type::STRING:
         case arrow::Type::BINARY:
         case arrow::Type::TIME32:
-        case arrow::Type::TIMESTAMP:
         case arrow::Type::DECIMAL128:
             return Status::OK();
+        case arrow::Type::TIMESTAMP: {
+            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*type);
+            if (timestamp_type.unit() == arrow::TimeUnit::SECOND) {
+                return Status::Invalid("Mosaic file format does not support TIMESTAMP(0)");
+            }
+            return Status::OK();
+        }
         case arrow::Type::LIST:
             return ValidateMosaicDataField(type->field(0));
         case arrow::Type::MAP: {
