@@ -1269,7 +1269,8 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0,
                                    /*bucket_path=*/path + "bucket-0/", {data_file_meta});
     ASSERT_OK_AND_ASSIGN(auto split,
