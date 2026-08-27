@@ -115,6 +115,9 @@ class AsyncKeyValueConsumer {
     void CleanUp();
 
  private:
+    friend class AsyncKeyValueProducerAndConsumer<T, R>;
+
+    bool IsFinished() const;
     Status ConsumeLoop();
 
  private:

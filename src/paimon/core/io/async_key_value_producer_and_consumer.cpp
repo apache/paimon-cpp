@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <thread>
 #include <type_traits>
 
 #include "arrow/c/abi.h"
@@ -143,14 +144,35 @@ template <typename T, typename R>
 void AsyncKeyValueProducerAndConsumer<T, R>::CleanUp() {
     consume_finished_ = true;
     next_batch_finished_ = true;
+
+    // A producer or consumer may already be blocked in a bounded queue push. Keep draining both
+    // queues until every worker has stopped producing, otherwise a single drain can miss an item
+    // pushed by a worker after it is woken up.
+    while (true) {
+        bool producer_finished =
+            !producer_future_.valid() ||
+            producer_future_.wait_for(std::chrono::microseconds(0)) == std::future_status::ready;
+        bool consumers_finished = true;
+        for (const std::unique_ptr<AsyncKeyValueConsumer<T, R>>& consumer : consumers_) {
+            if (!consumer->IsFinished()) {
+                consumers_finished = false;
+                break;
+            }
+        }
+        if (producer_finished && consumers_finished) {
+            break;
+        }
+        CleanUpQueue();
+        std::this_thread::yield();
+    }
     CleanUpQueue();
+
     if (producer_future_.valid()) {
         [[maybe_unused]] Status status = producer_future_.get();
     }
     for (auto& consumer : consumers_) {
         consumer->CleanUp();
     }
-    CleanUpQueue();
 }
 
 template <typename T, typename R>
@@ -200,6 +222,12 @@ Status AsyncKeyValueConsumer<T, R>::GetStatus() const {
         PAIMON_RETURN_NOT_OK(consumer_future_.get());
     }
     return Status::OK();
+}
+
+template <typename T, typename R>
+bool AsyncKeyValueConsumer<T, R>::IsFinished() const {
+    return !consumer_future_.valid() ||
+           consumer_future_.wait_for(std::chrono::microseconds(0)) == std::future_status::ready;
 }
 
 template <typename T, typename R>

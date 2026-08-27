@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
@@ -51,17 +52,29 @@ namespace detail {
 template <typename Key, typename HashCompare>
 class HashCompareHasher {
  public:
+    explicit HashCompareHasher(std::shared_ptr<const HashCompare> hash_compare)
+        : hash_compare_(std::move(hash_compare)) {}
+
     size_t operator()(const Key& key) const {
-        return HashCompare{}.hash(key);
+        return hash_compare_->hash(key);
     }
+
+ private:
+    std::shared_ptr<const HashCompare> hash_compare_;
 };
 
 template <typename Key, typename HashCompare>
 class HashCompareEqual {
  public:
+    explicit HashCompareEqual(std::shared_ptr<const HashCompare> hash_compare)
+        : hash_compare_(std::move(hash_compare)) {}
+
     bool operator()(const Key& lhs, const Key& rhs) const {
-        return HashCompare{}.equal(lhs, rhs);
+        return hash_compare_->equal(lhs, rhs);
     }
+
+ private:
+    std::shared_ptr<const HashCompare> hash_compare_;
 };
 
 }  // namespace detail
@@ -73,7 +86,10 @@ class ConcurrentHashMap {
                                        detail::HashCompareEqual<Key, HashCompare>>;
 
  public:
-    ConcurrentHashMap() = default;
+    ConcurrentHashMap()
+        : hash_compare_(std::make_shared<HashCompare>()),
+          hash_map_(0, detail::HashCompareHasher<Key, HashCompare>(hash_compare_),
+                    detail::HashCompareEqual<Key, HashCompare>(hash_compare_)) {}
     ~ConcurrentHashMap() = default;
 
     ConcurrentHashMap(const ConcurrentHashMap&) = delete;
@@ -106,6 +122,7 @@ class ConcurrentHashMap {
     }
 
  private:
+    std::shared_ptr<const HashCompare> hash_compare_;
     HashMap hash_map_;
     mutable std::shared_mutex mutex_;
 };

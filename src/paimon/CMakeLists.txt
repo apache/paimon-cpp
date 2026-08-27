@@ -756,6 +756,7 @@ if(PAIMON_BUILD_TESTS)
                     core/index/pk/primary_key_index_definitions_test.cpp
                     core/index/pksorted/pk_sorted_bucket_index_state_test.cpp
                     core/index/index_file_handler_test.cpp
+                    core/io/async_key_value_producer_and_consumer_test.cpp
                     core/io/compact_increment_test.cpp
                     core/io/infer_shredding_file_writer_test.cpp
                     core/io/concat_key_value_record_reader_test.cpp

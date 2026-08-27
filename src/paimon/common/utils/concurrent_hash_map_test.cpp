@@ -21,6 +21,7 @@
 
 #include <unistd.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <functional>
 #include <optional>
@@ -30,6 +31,23 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+class StatefulHashCompare {
+ public:
+    StatefulHashCompare() : seed_(next_seed_++) {}
+
+    size_t hash(const int32_t& key) const {
+        return std::hash<int32_t>{}(key) + seed_;
+    }
+
+    bool equal(const int32_t& lhs, const int32_t& rhs) const {
+        return lhs == rhs;
+    }
+
+ private:
+    inline static std::atomic<size_t> next_seed_ = 0;
+    size_t seed_;
+};
 
 TEST(ConcurrentHashMapTest, TestSimple) {
     ConcurrentHashMap<int32_t, std::string> hash_map;
@@ -70,6 +88,14 @@ TEST(ConcurrentHashMapTest, TestVectorStringHashCompare) {
     ASSERT_EQ(hash_map.Find({}), 4);
     ASSERT_EQ(hash_map.Find({"non"}), std::nullopt);
     ASSERT_EQ(hash_map.Size(), 4);
+}
+
+TEST(ConcurrentHashMapTest, TestStatefulHashCompare) {
+    ConcurrentHashMap<int32_t, std::string, StatefulHashCompare> hash_map;
+    hash_map.Insert(1, "a");
+    ASSERT_EQ(hash_map.Find(1).value(), "a");
+    hash_map.Erase(1);
+    ASSERT_EQ(hash_map.Find(1), std::nullopt);
 }
 
 TEST(ConcurrentHashMapTest, TestMultiThreadInsertAndFindAndDelete) {
