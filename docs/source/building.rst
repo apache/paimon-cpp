@@ -224,16 +224,6 @@ require project-specific patches, so their supported source values are
 ``TBB_SOURCE`` is only considered when ``PAIMON_USE_TBB=ON``. To build without
 any TBB dependency, configure with ``-DPAIMON_USE_TBB=OFF``.
 
-Custom concurrent backends can be compiled and statically registered through
-``ConcurrentBackendFactory`` regardless of this option. With
-``PAIMON_USE_TBB=ON``, registrations still run but the TBB-backed containers do
-not query the factory. With it set to ``OFF``, a registered backend is selected,
-falling back to the built-in C++17 implementation when none is registered. The
-registration object and its container specialization must be part of the same
-final executable or shared library. If registration code is stored only in a
-static archive, make sure its object file is retained by the linker (for example,
-by referencing an exported symbol or linking that archive whole).
-
 Use ``PAIMON_PACKAGE_PREFIX`` to provide one common prefix for dependencies
 whose own ``<Package>_ROOT`` variable is not set. Because the patched Arrow and
 ORC dependencies cannot be resolved from the system, a global ``SYSTEM`` build

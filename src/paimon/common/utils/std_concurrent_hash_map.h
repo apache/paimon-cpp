@@ -19,18 +19,18 @@
 
 #pragma once
 
-#ifdef PAIMON_USE_TBB
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "paimon/common/utils/murmurhash_utils.h"
-#include "tbb/concurrent_hash_map.h"
 
 namespace paimon {
 
@@ -46,8 +46,32 @@ class DefaultHashCompare {
     }
 };
 
+namespace detail {
+
+template <typename Key, typename HashCompare>
+class HashCompareHasher {
+ public:
+    size_t operator()(const Key& key) const {
+        return HashCompare{}.hash(key);
+    }
+};
+
+template <typename Key, typename HashCompare>
+class HashCompareEqual {
+ public:
+    bool operator()(const Key& lhs, const Key& rhs) const {
+        return HashCompare{}.equal(lhs, rhs);
+    }
+};
+
+}  // namespace detail
+
 template <typename Key, typename T, typename HashCompare = DefaultHashCompare<Key>>
 class ConcurrentHashMap {
+ private:
+    using HashMap = std::unordered_map<Key, T, detail::HashCompareHasher<Key, HashCompare>,
+                                       detail::HashCompareEqual<Key, HashCompare>>;
+
  public:
     ConcurrentHashMap() = default;
     ~ConcurrentHashMap() = default;
@@ -58,32 +82,32 @@ class ConcurrentHashMap {
     ConcurrentHashMap& operator=(ConcurrentHashMap&&) = delete;
 
     std::optional<T> Find(const Key& key) const {
-        typename tbb::concurrent_hash_map<Key, T, HashCompare>::const_accessor accessor;
-        if (hash_map_.find(accessor, key)) {
-            return accessor->second;
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        typename HashMap::const_iterator iter = hash_map_.find(key);
+        if (iter != hash_map_.end()) {
+            return iter->second;
         }
         return std::nullopt;
     }
 
     void Insert(const Key& key, const T& value) {
-        typename tbb::concurrent_hash_map<Key, T, HashCompare>::accessor accessor;
-        hash_map_.insert(accessor, key);
-        accessor->second = value;
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        hash_map_.insert_or_assign(key, value);
     }
 
     void Erase(const Key& key) {
-        typename tbb::concurrent_hash_map<Key, T, HashCompare>::accessor accessor;
-        if (hash_map_.find(accessor, key)) {
-            hash_map_.erase(accessor);
-        }
+        std::unique_lock<std::shared_mutex> lock(mutex_);
+        hash_map_.erase(key);
     }
 
     size_t Size() const {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         return hash_map_.size();
     }
 
  private:
-    tbb::concurrent_hash_map<Key, T, HashCompare> hash_map_;
+    HashMap hash_map_;
+    mutable std::shared_mutex mutex_;
 };
 
 class VectorStringHashCompare {
@@ -103,9 +127,3 @@ class VectorStringHashCompare {
 };
 
 }  // namespace paimon
-
-#else
-
-#include "paimon/common/utils/std_concurrent_hash_map.h"
-
-#endif

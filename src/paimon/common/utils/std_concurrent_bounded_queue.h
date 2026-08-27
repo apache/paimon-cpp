@@ -19,12 +19,12 @@
 
 #pragma once
 
-#ifdef PAIMON_USE_TBB
-
+#include <condition_variable>
 #include <cstddef>
+#include <limits>
+#include <mutex>
+#include <queue>
 #include <utility>
-
-#include "tbb/concurrent_queue.h"
 
 namespace paimon {
 
@@ -45,33 +45,48 @@ class ConcurrentBoundedQueue {
     ConcurrentBoundedQueue& operator=(ConcurrentBoundedQueue&&) = delete;
 
     void set_capacity(size_type capacity) {
-        queue_.set_capacity(capacity);
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            capacity_ =
+                capacity < 0 ? std::numeric_limits<size_t>::max() : static_cast<size_t>(capacity);
+        }
+        capacity_available_.notify_all();
     }
 
     void push(const T& value) {
-        queue_.push(value);
+        T copied_value = value;
+        push(std::move(copied_value));
     }
 
     void push(T&& value) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        capacity_available_.wait(lock, [this]() { return queue_.size() < capacity_; });
         queue_.push(std::move(value));
     }
 
     bool try_pop(T& value) {
-        return queue_.try_pop(value);
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (queue_.empty()) {
+                return false;
+            }
+            value = std::move(queue_.front());
+            queue_.pop();
+        }
+        capacity_available_.notify_one();
+        return true;
     }
 
     bool empty() const {
+        std::unique_lock<std::mutex> lock(mutex_);
         return queue_.empty();
     }
 
  private:
-    tbb::concurrent_bounded_queue<T> queue_;
+    std::queue<T> queue_;
+    size_t capacity_ = std::numeric_limits<size_t>::max();
+    mutable std::mutex mutex_;
+    std::condition_variable capacity_available_;
 };
 
 }  // namespace paimon
-
-#else
-
-#include "paimon/common/utils/std_concurrent_bounded_queue.h"
-
-#endif
