@@ -18,13 +18,11 @@
 
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta.h"
 
-#include <cstdint>
 #include <string>
 #include <utility>
 
 #include "fmt/format.h"
 #include "paimon/common/utils/field_type_utils.h"
-#include "paimon/common/utils/math.h"
 #include "paimon/defs.h"
 #include "paimon/io/data_input_stream.h"
 #include "paimon/memory/bytes.h"
@@ -81,18 +79,6 @@ Result<std::function<void(const Literal&)>> BitmapFileIndexMeta::GetValueWriter(
             return std::function<void(const Literal&)>(
                 [output_stream](const Literal& literal) -> void {
                     output_stream->WriteValue<int64_t>(literal.GetValue<int64_t>());
-                });
-        case FieldType::FLOAT:
-            return std::function<void(const Literal&)>(
-                [output_stream](const Literal& literal) -> void {
-                    const float value = CanonicalizeFloatingPoint(literal.GetValue<float>());
-                    output_stream->WriteValue<float>(value);
-                });
-        case FieldType::DOUBLE:
-            return std::function<void(const Literal&)>(
-                [output_stream](const Literal& literal) -> void {
-                    const double value = CanonicalizeFloatingPoint(literal.GetValue<double>());
-                    output_stream->WriteValue<double>(value);
                 });
         case FieldType::STRING:
             return std::function<void(const Literal&)>(
@@ -165,24 +151,6 @@ Result<std::function<Result<Literal>()>> BitmapFileIndexMeta::GetValueReader(
                                                      this]() -> Result<Literal> {
                 PAIMON_ASSIGN_OR_RAISE(int64_t value,
                                        ReadAndMoveBodyStart<int64_t>(in, move_body_start));
-                return Literal(value);
-            };
-            return func;
-        }
-        case FieldType::FLOAT: {
-            std::function<Result<Literal>()> func = [&in, move_body_start,
-                                                     this]() -> Result<Literal> {
-                PAIMON_ASSIGN_OR_RAISE(float value,
-                                       ReadAndMoveBodyStart<float>(in, move_body_start));
-                return Literal(value);
-            };
-            return func;
-        }
-        case FieldType::DOUBLE: {
-            std::function<Result<Literal>()> func = [&in, move_body_start,
-                                                     this]() -> Result<Literal> {
-                PAIMON_ASSIGN_OR_RAISE(double value,
-                                       ReadAndMoveBodyStart<double>(in, move_body_start));
                 return Literal(value);
             };
             return func;
