@@ -30,16 +30,16 @@
 #include "paimon/core/index/pk/primary_key_index_source_meta.h"
 
 namespace paimon {
-/// The single validated payload group which indexes one complete data level.
+/// One validated payload group which indexes an immutable source subset at one data level.
 ///
-/// A group is only created when the payload provably covers the current active source set
-/// of its data level: exactly one payload, unique source names, source order / file names /
-/// row counts identical to the expected level sources, matching index type and field id,
-/// a row range of exactly `[0, total source rows - 1]` and a payload row count equal to the
-/// source row count sum. Anything else must be treated as uncovered.
+/// A group is only created when the payload provably covers its declared source set: unique
+/// source names, matching index type and field id, a row range of exactly
+/// `[0, total source rows - 1]`, and a payload row count equal to the source row count sum.
+/// Snapshot-level active-source and overlap validation is performed by
+/// `PkSortedBucketIndexState` before creating the group.
 class PkSortedIndexGroup {
  public:
-    /// Validates one payload against the expected level sources; returns null when any
+    /// Validates one payload against its expected source group; returns null when any
     /// coverage condition fails.
     static std::shared_ptr<PkSortedIndexGroup> Create(
         int32_t field_id, const std::string& index_type,

@@ -21,8 +21,8 @@ Primary Key Global Index
 Paimon 2.0 primary-key tables support *source-backed* global scalar indexes
 (``pk-btree`` / ``pk-bitmap``). Unlike the Data Evolution global indexes described in
 :doc:`global_index`, which address rows by a table-wide row id, a source-backed payload
-covers the complete active source set of one positive data level of one bucket, and its
-results are group ordinals that are localized back to per-file physical row positions.
+covers an immutable ordered source group from one positive data level of one bucket, and
+its results are group ordinals that are localized back to per-file physical row positions.
 
 paimon-cpp supports the read path of this protocol: ordinary batch scans of a
 primary-key table with scalar index definitions automatically evaluate the part of the
@@ -43,11 +43,13 @@ The definitions follow the Java table options:
 Semantics
 ---------
 
-- A payload is only used when it provably covers the current active source set of its
-  data level: exactly one payload per level, source file names / order / row counts
-  identical to the active COMPACT files of that level, matching index type and field id,
-  and a row range of exactly ``[0, total source rows - 1]``. Anything else is treated as
-  uncovered and scanned normally.
+- A payload retains its complete ordered source list as the group-ordinal namespace. If
+  part of that list is not in the current scan because it was retired or safely pruned,
+  the payload can still cover the remaining files. Several payloads may coexist when their
+  active source intersections are disjoint. A payload is rejected if it has no active
+  source, an active source's row count differs, its metadata or row range is invalid, or
+  another payload claims the same active source. Active files without accepted coverage
+  are scanned normally.
 - ``AND`` predicates narrow with any safely evaluable indexed child; ``OR`` predicates
   only use the index when every branch is evaluable. Files whose evaluation fails, whose
   positions are out of range, or whose result needs more than 4096 ranges fall back to a

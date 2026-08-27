@@ -23,6 +23,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "paimon/core/index/global_index_meta.h"
@@ -30,6 +31,15 @@
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
 
 namespace paimon {
+namespace {
+struct PayloadCandidate {
+    std::shared_ptr<IndexFileMeta> payload;
+    std::shared_ptr<PkSortedIndexGroup> group;
+    std::vector<PrimaryKeyIndexSourceFile> active_sources;
+    bool conflicted = false;
+};
+}  // namespace
+
 PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
     int32_t field_id, const std::string& index_type,
     const std::vector<std::shared_ptr<DataFileMeta>>& active_data_files,
@@ -49,10 +59,20 @@ PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
             });
     }
 
-    // Match payloads against the expected level sources; anything that does not decode or
-    // does not exactly cover its level is rejected.
-    std::map<int32_t, std::vector<std::shared_ptr<IndexFileMeta>>> payloads_by_level;
-    std::map<int32_t, std::vector<PrimaryKeyIndexSourceMeta>> payload_metas_by_level;
+    std::map<std::string, int64_t> active_sources;
+    std::set<std::string> ambiguous_active_source_names;
+    for (const auto& level_sources : sources_by_level) {
+        for (const PrimaryKeyIndexSourceFile& source : level_sources.second) {
+            if (!active_sources.emplace(source.file_name, source.row_count).second) {
+                ambiguous_active_source_names.insert(source.file_name);
+            }
+        }
+    }
+
+    // Keep the complete immutable source group for ordinal localization, but only claim the
+    // sources which are still active in this snapshot. Several disjoint groups may coexist
+    // after an update; no active source file may be claimed by two groups.
+    std::vector<PayloadCandidate> candidates;
     std::vector<std::shared_ptr<IndexFileMeta>> rejected;
     for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads) {
         if (payload == nullptr) {
@@ -71,39 +91,86 @@ PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
             continue;
         }
         PrimaryKeyIndexSourceMeta source_meta = std::move(source_meta_result).value();
-        auto desired = sources_by_level.find(source_meta.DataLevel());
-        if (desired == sources_by_level.end() || desired->second != source_meta.SourceFiles()) {
+        const std::vector<PrimaryKeyIndexSourceFile>& payload_sources = source_meta.SourceFiles();
+        bool valid_candidate = !payload_sources.empty();
+        std::vector<PrimaryKeyIndexSourceFile> active_intersection;
+        for (size_t i = 0; valid_candidate && i < payload_sources.size(); i++) {
+            const PrimaryKeyIndexSourceFile& source = payload_sources[i];
+            if (i > 0 && payload_sources[i - 1].file_name >= source.file_name) {
+                valid_candidate = false;
+                break;
+            }
+            auto active_source = active_sources.find(source.file_name);
+            if (active_source == active_sources.end()) {
+                continue;
+            }
+            if (active_source->second != source.row_count ||
+                ambiguous_active_source_names.count(source.file_name) > 0) {
+                valid_candidate = false;
+                break;
+            }
+            active_intersection.push_back(source);
+        }
+        if (!valid_candidate || active_intersection.empty()) {
             rejected.push_back(payload);
             continue;
         }
-        payloads_by_level[source_meta.DataLevel()].push_back(payload);
-        payload_metas_by_level[source_meta.DataLevel()].push_back(std::move(source_meta));
+        std::shared_ptr<PkSortedIndexGroup> group =
+            PkSortedIndexGroup::Create(field_id, index_type, payload_sources, payload, source_meta);
+        if (group == nullptr) {
+            rejected.push_back(payload);
+            continue;
+        }
+        candidates.push_back(
+            {payload, std::move(group), std::move(active_intersection), /*conflicted=*/false});
+    }
+
+    std::map<std::pair<std::string, int64_t>, std::vector<size_t>> candidates_by_source;
+    for (size_t i = 0; i < candidates.size(); i++) {
+        const PayloadCandidate& candidate = candidates[i];
+        for (const PrimaryKeyIndexSourceFile& source : candidate.active_sources) {
+            candidates_by_source[{source.file_name, source.row_count}].push_back(i);
+        }
+    }
+    for (const auto& source_candidates : candidates_by_source) {
+        if (source_candidates.second.size() > 1) {
+            for (size_t candidate_index : source_candidates.second) {
+                candidates[candidate_index].conflicted = true;
+            }
+        }
     }
 
     std::vector<std::shared_ptr<PkSortedIndexGroup>> groups;
-    std::set<int32_t> covered_levels;
-    for (const auto& level_payloads : payloads_by_level) {
-        int32_t level = level_payloads.first;
-        std::shared_ptr<PkSortedIndexGroup> group;
-        if (level_payloads.second.size() == 1) {
-            group = PkSortedIndexGroup::Create(field_id, index_type, sources_by_level[level],
-                                               level_payloads.second[0],
-                                               payload_metas_by_level[level][0]);
+    std::set<std::pair<std::string, int64_t>> covered_sources;
+    for (PayloadCandidate& candidate : candidates) {
+        if (candidate.conflicted) {
+            rejected.push_back(std::move(candidate.payload));
+            continue;
         }
-        if (group != nullptr) {
-            groups.push_back(std::move(group));
-            covered_levels.insert(level);
-        } else {
-            rejected.insert(rejected.end(), level_payloads.second.begin(),
-                            level_payloads.second.end());
+        for (const PrimaryKeyIndexSourceFile& source : candidate.active_sources) {
+            covered_sources.emplace(source.file_name, source.row_count);
         }
+        groups.push_back(std::move(candidate.group));
     }
+    std::sort(groups.begin(), groups.end(),
+              [](const std::shared_ptr<PkSortedIndexGroup>& left,
+                 const std::shared_ptr<PkSortedIndexGroup>& right) {
+                  if (left->DataLevel() != right->DataLevel()) {
+                      return left->DataLevel() < right->DataLevel();
+                  }
+                  return left->SourceFiles().front().file_name <
+                         right->SourceFiles().front().file_name;
+              });
 
     std::vector<PrimaryKeyIndexSourceFile> covered;
     std::vector<PrimaryKeyIndexSourceFile> uncovered;
     for (const auto& level_sources : sources_by_level) {
-        auto& target = covered_levels.count(level_sources.first) > 0 ? covered : uncovered;
-        target.insert(target.end(), level_sources.second.begin(), level_sources.second.end());
+        for (const PrimaryKeyIndexSourceFile& source : level_sources.second) {
+            auto& target = covered_sources.count({source.file_name, source.row_count}) > 0
+                               ? covered
+                               : uncovered;
+            target.push_back(source);
+        }
     }
     return PkSortedBucketIndexState(std::move(groups), std::move(covered), std::move(uncovered),
                                     std::move(rejected));

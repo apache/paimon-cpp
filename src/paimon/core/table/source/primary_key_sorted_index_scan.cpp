@@ -34,6 +34,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
+#include "paimon/core/index/pk/primary_key_index_source_policy.h"
 #include "paimon/core/index/pksorted/pk_sorted_bucket_index_state.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
@@ -387,7 +388,9 @@ Result<PrimaryKeySortedIndexScan::Plan> PrimaryKeySortedIndexScan::CreatePlan(
         }
         std::set<std::pair<std::string, int64_t>> active_source_files;
         for (const std::shared_ptr<DataFileMeta>& data_file : bucket_entry.second) {
-            active_source_files.emplace(data_file->file_name, data_file->row_count);
+            if (data_file != nullptr && PrimaryKeyIndexSourcePolicy::ShouldRead(*data_file)) {
+                active_source_files.emplace(data_file->file_name, data_file->row_count);
+            }
         }
         std::map<std::string, std::map<int32_t, std::shared_ptr<PkSortedIndexGroup>>>
             groups_by_source;
