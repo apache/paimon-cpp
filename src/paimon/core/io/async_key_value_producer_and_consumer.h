@@ -27,12 +27,12 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "paimon/common/utils/concurrent_bounded_queue.h"
 #include "paimon/core/io/row_to_arrow_array_converter.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/mergetree/compact/sort_merge_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
-#include "tbb/concurrent_queue.h"
 
 namespace paimon {
 template <typename T, typename R>
@@ -94,8 +94,8 @@ class AsyncKeyValueProducerAndConsumer {
     std::shared_future<Status> producer_future_;
     std::vector<std::unique_ptr<AsyncKeyValueConsumer<T, R>>> consumers_;
     std::atomic<int32_t> consumer_finished_count_ = 0;
-    tbb::concurrent_bounded_queue<std::vector<KeyValue>> kv_queue_;
-    tbb::concurrent_bounded_queue<R> result_queue_;
+    ConcurrentBoundedQueue<std::vector<KeyValue>> kv_queue_;
+    ConcurrentBoundedQueue<R> result_queue_;
 };
 
 template <typename T, typename R>
@@ -104,8 +104,8 @@ class AsyncKeyValueConsumer {
     AsyncKeyValueConsumer(std::unique_ptr<RowToArrowArrayConverter<T, R>>&& key_value_consumer,
                           std::atomic<bool>& consume_finished,
                           std::atomic<int32_t>& consumer_finished_count,
-                          tbb::concurrent_bounded_queue<std::vector<KeyValue>>& kv_queue,
-                          tbb::concurrent_bounded_queue<R>& result_queue);
+                          ConcurrentBoundedQueue<std::vector<KeyValue>>& kv_queue,
+                          ConcurrentBoundedQueue<R>& result_queue);
 
     ~AsyncKeyValueConsumer() {
         CleanUp();
@@ -122,8 +122,8 @@ class AsyncKeyValueConsumer {
     std::shared_future<Status> consumer_future_;
     std::atomic<bool>& consume_finished_;
     std::atomic<int32_t>& consumer_finished_count_;
-    tbb::concurrent_bounded_queue<std::vector<KeyValue>>& kv_queue_;
-    tbb::concurrent_bounded_queue<R>& result_queue_;
+    ConcurrentBoundedQueue<std::vector<KeyValue>>& kv_queue_;
+    ConcurrentBoundedQueue<R>& result_queue_;
 };
 
 }  // namespace paimon

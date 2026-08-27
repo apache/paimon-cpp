@@ -39,7 +39,7 @@ if(PAIMON_ENABLE_AVRO)
                    glog
                    fmt
                    avro
-                   tbb
+                   ${PAIMON_TBB_LIBS}
                    Threads::Threads
                    SHARED_LINK_LIBS
                    paimon_shared

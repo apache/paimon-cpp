@@ -23,12 +23,69 @@
 
 #include <cstdlib>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <thread>
 
 #include "gtest/gtest.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+struct PluginMapKey {
+    int32_t value = 0;
+};
+
+class PluginMapKeyHashCompare {
+ public:
+    size_t hash(const PluginMapKey& key) const {
+        return std::hash<int32_t>{}(key.value);
+    }
+
+    bool equal(const PluginMapKey& lhs, const PluginMapKey& rhs) const {
+        return lhs.value == rhs.value;
+    }
+};
+
+using PluginMapBackend =
+    ConcurrentHashMapBackend<PluginMapKey, std::string, PluginMapKeyHashCompare>;
+
+class PluginMapBackendImpl : public PluginMapBackend {
+ public:
+    std::optional<std::string> Find(const PluginMapKey& key) const override {
+        if (value_ && value_->first.value == key.value) {
+            return value_->second;
+        }
+        return std::nullopt;
+    }
+
+    void Insert(const PluginMapKey& key, const std::string& value) override {
+        value_ = std::make_pair(key, value);
+    }
+
+    void Erase(const PluginMapKey& key) override {
+        if (value_ && value_->first.value == key.value) {
+            value_ = std::nullopt;
+        }
+    }
+
+    size_t Size() const override {
+        return value_ ? 1 : 0;
+    }
+
+ private:
+    std::optional<std::pair<PluginMapKey, std::string>> value_;
+};
+
+int32_t plugin_map_backend_create_count = 0;
+const bool plugin_map_backend_registered =
+    ConcurrentBackendFactory<PluginMapBackend>::Register([]() {
+        ++plugin_map_backend_create_count;
+        return std::make_unique<PluginMapBackendImpl>();
+    });
+
+}  // namespace
 
 TEST(ConcurrentHashMapTest, TestSimple) {
     ConcurrentHashMap<int32_t, std::string> hash_map;
@@ -152,6 +209,19 @@ TEST(ConcurrentHashMapTest, TestMultiThreadInsertAndFindAndDelete) {
             }
         }
     }
+}
+
+TEST(ConcurrentHashMapTest, TestStaticallyRegisteredBackendSelection) {
+    ASSERT_TRUE(plugin_map_backend_registered);
+    ConcurrentHashMap<PluginMapKey, std::string, PluginMapKeyHashCompare> hash_map;
+    hash_map.Insert(PluginMapKey{1}, "plugin");
+    ASSERT_EQ(hash_map.Find(PluginMapKey{1}), "plugin");
+
+#ifdef PAIMON_USE_TBB
+    ASSERT_EQ(plugin_map_backend_create_count, 0);
+#else
+    ASSERT_EQ(plugin_map_backend_create_count, 1);
+#endif
 }
 
 }  // namespace paimon::test

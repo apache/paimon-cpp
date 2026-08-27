@@ -467,7 +467,7 @@ add_paimon_lib(paimon
                ${PAIMON_CORE_SRCS}
                DEPENDENCIES
                arrow
-               tbb
+               ${PAIMON_TBB_LIBS}
                glog
                fmt
                roaring_bitmap
@@ -479,7 +479,7 @@ add_paimon_lib(paimon
                DataSketches
                STATIC_LINK_LIBS
                arrow
-               tbb
+               ${PAIMON_TBB_LIBS}
                glog
                fmt
                roaring_bitmap
@@ -632,6 +632,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/arrow/mem_utils_test.cpp
                     common/utils/arrow/status_utils_test.cpp
                     common/utils/concurrent_hash_map_test.cpp
+                    common/utils/concurrent_bounded_queue_test.cpp
                     common/utils/projected_row_test.cpp
                     common/utils/projected_array_test.cpp
                     common/utils/bit_set_test.cpp

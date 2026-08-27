@@ -173,6 +173,8 @@ if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
     define_option(PAIMON_DEPENDENCY_USE_SHARED
                   "Prefer shared libraries for system third-party packages" OFF)
 
+    define_option(PAIMON_USE_TBB "Use oneTBB concurrent containers" ON)
+
     define_option_string(Arrow_SOURCE
                          "Dependency source for Apache Arrow; SYSTEM is unsupported"
                          ""
