@@ -28,6 +28,7 @@
 #pragma once
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -40,6 +41,41 @@
 #include "paimon/status.h"
 
 namespace paimon {
+
+inline constexpr uint32_t kCanonicalFloatNaNBits = 0x7fc00000;
+inline constexpr uint64_t kCanonicalDoubleNaNBits = 0x7ff8000000000000;
+
+inline float CanonicalizeFloatingPoint(float value) {
+    if (std::isnan(value)) {
+        std::memcpy(&value, &kCanonicalFloatNaNBits, sizeof(value));
+    }
+    return value;
+}
+
+inline double CanonicalizeFloatingPoint(double value) {
+    if (std::isnan(value)) {
+        std::memcpy(&value, &kCanonicalDoubleNaNBits, sizeof(value));
+    }
+    return value;
+}
+
+inline int32_t CanonicalizeFloatToIntBits(float value) {
+    if (std::isnan(value)) {
+        return static_cast<int32_t>(kCanonicalFloatNaNBits);
+    }
+    int32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+inline int64_t CanonicalizeDoubleToLongBits(double value) {
+    if (std::isnan(value)) {
+        return static_cast<int64_t>(kCanonicalDoubleNaNBits);
+    }
+    int64_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
 
 template <typename To, typename From>
 constexpr bool InRange(From value) {

@@ -18,7 +18,6 @@
 
 #include "paimon/predicate/literal.h"
 
-#include <cmath>
 #include <cstring>
 #include <functional>
 #include <sstream>
@@ -29,6 +28,7 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/status.h"
@@ -63,9 +63,9 @@ class Literal::Impl {
             case FieldType::BIGINT:
                 return std::hash<int64_t>{}(value_.BigIntVal);
             case FieldType::FLOAT:
-                return std::hash<float>{}(value_.FloatVal);
+                return std::hash<float>{}(CanonicalizeFloatingPoint(value_.FloatVal));
             case FieldType::DOUBLE:
-                return std::hash<double>{}(value_.DoubleVal);
+                return std::hash<double>{}(CanonicalizeFloatingPoint(value_.DoubleVal));
             case FieldType::STRING:
             case FieldType::BINARY:
                 return std::hash<std::string_view>{}(std::string_view(value_.Buffer, size_));
