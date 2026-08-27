@@ -124,6 +124,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/less_than.cpp
     common/predicate/like.cpp
     common/predicate/literal_converter.cpp
+    common/predicate/literal_set.cpp
     common/predicate/literal.cpp
     common/predicate/not_equal.cpp
     common/predicate/not_in.cpp
@@ -604,6 +605,7 @@ if(PAIMON_BUILD_TESTS)
                     common/options/memory_size_test.cpp
                     common/options/time_duration_test.cpp
                     common/predicate/literal_converter_test.cpp
+                    common/predicate/literal_set_test.cpp
                     common/predicate/literal_test.cpp
                     common/predicate/predicate_test.cpp
                     common/predicate/predicate_utils_test.cpp

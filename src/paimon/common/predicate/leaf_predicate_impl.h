@@ -20,12 +20,14 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "paimon/common/predicate/compound_function.h"
 #include "paimon/common/predicate/leaf_function.h"
 #include "paimon/common/predicate/literal_converter.h"
+#include "paimon/common/predicate/literal_set.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/predicate/leaf_predicate.h"
@@ -35,7 +37,8 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
     LeafPredicateImpl(const LeafFunction& leaf_function, int32_t field_index,
                       const std::string& field_name, const FieldType& field_type,
                       const std::vector<Literal>& literals)
-        : LeafPredicate(leaf_function, field_index, field_name, field_type, literals) {}
+        : LeafPredicateImpl(leaf_function, field_index, field_name, field_type, literals,
+                            BuildLiteralSet(leaf_function, field_type, literals)) {}
 
     const LeafFunction& GetLeafFunction() const {
         return leaf_function_;
@@ -49,6 +52,11 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
                             struct_array.fields().size()));
         }
         const auto& field_array = struct_array.field(field_index_);
+        if (literal_set_ && literal_set_->MatchesArrowType(*field_array)) {
+            std::vector<char> is_valid(field_array->length(), 0);
+            PAIMON_RETURN_NOT_OK(literal_set_->TestArray(*field_array, negate_in_, &is_valid));
+            return is_valid;
+        }
         return leaf_function_.Test(*field_array, literals_);
     }
 
@@ -60,6 +68,9 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
         }
         PAIMON_ASSIGN_OR_RAISE(Literal value, LiteralConverter::ConvertLiteralsFromRow(
                                                   schema, row, field_index_, field_type_));
+        if (literal_set_ && value.GetType() == field_type_) {
+            return literal_set_->TestValue(value, negate_in_);
+        }
         return leaf_function_.Test(value, literals_);
     }
 
@@ -86,14 +97,41 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
         return leaf_function_.Test(row_count, min_value, max_value, null_count, literals_);
     }
 
+    // Rebinding to another schema keeps the literals untouched, so the lookup structure is shared
+    // instead of rebuilt for every reader.
     std::shared_ptr<LeafPredicateImpl> NewLeafPredicate(int32_t new_field_index) const {
-        return std::make_shared<LeafPredicateImpl>(leaf_function_, new_field_index, field_name_,
-                                                   field_type_, literals_);
+        return std::shared_ptr<LeafPredicateImpl>(new LeafPredicateImpl(
+            leaf_function_, new_field_index, field_name_, field_type_, literals_, literal_set_));
     }
 
     std::shared_ptr<LeafPredicateImpl> NewLeafPredicate(const std::string& new_field_name) const {
-        return std::make_shared<LeafPredicateImpl>(leaf_function_, field_index_, new_field_name,
-                                                   field_type_, literals_);
+        return std::shared_ptr<LeafPredicateImpl>(new LeafPredicateImpl(
+            leaf_function_, field_index_, new_field_name, field_type_, literals_, literal_set_));
     }
+
+ private:
+    LeafPredicateImpl(const LeafFunction& leaf_function, int32_t field_index,
+                      const std::string& field_name, const FieldType& field_type,
+                      const std::vector<Literal>& literals,
+                      std::shared_ptr<const LiteralSet> literal_set)
+        : LeafPredicate(leaf_function, field_index, field_name, field_type, literals),
+          literal_set_(std::move(literal_set)),
+          negate_in_(leaf_function.GetType() == Function::Type::NOT_IN) {}
+
+    static std::shared_ptr<const LiteralSet> BuildLiteralSet(const LeafFunction& leaf_function,
+                                                             const FieldType& field_type,
+                                                             const std::vector<Literal>& literals) {
+        Function::Type type = leaf_function.GetType();
+        if (type != Function::Type::IN && type != Function::Type::NOT_IN) {
+            return nullptr;
+        }
+        return LiteralSet::CreateOrNull(field_type, literals);
+    }
+
+    // Built once at construction time and never mutated afterwards, so concurrent `Test` calls on
+    // the same predicate stay safe. Null when the type or the literals are not supported, in which
+    // case every path falls back to `leaf_function_`.
+    std::shared_ptr<const LiteralSet> literal_set_;
+    bool negate_in_;
 };
 }  // namespace paimon
