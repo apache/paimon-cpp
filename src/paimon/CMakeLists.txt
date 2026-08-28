@@ -286,6 +286,7 @@ set(PAIMON_CORE_SRCS
     core/io/vector_file_batch_reader.cpp
     core/io/file_index_evaluator.cpp
     core/io/key_value_data_file_record_reader.cpp
+    core/io/key_value_data_file_writer_factories.cpp
     core/io/key_value_data_file_writer_factory.cpp
     core/io/key_value_data_file_writer.cpp
     core/io/key_value_in_memory_record_reader.cpp

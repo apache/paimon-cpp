@@ -55,8 +55,9 @@ class LookupMergeTreeCompactRewriter : public ChangelogMergeTreeRewriter {
 
     static std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>
     CreateFirstRowMergeFunctionWrapper(std::unique_ptr<FirstRowMergeFunction>&& merge_func,
-                                       int32_t output_level, LookupLevels<bool>* lookup_levels,
-                                       std::unique_ptr<RowCompactedSerializer>&& value_serializer);
+                                       int32_t output_level,
+                                       std::unique_ptr<RowCompactedSerializer>&& value_serializer,
+                                       LookupLevels<bool>* lookup_levels);
 
     static Result<std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>>
     CreateLookupMergeFunctionWrapper(
@@ -65,7 +66,7 @@ class LookupMergeTreeCompactRewriter : public ChangelogMergeTreeRewriter {
         const LookupStrategy& lookup_strategy, bool should_produce_changelog,
         const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
         LookupLevels<T>* lookup_levels, std::unique_ptr<RowCompactedSerializer>&& value_serializer,
-        typename LookupChangelogMergeFunctionWrapper<T>::ValueEqualizer value_equalizer);
+        FieldComparatorFunc value_equalizer);
 
  private:
     LookupMergeTreeCompactRewriter(

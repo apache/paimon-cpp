@@ -140,8 +140,10 @@ TEST(LookupChangelogMergeFunctionWrapperTest, TestWithLookup) {
     ASSERT_EQ(result->result->sequence_number, 3);
     ASSERT_EQ(result->changelogs.size(), 2);
     ASSERT_EQ(result->changelogs[0].value_kind, RowKind::UpdateBefore());
+    ASSERT_EQ(result->changelogs[0].level, KeyValue::UNKNOWN_LEVEL);
     ASSERT_EQ(result->changelogs[0].value->GetInt(0), 1001);
     ASSERT_EQ(result->changelogs[1].value_kind, RowKind::UpdateAfter());
+    ASSERT_EQ(result->changelogs[1].level, KeyValue::UNKNOWN_LEVEL);
     ASSERT_EQ(result->changelogs[1].value->GetInt(0), 300);
 }
 
@@ -161,7 +163,7 @@ TEST(LookupChangelogMergeFunctionWrapperTest, TestRowDeduplicate) {
     LookupStrategy lookup_strategy(/*is_first_row=*/false, /*produce_changelog=*/true,
                                    /*deletion_vector=*/false, /*force_lookup=*/true);
     auto value_equalizer = [](const InternalRow& lhs, const InternalRow& rhs) {
-        return lhs.GetInt(0) == rhs.GetInt(0);
+        return lhs.GetInt(0) == rhs.GetInt(0) ? 0 : 1;
     };
     ASSERT_OK_AND_ASSIGN(auto wrapper,
                          LookupChangelogMergeFunctionWrapper<KeyValue>::Create(

@@ -168,7 +168,7 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
             std::shared_ptr<MergeFunctionWrapper<ChangelogResult>> merge_function_wrapper =
                 LookupMergeTreeCompactRewriter<bool>::CreateFirstRowMergeFunctionWrapper(
                     std::make_unique<FirstRowMergeFunction>(/*ignore_delete=*/true), output_level,
-                    lookup_levels_ptr, std::move(value_serializer));
+                    std::move(value_serializer), lookup_levels_ptr);
             return merge_function_wrapper;
         };
         auto cancellation_controller = std::make_shared<CancellationController>();
@@ -197,7 +197,7 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
                     arrow_schema_, table_schema->TrimmedPrimaryKeys().value(), options, pool_));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RowCompactedSerializer> value_serializer,
                                    RowCompactedSerializer::Create(arrow_schema_, pool_));
-            InternalRowEqualizer::Equalizer value_equalizer;
+            FieldComparatorFunc value_equalizer;
             if (options.ChangelogRowDeduplicate()) {
                 PAIMON_ASSIGN_OR_RAISE(
                     value_equalizer,
@@ -292,7 +292,7 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
                     arrow_schema_, table_schema->TrimmedPrimaryKeys().value(), options, pool_));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RowCompactedSerializer> value_serializer,
                                    RowCompactedSerializer::Create(arrow_schema_, pool_));
-            InternalRowEqualizer::Equalizer value_equalizer;
+            FieldComparatorFunc value_equalizer;
             if (options.ChangelogRowDeduplicate()) {
                 PAIMON_ASSIGN_OR_RAISE(
                     value_equalizer,

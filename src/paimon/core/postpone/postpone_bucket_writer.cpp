@@ -31,7 +31,6 @@
 #include "arrow/c/helpers.h"
 #include "arrow/scalar.h"
 #include "fmt/format.h"
-#include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
@@ -43,8 +42,7 @@
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/data_increment.h"
-#include "paimon/core/io/key_value_data_file_writer_factory.h"
-#include "paimon/core/io/shredding_key_value_data_file_writer_factory.h"
+#include "paimon/core/io/key_value_data_file_writer_factories.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/format/file_format.h"
@@ -258,21 +256,12 @@ PostponeBucketWriter::PrepareMinMaxKey(
 
 Result<std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
 PostponeBucketWriter::CreateRollingRowWriter() const {
-    std::shared_ptr<SingleFileWriterFactory<KeyValueBatch, std::shared_ptr<DataFileMeta>>> factory;
     PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ShreddingWritePlanFactory> plan_factory,
-        ShreddingWritePlanFactories::SelectActive(options_, write_schema_, pool_));
-    if (plan_factory != nullptr) {
-        factory = std::make_shared<ShreddingKeyValueDataFileWriterFactory>(
-            options_, schema_id_, write_schema_, /*level=*/0, FileSource::Append(),
-            trimmed_primary_keys_, path_factory_, /*create_stats_extractor=*/false, plan_factory,
-            /*is_changelog=*/false, pool_);
-    } else {
-        factory = std::make_shared<KeyValueDataFileWriterFactory>(
-            options_, schema_id_, write_schema_, /*level=*/0, FileSource::Append(),
-            trimmed_primary_keys_, path_factory_, /*create_stats_extractor=*/false,
-            /*is_changelog=*/false, pool_);
-    }
+        std::shared_ptr<KeyValueDataFileWriterFactories::WriterFactory> factory,
+        KeyValueDataFileWriterFactories::Create(options_, schema_id_, write_schema_, /*level=*/0,
+                                                FileSource::Append(), trimmed_primary_keys_,
+                                                path_factory_, /*create_stats_extractor=*/false,
+                                                /*is_changelog=*/false, pool_));
     return std::make_unique<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>(
         options_.GetTargetFileSize(/*has_primary_key=*/true), options_.GetTargetFileRowNum(),
         factory);

@@ -383,8 +383,7 @@ TEST_F(MergeTreeCompactManagerFactoryWriteTest,
     ASSERT_OK(CreateSingleStringFileStoreWrite({{"bucket", "1"},
                                                 {Options::DELETION_VECTORS_ENABLED, "true"},
                                                 {Options::CHANGELOG_PRODUCER, "lookup"}},
-                                               /*with_io_manager=*/true)
-                  .status());
+                                               /*with_io_manager=*/true));
 }
 
 }  // namespace paimon::test

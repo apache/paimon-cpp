@@ -1,17 +1,20 @@
 /*
- * Copyright 2026-present Alibaba Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
 #include "paimon/core/mergetree/compact/internal_row_equalizer.h"
@@ -109,34 +112,33 @@ TEST(InternalRowEqualizerTest, PrimitiveTypesAndIgnoreFields) {
 
     std::unique_ptr<GenericRow> left = GenericRow::Of(left_values);
     std::unique_ptr<GenericRow> right = GenericRow::Of(right_values);
-    ASSERT_OK_AND_ASSIGN(InternalRowEqualizer::Equalizer equalizer,
+    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer,
                          InternalRowEqualizer::Create(schema, {"ignored"}));
-    ASSERT_TRUE(equalizer(*left, *right));
+    ASSERT_EQ(0, equalizer(*left, *right));
 
     right->SetField(/*pos=*/3, int32_t{30});
-    ASSERT_FALSE(equalizer(*left, *right));
+    ASSERT_NE(0, equalizer(*left, *right));
 }
 
 TEST(InternalRowEqualizerTest, NullAndFloatingPointSemantics) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(
         {arrow::field("value", arrow::float64()), arrow::field("nullable", arrow::int32())});
-    ASSERT_OK_AND_ASSIGN(InternalRowEqualizer::Equalizer equalizer,
-                         InternalRowEqualizer::Create(schema, {}));
+    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer, InternalRowEqualizer::Create(schema, {}));
 
     std::unique_ptr<GenericRow> negative_zero =
         GenericRow::Of({static_cast<double>(-0.0), NullType()});
     std::unique_ptr<GenericRow> positive_zero =
         GenericRow::Of({static_cast<double>(0.0), NullType()});
-    ASSERT_FALSE(equalizer(*negative_zero, *positive_zero));
+    ASSERT_NE(0, equalizer(*negative_zero, *positive_zero));
 
     double nan1 = std::numeric_limits<double>::quiet_NaN();
     double nan2 = -std::numeric_limits<double>::quiet_NaN();
     std::unique_ptr<GenericRow> left_nan = GenericRow::Of({nan1, NullType()});
     std::unique_ptr<GenericRow> right_nan = GenericRow::Of({nan2, NullType()});
-    ASSERT_TRUE(equalizer(*left_nan, *right_nan));
+    ASSERT_EQ(0, equalizer(*left_nan, *right_nan));
 
     right_nan->SetField(/*pos=*/1, int32_t{1});
-    ASSERT_FALSE(equalizer(*left_nan, *right_nan));
+    ASSERT_NE(0, equalizer(*left_nan, *right_nan));
 }
 
 TEST(InternalRowEqualizerTest, NestedTypes) {
@@ -146,8 +148,7 @@ TEST(InternalRowEqualizerTest, NestedTypes) {
          arrow::field("map", arrow::map(arrow::int32(), arrow::int32())),
          arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32()),
                                              arrow::field("floating", arrow::float64())}))});
-    ASSERT_OK_AND_ASSIGN(InternalRowEqualizer::Equalizer equalizer,
-                         InternalRowEqualizer::Create(schema, {}));
+    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer, InternalRowEqualizer::Create(schema, {}));
 
     std::unique_ptr<GenericRow> left =
         GenericRow::Of({CreateNullableIntArray({1, 0, 3}, /*null_pos=*/1, pool.get()),
@@ -157,39 +158,38 @@ TEST(InternalRowEqualizerTest, NestedTypes) {
         GenericRow::Of({CreateNullableIntArray({1, 9, 3}, /*null_pos=*/1, pool.get()),
                         CreateIntMap({1, 2}, {10, 20}, pool.get()),
                         CreateNestedRow(100, -std::numeric_limits<double>::quiet_NaN())});
-    ASSERT_TRUE(equalizer(*left, *right));
+    ASSERT_EQ(0, equalizer(*left, *right));
 
     right->SetField(/*pos=*/0, CreateIntArray({1, 2}, pool.get()));
-    ASSERT_FALSE(equalizer(*left, *right));
+    ASSERT_NE(0, equalizer(*left, *right));
 
     right->SetField(/*pos=*/0, CreateNullableIntArray({1, 0, 3}, /*null_pos=*/1, pool.get()));
     right->SetField(/*pos=*/0, CreateNullableIntArray({1, 0, 4}, /*null_pos=*/1, pool.get()));
-    ASSERT_FALSE(equalizer(*left, *right));
+    ASSERT_NE(0, equalizer(*left, *right));
 
     right->SetField(/*pos=*/0, CreateNullableIntArray({1, 0, 3}, /*null_pos=*/1, pool.get()));
     right->SetField(/*pos=*/1, CreateIntMap({1, 3}, {10, 20}, pool.get()));
-    ASSERT_FALSE(equalizer(*left, *right));
+    ASSERT_NE(0, equalizer(*left, *right));
 
     right->SetField(/*pos=*/1, CreateIntMap({1, 2}, {10, 20}, pool.get()));
     right->SetField(/*pos=*/2, CreateNestedRow(101, 1.0));
-    ASSERT_FALSE(equalizer(*left, *right));
+    ASSERT_NE(0, equalizer(*left, *right));
 }
 
 TEST(InternalRowEqualizerTest, MapEqualityDoesNotDependOnEntryOrder) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     std::shared_ptr<arrow::Schema> schema =
         arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::int32()))});
-    ASSERT_OK_AND_ASSIGN(InternalRowEqualizer::Equalizer equalizer,
-                         InternalRowEqualizer::Create(schema, {}));
+    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer, InternalRowEqualizer::Create(schema, {}));
 
     std::unique_ptr<GenericRow> left =
         GenericRow::Of({CreateIntMap({1, 2, 3}, {10, 20, 30}, pool.get())});
     std::unique_ptr<GenericRow> reordered =
         GenericRow::Of({CreateIntMap({3, 1, 2}, {30, 10, 20}, pool.get())});
-    ASSERT_TRUE(equalizer(*left, *reordered));
+    ASSERT_EQ(0, equalizer(*left, *reordered));
 
     reordered->SetField(/*pos=*/0, CreateIntMap({3, 1, 2}, {30, 10, 21}, pool.get()));
-    ASSERT_FALSE(equalizer(*left, *reordered));
+    ASSERT_NE(0, equalizer(*left, *reordered));
 }
 
 TEST(InternalRowEqualizerTest, UnsupportedType) {

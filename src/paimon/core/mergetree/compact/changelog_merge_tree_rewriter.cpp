@@ -46,7 +46,7 @@ class ChangelogCompactionBatchProducer : public AsyncKeyValueBatchProducer {
         bool produce_data, bool produce_changelog)
         : sections_(sections),
           reader_holders_(reader_holders),
-          write_batch_size_(write_batch_size),
+          write_batch_size_(NormalizeProjectionBatchSize(write_batch_size)),
           reader_factory_(std::move(reader_factory)),
           merge_function_wrapper_factory_(std::move(merge_function_wrapper_factory)),
           key_comparator_(std::move(key_comparator)),
@@ -255,7 +255,6 @@ Result<CompactResult> ChangelogMergeTreeRewriter::RewriteOrProduceChangelog(
 
     bool produce_data = compact_file_writer != nullptr;
     bool produce_changelog = changelog_file_writer != nullptr;
-    using AsyncPipeline = AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>;
     SortMergeReaderFactory reader_factory = [this](const std::vector<SortedRun>& section) {
         return CreateRawSortMergeReaderForSection(section);
     };
@@ -269,18 +268,13 @@ Result<CompactResult> ChangelogMergeTreeRewriter::RewriteOrProduceChangelog(
     CancellationChecker cancellation_checker = [this]() { return IsCancelled(); };
     std::unique_ptr<AsyncKeyValueBatchProducer> producer =
         std::make_unique<ChangelogCompactionBatchProducer>(
-            sections, reader_holders,
-            AsyncPipeline::NormalizeProjectionBatchSize(options_.GetWriteBatchSize()),
-            std::move(reader_factory), std::move(merge_function_wrapper_factory),
-            std::move(key_comparator), std::move(cancellation_checker), drop_delete, produce_data,
-            produce_changelog);
+            sections, reader_holders, options_.GetWriteBatchSize(), std::move(reader_factory),
+            std::move(merge_function_wrapper_factory), std::move(key_comparator),
+            std::move(cancellation_checker), drop_delete, produce_data, produce_changelog);
 
-    AsyncPipeline::ConsumerCreator data_consumer =
-        produce_data ? create_consumer : AsyncPipeline::ConsumerCreator();
-    AsyncPipeline::ConsumerCreator changelog_consumer =
-        produce_changelog ? create_consumer : AsyncPipeline::ConsumerCreator();
-    auto producer_and_consumer = std::make_unique<AsyncPipeline>(
-        std::move(producer), std::move(data_consumer), std::move(changelog_consumer));
+    auto producer_and_consumer =
+        std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
+            std::move(producer), std::move(create_consumer), /*consumer_thread_num=*/1);
     while (true) {
         if (IsCancelled()) {
             return Status::Cancelled("Compaction is cancelled");

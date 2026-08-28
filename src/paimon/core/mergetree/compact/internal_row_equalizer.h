@@ -1,17 +1,20 @@
 /*
- * Copyright 2026-present Alibaba Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 
 #pragma once
@@ -38,12 +41,13 @@
 namespace paimon {
 
 /// Creates equality functions for internal rows, including nested values.
+/// Java's RecordEqualiser also compares the RowKind embedded in InternalRow. This comparator
+/// currently compares field values only. This does not affect the current lookup changelog results
+/// because changelog kinds are tracked separately by KeyValue::value_kind.
 class InternalRowEqualizer {
  public:
-    using Equalizer = std::function<bool(const InternalRow&, const InternalRow&)>;
-
-    static Result<Equalizer> Create(const std::shared_ptr<arrow::Schema>& schema,
-                                    const std::vector<std::string>& ignore_fields) {
+    static Result<FieldComparatorFunc> Create(const std::shared_ptr<arrow::Schema>& schema,
+                                              const std::vector<std::string>& ignore_fields) {
         std::set<std::string> ignored(ignore_fields.begin(), ignore_fields.end());
         std::vector<std::pair<int32_t, ValueEqualizer>> equalizers;
         for (int32_t i = 0; i < schema->num_fields(); ++i) {
@@ -54,14 +58,14 @@ class InternalRowEqualizer {
                                    CreateValueEqualizer(schema->field(i)->type()));
             equalizers.emplace_back(i, std::move(equalizer));
         }
-        return Equalizer(
+        return FieldComparatorFunc(
             [equalizers = std::move(equalizers)](const InternalRow& lhs, const InternalRow& rhs) {
                 for (const auto& [field_idx, equalizer] : equalizers) {
                     if (!EqualAt(lhs, field_idx, rhs, field_idx, equalizer)) {
-                        return false;
+                        return 1;
                     }
                 }
-                return true;
+                return 0;
             });
     }
 

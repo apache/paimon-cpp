@@ -38,6 +38,8 @@ class DataType;
 namespace paimon {
 class DataField;
 
+using FieldComparatorFunc = std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
+
 /// A `Comparator` that compares the file store key.
 class FieldsComparator {
  public:
@@ -82,9 +84,6 @@ class FieldsComparator {
     }
 
  private:
-    using FieldComparatorFunc =
-        std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
-
     FieldsComparator(bool is_ascending_order, const std::vector<int32_t>& sort_fields,
                      std::vector<FieldComparatorFunc>&& comparators)
         : is_ascending_order_(is_ascending_order),

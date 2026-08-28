@@ -165,7 +165,7 @@ class WriteAndReadInteTest
             file_store_write->PrepareCommit(/*wait_compaction=*/true, commit_identifier));
         PAIMON_RETURN_NOT_OK(file_store_write->Close());
         if (compact_messages.empty()) {
-            return Status::Invalid("expected lookup compaction commit messages");
+            return Status::Invalid("expected compaction commit messages");
         }
         CommitContextBuilder commit_context_builder(table_path, "commit_user");
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
@@ -745,33 +745,8 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogStreamRead) {
                                      /*expected_commit_messages=*/std::nullopt));
 
     std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
-    auto compact_and_commit = [this, &options, &table_path](int64_t commit_identifier) -> Status {
-        WriteContextBuilder write_context_builder(table_path, "commit_user");
-        write_context_builder.WithTempDirectory(LookupTempDirectory());
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<WriteContext> write_context,
-            write_context_builder.SetOptions(options).WithStreamingMode(true).Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
-        PAIMON_RETURN_NOT_OK(file_store_write->Compact(/*partition=*/{}, /*bucket=*/0,
-                                                       /*full_compaction=*/true));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::vector<std::shared_ptr<CommitMessage>> compact_messages,
-            file_store_write->PrepareCommit(/*wait_compaction=*/true, commit_identifier));
-        PAIMON_RETURN_NOT_OK(file_store_write->Close());
-        if (compact_messages.empty()) {
-            return Status::Invalid("expected lookup compaction commit messages");
-        }
-        CommitContextBuilder commit_context_builder(table_path, "commit_user");
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
-                               commit_context_builder.SetOptions(options).Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
-        return file_store_commit->Commit(compact_messages, commit_identifier);
-    };
-
     // Move the initial value to a high level so the next compaction must look it up.
-    ASSERT_OK(compact_and_commit(/*commit_identifier=*/1));
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/1));
     helper.reset();
     ASSERT_OK_AND_ASSIGN(helper, CreateLookupTestHelper(table_path, options));
 
@@ -784,7 +759,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogStreamRead) {
                                                      /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/2,
                                      /*expected_commit_messages=*/std::nullopt));
-    ASSERT_OK(compact_and_commit(/*commit_identifier=*/3));
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/3));
 
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
@@ -819,26 +794,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInitialFullScanExcludesLevelZero
                                      /*expected_commit_messages=*/std::nullopt));
 
     std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
-    WriteContextBuilder write_context_builder(table_path, "commit_user");
-    write_context_builder.WithTempDirectory(LookupTempDirectory());
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<WriteContext> write_context,
-        write_context_builder.SetOptions(options).WithStreamingMode(true).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
-    ASSERT_OK(file_store_write->Compact(/*partition=*/{}, /*bucket=*/0,
-                                        /*full_compaction=*/true));
-    ASSERT_OK_AND_ASSIGN(
-        std::vector<std::shared_ptr<CommitMessage>> compact_messages,
-        file_store_write->PrepareCommit(/*wait_compaction=*/true, /*commit_identifier=*/1));
-    ASSERT_OK(file_store_write->Close());
-    ASSERT_FALSE(compact_messages.empty());
-    CommitContextBuilder commit_context_builder(table_path, "commit_user");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         commit_context_builder.SetOptions(options).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> file_store_commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
-    ASSERT_OK(file_store_commit->Commit(compact_messages, /*commit_identifier=*/1));
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/1));
 
     helper.reset();
     ASSERT_OK_AND_ASSIGN(helper, CreateLookupTestHelper(table_path, options));
@@ -869,21 +825,7 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInitialFullScanExcludesLevelZero
         helper->ReadAndCheckResult(expected_type, initial_full_splits, R"([[0, "Alice", 10]])"));
     ASSERT_TRUE(success);
 
-    WriteContextBuilder changelog_write_context_builder(table_path, "commit_user");
-    changelog_write_context_builder.WithTempDirectory(LookupTempDirectory());
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<WriteContext> changelog_write_context,
-        changelog_write_context_builder.SetOptions(options).WithStreamingMode(true).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> changelog_file_store_write,
-                         FileStoreWrite::Create(std::move(changelog_write_context)));
-    ASSERT_OK(changelog_file_store_write->Compact(/*partition=*/{}, /*bucket=*/0,
-                                                  /*full_compaction=*/true));
-    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> changelog_compact_messages,
-                         changelog_file_store_write->PrepareCommit(/*wait_compaction=*/true,
-                                                                   /*commit_identifier=*/3));
-    ASSERT_OK(changelog_file_store_write->Close());
-    ASSERT_FALSE(changelog_compact_messages.empty());
-    ASSERT_OK(file_store_commit->Commit(changelog_compact_messages, /*commit_identifier=*/3));
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/3));
 
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
@@ -3637,23 +3579,7 @@ TEST_P(WriteAndReadInteTest, TestAppendMapStorageLayoutSharedShreddingToDefaultC
     ASSERT_OK(helper->WriteAndCommit(std::move(batch_v1_file3), commit_identifier++,
                                      /*expected_commit_messages=*/std::nullopt));
 
-    WriteContextBuilder write_context_builder(table_path, "commit_user");
-    ASSERT_OK_AND_ASSIGN(
-        auto write_context,
-        write_context_builder.SetOptions(options_v1).WithStreamingMode(true).Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
-    ASSERT_OK(file_store_write->Compact(/*partition=*/{}, /*bucket=*/0,
-                                        /*full_compaction=*/true));
-    ASSERT_OK_AND_ASSIGN(auto compact_messages, file_store_write->PrepareCommit(
-                                                    /*wait_compaction=*/true, commit_identifier));
-    ASSERT_FALSE(compact_messages.empty());
-
-    CommitContextBuilder commit_context_builder(table_path, "commit_user");
-    ASSERT_OK_AND_ASSIGN(auto commit_context,
-                         commit_context_builder.SetOptions(options_v1).Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
-    ASSERT_OK(file_store_commit->Commit(compact_messages, commit_identifier));
+    ASSERT_OK(CompactAndCommit(table_path, options_v1, commit_identifier));
 
     arrow::FieldVector expected_fields = fields;
     expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));

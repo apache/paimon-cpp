@@ -71,6 +71,7 @@ class FirstRowMergeFunctionWrapper : public MergeFunctionWrapper<ChangelogResult
             Reset();
             return std::optional<ChangelogResult>(std::move(changelog_result));
         }
+        // TODO(lisizhuo.lsz): avoid serialize & deserialize here.
         if (value_serializer_) {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes,
                                    value_serializer_->SerializeToBytes(*result->value));

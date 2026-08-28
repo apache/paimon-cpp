@@ -117,6 +117,16 @@ class MergeTreeCompactManagerFactory {
         const std::shared_ptr<FileStorePathFactoryCache>& path_factory_cache,
         const std::shared_ptr<CancellationController>& cancellation_controller) const;
 
+    template <typename T>
+    Result<std::shared_ptr<CompactRewriter>> CreateLookupRewriterInternal(
+        const BinaryRow& partition, int32_t bucket, const std::shared_ptr<Levels>& levels,
+        const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, int32_t max_level,
+        const LookupStrategy& lookup_strategy, bool should_produce_changelog,
+        const std::shared_ptr<typename PersistProcessor<T>::Factory>& processor_factory,
+        const std::shared_ptr<FileStorePathFactoryCache>& path_factory_cache,
+        const std::shared_ptr<CancellationController>& cancellation_controller,
+        const std::shared_ptr<RemoteLookupFileManager>& remote_lookup_file_manager) const;
+
     Result<std::shared_ptr<CompactRewriter>> CreateLookupRewriterWithDeletionVector(
         const BinaryRow& partition, int32_t bucket, const std::shared_ptr<Levels>& levels,
         const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer, int32_t max_level,
