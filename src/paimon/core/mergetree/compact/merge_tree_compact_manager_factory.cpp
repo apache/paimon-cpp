@@ -285,8 +285,8 @@ MergeTreeCompactManagerFactory::CreateLookupRewriterInternal(
         return LookupMergeTreeCompactRewriter<T>::CreateLookupMergeFunctionWrapper(
             std::make_unique<LookupMergeFunction>(std::move(merge_func)), output_level,
             dv_maintainer_ptr, lookup_strategy, should_produce_changelog,
-            user_defined_seq_comparator, lookup_levels_ptr, std::move(value_serializer),
-            std::move(value_equalizer));
+            user_defined_seq_comparator, std::move(value_serializer), std::move(value_equalizer),
+            lookup_levels_ptr);
     };
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<LookupMergeTreeCompactRewriter<T>> rewriter,

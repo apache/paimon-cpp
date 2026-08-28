@@ -134,8 +134,8 @@ LookupMergeTreeCompactRewriter<T>::CreateLookupMergeFunctionWrapper(
     const std::shared_ptr<BucketedDvMaintainer>& deletion_vectors_maintainer,
     const LookupStrategy& lookup_strategy, bool should_produce_changelog,
     const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
-    LookupLevels<T>* lookup_levels, std::unique_ptr<RowCompactedSerializer>&& value_serializer,
-    FieldsComparator::FieldComparatorFunc value_equalizer) {
+    std::unique_ptr<RowCompactedSerializer>&& value_serializer,
+    FieldsComparator::FieldComparatorFunc value_equalizer, LookupLevels<T>* lookup_levels) {
     auto lookup = [output_level, lookup_levels](
                       const std::shared_ptr<InternalRow>& key) -> Result<std::optional<T>> {
         return lookup_levels->Lookup(key, output_level + 1);
