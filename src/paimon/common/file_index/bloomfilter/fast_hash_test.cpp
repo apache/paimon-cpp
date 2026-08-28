@@ -20,12 +20,12 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/file_index_result.h"
@@ -168,26 +168,16 @@ TEST_F(FastHashTest, TestCompatibleWithJava) {
 }
 
 TEST_F(FastHashTest, TestNaNCompatibleWithJava) {
-    auto float_from_bits = [](uint32_t bits) {
-        float value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    };
-    const float float_nan = float_from_bits(0x7fc12345);
-    const float negative_float_nan = float_from_bits(0xffc54321);
+    const float float_nan = FloatingPointFromBits<float>(0x7fc12345U);
+    const float negative_float_nan = FloatingPointFromBits<float>(0xffc54321U);
     ASSERT_TRUE(std::isnan(float_nan));
     ASSERT_TRUE(std::isnan(negative_float_nan));
     ASSERT_OK_AND_ASSIGN(auto float_hash_function, FastHash::GetHashFunction(arrow::float32()));
     CheckResult(float_hash_function, {Literal(float_nan), Literal(negative_float_nan)},
                 {0x67c27c6d9936ae63, 0x67c27c6d9936ae63});
 
-    auto double_from_bits = [](uint64_t bits) {
-        double value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    };
-    const double double_nan = double_from_bits(0x7ff8123456789abc);
-    const double negative_double_nan = double_from_bits(0xfff8abcdef012345);
+    const double double_nan = FloatingPointFromBits<double>(0x7ff8123456789abcULL);
+    const double negative_double_nan = FloatingPointFromBits<double>(0xfff8abcdef012345ULL);
     ASSERT_TRUE(std::isnan(double_nan));
     ASSERT_TRUE(std::isnan(negative_double_nan));
     ASSERT_OK_AND_ASSIGN(auto double_hash_function, FastHash::GetHashFunction(arrow::float64()));
