@@ -149,15 +149,18 @@ TEST_F(GlobalIndexResultTest, TestSerializeAndDeserializeWithScore) {
 
 TEST_F(GlobalIndexResultTest, TestSerializeCanonicalizesNaNScore) {
     auto pool = GetDefaultPool();
-    const float payload_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto payload_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto canonical_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
     auto index_result = std::make_shared<BitmapScoredGlobalIndexResult>(
         RoaringBitmap64::From({1}), std::vector<float>{payload_nan});
+    auto canonical_index_result = std::make_shared<BitmapScoredGlobalIndexResult>(
+        RoaringBitmap64::From({1}), std::vector<float>{canonical_nan});
 
     ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized,
                          GlobalIndexResult::Serialize(index_result, pool));
-    ASSERT_GE(serialized->size(), sizeof(float));
-    ASSERT_EQ(std::string(serialized->data() + serialized->size() - sizeof(float), sizeof(float)),
-              std::string("\x7f\xc0\x00\x00", sizeof(float)));
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> canonical_serialized,
+                         GlobalIndexResult::Serialize(canonical_index_result, pool));
+    ASSERT_EQ(*serialized, *canonical_serialized);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GlobalIndexResult> deserialized,

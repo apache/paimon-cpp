@@ -168,16 +168,16 @@ TEST_F(FastHashTest, TestCompatibleWithJava) {
 }
 
 TEST_F(FastHashTest, TestNaNCompatibleWithJava) {
-    const float float_nan = FloatingPointFromBits<float>(0x7fc12345U);
-    const float negative_float_nan = FloatingPointFromBits<float>(0xffc54321U);
+    const auto float_nan = FloatingPointFromBits<float>(0x7fc12345U);
+    const auto negative_float_nan = FloatingPointFromBits<float>(0xffc54321U);
     ASSERT_TRUE(std::isnan(float_nan));
     ASSERT_TRUE(std::isnan(negative_float_nan));
     ASSERT_OK_AND_ASSIGN(auto float_hash_function, FastHash::GetHashFunction(arrow::float32()));
     CheckResult(float_hash_function, {Literal(float_nan), Literal(negative_float_nan)},
                 {0x67c27c6d9936ae63, 0x67c27c6d9936ae63});
 
-    const double double_nan = FloatingPointFromBits<double>(0x7ff8123456789abcULL);
-    const double negative_double_nan = FloatingPointFromBits<double>(0xfff8abcdef012345ULL);
+    const auto double_nan = FloatingPointFromBits<double>(0x7ff8123456789abcULL);
+    const auto negative_double_nan = FloatingPointFromBits<double>(0xfff8abcdef012345ULL);
     ASSERT_TRUE(std::isnan(double_nan));
     ASSERT_TRUE(std::isnan(negative_double_nan));
     ASSERT_OK_AND_ASSIGN(auto double_hash_function, FastHash::GetHashFunction(arrow::float64()));

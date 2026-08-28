@@ -213,8 +213,8 @@ TEST_F(KeySerializerTest, SerializeAndDeserializeAllTypes) {
 }
 
 TEST_F(KeySerializerTest, CanonicalizesFloatingPointNaN) {
-    const float float_nan = FloatingPointFromBits<float>(0xffc12345U);
-    const float canonical_float_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
+    const auto float_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto canonical_float_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Bytes> float_bytes,
         KeySerializer::SerializeKey(Literal(float_nan), arrow::float32(), pool_.get()));
@@ -224,8 +224,8 @@ TEST_F(KeySerializerTest, CanonicalizesFloatingPointNaN) {
     ASSERT_EQ(std::string(float_bytes->data(), float_bytes->size()),
               std::string(canonical_float_bytes->data(), canonical_float_bytes->size()));
 
-    const double double_nan = FloatingPointFromBits<double>(0xfff8123456789abcULL);
-    const double canonical_double_nan = FloatingPointFromBits<double>(kCanonicalDoubleNaNBits);
+    const auto double_nan = FloatingPointFromBits<double>(0xfff8123456789abcULL);
+    const auto canonical_double_nan = FloatingPointFromBits<double>(kCanonicalDoubleNaNBits);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Bytes> double_bytes,
         KeySerializer::SerializeKey(Literal(double_nan), arrow::float64(), pool_.get()));

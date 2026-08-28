@@ -29,14 +29,14 @@
 namespace paimon::test {
 
 TEST(MathTest, FloatingPointNaNCanonicalization) {
-    const float float_nan = CanonicalizeFloatingPoint(FloatingPointFromBits<float>(0xffc12345U));
+    const auto float_nan = CanonicalizeFloatingPoint(FloatingPointFromBits<float>(0xffc12345U));
     uint32_t float_nan_bits;
     std::memcpy(&float_nan_bits, &float_nan, sizeof(float_nan_bits));
     ASSERT_EQ(kCanonicalFloatNaNBits, float_nan_bits);
     ASSERT_EQ(static_cast<int32_t>(kCanonicalFloatNaNBits),
               CanonicalizeFloatToIntBits(FloatingPointFromBits<float>(0x7fa12345U)));
 
-    const double double_nan =
+    const auto double_nan =
         CanonicalizeFloatingPoint(FloatingPointFromBits<double>(0xfff8123456789abcULL));
     uint64_t double_nan_bits;
     std::memcpy(&double_nan_bits, &double_nan, sizeof(double_nan_bits));

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -163,17 +164,26 @@ TEST(IndexedSplitTest, TestSerializeCanonicalizesNaNScore) {
         /*partition=*/BinaryRow::EmptyRow(),
         /*bucket=*/0, /*bucket_path=*/"bucket-0",
         /*data_files=*/{});
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> data_split, builder.Build());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> data_split, builder.Build());
 
-    const float payload_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto payload_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto canonical_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
     auto indexed_split = std::make_shared<IndexedSplitImpl>(
-        std::dynamic_pointer_cast<DataSplitImpl>(data_split), std::vector<Range>{Range(0, 0)},
-        std::vector<float>{payload_nan});
+        data_split, std::vector<Range>{Range(0, 0)}, std::vector<float>{payload_nan});
+    auto canonical_indexed_split = std::make_shared<IndexedSplitImpl>(
+        data_split, std::vector<Range>{Range(0, 0)}, std::vector<float>{canonical_nan});
 
     ASSERT_OK_AND_ASSIGN(std::string serialized, Split::Serialize(indexed_split, pool));
-    ASSERT_GE(serialized.size(), sizeof(float));
-    ASSERT_EQ(serialized.substr(serialized.size() - sizeof(float)),
-              std::string("\x7f\xc0\x00\x00", sizeof(float)));
+    ASSERT_OK_AND_ASSIGN(std::string canonical_serialized,
+                         Split::Serialize(canonical_indexed_split, pool));
+    ASSERT_EQ(serialized, canonical_serialized);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> roundtrip,
+                         Split::Deserialize(serialized.data(), serialized.size(), pool));
+    auto roundtrip_indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(roundtrip);
+    ASSERT_TRUE(roundtrip_indexed_split);
+    ASSERT_EQ(roundtrip_indexed_split->Scores().size(), 1);
+    ASSERT_TRUE(std::isnan(roundtrip_indexed_split->Scores()[0]));
 }
 
 TEST(IndexedSplitTest, TestValidate) {
