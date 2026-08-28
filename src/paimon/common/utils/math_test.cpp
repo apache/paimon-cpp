@@ -29,30 +29,20 @@
 namespace paimon::test {
 
 TEST(MathTest, FloatingPointNaNCanonicalization) {
-    auto float_from_bits = [](uint32_t bits) {
-        float value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    };
-    auto double_from_bits = [](uint64_t bits) {
-        double value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    };
-
-    const float float_nan = CanonicalizeFloatingPoint(float_from_bits(0xffc12345));
+    const float float_nan = CanonicalizeFloatingPoint(FloatingPointFromBits<float>(0xffc12345U));
     uint32_t float_nan_bits;
     std::memcpy(&float_nan_bits, &float_nan, sizeof(float_nan_bits));
     ASSERT_EQ(kCanonicalFloatNaNBits, float_nan_bits);
     ASSERT_EQ(static_cast<int32_t>(kCanonicalFloatNaNBits),
-              CanonicalizeFloatToIntBits(float_from_bits(0x7fa12345)));
+              CanonicalizeFloatToIntBits(FloatingPointFromBits<float>(0x7fa12345U)));
 
-    const double double_nan = CanonicalizeFloatingPoint(double_from_bits(0xfff8123456789abc));
+    const double double_nan =
+        CanonicalizeFloatingPoint(FloatingPointFromBits<double>(0xfff8123456789abcULL));
     uint64_t double_nan_bits;
     std::memcpy(&double_nan_bits, &double_nan, sizeof(double_nan_bits));
     ASSERT_EQ(kCanonicalDoubleNaNBits, double_nan_bits);
     ASSERT_EQ(static_cast<int64_t>(kCanonicalDoubleNaNBits),
-              CanonicalizeDoubleToLongBits(double_from_bits(0x7ff123456789abcd)));
+              CanonicalizeDoubleToLongBits(FloatingPointFromBits<double>(0x7ff123456789abcdULL)));
 
     const float negative_zero = CanonicalizeFloatingPoint(-0.0f);
     uint32_t negative_zero_bits;

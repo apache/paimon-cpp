@@ -18,7 +18,6 @@
  */
 
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -28,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -165,9 +165,7 @@ TEST(IndexedSplitTest, TestSerializeCanonicalizesNaNScore) {
         /*data_files=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> data_split, builder.Build());
 
-    uint32_t payload_bits = 0xffc12345;
-    float payload_nan;
-    std::memcpy(&payload_nan, &payload_bits, sizeof(payload_nan));
+    const float payload_nan = FloatingPointFromBits<float>(0xffc12345U);
     auto indexed_split = std::make_shared<IndexedSplitImpl>(
         std::dynamic_pointer_cast<DataSplitImpl>(data_split), std::vector<Range>{Range(0, 0)},
         std::vector<float>{payload_nan});

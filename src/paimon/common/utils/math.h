@@ -45,16 +45,26 @@ namespace paimon {
 inline constexpr uint32_t kCanonicalFloatNaNBits = 0x7fc00000;
 inline constexpr uint64_t kCanonicalDoubleNaNBits = 0x7ff8000000000000;
 
+template <typename FloatingPoint, typename Bits>
+inline FloatingPoint FloatingPointFromBits(Bits bits) {
+    static_assert(std::is_floating_point_v<FloatingPoint>);
+    static_assert(std::is_integral_v<Bits>);
+    static_assert(sizeof(FloatingPoint) == sizeof(Bits));
+    FloatingPoint value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 inline float CanonicalizeFloatingPoint(float value) {
     if (std::isnan(value)) {
-        std::memcpy(&value, &kCanonicalFloatNaNBits, sizeof(value));
+        return FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
     }
     return value;
 }
 
 inline double CanonicalizeFloatingPoint(double value) {
     if (std::isnan(value)) {
-        std::memcpy(&value, &kCanonicalDoubleNaNBits, sizeof(value));
+        return FloatingPointFromBits<double>(kCanonicalDoubleNaNBits);
     }
     return value;
 }

@@ -21,10 +21,10 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <utility>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/testing/utils/testharness.h"
@@ -149,9 +149,7 @@ TEST_F(GlobalIndexResultTest, TestSerializeAndDeserializeWithScore) {
 
 TEST_F(GlobalIndexResultTest, TestSerializeCanonicalizesNaNScore) {
     auto pool = GetDefaultPool();
-    uint32_t payload_bits = 0xffc12345;
-    float payload_nan;
-    std::memcpy(&payload_nan, &payload_bits, sizeof(payload_nan));
+    const float payload_nan = FloatingPointFromBits<float>(0xffc12345U);
     auto index_result = std::make_shared<BitmapScoredGlobalIndexResult>(
         RoaringBitmap64::From({1}), std::vector<float>{payload_nan});
 

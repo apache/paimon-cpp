@@ -20,26 +20,15 @@
 #include "paimon/common/global_index/btree/key_serializer.h"
 
 #include <cstdint>
-#include <cstring>
 #include <string>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-namespace {
-
-template <typename FloatingPoint, typename UInt>
-FloatingPoint FloatingPointFromBits(UInt bits) {
-    static_assert(sizeof(FloatingPoint) == sizeof(UInt));
-    FloatingPoint value;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-
-}  // namespace
 
 class KeySerializerTest : public ::testing::Test {
  protected:
@@ -224,8 +213,8 @@ TEST_F(KeySerializerTest, SerializeAndDeserializeAllTypes) {
 }
 
 TEST_F(KeySerializerTest, CanonicalizesFloatingPointNaN) {
-    const float float_nan = FloatingPointFromBits<float>(uint32_t{0xffc12345});
-    const float canonical_float_nan = FloatingPointFromBits<float>(uint32_t{0x7fc00000});
+    const float float_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const float canonical_float_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Bytes> float_bytes,
         KeySerializer::SerializeKey(Literal(float_nan), arrow::float32(), pool_.get()));
@@ -235,8 +224,8 @@ TEST_F(KeySerializerTest, CanonicalizesFloatingPointNaN) {
     ASSERT_EQ(std::string(float_bytes->data(), float_bytes->size()),
               std::string(canonical_float_bytes->data(), canonical_float_bytes->size()));
 
-    const double double_nan = FloatingPointFromBits<double>(uint64_t{0xfff8123456789abc});
-    const double canonical_double_nan = FloatingPointFromBits<double>(uint64_t{0x7ff8000000000000});
+    const double double_nan = FloatingPointFromBits<double>(0xfff8123456789abcULL);
+    const double canonical_double_nan = FloatingPointFromBits<double>(kCanonicalDoubleNaNBits);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Bytes> double_bytes,
         KeySerializer::SerializeKey(Literal(double_nan), arrow::float64(), pool_.get()));

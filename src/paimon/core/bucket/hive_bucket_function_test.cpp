@@ -18,7 +18,6 @@
 
 #include "paimon/core/bucket/hive_bucket_function.h"
 
-#include <cstring>
 #include <limits>
 
 #include "gtest/gtest.h"
@@ -111,18 +110,6 @@ class HiveBucketFunctionTest : public ::testing::Test {
     BinaryRow CreateShortRow(int16_t value) {
         auto pool = GetDefaultPool();
         return BinaryRowGenerator::GenerateRow({value}, pool.get());
-    }
-
-    float FloatFromBits(uint32_t bits) {
-        float value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
-
-    double DoubleFromBits(uint64_t bits) {
-        double value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
     }
 };
 
@@ -239,8 +226,9 @@ TEST_F(HiveBucketFunctionTest, TestFloatNaNCanonicalizationCompatibleWithJava) {
     // Float.NaN, a payload NaN, and the canonical NaN all hash through
     // Float.floatToIntBits(...) to kCanonicalFloatNaNBits.
     ASSERT_EQ(344, func->Bucket(CreateFloatRow(std::numeric_limits<float>::quiet_NaN()), 1000));
-    ASSERT_EQ(344, func->Bucket(CreateFloatRow(FloatFromBits(0x7FA12345U)), 1000));
-    ASSERT_EQ(344, func->Bucket(CreateFloatRow(FloatFromBits(kCanonicalFloatNaNBits)), 1000));
+    ASSERT_EQ(344, func->Bucket(CreateFloatRow(FloatingPointFromBits<float>(0x7FA12345U)), 1000));
+    ASSERT_EQ(344, func->Bucket(
+                       CreateFloatRow(FloatingPointFromBits<float>(kCanonicalFloatNaNBits)), 1000));
 }
 
 TEST_F(HiveBucketFunctionTest, TestDoubleNaNCanonicalizationCompatibleWithJava) {
@@ -251,8 +239,12 @@ TEST_F(HiveBucketFunctionTest, TestDoubleNaNCanonicalizationCompatibleWithJava) 
     // Double.NaN, Double.longBitsToDouble(0x7ff123456789abcd), and canonical NaN
     // All NaNs hash through Double.doubleToLongBits(...) to kCanonicalDoubleNaNBits.
     ASSERT_EQ(360, func->Bucket(CreateDoubleRow(std::numeric_limits<double>::quiet_NaN()), 1000));
-    ASSERT_EQ(360, func->Bucket(CreateDoubleRow(DoubleFromBits(0x7FF123456789ABCDULL)), 1000));
-    ASSERT_EQ(360, func->Bucket(CreateDoubleRow(DoubleFromBits(kCanonicalDoubleNaNBits)), 1000));
+    ASSERT_EQ(
+        360,
+        func->Bucket(CreateDoubleRow(FloatingPointFromBits<double>(0x7FF123456789ABCDULL)), 1000));
+    ASSERT_EQ(360,
+              func->Bucket(CreateDoubleRow(FloatingPointFromBits<double>(kCanonicalDoubleNaNBits)),
+                           1000));
 }
 
 TEST_F(HiveBucketFunctionTest, TestTinyintNegativeValuesCompatibleWithJava) {
