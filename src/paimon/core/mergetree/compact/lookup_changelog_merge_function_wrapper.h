@@ -59,7 +59,7 @@ class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<Changelo
         const std::shared_ptr<BucketedDvMaintainer>& deletion_vectors_maintainer,
         const std::shared_ptr<FieldsComparator>& comparator,
         std::unique_ptr<RowCompactedSerializer>&& value_serializer,
-        FieldComparatorFunc value_equalizer) {
+        FieldsComparator::FieldComparatorFunc value_equalizer) {
         if (lookup_strategy.deletion_vector && !deletion_vectors_maintainer) {
             return Status::Invalid("deletionVectorsMaintainer should not be null, there is a bug.");
         }
@@ -148,7 +148,7 @@ class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<Changelo
         const std::shared_ptr<BucketedDvMaintainer>& deletion_vectors_maintainer,
         const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
         std::unique_ptr<RowCompactedSerializer>&& value_serializer,
-        FieldComparatorFunc value_equalizer)
+        FieldsComparator::FieldComparatorFunc value_equalizer)
         : merge_function_(std::move(merge_function)),
           lookup_(std::move(lookup)),
           lookup_strategy_(lookup_strategy),
@@ -219,7 +219,7 @@ class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<Changelo
     std::shared_ptr<BucketedDvMaintainer> deletion_vectors_maintainer_;
     std::function<bool(const KeyValue& o1, const KeyValue& o2)> comparator_;
     std::unique_ptr<RowCompactedSerializer> value_serializer_;
-    FieldComparatorFunc value_equalizer_;
+    FieldsComparator::FieldComparatorFunc value_equalizer_;
 };
 
 }  // namespace paimon

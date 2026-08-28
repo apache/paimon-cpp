@@ -112,7 +112,7 @@ TEST(InternalRowEqualizerTest, PrimitiveTypesAndIgnoreFields) {
 
     std::unique_ptr<GenericRow> left = GenericRow::Of(left_values);
     std::unique_ptr<GenericRow> right = GenericRow::Of(right_values);
-    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer,
+    ASSERT_OK_AND_ASSIGN(FieldsComparator::FieldComparatorFunc equalizer,
                          InternalRowEqualizer::Create(schema, {"ignored"}));
     ASSERT_EQ(0, equalizer(*left, *right));
 
@@ -123,7 +123,8 @@ TEST(InternalRowEqualizerTest, PrimitiveTypesAndIgnoreFields) {
 TEST(InternalRowEqualizerTest, NullAndFloatingPointSemantics) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(
         {arrow::field("value", arrow::float64()), arrow::field("nullable", arrow::int32())});
-    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer, InternalRowEqualizer::Create(schema, {}));
+    ASSERT_OK_AND_ASSIGN(FieldsComparator::FieldComparatorFunc equalizer,
+                         InternalRowEqualizer::Create(schema, {}));
 
     std::unique_ptr<GenericRow> negative_zero =
         GenericRow::Of({static_cast<double>(-0.0), NullType()});
@@ -148,7 +149,8 @@ TEST(InternalRowEqualizerTest, NestedTypes) {
          arrow::field("map", arrow::map(arrow::int32(), arrow::int32())),
          arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32()),
                                              arrow::field("floating", arrow::float64())}))});
-    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer, InternalRowEqualizer::Create(schema, {}));
+    ASSERT_OK_AND_ASSIGN(FieldsComparator::FieldComparatorFunc equalizer,
+                         InternalRowEqualizer::Create(schema, {}));
 
     std::unique_ptr<GenericRow> left =
         GenericRow::Of({CreateNullableIntArray({1, 0, 3}, /*null_pos=*/1, pool.get()),
@@ -180,7 +182,8 @@ TEST(InternalRowEqualizerTest, MapEqualityDoesNotDependOnEntryOrder) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     std::shared_ptr<arrow::Schema> schema =
         arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::int32()))});
-    ASSERT_OK_AND_ASSIGN(FieldComparatorFunc equalizer, InternalRowEqualizer::Create(schema, {}));
+    ASSERT_OK_AND_ASSIGN(FieldsComparator::FieldComparatorFunc equalizer,
+                         InternalRowEqualizer::Create(schema, {}));
 
     std::unique_ptr<GenericRow> left =
         GenericRow::Of({CreateIntMap({1, 2, 3}, {10, 20, 30}, pool.get())});

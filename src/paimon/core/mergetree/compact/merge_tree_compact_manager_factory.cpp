@@ -51,11 +51,11 @@ namespace paimon {
 
 namespace {
 
-Result<FieldComparatorFunc> CreateChangelogValueEqualizer(
+Result<FieldsComparator::FieldComparatorFunc> CreateChangelogValueEqualizer(
     const std::shared_ptr<arrow::Schema>& schema, const CoreOptions& options,
     bool produce_changelog) {
     if (!produce_changelog || !options.ChangelogRowDeduplicate()) {
-        return FieldComparatorFunc();
+        return FieldsComparator::FieldComparatorFunc();
     }
     return InternalRowEqualizer::Create(schema, options.GetChangelogRowDeduplicateIgnoreFields());
 }
@@ -280,7 +280,7 @@ MergeTreeCompactManagerFactory::CreateLookupRewriterInternal(
             std::unique_ptr<RowCompactedSerializer> value_serializer,
             CreateChangelogValueSerializer(data_schema, should_produce_changelog, pool));
         PAIMON_ASSIGN_OR_RAISE(
-            FieldComparatorFunc value_equalizer,
+            FieldsComparator::FieldComparatorFunc value_equalizer,
             CreateChangelogValueEqualizer(data_schema, options, should_produce_changelog));
         return LookupMergeTreeCompactRewriter<T>::CreateLookupMergeFunctionWrapper(
             std::make_unique<LookupMergeFunction>(std::move(merge_func)), output_level,

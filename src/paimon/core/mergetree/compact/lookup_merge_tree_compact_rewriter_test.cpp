@@ -197,7 +197,7 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
                     arrow_schema_, table_schema->TrimmedPrimaryKeys().value(), options, pool_));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RowCompactedSerializer> value_serializer,
                                    RowCompactedSerializer::Create(arrow_schema_, pool_));
-            FieldComparatorFunc value_equalizer;
+            FieldsComparator::FieldComparatorFunc value_equalizer;
             if (options.ChangelogRowDeduplicate()) {
                 PAIMON_ASSIGN_OR_RAISE(
                     value_equalizer,
@@ -292,7 +292,7 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
                     arrow_schema_, table_schema->TrimmedPrimaryKeys().value(), options, pool_));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RowCompactedSerializer> value_serializer,
                                    RowCompactedSerializer::Create(arrow_schema_, pool_));
-            FieldComparatorFunc value_equalizer;
+            FieldsComparator::FieldComparatorFunc value_equalizer;
             if (options.ChangelogRowDeduplicate()) {
                 PAIMON_ASSIGN_OR_RAISE(
                     value_equalizer,

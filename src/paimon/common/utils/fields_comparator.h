@@ -38,11 +38,12 @@ class DataType;
 namespace paimon {
 class DataField;
 
-using FieldComparatorFunc = std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
-
 /// A `Comparator` that compares the file store key.
 class FieldsComparator {
  public:
+    using FieldComparatorFunc =
+        std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
+
     static Result<std::unique_ptr<FieldsComparator>> Create(
         const std::vector<DataField>& input_data_field, bool is_ascending_order);
 

@@ -80,7 +80,7 @@ int32_t FieldsComparator::CompareTo(const InternalRow& lhs, const InternalRow& r
     return 0;
 }
 
-Result<FieldComparatorFunc> FieldsComparator::CompareField(
+Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
     int32_t field_idx, const std::shared_ptr<arrow::DataType>& input_type) {
     arrow::Type::type type = input_type->id();
     switch (type) {

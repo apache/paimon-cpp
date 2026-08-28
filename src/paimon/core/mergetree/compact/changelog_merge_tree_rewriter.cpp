@@ -20,6 +20,7 @@
 
 #include <utility>
 
+#include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/key_value_meta_projection_consumer.h"
 #include "paimon/core/io/row_to_arrow_array_converter.h"
@@ -28,7 +29,6 @@ namespace paimon {
 
 namespace {
 
-using KeyComparator = std::function<int32_t(const InternalRow&, const InternalRow&)>;
 using CancellationChecker = std::function<bool()>;
 
 class ChangelogCompactionBatchProducer : public AsyncKeyValueBatchProducer {
@@ -36,8 +36,9 @@ class ChangelogCompactionBatchProducer : public AsyncKeyValueBatchProducer {
     ChangelogCompactionBatchProducer(
         std::unique_ptr<SortMergeReader>&& sort_merge_reader, int32_t write_batch_size,
         std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>&& merge_function_wrapper,
-        const KeyComparator& key_comparator, const CancellationChecker& cancellation_checker,
-        bool drop_delete, bool produce_data, bool produce_changelog)
+        const FieldsComparator::FieldComparatorFunc& key_comparator,
+        const CancellationChecker& cancellation_checker, bool drop_delete, bool produce_data,
+        bool produce_changelog)
         : sort_merge_reader_(std::move(sort_merge_reader)),
           write_batch_size_(NormalizeProjectionBatchSize(write_batch_size)),
           merge_function_wrapper_(std::move(merge_function_wrapper)),
@@ -142,7 +143,7 @@ class ChangelogCompactionBatchProducer : public AsyncKeyValueBatchProducer {
     std::unique_ptr<SortMergeReader> sort_merge_reader_;
     int32_t write_batch_size_;
     std::shared_ptr<MergeFunctionWrapper<ChangelogResult>> merge_function_wrapper_;
-    KeyComparator key_comparator_;
+    FieldsComparator::FieldComparatorFunc key_comparator_;
     CancellationChecker cancellation_checker_;
     bool drop_delete_;
     bool produce_data_;
@@ -244,7 +245,8 @@ Result<CompactResult> ChangelogMergeTreeRewriter::RewriteOrProduceChangelog(
 
     bool produce_data = compact_file_writer != nullptr;
     bool produce_changelog = changelog_file_writer != nullptr;
-    KeyComparator key_comparator = [this](const InternalRow& lhs, const InternalRow& rhs) {
+    FieldsComparator::FieldComparatorFunc key_comparator = [this](const InternalRow& lhs,
+                                                                  const InternalRow& rhs) {
         return merge_file_split_read_->GetKeyComparator()->CompareTo(lhs, rhs);
     };
     CancellationChecker cancellation_checker = [this]() { return IsCancelled(); };

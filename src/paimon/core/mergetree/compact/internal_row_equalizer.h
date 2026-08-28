@@ -46,8 +46,9 @@ namespace paimon {
 /// because changelog kinds are tracked separately by KeyValue::value_kind.
 class InternalRowEqualizer {
  public:
-    static Result<FieldComparatorFunc> Create(const std::shared_ptr<arrow::Schema>& schema,
-                                              const std::vector<std::string>& ignore_fields) {
+    static Result<FieldsComparator::FieldComparatorFunc> Create(
+        const std::shared_ptr<arrow::Schema>& schema,
+        const std::vector<std::string>& ignore_fields) {
         std::set<std::string> ignored(ignore_fields.begin(), ignore_fields.end());
         std::vector<std::pair<int32_t, ValueEqualizer>> equalizers;
         for (int32_t i = 0; i < schema->num_fields(); ++i) {
@@ -58,7 +59,7 @@ class InternalRowEqualizer {
                                    CreateValueEqualizer(schema->field(i)->type()));
             equalizers.emplace_back(i, std::move(equalizer));
         }
-        return FieldComparatorFunc(
+        return FieldsComparator::FieldComparatorFunc(
             [equalizers = std::move(equalizers)](const InternalRow& lhs, const InternalRow& rhs) {
                 for (const auto& [field_idx, equalizer] : equalizers) {
                     if (!EqualAt(lhs, field_idx, rhs, field_idx, equalizer)) {

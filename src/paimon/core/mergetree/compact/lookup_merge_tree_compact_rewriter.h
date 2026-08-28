@@ -66,7 +66,7 @@ class LookupMergeTreeCompactRewriter : public ChangelogMergeTreeRewriter {
         const LookupStrategy& lookup_strategy, bool should_produce_changelog,
         const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
         LookupLevels<T>* lookup_levels, std::unique_ptr<RowCompactedSerializer>&& value_serializer,
-        FieldComparatorFunc value_equalizer);
+        FieldsComparator::FieldComparatorFunc value_equalizer);
 
  private:
     LookupMergeTreeCompactRewriter(
