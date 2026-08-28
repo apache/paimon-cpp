@@ -211,10 +211,10 @@ Result<std::shared_ptr<CompactRewriter>> MergeTreeCompactManagerFactory::CreateL
                 options_, schema_manager_, io_manager_, cache_manager_, file_store_path_factory_,
                 table_schema_, partition, bucket, levels, processor_factory, dv_maintainer,
                 lookup_file_cache_, remote_lookup_file_manager, pool_));
-        auto merge_function_wrapper_factory =
-            [lookup_levels_ptr = lookup_levels.get(), data_schema = schema_, lookup_strategy,
-             should_produce_changelog, ignore_delete = options_.IgnoreDelete(),
-             pool = pool_](int32_t output_level)
+        auto merge_function_wrapper_factory = [lookup_levels_ptr = lookup_levels.get(),
+                                               data_schema = schema_, should_produce_changelog,
+                                               ignore_delete = options_.IgnoreDelete(),
+                                               pool = pool_](int32_t output_level)
             -> Result<std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>> {
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<RowCompactedSerializer> value_serializer,
