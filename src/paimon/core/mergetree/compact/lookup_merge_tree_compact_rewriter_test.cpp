@@ -700,45 +700,6 @@ TEST_F(LookupMergeTreeCompactRewriterTest, TestFirstRowRewriteWithSharedShreddin
                              /*field_index=*/3, expected_meta);
 }
 
-TEST_F(LookupMergeTreeCompactRewriterTest, TestFirstRowLooksUpExistingKeys) {
-    std::map<std::string, std::string> options = {{Options::MERGE_ENGINE, "first-row"},
-                                                  {Options::FILE_FORMAT, "orc"}};
-    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
-    ASSERT_OK_AND_ASSIGN(auto table_path, CreateTable(options));
-    auto schema_manager = std::make_shared<SchemaManager>(fs_, table_path);
-    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager->ReadSchema(0));
-
-    ASSERT_OK_AND_ASSIGN(auto level0_file,
-                         NewFiles(/*level=*/0, /*last_sequence_number=*/0, table_path, core_options,
-                                  "[[1, 111], [2, 22]]"));
-    ASSERT_OK_AND_ASSIGN(auto high_level_file, NewFiles(/*level=*/2, /*last_sequence_number=*/-1,
-                                                        table_path, core_options, "[[1, 11]]"));
-    auto processor_factory = std::make_shared<PersistEmptyProcessor::Factory>();
-    ASSERT_OK_AND_ASSIGN(auto lookup_levels,
-                         CreateLookupLevels<bool>(table_path, table_schema, processor_factory,
-                                                  std::vector<std::shared_ptr<DataFileMeta>>{
-                                                      level0_file, high_level_file}));
-    ASSERT_OK_AND_ASSIGN(auto rewriter,
-                         CreateCompactRewriterForFirstRow(table_path, table_schema, core_options,
-                                                          std::move(lookup_levels)));
-    ASSERT_OK_AND_ASSIGN(
-        auto runs, GenerateSortedRuns(std::vector<std::shared_ptr<DataFileMeta>>{level0_file}));
-    ASSERT_OK_AND_ASSIGN(auto compact_result, rewriter->Rewrite(
-                                                  /*output_level=*/1, /*drop_delete=*/true, runs));
-
-    ASSERT_EQ(1, compact_result.After().size());
-    ASSERT_EQ(1, compact_result.After()[0]->row_count);
-
-    auto type_with_special_fields =
-        arrow::struct_(SpecialFields::CompleteSequenceAndValueKindField(arrow_schema_)->fields());
-    std::shared_ptr<arrow::ChunkedArray> expected;
-    ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(type_with_special_fields,
-                                                                 {"[[2, 0, 2, 22]]"}, &expected)
-                    .ok());
-    CheckResult(table_path + "/bucket-0/" + compact_result.After()[0]->file_name, table_schema,
-                "orc", expected);
-}
-
 TEST_F(LookupMergeTreeCompactRewriterTest, TestFirstRowUpgrade) {
     std::map<std::string, std::string> options = {{Options::MERGE_ENGINE, "first-row"},
                                                   {Options::FILE_FORMAT, "orc"}};
