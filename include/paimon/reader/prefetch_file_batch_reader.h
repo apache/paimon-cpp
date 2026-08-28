@@ -27,6 +27,47 @@
 
 namespace paimon {
 
+/// C++-only prefetch reader metrics. Java Paimon has no corresponding metrics.
+class PAIMON_EXPORT PrefetchMetrics {
+ public:
+    static constexpr char ENABLED[] = "prefetch.enabled";
+    static constexpr char PARALLELISM[] = "prefetch.parallelism";
+    static constexpr char READ_RANGES_TOTAL[] = "prefetch.read-ranges.total";
+    static constexpr char READ_RANGES_AFTER_BITMAP[] = "prefetch.read-ranges.after-bitmap";
+    static constexpr char SEEK_COUNT[] = "prefetch.seek.count";
+    static constexpr char PRODUCED_BATCHES[] = "prefetch.produced-batches";
+    static constexpr char CONSUMED_BATCHES[] = "prefetch.consumed-batches";
+    static constexpr char DISCARDED_BATCHES[] = "prefetch.discarded-batches";
+    static constexpr char ERRORS[] = "prefetch.errors";
+    static constexpr char ADAPTIVE_DISABLED_COUNT[] = "prefetch.adaptive-disabled-count";
+    static constexpr char QUEUE_FULL_COUNT[] = "prefetch.queue-full-count";
+    static constexpr char QUEUE_DEPTH[] = "prefetch.queue-depth";
+    static constexpr char QUEUE_DEPTH_MAX[] = "prefetch.queue-depth.max";
+    static constexpr char READER_READ_LATENCY_US[] = "prefetch.reader-read-latency-us";
+    static constexpr char CONSUMER_WAIT_LATENCY_US[] = "prefetch.consumer-wait-latency-us";
+};
+
+/// C++-only metric names for I/O observed by the prefetch reader's instrumented input streams.
+/// Java Paimon has no corresponding metrics.
+/// These metrics do not represent whole-query or whole-table I/O.
+class PAIMON_EXPORT PrefetchIoMetrics {
+ public:
+    static constexpr char READ_REQUESTS[] = "io.read.requests";
+    static constexpr char READ_REQUESTED_BYTES[] = "io.read.requested-bytes";
+    static constexpr char READ_PHYSICAL_BYTES[] = "io.read.physical-bytes";
+    static constexpr char READ_FAILED[] = "io.read.failed";
+    static constexpr char READ_LATENCY_COUNT[] = "io.read.latency.count";
+    static constexpr char READ_LATENCY_SUM_US[] = "io.read.latency.sum-us";
+    static constexpr char ASYNC_REQUESTS[] = "io.async.requests";
+    static constexpr char ASYNC_REQUESTED_BYTES[] = "io.async.requested-bytes";
+    static constexpr char ASYNC_PHYSICAL_BYTES[] = "io.async.physical-bytes";
+    static constexpr char ASYNC_COMPLETED[] = "io.async.completed";
+    static constexpr char ASYNC_FAILED[] = "io.async.failed";
+    static constexpr char ASYNC_PENDING[] = "io.async.pending";
+    static constexpr char ASYNC_LATENCY_COUNT[] = "io.async.latency.count";
+    static constexpr char ASYNC_LATENCY_SUM_US[] = "io.async.latency.sum-us";
+};
+
 /// The prefetch file batch reader extends the basic FileBatchReader interface for prefetch read,
 /// if a format implementation inherits from this class, it will automatically support the C++
 /// Paimon prefetch capability and integrate with the Paimon prefetch framework.
@@ -40,7 +81,7 @@ class PAIMON_EXPORT PrefetchFileBatchReader : public FileBatchReader {
     /// Retrieves the row number of the next row to be read.
     /// This method indicates the current read position within the file.
     /// @return The row number of the next row to read.
-    virtual uint64_t GetNextRowToRead() const = 0;
+    virtual Result<uint64_t> GetNextRowToRead() const = 0;
 
     /// Generates a list of row ranges to be read in batches.
     /// Each range specifies the start and end row numbers for a batch,

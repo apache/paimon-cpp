@@ -33,7 +33,6 @@
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
-#include "paimon/core/operation/metrics/scan_metrics.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
@@ -50,6 +49,7 @@
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/scan_context.h"
+#include "paimon/table/source/scan_metrics.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -353,7 +353,8 @@ TEST_F(KeyValueFileStoreScanTest, TestNoOverlapping) {
                     /*embedded_index=*/nullptr,
                     /*file_source=*/FileSource::Append(), /*external_path=*/std::nullopt,
                     /*value_stats_cols=*/std::nullopt,
-                    /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt));
+                    /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+                    /*column_max_sequence_numbers=*/std::nullopt));
         }
         return entries;
     };
@@ -405,7 +406,7 @@ TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithValueStatsCols) {
             /*value_stats_cols=*/value_stats_cols,
             /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt));
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt));
 
     // max(v0)=50 > 30.1, should be kept.
     SimpleStats value_stats_keep = BinaryRowGenerator::GenerateStats(
@@ -430,7 +431,7 @@ TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithValueStatsCols) {
             /*value_stats_cols=*/value_stats_cols,
             /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt));
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt));
 
     // max(v0)=20 <= 30.1, should be filtered out.
     ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterByStats(entry));
@@ -482,7 +483,7 @@ TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithSchemaEvolution) {
             /*value_stats_cols=*/value_stats_cols,
             /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt));
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt));
 
     SimpleStats value_stats_keep = BinaryRowGenerator::GenerateStats(
         /*min=*/{40}, /*max=*/{50}, /*null=*/{0}, pool.get());
@@ -506,7 +507,7 @@ TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithSchemaEvolution) {
             /*value_stats_cols=*/value_stats_cols,
             /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt));
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterByStats(entry));
     ASSERT_FALSE(keep);
@@ -555,7 +556,7 @@ TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithNewFieldUsesNullSta
             /*value_stats_cols=*/value_stats_cols,
             /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt));
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterByStats(old_schema_entry));
     ASSERT_FALSE(keep);

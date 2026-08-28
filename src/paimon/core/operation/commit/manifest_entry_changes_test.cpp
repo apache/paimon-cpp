@@ -67,7 +67,7 @@ class ManifestEntryChangesTest : public testing::Test {
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*external_path=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     std::shared_ptr<IndexFileMeta> CreateIndexFileMeta(
@@ -140,7 +140,7 @@ TEST_F(ManifestEntryChangesTest, TestDropStatsOnlyForDeleteEntries) {
         /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
         /*value_stats_cols=*/std::vector<std::string>({"f0"}),
         /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> after, before->Upgrade(/*new_level=*/1));
 
     CompactIncrement compact_increment(/*compact_before=*/{before}, /*compact_after=*/{after},

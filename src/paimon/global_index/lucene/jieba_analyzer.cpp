@@ -17,6 +17,8 @@
  */
 #include "paimon/global_index/lucene/jieba_analyzer.h"
 
+#include <cctype>
+
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/global_index/lucene/lucene_utils.h"
 
@@ -94,9 +96,7 @@ void JiebaTokenizer::NormalizeCase(std::string* term) {
         }
     }
     if (is_alphanumeric && !term->empty()) {
-        std::transform(term->begin(), term->end(), term->begin(), [](char ch) {
-            return static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        });
+        *term = StringUtils::ToLowerCase(*term);
     }
 }
 

@@ -27,6 +27,11 @@
 
 namespace paimon::test {
 
+TEST(LocalFileTest, TestSchemeCaseInsensitive) {
+    ASSERT_OK(LocalFile::Create("FILE:/tmp"));
+    ASSERT_NOK(LocalFile::Create("s3:/tmp"));
+}
+
 TEST(LocalFileTest, TestReadWriteEmptyContent) {
     auto test_root_dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);

@@ -27,6 +27,7 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/common/utils/preconditions.h"
 #include "paimon/common/utils/var_length_int_utils.h"
 #include "paimon/data/decimal.h"
@@ -164,19 +165,13 @@ Result<std::shared_ptr<Bytes>> KeySerializer::SerializeKey(
         case FieldType::FLOAT: {
             MemorySliceOutput output(4, pool);
             output.Reset();
-            auto fvalue = literal.GetValue<float>();
-            int32_t ivalue;
-            memcpy(&ivalue, &fvalue, sizeof(float));
-            output.WriteValue<int32_t>(ivalue);
+            output.WriteValue<int32_t>(CanonicalizeFloatToIntBits(literal.GetValue<float>()));
             return output.ToSlice().CopyBytes(pool);
         }
         case FieldType::DOUBLE: {
             MemorySliceOutput output(8, pool);
             output.Reset();
-            auto dvalue = literal.GetValue<double>();
-            int64_t ivalue;
-            memcpy(&ivalue, &dvalue, sizeof(double));
-            output.WriteValue<int64_t>(ivalue);
+            output.WriteValue<int64_t>(CanonicalizeDoubleToLongBits(literal.GetValue<double>()));
             return output.ToSlice().CopyBytes(pool);
         }
         case FieldType::STRING: {

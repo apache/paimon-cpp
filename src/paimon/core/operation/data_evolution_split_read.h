@@ -64,7 +64,8 @@ struct DeletionFile;
 /// ->(ConcatBatchReader across blob files | BlobFallbackBatchReader across blob sequence layers)
 /// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ApplyBitmapIndexBatchReader)
 /// ->(CompleteRowTrackingFieldsBatchReader)->(ShreddingFileReader)
-/// ->(VectorFileBatchReader)->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
+/// ->(VectorFileBatchReader)->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)
+/// ->(LateMaterializingFileBatchReader)->FormatReader
 ///
 ///
 /// A union `SplitRead` to read multiple inner files to merge columns. A single-file row range

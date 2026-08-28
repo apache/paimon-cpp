@@ -110,7 +110,8 @@ Result<std::shared_ptr<DataFileMeta>> KeyValueDataFileWriter::GetResult() {
         file_index.extra_files,
         Timestamp(/*millisecond=*/local_micro / 1000, /*nano_of_millisecond=*/0), delete_row_count_,
         file_index.embedded_index, file_source_, /*value_stats_cols=*/std::nullopt, final_path,
-        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 Status KeyValueDataFileWriter::GenerateMinMaxKey(BinaryRow* min_key, BinaryRow* max_key) const {

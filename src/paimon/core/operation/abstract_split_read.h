@@ -107,12 +107,12 @@ class AbstractSplitRead : public SplitRead {
 
     Result<std::unique_ptr<FileBatchReader>> CreateFileBatchReader(
         const std::string& file_format_identifier, const std::string& data_file_path,
-        int64_t data_file_size, const ReaderBuilder* reader_builder) const;
+        int64_t data_file_size, std::unique_ptr<ReaderBuilder> reader_builder) const;
 
     // return nullptr if data file is skipped by index or dv
     Result<std::unique_ptr<FileBatchReader>> CreateFieldMappingReader(
         const std::string& data_file_path, const std::shared_ptr<DataFileMeta>& file_meta,
-        const BinaryRow& partition, const ReaderBuilder* reader_builder,
+        const BinaryRow& partition, std::unique_ptr<ReaderBuilder> reader_builder,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;

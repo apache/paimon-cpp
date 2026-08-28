@@ -108,6 +108,10 @@ class SnapshotReader {
         return scan_->GetPartitionPredicate();
     }
 
+    std::shared_ptr<Metrics> GetMetrics() const {
+        return scan_->GetScanMetrics();
+    }
+
     /// Get splits from `FileKind::ADD` files.
     Result<std::shared_ptr<Plan>> Read() const;
 

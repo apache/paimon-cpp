@@ -134,6 +134,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/starts_with.cpp
     common/reader/batch_reader.cpp
     common/reader/concat_batch_reader.cpp
+    common/reader/late_materializing_file_batch_reader.cpp
     common/reader/predicate_batch_reader.cpp
     common/reader/prefetch_file_batch_reader_impl.cpp
     common/reader/reader_utils.cpp
@@ -274,6 +275,7 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_meta_first_row_id_legacy_serializer.cpp
     core/io/data_file_meta.cpp
     core/io/data_file_meta_serializer.cpp
+    core/io/data_file_meta_write_cols_legacy_serializer.cpp
     core/io/data_file_path_factory.cpp
     core/io/data_file_index_writer.cpp
     core/io/file_index_options.cpp
@@ -607,6 +609,7 @@ if(PAIMON_BUILD_TESTS)
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp
                     common/reader/concat_batch_reader_test.cpp
+                    common/reader/late_materializing_file_batch_reader_test.cpp
                     common/reader/predicate_batch_reader_test.cpp
                     common/reader/prefetch_file_batch_reader_impl_test.cpp
                     common/reader/reader_utils_test.cpp

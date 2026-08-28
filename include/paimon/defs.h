@@ -156,6 +156,10 @@ struct PAIMON_EXPORT Options {
     /// 9, but the read and write speed will significantly decrease. Default value is 1.
     static const char FILE_COMPRESSION_ZSTD_LEVEL[];
 
+    /// "file.block-size" - File block size of format, default value of orc stripe is 64 MB,
+    /// parquet row group is 128 MB, and Mosaic row group is 256 MB.
+    static const char FILE_BLOCK_SIZE[];
+
     /// "manifest.target-file-size" - Suggested file size of a manifest file.
     /// Default value is 8MB.
     static const char MANIFEST_TARGET_FILE_SIZE[];
@@ -203,6 +207,10 @@ struct PAIMON_EXPORT Options {
     /// "scan.manifest-entry.lazy-decode.enabled" - Whether to deserialize only manifest entries
     /// for the target bucket when rebuilding the cache. Default value is true.
     static const char SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[];
+
+    /// "prefetch.io-metrics.enabled" - Whether to collect per-I/O metrics for prefetch reads.
+    /// Default value is false.
+    static const char PREFETCH_IO_METRICS_ENABLED[];
 
     /// "read.batch-size" - Read batch size for any file format if it supports.
     /// The default value is 1024.

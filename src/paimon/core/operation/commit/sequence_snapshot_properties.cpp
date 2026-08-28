@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <limits>
 
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/manifest/file_kind.h"
 
 namespace paimon {
@@ -40,19 +41,12 @@ Result<std::optional<int64_t>> SequenceSnapshotProperties::MaxSequenceNumber(
         return std::optional<int64_t>();
     }
 
-    try {
-        size_t parsed = 0;
-        int64_t value = std::stoll(iter->second, &parsed);
-        if (parsed != iter->second.size()) {
-            return Status::Invalid(
-                fmt::format("Invalid {} value '{}': trailing characters are not allowed",
-                            kMaxSequenceNumberKey, iter->second));
-        }
-        return std::optional<int64_t>(value);
-    } catch (const std::exception& e) {
-        return Status::Invalid(fmt::format("Invalid {} value '{}': {}", kMaxSequenceNumberKey,
-                                           iter->second, e.what()));
+    std::optional<int64_t> value = StringUtils::StringToValue<int64_t>(iter->second);
+    if (!value) {
+        return Status::Invalid(
+            fmt::format("Invalid {} value '{}'", kMaxSequenceNumberKey, iter->second));
     }
+    return value;
 }
 
 std::optional<int64_t> SequenceSnapshotProperties::MaxSequenceNumberFromFiles(

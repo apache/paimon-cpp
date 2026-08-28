@@ -289,6 +289,13 @@ TEST_F(OrcFormatWriterTest, TestPrepareWriterOptions) {
         ASSERT_FALSE(writer_options.getEnableDictionary());
     }
     {
+        std::map<std::string, std::string> options = {{ORC_STRIPE_SIZE, "4096"},
+                                                      {Options::FILE_BLOCK_SIZE, "8 KB"}};
+        ASSERT_OK_AND_ASSIGN(::orc::WriterOptions writer_options,
+                             OrcFormatWriter::PrepareWriterOptions(options, "zstd", data_type));
+        ASSERT_EQ(writer_options.getStripeSize(), 8 * 1024);
+    }
+    {
         // test disable config for timestamp with timezone
         arrow::FieldVector invalid_fields = {
             arrow::field("f0", arrow::timestamp(arrow::TimeUnit::NANO, "Asia/Shanghai"))};

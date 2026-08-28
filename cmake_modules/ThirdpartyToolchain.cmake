@@ -91,6 +91,18 @@ else()
     endif()
 endif()
 
+if(DEFINED ENV{PAIMON_MOSAIC_URL})
+    set(MOSAIC_SOURCE_URL "$ENV{PAIMON_MOSAIC_URL}")
+else()
+    if(EXISTS "${THIRDPARTY_DIR}/${PAIMON_MOSAIC_PKG_NAME}")
+        set_urls(MOSAIC_SOURCE_URL "${THIRDPARTY_DIR}/${PAIMON_MOSAIC_PKG_NAME}")
+    else()
+        set_urls(MOSAIC_SOURCE_URL
+                 "https://downloads.apache.org/paimon/paimon-mosaic-${PAIMON_MOSAIC_BUILD_VERSION}/${PAIMON_MOSAIC_PKG_NAME}"
+        )
+    endif()
+endif()
+
 if(DEFINED ENV{PAIMON_RAPIDJSON_URL})
     set(RAPIDJSON_SOURCE_URL "$ENV{PAIMON_RAPIDJSON_URL}")
 else()
@@ -1314,6 +1326,50 @@ macro(build_lumina)
     install(FILES "${LUMINA_DYNAMIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endmacro()
 
+macro(build_mosaic)
+    message(STATUS "Building Apache Paimon Mosaic Rust FFI from source")
+    find_program(PAIMON_CARGO_EXECUTABLE cargo REQUIRED)
+
+    set(MOSAIC_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/mosaic_ep-install")
+    set(MOSAIC_INCLUDE_DIR "${MOSAIC_PREFIX}/include")
+    set(MOSAIC_LIB_DIR "${MOSAIC_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+    set(MOSAIC_DYNAMIC_LIB
+        "${MOSAIC_LIB_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_mosaic_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+    set(MOSAIC_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/mosaic_ep-cargo")
+    set(MOSAIC_CARGO_DYNAMIC_LIB
+        "${MOSAIC_CARGO_TARGET_DIR}/release/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_mosaic_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+
+    file(MAKE_DIRECTORY "${MOSAIC_INCLUDE_DIR}")
+    file(MAKE_DIRECTORY "${MOSAIC_LIB_DIR}")
+
+    externalproject_add(mosaic_ep
+                        URL ${MOSAIC_SOURCE_URL}
+                        URL_HASH "SHA256=${PAIMON_MOSAIC_BUILD_SHA256_CHECKSUM}"
+                        ${THIRDPARTY_LOG_OPTIONS}
+                        CONFIGURE_COMMAND ""
+                        BUILD_COMMAND ${CMAKE_COMMAND} -E env
+                                      CARGO_TARGET_DIR=${MOSAIC_CARGO_TARGET_DIR}
+                                      ${PAIMON_CARGO_EXECUTABLE} build --release
+                                      --manifest-path <SOURCE_DIR>/ffi/Cargo.toml
+                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                ${MOSAIC_CARGO_DYNAMIC_LIB} ${MOSAIC_DYNAMIC_LIB}
+                        INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_directory
+                                        <SOURCE_DIR>/include ${MOSAIC_INCLUDE_DIR}
+                        BUILD_BYPRODUCTS "${MOSAIC_DYNAMIC_LIB}")
+
+    add_library(paimon_mosaic_ffi SHARED IMPORTED GLOBAL)
+    set_target_properties(paimon_mosaic_ffi
+                          PROPERTIES IMPORTED_LOCATION "${MOSAIC_DYNAMIC_LIB}"
+                                     IMPORTED_NO_SONAME TRUE
+                                     INTERFACE_INCLUDE_DIRECTORIES
+                                     "${MOSAIC_INCLUDE_DIR}")
+    add_dependencies(paimon_mosaic_ffi mosaic_ep)
+
+    install(FILES "${MOSAIC_DYNAMIC_LIB}" DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endmacro()
+
 macro(build_jindosdk_nextarch)
     message(STATUS "Building jindosdk-nextarch from local source")
 
@@ -1953,6 +2009,9 @@ paimon_warn_if_mixed_arrow_dependencies()
 resolve_dependency(TBB)
 resolve_dependency(glog)
 
+if(PAIMON_ENABLE_MOSAIC)
+    build_mosaic()
+endif()
 if(PAIMON_ENABLE_AVRO)
     resolve_dependency(Avro)
 endif()

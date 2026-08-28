@@ -21,11 +21,17 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <future>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -40,6 +46,9 @@ class MockHttpClient : public HttpClient {
  public:
     Result<HttpResponse> Execute(const HttpRequest& request,
                                  const HttpBodyConsumer& consumer) const override {
+        if (before_execute_) {
+            before_execute_();
+        }
         request_ = request;
         HttpResponse response;
         response.status_code = status_code_;
@@ -55,6 +64,7 @@ class MockHttpClient : public HttpClient {
     int32_t status_code_ = 200;
     HttpHeaders response_headers_;
     std::string body_;
+    std::function<void()> before_execute_;
 };
 
 class ScopedEnvironmentVariable {
@@ -433,6 +443,46 @@ TEST(S3ObjectStoreClientTest, TestRangeAndListObjects) {
     ASSERT_NE(http->request_.url.find("amazonaws.com/?list-type=2"), std::string::npos);
     ASSERT_NE(http->request_.url.find("encoding-type=url"), std::string::npos);
     ASSERT_NE(http->request_.url.find("continuation-token=old%20token"), std::string::npos);
+}
+
+TEST(S3ObjectStoreClientTest, TestGetObjectRangeAsyncClientLifetime) {
+    auto http = std::make_shared<MockHttpClient>();
+    http->body_ = "data";
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool request_started = false;
+    bool release_request = false;
+    http->before_execute_ = [&] {
+        std::unique_lock<std::mutex> lock(mutex);
+        request_started = true;
+        condition.notify_one();
+        condition.wait(lock, [&] { return release_request; });
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ObjectStoreClient> client,
+                         MakeS3ObjectStoreClient(StaticOptions(), http));
+    char buffer[4];
+    auto promise = std::make_shared<std::promise<Status>>();
+    std::future<Status> future = promise->get_future();
+
+    client->GetObjectRangeAsync({"bucket", "key"}, 0, 4, buffer, [promise](Status status) {
+        promise->set_value(std::move(status));
+    });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(
+            condition.wait_for(lock, std::chrono::seconds(5), [&] { return request_started; }));
+    }
+    std::thread destruction_thread([client = std::move(client)]() mutable { client.reset(); });
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release_request = true;
+    }
+    condition.notify_one();
+
+    destruction_thread.join();
+    ASSERT_EQ(std::future_status::ready, future.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK(future.get());
+    ASSERT_EQ("data", std::string(buffer, sizeof(buffer)));
 }
 
 TEST(S3ObjectStoreClientTest, TestUrlEncodedListObjects) {

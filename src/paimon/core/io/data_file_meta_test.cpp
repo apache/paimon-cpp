@@ -37,7 +37,8 @@ TEST(DataFileMetaTest, TestCopyWithoutStats) {
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::vector<std::string>({"f0", "f1"}),
         /*external_path=*/"file:/tmp/bucket-0/data-0.orc", /*first_row_id=*/100,
-        /*write_cols=*/std::vector<std::string>({"f0"}));
+        /*write_cols=*/std::vector<std::string>({"f0"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     std::shared_ptr<DataFileMeta> result = file_meta->CopyWithoutStats();
 
@@ -68,7 +69,8 @@ TEST(DataFileMetaTest, TestAddRowCount) {
                            /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
                            /*value_stats_cols=*/std::nullopt,
                            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-                           /*write_cols=*/std::nullopt);
+                           /*write_cols=*/std::nullopt,
+                           /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_EQ(3, file_meta.AddRowCount().value());
     // test null delete row count
     file_meta.delete_row_count = std::nullopt;
@@ -85,7 +87,8 @@ TEST(DataFileMetaTest, TestFileFormat) {
                            /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
                            /*value_stats_cols=*/std::nullopt,
                            /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-                           /*write_cols=*/std::nullopt);
+                           /*write_cols=*/std::nullopt,
+                           /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_OK_AND_ASSIGN(auto file_format, file_meta.FileFormat());
     ASSERT_EQ("orc", file_format);
     file_meta.file_name = "data-80110e15-97b5-4bcf-ac09-6ca2659a4950-0.parquet";
@@ -107,7 +110,8 @@ TEST(DataFileMetaTest, TestExternalPathDir) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/"file:/tmp/bucket-0/data-80110e15-97b5-4bcf-ac09-6ca2659a4950-0.orc",
-        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_EQ("file:/tmp/bucket-0", file_meta.ExternalPathDir().value());
     file_meta.external_path = std::nullopt;
     ASSERT_EQ(std::nullopt, file_meta.ExternalPathDir());
@@ -123,7 +127,8 @@ TEST(DataFileMetaTest, TestGetMaxSequenceNumber) {
         /*creation_time=*/Timestamp(1737111915429ll, 0),
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-80110e15-97b5-4bcf-ac09-6ca2659a4950-1.orc", /*file_size=*/645,
         /*row_count=*/5, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(), SimpleStats::EmptyStats(),
@@ -133,7 +138,8 @@ TEST(DataFileMetaTest, TestGetMaxSequenceNumber) {
         /*creation_time=*/Timestamp(1737111915429ll, 0),
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_EQ(4, DataFileMeta::GetMaxSequenceNumber({file_meta1}));
     ASSERT_EQ(10, DataFileMeta::GetMaxSequenceNumber({file_meta1, file_meta2}));
     ASSERT_EQ(-1, DataFileMeta::GetMaxSequenceNumber({}));
@@ -152,7 +158,8 @@ TEST(DataFileMetaTest, TestNonNullFirstRowId) {
             /*creation_time=*/Timestamp(1737111915429ll, 0),
             /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
-            /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt);
+            /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
         ASSERT_OK_AND_ASSIGN(int64_t first_row_id, file_meta->NonNullFirstRowId());
         ASSERT_EQ(100, first_row_id);
     }
@@ -167,7 +174,7 @@ TEST(DataFileMetaTest, TestNonNullFirstRowId) {
             /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         ASSERT_NOK_WITH_MSG(file_meta->NonNullFirstRowId(),
                             "First row id of data-1.orc should not be null.");
     }
@@ -184,7 +191,8 @@ TEST(DataFileMetaTest, TestToFileSelection) {
         /*creation_time=*/Timestamp(1737111915429ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     {
         ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap32> result,
@@ -223,7 +231,8 @@ TEST(DataFileMetaTest, TestUpgrade) {
         /*creation_time=*/Timestamp(1737111915429ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     // test normal upgrade
     ASSERT_OK_AND_ASSIGN(auto new_file_meta, file_meta->Upgrade(10));
     ASSERT_EQ(new_file_meta->level, 10);

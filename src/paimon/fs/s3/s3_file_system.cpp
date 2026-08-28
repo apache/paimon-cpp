@@ -580,22 +580,22 @@ bool IsIpAddressAuthority(const std::string& authority) {
 }
 
 const char* AwsDnsSuffixForRegion(const std::string& region) {
-    if (region.rfind("cn-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "cn-")) {
         return "amazonaws.com.cn";
     }
-    if (region.rfind("eusc-de-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "eusc-de-")) {
         return "amazonaws.eu";
     }
-    if (region.rfind("us-iso-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "us-iso-")) {
         return "c2s.ic.gov";
     }
-    if (region.rfind("us-isob-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "us-isob-")) {
         return "sc2s.sgov.gov";
     }
-    if (region.rfind("eu-isoe-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "eu-isoe-")) {
         return "cloud.adc-e.uk";
     }
-    if (region.rfind("us-isof-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "us-isof-")) {
         return "csp.hci.ic.gov";
     }
     return "amazonaws.com";

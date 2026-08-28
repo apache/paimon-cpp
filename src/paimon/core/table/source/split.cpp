@@ -23,6 +23,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/common/utils/serialization_utils.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta_serializer.h"
@@ -159,8 +160,8 @@ Result<std::string> Split::Serialize(const std::shared_ptr<Split>& split,
         if (!scores.empty()) {
             out.WriteValue<bool>(true);
             out.WriteValue<int32_t>(scores.size());
-            for (const auto& score : scores) {
-                out.WriteValue<float>(score);
+            for (float score : scores) {
+                out.WriteValue<float>(CanonicalizeFloatingPoint(score));
             }
         } else {
             out.WriteValue<bool>(false);

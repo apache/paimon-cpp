@@ -46,6 +46,7 @@ const char Options::PAGE_SIZE[] = "page-size";
 const char Options::PARTITION_DEFAULT_NAME[] = "partition.default-name";
 const char Options::FILE_COMPRESSION[] = "file.compression";
 const char Options::FILE_COMPRESSION_ZSTD_LEVEL[] = "file.compression.zstd-level";
+const char Options::FILE_BLOCK_SIZE[] = "file.block-size";
 const char Options::MANIFEST_TARGET_FILE_SIZE[] = "manifest.target-file-size";
 const char Options::MANIFEST_FORMAT[] = "manifest.format";
 const char Options::MANIFEST_COMPRESSION[] = "manifest.compression";
@@ -61,6 +62,7 @@ const char Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[] =
     "scan.manifest-entry-cache.max-snapshots";
 const char Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[] =
     "scan.manifest-entry.lazy-decode.enabled";
+const char Options::PREFETCH_IO_METRICS_ENABLED[] = "prefetch.io-metrics.enabled";
 const char Options::READ_BATCH_SIZE[] = "read.batch-size";
 const char Options::WRITE_BATCH_SIZE[] = "write.batch-size";
 const char Options::WRITE_BUFFER_SIZE[] = "write-buffer-size";

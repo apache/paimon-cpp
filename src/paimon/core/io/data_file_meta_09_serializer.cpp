@@ -114,7 +114,7 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMeta09Serializer::FromRow(
         embedded_file_index, file_source,
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 }  // namespace paimon

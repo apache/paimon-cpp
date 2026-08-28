@@ -19,7 +19,6 @@
 #include "paimon/common/file_index/bloomfilter/fast_hash.h"
 
 #include <cassert>
-#include <cmath>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -28,6 +27,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/file_index_result.h"
@@ -35,11 +35,6 @@
 #include "xxhash.h"  // NOLINT(build/include_subdir)
 
 namespace paimon {
-namespace {
-constexpr int32_t kCanonicalFloatNaNBits = 0x7fc00000;
-constexpr int64_t kCanonicalDoubleNaNBits = 0x7ff8000000000000L;
-}  // namespace
-
 Result<FastHash::HashFunction> FastHash::GetHashFunction(
     const std::shared_ptr<arrow::DataType>& arrow_type) {
     PAIMON_ASSIGN_OR_RAISE(FieldType field_type,
@@ -64,23 +59,11 @@ Result<FastHash::HashFunction> FastHash::GetHashFunction(
             });
         case FieldType::FLOAT:
             return HashFunction([](const Literal& literal) -> int64_t {
-                const auto raw_value = literal.GetValue<float>();
-                if (std::isnan(raw_value)) {
-                    return GetLongHash(kCanonicalFloatNaNBits);
-                }
-                int32_t bits = 0;
-                std::memcpy(&bits, &raw_value, sizeof(raw_value));
-                return GetLongHash(bits);
+                return GetLongHash(CanonicalizeFloatToIntBits(literal.GetValue<float>()));
             });
         case FieldType::DOUBLE:
             return HashFunction([](const Literal& literal) -> int64_t {
-                const auto raw_value = literal.GetValue<double>();
-                if (std::isnan(raw_value)) {
-                    return GetLongHash(kCanonicalDoubleNaNBits);
-                }
-                int64_t bits;
-                std::memcpy(&bits, &raw_value, sizeof(raw_value));
-                return GetLongHash(bits);
+                return GetLongHash(CanonicalizeDoubleToLongBits(literal.GetValue<double>()));
             });
         case FieldType::TIMESTAMP: {
             auto ts_type = checked_pointer_cast<arrow::TimestampType>(arrow_type);

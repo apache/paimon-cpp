@@ -1275,6 +1275,9 @@ TEST_P(WriteAndReadInteTest, TestNestedType) {
         arrow::field("f6", arrow::decimal128(2, 2))};
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
+    if (file_format == "mosaic") {
+        return;
+    }
     std::map<std::string, std::string> options = {
         {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
@@ -1324,7 +1327,7 @@ TEST_P(WriteAndReadInteTest, TestNestedType) {
 
 TEST_P(WriteAndReadInteTest, TestSchemaEvolutionAddFieldInsideListAndMap) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "lance" || file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     auto list_struct =
@@ -1610,6 +1613,9 @@ TEST_P(WriteAndReadInteTest, TestAppendTimestampType) {
     };
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
+    if (file_format == "mosaic") {
+        return;
+    }
     std::map<std::string, std::string> options = {
         {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
@@ -1663,6 +1669,9 @@ TEST_P(WriteAndReadInteTest, TestPkTimestampType) {
     };
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
+    if (file_format == "mosaic") {
+        return;
+    }
     std::map<std::string, std::string> options = {
         {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
@@ -1709,6 +1718,9 @@ TEST_P(WriteAndReadInteTest, TestPkTimestampType) {
 /// the reader has to convert milli back to second for every nested leaf.
 TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampSecondPrecision) {
     auto [file_format, file_system] = GetParam();
+    if (file_format == "mosaic") {
+        return;
+    }
     TimezoneGuard timezone_guard("Asia/Shanghai");
     auto timezone = DateTimeUtils::GetLocalTimezoneName();
     auto event_type = arrow::struct_({
@@ -1764,6 +1776,9 @@ TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampSecondPrecision) {
 /// file schema differ only in the timezone of those leaves; the micro precision stays unchanged.
 TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampLtzMicroTimezoneOnly) {
     auto [file_format, file_system] = GetParam();
+    if (file_format == "mosaic") {
+        return;
+    }
     // Pin a non-UTC timezone so the read schema really differs from what the file reports.
     TimezoneGuard timezone_guard("Asia/Shanghai");
     auto timezone = DateTimeUtils::GetLocalTimezoneName();
@@ -2192,6 +2207,9 @@ TEST_P(WriteAndReadInteTest, TestCharVarcharBinaryVarbinaryTypes) {
 
 std::vector<std::pair<std::string, std::string>> GetTestValuesForWriteAndReadInteTest() {
     std::vector<std::pair<std::string, std::string>> values = {{"parquet", "local"}};
+#ifdef PAIMON_ENABLE_MOSAIC
+    values.emplace_back("mosaic", "local");
+#endif
 #if defined(PAIMON_ENABLE_NETWORK_TESTS) && defined(PAIMON_ENABLE_JINDO)
     values.emplace_back("parquet", "jindo");
 #endif
@@ -2608,7 +2626,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetMetadataCache) {
 
 TEST_P(WriteAndReadInteTest, TestAppendSharedShreddingMap) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -2665,7 +2683,7 @@ TEST_P(WriteAndReadInteTest, TestAppendSharedShreddingMap) {
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingColumnPlacementPolicies) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -2749,7 +2767,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingColumnPlacementPolicies) {
 
 TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPartitionAndBucket) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -2857,7 +2875,7 @@ TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPartitionAndBucket)
 
 TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPredicate) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -2951,7 +2969,7 @@ TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPredicate) {
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingNewWriterStartsWithMaxColumnCount) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3020,7 +3038,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingNewWriterStartsWithMaxColumnC
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingAdaptsAcrossRollingFiles) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3093,7 +3111,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingAdaptsAcrossRollingFiles) {
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingSwitchMapLayoutAndUseMaxColumnsWithoutMetadata) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3176,7 +3194,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingSwitchMapLayoutAndUseMaxColum
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingReadAfterRenameColumn) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3260,7 +3278,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingReadAfterRenameColumn) {
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingWithSchemaEvolution) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3371,7 +3389,7 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingWithSchemaEvolution) {
 // Verify storage-layout evolution: default->shared-shredding.
 TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShredding) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3449,7 +3467,7 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShredding) {
 // Verify storage-layout evolution: shared-shredding->default.
 TEST_P(WriteAndReadInteTest, TestMapStorageLayoutSharedShreddingToDefault) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3513,7 +3531,7 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutSharedShreddingToDefault) {
 
 TEST_P(WriteAndReadInteTest, TestAppendMapStorageLayoutSharedShreddingToDefaultCompaction) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3601,7 +3619,7 @@ TEST_P(WriteAndReadInteTest, TestAppendMapStorageLayoutSharedShreddingToDefaultC
 // Nested map values through both selected physical columns and overflow.
 TEST_P(WriteAndReadInteTest, TestSharedShreddingWithStructValue) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3672,7 +3690,7 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingWithStructValue) {
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithComplexValue) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3786,7 +3804,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithComplexValue) {
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithAllSupportedComplexValueTypes) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -3936,7 +3954,7 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithAllSupportedComplexValueT
 
 TEST_P(WriteAndReadInteTest, TestMapSharedShreddingStructValueSchemaEvolutionReadFails) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4148,7 +4166,7 @@ TEST_P(WriteAndReadInteTest, TestOrcDictionaryLazyDecodingWithSharedShredding) {
 // Verify shared-shredding in the PK read path.
 TEST_P(WriteAndReadInteTest, TestPkSharedShreddingMap) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4218,7 +4236,7 @@ TEST_P(WriteAndReadInteTest, TestPkSharedShreddingMap) {
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithOverflow) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4353,7 +4371,7 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithOverflow) {
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithNullOrMissingKey) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4464,7 +4482,7 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithNullOrMissin
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallMultipleColumns) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4576,7 +4594,7 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallMultipleColumns)
 
 TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShreddingPartialKeyRecall) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4666,7 +4684,7 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShreddingPartial
 
 TEST_P(WriteAndReadInteTest, TestMapStorageLayoutSharedShreddingToDefaultPartialKeyRecall) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4761,7 +4779,7 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutSharedShreddingToDefaultPartial
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingDuplicateSelectedKeys) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4809,7 +4827,7 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingDuplicateSelectedKeys) {
 
 TEST_P(WriteAndReadInteTest, TestSharedShreddingAllNullMapColumn) {
     auto [file_format, file_system] = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 

@@ -724,7 +724,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate);
+    read_context_builder.SetPredicate(predicate).EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
@@ -737,6 +737,45 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
     auto expected = std::make_shared<arrow::ChunkedArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
 [0, "Lucy", 20, 1, 14.1],
+[0, "Paul", 20, 1, 18.1]
+   ])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected);
+    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
+TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLateMaterializing) {
+    auto file_format = FileFormat();
+    std::string table_path = paimon::test::GetDataDir() + file_format +
+                             "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
+
+    std::string literal_str = "Alice";
+    auto not_equal = PredicateBuilder::NotEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+        Literal(FieldType::STRING, literal_str.data(), literal_str.size()));
+    auto greater_than = PredicateBuilder::GreaterThan(/*field_index=*/3, /*field_name=*/"f3",
+                                                      FieldType::DOUBLE, Literal(18.0));
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({not_equal, greater_than}));
+    scan_context_builder.SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+
+    ReadContextBuilder read_context_builder(table_path);
+    AddReadOptionsForPrefetch(&read_context_builder);
+    read_context_builder.SetPredicate(predicate).EnableLateMaterializing(true);
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    ASSERT_EQ(result_plan->SnapshotId().value(), 6);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    // check result: "Lucy" (f3 = 14.1) does not match f3 > 18 and is filtered out.
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
 [0, "Paul", 20, 1, 18.1]
    ])")
             .ValueOrDie());
@@ -1251,7 +1290,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
 
     ReadContextBuilder read_context_builder(table_path);
     AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate);
+    read_context_builder.SetPredicate(predicate).EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
@@ -1273,6 +1312,55 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
 [0, "Tony", 10, 0, 14.1],
 [0, "Alice", 10, 1, 19.1],
 [0, "Two roads diverged in a wood, and I took the one less traveled by, And that has made all the difference.", 10, 1, 11.0]
+   ])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected);
+    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
+// Same coverage as the deletion-vector case above, for the merge-on-read path where only the
+// key part of the predicate is pushed down into the data files.
+TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithLateMaterializing) {
+    auto file_format = FileFormat();
+    std::string table_path = paimon::test::GetDataDir() + file_format +
+                             "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
+
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "5");
+
+    std::string literal_str = "Alice";
+    auto not_equal = PredicateBuilder::NotEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+        Literal(FieldType::STRING, literal_str.data(), literal_str.size()));
+    std::string literal_str2 = "Lucy";
+    auto less_than = PredicateBuilder::LessThan(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+        Literal(FieldType::STRING, literal_str2.data(), literal_str2.size()));
+    auto less_or_equal = PredicateBuilder::LessOrEqual(/*field_index=*/3, /*field_name=*/"f3",
+                                                       FieldType::DOUBLE, Literal(30.0));
+    ASSERT_OK_AND_ASSIGN(auto predicate,
+                         PredicateBuilder::And({not_equal, less_than, less_or_equal}));
+    scan_context_builder.SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+
+    ReadContextBuilder read_context_builder(table_path);
+    AddReadOptionsForPrefetch(&read_context_builder);
+    read_context_builder.SetPredicate(predicate).EnableLateMaterializing(true);
+    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    ASSERT_EQ(result_plan->SnapshotId().value(), 5);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+
+    // check result: only the rows before "Lucy" with f3 <= 30.0 remain.
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
+[0, "Bob", 10, 0, 12.1],
+[0, "David", 10, 0, 17.1],
+[0, "Emily", 10, 0, 13.1]
    ])")
             .ValueOrDie());
     ASSERT_TRUE(expected);
@@ -2663,6 +2751,97 @@ TEST_P(ScanAndReadInteTest, TestCastTimestampType) {
     ASSERT_TRUE(expected);
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
+
+#ifdef PAIMON_ENABLE_MOSAIC
+TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
+    TimezoneGuard timezone_guard("UTC");
+    std::string timezone = DateTimeUtils::GetLocalTimezoneName();
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("f_boolean", arrow::boolean()),
+        arrow::field("f_tinyint", arrow::int8()),
+        arrow::field("f_smallint", arrow::int16()),
+        arrow::field("f_bigint", arrow::int64()),
+        arrow::field("f_float", arrow::float32()),
+        arrow::field("f_double", arrow::float64()),
+        arrow::field("f_char", arrow::utf8()),
+        arrow::field("f_varchar", arrow::utf8()),
+        arrow::field("f_binary", arrow::binary()),
+        arrow::field("f_varbinary", arrow::binary()),
+        arrow::field("f_date", arrow::date32()),
+        arrow::field("f_ts_3", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("f_ts_6", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("f_ts_9", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f_ltz_3", arrow::timestamp(arrow::TimeUnit::MILLI, timezone)),
+        arrow::field("f_ltz_6", arrow::timestamp(arrow::TimeUnit::MICRO, timezone)),
+        arrow::field("f_ltz_9", arrow::timestamp(arrow::TimeUnit::NANO, timezone)),
+        arrow::field("f_decimal_1_0", arrow::decimal128(1, 0)),
+        arrow::field("f_decimal_18_2", arrow::decimal128(18, 2)),
+        arrow::field("f_decimal_19_2", arrow::decimal128(19, 2)),
+        arrow::field("f_decimal_38_18", arrow::decimal128(38, 18)),
+        arrow::field("f_array_int", arrow::list(arrow::int32())),
+        arrow::field("f_map_numeric", arrow::map(arrow::int8(), arrow::int16())),
+        arrow::field("f_map_string_bigint", arrow::map(arrow::utf8(), arrow::int64())),
+        arrow::field("f_array_array_int", arrow::list(arrow::list(arrow::int32()))),
+        arrow::field("f_array_map", arrow::list(arrow::map(arrow::utf8(), arrow::int32()))),
+        arrow::field("f_map_array", arrow::map(arrow::utf8(), arrow::list(arrow::int32()))),
+    };
+    std::shared_ptr<arrow::DataType> data_type = arrow::struct_(fields);
+    std::shared_ptr<arrow::Array> expected_array =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
+[0, 1, true, -5, -1000, 10000000001, 1.25, 10.5, "char0001", "value-1", "bin00001", "\u0001\u0002\u0003", 20000, "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "1970-01-01 00:01:01.321", "1970-01-01 00:01:01.654321", "1970-01-01 00:01:01.321654987", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [1, 2], [[0, 0], [10, 1]], [["k0", 1000], ["z0", 2000]], [[1, 2], [3]], [[["nested0", 0]], [["nested10", 10]]], [["array0", [0, 1]]]],
+[0, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+[0, 10, true, -3, -998, 10000000010, 3.25, 12.5, "char0010", "value-10", "bin00010", "\u000a\u000b\u000c", 20002, "1970-01-01 00:00:10.123", "1970-01-01 00:00:10.123456", "1970-01-01 00:00:10.123456789", "1970-01-01 00:01:10.321", "1970-01-01 00:01:10.654321", "1970-01-01 00:01:10.321654987", "-1", "10.25", "12345678901234569.89", "12345678901234567892.123456789012345678", [10, 11], [[2, 20], [12, 21]], [["k2", 1002], ["z2", 2002]], [[10, 11], [12]], [[["nested2", 2]], [["nested12", 12]]], [["array2", [2, 3]]]],
+[0, 11, false, -2, -997, 10000000011, 4.25, 13.5, "char0011", "value-11", "bin00011", "\u000b\u000c\u000d", 20003, "1970-01-01 00:00:11.123", "1970-01-01 00:00:11.123456", "1970-01-01 00:00:11.123456789", "1970-01-01 00:01:11.321", "1970-01-01 00:01:11.654321", "1970-01-01 00:01:11.321654987", "0", "11.25", "12345678901234570.89", "12345678901234567893.123456789012345678", [11, 12], [[3, 30], [13, 31]], [["k3", 1003], ["z3", 2003]], [[11, 12], [13]], [[["nested3", 3]], [["nested13", 13]]], [["array3", [3, 4]]]],
+[0, 20, true, -1, -996, 10000000020, 5.25, 14.5, "char0020", "value-20", "bin00020", "\u0014\u0015\u0016", 20004, "1970-01-01 00:00:20.123", "1970-01-01 00:00:20.123456", "1970-01-01 00:00:20.123456789", "1970-01-01 00:01:20.321", "1970-01-01 00:01:20.654321", "1970-01-01 00:01:20.321654987", "1", "20.25", "12345678901234571.89", "12345678901234567894.123456789012345678", [20, 21], [[4, 40], [14, 41]], [["k4", 1004], ["z4", 2004]], [[20, 21], [22]], [[["nested4", 4]], [["nested14", 14]]], [["array4", [4, 5]]]],
+[0, 21, false, 0, -995, 10000000021, 6.25, 15.5, "char0021", "value-21", "bin00021", "\u0015\u0016\u0017", 20005, "1970-01-01 00:00:21.123", "1970-01-01 00:00:21.123456", "1970-01-01 00:00:21.123456789", "1970-01-01 00:01:21.321", "1970-01-01 00:01:21.654321", "1970-01-01 00:01:21.321654987", "2", "21.25", "12345678901234572.89", "12345678901234567895.123456789012345678", [21, 22], [[5, 50], [15, 51]], [["k5", 1005], ["z5", 2005]], [[21, 22], [23]], [[["nested5", 5]], [["nested15", 15]]], [["array5", [5, 6]]]]
+])")
+            .ValueOrDie();
+    auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+
+    auto check_compatibility = [](const std::string& table_path,
+                                  const std::shared_ptr<Predicate>& predicate,
+                                  const std::shared_ptr<arrow::ChunkedArray>& expected_result) {
+        ScanContextBuilder scan_context_builder(table_path);
+        ReadContextBuilder read_context_builder(table_path);
+        if (predicate != nullptr) {
+            scan_context_builder.SetPredicate(predicate);
+            read_context_builder.SetPredicate(predicate);
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                             scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                             TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                             table_read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_TRUE(expected_result->Equals(actual))
+            << "actual: " << (actual == nullptr ? "null" : actual->ToString())
+            << "\nexpected: " << expected_result->ToString();
+    };
+
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/0, /*field_name=*/"id", FieldType::INT, Literal(20));
+    std::shared_ptr<Predicate> predicate_without_stats = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/4, /*field_name=*/"f_bigint", FieldType::BIGINT,
+        Literal(int64_t{10000000020LL}));
+    for (const std::string table_name : {"append_java_compat", "append_python_compat"}) {
+        SCOPED_TRACE(table_name);
+        std::string table_path = GetDataDir() + "/mosaic/" + table_name + ".db/" + table_name;
+        check_compatibility(table_path, /*predicate=*/nullptr, expected);
+        check_compatibility(table_path, predicate, expected->Slice(4, 2));
+        check_compatibility(table_path, predicate_without_stats, expected);
+    }
+}
+#endif
 
 TEST_F(ScanAndReadInteTest, TestAvroWithAppendTable) {
     auto read_data = [](int64_t snapshot_id, const std::string& result_json) {

@@ -132,7 +132,7 @@ TEST_F(FileMetaUtilsTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-db2b44c0-0d73-449d-82a0-4075bd2cb6e3-0.orc", /*file_size=*/541,
@@ -148,7 +148,7 @@ TEST_F(FileMetaUtilsTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     CommitMessageImpl expected(BinaryRow::EmptyRow(), /*bucket=*/0, /*total_buckets=*/-1,
                                DataIncrement({file_meta1, file_meta2}, {}, {}),
                                CompactIncrement({}, {}, {}));
@@ -211,7 +211,7 @@ TEST_F(FileMetaUtilsTest, TestFailover) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-db2b44c0-0d73-449d-82a0-4075bd2cb6e3-0.orc", /*file_size=*/541,
@@ -227,7 +227,7 @@ TEST_F(FileMetaUtilsTest, TestFailover) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     CommitMessageImpl expected(BinaryRow::EmptyRow(), /*bucket=*/0, /*total_buckets=*/-1,
                                DataIncrement({file_meta1, file_meta2}, {}, {}),
                                CompactIncrement({}, {}, {}));
@@ -291,7 +291,7 @@ TEST_F(FileMetaUtilsTest, TestWithPartition) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-1c547e5f-48b2-4917-a996-71d306377661-0.orc", /*file_size=*/589,
@@ -307,7 +307,7 @@ TEST_F(FileMetaUtilsTest, TestWithPartition) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     CommitMessageImpl expected(BinaryRowGenerator::GenerateRow({10, 0}, pool_.get()), /*bucket=*/0,
                                /*total_buckets=*/-1,
                                DataIncrement({file_meta1, file_meta2}, {}, {}),
@@ -370,7 +370,7 @@ TEST_F(FileMetaUtilsTest, TestWithNestedType) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     CommitMessageImpl expected(BinaryRow::EmptyRow(), /*bucket=*/0, /*total_buckets=*/-1,
                                DataIncrement({file_meta1}, {}, {}), CompactIncrement({}, {}, {}));

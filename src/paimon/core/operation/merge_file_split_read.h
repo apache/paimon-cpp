@@ -74,7 +74,8 @@ class MergeFunctionWrapper;
 /// files->KeyValueProjectionReader/AsyncKeyValueProjectionReader
 /// ->DropDeleteReader->SortMergeReader->ConcatKeyValueRecordReader->KeyValueDataFileRecordReader
 /// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ShreddingFileReader)
-/// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
+/// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)
+/// ->(LateMaterializingFileBatchReader)->FormatReader
 class MergeFileSplitRead : public AbstractSplitRead {
  public:
     static Result<std::unique_ptr<MergeFileSplitRead>> Create(

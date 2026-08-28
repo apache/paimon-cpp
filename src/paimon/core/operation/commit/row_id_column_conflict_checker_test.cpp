@@ -57,7 +57,8 @@ class RowIdColumnConflictCheckerTest : public testing::Test {
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt,
-            /*first_row_id=*/first_row_id, write_cols);
+            /*first_row_id=*/first_row_id, write_cols,
+            /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     Result<std::shared_ptr<RowIdColumnConflictChecker>> CreateChecker(

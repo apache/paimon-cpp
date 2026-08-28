@@ -197,10 +197,10 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
 
     std::shared_ptr<DataFileMeta> ReconstructDataFileMeta(
         const std::shared_ptr<DataFileMeta>& file_meta) const {
-        if (GetParam() != "avro") {
+        if (GetParam() != "avro" && GetParam() != "mosaic") {
             return file_meta;
         }
-        // For the avro format, all stats are null.
+        // Avro and Mosaic without configured statistics have null statistics.
         auto new_meta = std::make_shared<DataFileMeta>(
             file_meta->file_name, file_meta->file_size, file_meta->row_count, file_meta->min_key,
             file_meta->max_key, file_meta->key_stats, file_meta->value_stats,
@@ -208,7 +208,7 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
             file_meta->level, file_meta->extra_files, file_meta->creation_time,
             file_meta->delete_row_count, file_meta->embedded_index, file_meta->file_source,
             file_meta->value_stats_cols, file_meta->external_path, file_meta->first_row_id,
-            file_meta->write_cols);
+            file_meta->write_cols, /*column_max_sequence_numbers=*/std::nullopt);
         auto generate_null_stats = [this](const SimpleStats& stats) -> SimpleStats {
             if (stats == SimpleStats::EmptyStats()) {
                 return stats;
@@ -383,6 +383,9 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
 std::vector<std::string> GetTestValuesForWriteInteTest() {
     std::vector<std::string> values;
     values.emplace_back("parquet");
+#ifdef PAIMON_ENABLE_MOSAIC
+    values.emplace_back("mosaic");
+#endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
 #endif
@@ -445,7 +448,7 @@ TEST_P(WriteInteTest, TestAppendTableBatchWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta = ReconstructDataFileMeta(file_meta);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -549,7 +552,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithOneBucket) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta = ReconstructDataFileMeta(file_meta);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -619,7 +622,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithOneBucket) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_2 = ReconstructDataFileMeta(file_meta_2);
     DataIncrement data_increment_2({file_meta_2}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_2 = std::make_shared<CommitMessageImpl>(
@@ -805,6 +808,9 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithPartitionAndMultiBuckets) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     auto dir = UniqueTestDirectory::Create();
     arrow::FieldVector fields = {
         arrow::field("f1", arrow::map(arrow::int8(), arrow::int16())),
@@ -862,7 +868,7 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta = ReconstructDataFileMeta(file_meta);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -926,7 +932,7 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_2 = ReconstructDataFileMeta(file_meta_2);
     DataIncrement data_increment_2({file_meta_2}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_2 = std::make_shared<CommitMessageImpl>(
@@ -1011,7 +1017,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_1 = ReconstructDataFileMeta(file_meta_1);
     DataIncrement data_increment_1({file_meta_1}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -1037,7 +1043,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_2 = ReconstructDataFileMeta(file_meta_2);
     DataIncrement data_increment_2({file_meta_2}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_2 = std::make_shared<CommitMessageImpl>(
@@ -1063,7 +1069,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_3 = ReconstructDataFileMeta(file_meta_3);
     DataIncrement data_increment_3({file_meta_3}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_3 = std::make_shared<CommitMessageImpl>(
@@ -1135,7 +1141,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_4 = ReconstructDataFileMeta(file_meta_4);
     DataIncrement data_increment_4({file_meta_4}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_4 = std::make_shared<CommitMessageImpl>(
@@ -1161,7 +1167,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_5 = ReconstructDataFileMeta(file_meta_5);
     DataIncrement data_increment_5({file_meta_5}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_5 = std::make_shared<CommitMessageImpl>(
@@ -1187,7 +1193,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_6 = ReconstructDataFileMeta(file_meta_6);
     DataIncrement data_increment_6({file_meta_6}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_6 = std::make_shared<CommitMessageImpl>(
@@ -1285,7 +1291,7 @@ TEST_P(WriteInteTest, TestPkTableBatchWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_1 = ReconstructDataFileMeta(file_meta_1);
     DataIncrement data_increment_1({file_meta_1}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -1311,7 +1317,7 @@ TEST_P(WriteInteTest, TestPkTableBatchWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_2 = ReconstructDataFileMeta(file_meta_2);
     DataIncrement data_increment_2({file_meta_2}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_2 = std::make_shared<CommitMessageImpl>(
@@ -1337,7 +1343,7 @@ TEST_P(WriteInteTest, TestPkTableBatchWrite) {
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_3 = ReconstructDataFileMeta(file_meta_3);
     DataIncrement data_increment_3({file_meta_3}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_3 = std::make_shared<CommitMessageImpl>(
@@ -1452,7 +1458,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_1 = ReconstructDataFileMeta(file_meta_1);
     DataIncrement data_increment_1({file_meta_1}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -1482,7 +1488,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_2 = ReconstructDataFileMeta(file_meta_2);
     DataIncrement data_increment_2({file_meta_2}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_2 = std::make_shared<CommitMessageImpl>(
@@ -1558,7 +1564,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_3 = ReconstructDataFileMeta(file_meta_3);
     DataIncrement data_increment_3({file_meta_3}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_3 = std::make_shared<CommitMessageImpl>(
@@ -1586,7 +1592,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_4 = ReconstructDataFileMeta(file_meta_4);
     DataIncrement data_increment_4({file_meta_4}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_4 = std::make_shared<CommitMessageImpl>(
@@ -1626,6 +1632,9 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
 }
 
 TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     arrow::FieldVector fields = {
@@ -1696,7 +1705,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta = ReconstructDataFileMeta(file_meta);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -1769,7 +1778,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_2 = ReconstructDataFileMeta(file_meta_2);
     DataIncrement data_increment_2({file_meta_2}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_2 = std::make_shared<CommitMessageImpl>(
@@ -2036,7 +2045,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         file_meta_1 = ReconstructDataFileMeta(file_meta_1);
         DataIncrement data_increment_1({file_meta_1}, {}, {});
         std::shared_ptr<CommitMessage> expected_commit_message_1 =
@@ -2065,7 +2074,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         file_meta_2 = ReconstructDataFileMeta(file_meta_2);
         DataIncrement data_increment_2({file_meta_2}, {}, {});
         std::shared_ptr<CommitMessage> expected_commit_message_2 =
@@ -2094,7 +2103,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
             /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         file_meta_3 = ReconstructDataFileMeta(file_meta_3);
         DataIncrement data_increment_3({file_meta_3}, {}, {});
         std::shared_ptr<CommitMessage> expected_commit_message_3 =
@@ -2126,7 +2135,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         file_meta_4 = ReconstructDataFileMeta(file_meta_4);
         DataIncrement data_increment_4({file_meta_4}, {}, {});
         std::shared_ptr<CommitMessage> expected_commit_message_4 =
@@ -2154,7 +2163,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         file_meta_5 = ReconstructDataFileMeta(file_meta_5);
         DataIncrement data_increment_5({file_meta_5}, {}, {});
         std::shared_ptr<CommitMessage> expected_commit_message_5 =
@@ -2183,7 +2192,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         file_meta_6 = ReconstructDataFileMeta(file_meta_6);
         DataIncrement data_increment_6({file_meta_6}, {}, {});
         std::shared_ptr<CommitMessage> expected_commit_message_6 =
@@ -2257,7 +2266,7 @@ TEST_F(WriteInteTest, TestAppendTableWriteWithAlterTable) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message = std::make_shared<CommitMessageImpl>(
         BinaryRowGenerator::GenerateRow({1, 1}, pool_.get()), /*bucket=*/0,
@@ -2337,7 +2346,7 @@ TEST_F(WriteInteTest, TestPKTableWriteWithAlterTable) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message = std::make_shared<CommitMessageImpl>(
         BinaryRowGenerator::GenerateRow({0, 0}, pool_.get()), /*bucket=*/0,
@@ -2473,7 +2482,7 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
 
 TEST_P(WriteInteTest, TestWriteWithFieldId) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     // prepare write schema and write data
@@ -2775,7 +2784,8 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithExternalPath) {
         /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt, "FILE:/tmp/xxx", std::nullopt, std::nullopt);
+        /*value_stats_cols=*/std::nullopt, "FILE:/tmp/xxx", std::nullopt, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     file_meta = ReconstructDataFileMeta(file_meta);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -2844,7 +2854,8 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithExternalPath) {
         /*level=*/0, /*extra_files=*/std::vector<std::optional<std::string>>(),
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
-        /*value_stats_cols=*/std::nullopt, "FILE:/tmp/xxx", std::nullopt, std::nullopt);
+        /*value_stats_cols=*/std::nullopt, "FILE:/tmp/xxx", std::nullopt, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     file_meta_2 = ReconstructDataFileMeta(file_meta_2);
     DataIncrement data_increment_2({file_meta_2}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_2 = std::make_shared<CommitMessageImpl>(
@@ -3074,6 +3085,9 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
 }
 
 TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::struct_({arrow::field("v0", arrow::boolean()),
                                            arrow::field("v1", arrow::int64())}))};
@@ -3335,6 +3349,9 @@ TEST_P(WriteInteTest, TestWriteMemoryUse) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWithAllNull) {
+    if (GetParam() == "mosaic") {
+        return;
+    }
     auto dir = UniqueTestDirectory::Create();
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::boolean()),
@@ -3443,7 +3460,7 @@ TEST_P(WriteInteTest, TestPkTablePostponeBucket) {
         /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message = std::make_shared<CommitMessageImpl>(
         /*partition_map=*/BinaryRow::EmptyRow(), /*bucket=*/-2,
@@ -3532,7 +3549,7 @@ TEST_F(WriteInteTest, TestBranchWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment_0({file_meta_0}, {}, {});
     auto expected_commit_message_0 = std::make_shared<CommitMessageImpl>(
         BinaryRowGenerator::GenerateRow({std::string("20240726")}, pool_.get()), /*bucket=*/0,
@@ -3574,7 +3591,7 @@ TEST_F(WriteInteTest, TestBranchWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement data_increment_1({file_meta_1}, {}, {});
     auto expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
         BinaryRowGenerator::GenerateRow({std::string("20240725")}, pool_.get()), /*bucket=*/0,
@@ -3704,7 +3721,7 @@ TEST_P(WriteInteTest, TestDataEvolutionWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     check_meta(commit_msgs1[0], {file_meta1});
     commit(commit_msgs1, /*latest_snapshot_id=*/1, /*next_row_id=*/2);
     check_committed_meta({{0, std::nullopt, 1, 1}});
@@ -3736,7 +3753,7 @@ TEST_P(WriteInteTest, TestDataEvolutionWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/write_cols2);
+        /*write_cols=*/write_cols2, /*column_max_sequence_numbers=*/std::nullopt);
     check_meta(commit_msgs2[0], {file_meta2});
     commit(commit_msgs2, /*latest_snapshot_id=*/2, /*next_row_id=*/7);
     check_committed_meta({{0, std::nullopt, 1, 1}, {2, write_cols2, 2, 2}});
@@ -3762,7 +3779,7 @@ TEST_P(WriteInteTest, TestDataEvolutionWrite) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/write_cols3);
+        /*write_cols=*/write_cols3, /*column_max_sequence_numbers=*/std::nullopt);
     check_meta(commit_msgs3[0], {file_meta3});
     auto commit_msg_impl = std::dynamic_pointer_cast<CommitMessageImpl>(commit_msgs3[0]);
     ASSERT_TRUE(commit_msg_impl);
@@ -3834,7 +3851,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithBlobType) {
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/0,
-        /*write_cols=*/std::vector<std::string>({"f0", "f1"}));
+        /*write_cols=*/std::vector<std::string>({"f0", "f1"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
     file_meta1 = ReconstructDataFileMeta(file_meta1);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-xxx.blob", /*file_size=*/764, /*row_count=*/3,
@@ -3845,7 +3863,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithBlobType) {
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/0,
-        /*write_cols=*/std::vector<std::string>({"blob"}));
+        /*write_cols=*/std::vector<std::string>({"blob"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta3 = std::make_shared<DataFileMeta>(
         "data-xxx.blob", /*file_size=*/3023, /*row_count=*/1,
         /*min_key=*/BinaryRow::EmptyRow(), /*max_key=*/BinaryRow::EmptyRow(),
@@ -3855,7 +3874,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithBlobType) {
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/3,
-        /*write_cols=*/std::vector<std::string>({"blob"}));
+        /*write_cols=*/std::vector<std::string>({"blob"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
     std::vector<std::shared_ptr<DataFileMeta>> expected_meta = {file_meta1, file_meta2, file_meta3};
 
     // NOTE: Due to the write logic of C++ Paimon and Java Paimon is different, the first_row_id in
@@ -3924,7 +3944,7 @@ TEST_P(WriteInteTest, TestAppendTableWithDateFieldAsPartitionField) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     file_meta = ReconstructDataFileMeta(file_meta);
     DataIncrement data_increment({file_meta}, {}, {});
     std::shared_ptr<CommitMessage> expected_commit_message_1 = std::make_shared<CommitMessageImpl>(
@@ -4006,7 +4026,7 @@ TEST_P(WriteInteTest, TestNullabilityCheck) {
 
 TEST_P(WriteInteTest, TestPkSpillableMapSharedShreddingReadWrite) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -4728,7 +4748,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithMultipleBlobFields) {
         /*creation_time=*/Timestamp(0, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/0,
-        /*write_cols=*/std::vector<std::string>({"f0", "f1"}));
+        /*write_cols=*/std::vector<std::string>({"f0", "f1"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
     expected_main = ReconstructDataFileMeta(expected_main);
 
     // blob1 file: 3 rows, write_cols={"blob1"}, first_row_id=0
@@ -4741,7 +4762,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithMultipleBlobFields) {
         /*creation_time=*/Timestamp(0, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/0,
-        /*write_cols=*/std::vector<std::string>({"blob1"}));
+        /*write_cols=*/std::vector<std::string>({"blob1"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     // blob2 file: 3 rows, write_cols={"blob2"}, first_row_id=0
     auto expected_blob2 = std::make_shared<DataFileMeta>(
@@ -4753,7 +4775,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithMultipleBlobFields) {
         /*creation_time=*/Timestamp(0, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/0,
-        /*write_cols=*/std::vector<std::string>({"blob2"}));
+        /*write_cols=*/std::vector<std::string>({"blob2"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     ASSERT_OK_AND_ASSIGN(auto commit_msgs,
                          helper->WriteAndCommit(std::move(batch), commit_identifier++,

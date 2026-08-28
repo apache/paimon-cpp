@@ -197,7 +197,8 @@ class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
             /*delete_row_count=*/0,
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
-            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     Result<std::shared_ptr<MergeTreeWriter>> CreateMergeWriter(
@@ -294,7 +295,7 @@ TEST_P(MergeTreeWriterTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
@@ -551,7 +552,7 @@ TEST_P(MergeTreeWriterTest, TestWriteMultiBatch) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
@@ -659,7 +660,8 @@ TEST_P(MergeTreeWriterTest, TestSharedShreddingMapDataFileMetaInfo) {
         /*creation_time=*/actual_meta->creation_time, /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
-        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_TRUE(expected_data_file_meta->TEST_Equal(*actual_meta));
 }
 
@@ -839,7 +841,7 @@ TEST_P(MergeTreeWriterTest, TestWriteWithDeleteRow) {
         /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
@@ -950,7 +952,7 @@ TEST_P(MergeTreeWriterTest, TestMultiplePrepareCommit) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto expected_data_file_meta2 = std::make_shared<DataFileMeta>(
         expected_data_file_name2, /*file_size=*/data_file_status2.GetLen(), /*row_count=*/3,
@@ -969,7 +971,7 @@ TEST_P(MergeTreeWriterTest, TestMultiplePrepareCommit) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment1({expected_data_file_meta1},
                                            /*deleted_files=*/{},
                                            /*changelog_files=*/{});
@@ -1172,7 +1174,7 @@ TEST_P(MergeTreeWriterTest, TestAutoFlush) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     auto expected_data_file_meta2 = std::make_shared<DataFileMeta>(
         expected_data_file_name2, /*file_size=*/data_file_status2.GetLen(), /*row_count=*/3,
@@ -1191,7 +1193,7 @@ TEST_P(MergeTreeWriterTest, TestAutoFlush) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment({expected_data_file_meta1, expected_data_file_meta2},
                                           /*deleted_files=*/{},
                                           /*changelog_files=*/{});
@@ -1305,7 +1307,7 @@ TEST_P(MergeTreeWriterTest, TestBulkData) {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         ASSERT_EQ(*commit_increment.GetNewFilesIncrement().NewFiles()[i], *expected_data_file_meta);
     }
 }

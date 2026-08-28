@@ -142,7 +142,7 @@ class TestRewriter final : public CompactRewriter {
             /*max_sequence_number=*/max_sequence,
             /*schema_id=*/0, output_level, std::vector<std::optional<std::string>>(),
             Timestamp(1, 0), std::nullopt, nullptr, FileSource::Append(), std::nullopt,
-            std::nullopt, std::nullopt, std::nullopt);
+            std::nullopt, std::nullopt, std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
         return CompactResult(before, {after});
     }
@@ -208,7 +208,7 @@ class MergeTreeCompactManagerTest : public testing::Test {
             /*max_sequence_number=*/max_sequence,
             /*schema_id=*/0, minmax.level, std::vector<std::optional<std::string>>(),
             Timestamp(1, 0), std::nullopt, nullptr, FileSource::Append(), std::nullopt,
-            std::nullopt, std::nullopt, std::nullopt);
+            std::nullopt, std::nullopt, std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     StrategyFn TestStrategy() {

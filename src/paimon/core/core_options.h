@@ -235,6 +235,8 @@ class PAIMON_EXPORT CoreOptions {
 
     std::string DataFilePrefix() const;
 
+    bool PrefetchIoMetricsEnabled() const;
+
     bool IndexFileInDataFileDir() const;
 
     bool RowTrackingEnabled() const;

@@ -45,7 +45,7 @@ class LevelsTest : public testing::Test {
             max_sequence_number,
             /*schema_id=*/0, level, std::vector<std::optional<std::string>>(),
             Timestamp(ts_second, 0l), std::nullopt, nullptr, FileSource::Append(), std::nullopt,
-            std::nullopt, std::nullopt, std::nullopt);
+            std::nullopt, std::nullopt, std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     std::shared_ptr<FieldsComparator> CreateComparator() const {
@@ -261,7 +261,8 @@ TEST_F(LevelsTest, TestUpdateDropFileCallbackExcludesUpgradeFiles) {
         file_level0->key_stats, file_level0->value_stats, file_level0->min_sequence_number,
         file_level0->max_sequence_number, file_level0->schema_id, /*level=*/1,
         file_level0->extra_files, file_level0->creation_time, std::nullopt, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     std::vector<std::shared_ptr<DataFileMeta>> before = {file_level0};
     std::vector<std::shared_ptr<DataFileMeta>> after = {upgraded_file};
