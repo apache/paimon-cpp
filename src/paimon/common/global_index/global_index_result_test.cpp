@@ -19,6 +19,9 @@
 
 #include "paimon/global_index/global_index_result.h"
 
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <utility>
 
 #include "gtest/gtest.h"
@@ -142,6 +145,28 @@ TEST_F(GlobalIndexResultTest, TestSerializeAndDeserializeWithScore) {
     ASSERT_OK_AND_ASSIGN(auto serialize_bytes, GlobalIndexResult::Serialize(index_result, pool));
     ASSERT_EQ(byte_buffer, std::vector<uint8_t>(serialize_bytes->data(),
                                                 serialize_bytes->data() + serialize_bytes->size()));
+}
+
+TEST_F(GlobalIndexResultTest, TestSerializeCanonicalizesNaNScore) {
+    auto pool = GetDefaultPool();
+    uint32_t payload_bits = 0xffc12345;
+    float payload_nan;
+    std::memcpy(&payload_nan, &payload_bits, sizeof(payload_nan));
+    auto index_result = std::make_shared<BitmapScoredGlobalIndexResult>(
+        RoaringBitmap64::From({1}), std::vector<float>{payload_nan});
+
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized,
+                         GlobalIndexResult::Serialize(index_result, pool));
+    ASSERT_GE(serialized->size(), sizeof(float));
+    ASSERT_EQ(std::string(serialized->data() + serialized->size() - sizeof(float), sizeof(float)),
+              std::string("\x7f\xc0\x00\x00", sizeof(float)));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<GlobalIndexResult> deserialized,
+        GlobalIndexResult::Deserialize(serialized->data(), serialized->size(), pool));
+    auto scored_result = std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(deserialized);
+    ASSERT_TRUE(scored_result);
+    ASSERT_TRUE(std::isnan(scored_result->GetScores()[0]));
 }
 
 TEST_F(GlobalIndexResultTest, TestInvalidSerialize) {

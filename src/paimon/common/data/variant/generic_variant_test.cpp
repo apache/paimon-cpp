@@ -19,6 +19,8 @@
 
 #include "paimon/common/data/variant/generic_variant.h"
 
+#include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <string>
@@ -31,6 +33,17 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+template <typename FloatingPoint, typename UInt>
+FloatingPoint FloatingPointFromBits(UInt bits) {
+    static_assert(sizeof(FloatingPoint) == sizeof(UInt));
+    FloatingPoint value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+}  // namespace
 
 class GenericVariantTest : public ::testing::Test {
  public:
@@ -348,6 +361,24 @@ TEST_F(GenericVariantTest, NonFiniteDoubleToJson) {
     ASSERT_OK_AND_ASSIGN(auto v, builder.Build(pool_));
     ASSERT_OK_AND_ASSIGN(std::string json, v->ToJson());
     ASSERT_EQ(json, "\"Infinity\"");
+}
+
+TEST_F(GenericVariantTest, CanonicalizesFloatingPointNaN) {
+    {
+        VariantBuilder builder(false);
+        ASSERT_OK(builder.AppendFloat(FloatingPointFromBits<float>(uint32_t{0xffc12345})));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> variant, builder.Build(pool_));
+        ASSERT_OK_AND_ASSIGN(std::string_view value, variant->Value());
+        ASSERT_EQ(ToHex(value), "380000c07f");
+    }
+    {
+        VariantBuilder builder(false);
+        ASSERT_OK(
+            builder.AppendDouble(FloatingPointFromBits<double>(uint64_t{0xfff8123456789abc})));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GenericVariant> variant, builder.Build(pool_));
+        ASSERT_OK_AND_ASSIGN(std::string_view value, variant->Value());
+        ASSERT_EQ(ToHex(value), "1c000000000000f87f");
+    }
 }
 
 TEST_F(GenericVariantTest, GetTypeInfoReturnsHeaderBits) {

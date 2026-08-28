@@ -17,6 +17,8 @@
  * under the License.
  */
 
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -153,6 +155,27 @@ TEST(IndexedSplitTest, TestIndexedSplitWithScore) {
     auto roundtrip_indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(roundtrip);
     ASSERT_EQ(*roundtrip_indexed_split, *expected_indexed_split)
         << roundtrip_indexed_split->ToString();
+}
+
+TEST(IndexedSplitTest, TestSerializeCanonicalizesNaNScore) {
+    auto pool = GetDefaultPool();
+    DataSplitImpl::Builder builder(
+        /*partition=*/BinaryRow::EmptyRow(),
+        /*bucket=*/0, /*bucket_path=*/"bucket-0",
+        /*data_files=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> data_split, builder.Build());
+
+    uint32_t payload_bits = 0xffc12345;
+    float payload_nan;
+    std::memcpy(&payload_nan, &payload_bits, sizeof(payload_nan));
+    auto indexed_split = std::make_shared<IndexedSplitImpl>(
+        std::dynamic_pointer_cast<DataSplitImpl>(data_split), std::vector<Range>{Range(0, 0)},
+        std::vector<float>{payload_nan});
+
+    ASSERT_OK_AND_ASSIGN(std::string serialized, Split::Serialize(indexed_split, pool));
+    ASSERT_GE(serialized.size(), sizeof(float));
+    ASSERT_EQ(serialized.substr(serialized.size() - sizeof(float)),
+              std::string("\x7f\xc0\x00\x00", sizeof(float)));
 }
 
 TEST(IndexedSplitTest, TestValidate) {
