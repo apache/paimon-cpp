@@ -210,8 +210,8 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
                     std::make_unique<LookupMergeFunction>(std::move(merge_func)), output_level,
                     /*deletion_vectors_maintainer=*/nullptr, lookup_strategy,
                     /*should_produce_changelog=*/lookup_strategy.produce_changelog,
-                    /*user_defined_seq_comparator=*/nullptr, lookup_levels_ptr,
-                    std::move(value_serializer), std::move(value_equalizer)));
+                    /*user_defined_seq_comparator=*/nullptr, std::move(value_serializer),
+                    std::move(value_equalizer), lookup_levels_ptr));
             return merge_function_wrapper;
         };
         auto cancellation_controller = std::make_shared<CancellationController>();
@@ -251,8 +251,8 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
                     std::make_unique<LookupMergeFunction>(std::move(merge_func)), output_level,
                     dv_maintainer_ptr, lookup_strategy,
                     /*should_produce_changelog=*/lookup_strategy.produce_changelog,
-                    /*user_defined_seq_comparator=*/nullptr, lookup_levels_ptr,
-                    std::move(value_serializer), /*value_equalizer=*/{}));
+                    /*user_defined_seq_comparator=*/nullptr, std::move(value_serializer),
+                    /*value_equalizer=*/{}, lookup_levels_ptr));
             return merge_function_wrapper;
         };
         auto cancellation_controller = std::make_shared<CancellationController>();
@@ -306,8 +306,8 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
                         std::make_unique<LookupMergeFunction>(std::move(merge_func)), output_level,
                         dv_maintainer_ptr, lookup_strategy,
                         /*should_produce_changelog=*/lookup_strategy.produce_changelog,
-                        /*user_defined_seq_comparator=*/nullptr, lookup_levels_ptr,
-                        std::move(value_serializer), std::move(value_equalizer)));
+                        /*user_defined_seq_comparator=*/nullptr, std::move(value_serializer),
+                        std::move(value_equalizer), lookup_levels_ptr));
             return merge_function_wrapper;
         };
         auto cancellation_controller = std::make_shared<CancellationController>();
