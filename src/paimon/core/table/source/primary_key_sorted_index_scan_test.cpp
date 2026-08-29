@@ -453,65 +453,6 @@ TEST_F(PrimaryKeySortedIndexScanTest, GroupAndQueryAreSharedAcrossSourceFiles) {
     ASSERT_EQ(1, *equal_call_count);
 }
 
-TEST_F(PrimaryKeySortedIndexScanTest, DisjointSameLevelGroupsUseIndependentZeroBasedOrdinals) {
-    const std::vector<PrimaryKeyIndexSourceFile> left_sources = {{"a0.parquet", 3},
-                                                                 {"a1.parquet", 4}};
-    const std::vector<PrimaryKeyIndexSourceFile> right_sources = {{"b0.parquet", 5},
-                                                                  {"b1.parquet", 6}};
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> left_payload,
-                         MakeMetadataPayload("left.index", left_sources));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> right_payload,
-                         MakeMetadataPayload("right.index", right_sources));
-
-    std::shared_ptr<DataSplitImpl> split =
-        MakeSplit({MakeDataFile("a0.parquet", 3, 5, FileSource::Compact()),
-                   MakeDataFile("a1.parquet", 4, 5, FileSource::Compact()),
-                   MakeDataFile("b0.parquet", 5, 5, FileSource::Compact()),
-                   MakeDataFile("b1.parquet", 6, 5, FileSource::Compact())},
-                  /*raw_convertible=*/true);
-    std::vector<IndexManifestEntry> entries = {
-        IndexManifestEntry(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0, left_payload),
-        IndexManifestEntry(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0, right_payload)};
-    ASSERT_OK_AND_ASSIGN(
-        PrimaryKeySortedIndexScan::Plan plan,
-        PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, {split}, definitions_, entries));
-    ASSERT_EQ(4, plan.Files().size());
-    ASSERT_EQ(plan.Files()[0].Group(kPriceFieldId), plan.Files()[1].Group(kPriceFieldId));
-    ASSERT_EQ(plan.Files()[2].Group(kPriceFieldId), plan.Files()[3].Group(kPriceFieldId));
-    ASSERT_NE(plan.Files()[0].Group(kPriceFieldId), plan.Files()[2].Group(kPriceFieldId));
-
-    RoaringBitmap64 group_ordinal_zero;
-    group_ordinal_zero.Add(0);
-    auto factory_calls = std::make_shared<std::map<std::string, int32_t>>();
-    PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
-        [group_ordinal_zero, factory_calls](
-            const PrimaryKeySortedIndexScan::FilePlan& file,
-            const PrimaryKeyIndexDefinition& definition,
-            const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
-        (*factory_calls)[group.Payload()->FileName()]++;
-        return std::make_shared<StubGlobalIndexReader>(group_ordinal_zero);
-    };
-    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::EvaluatedPlan evaluated,
-                         PrimaryKeySortedIndexScan::Evaluate(plan, table_schema_, PriceEqual(10),
-                                                             definitions_, reader_factory));
-    ASSERT_EQ(1, factory_calls->at("left.index"));
-    ASSERT_EQ(1, factory_calls->at("right.index"));
-    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> result_splits,
-                         PrimaryKeySortedIndexResult::ToSplits(evaluated));
-    ASSERT_EQ(2, result_splits.size());
-    for (size_t i = 0; i < result_splits.size(); i++) {
-        auto indexed = std::dynamic_pointer_cast<IndexedSplitImpl>(result_splits[i]);
-        ASSERT_TRUE(indexed != nullptr);
-        auto inner = std::dynamic_pointer_cast<DataSplitImpl>(indexed->GetDataSplit());
-        ASSERT_TRUE(inner != nullptr);
-        ASSERT_EQ(1, inner->DataFiles().size());
-        ASSERT_EQ(i == 0 ? "a0.parquet" : "b0.parquet", inner->DataFiles()[0]->file_name);
-        ASSERT_EQ(1, indexed->RowRanges().size());
-        ASSERT_EQ(0, indexed->RowRanges()[0].from);
-        ASSERT_EQ(0, indexed->RowRanges()[0].to);
-    }
-}
-
 TEST_F(PrimaryKeySortedIndexScanTest, RetiredSourcesPreserveGroupOrdinalOffsets) {
     const std::vector<PrimaryKeyIndexSourceFile> sources = {{"a-retired-prefix.parquet", 3},
                                                             {"b-active-left.parquet", 4},

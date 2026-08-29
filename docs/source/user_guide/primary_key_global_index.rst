@@ -45,11 +45,11 @@ Semantics
 
 - A payload retains its complete ordered source list as the group-ordinal namespace. If
   part of that list is not in the current scan because it was retired or safely pruned,
-  the payload can still cover the remaining files. Several payloads may coexist when their
-  active source intersections are disjoint. A payload is rejected if it has no active
-  source, an active source's row count differs, its metadata or row range is invalid, or
-  another payload claims the same active source. Active files without accepted coverage
-  are scanned normally.
+  the payload can still cover the remaining files. There is at most one accepted payload
+  per data level. A payload is rejected if it has no active source at its metadata-declared
+  level, an active source's row count differs, its metadata or row range is invalid, or
+  another payload exists for that level. Active files without accepted coverage are scanned
+  normally.
 - ``AND`` predicates narrow with any safely evaluable indexed child; ``OR`` predicates
   only use the index when every branch is evaluable. Files whose evaluation fails, whose
   positions are out of range, or whose result needs more than 4096 ranges fall back to a

@@ -34,12 +34,12 @@ namespace paimon {
 /// Immutable source-backed sorted-index state for one field and bucket.
 ///
 /// Derives the eligible source sets from the active data files and keeps validated,
-/// non-overlapping payload groups. A group retains its complete immutable source list for
-/// ordinal localization while covering only the listed files which are still active. A
-/// payload is rejected when its metadata is invalid, it has no active source, an active
-/// source has a different row count, its source order is not canonical, or it overlaps
-/// another candidate on an active source. Active files without an accepted group remain
-/// uncovered and must be scanned normally.
+/// payload groups. A group retains its complete immutable source list for ordinal
+/// localization while covering only the listed files which are still active at its
+/// metadata-declared level. A payload is rejected when its metadata is invalid, it has no
+/// active source at that level, an active source has a different row count, its source
+/// order is not canonical, or another payload exists for the same level. Active files
+/// without an accepted group remain uncovered and must be scanned normally.
 class PkSortedBucketIndexState {
  public:
     static PkSortedBucketIndexState FromActiveDataFiles(

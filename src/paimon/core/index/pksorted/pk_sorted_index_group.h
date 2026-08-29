@@ -30,12 +30,12 @@
 #include "paimon/core/index/pk/primary_key_index_source_meta.h"
 
 namespace paimon {
-/// One validated payload group which indexes an immutable source subset at one data level.
+/// The single validated payload group which indexes an immutable source set at one data level.
 ///
 /// A group is only created when the payload provably covers its declared source set: unique
 /// source names, matching index type and field id, a row range of exactly
 /// `[0, total source rows - 1]`, and a payload row count equal to the source row count sum.
-/// Snapshot-level active-source and overlap validation is performed by
+/// Snapshot-level active-source and one-group-per-level validation is performed by
 /// `PkSortedBucketIndexState` before creating the group.
 class PkSortedIndexGroup {
  public:

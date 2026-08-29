@@ -190,7 +190,7 @@ TEST_F(PkSortedBucketIndexStateTest, AcceptsActiveSubsetAndLeavesOtherFilesUncov
     ASSERT_TRUE(state.RejectedPayloads().empty());
 }
 
-TEST_F(PkSortedBucketIndexStateTest, AcceptsDisjointPayloadGroupsAtSameLevel) {
+TEST_F(PkSortedBucketIndexStateTest, RejectsMultiplePayloadGroupsAtSameLevel) {
     std::vector<std::shared_ptr<DataFileMeta>> data_files = {
         MakeDataFile("a", 100, 5, FileSource::Compact()),
         MakeDataFile("b", 200, 5, FileSource::Compact()),
@@ -201,13 +201,11 @@ TEST_F(PkSortedBucketIndexStateTest, AcceptsDisjointPayloadGroupsAtSameLevel) {
         MakeNamedPayload("second.index", 7, "btree", 5, {{"c", 50}}, 50);
     PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
         7, "btree", data_files, {second_payload, first_payload});
-    ASSERT_EQ(2, state.Groups().size());
-    ASSERT_EQ(first_payload, state.Groups()[0]->Payload());
-    ASSERT_EQ(second_payload, state.Groups()[1]->Payload());
+    ASSERT_TRUE(state.Groups().empty());
+    ASSERT_TRUE(state.CoveredSourceFiles().empty());
     ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}, {"b", 200}, {"c", 50}}),
-              state.CoveredSourceFiles());
-    ASSERT_TRUE(state.UncoveredSourceFiles().empty());
-    ASSERT_TRUE(state.RejectedPayloads().empty());
+              state.UncoveredSourceFiles());
+    ASSERT_EQ(2, state.RejectedPayloads().size());
 }
 
 TEST_F(PkSortedBucketIndexStateTest, RetainsRetiredSourcesButCoversOnlyActiveIntersection) {
@@ -216,18 +214,14 @@ TEST_F(PkSortedBucketIndexStateTest, RetainsRetiredSourcesButCoversOnlyActiveInt
         MakeDataFile("b", 200, 5, FileSource::Compact())};
     std::shared_ptr<IndexFileMeta> mixed_payload =
         MakeNamedPayload("mixed.index", 7, "btree", 5, {{"a", 100}, {"retired", 50}}, 150);
-    std::shared_ptr<IndexFileMeta> valid_payload =
-        MakeNamedPayload("valid.index", 7, "btree", 5, {{"b", 200}}, 200);
-    PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
-        7, "btree", data_files, {mixed_payload, valid_payload});
-    ASSERT_EQ(2, state.Groups().size());
+    PkSortedBucketIndexState state =
+        PkSortedBucketIndexState::FromActiveDataFiles(7, "btree", data_files, {mixed_payload});
+    ASSERT_EQ(1, state.Groups().size());
     ASSERT_EQ(mixed_payload, state.Groups()[0]->Payload());
     ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}, {"retired", 50}}),
               state.Groups()[0]->SourceFiles());
-    ASSERT_EQ(valid_payload, state.Groups()[1]->Payload());
-    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}, {"b", 200}}),
-              state.CoveredSourceFiles());
-    ASSERT_TRUE(state.UncoveredSourceFiles().empty());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}}), state.CoveredSourceFiles());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"b", 200}}), state.UncoveredSourceFiles());
     ASSERT_TRUE(state.RejectedPayloads().empty());
 }
 
@@ -246,43 +240,19 @@ TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadWhoseSourcesAreAllRetired) {
               state.RejectedPayloads());
 }
 
-TEST_F(PkSortedBucketIndexStateTest, RetiredSourceOverlapDoesNotConflict) {
+TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadForDifferentActiveDataLevel) {
     std::vector<std::shared_ptr<DataFileMeta>> data_files = {
-        MakeDataFile("b-active", 100, 5, FileSource::Compact()),
-        MakeDataFile("c-active", 200, 5, FileSource::Compact())};
-    std::shared_ptr<IndexFileMeta> left_payload =
-        MakeNamedPayload("left.index", 7, "btree", 5, {{"a-retired", 50}, {"b-active", 100}}, 150);
-    std::shared_ptr<IndexFileMeta> right_payload =
-        MakeNamedPayload("right.index", 7, "btree", 5, {{"a-retired", 50}, {"c-active", 200}}, 250);
+        MakeDataFile("active", 100, 4, FileSource::Compact())};
+    std::shared_ptr<IndexFileMeta> wrong_level_payload =
+        MakePayload(7, "btree", 5, {{"active", 100}}, 100);
     PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
-        7, "btree", data_files, {left_payload, right_payload});
-    ASSERT_EQ(2, state.Groups().size());
-    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"b-active", 100}, {"c-active", 200}}),
-              state.CoveredSourceFiles());
-    ASSERT_TRUE(state.UncoveredSourceFiles().empty());
-    ASSERT_TRUE(state.RejectedPayloads().empty());
-}
-
-TEST_F(PkSortedBucketIndexStateTest, RejectsOverlappingGroupsButKeepsDisjointGroup) {
-    std::vector<std::shared_ptr<DataFileMeta>> data_files = {
-        MakeDataFile("a", 100, 5, FileSource::Compact()),
-        MakeDataFile("b", 200, 5, FileSource::Compact()),
-        MakeDataFile("c", 50, 5, FileSource::Compact()),
-        MakeDataFile("d", 75, 5, FileSource::Compact())};
-    std::shared_ptr<IndexFileMeta> left_payload =
-        MakeNamedPayload("left.index", 7, "btree", 5, {{"a", 100}, {"b", 200}}, 300);
-    std::shared_ptr<IndexFileMeta> right_payload =
-        MakeNamedPayload("right.index", 7, "btree", 5, {{"b", 200}, {"c", 50}}, 250);
-    std::shared_ptr<IndexFileMeta> disjoint_payload =
-        MakeNamedPayload("disjoint.index", 7, "btree", 5, {{"d", 75}}, 75);
-    PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
-        7, "btree", data_files, {left_payload, disjoint_payload, right_payload});
-    ASSERT_EQ(1, state.Groups().size());
-    ASSERT_EQ(disjoint_payload, state.Groups()[0]->Payload());
-    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"d", 75}}), state.CoveredSourceFiles());
-    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}, {"b", 200}, {"c", 50}}),
+        7, "btree", data_files, {wrong_level_payload});
+    ASSERT_TRUE(state.Groups().empty());
+    ASSERT_TRUE(state.CoveredSourceFiles().empty());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"active", 100}}),
               state.UncoveredSourceFiles());
-    ASSERT_EQ(2, state.RejectedPayloads().size());
+    ASSERT_EQ((std::vector<std::shared_ptr<IndexFileMeta>>{wrong_level_payload}),
+              state.RejectedPayloads());
 }
 
 TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadsClaimingTheSameActiveSources) {

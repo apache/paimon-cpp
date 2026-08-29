@@ -36,7 +36,6 @@ struct PayloadCandidate {
     std::shared_ptr<IndexFileMeta> payload;
     std::shared_ptr<PkSortedIndexGroup> group;
     std::vector<PrimaryKeyIndexSourceFile> active_sources;
-    bool conflicted = false;
 };
 }  // namespace
 
@@ -59,20 +58,9 @@ PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
             });
     }
 
-    std::map<std::string, int64_t> active_sources;
-    std::set<std::string> ambiguous_active_source_names;
-    for (const auto& level_sources : sources_by_level) {
-        for (const PrimaryKeyIndexSourceFile& source : level_sources.second) {
-            if (!active_sources.emplace(source.file_name, source.row_count).second) {
-                ambiguous_active_source_names.insert(source.file_name);
-            }
-        }
-    }
-
     // Keep the complete immutable source group for ordinal localization, but only claim the
-    // sources which are still active in this snapshot. Several disjoint groups may coexist
-    // after an update; no active source file may be claimed by two groups.
-    std::vector<PayloadCandidate> candidates;
+    // sources which are still active at the metadata-declared level in this snapshot.
+    std::map<int32_t, std::vector<PayloadCandidate>> candidates_by_level;
     std::vector<std::shared_ptr<IndexFileMeta>> rejected;
     for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads) {
         if (payload == nullptr) {
@@ -91,21 +79,30 @@ PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
             continue;
         }
         PrimaryKeyIndexSourceMeta source_meta = std::move(source_meta_result).value();
+        auto active_level = sources_by_level.find(source_meta.DataLevel());
+        if (active_level == sources_by_level.end()) {
+            rejected.push_back(payload);
+            continue;
+        }
         const std::vector<PrimaryKeyIndexSourceFile>& payload_sources = source_meta.SourceFiles();
         bool valid_candidate = !payload_sources.empty();
         std::vector<PrimaryKeyIndexSourceFile> active_intersection;
+        size_t active_source_index = 0;
         for (size_t i = 0; valid_candidate && i < payload_sources.size(); i++) {
             const PrimaryKeyIndexSourceFile& source = payload_sources[i];
             if (i > 0 && payload_sources[i - 1].file_name >= source.file_name) {
                 valid_candidate = false;
                 break;
             }
-            auto active_source = active_sources.find(source.file_name);
-            if (active_source == active_sources.end()) {
+            while (active_source_index < active_level->second.size() &&
+                   active_level->second[active_source_index].file_name < source.file_name) {
+                active_source_index++;
+            }
+            if (active_source_index == active_level->second.size() ||
+                active_level->second[active_source_index].file_name != source.file_name) {
                 continue;
             }
-            if (active_source->second != source.row_count ||
-                ambiguous_active_source_names.count(source.file_name) > 0) {
+            if (active_level->second[active_source_index].row_count != source.row_count) {
                 valid_candidate = false;
                 break;
             }
@@ -121,54 +118,35 @@ PkSortedBucketIndexState PkSortedBucketIndexState::FromActiveDataFiles(
             rejected.push_back(payload);
             continue;
         }
-        candidates.push_back(
-            {payload, std::move(group), std::move(active_intersection), /*conflicted=*/false});
-    }
-
-    std::map<std::pair<std::string, int64_t>, std::vector<size_t>> candidates_by_source;
-    for (size_t i = 0; i < candidates.size(); i++) {
-        const PayloadCandidate& candidate = candidates[i];
-        for (const PrimaryKeyIndexSourceFile& source : candidate.active_sources) {
-            candidates_by_source[{source.file_name, source.row_count}].push_back(i);
-        }
-    }
-    for (const auto& source_candidates : candidates_by_source) {
-        if (source_candidates.second.size() > 1) {
-            for (size_t candidate_index : source_candidates.second) {
-                candidates[candidate_index].conflicted = true;
-            }
-        }
+        candidates_by_level[source_meta.DataLevel()].push_back(
+            {payload, std::move(group), std::move(active_intersection)});
     }
 
     std::vector<std::shared_ptr<PkSortedIndexGroup>> groups;
-    std::set<std::pair<std::string, int64_t>> covered_sources;
-    for (PayloadCandidate& candidate : candidates) {
-        if (candidate.conflicted) {
-            rejected.push_back(std::move(candidate.payload));
+    std::map<int32_t, std::set<std::pair<std::string, int64_t>>> covered_sources_by_level;
+    for (auto& level_candidates : candidates_by_level) {
+        if (level_candidates.second.size() != 1) {
+            for (PayloadCandidate& candidate : level_candidates.second) {
+                rejected.push_back(std::move(candidate.payload));
+            }
             continue;
         }
+        PayloadCandidate& candidate = level_candidates.second[0];
         for (const PrimaryKeyIndexSourceFile& source : candidate.active_sources) {
-            covered_sources.emplace(source.file_name, source.row_count);
+            covered_sources_by_level[level_candidates.first].emplace(source.file_name,
+                                                                     source.row_count);
         }
         groups.push_back(std::move(candidate.group));
     }
-    std::sort(groups.begin(), groups.end(),
-              [](const std::shared_ptr<PkSortedIndexGroup>& left,
-                 const std::shared_ptr<PkSortedIndexGroup>& right) {
-                  if (left->DataLevel() != right->DataLevel()) {
-                      return left->DataLevel() < right->DataLevel();
-                  }
-                  return left->SourceFiles().front().file_name <
-                         right->SourceFiles().front().file_name;
-              });
 
     std::vector<PrimaryKeyIndexSourceFile> covered;
     std::vector<PrimaryKeyIndexSourceFile> uncovered;
     for (const auto& level_sources : sources_by_level) {
         for (const PrimaryKeyIndexSourceFile& source : level_sources.second) {
-            auto& target = covered_sources.count({source.file_name, source.row_count}) > 0
-                               ? covered
-                               : uncovered;
+            auto covered_level = covered_sources_by_level.find(level_sources.first);
+            bool is_covered = covered_level != covered_sources_by_level.end() &&
+                              covered_level->second.count({source.file_name, source.row_count}) > 0;
+            auto& target = is_covered ? covered : uncovered;
             target.push_back(source);
         }
     }
