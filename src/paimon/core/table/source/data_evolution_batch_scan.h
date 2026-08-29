@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -49,7 +50,13 @@ class DataEvolutionBatchScan : public AbstractTableScan {
         const std::map<int64_t, float>& id_to_score);
 
  private:
-    Result<std::shared_ptr<GlobalIndexResult>> EvalGlobalIndex() const;
+    struct EvaluatedGlobalIndex {
+        std::shared_ptr<GlobalIndexResult> result;
+        int64_t snapshot_id;
+    };
+
+    Result<std::optional<EvaluatedGlobalIndex>> EvalGlobalIndex() const;
+    Result<std::optional<int64_t>> ResolveGlobalIndexSnapshotId() const;
 
  private:
     std::shared_ptr<MemoryPool> pool_;

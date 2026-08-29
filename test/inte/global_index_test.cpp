@@ -1489,6 +1489,53 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
     }
 }
 
+TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexMissPreservesResolvedSnapshot) {
+    CreateTable();
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+    std::vector<std::string> write_cols = schema->field_names();
+    auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Alice", 10, 1, 11.1],
+["Bob", 20, 0, 12.1]
+    ])")
+                         .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols, src_array));
+    ASSERT_OK(Commit(table_path, commit_msgs));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", "bitmap", /*options=*/{},
+                         Range(0, 1)));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "bitmap", /*options=*/{},
+                         Range(0, 1)));
+
+    auto predicate =
+        PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                Literal(FieldType::STRING, "missing", 7));
+
+    ASSERT_OK_AND_ASSIGN(auto latest_plan, ScanGlobalIndexAndData(table_path, predicate));
+    ASSERT_TRUE(latest_plan->Splits().empty());
+    ASSERT_EQ(latest_plan->SnapshotId(), std::optional<int64_t>(3));
+
+    ASSERT_OK_AND_ASSIGN(
+        auto explicit_plan,
+        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_SNAPSHOT_ID, "2"}}));
+    ASSERT_TRUE(explicit_plan->Splits().empty());
+    ASSERT_EQ(explicit_plan->SnapshotId(), std::optional<int64_t>(2));
+
+    auto empty_index_result = BitmapGlobalIndexResult::FromRanges({});
+    ASSERT_OK_AND_ASSIGN(auto supplied_latest_plan,
+                         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, /*options=*/{},
+                                                empty_index_result));
+    ASSERT_TRUE(supplied_latest_plan->Splits().empty());
+    ASSERT_EQ(supplied_latest_plan->SnapshotId(), std::optional<int64_t>(3));
+
+    ASSERT_OK_AND_ASSIGN(
+        auto supplied_explicit_plan,
+        ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
+                               {{Options::SCAN_SNAPSHOT_ID, "2"}}, empty_index_result));
+    ASSERT_TRUE(supplied_explicit_plan->Splits().empty());
+    ASSERT_EQ(supplied_explicit_plan->SnapshotId(), std::optional<int64_t>(2));
+}
+
 TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithOnlyOnePartitionHasIndex) {
     CreateTable(/*partition_keys=*/{"f1"});
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
