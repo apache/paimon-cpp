@@ -37,30 +37,6 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-
-class ConcatLifetimeTrackingKeyValueRecordReader : public KeyValueRecordReader {
- public:
-    ConcatLifetimeTrackingKeyValueRecordReader(std::unique_ptr<KeyValueRecordReader> reader,
-                                               const std::shared_ptr<void>& lifetime)
-        : reader_(std::move(reader)), lifetime_(lifetime) {}
-
-    Result<std::unique_ptr<Iterator>> NextBatch() override {
-        return reader_->NextBatch();
-    }
-
-    std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        return reader_->GetReaderMetrics();
-    }
-
-    void Close() override {
-        reader_->Close();
-    }
-
- private:
-    std::unique_ptr<KeyValueRecordReader> reader_;
-    std::shared_ptr<void> lifetime_;
-};
-
 class ConcatKeyValueRecordReaderTest : public testing::Test {
  public:
     void SetUp() override {
@@ -73,18 +49,13 @@ class ConcatKeyValueRecordReaderTest : public testing::Test {
                      const std::shared_ptr<arrow::Schema>& value_schema) const {
         for (auto batch_size : {1, 2, 3, 4, 100}) {
             std::vector<std::unique_ptr<KeyValueRecordReader>> record_readers;
-            std::vector<std::weak_ptr<int32_t>> reader_lifetimes;
             for (const auto& src_array : src_array_vec) {
                 auto src_type = src_array->type();
                 auto file_batch_reader = std::make_unique<MockFileBatchReader>(
                     src_array, src_type, /*batch_size=*/batch_size);
                 auto record_reader = std::make_unique<MockKeyValueDataFileRecordReader>(
                     std::move(file_batch_reader), key_schema, value_schema, /*level=*/0, pool_);
-                std::shared_ptr<int32_t> lifetime = std::make_shared<int32_t>(0);
-                reader_lifetimes.push_back(lifetime);
-                record_readers.push_back(
-                    std::make_unique<ConcatLifetimeTrackingKeyValueRecordReader>(
-                        std::move(record_reader), lifetime));
+                record_readers.push_back(std::move(record_reader));
             }
 
             auto concat_record_reader =
@@ -96,9 +67,6 @@ class ConcatKeyValueRecordReaderTest : public testing::Test {
                     concat_record_reader.get())));
             KeyValueChecker::CheckResult(expected, results, key_schema->num_fields(),
                                          value_schema->num_fields());
-            for (const auto& reader_lifetime : reader_lifetimes) {
-                ASSERT_TRUE(reader_lifetime.expired());
-            }
         }
     }
 

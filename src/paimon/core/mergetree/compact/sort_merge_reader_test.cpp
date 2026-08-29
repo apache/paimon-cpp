@@ -52,30 +52,6 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-
-class SortMergeLifetimeTrackingKeyValueRecordReader : public KeyValueRecordReader {
- public:
-    SortMergeLifetimeTrackingKeyValueRecordReader(std::unique_ptr<KeyValueRecordReader> reader,
-                                                  const std::shared_ptr<void>& lifetime)
-        : reader_(std::move(reader)), lifetime_(lifetime) {}
-
-    Result<std::unique_ptr<Iterator>> NextBatch() override {
-        return reader_->NextBatch();
-    }
-
-    std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        return reader_->GetReaderMetrics();
-    }
-
-    void Close() override {
-        reader_->Close();
-    }
-
- private:
-    std::unique_ptr<KeyValueRecordReader> reader_;
-    std::shared_ptr<void> lifetime_;
-};
-
 class SortMergeReaderTest : public testing::Test {
  public:
     void SetUp() override {
@@ -116,7 +92,7 @@ class SortMergeReaderTest : public testing::Test {
         const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
         const std::shared_ptr<arrow::Schema>& key_schema,
         const std::shared_ptr<arrow::Schema>& value_schema, int32_t batch_size, bool need_merge,
-        bool ignore_delete, std::vector<std::weak_ptr<int32_t>>* reader_lifetimes) const {
+        bool ignore_delete) const {
         auto mfunc = std::make_unique<DeduplicateMergeFunction>(ignore_delete);
         auto merge_function_wrapper =
             std::make_shared<ReducerMergeFunctionWrapper>(std::move(mfunc));
@@ -135,13 +111,8 @@ class SortMergeReaderTest : public testing::Test {
                 std::move(file_batch_reader), key_schema, value_schema, /*level=*/0, pool_);
             std::vector<std::unique_ptr<KeyValueRecordReader>> readers;
             readers.push_back(std::move(record_reader));
-            std::unique_ptr<KeyValueRecordReader> concat_reader =
-                std::make_unique<ConcatKeyValueRecordReader>(std::move(readers));
-            std::shared_ptr<int32_t> lifetime = std::make_shared<int32_t>(0);
-            reader_lifetimes->push_back(lifetime);
             concat_readers.push_back(
-                std::make_unique<SortMergeLifetimeTrackingKeyValueRecordReader>(
-                    std::move(concat_reader), lifetime));
+                std::make_unique<ConcatKeyValueRecordReader>(std::move(readers)));
         }
 
         return std::make_unique<SortMergeReaderType>(std::move(concat_readers), user_key_comparator,
@@ -158,19 +129,15 @@ class SortMergeReaderTest : public testing::Test {
                               const std::vector<KeyValue>& expected, bool need_merge,
                               bool ignore_delete = false) const {
         for (auto batch_size : {1, 2, 3, 4, 100}) {
-            std::vector<std::weak_ptr<int32_t>> reader_lifetimes;
             auto sort_merge_reader = CreateSortMergeReader<SortMergeReaderType>(
                 src_array_vec, user_key_comparator, user_defined_seq_comparator, key_schema,
-                value_schema, batch_size, need_merge, ignore_delete, &reader_lifetimes);
+                value_schema, batch_size, need_merge, ignore_delete);
             ASSERT_OK_AND_ASSIGN(
                 std::vector<KeyValue> results,
                 (ReadResultCollector::CollectKeyValueResult<
                     SortMergeReader, SortMergeReader::Iterator>(sort_merge_reader.get())));
             KeyValueChecker::CheckResult(expected, results, key_schema->num_fields(),
                                          value_schema->num_fields());
-            for (const auto& reader_lifetime : reader_lifetimes) {
-                ASSERT_TRUE(reader_lifetime.expired());
-            }
         }
     }
 

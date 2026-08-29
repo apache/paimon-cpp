@@ -37,7 +37,7 @@ class ConcatKeyValueRecordReader : public KeyValueRecordReader {
  public:
     explicit ConcatKeyValueRecordReader(
         std::vector<std::unique_ptr<KeyValueRecordReader>>&& readers)
-        : finished_reader_metrics_(std::make_shared<MetricsImpl>()), readers_(std::move(readers)) {}
+        : readers_(std::move(readers)) {}
 
     Result<std::unique_ptr<KeyValueRecordReader::Iterator>> NextBatch() override {
         while (current_ < readers_.size()) {
@@ -48,7 +48,7 @@ class ConcatKeyValueRecordReader : public KeyValueRecordReader {
                 return iterator;
             }
             // current meets eof, move to next reader
-            CloseAndReleaseReader(current_);
+            current_reader->Close();
             current_++;
         }
         // read finish
@@ -57,29 +57,16 @@ class ConcatKeyValueRecordReader : public KeyValueRecordReader {
 
     void Close() override {
         for (; current_ < readers_.size(); current_++) {
-            CloseAndReleaseReader(current_);
+            readers_[current_]->Close();
         }
     }
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        auto metrics = std::make_shared<MetricsImpl>();
-        metrics->Merge(finished_reader_metrics_);
-        metrics->Merge(MetricsImpl::CollectReadMetrics(readers_));
-        return metrics;
+        return MetricsImpl::CollectReadMetrics(readers_);
     }
 
  private:
-    void CloseAndReleaseReader(size_t reader_index) {
-        std::unique_ptr<KeyValueRecordReader>& reader = readers_[reader_index];
-        if (!reader) {
-            return;
-        }
-        reader->Close();
-        finished_reader_metrics_->Merge(reader->GetReaderMetrics());
-        reader.reset();
-    }
-
-    std::shared_ptr<Metrics> finished_reader_metrics_;
+    // KeyValue rows may outlive the active child and still reference buffers allocated by it.
     std::vector<std::unique_ptr<KeyValueRecordReader>> readers_;
     size_t current_{0};
 };

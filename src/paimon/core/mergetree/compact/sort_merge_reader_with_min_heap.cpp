@@ -30,40 +30,35 @@ SortMergeReaderWithMinHeap::SortMergeReaderWithMinHeap(
     const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
     const std::shared_ptr<MergeFunctionWrapper<KeyValue>>& merge_function_wrapper)
     : need_merge_(merge_function_wrapper != nullptr),
-      readers_(std::move(readers)),
-      finished_reader_metrics_(std::make_shared<MetricsImpl>()),
+      readers_holder_(std::move(readers)),
       user_key_comparator_(user_key_comparator),
       merge_function_wrapper_(merge_function_wrapper),
       min_heap_(HeapSorter(user_key_comparator, user_defined_seq_comparator)) {
-    next_batch_reader_indices_.reserve(readers_.size());
-    for (size_t reader_index = 0; reader_index < readers_.size(); reader_index++) {
-        next_batch_reader_indices_.push_back(reader_index);
+    next_batch_readers_.reserve(readers_holder_.size());
+    for (auto& reader : readers_holder_) {
+        next_batch_readers_.push_back(reader.get());
     }
 }
 
 Result<std::unique_ptr<SortMergeReader::Iterator>> SortMergeReaderWithMinHeap::NextBatch() {
-    for (size_t reader_index : next_batch_reader_indices_) {
-        std::unique_ptr<KeyValueRecordReader>& reader = readers_[reader_index];
-        assert(reader);
+    for (auto* reader : next_batch_readers_) {
         while (true) {
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<KeyValueRecordReader::Iterator> iterator,
                                    reader->NextBatch());
             if (!iterator) {
                 // no more batches, permanently remove this reader
                 reader->Close();
-                finished_reader_metrics_->Merge(reader->GetReaderMetrics());
-                reader.reset();
                 break;
             }
             PAIMON_ASSIGN_OR_RAISE(bool has_next, iterator->HasNext());
             if (has_next) {
                 PAIMON_ASSIGN_OR_RAISE(KeyValue kv, iterator->Next());
-                min_heap_.emplace(std::move(kv), std::move(iterator), reader_index);
+                min_heap_.emplace(std::move(kv), std::move(iterator), reader);
                 break;
             }
         }
     }
-    next_batch_reader_indices_.clear();
+    next_batch_readers_.clear();
     if (min_heap_.empty()) {
         return std::unique_ptr<SortMergeReader::Iterator>();
     }
@@ -90,7 +85,7 @@ Result<bool> SortMergeReaderWithMinHeap::Iterator::HasNext() {
 }
 
 Result<bool> SortMergeReaderWithMinHeap::Iterator::NextImpl() {
-    assert(reader_->next_batch_reader_indices_.empty());
+    assert(reader_->next_batch_readers_.empty());
     // add previously polled elements back to priority queue
     for (auto& element : reader_->polled_) {
         PAIMON_ASSIGN_OR_RAISE(bool updated, element.Update());
@@ -99,11 +94,11 @@ Result<bool> SortMergeReaderWithMinHeap::Iterator::NextImpl() {
             reader_->min_heap_.push(std::move(element));
         } else {
             // reach end of batch, clean up
-            reader_->next_batch_reader_indices_.push_back(element.reader_index);
+            reader_->next_batch_readers_.push_back(std::move(element.reader));
         }
     }
     reader_->polled_.clear();
-    if (!reader_->next_batch_reader_indices_.empty()) {
+    if (!reader_->next_batch_readers_.empty()) {
         return false;
     }
 

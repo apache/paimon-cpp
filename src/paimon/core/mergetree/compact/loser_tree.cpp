@@ -21,32 +21,19 @@
 #include <algorithm>
 #include <cassert>
 
-#include "paimon/common/metrics/metrics_impl.h"
-
 namespace paimon {
 LoserTree::LoserTree(std::vector<std::unique_ptr<KeyValueRecordReader>>&& readers,
                      const CompareFunc& first_comparator, const CompareFunc& second_comparator)
     : size_(readers.size()),
       initialized_(false),
+      readers_holder_(std::move(readers)),
       tree_(size_),
       first_comparator_(first_comparator),
       second_comparator_(second_comparator) {
     leaves_.reserve(size_);
-    for (auto& reader : readers) {
-        leaves_.emplace_back(std::move(reader));
+    for (const auto& reader : readers_holder_) {
+        leaves_.emplace_back(reader.get());
     }
-}
-
-std::shared_ptr<Metrics> LoserTree::GetReaderMetrics() const {
-    auto metrics = std::make_shared<MetricsImpl>();
-    for (const auto& leaf : leaves_) {
-        if (leaf.reader) {
-            metrics->Merge(leaf.reader->GetReaderMetrics());
-        } else {
-            metrics->Merge(leaf.finished_reader_metrics);
-        }
-    }
-    return metrics;
 }
 
 Status LoserTree::InitializeIfNeeded() {

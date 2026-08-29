@@ -69,10 +69,8 @@ class SortMergeReaderWithMinHeap : public SortMergeReader {
     Result<std::unique_ptr<SortMergeReader::Iterator>> NextBatch() override;
 
     void Close() override {
-        for (const auto& reader : readers_) {
-            if (reader) {
-                reader->Close();
-            }
+        for (const auto& reader : readers_holder_) {
+            reader->Close();
         }
         if (merge_function_wrapper_) {
             merge_function_wrapper_->Reset();
@@ -80,23 +78,21 @@ class SortMergeReaderWithMinHeap : public SortMergeReader {
     }
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        auto metrics = std::make_shared<MetricsImpl>();
-        metrics->Merge(finished_reader_metrics_);
-        metrics->Merge(MetricsImpl::CollectReadMetrics(readers_));
-        return metrics;
+        return MetricsImpl::CollectReadMetrics(readers_holder_);
     }
 
  private:
     struct Element {
         Element(KeyValue&& _kv, std::unique_ptr<KeyValueRecordReader::Iterator>&& _iterator,
-                size_t _reader_index)
-            : kv(std::move(_kv)), reader_index(_reader_index), iterator(std::move(_iterator)) {
+                KeyValueRecordReader* _reader)
+            : kv(std::move(_kv)), reader(_reader), iterator(std::move(_iterator)) {
             assert(iterator);
+            assert(reader);
         }
 
         Element(Element&& other) noexcept : kv(std::move(other.kv)) {
             iterator = std::move(other.iterator);
-            reader_index = other.reader_index;
+            reader = other.reader;
         }
 
         Element& operator=(Element&& other) noexcept {
@@ -105,7 +101,7 @@ class SortMergeReaderWithMinHeap : public SortMergeReader {
             }
             kv = std::move(other.kv);
             iterator = std::move(other.iterator);
-            reader_index = other.reader_index;
+            reader = other.reader;
             return *this;
         }
 
@@ -121,7 +117,7 @@ class SortMergeReaderWithMinHeap : public SortMergeReader {
 
      public:
         KeyValue kv;
-        size_t reader_index;
+        KeyValueRecordReader* reader;
         std::unique_ptr<KeyValueRecordReader::Iterator> iterator;
     };
 
@@ -153,9 +149,10 @@ class SortMergeReaderWithMinHeap : public SortMergeReader {
 
  private:
     const bool need_merge_;
-    std::vector<std::unique_ptr<KeyValueRecordReader>> readers_;
-    std::vector<size_t> next_batch_reader_indices_;
-    std::shared_ptr<Metrics> finished_reader_metrics_;
+    // KeyValue rows may be consumed asynchronously and still reference buffers allocated by the
+    // input readers.
+    std::vector<std::unique_ptr<KeyValueRecordReader>> readers_holder_;
+    std::vector<KeyValueRecordReader*> next_batch_readers_;
     std::shared_ptr<FieldsComparator> user_key_comparator_;
     std::shared_ptr<MergeFunctionWrapper<KeyValue>> merge_function_wrapper_;
     std::priority_queue<Element, std::vector<Element>, HeapSorter> min_heap_;
