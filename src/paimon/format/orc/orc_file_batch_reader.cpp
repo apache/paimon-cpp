@@ -33,7 +33,6 @@
 #include "orc/OrcFile.hh"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
-#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -59,10 +58,8 @@ void CollectAllColumnIds(const ::orc::Type* type, std::vector<uint64_t>* column_
 
 OrcFileBatchReader::OrcFileBatchReader(std::unique_ptr<::orc::ReaderMetrics>&& reader_metrics,
                                        std::unique_ptr<OrcReaderWrapper>&& reader,
-                                       const std::map<std::string, std::string>& options,
-                                       const std::shared_ptr<OrcReadMemory>& read_memory)
+                                       const std::map<std::string, std::string>& options)
     : options_(options),
-      read_memory_(read_memory),
       reader_metrics_(std::move(reader_metrics)),
       reader_(std::move(reader)),
       metrics_(std::make_shared<MetricsImpl>()) {}
@@ -96,12 +93,11 @@ Result<std::unique_ptr<OrcFileBatchReader>> OrcFileBatchReader::Create(
         std::unique_ptr<::orc::Reader> reader =
             ::orc::createReader(std::move(input_stream), reader_options);
 
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<OrcReaderWrapper> reader_wrapper,
-            OrcReaderWrapper::Create(std::move(reader), file_name, batch_size, natural_read_size,
-                                     options, read_memory->arrow_pool, read_memory->orc_pool));
-        auto orc_file_batch_reader = std::unique_ptr<OrcFileBatchReader>(new OrcFileBatchReader(
-            std::move(reader_metrics), std::move(reader_wrapper), options, read_memory));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OrcReaderWrapper> reader_wrapper,
+                               OrcReaderWrapper::Create(std::move(reader), file_name, batch_size,
+                                                        natural_read_size, options, read_memory));
+        auto orc_file_batch_reader = std::unique_ptr<OrcFileBatchReader>(
+            new OrcFileBatchReader(std::move(reader_metrics), std::move(reader_wrapper), options));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> file_schema,
                                orc_file_batch_reader->GetFileSchema());
         PAIMON_RETURN_NOT_OK(orc_file_batch_reader->SetReadSchema(
@@ -193,7 +189,6 @@ Result<BatchReader::ReadBatch> OrcFileBatchReader::NextBatch() {
     if (BatchReader::IsEofBatch(batch)) {
         previous_batch_row_count_ = 0;
     } else {
-        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(batch.first.get(), read_memory_));
         previous_batch_row_count_ = batch.first->length;
     }
     return batch;

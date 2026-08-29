@@ -33,16 +33,6 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-namespace {
-
-Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContextForTest(
-    const std::shared_ptr<ReadContext>& read_context,
-    const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options) {
-    return InternalReadContext::Create(read_context, table_schema, options);
-}
-
-}  // namespace
 
 TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     // no read schema is specified, read all fields
@@ -52,8 +42,8 @@ TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
-                         CreateInternalReadContextForTest(std::move(read_context), table_schema,
-                                                          table_schema->Options()));
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
     std::vector<DataField> read_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
                                           DataField(1, arrow::field("f1", arrow::int32())),
                                           DataField(2, arrow::field("f2", arrow::int32())),
@@ -70,8 +60,8 @@ TEST(InternalReadContext, TestReadWithSpecifiedSchema) {
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
-                         CreateInternalReadContextForTest(std::move(read_context), table_schema,
-                                                          table_schema->Options()));
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
@@ -86,8 +76,8 @@ TEST(InternalReadContext, TestReadWithSpecifiedFieldId) {
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
-                         CreateInternalReadContextForTest(std::move(read_context), table_schema,
-                                                          table_schema->Options()));
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
@@ -105,8 +95,8 @@ TEST(InternalReadContext, TestReadWithSpecifiedFieldIdAndSchema) {
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
-                         CreateInternalReadContextForTest(std::move(read_context), table_schema,
-                                                          table_schema->Options()));
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
     auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(read_fields);
@@ -128,7 +118,7 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
         new_options[Options::DATA_EVOLUTION_ENABLED] = "true";
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
-            CreateInternalReadContextForTest(std::move(read_context), table_schema, new_options));
+            InternalReadContext::Create(std::move(read_context), table_schema, new_options));
         std::vector<DataField> read_fields = {
             DataField(3, arrow::field("f3", arrow::float64())),
             DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::RowId(),
@@ -144,8 +134,8 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
-        ASSERT_NOK_WITH_MSG(CreateInternalReadContextForTest(std::move(read_context), table_schema,
-                                                             table_schema->Options()),
+        ASSERT_NOK_WITH_MSG(InternalReadContext::Create(std::move(read_context), table_schema,
+                                                        table_schema->Options()),
                             "Get field _ROW_ID failed: not exist in table schema");
     }
     {
@@ -156,8 +146,8 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
-        ASSERT_NOK_WITH_MSG(CreateInternalReadContextForTest(std::move(read_context), table_schema,
-                                                             table_schema->Options()),
+        ASSERT_NOK_WITH_MSG(InternalReadContext::Create(std::move(read_context), table_schema,
+                                                        table_schema->Options()),
                             "Get field _INDEX_SCORE failed: not exist in table schema");
     }
 }
@@ -170,8 +160,8 @@ TEST(InternalReadContext, TestReadWithValueKindField) {
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
-                         CreateInternalReadContextForTest(std::move(read_context), table_schema,
-                                                          table_schema->Options()));
+                         InternalReadContext::Create(std::move(read_context), table_schema,
+                                                     table_schema->Options()));
     std::vector<DataField> read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                           SpecialFields::ValueKind(),
                                           DataField(0, arrow::field("f0", arrow::utf8()))};
@@ -197,7 +187,7 @@ TEST(InternalReadContext, TestReadWithFieldIdsAndSpecialFields) {
         new_options[Options::DATA_EVOLUTION_ENABLED] = "true";
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
-            CreateInternalReadContextForTest(std::move(read_context), table_schema, new_options));
+            InternalReadContext::Create(std::move(read_context), table_schema, new_options));
         std::vector<DataField> read_fields = {
             DataField(3, arrow::field("f3", arrow::float64())),
             DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::RowId(),
@@ -226,7 +216,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
         ASSERT_OK_AND_ASSIGN(auto unique_read_context, context_builder.Finish());
         std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
         ASSERT_NOK_WITH_MSG(
-            CreateInternalReadContextForTest(read_context, table_schema, table_schema->Options()),
+            InternalReadContext::Create(read_context, table_schema, table_schema->Options()),
             "not exist in table schema");
     }
 
@@ -245,7 +235,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
         std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
-            CreateInternalReadContextForTest(read_context, table_schema, enabled_options));
+            InternalReadContext::Create(read_context, table_schema, enabled_options));
         auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(projected_fields);
         ASSERT_TRUE(internal_context->GetReadSchema()->Equals(expected_schema));
     }
@@ -269,7 +259,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaWithoutFieldIds) {
 
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
-        CreateInternalReadContextForTest(read_context, table_schema, table_schema->Options()));
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
 
     std::vector<DataField> expected_fields = {
         DataField(3, arrow::field("f3", arrow::float64())),
@@ -301,7 +291,7 @@ TEST(InternalReadContext, TestProjectedSchemaMetadataWhitelist) {
 
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
-        CreateInternalReadContextForTest(read_context, table_schema, table_schema->Options()));
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
 
     auto aligned_field = internal_context->GetReadSchema()->GetFieldByName("f0");
     ASSERT_TRUE(aligned_field);
@@ -342,7 +332,7 @@ TEST(InternalReadContext, TestMapSharedShreddingAccessRequiresSharedShreddingLay
     std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
 
     ASSERT_NOK_WITH_MSG(
-        CreateInternalReadContextForTest(read_context, table_schema, table_schema->Options()),
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()),
         "Selected-key MAP pushdown only supports top-level shared-shredding MAP field: tags");
 }
 

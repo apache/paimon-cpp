@@ -24,7 +24,6 @@
 #include <utility>
 #include <vector>
 
-#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/core/io/key_value_record_reader.h"
 #include "paimon/core/key_value.h"
 #include "paimon/result.h"
@@ -52,13 +51,13 @@ class LoserTree {
     /// Peek the current winner, mainly for key comparisons.
     const std::optional<KeyValue>& PeekWinner() const;
 
-    std::shared_ptr<Metrics> GetReaderMetrics() const {
-        return MetricsImpl::CollectReadMetrics(readers_holder_);
-    }
+    std::shared_ptr<Metrics> GetReaderMetrics() const;
 
     void Close() {
-        for (const auto& reader : readers_holder_) {
-            reader->Close();
+        for (const auto& leaf : leaves_) {
+            if (leaf.reader) {
+                leaf.reader->Close();
+            }
         }
     }
 
@@ -97,7 +96,8 @@ class LoserTree {
     }
 
     struct LeafIterator {
-        explicit LeafIterator(KeyValueRecordReader* reader) : reader(reader) {}
+        explicit LeafIterator(std::unique_ptr<KeyValueRecordReader>&& reader)
+            : reader(std::move(reader)) {}
 
         const std::optional<KeyValue>& Peek() const {
             return kv;
@@ -127,7 +127,10 @@ class LoserTree {
                     PAIMON_ASSIGN_OR_RAISE(iterator, reader->NextBatch());
                     if (!iterator) {
                         // read eof
+                        iterator.reset();
                         reader->Close();
+                        finished_reader_metrics = reader->GetReaderMetrics();
+                        reader.reset();
                         end_of_input = true;
                         kv = std::nullopt;
                     } else {
@@ -148,7 +151,8 @@ class LoserTree {
         bool end_of_input = false;
         int32_t first_same_key_index = -1;
         State state = State::WINNER_WITH_NEW_KEY;
-        KeyValueRecordReader* reader;
+        std::unique_ptr<KeyValueRecordReader> reader;
+        std::shared_ptr<Metrics> finished_reader_metrics;
         std::unique_ptr<KeyValueRecordReader::Iterator> iterator;
         std::optional<KeyValue> kv;
     };
@@ -156,9 +160,6 @@ class LoserTree {
  private:
     int32_t size_;
     bool initialized_;
-    // must hold all readers, as data array is allocated by the pool of data file
-    // reader
-    std::vector<std::unique_ptr<KeyValueRecordReader>> readers_holder_;
 
     std::vector<int32_t> tree_;
     std::vector<LeafIterator> leaves_;

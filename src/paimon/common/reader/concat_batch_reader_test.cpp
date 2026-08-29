@@ -29,6 +29,7 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/memory/memory_pool.h"
@@ -65,6 +66,36 @@ class LifetimeTrackingBatchReader : public BatchReader {
  private:
     std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<void> lifetime_;
+};
+
+class FixedMetricsBatchReader : public BatchReader {
+ public:
+    FixedMetricsBatchReader(std::unique_ptr<BatchReader> reader, uint64_t latency,
+                            uint64_t io_count)
+        : reader_(std::move(reader)), metrics_(std::make_shared<MetricsImpl>()) {
+        metrics_->SetCounter("orc.read.inclusive.latency.us", latency);
+        metrics_->SetCounter("orc.read.io.count", io_count);
+    }
+
+    Result<ReadBatch> NextBatch() override {
+        return reader_->NextBatch();
+    }
+
+    Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
+        return reader_->NextBatchWithBitmap();
+    }
+
+    void Close() override {
+        reader_->Close();
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return metrics_;
+    }
+
+ private:
+    std::unique_ptr<BatchReader> reader_;
+    std::shared_ptr<Metrics> metrics_;
 };
 
 class ConcatBatchReaderTest : public ::testing::Test {
@@ -223,6 +254,33 @@ TEST_F(ConcatBatchReaderTest, TestReleaseReaderAtEof) {
     ASSERT_FALSE(BatchReader::IsEofBatch(batch));
     ASSERT_TRUE(weak_lifetime.expired());
     ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+}
+
+TEST_F(ConcatBatchReaderTest, TestCollectMetricsAfterReleasingReaders) {
+    std::shared_ptr<arrow::DataType> type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    std::shared_ptr<arrow::Array> data1 =
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[1]]").ValueOrDie();
+    std::shared_ptr<arrow::Array> data2 =
+        arrow::ipc::internal::json::ArrayFromJSON(type, "[[2]]").ValueOrDie();
+
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    readers.push_back(std::make_unique<FixedMetricsBatchReader>(
+        std::make_unique<MockFileBatchReader>(data1, type, /*read_batch_size=*/1),
+        /*latency=*/11, /*io_count=*/2));
+    readers.push_back(std::make_unique<FixedMetricsBatchReader>(
+        std::make_unique<MockFileBatchReader>(data2, type, /*read_batch_size=*/1),
+        /*latency=*/17, /*io_count=*/3));
+    auto concat_reader =
+        std::make_unique<ConcatBatchReader>(std::move(readers), GetSharedArrowPool(pool_));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(concat_reader.get()));
+    ASSERT_EQ(result->length(), 2);
+    std::shared_ptr<Metrics> metrics = concat_reader->GetReaderMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t latency, metrics->GetCounter("orc.read.inclusive.latency.us"));
+    ASSERT_EQ(latency, 28);
+    ASSERT_OK_AND_ASSIGN(uint64_t io_count, metrics->GetCounter("orc.read.io.count"));
+    ASSERT_EQ(io_count, 5);
 }
 
 }  // namespace paimon::test

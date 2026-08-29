@@ -20,8 +20,24 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+
+#include "arrow/memory_pool.h"
+#include "orc/MemoryPool.hh"
+#include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/format/orc/orc_memory_pool.h"
+#include "paimon/memory/memory_pool.h"
 
 namespace paimon::orc {
+
+struct OrcReadMemory {
+    explicit OrcReadMemory(const std::shared_ptr<MemoryPool>& pool)
+        : arrow_pool(GetSharedArrowPool(pool)), orc_pool(std::make_shared<OrcMemoryPool>(pool)) {}
+
+    std::shared_ptr<arrow::MemoryPool> arrow_pool;
+    std::shared_ptr<::orc::MemoryPool> orc_pool;
+};
+
 // write options
 static inline const char ORC_STRIPE_SIZE[] = "orc.stripe.size";
 static constexpr size_t DEFAULT_STRIPE_SIZE = 64 * 1024 * 1024;

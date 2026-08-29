@@ -271,7 +271,7 @@ TEST(MemUtilsTest, TestAddArrowArrayLifetimeDeduplicatesSameOwner) {
     array.private_data = new TrackingArrowArrayPrivateData{nullptr, &release_order};
 
     ASSERT_OK(AddArrowArrayLifetime(&array, lifetime));
-    const long use_count = lifetime.use_count();
+    const int64_t use_count = lifetime.use_count();
     ASSERT_OK(AddArrowArrayLifetime(&array, lifetime));
     ASSERT_EQ(use_count, lifetime.use_count());
 

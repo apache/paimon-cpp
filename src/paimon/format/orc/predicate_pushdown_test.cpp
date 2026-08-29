@@ -69,7 +69,6 @@ class PredicatePushdownTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        read_memory_ = std::make_shared<OrcReadMemory>(pool_);
         batch_size_ = 10;
 
         arrow::FieldVector fields = {
@@ -114,8 +113,9 @@ class PredicatePushdownTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name_));
         ASSERT_OK_AND_ASSIGN(auto in_stream,
                              OrcInputStreamImpl::Create(in, DEFAULT_NATURAL_READ_SIZE));
+        std::shared_ptr<OrcReadMemory> read_memory = std::make_shared<OrcReadMemory>(pool_);
         ASSERT_OK_AND_ASSIGN(auto orc_batch_reader,
-                             OrcFileBatchReader::Create(std::move(in_stream), read_memory_,
+                             OrcFileBatchReader::Create(std::move(in_stream), read_memory,
                                                         /*options=*/{}, batch_size_));
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());
@@ -141,7 +141,6 @@ class PredicatePushdownTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<OrcReadMemory> read_memory_;
     int32_t batch_size_;
     std::shared_ptr<arrow::StructArray> struct_array_;
     std::shared_ptr<FileSystem> fs_;
@@ -421,8 +420,9 @@ TEST_F(PredicatePushdownTest, TestPredicatePushdownWithNullLiteral) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name_));
         ASSERT_OK_AND_ASSIGN(auto in_stream,
                              OrcInputStreamImpl::Create(in, DEFAULT_NATURAL_READ_SIZE));
+        std::shared_ptr<OrcReadMemory> read_memory = std::make_shared<OrcReadMemory>(pool_);
         ASSERT_OK_AND_ASSIGN(auto orc_batch_reader,
-                             OrcFileBatchReader::Create(std::move(in_stream), read_memory_,
+                             OrcFileBatchReader::Create(std::move(in_stream), read_memory,
                                                         /*options=*/{}, batch_size_));
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());

@@ -64,7 +64,6 @@ class OrcFileBatchReaderTest : public ::testing::Test,
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        read_memory_ = std::make_shared<OrcReadMemory>(pool_);
         batch_size_ = 10;
 
         arrow::FieldVector fields = {
@@ -163,9 +162,10 @@ class OrcFileBatchReaderTest : public ::testing::Test,
         const std::shared_ptr<Predicate>& predicate,
         const std::optional<RoaringBitmap32>& selection_bitmap, int32_t batch_size,
         const std::shared_ptr<OrcReadMemory>& read_memory = nullptr) const {
+        std::shared_ptr<OrcReadMemory> actual_read_memory =
+            read_memory ? read_memory : std::make_shared<OrcReadMemory>(pool_);
         EXPECT_OK_AND_ASSIGN(auto orc_batch_reader,
-                             OrcFileBatchReader::Create(std::move(in_stream),
-                                                        read_memory ? read_memory : read_memory_,
+                             OrcFileBatchReader::Create(std::move(in_stream), actual_read_memory,
                                                         options, batch_size));
         EXPECT_TRUE(orc_batch_reader);
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
@@ -198,7 +198,6 @@ class OrcFileBatchReaderTest : public ::testing::Test,
 
  private:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<OrcReadMemory> read_memory_;
     int32_t batch_size_;
     std::shared_ptr<arrow::StructArray> struct_array_;
 };
@@ -262,7 +261,8 @@ TEST_F(OrcFileBatchReaderTest, TestSetReadSchema) {
     std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
     ASSERT_OK_AND_ASSIGN(
         auto orc_batch_reader,
-        OrcFileBatchReader::Create(std::move(in_stream), read_memory_, options, batch_size_));
+        OrcFileBatchReader::Create(std::move(in_stream), std::make_shared<OrcReadMemory>(pool_),
+                                   options, batch_size_));
     // test GetFileSchema()
     ASSERT_OK_AND_ASSIGN(auto c_file_schema, orc_batch_reader->GetFileSchema());
     auto arrow_file_schema = arrow::ImportSchema(c_file_schema.get()).ValueOrDie();
@@ -638,6 +638,8 @@ TEST_F(OrcFileBatchReaderTest, TestBatchRetainsOrcReadMemory) {
 
     std::shared_ptr<OrcReadMemory> read_memory = std::make_shared<OrcReadMemory>(pool_);
     std::weak_ptr<OrcReadMemory> weak_read_memory = read_memory;
+    std::weak_ptr<arrow::MemoryPool> weak_arrow_pool = read_memory->arrow_pool;
+    std::weak_ptr<::orc::MemoryPool> weak_orc_pool = read_memory->orc_pool;
     std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
     std::unique_ptr<OrcFileBatchReader> reader = PrepareOrcFileBatchReader(
         std::move(in_stream), options, schema.get(), /*predicate=*/nullptr,
@@ -647,12 +649,16 @@ TEST_F(OrcFileBatchReaderTest, TestBatchRetainsOrcReadMemory) {
     reader.reset();
     read_memory.reset();
     ASSERT_FALSE(weak_read_memory.expired());
+    ASSERT_FALSE(weak_arrow_pool.expired());
+    ASSERT_FALSE(weak_orc_pool.expired());
 
     arrow::Result<std::shared_ptr<arrow::Array>> import_result =
         arrow::ImportArray(batch.first.get(), batch.second.get());
     ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();
     std::shared_ptr<arrow::Array> array = std::move(import_result).ValueOrDie();
     ASSERT_FALSE(weak_read_memory.expired());
+    ASSERT_FALSE(weak_arrow_pool.expired());
+    ASSERT_FALSE(weak_orc_pool.expired());
     ASSERT_TRUE(array->ValidateFull().ok());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> converted,
@@ -661,6 +667,8 @@ TEST_F(OrcFileBatchReaderTest, TestBatchRetainsOrcReadMemory) {
     ASSERT_TRUE(converted->Equals(expected));
     converted.reset();
     ASSERT_TRUE(weak_read_memory.expired());
+    ASSERT_TRUE(weak_arrow_pool.expired());
+    ASSERT_TRUE(weak_orc_pool.expired());
 }
 
 TEST_P(OrcFileBatchReaderTest, TestNextBatchWithTargetSchema) {
@@ -704,7 +712,8 @@ TEST_F(OrcFileBatchReaderTest, TestNextBatchWithOutofOrderTargetSchema) {
     std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
     ASSERT_OK_AND_ASSIGN(
         auto orc_batch_reader,
-        OrcFileBatchReader::Create(std::move(in_stream), read_memory_, options, batch_size_));
+        OrcFileBatchReader::Create(std::move(in_stream), std::make_shared<OrcReadMemory>(pool_),
+                                   options, batch_size_));
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(read_schema, c_schema.get()).ok());
     ASSERT_NOK_WITH_MSG(orc_batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
@@ -819,7 +828,8 @@ TEST_F(OrcFileBatchReaderTest, TestGetFileSchemaWithFieldId) {
         std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
         EXPECT_OK_AND_ASSIGN(
             auto orc_batch_reader,
-            OrcFileBatchReader::Create(std::move(in_stream), read_memory_, options, batch_size_));
+            OrcFileBatchReader::Create(std::move(in_stream), std::make_shared<OrcReadMemory>(pool_),
+                                       options, batch_size_));
         EXPECT_TRUE(orc_batch_reader);
         auto c_file_schema = orc_batch_reader->GetFileSchema();
         EXPECT_TRUE(c_file_schema.ok());
@@ -1284,7 +1294,8 @@ TEST_F(OrcFileBatchReaderTest, TestListStructPartialProjection) {
                          OrcInputStreamImpl::Create(input_stream, DEFAULT_NATURAL_READ_SIZE));
     ASSERT_OK_AND_ASSIGN(
         auto orc_batch_reader,
-        OrcFileBatchReader::Create(std::move(in_stream), read_memory_, /*options=*/{},
+        OrcFileBatchReader::Create(std::move(in_stream), std::make_shared<OrcReadMemory>(pool_),
+                                   /*options=*/{},
                                    /*batch_size=*/10));
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(read_schema, c_schema.get()).ok());
