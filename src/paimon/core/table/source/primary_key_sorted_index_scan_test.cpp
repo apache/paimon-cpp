@@ -503,6 +503,25 @@ TEST_F(PrimaryKeySortedIndexScanTest, RetiredSourcesPreserveGroupOrdinalOffsets)
     }
 }
 
+TEST_F(PrimaryKeySortedIndexScanTest, SourceMovedToDifferentLevelFallsBack) {
+    const std::vector<PrimaryKeyIndexSourceFile> sources = {{"a-stays.parquet", 4},
+                                                            {"b-moved.parquet", 6}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload,
+                         MakeMetadataPayload("payload.index", sources, /*data_level=*/5));
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a-stays.parquet", 4, 5, FileSource::Compact()),
+                   MakeDataFile("b-moved.parquet", 6, 4, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::Plan plan,
+                         PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, {split}, definitions_,
+                                                               MakeEntries(payload)));
+
+    ASSERT_EQ(2, plan.Files().size());
+    ASSERT_NE(nullptr, plan.Files()[0].Group(kPriceFieldId));
+    ASSERT_EQ(nullptr, plan.Files()[1].Group(kPriceFieldId));
+}
+
 TEST_F(PrimaryKeySortedIndexScanTest, UpdatedFileFallsBackWhileOldIndexedFileKeepsDeletionFile) {
     const std::vector<PrimaryKeyIndexSourceFile> old_sources = {{"a-retired-prefix.parquet", 3},
                                                                 {"b-active-old.parquet", 4},
