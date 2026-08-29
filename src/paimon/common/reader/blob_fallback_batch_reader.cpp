@@ -100,7 +100,8 @@ BlobFallbackBatchReader::BlobFallbackBatchReader(
       row_id_field_idx_(row_id_field_idx),
       seq_num_field_idx_(seq_num_field_idx),
       read_batch_size_(read_batch_size),
-      arrow_pool_(arrow_pool) {}
+      arrow_pool_(arrow_pool),
+      finished_reader_metrics_(std::make_shared<MetricsImpl>()) {}
 
 Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t want,
                                                     std::vector<Chunk>* chunks) {
@@ -156,6 +157,9 @@ Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t wa
         PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch_with_bitmap,
                                segment.reader->NextBatchWithBitmap());
         if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+            segment.reader->Close();
+            finished_reader_metrics_->Merge(segment.reader->GetReaderMetrics());
+            segment.reader.reset();
             cursor.segment_idx++;
             continue;
         }
@@ -382,6 +386,8 @@ void BlobFallbackBatchReader::Close() {
         for (auto& segment : group.segments) {
             if (segment.reader) {
                 segment.reader->Close();
+                finished_reader_metrics_->Merge(segment.reader->GetReaderMetrics());
+                segment.reader.reset();
             }
         }
     }
@@ -390,6 +396,7 @@ void BlobFallbackBatchReader::Close() {
 
 std::shared_ptr<Metrics> BlobFallbackBatchReader::GetReaderMetrics() const {
     auto metrics = std::make_shared<MetricsImpl>();
+    metrics->Merge(finished_reader_metrics_);
     for (const auto& group : groups_) {
         for (const auto& segment : group.segments) {
             if (segment.reader) {

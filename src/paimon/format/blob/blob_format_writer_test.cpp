@@ -116,7 +116,6 @@ class BlobFormatWriterTestBase : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        arrow_pool_ = GetSharedArrowPool(pool_);
         dir_ = paimon::test::UniqueTestDirectory::Create();
         ASSERT_TRUE(dir_);
         file_system_ = std::make_shared<LocalFileSystem>();
@@ -174,11 +173,11 @@ class BlobFormatWriterTestBase : public ::testing::Test {
     Result<std::shared_ptr<arrow::StructArray>> ReadBackAsData() const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                                file_system_->Open(dir_->Str() + "/file.blob"));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<BlobFileBatchReader> reader,
-            BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                        /*blob_as_descriptor=*/false,
-                                        /*emit_placeholder_sentinel=*/false, pool_, arrow_pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BlobFileBatchReader> reader,
+                               BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
+                                                           /*blob_as_descriptor=*/false,
+                                                           /*emit_placeholder_sentinel=*/false,
+                                                           pool_, GetSharedArrowPool(pool_)));
         auto schema = arrow::schema(struct_type_->fields());
         ::ArrowSchema c_schema;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &c_schema));
@@ -193,7 +192,6 @@ class BlobFormatWriterTestBase : public ::testing::Test {
 
  protected:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<paimon::test::UniqueTestDirectory> dir_;
     std::shared_ptr<OutputStream> output_stream_;
     std::shared_ptr<FileSystem> file_system_;
@@ -270,7 +268,8 @@ TEST_P(BlobFormatWriterTest, TestSimple) {
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<BlobFileBatchReader> reader,
         BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024, blob_as_descriptor_,
-                                    /*emit_placeholder_sentinel=*/false, pool_, arrow_pool_));
+                                    /*emit_placeholder_sentinel=*/false, pool_,
+                                    GetSharedArrowPool(pool_)));
     auto schema = arrow::schema(struct_type_->fields());
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
@@ -467,7 +466,8 @@ TEST_P(BlobFormatWriterTest, TestLargeBlob) {
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<BlobFileBatchReader> reader,
         BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024, blob_as_descriptor_,
-                                    /*emit_placeholder_sentinel=*/false, pool_, arrow_pool_));
+                                    /*emit_placeholder_sentinel=*/false, pool_,
+                                    GetSharedArrowPool(pool_)));
     auto schema = arrow::schema(struct_type_->fields());
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
@@ -517,7 +517,8 @@ TEST_P(BlobFormatWriterTest, TestAddBatchWithNullValues) {
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<BlobFileBatchReader> reader,
         BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024, blob_as_descriptor_,
-                                    /*emit_placeholder_sentinel=*/false, pool_, arrow_pool_));
+                                    /*emit_placeholder_sentinel=*/false, pool_,
+                                    GetSharedArrowPool(pool_)));
     auto schema = arrow::schema(struct_type_->fields());
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
@@ -1041,11 +1042,11 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderStrictAndAwareModes) 
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
                              file_system_->Open(dir_->Str() + "/file.blob"));
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<BlobFileBatchReader> reader,
-            BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                        /*blob_as_descriptor=*/false,
-                                        /*emit_placeholder_sentinel=*/false, pool_, arrow_pool_));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                             BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
+                                                         /*blob_as_descriptor=*/false,
+                                                         /*emit_placeholder_sentinel=*/false, pool_,
+                                                         GetSharedArrowPool(pool_)));
         ::ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
         ASSERT_OK(reader->SetReadSchema(&c_schema, /*predicate=*/nullptr,
@@ -1057,11 +1058,11 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderStrictAndAwareModes) 
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
                              file_system_->Open(dir_->Str() + "/file.blob"));
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<BlobFileBatchReader> reader,
-            BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                        /*blob_as_descriptor=*/false,
-                                        /*emit_placeholder_sentinel=*/true, pool_, arrow_pool_));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                             BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
+                                                         /*blob_as_descriptor=*/false,
+                                                         /*emit_placeholder_sentinel=*/true, pool_,
+                                                         GetSharedArrowPool(pool_)));
         ::ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
         ASSERT_OK(reader->SetReadSchema(&c_schema, /*predicate=*/nullptr,
@@ -1081,11 +1082,11 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderStrictAndAwareModes) 
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
                              file_system_->Open(dir_->Str() + "/file.blob"));
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<BlobFileBatchReader> reader,
-            BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                        /*blob_as_descriptor=*/true,
-                                        /*emit_placeholder_sentinel=*/true, pool_, arrow_pool_));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                             BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
+                                                         /*blob_as_descriptor=*/true,
+                                                         /*emit_placeholder_sentinel=*/true, pool_,
+                                                         GetSharedArrowPool(pool_)));
         ::ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
         ASSERT_OK(reader->SetReadSchema(&c_schema, /*predicate=*/nullptr,
@@ -1112,11 +1113,11 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestReadPlaceholderWithSelectionBitmap) 
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
                          file_system_->Open(dir_->Str() + "/file.blob"));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<BlobFileBatchReader> reader,
-        BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                    /*blob_as_descriptor=*/false,
-                                    /*emit_placeholder_sentinel=*/true, pool_, arrow_pool_));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                         BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
+                                                     /*blob_as_descriptor=*/false,
+                                                     /*emit_placeholder_sentinel=*/true, pool_,
+                                                     GetSharedArrowPool(pool_)));
     auto schema = arrow::schema(struct_type_->fields());
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
@@ -1145,11 +1146,11 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelBytesVerbatimWithoutPlacehol
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream,
                          file_system_->Open(dir_->Str() + "/file.blob"));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<BlobFileBatchReader> reader,
-        BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
-                                    /*blob_as_descriptor=*/false,
-                                    /*emit_placeholder_sentinel=*/false, pool_, arrow_pool_));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                         BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
+                                                     /*blob_as_descriptor=*/false,
+                                                     /*emit_placeholder_sentinel=*/false, pool_,
+                                                     GetSharedArrowPool(pool_)));
     auto schema = arrow::schema(struct_type_->fields());
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
@@ -1186,7 +1187,7 @@ TEST_F(BlobFormatWriterPlaceholderTest, TestSentinelPrefixedValueVerbatimInPlace
             std::unique_ptr<BlobFileBatchReader> reader,
             BlobFileBatchReader::Create(input_stream, /*batch_size=*/1024,
                                         /*blob_as_descriptor=*/false, emit_placeholder_sentinel,
-                                        pool_, arrow_pool_));
+                                        pool_, GetSharedArrowPool(pool_)));
         ::ArrowSchema c_schema;
         ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
         ASSERT_OK(reader->SetReadSchema(&c_schema, /*predicate=*/nullptr,

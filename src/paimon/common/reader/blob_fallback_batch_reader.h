@@ -158,6 +158,7 @@ class BlobFallbackBatchReader : public BatchReader {
     const int32_t seq_num_field_idx_;
     const int32_t read_batch_size_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<Metrics> finished_reader_metrics_;
     bool closed_ = false;
 };
 

@@ -57,7 +57,6 @@ class MapSharedShreddingReadPlanFactoryTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        arrow_pool_ = GetSharedArrowPool(pool_);
     }
 
     static MapSharedShreddingFieldMeta TagsMeta() {
@@ -139,7 +138,7 @@ class MapSharedShreddingReadPlanFactoryTest : public ::testing::Test {
             field_read_plans.emplace(field->name(), std::move(field_read_plan));
         }
         return std::make_unique<ShreddingFileReader>(std::move(reader), std::move(field_read_plans),
-                                                     arrow_pool_);
+                                                     GetSharedArrowPool(pool_));
     }
 
     Result<std::unique_ptr<ShreddingFileReader>> CreateReader(
@@ -226,7 +225,6 @@ class MapSharedShreddingReadPlanFactoryTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<arrow::Schema> logical_schema_ = arrow::schema({
         arrow::field("id", arrow::int32()),
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64())),
@@ -305,7 +303,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSelectedKeysStructProjection) 
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> contexts;
     contexts.emplace("tags", std::move(field_read_plan));
     auto reader = std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts),
-                                                        arrow_pool_);
+                                                        GetSharedArrowPool(pool_));
 
     auto read_schema =
         ExportSchema(arrow::schema({arrow::field("id", arrow::int32()), selected_field}));
@@ -445,7 +443,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSelectedKeysStructProjectionFr
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> contexts;
     contexts.emplace("tags", std::move(field_read_plan));
     auto reader = std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts),
-                                                        arrow_pool_);
+                                                        GetSharedArrowPool(pool_));
 
     auto read_schema =
         ExportSchema(arrow::schema({arrow::field("id", arrow::int32()), selected_field}));

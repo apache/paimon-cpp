@@ -94,10 +94,8 @@ class MergeFileSplitReadTest : public ::testing::Test,
         const std::shared_ptr<ReadContext>& read_context, int32_t schema_id = 0) {
         SchemaManager schema_manager(fs_, read_context->GetPath());
         EXPECT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(schema_id));
-        EXPECT_OK_AND_ASSIGN(
-            auto context,
-            InternalReadContext::Create(read_context, table_schema, read_context->GetOptions(),
-                                        GetSharedArrowPool(read_context->GetMemoryPool())));
+        EXPECT_OK_AND_ASSIGN(auto context, InternalReadContext::Create(read_context, table_schema,
+                                                                       read_context->GetOptions()));
         return context;
     }
 
@@ -365,12 +363,12 @@ class MergeFileSplitReadTest : public ::testing::Test,
                                    split_read->CreateReader(split));
             batch_readers.emplace_back(std::move(reader));
         }
-        return std::make_unique<ConcatBatchReader>(std::move(batch_readers), arrow_pool_);
+        return std::make_unique<ConcatBatchReader>(std::move(batch_readers),
+                                                   GetSharedArrowPool(pool_));
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_ = GetSharedArrowPool(pool_);
     std::shared_ptr<FileSystem> fs_ = std::make_shared<LocalFileSystem>();
     std::shared_ptr<Executor> executor_ = CreateDefaultExecutor();
 };

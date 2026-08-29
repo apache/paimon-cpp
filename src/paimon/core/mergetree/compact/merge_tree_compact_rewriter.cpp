@@ -24,7 +24,6 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/table/special_fields.h"
-#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/key_value_data_file_writer_factories.h"
 #include "paimon/core/io/key_value_meta_projection_consumer.h"
@@ -85,8 +84,7 @@ Result<std::unique_ptr<MergeTreeCompactRewriter>> MergeTreeCompactRewriter::Crea
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(read_context, table_schema, options.ToMap(),
-                                    GetSharedArrowPool(read_context->GetMemoryPool())));
+        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         path_factory_cache->GetOrCreatePathFactory(options.GetFileFormat()->Identifier()));
@@ -205,14 +203,11 @@ MergeTreeCompactRewriter::CreateRawSortMergeReaderForSection(
 Status MergeTreeCompactRewriter::MergeReadAndWrite(
     int32_t output_level, bool drop_delete, const std::vector<SortedRun>& section,
     const MergeTreeCompactRewriter::KeyValueConsumerCreator& create_consumer,
-    MergeTreeCompactRewriter::KeyValueRollingFileWriter* rolling_writer,
-    std::vector<std::shared_ptr<MergeTreeCompactRewriter::KeyValueMergeReader>>*
-        reader_holders_ptr) {
+    MergeTreeCompactRewriter::KeyValueRollingFileWriter* rolling_writer) {
     if (!merge_file_split_read_) {
         return Status::Invalid(
             "merge_file_split_read in MergeTreeCompactRewriter cannot be nullptr");
     }
-    auto& reader_holders = *reader_holders_ptr;
     // prepare sort merge reader
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            CreateDataFilePathFactory(options_.GetFileFormat()->Identifier()));
@@ -250,9 +245,8 @@ Status MergeTreeCompactRewriter::MergeReadAndWrite(
         std::make_unique<SortMergeReaderBatchProducer>(std::move(sort_merge_reader),
                                                        options_.GetWriteBatchSize());
     auto async_key_value_producer_consumer =
-        std::make_shared<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
+        std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
             std::move(producer), create_consumer, /*projection_thread_num=*/1);
-    reader_holders.push_back(async_key_value_producer_consumer);
     // read KeyValueBatch from SortMergeReader and write to RollingWriter
     while (true) {
         if (cancellation_controller_->IsCancelled()) {
@@ -273,21 +267,17 @@ Result<CompactResult> MergeTreeCompactRewriter::RewriteCompaction(
     PAIMON_ASSIGN_OR_RAISE(MergeTreeCompactRewriter::KeyValueConsumerCreator create_consumer,
                            GenerateKeyValueConsumer());
     auto before = ExtractFilesFromSections(sections);
-    std::vector<std::shared_ptr<MergeTreeCompactRewriter::KeyValueMergeReader>> reader_holders;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<KeyValueRollingFileWriter> rolling_writer,
                            CreateRollingRowWriter(output_level));
 
     ScopeGuard write_guard([&]() -> void {
         rolling_writer->Abort();
-        for (const auto& reader : reader_holders) {
-            reader->Close();
-        }
         merge_file_split_read_.reset();
     });
 
     for (const auto& section : sections) {
         PAIMON_RETURN_NOT_OK(MergeReadAndWrite(output_level, drop_delete, section, create_consumer,
-                                               rolling_writer.get(), &reader_holders));
+                                               rolling_writer.get()));
     }
 
     PAIMON_RETURN_NOT_OK(rolling_writer->Close());

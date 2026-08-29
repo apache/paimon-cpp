@@ -25,7 +25,6 @@
 #include "gtest/gtest.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
-#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/defs.h"
@@ -40,8 +39,7 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContextForTest(
     const std::shared_ptr<ReadContext>& read_context,
     const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& options) {
-    return InternalReadContext::Create(read_context, table_schema, options,
-                                       GetSharedArrowPool(read_context->GetMemoryPool()));
+    return InternalReadContext::Create(read_context, table_schema, options);
 }
 
 }  // namespace

@@ -144,8 +144,7 @@ class RawFileSplitReadTest : public ::testing::Test {
 
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
-            InternalReadContext::Create(read_context, table_schema, table_schema->Options(),
-                                        GetSharedArrowPool(read_context->GetMemoryPool())));
+            InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
         auto data_splits = PrepareDataSplits();
         const auto& core_options = internal_context->GetCoreOptions();
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
@@ -174,8 +173,8 @@ class RawFileSplitReadTest : public ::testing::Test {
                                  split_read->CreateReader(split));
             batch_readers.emplace_back(std::move(reader));
         }
-        auto batch_reader =
-            std::make_unique<ConcatBatchReader>(std::move(batch_readers), arrow_pool_);
+        auto batch_reader = std::make_unique<ConcatBatchReader>(std::move(batch_readers),
+                                                                GetSharedArrowPool(pool_));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(std::move(batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_array));
@@ -183,7 +182,6 @@ class RawFileSplitReadTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_ = GetSharedArrowPool(pool_);
 };
 
 // test simple, recall all columns with sequence in data
@@ -393,8 +391,7 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
 
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
-        InternalReadContext::Create(read_context, table_schema, table_schema->Options(),
-                                    GetSharedArrowPool(read_context->GetMemoryPool())));
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
     const auto& core_options = internal_context->GetCoreOptions();
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
@@ -427,7 +424,8 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
     std::vector<std::unique_ptr<BatchReader>> batch_readers;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, split_read->CreateReader(data_split));
     batch_readers.push_back(std::move(reader));
-    auto batch_reader = std::make_unique<ConcatBatchReader>(std::move(batch_readers), arrow_pool_);
+    auto batch_reader =
+        std::make_unique<ConcatBatchReader>(std::move(batch_readers), GetSharedArrowPool(pool_));
     ASSERT_OK_AND_ASSIGN(auto result_array,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_EQ(result_array, nullptr);
@@ -443,8 +441,7 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(read_context, table_schema, table_schema->Options(),
-                                    GetSharedArrowPool(read_context->GetMemoryPool())));
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                          CreateDefaultExecutor(/*thread_count=*/2));
     auto split_read = std::make_unique<RawFileSplitRead>(

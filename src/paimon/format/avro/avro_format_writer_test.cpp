@@ -52,7 +52,6 @@ class AvroFormatWriterTest : public ::testing::Test {
         ASSERT_TRUE(dir_);
         fs_ = std::make_shared<LocalFileSystem>();
         pool_ = GetDefaultPool();
-        arrow_pool_ = GetArrowPool(pool_);
     }
     void TearDown() override {}
 
@@ -120,8 +119,9 @@ class AvroFormatWriterTest : public ::testing::Test {
 
     void CheckResult(const std::string& file_path, int32_t row_count) const {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path));
-        ASSERT_OK_AND_ASSIGN(auto file_reader,
-                             AvroFileBatchReader::Create(input_stream, 1024, pool_, arrow_pool_));
+        ASSERT_OK_AND_ASSIGN(
+            auto file_reader,
+            AvroFileBatchReader::Create(input_stream, 1024, pool_, GetSharedArrowPool(pool_)));
         ASSERT_OK_AND_ASSIGN(uint64_t num_rows, file_reader->GetNumberOfRows());
         ASSERT_EQ(num_rows, row_count);
 
@@ -158,7 +158,6 @@ class AvroFormatWriterTest : public ::testing::Test {
     std::unique_ptr<paimon::test::UniqueTestDirectory> dir_;
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_F(AvroFormatWriterTest, TestWriteWithVariousBatchSize) {

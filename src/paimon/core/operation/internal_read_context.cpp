@@ -200,8 +200,7 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    const std::map<std::string, std::string>& options) {
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(),
                                                 context->GetFileSystemSchemeToIdentifierMap()));
@@ -283,9 +282,10 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
             PredicateValidator::ValidatePredicateWithLiterals(context->GetPredicate()));
     }
 
-    if (!arrow_pool) {
-        return Status::Invalid("arrow memory pool is null");
+    if (!context->GetMemoryPool()) {
+        return Status::Invalid("memory pool is null");
     }
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(context->GetMemoryPool());
     return std::unique_ptr<InternalReadContext>(
         new InternalReadContext(context, table_schema, read_schema, core_options, arrow_pool));
 }

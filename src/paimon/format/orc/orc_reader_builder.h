@@ -34,12 +34,10 @@ class OrcReaderBuilder : public ReaderBuilder {
  public:
     OrcReaderBuilder(const std::map<std::string, std::string>& options, int32_t batch_size)
         : batch_size_(batch_size),
-          pool_(GetDefaultPool()),
-          read_memory_(std::make_shared<OrcReadMemory>(pool_)),
+          read_memory_(std::make_shared<OrcReadMemory>(GetDefaultPool())),
           options_(options) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
-        pool_ = pool;
         read_memory_ = std::make_shared<OrcReadMemory>(pool);
         return this;
     }
@@ -61,7 +59,6 @@ class OrcReaderBuilder : public ReaderBuilder {
 
  private:
     int32_t batch_size_ = -1;
-    std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<OrcReadMemory> read_memory_;
     std::map<std::string, std::string> options_;
 };

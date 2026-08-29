@@ -44,7 +44,10 @@ class ConcatBatchReader : public BatchReader {
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
 
  private:
+    void CloseAndReleaseReader(size_t reader_index);
+
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<Metrics> finished_reader_metrics_;
     std::vector<std::unique_ptr<BatchReader>> readers_;
     size_t current_;
 };

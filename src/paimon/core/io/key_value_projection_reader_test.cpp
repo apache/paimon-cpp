@@ -58,7 +58,6 @@ class KeyValueProjectionReaderTest : public testing::Test,
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        arrow_pool_ = GetSharedArrowPool(pool_);
     }
 
     std::unique_ptr<BatchReader> GenerateProjectionReader(
@@ -97,14 +96,14 @@ class KeyValueProjectionReaderTest : public testing::Test,
         if (!multi_thread_row_to_batch) {
             EXPECT_OK_AND_ASSIGN(
                 auto projection_reader,
-                KeyValueProjectionReader::Create(std::move(sort_merge_reader), target_schema,
-                                                 target_to_src_mapping,
-                                                 /*batch_size=*/batch_size, arrow_pool_));
+                KeyValueProjectionReader::Create(
+                    std::move(sort_merge_reader), target_schema, target_to_src_mapping,
+                    /*batch_size=*/batch_size, GetSharedArrowPool(pool_)));
             return std::move(projection_reader);
         } else {
             return std::make_unique<AsyncKeyValueProjectionReader>(
                 std::move(sort_merge_reader), target_schema, target_to_src_mapping, batch_size,
-                /*projection_thread_num=*/3, arrow_pool_);
+                /*projection_thread_num=*/3, GetSharedArrowPool(pool_));
         }
     }
 
@@ -159,7 +158,6 @@ class KeyValueProjectionReaderTest : public testing::Test,
 
  private:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_P(KeyValueProjectionReaderTest, TestBulkData) {

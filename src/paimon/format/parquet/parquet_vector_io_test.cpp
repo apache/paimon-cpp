@@ -56,7 +56,6 @@ class ParquetVectorIoTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        arrow_pool_ = GetArrowPool(pool_);
         dir_ = paimon::test::UniqueTestDirectory::Create();
         ASSERT_TRUE(dir_);
         fs_ = dir_->GetFileSystem();
@@ -108,11 +107,12 @@ class ParquetVectorIoTest : public ::testing::Test {
                              fs_->Create(file_path, /*overwrite=*/false));
         ::parquet::WriterProperties::Builder properties_builder;
         properties_builder.max_row_group_length(max_row_group_length);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<ParquetFormatWriter> writer,
             ParquetFormatWriter::Create(out, arrow::schema(write_type->fields()),
                                         properties_builder.build(),
-                                        DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, arrow_pool_));
+                                        DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, arrow_pool));
         ASSERT_OK(writer->AddBatch(c_array.get()));
         ASSERT_OK(writer->Finish());
         ASSERT_OK(out->Close());
@@ -138,10 +138,11 @@ class ParquetVectorIoTest : public ::testing::Test {
                              fs_->Create(file_path, /*overwrite=*/false));
         auto arrow_out = std::make_shared<ArrowOutputStreamAdapter>(out);
         ::parquet::WriterProperties::Builder properties_builder;
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
         std::shared_ptr<::parquet::ArrowWriterProperties> arrow_properties =
             ::parquet::ArrowWriterProperties::Builder().store_schema()->build();
         arrow::Status status = ::parquet::arrow::WriteTable(
-            *std::move(table_result).ValueOrDie(), arrow_pool_.get(), arrow_out,
+            *std::move(table_result).ValueOrDie(), arrow_pool.get(), arrow_out,
             /*chunk_size=*/1024, properties_builder.build(), arrow_properties);
         ASSERT_TRUE(status.ok()) << status.ToString();
         ASSERT_OK(out->Close());
@@ -151,12 +152,13 @@ class ParquetVectorIoTest : public ::testing::Test {
                       std::shared_ptr<arrow::StructType>* file_type_out) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
         ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
-        auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
+        auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool);
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<ParquetFileBatchReader> reader,
             ParquetFileBatchReader::Create(std::move(in_stream), /*options=*/{},
                                            /*batch_size=*/10, /*file_metadata=*/nullptr,
-                                           /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                           /*storage_read_bytes=*/nullptr, arrow_pool,
                                            /*hints=*/std::nullopt));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_file_schema, reader->GetFileSchema());
         arrow::Result<std::shared_ptr<arrow::DataType>> file_type_result =
@@ -173,15 +175,16 @@ class ParquetVectorIoTest : public ::testing::Test {
                             std::unique_ptr<FileBatchReader>* vector_reader_out) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
         ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
-        auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
+        auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool);
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<ParquetFileBatchReader> reader,
             ParquetFileBatchReader::Create(std::move(in_stream), options, batch_size,
                                            /*file_metadata=*/nullptr,
-                                           /*storage_read_bytes=*/nullptr, arrow_pool_,
+                                           /*storage_read_bytes=*/nullptr, arrow_pool,
                                            /*hints=*/std::nullopt));
         std::unique_ptr<FileBatchReader> vector_reader =
-            std::make_unique<VectorFileBatchReader>(std::move(reader), arrow_pool_);
+            std::make_unique<VectorFileBatchReader>(std::move(reader), arrow_pool);
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
         ASSERT_OK(vector_reader->SetReadSchema(c_schema.get(), predicate,
@@ -246,7 +249,6 @@ class ParquetVectorIoTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<FileSystem> fs_;
     std::unique_ptr<paimon::test::UniqueTestDirectory> dir_;
 };

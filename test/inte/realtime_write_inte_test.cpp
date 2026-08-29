@@ -315,10 +315,6 @@ class RealtimeWriteInteTest : public ::testing::Test {
  protected:
     using Row = std::tuple<int64_t, std::string, std::string>;
 
-    struct CollectedReadResult {
-        std::shared_ptr<arrow::ChunkedArray> data;
-    };
-
     void SetUp() override {
         pool_ = GetDefaultPool();
         dir_ = UniqueTestDirectory::Create("local");
@@ -614,11 +610,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         return CreateQueryReader(plan, realtime_context);
     }
 
-    Result<CollectedReadResult> ReadPlan(const std::shared_ptr<Plan>& plan,
-                                         const std::shared_ptr<RealtimeContext>& realtime_context,
-                                         const std::vector<std::string>& read_fields,
-                                         const std::shared_ptr<Predicate>& predicate,
-                                         bool enable_predicate_filter) const {
+    Result<std::shared_ptr<arrow::ChunkedArray>> ReadPlan(
+        const std::shared_ptr<Plan>& plan, const std::shared_ptr<RealtimeContext>& realtime_context,
+        const std::vector<std::string>& read_fields, const std::shared_ptr<Predicate>& predicate,
+        bool enable_predicate_filter) const {
         ReadContextBuilder read_builder(table_path_);
         read_builder.SetOptions(options_)
             .SetReadFieldNames(read_fields)
@@ -633,7 +628,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
                                table_read->CreateReader(plan->Splits()));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
                                ReadResultCollector::CollectResult(std::move(reader)));
-        return CollectedReadResult{std::move(result)};
+        return result;
     }
 
     void ReadPlanWithSchemaAndCheck(const std::shared_ptr<Plan>& plan,
@@ -676,11 +671,11 @@ class RealtimeWriteInteTest : public ::testing::Test {
     Result<std::vector<Row>> ReadRows(
         const std::shared_ptr<Plan>& plan,
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
-        PAIMON_ASSIGN_OR_RAISE(CollectedReadResult read_result,
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> read_result,
                                ReadPlan(plan, realtime_context, {"id", "payload", "pt"},
                                         /*predicate=*/nullptr,
                                         /*enable_predicate_filter=*/false));
-        const std::shared_ptr<arrow::ChunkedArray>& result = read_result.data;
+        const std::shared_ptr<arrow::ChunkedArray>& result = read_result;
 
         std::vector<Row> rows;
         if (!result) {
@@ -2510,7 +2505,7 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> memory_plan,
                          CreatePlan(realtime_context, scan_predicate));
-    ASSERT_OK_AND_ASSIGN(CollectedReadResult memory_result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> memory_result,
                          ReadPlan(memory_plan, realtime_context, read_fields, read_predicate,
                                   /*enable_predicate_filter=*/true));
     std::shared_ptr<arrow::Array> expected_memory =
@@ -2518,9 +2513,8 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
             [0, "value-2", 2]
         ])")
             .ValueOrDie();
-    ASSERT_NE(nullptr, memory_result.data);
-    ASSERT_TRUE(
-        std::make_shared<arrow::ChunkedArray>(expected_memory)->Equals(*memory_result.data));
+    ASSERT_NE(nullptr, memory_result);
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected_memory)->Equals(*memory_result));
 
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
@@ -2532,7 +2526,7 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> union_plan,
                          CreatePlan(realtime_context, scan_predicate));
-    ASSERT_OK_AND_ASSIGN(CollectedReadResult union_result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> union_result,
                          ReadPlan(union_plan, realtime_context, read_fields, read_predicate,
                                   /*enable_predicate_filter=*/true));
     std::shared_ptr<arrow::Array> expected_union =
@@ -2543,8 +2537,8 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
             [0, "value-5", 5]
         ])")
             .ValueOrDie();
-    ASSERT_NE(nullptr, union_result.data);
-    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected_union)->Equals(*union_result.data));
+    ASSERT_NE(nullptr, union_result);
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected_union)->Equals(*union_result));
     ASSERT_OK(writer->Close());
 }
 
@@ -2578,7 +2572,7 @@ TEST_F(RealtimeWriteInteTest, TestDiskPredicatePushdownWithoutMemoryFiltering) {
     ASSERT_OK(writer->Write(std::move(memory_batch)));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
-    ASSERT_OK_AND_ASSIGN(CollectedReadResult result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, predicate,
                                   /*enable_predicate_filter=*/false));
     std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
@@ -2592,9 +2586,9 @@ TEST_F(RealtimeWriteInteTest, TestDiskPredicatePushdownWithoutMemoryFiltering) {
             [0, 5, "value-5", "p0"]
         ])")
             .ValueOrDie();
-    ASSERT_NE(nullptr, result.data);
-    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result.data))
-        << result.data->ToString();
+    ASSERT_NE(nullptr, result);
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
+        << result->ToString();
     ASSERT_OK(writer->Close());
 }
 
@@ -2640,11 +2634,10 @@ TEST_F(RealtimeWriteInteTest, TestMemoryBatchStatisticsPredicatePushdown) {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan,
                                    CreatePlan(realtime_context, predicate));
             PAIMON_ASSIGN_OR_RAISE(
-                CollectedReadResult result,
+                std::shared_ptr<arrow::ChunkedArray> result,
                 ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, predicate,
                          /*enable_predicate_filter=*/false));
-            std::shared_ptr<arrow::ChunkedArray> actual =
-                result.data ? result.data : make_expected("[]");
+            std::shared_ptr<arrow::ChunkedArray> actual = result ? result : make_expected("[]");
             if (!expected[i]->Equals(*actual)) {
                 return Status::Invalid("unexpected real-time candidate rows: " +
                                        actual->ToString());
@@ -2715,7 +2708,7 @@ TEST_F(RealtimeWriteInteTest, TestMemoryBatchStatisticsPredicatePushdownWithDisk
         PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"id", FieldType::BIGINT,
                                       Literal(static_cast<int64_t>(3)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
-    ASSERT_OK_AND_ASSIGN(CollectedReadResult result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, predicate,
                                   /*enable_predicate_filter=*/false));
 
@@ -2731,9 +2724,9 @@ TEST_F(RealtimeWriteInteTest, TestMemoryBatchStatisticsPredicatePushdownWithDisk
             [0, 12, "value-12", "p0"]
         ])")
             .ValueOrDie();
-    ASSERT_NE(nullptr, result.data);
-    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result.data))
-        << result.data->ToString();
+    ASSERT_NE(nullptr, result);
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
+        << result->ToString();
     ASSERT_OK(writer->Close());
 }
 
@@ -2778,7 +2771,7 @@ TEST_F(RealtimeWriteInteTest, TestNullPredicateForMemoryAndDisk) {
     std::shared_ptr<Predicate> predicate = PredicateBuilder::IsNull(
         /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
-    ASSERT_OK_AND_ASSIGN(CollectedReadResult result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, predicate,
                                   /*enable_predicate_filter=*/false));
 
@@ -2792,9 +2785,9 @@ TEST_F(RealtimeWriteInteTest, TestNullPredicateForMemoryAndDisk) {
             [0, 5, "memory-value-5", "p0"]
         ])")
             .ValueOrDie();
-    ASSERT_NE(nullptr, result.data);
-    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result.data))
-        << result.data->ToString();
+    ASSERT_NE(nullptr, result);
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
+        << result->ToString();
     ASSERT_OK(writer->Close());
 }
 
@@ -2831,7 +2824,7 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadAfterColumnRename) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
                          CreatePlan(second_context, /*predicate=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(CollectedReadResult result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadPlan(plan, second_context, {"id", "renamed_payload", "pt"},
                                   /*predicate=*/nullptr, /*enable_predicate_filter=*/false));
     std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
@@ -2846,9 +2839,9 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadAfterColumnRename) {
             [0, 4, "value-4", "p0"]
         ])")
             .ValueOrDie();
-    ASSERT_NE(nullptr, result.data);
-    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result.data))
-        << result.data->ToString();
+    ASSERT_NE(nullptr, result);
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
+        << result->ToString();
     ASSERT_OK(second_writer->Close());
 }
 

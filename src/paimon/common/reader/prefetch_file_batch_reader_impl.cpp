@@ -205,8 +205,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
     bool read_ahead_cache_enabled, const CacheConfig& cache_config, bool enable_io_metrics,
-    const std::shared_ptr<MemoryPool>& pool,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (prefetch_max_parallel_num == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0.");
     }

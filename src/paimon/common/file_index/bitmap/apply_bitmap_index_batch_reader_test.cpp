@@ -56,7 +56,6 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
         target_type_ = arrow::struct_({arrow::field("f1", int_type_)});
 
         pool_ = GetDefaultPool();
-        arrow_pool_ = GetSharedArrowPool(pool_);
         fs_ = std::make_shared<MockFileSystem>();
         ASSERT_OK_AND_ASSIGN(executor_, CreateDefaultExecutor(/*thread_count=*/2));
     }
@@ -101,7 +100,7 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
                         /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                        /*enable_io_metrics=*/false, pool_, arrow_pool_));
+                        /*enable_io_metrics=*/false, pool_, GetSharedArrowPool(pool_)));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);
@@ -125,7 +124,6 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
     std::shared_ptr<arrow::DataType> int_type_;
     std::shared_ptr<arrow::DataType> target_type_;
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<Executor> executor_;
 };

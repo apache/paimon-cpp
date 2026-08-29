@@ -41,7 +41,6 @@ class CompleteIndexScoreBatchReaderTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
-        arrow_pool_ = GetSharedArrowPool(pool_);
     }
     void TearDown() override {
         pool_.reset();
@@ -53,7 +52,7 @@ class CompleteIndexScoreBatchReaderTest : public ::testing::Test {
         auto file_batch_reader = std::make_unique<MockFileBatchReader>(src_array, src_array->type(),
                                                                        selected_bitmap, batch_size);
         return std::make_unique<CompleteIndexScoreBatchReader>(std::move(file_batch_reader), scores,
-                                                               arrow_pool_);
+                                                               GetSharedArrowPool(pool_));
     }
 
     std::unique_ptr<BatchReader> PrepareCompleteIndexScoreBatchReader(
@@ -62,12 +61,11 @@ class CompleteIndexScoreBatchReaderTest : public ::testing::Test {
         auto file_batch_reader =
             std::make_unique<MockFileBatchReader>(src_array, src_array->type(), batch_size);
         return std::make_unique<CompleteIndexScoreBatchReader>(std::move(file_batch_reader), scores,
-                                                               arrow_pool_);
+                                                               GetSharedArrowPool(pool_));
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_F(CompleteIndexScoreBatchReaderTest, TestSimple) {

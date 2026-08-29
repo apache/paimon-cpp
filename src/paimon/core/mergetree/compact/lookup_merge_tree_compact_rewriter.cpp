@@ -21,7 +21,6 @@
 #include <map>
 
 #include "paimon/common/table/special_fields.h"
-#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/mergetree/compact/first_row_merge_function_wrapper.h"
 #include "paimon/core/mergetree/compact/lookup_changelog_merge_function_wrapper.h"
 #include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
@@ -85,8 +84,7 @@ LookupMergeTreeCompactRewriter<T>::Create(
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(read_context, table_schema, options.ToMap(),
-                                    GetSharedArrowPool(read_context->GetMemoryPool())));
+        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         path_factory_cache->GetOrCreatePathFactory(options.GetFileFormat()->Identifier()));
