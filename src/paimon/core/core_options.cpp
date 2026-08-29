@@ -330,9 +330,7 @@ class ConfigParser {
 // storing various configurable fields and their default values.
 struct CoreOptions::Impl {
     int64_t page_size = 64 * 1024;
-    std::optional<int64_t> target_file_size;
     int64_t target_file_row_num = std::numeric_limits<int64_t>::max();
-    std::optional<int64_t> blob_target_file_size;
     int64_t source_split_target_size = 128 * 1024 * 1024;
     int64_t source_split_open_file_cost = 4 * 1024 * 1024;
     int64_t manifest_target_file_size = 8 * 1024 * 1024;
@@ -343,17 +341,29 @@ struct CoreOptions::Impl {
     int64_t commit_timeout = std::numeric_limits<int64_t>::max();
     int64_t commit_min_retry_wait = 10;
     int64_t commit_max_retry_wait = 10 * 1000;
-    bool realtime_enabled = false;
     int64_t realtime_read_view_ttl_millis = 5 * 60 * 1000;
-    StatisticsMode realtime_store_statistics_mode = StatisticsMode::NONE;
+    int64_t write_buffer_spill_max_disk_size = std::numeric_limits<int64_t>::max();
+    double variant_shredding_min_field_cardinality_ratio = 0.1;
+    double variant_shredding_adaptive_retention_ratio = 0.05;
+    double lookup_cache_bloom_filter_fpp = 0.05;
+    int64_t cache_page_size = 64 * 1024;  // 64KB
+    int64_t lookup_cache_max_memory = 256 * 1024 * 1024;
+    double lookup_cache_high_prio_pool_ratio = 0.25;
+    int64_t lookup_cache_file_retention_ms = 1 * 3600 * 1000;  // 1 hour
+    int64_t lookup_cache_max_disk_size = INT64_MAX;
 
+    std::optional<int64_t> target_file_size;
+    std::optional<int64_t> blob_target_file_size;
     std::shared_ptr<FileFormat> file_format;
     std::shared_ptr<FileSystem> file_system;
     std::shared_ptr<FileFormat> manifest_file_format;
     std::shared_ptr<Cache> cache;
-
     std::optional<int64_t> scan_snapshot_id;
     std::optional<int64_t> scan_timestamp_millis;
+    std::optional<int64_t> optimized_compaction_interval;
+    std::optional<int64_t> compaction_total_size_threshold;
+    std::optional<int64_t> compaction_incremental_size_threshold;
+    std::shared_ptr<FileFormat> changelog_file_format;
     ExpireConfig expire_config;
     std::vector<std::string> sequence_field;
     std::vector<std::string> remove_record_on_sequence_group;
@@ -370,20 +380,23 @@ struct CoreOptions::Impl {
     std::string data_file_prefix = "data-";
     std::string changelog_file_prefix = "changelog-";
     std::string file_system_scheme_to_identifier_map_str;
-
     std::optional<std::string> field_default_func;
     std::optional<std::string> scan_fallback_branch;
     std::optional<std::string> data_file_external_paths;
     std::optional<std::string> blob_view_upstream_warehouse;
     std::optional<std::string> changelog_file_compression;
-
+    std::optional<std::string> global_index_external_path;
+    std::optional<std::string> scan_tag_name;
+    CompressOptions lookup_compress_options{"zstd", 1};
+    CompressOptions spill_compress_options{"zstd", 1};
     std::map<std::string, std::string> raw_options;
+    std::map<int32_t, std::shared_ptr<FileFormat>> file_format_per_level;
+    std::map<int32_t, std::string> file_compression_per_level;
 
+    StatisticsMode realtime_store_statistics_mode = StatisticsMode::NONE;
     int32_t bucket = -1;
-
     int32_t manifest_merge_min_count = 30;
     int32_t scan_manifest_entry_cache_max_snapshots = 0;
-    bool scan_manifest_entry_lazy_decode_enabled = true;
     int32_t read_batch_size = 1024;
     int32_t write_batch_size = 1024;
     int32_t local_sort_max_num_file_handles = 128;
@@ -392,28 +405,38 @@ struct CoreOptions::Impl {
     int32_t compaction_max_size_amplification_percent = 200;
     int32_t compaction_size_ratio = 1;
     int32_t num_sorted_runs_compaction_trigger = 5;
-    std::optional<int32_t> num_sorted_runs_stop_trigger;
-    std::optional<int32_t> num_levels;
-
     SortOrder sequence_field_sort_order = SortOrder::ASCENDING;
     MergeEngine merge_engine = MergeEngine::DEDUPLICATE;
     SortEngine sort_engine = SortEngine::LOSER_TREE;
     ChangelogProducer changelog_producer = ChangelogProducer::NONE;
     ExternalPathStrategy external_path_strategy = ExternalPathStrategy::NONE;
     LookupCompactMode lookup_compact_mode = LookupCompactMode::RADICAL;
-    std::optional<int32_t> lookup_compact_max_interval;
     BucketFunctionType bucket_function_type = BucketFunctionType::DEFAULT;
-
     int32_t file_compression_zstd_level = 1;
-    int64_t write_buffer_spill_max_disk_size = std::numeric_limits<int64_t>::max();
+    CoreOptions::SequenceNumberInitMode write_sequence_number_init_mode =
+        CoreOptions::SequenceNumberInitMode::SCAN;
+    VariantShreddingInferenceMode variant_shredding_inference_mode =
+        VariantShreddingInferenceMode::PER_FILE;
+    int32_t variant_shredding_max_schema_width = 300;
+    int32_t variant_shredding_max_schema_depth = 50;
+    int32_t variant_shredding_max_infer_buffer_row = 4096;
+    int32_t variant_shredding_adaptive_max_infer_buffer_row = 256;
+    int32_t compact_off_peak_start_hour = -1;
+    int32_t compact_off_peak_end_hour = -1;
+    int32_t compact_off_peak_ratio = 0;
+    int32_t lookup_remote_level_threshold = INT32_MIN;
+    std::optional<int32_t> num_sorted_runs_stop_trigger;
+    std::optional<int32_t> num_levels;
+    std::optional<int32_t> lookup_compact_max_interval;
+    std::optional<int32_t> global_index_thread_num;
 
+    bool realtime_enabled = false;
+    bool scan_manifest_entry_lazy_decode_enabled = true;
     bool ignore_delete = false;
     bool manifest_delete_file_drop_stats = false;
     bool write_buffer_spillable = true;
     bool write_only = false;
     bool bucket_append_ordered = false;
-    CoreOptions::SequenceNumberInitMode write_sequence_number_init_mode =
-        CoreOptions::SequenceNumberInitMode::SCAN;
     bool deletion_vectors_enabled = false;
     bool deletion_vectors_bitmap64 = false;
     bool force_lookup = false;
@@ -431,49 +454,19 @@ struct CoreOptions::Impl {
     bool row_tracking_partition_group_on_commit = true;
     bool data_evolution_enabled = false;
     bool variant_infer_shredding_schema = false;
-    VariantShreddingInferenceMode variant_shredding_inference_mode =
-        VariantShreddingInferenceMode::PER_FILE;
-    int32_t variant_shredding_max_schema_width = 300;
-    int32_t variant_shredding_max_schema_depth = 50;
-    double variant_shredding_min_field_cardinality_ratio = 0.1;
-    int32_t variant_shredding_max_infer_buffer_row = 4096;
-    int32_t variant_shredding_adaptive_max_infer_buffer_row = 256;
-    double variant_shredding_adaptive_retention_ratio = 0.05;
     bool blob_view_resolve_enabled = true;
     bool blob_as_descriptor = false;
-    std::optional<bool> blob_split_by_file_size;
     bool legacy_partition_name_enabled = true;
     bool global_index_enabled = true;
-    std::optional<int32_t> global_index_thread_num;
     bool commit_force_compact = false;
     bool commit_discard_duplicate_files = false;
     bool dynamic_partition_overwrite = true;
     bool overwrite_upgrade = true;
     bool compaction_force_rewrite_all_files = false;
     bool compaction_force_up_level_0 = false;
-    std::optional<std::string> global_index_external_path;
-
-    std::optional<std::string> scan_tag_name;
-    std::optional<int64_t> optimized_compaction_interval;
-    std::optional<int64_t> compaction_total_size_threshold;
-    std::optional<int64_t> compaction_incremental_size_threshold;
-    int32_t compact_off_peak_start_hour = -1;
-    int32_t compact_off_peak_end_hour = -1;
-    int32_t compact_off_peak_ratio = 0;
     bool lookup_cache_bloom_filter = true;
-    double lookup_cache_bloom_filter_fpp = 0.05;
     bool lookup_remote_file_enabled = false;
-    int32_t lookup_remote_level_threshold = INT32_MIN;
-    CompressOptions lookup_compress_options{"zstd", 1};
-    CompressOptions spill_compress_options{"zstd", 1};
-    int64_t cache_page_size = 64 * 1024;  // 64KB
-    std::map<int32_t, std::shared_ptr<FileFormat>> file_format_per_level;
-    std::map<int32_t, std::string> file_compression_per_level;
-    std::shared_ptr<FileFormat> changelog_file_format;
-    int64_t lookup_cache_max_memory = 256 * 1024 * 1024;
-    double lookup_cache_high_prio_pool_ratio = 0.25;
-    int64_t lookup_cache_file_retention_ms = 1 * 3600 * 1000;  // 1 hour
-    int64_t lookup_cache_max_disk_size = INT64_MAX;
+    std::optional<bool> blob_split_by_file_size;
 
     // Parse basic table options: bucket, partition, file sizes, batch sizes, file system, etc.
     Status ParseBasicOptions(
