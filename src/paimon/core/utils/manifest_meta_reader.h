@@ -42,7 +42,7 @@ class PAIMON_EXPORT ManifestMetaReader : public BatchReader {
  public:
     ManifestMetaReader(std::unique_ptr<BatchReader>&& reader,
                        const std::shared_ptr<arrow::DataType>& target_type,
-                       const std::shared_ptr<MemoryPool>& pool);
+                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~ManifestMetaReader() override {
         DoClose();
@@ -68,7 +68,7 @@ class PAIMON_EXPORT ManifestMetaReader : public BatchReader {
 
     std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<arrow::DataType> target_type_;
-    std::unique_ptr<arrow::MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> pool_;
 };
 
 }  // namespace paimon

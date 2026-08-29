@@ -27,7 +27,7 @@ Result<std::unique_ptr<MetaToArrowArrayConverter>> MetaToArrowArrayConverter::Cr
         return Status::Invalid("meta_data_type in MetaToArrowArrayConverter must be struct type");
     }
     auto struct_type = checked_pointer_cast<arrow::StructType>(meta_data_type);
-    auto arrow_pool = GetArrowPool(pool);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool);
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
         arrow_pool.get(), arrow::struct_(struct_type->fields()), &array_builder));
@@ -44,7 +44,7 @@ Result<std::unique_ptr<MetaToArrowArrayConverter>> MetaToArrowArrayConverter::Cr
         appenders.emplace_back(func);
     }
     return std::unique_ptr<MetaToArrowArrayConverter>(new MetaToArrowArrayConverter(
-        reserve_count, std::move(appenders), std::move(struct_builder), std::move(arrow_pool)));
+        reserve_count, std::move(appenders), std::move(struct_builder), arrow_pool));
 }
 
 Result<std::shared_ptr<arrow::Array>> MetaToArrowArrayConverter::NextBatch(

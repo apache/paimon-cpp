@@ -37,6 +37,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
@@ -52,6 +53,7 @@ class BlobViewResolvingBatchReaderTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
+        arrow_pool_ = GetSharedArrowPool(pool_);
     }
 
     void TearDown() override {
@@ -130,6 +132,7 @@ class BlobViewResolvingBatchReaderTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_F(BlobViewResolvingBatchReaderTest, TestEofBatch) {
@@ -138,7 +141,7 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestEofBatch) {
         return std::shared_ptr<Bytes>();
     });
     BlobViewResolvingBatchReader reader(std::move(inner_reader), {"blob_col"}, std::move(resolver),
-                                        pool_);
+                                        arrow_pool_);
     ASSERT_OK_AND_ASSIGN(auto batch, reader.NextBatch());
     ASSERT_TRUE(BatchReader::IsEofBatch(batch));
 }
@@ -155,9 +158,10 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestEmptyReadBlobViewFields) {
         });
 
     auto inner_reader = std::make_unique<InMemoryBatchReader>(struct_array);
-    BlobViewResolvingBatchReader reader(std::move(inner_reader), /*read_blob_view_fields=*/{},
-                                        std::move(resolver), pool_);
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(&reader));
+    auto reader = std::make_unique<BlobViewResolvingBatchReader>(
+        std::move(inner_reader), /*read_blob_view_fields=*/std::vector<std::string>(),
+        std::move(resolver), arrow_pool_);
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
     auto expected_array = std::make_shared<arrow::ChunkedArray>(struct_array);
     ASSERT_TRUE(expected_array->Equals(*result_array));
     ASSERT_FALSE(resolver_called);
@@ -186,9 +190,10 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestResolvesBlobViewColumn) {
         });
 
     auto inner_reader = std::make_unique<InMemoryBatchReader>(src_struct);
-    BlobViewResolvingBatchReader reader(std::move(inner_reader), {"blob_col"}, std::move(resolver),
-                                        pool_);
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(&reader));
+    auto reader = std::make_unique<BlobViewResolvingBatchReader>(
+        std::move(inner_reader), std::vector<std::string>{"blob_col"}, std::move(resolver),
+        arrow_pool_);
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
     auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(result_array->chunk(0));
 
     auto result_blob_column =
@@ -207,7 +212,7 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestResolverError) {
     });
     auto inner_reader = std::make_unique<InMemoryBatchReader>(src_struct);
     BlobViewResolvingBatchReader reader(std::move(inner_reader), {"blob_col"}, std::move(resolver),
-                                        pool_);
+                                        arrow_pool_);
     ASSERT_NOK_WITH_MSG(reader.NextBatch(), "cache miss");
 }
 

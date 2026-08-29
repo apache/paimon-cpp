@@ -27,6 +27,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
@@ -61,7 +62,7 @@ TEST(VectorFileBatchReaderTest, ConvertSchemaAndNextBatch) {
         std::make_unique<MockFileBatchReader>(physical_array, physical_type, /*batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
     MockFileBatchReader* inner_reader = mock_reader.get();
-    VectorFileBatchReader reader(std::move(mock_reader), GetDefaultPool());
+    VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
 
     ASSERT_TRUE(VectorFileBatchReader::ContainsVector(arrow::schema(logical_type->fields())));
     ASSERT_FALSE(VectorFileBatchReader::ContainsVector(arrow::schema(physical_type->fields())));
@@ -97,7 +98,7 @@ TEST(VectorFileBatchReaderTest, KeepFixedSizeListFileSchema) {
         std::make_unique<MockFileBatchReader>(logical_array, logical_type, /*batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
     MockFileBatchReader* inner_reader = mock_reader.get();
-    VectorFileBatchReader reader(std::move(mock_reader), GetDefaultPool());
+    VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
 
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
@@ -135,7 +136,7 @@ TEST(VectorFileBatchReaderTest, NormalizeFixedSizeListElementField) {
     auto mock_reader =
         std::make_unique<MockFileBatchReader>(file_array, file_type, /*batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
-    VectorFileBatchReader reader(std::move(mock_reader), GetDefaultPool());
+    VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
 
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
@@ -173,7 +174,7 @@ TEST(VectorFileBatchReaderTest, ConvertNestedVectorsWithBitmap) {
     auto mock_reader = std::make_unique<MockFileBatchReader>(physical_array, physical_type, bitmap,
                                                              /*read_batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
-    VectorFileBatchReader reader(std::move(mock_reader), GetDefaultPool());
+    VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
     ASSERT_OK(reader.SetReadSchema(&c_read_schema, /*predicate=*/nullptr,
@@ -202,7 +203,7 @@ TEST(VectorFileBatchReaderTest, RejectInvalidVectorValues) {
         auto mock_reader = std::make_unique<MockFileBatchReader>(physical_array, physical_type,
                                                                  /*read_batch_size=*/10);
         mock_reader->EnableRandomizeBatchSize(false);
-        VectorFileBatchReader reader(std::move(mock_reader), GetDefaultPool());
+        VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
         ArrowSchema c_read_schema;
         ASSERT_TRUE(
             arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
@@ -221,7 +222,7 @@ TEST(VectorFileBatchReaderTest, RejectInvalidFixedSizeListVectorValues) {
     auto mock_reader = std::make_unique<MockFileBatchReader>(physical_array, physical_type,
                                                              /*read_batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
-    VectorFileBatchReader reader(std::move(mock_reader), GetDefaultPool());
+    VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(physical_type->fields()), &c_read_schema).ok());
     ASSERT_OK(reader.SetReadSchema(&c_read_schema, /*predicate=*/nullptr,

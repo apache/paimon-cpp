@@ -60,7 +60,7 @@ Result<std::unique_ptr<KeyValueMetaProjectionConsumer>> KeyValueMetaProjectionCo
                         target_to_src_mapping.size()));
     }
 
-    auto arrow_pool = GetArrowPool(pool);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool);
     // target fields of output array: special fields + value fields
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
@@ -93,7 +93,7 @@ Result<std::unique_ptr<KeyValueMetaProjectionConsumer>> KeyValueMetaProjectionCo
         appenders.emplace_back(func);
     }
     return std::unique_ptr<KeyValueMetaProjectionConsumer>(new KeyValueMetaProjectionConsumer(
-        reserve_count, std::move(appenders), std::move(struct_builder), std::move(arrow_pool),
+        reserve_count, std::move(appenders), std::move(struct_builder), arrow_pool,
         target_to_src_mapping, sequence_appender, value_kind_appender));
 }
 

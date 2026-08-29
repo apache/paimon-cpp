@@ -40,8 +40,8 @@ namespace {
 class InMemorySystemTableBatchReader : public BatchReader {
  public:
     InMemorySystemTableBatchReader(std::shared_ptr<const InMemorySystemTable> table,
-                                   const std::shared_ptr<MemoryPool>& pool)
-        : table_(std::move(table)), arrow_pool_(GetArrowPool(pool)) {}
+                                   const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+        : table_(std::move(table)), arrow_pool_(arrow_pool) {}
 
     Result<ReadBatch> NextBatch() override {
         if (emitted_) {
@@ -54,7 +54,7 @@ class InMemorySystemTableBatchReader : public BatchReader {
             return BatchReader::MakeEofBatch();
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GenericRowToArrowArrayConverter> converter,
-                               GenericRowToArrowArrayConverter::Create(schema, arrow_pool_.get()));
+                               GenericRowToArrowArrayConverter::Create(schema, arrow_pool_));
         return converter->NextBatch(rows);
     }
 
@@ -68,7 +68,7 @@ class InMemorySystemTableBatchReader : public BatchReader {
 
  private:
     std::shared_ptr<const InMemorySystemTable> table_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     bool emitted_ = false;
 };
 
@@ -76,7 +76,7 @@ class InMemorySystemTableRead : public TableRead {
  public:
     InMemorySystemTableRead(std::shared_ptr<const InMemorySystemTable> table,
                             const std::shared_ptr<MemoryPool>& memory_pool)
-        : TableRead(memory_pool), table_(std::move(table)) {}
+        : table_(std::move(table)), arrow_pool_(GetSharedArrowPool(memory_pool)) {}
 
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const std::vector<std::shared_ptr<Split>>& splits) override {
@@ -88,7 +88,7 @@ class InMemorySystemTableRead : public TableRead {
                 return Status::Invalid("unsupported split for ", table_->Name(), " system table");
             }
         }
-        return std::make_unique<InMemorySystemTableBatchReader>(table_, GetMemoryPool());
+        return std::make_unique<InMemorySystemTableBatchReader>(table_, arrow_pool_);
     }
 
     Result<std::unique_ptr<BatchReader>> CreateReader(
@@ -99,6 +99,7 @@ class InMemorySystemTableRead : public TableRead {
 
  private:
     std::shared_ptr<const InMemorySystemTable> table_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace

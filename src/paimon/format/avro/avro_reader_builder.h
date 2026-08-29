@@ -21,6 +21,7 @@
 #include <memory>
 
 #include "avro/DataFile.hh"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/avro/avro_file_batch_reader.h"
 #include "paimon/format/avro/avro_input_stream_impl.h"
 #include "paimon/format/reader_builder.h"
@@ -32,21 +33,25 @@ namespace paimon::avro {
 class AvroReaderBuilder : public ReaderBuilder {
  public:
     explicit AvroReaderBuilder(int32_t batch_size)
-        : batch_size_(batch_size), pool_(GetDefaultPool()) {}
+        : batch_size_(batch_size),
+          pool_(GetDefaultPool()),
+          arrow_pool_(GetSharedArrowPool(pool_)) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
+        arrow_pool_ = GetSharedArrowPool(pool);
         return this;
     }
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
-        return AvroFileBatchReader::Create(path, batch_size_, pool_);
+        return AvroFileBatchReader::Create(path, batch_size_, pool_, arrow_pool_);
     }
 
  private:
     const int32_t batch_size_;
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace paimon::avro

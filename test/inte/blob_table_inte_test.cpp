@@ -93,7 +93,6 @@ class RecordBatch;
 namespace paimon::test {
 
 struct ReadResult {
-    std::unique_ptr<BatchReader> batch_reader;
     std::shared_ptr<arrow::ChunkedArray> chunked_array;
 };
 
@@ -290,8 +289,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         return result_plan;
     }
 
-    /// Read from table using a pre-scanned plan, returning the ChunkedArray and batch_reader.
-    /// The batch_reader must outlive the returned ChunkedArray (array memory depends on reader).
+    /// Read from table using a pre-scanned plan and return data after the reader is destroyed.
     Result<ReadResult> ReadTable(const std::string& table_path,
                                  const std::vector<std::string>& read_schema,
                                  const std::shared_ptr<Plan>& plan,
@@ -309,8 +307,8 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
-        return ReadResult{std::move(batch_reader), std::move(read_result)};
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
+        return ReadResult{std::move(read_result)};
     }
 
     /// Convenience: scan + read in one call.

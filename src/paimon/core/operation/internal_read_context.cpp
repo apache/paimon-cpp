@@ -30,6 +30,7 @@
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/options/map_storage_layout.h"
@@ -199,7 +200,8 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
 
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options) {
+    const std::map<std::string, std::string>& options,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(),
                                                 context->GetFileSystemSchemeToIdentifierMap()));
@@ -281,17 +283,22 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
             PredicateValidator::ValidatePredicateWithLiterals(context->GetPredicate()));
     }
 
+    if (!arrow_pool) {
+        return Status::Invalid("arrow memory pool is null");
+    }
     return std::unique_ptr<InternalReadContext>(
-        new InternalReadContext(context, table_schema, read_schema, core_options));
+        new InternalReadContext(context, table_schema, read_schema, core_options, arrow_pool));
 }
 
 InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& read_context,
                                          const std::shared_ptr<TableSchema>& table_schema,
                                          const std::shared_ptr<arrow::Schema>& read_schema,
-                                         const CoreOptions& options)
+                                         const CoreOptions& options,
+                                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : read_context_(read_context),
       table_schema_(table_schema),
       read_schema_(read_schema),
+      arrow_pool_(arrow_pool),
       options_(options) {}
 
 Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSchema(
@@ -299,8 +306,9 @@ Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSche
     const std::shared_ptr<arrow::Schema>& new_read_schema) {
     // Create a new InternalReadContext sharing all properties except read_schema.
     // The new read_schema is the minimal column set for COUNT(*).
-    return std::shared_ptr<InternalReadContext>(new InternalReadContext(
-        original->read_context_, original->table_schema_, new_read_schema, original->options_));
+    return std::shared_ptr<InternalReadContext>(
+        new InternalReadContext(original->read_context_, original->table_schema_, new_read_schema,
+                                original->options_, original->arrow_pool_));
 }
 
 }  // namespace paimon

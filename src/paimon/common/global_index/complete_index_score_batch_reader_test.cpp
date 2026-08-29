@@ -27,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/memory/memory_pool.h"
@@ -40,6 +41,7 @@ class CompleteIndexScoreBatchReaderTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
+        arrow_pool_ = GetSharedArrowPool(pool_);
     }
     void TearDown() override {
         pool_.reset();
@@ -51,7 +53,7 @@ class CompleteIndexScoreBatchReaderTest : public ::testing::Test {
         auto file_batch_reader = std::make_unique<MockFileBatchReader>(src_array, src_array->type(),
                                                                        selected_bitmap, batch_size);
         return std::make_unique<CompleteIndexScoreBatchReader>(std::move(file_batch_reader), scores,
-                                                               pool_);
+                                                               arrow_pool_);
     }
 
     std::unique_ptr<BatchReader> PrepareCompleteIndexScoreBatchReader(
@@ -60,11 +62,12 @@ class CompleteIndexScoreBatchReaderTest : public ::testing::Test {
         auto file_batch_reader =
             std::make_unique<MockFileBatchReader>(src_array, src_array->type(), batch_size);
         return std::make_unique<CompleteIndexScoreBatchReader>(std::move(file_batch_reader), scores,
-                                                               pool_);
+                                                               arrow_pool_);
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_F(CompleteIndexScoreBatchReaderTest, TestSimple) {
@@ -86,7 +89,7 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestSimple) {
     auto reader = PrepareCompleteIndexScoreBatchReader(src_array, scores,
                                                        /*batch_size=*/1);
 
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     auto array_status =
@@ -98,7 +101,6 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestSimple) {
                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
     ASSERT_TRUE(expected_array->ApproxEquals(*result_array));
-    reader->Close();
 }
 
 TEST_F(CompleteIndexScoreBatchReaderTest, TestWithBitmap) {
@@ -122,7 +124,7 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestWithBitmap) {
     auto reader = PrepareCompleteIndexScoreBatchReader(src_array, selected_bitmap, scores,
                                                        /*batch_size=*/2);
 
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     auto array_status =
@@ -133,7 +135,6 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestWithBitmap) {
                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
     ASSERT_TRUE(expected_array->ApproxEquals(*result_array));
-    reader->Close();
 }
 
 TEST_F(CompleteIndexScoreBatchReaderTest, TestReadWithNullScores) {
@@ -155,11 +156,10 @@ TEST_F(CompleteIndexScoreBatchReaderTest, TestReadWithNullScores) {
     auto reader = PrepareCompleteIndexScoreBatchReader(src_array, /*scores=*/{},
                                                        /*batch_size=*/1);
 
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
 
     auto expected_array = std::make_shared<arrow::ChunkedArray>(src_array);
     ASSERT_TRUE(expected_array->Equals(*result_array));
-    reader->Close();
 }
 
 }  // namespace paimon::test

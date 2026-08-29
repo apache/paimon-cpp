@@ -30,6 +30,7 @@
 #include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/append/append_only_writer.h"
 #include "paimon/core/append/bucketed_append_compact_manager.h"
@@ -290,8 +291,10 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyFileStoreWrite::CreateFilesReader
         .WithMemoryPool(pool_);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     std::map<std::string, std::string> options = options_.ToMap();
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_read_context,
-                           InternalReadContext::Create(read_context, table_schema_, options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<InternalReadContext> internal_read_context,
+        InternalReadContext::Create(read_context, table_schema_, options,
+                                    GetSharedArrowPool(read_context->GetMemoryPool())));
     auto read = std::make_unique<RawFileSplitRead>(file_store_path_factory_, internal_read_context,
                                                    pool_, compact_executor_);
 

@@ -30,6 +30,8 @@
 #include "arrow/type.h"
 #include "orc/OrcFile.hh"
 #include "orc/Reader.hh"
+#include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/format/orc/orc_memory_pool.h"
 #include "paimon/format/orc/orc_reader_wrapper.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate.h"
@@ -41,11 +43,20 @@ class InputStream;
 
 namespace paimon::orc {
 
+struct OrcReadMemory {
+    explicit OrcReadMemory(const std::shared_ptr<MemoryPool>& pool)
+        : arrow_pool(GetSharedArrowPool(pool)), orc_pool(std::make_shared<OrcMemoryPool>(pool)) {}
+
+    std::shared_ptr<arrow::MemoryPool> arrow_pool;
+    std::shared_ptr<::orc::MemoryPool> orc_pool;
+};
+
 class OrcFileBatchReader : public PrefetchFileBatchReader {
  public:
     ~OrcFileBatchReader() override = default;
     static Result<std::unique_ptr<OrcFileBatchReader>> Create(
-        std::unique_ptr<::orc::InputStream>&& input_stream, const std::shared_ptr<MemoryPool>& pool,
+        std::unique_ptr<::orc::InputStream>&& input_stream,
+        const std::shared_ptr<OrcReadMemory>& read_memory,
         const std::map<std::string, std::string>& options, int32_t batch_size);
 
     // For timestamp type, precision info is missing from file
@@ -60,8 +71,7 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
         return reader_->SetReadRanges(read_ranges);
     }
 
-    // Important: output ArrowArray is allocated on arrow_pool_ whose lifecycle holds in
-    // OrcFileBatchReader. Therefore, we need to hold BatchReader when using output ArrowArray.
+    // The output ArrowArray retains both Arrow and ORC pools and can outlive this reader.
     Result<ReadBatch> NextBatch() override;
 
     Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override {
@@ -113,8 +123,7 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
     OrcFileBatchReader(std::unique_ptr<::orc::ReaderMetrics>&& reader_metrics,
                        std::unique_ptr<OrcReaderWrapper>&& reader,
                        const std::map<std::string, std::string>& options,
-                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-                       const std::shared_ptr<::orc::MemoryPool>& orc_pool);
+                       const std::shared_ptr<OrcReadMemory>& read_memory);
 
     static Result<::orc::RowReaderOptions> CreateRowReaderOptions(
         const ::orc::Type* src_type, const ::orc::Type* target_type,
@@ -127,8 +136,7 @@ class OrcFileBatchReader : public PrefetchFileBatchReader {
                                          std::vector<uint64_t>* target_column_ids);
     std::map<std::string, std::string> options_;
 
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
-    std::shared_ptr<::orc::MemoryPool> orc_pool_;
+    std::shared_ptr<OrcReadMemory> read_memory_;
 
     std::unique_ptr<::orc::ReaderMetrics> reader_metrics_;
     std::unique_ptr<OrcReaderWrapper> reader_;

@@ -26,24 +26,30 @@
 #include "paimon/result.h"
 #include "paimon/table/source/table_read.h"
 
+namespace arrow {
+class MemoryPool;
+}
+
 namespace paimon {
 class DataSplit;
-class MemoryPool;
 
 class FallbackTableRead : public TableRead {
  public:
     FallbackTableRead(std::unique_ptr<TableRead> main_table,
                       std::unique_ptr<TableRead> fallback_table,
-                      const std::shared_ptr<MemoryPool>& memory_pool)
-        : TableRead(memory_pool),
-          main_table_(std::move(main_table)),
-          fallback_table_(std::move(fallback_table)) {}
+                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+        : main_table_(std::move(main_table)),
+          fallback_table_(std::move(fallback_table)),
+          arrow_pool_(arrow_pool) {}
 
     Result<std::unique_ptr<BatchReader>> CreateReader(const std::shared_ptr<Split>& split) override;
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const std::vector<std::shared_ptr<Split>>& splits) override;
 
  private:
     std::unique_ptr<TableRead> main_table_;
     std::unique_ptr<TableRead> fallback_table_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace paimon

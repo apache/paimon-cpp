@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/format/blob/blob_file_batch_reader.h"
 #include "paimon/format/reader_builder.h"
@@ -33,10 +34,14 @@ namespace paimon::blob {
 class BlobReaderBuilder : public ReaderBuilder {
  public:
     BlobReaderBuilder(int32_t batch_size, const std::map<std::string, std::string>& options)
-        : batch_size_(batch_size), pool_(GetDefaultPool()), options_(options) {}
+        : batch_size_(batch_size),
+          pool_(GetDefaultPool()),
+          arrow_pool_(GetSharedArrowPool(pool_)),
+          options_(options) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
+        arrow_pool_ = GetSharedArrowPool(pool);
         return this;
     }
 
@@ -49,12 +54,13 @@ class BlobReaderBuilder : public ReaderBuilder {
                                OptionsUtils::GetValueFromMap<bool>(
                                    options_, BlobDefs::kEmitPlaceholderSentinelKey, false));
         return BlobFileBatchReader::Create(input_stream, batch_size_, blob_as_descriptor,
-                                           emit_placeholder_sentinel, pool_);
+                                           emit_placeholder_sentinel, pool_, arrow_pool_);
     }
 
  private:
     int32_t batch_size_;
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::map<std::string, std::string> options_;
 };
 

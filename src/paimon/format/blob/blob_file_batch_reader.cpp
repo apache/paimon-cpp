@@ -42,7 +42,8 @@ namespace paimon::blob {
 
 Result<std::unique_ptr<BlobFileBatchReader>> BlobFileBatchReader::Create(
     const std::shared_ptr<InputStream>& input_stream, int32_t batch_size, bool blob_as_descriptor,
-    bool emit_placeholder_sentinel, const std::shared_ptr<MemoryPool>& pool) {
+    bool emit_placeholder_sentinel, const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (input_stream == nullptr) {
         return Status::Invalid("blob file batch reader create failed: input stream is nullptr");
     }
@@ -95,17 +96,15 @@ Result<std::unique_ptr<BlobFileBatchReader>> BlobFileBatchReader::Create(
     PAIMON_ASSIGN_OR_RAISE(std::string file_path, input_stream->GetUri());
     auto reader = std::unique_ptr<BlobFileBatchReader>(
         new BlobFileBatchReader(input_stream, file_path, blob_lengths, blob_offsets, batch_size,
-                                blob_as_descriptor, emit_placeholder_sentinel, pool));
+                                blob_as_descriptor, emit_placeholder_sentinel, pool, arrow_pool));
     return reader;
 }
 
-BlobFileBatchReader::BlobFileBatchReader(const std::shared_ptr<InputStream>& input_stream,
-                                         const std::string& file_path,
-                                         const std::vector<int64_t>& blob_lengths,
-                                         const std::vector<int64_t>& blob_offsets,
-                                         int32_t batch_size, bool blob_as_descriptor,
-                                         bool emit_placeholder_sentinel,
-                                         const std::shared_ptr<MemoryPool>& pool)
+BlobFileBatchReader::BlobFileBatchReader(
+    const std::shared_ptr<InputStream>& input_stream, const std::string& file_path,
+    const std::vector<int64_t>& blob_lengths, const std::vector<int64_t>& blob_offsets,
+    int32_t batch_size, bool blob_as_descriptor, bool emit_placeholder_sentinel,
+    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : input_stream_(input_stream),
       file_path_(file_path),
       all_blob_lengths_(blob_lengths),
@@ -116,7 +115,7 @@ BlobFileBatchReader::BlobFileBatchReader(const std::shared_ptr<InputStream>& inp
       blob_as_descriptor_(blob_as_descriptor),
       emit_placeholder_sentinel_(emit_placeholder_sentinel),
       pool_(pool),
-      arrow_pool_(GetArrowPool(pool_)),
+      arrow_pool_(arrow_pool),
       metrics_(std::make_shared<MetricsImpl>()) {
     target_blob_row_indexes_.resize(target_blob_lengths_.size());
     std::iota(target_blob_row_indexes_.begin(), target_blob_row_indexes_.end(), 0);
@@ -326,6 +325,7 @@ Result<BatchReader::ReadBatch> BlobFileBatchReader::NextBatch() {
     std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*blob_array, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
     previous_batch_start_pos_ = current_pos_;
     current_pos_ += rows_to_read;
     previous_batch_row_count_ = c_array->length;

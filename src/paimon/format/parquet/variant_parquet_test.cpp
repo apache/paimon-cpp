@@ -423,8 +423,8 @@ class VariantParquetTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(auto plans, VariantShreddingReadPlanFactory::CreateReadPlans(
                                              read_schema, file_schema, pool_));
         ASSERT_EQ(plans.size(), 1);
-        auto shredding_reader =
-            std::make_unique<ShreddingFileReader>(std::move(file_reader), std::move(plans), pool_);
+        auto shredding_reader = std::make_unique<ShreddingFileReader>(
+            std::move(file_reader), std::move(plans), arrow_pool_);
         auto c_read_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_read_schema.get()).ok());
         ASSERT_OK(shredding_reader->SetReadSchema(c_read_schema.get(), /*predicate=*/nullptr,
@@ -437,9 +437,7 @@ class VariantParquetTest : public ::testing::Test {
         auto result_struct = checked_pointer_cast<arrow::StructArray>(imported.ValueOrDie());
         *column = result_struct->field(1);
         shredding_reader->Close();
-        // The assembled arrays borrow the reader's memory pool; keep the reader alive until the
-        // fixture is torn down (fixture members outlive test-body locals).
-        live_readers_.push_back(std::move(shredding_reader));
+        shredding_reader.reset();
     }
 
     // `ReadColumn` for the cases whose second column is a struct.
@@ -467,7 +465,6 @@ class VariantParquetTest : public ::testing::Test {
     std::shared_ptr<arrow::Field> map_item_field_;
     std::shared_ptr<arrow::Schema> list_struct_schema_;
     std::shared_ptr<arrow::Field> list_struct_variant_field_;
-    std::vector<std::unique_ptr<FileBatchReader>> live_readers_;
 };
 
 namespace {
@@ -581,8 +578,7 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
     ASSERT_OK(batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
                                           /*selection_bitmap=*/std::nullopt));
     ASSERT_OK_AND_ASSIGN(auto result_chunked,
-                         paimon::test::ReadResultCollector::CollectResult(batch_reader.get()));
-    batch_reader->Close();
+                         paimon::test::ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_EQ(result_chunked->length(), static_cast<int64_t>(jsons.size()));
     ASSERT_EQ(result_chunked->num_chunks(), 1);
     auto result_struct = checked_pointer_cast<arrow::StructArray>(result_chunked->chunk(0));

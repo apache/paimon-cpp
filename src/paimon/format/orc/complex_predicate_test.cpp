@@ -63,6 +63,7 @@ class ComplexPredicateTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
+        read_memory_ = std::make_shared<OrcReadMemory>(pool_);
         batch_size_ = 10;
     }
     void TearDown() override {}
@@ -79,7 +80,7 @@ class ComplexPredicateTest : public ::testing::Test {
         EXPECT_TRUE(in_stream);
         EXPECT_OK_AND_ASSIGN(
             auto orc_batch_reader,
-            OrcFileBatchReader::Create(std::move(in_stream), pool_,
+            OrcFileBatchReader::Create(std::move(in_stream), read_memory_,
                                        /*options=*/{{"orc.timestamp-ltz.legacy.type", "false"}},
                                        batch_size));
         EXPECT_TRUE(orc_batch_reader);
@@ -98,7 +99,7 @@ class ComplexPredicateTest : public ::testing::Test {
         auto orc_batch_reader =
             PrepareOrcFileBatchReader(file_name, read_schema.get(), predicate, batch_size_);
         ASSERT_OK_AND_ASSIGN(auto arrow_array, paimon::test::ReadResultCollector::CollectResult(
-                                                   orc_batch_reader.get()));
+                                                   std::move(orc_batch_reader)));
         // check result
         if (expected_array) {
             ASSERT_TRUE(arrow_array);
@@ -111,6 +112,7 @@ class ComplexPredicateTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<OrcReadMemory> read_memory_;
     int32_t batch_size_;
 };
 

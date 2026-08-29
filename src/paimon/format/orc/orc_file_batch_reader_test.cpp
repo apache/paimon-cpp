@@ -64,6 +64,7 @@ class OrcFileBatchReaderTest : public ::testing::Test,
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
+        read_memory_ = std::make_shared<OrcReadMemory>(pool_);
         batch_size_ = 10;
 
         arrow::FieldVector fields = {
@@ -79,14 +80,12 @@ class OrcFileBatchReaderTest : public ::testing::Test,
     }
     void TearDown() override {}
 
-    std::pair<std::unique_ptr<OrcFileBatchReader>, std::shared_ptr<arrow::ChunkedArray>>
-    ReadBatchWithCustomizedData(const std::shared_ptr<arrow::Array>& src_array,
-                                int32_t write_batch_size, int32_t write_stripe_size,
-                                int32_t write_row_index_stride, const arrow::Schema* read_schema,
-                                const std::shared_ptr<Predicate>& predicate,
-                                const std::optional<RoaringBitmap32>& selection_bitmap,
-                                int32_t read_batch_size, double dict_key_size_threshold,
-                                bool enable_lazy_decoding) const {
+    std::shared_ptr<arrow::ChunkedArray> ReadBatchWithCustomizedData(
+        const std::shared_ptr<arrow::Array>& src_array, int32_t write_batch_size,
+        int32_t write_stripe_size, int32_t write_row_index_stride, const arrow::Schema* read_schema,
+        const std::shared_ptr<Predicate>& predicate,
+        const std::optional<RoaringBitmap32>& selection_bitmap, int32_t read_batch_size,
+        double dict_key_size_threshold, bool enable_lazy_decoding) const {
         arrow::Schema src_schema(src_array->type()->fields());
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<::orc::Type> orc_type,
                              OrcAdapter::GetOrcType(src_schema));
@@ -135,9 +134,9 @@ class OrcFileBatchReaderTest : public ::testing::Test,
         auto orc_batch_reader =
             PrepareOrcFileBatchReader(std::move(orc_input_stream), options, read_schema, predicate,
                                       selection_bitmap, read_batch_size);
-        EXPECT_OK_AND_ASSIGN(
-            auto result, paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
-        return std::make_pair(std::move(orc_batch_reader), result);
+        EXPECT_OK_AND_ASSIGN(auto result, paimon::test::ReadResultCollector::CollectResult(
+                                              std::move(orc_batch_reader)));
+        return result;
     }
 
     std::unique_ptr<OrcFileBatchReader> PrepareOrcFileBatchReader(
@@ -162,10 +161,12 @@ class OrcFileBatchReaderTest : public ::testing::Test,
         std::unique_ptr<::orc::InputStream>&& in_stream,
         const std::map<std::string, std::string>& options, const arrow::Schema* read_schema,
         const std::shared_ptr<Predicate>& predicate,
-        const std::optional<RoaringBitmap32>& selection_bitmap, int32_t batch_size) const {
-        EXPECT_OK_AND_ASSIGN(
-            auto orc_batch_reader,
-            OrcFileBatchReader::Create(std::move(in_stream), pool_, options, batch_size));
+        const std::optional<RoaringBitmap32>& selection_bitmap, int32_t batch_size,
+        const std::shared_ptr<OrcReadMemory>& read_memory = nullptr) const {
+        EXPECT_OK_AND_ASSIGN(auto orc_batch_reader,
+                             OrcFileBatchReader::Create(std::move(in_stream),
+                                                        read_memory ? read_memory : read_memory_,
+                                                        options, batch_size));
         EXPECT_TRUE(orc_batch_reader);
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());
@@ -197,6 +198,7 @@ class OrcFileBatchReaderTest : public ::testing::Test,
 
  private:
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<OrcReadMemory> read_memory_;
     int32_t batch_size_;
     std::shared_ptr<arrow::StructArray> struct_array_;
 };
@@ -241,7 +243,7 @@ TEST_F(OrcFileBatchReaderTest, TestReadBinaryWrittenFromBinaryAndLargeBinary) {
                 .ValueOrDie());
         auto expected_chunked_array = std::make_shared<arrow::ChunkedArray>(expected_array);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    orc_batch_reader.get()));
+                                                    std::move(orc_batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_chunked_array));
     };
 
@@ -260,7 +262,7 @@ TEST_F(OrcFileBatchReaderTest, TestSetReadSchema) {
     std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
     ASSERT_OK_AND_ASSIGN(
         auto orc_batch_reader,
-        OrcFileBatchReader::Create(std::move(in_stream), pool_, options, batch_size_));
+        OrcFileBatchReader::Create(std::move(in_stream), read_memory_, options, batch_size_));
     // test GetFileSchema()
     ASSERT_OK_AND_ASSIGN(auto c_file_schema, orc_batch_reader->GetFileSchema());
     auto arrow_file_schema = arrow::ImportSchema(c_file_schema.get()).ValueOrDie();
@@ -298,8 +300,8 @@ TEST_F(OrcFileBatchReaderTest, TestSetReadSchema) {
     ASSERT_TRUE(arrow::ExportSchema(read_schema, c_read_schema.get()).ok());
     ASSERT_OK(orc_batch_reader->SetReadSchema(c_read_schema.get(), predicate,
                                               /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(result_with_read_schema,
-                         paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(result_with_read_schema, paimon::test::ReadResultCollector::CollectResult(
+                                                      std::move(orc_batch_reader)));
     ASSERT_FALSE(result_with_read_schema);
 }
 
@@ -615,6 +617,52 @@ TEST_P(OrcFileBatchReaderTest, TestNextBatchSimple) {
     }
 }
 
+TEST_F(OrcFileBatchReaderTest, TestBatchRetainsOrcReadMemory) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<FileSystem> file_system = dir->GetFileSystem();
+    std::string file_name = dir->Str() + "/dictionary.orc";
+    arrow::FieldVector fields = {arrow::field("f0", arrow::utf8())};
+    std::shared_ptr<arrow::StructArray> expected = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+                ["abc"], ["abc"], ["abc"], ["de"], ["de"], ["de"]
+            ])")
+            .ValueOrDie());
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    WriteArray(file_system, file_name, expected, schema,
+               {{ORC_DICTIONARY_KEY_SIZE_THRESHOLD, "0.9"}});
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, file_system->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OrcInputStreamImpl> in_stream,
+                         OrcInputStreamImpl::Create(input_stream, /*natural_read_size=*/16));
+
+    std::shared_ptr<OrcReadMemory> read_memory = std::make_shared<OrcReadMemory>(pool_);
+    std::weak_ptr<OrcReadMemory> weak_read_memory = read_memory;
+    std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
+    std::unique_ptr<OrcFileBatchReader> reader = PrepareOrcFileBatchReader(
+        std::move(in_stream), options, schema.get(), /*predicate=*/nullptr,
+        /*selection_bitmap=*/std::nullopt, /*batch_size=*/6, read_memory);
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+
+    reader.reset();
+    read_memory.reset();
+    ASSERT_FALSE(weak_read_memory.expired());
+
+    arrow::Result<std::shared_ptr<arrow::Array>> import_result =
+        arrow::ImportArray(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();
+    std::shared_ptr<arrow::Array> array = std::move(import_result).ValueOrDie();
+    ASSERT_FALSE(weak_read_memory.expired());
+    ASSERT_TRUE(array->ValidateFull().ok());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::Array> converted,
+        paimon::test::DictArrayConverter::ConvertDictArray(array, arrow::default_memory_pool()));
+    array.reset();
+    ASSERT_TRUE(converted->Equals(expected));
+    converted.reset();
+    ASSERT_TRUE(weak_read_memory.expired());
+}
+
 TEST_P(OrcFileBatchReaderTest, TestNextBatchWithTargetSchema) {
     std::string file_name = paimon::test::GetDataDir() +
                             "/orc/append_09.db/append_09/f1=10/bucket-1/"
@@ -628,8 +676,8 @@ TEST_P(OrcFileBatchReaderTest, TestNextBatchWithTargetSchema) {
 
     auto orc_batch_reader =
         PrepareOrcFileBatchReader(file_name, &read_schema, batch_size_, natural_read_size);
-    ASSERT_OK_AND_ASSIGN(auto result_array,
-                         paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
+                                                std::move(orc_batch_reader)));
     auto expected_array = std::make_shared<arrow::ChunkedArray>(
         arrow::StructArray::Make(
             {struct_array_->GetFieldByName("f0"), struct_array_->GetFieldByName("f1"),
@@ -656,7 +704,7 @@ TEST_F(OrcFileBatchReaderTest, TestNextBatchWithOutofOrderTargetSchema) {
     std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
     ASSERT_OK_AND_ASSIGN(
         auto orc_batch_reader,
-        OrcFileBatchReader::Create(std::move(in_stream), pool_, options, batch_size_));
+        OrcFileBatchReader::Create(std::move(in_stream), read_memory_, options, batch_size_));
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(read_schema, c_schema.get()).ok());
     ASSERT_NOK_WITH_MSG(orc_batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
@@ -678,8 +726,8 @@ TEST_P(OrcFileBatchReaderTest, TestNextBatchWithNullValue) {
     auto [natural_read_size, _] = GetParam();
     auto orc_batch_reader =
         PrepareOrcFileBatchReader(file_name, &read_schema, batch_size_, natural_read_size);
-    ASSERT_OK_AND_ASSIGN(auto result_array,
-                         paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
+                                                std::move(orc_batch_reader)));
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     std::string json = R"([
       ["Paul", 20, 1, null]
@@ -714,7 +762,7 @@ TEST_F(OrcFileBatchReaderTest, TestNextBatchWithDictionary) {
     auto read_schema = arrow::schema(read_fields);
     auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(src_array);
     auto check_result = [&](double dict_key_size_threshold, bool enable_lazy_decoding) {
-        auto [orc_reader_holder, target_array] = ReadBatchWithCustomizedData(
+        auto target_array = ReadBatchWithCustomizedData(
             src_array, /*write_batch_size=*/src_array->length(), /*write_stripe_size=*/-1,
             /*write_row_index_stride=*/-1, read_schema.get(), /*predicate=*/nullptr,
             /*selection_bitmap=*/std::nullopt, 10, dict_key_size_threshold, enable_lazy_decoding);
@@ -743,8 +791,8 @@ TEST_P(OrcFileBatchReaderTest, TestComplexType) {
     auto [natural_read_size, _] = GetParam();
     auto orc_batch_reader =
         PrepareOrcFileBatchReader(file_name, &read_schema, batch_size_, natural_read_size);
-    ASSERT_OK_AND_ASSIGN(auto result_array,
-                         paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
+                                                std::move(orc_batch_reader)));
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
         [10, 1, 1234,  "2033-05-18 03:33:20.0",         "123456789987654321.45678", "add"],
@@ -771,7 +819,7 @@ TEST_F(OrcFileBatchReaderTest, TestGetFileSchemaWithFieldId) {
         std::map<std::string, std::string> options = {{ORC_READ_ENABLE_LAZY_DECODING, "true"}};
         EXPECT_OK_AND_ASSIGN(
             auto orc_batch_reader,
-            OrcFileBatchReader::Create(std::move(in_stream), pool_, options, batch_size_));
+            OrcFileBatchReader::Create(std::move(in_stream), read_memory_, options, batch_size_));
         EXPECT_TRUE(orc_batch_reader);
         auto c_file_schema = orc_batch_reader->GetFileSchema();
         EXPECT_TRUE(c_file_schema.ok());
@@ -850,7 +898,7 @@ TEST_F(OrcFileBatchReaderTest, TestDictionaryWithMultiStripe) {
             .ValueOrDie());
     auto src_schema = arrow::schema(fields);
     // force generate two stripe in one file
-    auto [orc_reader_holder, target_array] = ReadBatchWithCustomizedData(
+    auto target_array = ReadBatchWithCustomizedData(
         src_array, /*write_batch_size=*/3, /*write_stripe_size=*/3,
         /*write_row_index_stride=*/3, /*read_schema=*/src_schema.get(), /*predicate=*/nullptr,
         /*selection_bitmap=*/std::nullopt, /*read_batch_size=*/10,
@@ -945,7 +993,7 @@ TEST_P(OrcFileBatchReaderTest, TestTimestampType) {
                                                           batch_size_, natural_read_size);
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(orc_batch_reader)));
         ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString() << std::endl
                                                            << expected_array->ToString();
     }
@@ -979,7 +1027,7 @@ TEST_P(OrcFileBatchReaderTest, TestTimestampType) {
         // check array
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(orc_batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_array)) << result_array->ToString();
     }
 }
@@ -1020,7 +1068,7 @@ TEST_F(OrcFileBatchReaderTest, TestNestedFieldProjection) {
             PrepareOrcFileBatchReader(data_path, &read_schema,
                                       /*batch_size=*/10, DEFAULT_NATURAL_READ_SIZE);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    orc_batch_reader.get()));
+                                                    std::move(orc_batch_reader)));
 
         auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({read_col1}), R"([
@@ -1044,7 +1092,7 @@ TEST_F(OrcFileBatchReaderTest, TestNestedFieldProjection) {
             PrepareOrcFileBatchReader(data_path, &read_schema,
                                       /*batch_size=*/10, DEFAULT_NATURAL_READ_SIZE);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    orc_batch_reader.get()));
+                                                    std::move(orc_batch_reader)));
 
         auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({read_col1, col2}), R"([
@@ -1068,7 +1116,7 @@ TEST_F(OrcFileBatchReaderTest, TestNestedFieldProjection) {
             PrepareOrcFileBatchReader(data_path, &read_schema,
                                       /*batch_size=*/10, DEFAULT_NATURAL_READ_SIZE);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    orc_batch_reader.get()));
+                                                    std::move(orc_batch_reader)));
 
         auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({read_col1}), R"([
@@ -1119,7 +1167,7 @@ TEST_F(OrcFileBatchReaderTest, TestDeepNestedFieldProjection) {
             PrepareOrcFileBatchReader(data_path, &read_schema,
                                       /*batch_size=*/10, DEFAULT_NATURAL_READ_SIZE);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    orc_batch_reader.get()));
+                                                    std::move(orc_batch_reader)));
 
         auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({read_a}), R"([
@@ -1166,7 +1214,7 @@ TEST_F(OrcFileBatchReaderTest, TestNestedFieldProjectionWithListAndMap) {
             PrepareOrcFileBatchReader(data_path, &read_schema,
                                       /*batch_size=*/10, DEFAULT_NATURAL_READ_SIZE);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    orc_batch_reader.get()));
+                                                    std::move(orc_batch_reader)));
 
         auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({read_col1}), R"([
@@ -1188,7 +1236,7 @@ TEST_F(OrcFileBatchReaderTest, TestNestedFieldProjectionWithListAndMap) {
             PrepareOrcFileBatchReader(data_path, &read_schema,
                                       /*batch_size=*/10, DEFAULT_NATURAL_READ_SIZE);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    orc_batch_reader.get()));
+                                                    std::move(orc_batch_reader)));
 
         auto expected = std::dynamic_pointer_cast<arrow::StructArray>(
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({read_col1, col2}), R"([
@@ -1236,7 +1284,8 @@ TEST_F(OrcFileBatchReaderTest, TestListStructPartialProjection) {
                          OrcInputStreamImpl::Create(input_stream, DEFAULT_NATURAL_READ_SIZE));
     ASSERT_OK_AND_ASSIGN(
         auto orc_batch_reader,
-        OrcFileBatchReader::Create(std::move(in_stream), pool_, /*options=*/{}, /*batch_size=*/10));
+        OrcFileBatchReader::Create(std::move(in_stream), read_memory_, /*options=*/{},
+                                   /*batch_size=*/10));
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(read_schema, c_schema.get()).ok());
     ASSERT_NOK_WITH_MSG(orc_batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
@@ -1323,8 +1372,8 @@ TEST_F(OrcFileBatchReaderTest, TestAddMetadataPerFieldMetadata) {
     ASSERT_EQ("percent", unit_val);
 
     // Also verify data integrity — read it back and compare content.
-    ASSERT_OK_AND_ASSIGN(auto result_array,
-                         paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
+                                                std::move(orc_batch_reader)));
     ASSERT_EQ(result_array->num_chunks(), 1);
     ASSERT_TRUE(data->Equals(*result_array->chunk(0))) << result_array->ToString();
 }

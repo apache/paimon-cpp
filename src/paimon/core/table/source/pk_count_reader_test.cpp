@@ -26,6 +26,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -71,13 +72,15 @@ class PKCountReaderTest : public testing::Test {
     Result<std::shared_ptr<InternalReadContext>> CreateInternalContext(
         const std::string& table_path) {
         ReadContextBuilder read_context_builder(table_path);
-        PAIMON_ASSIGN_OR_RAISE(auto read_context, read_context_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
+                               read_context_builder.Finish());
 
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), table_path);
         PAIMON_ASSIGN_OR_RAISE(auto table_schema, schema_manager.ReadSchema(0));
-        PAIMON_ASSIGN_OR_RAISE(auto internal_context,
-                               InternalReadContext::Create(std::move(read_context), table_schema,
-                                                           table_schema->Options()));
+        PAIMON_ASSIGN_OR_RAISE(
+            auto internal_context,
+            InternalReadContext::Create(read_context, table_schema, table_schema->Options(),
+                                        GetSharedArrowPool(read_context->GetMemoryPool())));
         return std::shared_ptr<InternalReadContext>(std::move(internal_context));
     }
 

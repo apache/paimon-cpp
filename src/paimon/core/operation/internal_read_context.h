@@ -30,6 +30,7 @@
 #include "paimon/result.h"
 
 namespace arrow {
+class MemoryPool;
 class Schema;
 }  // namespace arrow
 
@@ -45,7 +46,8 @@ class InternalReadContext {
     static Result<std::unique_ptr<InternalReadContext>> Create(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options);
+        const std::map<std::string, std::string>& options,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     const CoreOptions& GetCoreOptions() const {
         return options_;
@@ -92,6 +94,9 @@ class InternalReadContext {
     std::shared_ptr<MemoryPool> GetMemoryPool() const {
         return read_context_->GetMemoryPool();
     }
+    const std::shared_ptr<arrow::MemoryPool>& GetArrowMemoryPool() const {
+        return arrow_pool_;
+    }
     std::shared_ptr<Executor> GetExecutor() const {
         return read_context_->GetExecutor();
     }
@@ -119,7 +124,8 @@ class InternalReadContext {
     InternalReadContext(const std::shared_ptr<ReadContext>& read_context,
                         const std::shared_ptr<TableSchema>& table_schema,
                         const std::shared_ptr<arrow::Schema>& read_schema,
-                        const CoreOptions& options);
+                        const CoreOptions& options,
+                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     static std::optional<DataField> TryResolveSpecialFieldById(int32_t field_id,
                                                                const CoreOptions& core_options);
@@ -132,6 +138,7 @@ class InternalReadContext {
     std::shared_ptr<ReadContext> read_context_;
     std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<arrow::Schema> read_schema_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
 };
 

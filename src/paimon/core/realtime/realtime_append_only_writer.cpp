@@ -31,6 +31,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -69,7 +70,7 @@ RealtimeAppendOnlyWriter::RealtimeAppendOnlyWriter(
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
     const std::shared_ptr<arrow::Schema>& input_schema, int64_t next_offset,
     const std::shared_ptr<MemoryPool>& memory_pool)
-    : memory_pool_(memory_pool),
+    : arrow_pool_(GetSharedArrowPool(memory_pool)),
       realtime_store_(realtime_store),
       file_writer_(file_writer),
       input_schema_(input_schema),
@@ -123,7 +124,7 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
     const std::shared_ptr<RealtimeSegmentHandle>& segment) {
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                            realtime_store_->CreateCommitReaders(segment));
-    ConcatBatchReader reader(std::move(readers), memory_pool_);
+    ConcatBatchReader reader(std::move(readers), arrow_pool_);
     ScopeGuard reader_guard([&reader]() { reader.Close(); });
     const OffsetRange offset_range = segment->GetOffsetRange();
     int64_t emitted_rows = 0;

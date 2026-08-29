@@ -35,11 +35,11 @@ namespace paimon {
 CompleteRowTrackingFieldsBatchReader::CompleteRowTrackingFieldsBatchReader(
     std::unique_ptr<FileBatchReader>&& reader, const std::optional<int64_t>& first_row_id,
     int64_t snapshot_id, const std::optional<std::vector<std::string>>& file_field_names,
-    const std::shared_ptr<MemoryPool>& pool)
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : first_row_id_(first_row_id),
       snapshot_id_(snapshot_id),
       file_field_names_(file_field_names),
-      arrow_pool_(GetArrowPool(pool)),
+      arrow_pool_(arrow_pool),
       reader_(std::move(reader)) {}
 
 Status CompleteRowTrackingFieldsBatchReader::SetReadSchema(
@@ -149,6 +149,7 @@ CompleteRowTrackingFieldsBatchReader::NextBatchWithBitmap() {
         arrow::StructArray::Make(sub_array_vec, read_schema_->field_names()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
     return std::move(src_array_with_bitmap);
 }
 

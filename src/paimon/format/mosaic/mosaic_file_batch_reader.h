@@ -42,7 +42,8 @@ class MosaicFileBatchReader : public FileBatchReader {
  public:
     static Result<std::unique_ptr<MosaicFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input, int32_t batch_size,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~MosaicFileBatchReader() override;
 

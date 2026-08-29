@@ -51,7 +51,7 @@ AppendOnlyTableRead::AppendOnlyTableRead(const std::shared_ptr<FileStorePathFact
                                          const std::shared_ptr<InternalReadContext>& context,
                                          const std::shared_ptr<MemoryPool>& memory_pool,
                                          const std::shared_ptr<Executor>& executor)
-    : TableRead(memory_pool), context_(context) {
+    : context_(context) {
     const auto& core_options = context->GetCoreOptions();
     if (core_options.DataEvolutionEnabled()) {
         // add data evolution first
@@ -111,7 +111,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
                 realtime_context_impl->ReleaseReadView(realtime_split->OpaqueTicket()));
         }
     }
-    return std::make_unique<ConcatBatchReader>(std::move(readers), GetMemoryPool());
+    return std::make_unique<ConcatBatchReader>(std::move(readers),
+                                               context_->GetArrowMemoryPool());
 }
 
 Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
@@ -174,9 +175,10 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
             return Status::Invalid("append-only real-time store returned a null query reader");
         }
         if (context_->EnablePredicateFilter() && context_->GetPredicate()) {
-            PAIMON_ASSIGN_OR_RAISE(memory_reader, PredicateBatchReader::Create(
-                                                      std::move(memory_reader),
-                                                      context_->GetPredicate(), GetMemoryPool()));
+            PAIMON_ASSIGN_OR_RAISE(
+                memory_reader,
+                PredicateBatchReader::Create(std::move(memory_reader), context_->GetPredicate(),
+                                             context_->GetArrowMemoryPool()));
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeReader> realtime_reader,
                                RealtimeReader::Create(memory.read_view, std::move(memory_reader)));
@@ -187,7 +189,7 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
             realtime_context_impl->ReleaseReadView(realtime_split->OpaqueTicket()));
     }
     std::unique_ptr<BatchReader> result =
-        std::make_unique<ConcatBatchReader>(std::move(readers), GetMemoryPool());
+        std::make_unique<ConcatBatchReader>(std::move(readers), context_->GetArrowMemoryPool());
     readers_guard.Release();
     return result;
 }
@@ -254,7 +256,7 @@ Result<std::unique_ptr<CountReader>> AppendOnlyTableRead::CreateCountReader(
     }
 
     return std::make_unique<AppendCountReader>(splits, context_->GetCoreOptions().GetFileSystem(),
-                                               GetMemoryPool());
+                                               context_->GetMemoryPool());
 }
 
 }  // namespace paimon

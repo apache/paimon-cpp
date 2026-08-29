@@ -21,6 +21,7 @@
 
 #include <memory>
 
+#include "arrow/c/abi.h"
 #include "arrow/memory_pool.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
@@ -33,7 +34,15 @@ namespace paimon {
 PAIMON_EXPORT std::unique_ptr<arrow::MemoryPool> GetArrowPool(
     const std::shared_ptr<MemoryPool>& pool);
 
-Status RetainArrowArrayMemoryPool(ArrowArray* array,
-                                  const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+PAIMON_EXPORT std::shared_ptr<arrow::MemoryPool> GetSharedArrowPool(
+    const std::shared_ptr<MemoryPool>& pool);
+
+/// Keep an additional resource alive until the ArrowArray is released.
+///
+/// The existing release callback and private data are preserved as a release chain, so this helper
+/// can be applied to arrays produced by Arrow libraries or format plugins without inspecting their
+/// private data.
+PAIMON_EXPORT Status AddArrowArrayLifetime(ArrowArray* array,
+                                           const std::shared_ptr<void>& lifetime);
 
 }  // namespace paimon

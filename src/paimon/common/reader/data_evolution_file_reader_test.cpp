@@ -40,6 +40,7 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
+        arrow_pool_ = GetSharedArrowPool(pool_);
     }
 
     void TearDown() override {
@@ -77,7 +78,7 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
             ASSERT_OK_AND_ASSIGN(
                 auto data_evolution_file_reader,
                 DataEvolutionFileReader::Create(std::move(readers), read_schema, batch_size,
-                                                reader_offsets, field_offsets, pool_));
+                                                reader_offsets, field_offsets, arrow_pool_));
             // check metrics, data_evolution_file_reader collects all row of each
             // MockFileBatchReader
             auto metrics = data_evolution_file_reader->GetReaderMetrics();
@@ -85,10 +86,9 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
                       "{\"mock.number.of.rows\":" + std::to_string(total_row_count) + "}");
 
             // check result array
-            ASSERT_OK_AND_ASSIGN(
-                auto result_array,
-                paimon::test::ReadResultCollector::CollectResult(data_evolution_file_reader.get()));
-            data_evolution_file_reader->Close();
+            ASSERT_OK_AND_ASSIGN(auto result_array,
+                                 paimon::test::ReadResultCollector::CollectResult(
+                                     std::move(data_evolution_file_reader)));
             auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_array);
             ASSERT_TRUE(result_array->Equals(expected_chunk_array));
         }
@@ -112,7 +112,7 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
         readers.push_back(std::move(file_batch_reader));
         DataEvolutionFileReader fake_data_evolution_reader(
             std::move(readers), /*read_schema=*/arrow::schema({}), read_batch_size,
-            /*reader_offsets=*/{}, /*field_offsets=*/{}, GetArrowPool(pool_));
+            /*reader_offsets=*/{}, /*field_offsets=*/{}, arrow_pool_);
         arrow::ArrayVector result_array_vec;
         while (true) {
             ASSERT_OK_AND_ASSIGN(auto result_array,
@@ -142,15 +142,16 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
 
  private:
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
     {
         arrow::FieldVector read_fields;
         auto read_schema = arrow::schema(read_fields);
-        ASSERT_NOK_WITH_MSG(
-            DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10, {}, {}, pool_),
-            "read schema must not be empty");
+        ASSERT_NOK_WITH_MSG(DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10,
+                                                            {}, {}, arrow_pool_),
+                            "read schema must not be empty");
     }
     {
         arrow::FieldVector read_fields = {
@@ -162,9 +163,10 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
         auto read_schema = arrow::schema(read_fields);
         std::vector<int32_t> reader_offsets = {0, 0, 1};
         std::vector<int32_t> field_offsets = {0, 1, 0};
-        ASSERT_NOK_WITH_MSG(DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10,
-                                                            reader_offsets, field_offsets, pool_),
-                            "read schema, row offsets and field offsets must have the same size");
+        ASSERT_NOK_WITH_MSG(
+            DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10, reader_offsets,
+                                            field_offsets, arrow_pool_),
+            "read schema, row offsets and field offsets must have the same size");
     }
     {
         arrow::FieldVector read_fields = {
@@ -176,9 +178,10 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
         auto read_schema = arrow::schema(read_fields);
         std::vector<int32_t> reader_offsets = {0, 0, 1, 1};
         std::vector<int32_t> field_offsets = {0, 1, 1, 0};
-        ASSERT_NOK_WITH_MSG(DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10,
-                                                            reader_offsets, field_offsets, pool_),
-                            "readers must not be empty");
+        ASSERT_NOK_WITH_MSG(
+            DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10, reader_offsets,
+                                            field_offsets, arrow_pool_),
+            "readers must not be empty");
     }
     {
         std::vector<std::unique_ptr<BatchReader>> readers;
@@ -195,7 +198,7 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
         std::vector<int32_t> field_offsets = {0, 1, 1, 0};
         ASSERT_NOK_WITH_MSG(
             DataEvolutionFileReader::Create(std::move(readers), read_schema, /*read_batch_size=*/10,
-                                            reader_offsets, field_offsets, pool_),
+                                            reader_offsets, field_offsets, arrow_pool_),
             "reader offset is out of range of readers");
     }
 }
@@ -637,10 +640,10 @@ TEST_P(DataEvolutionFileReaderTest, TestSingleReaderRowCountMismatch) {
     ASSERT_OK_AND_ASSIGN(
         auto data_evolution_file_reader,
         DataEvolutionFileReader::Create(std::move(readers), read_schema, /*read_batch_size=*/10,
-                                        reader_offsets, field_offsets, pool_));
+                                        reader_offsets, field_offsets, arrow_pool_));
     // array0 has 6 rows but array1 only has 5 rows
     ASSERT_NOK_WITH_MSG(
-        paimon::test::ReadResultCollector::CollectResult(data_evolution_file_reader.get()),
+        paimon::test::ReadResultCollector::CollectResult(std::move(data_evolution_file_reader)),
         "array for single reader length mismatch others");
 }
 

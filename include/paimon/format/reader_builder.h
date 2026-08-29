@@ -53,6 +53,10 @@ class PAIMON_EXPORT ReaderBuilder {
     }
 
     /// Build a file batch reader based on the created `InputStream`.
+    ///
+    /// Every non-EOF ArrowArray returned by the reader must retain all allocator and plugin
+    /// resources needed by its release callback. The array must remain releasable after the
+    /// reader has been destroyed.
     virtual Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const = 0;
 };

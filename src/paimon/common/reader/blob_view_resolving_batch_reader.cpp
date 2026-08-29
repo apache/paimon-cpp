@@ -41,9 +41,8 @@
 namespace paimon {
 BlobViewResolvingBatchReader::BlobViewResolvingBatchReader(
     std::unique_ptr<BatchReader>&& reader, std::vector<std::string> read_blob_view_fields,
-    BlobViewResolver resolver, const std::shared_ptr<MemoryPool>& pool)
-    : pool_(pool),
-      arrow_pool_(GetArrowPool(pool)),
+    BlobViewResolver resolver, const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool),
       reader_(std::move(reader)),
       read_blob_view_fields_(std::make_move_iterator(read_blob_view_fields.begin()),
                              std::make_move_iterator(read_blob_view_fields.end())),
@@ -91,6 +90,7 @@ Result<BatchReader::ReadBatch> BlobViewResolvingBatchReader::NextBatch() {
                                       arrow::StructArray::Make(new_fields, field_names));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*resolved_struct_array, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
     return batch;
 }
 

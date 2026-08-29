@@ -205,7 +205,8 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
     bool read_ahead_cache_enabled, const CacheConfig& cache_config, bool enable_io_metrics,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (prefetch_max_parallel_num == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0.");
     }
@@ -276,7 +277,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 
     auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(new PrefetchFileBatchReaderImpl(
         readers, batch_size, prefetch_queue_capacity, enable_adaptive_prefetch_strategy, executor,
-        cache, io_metrics, pool));
+        cache, io_metrics, arrow_pool));
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read
         // ranges, and set read schema will always be called before read.
@@ -290,12 +291,12 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
     uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
     const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
-    const std::shared_ptr<MemoryPool>& pool)
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : readers_(std::move(readers)),
       batch_size_(batch_size),
       executor_(executor),
       cache_(cache),
-      arrow_pool_(GetArrowPool(pool)),
+      arrow_pool_(arrow_pool),
       prefetch_queue_capacity_(prefetch_queue_capacity),
       enable_adaptive_prefetch_strategy_(enable_adaptive_prefetch_strategy),
       prefetch_metrics_(std::make_shared<PrefetchMetricsState>()),
@@ -654,6 +655,7 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
                 ArrowUtils::NormalizeArrayOffsets(sliced_array, arrow_pool_.get()));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(
                 arrow::ExportArray(*normalized_array, c_array.get(), c_schema.get()));
+            PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
             bitmap.RemoveRange(slice_end, array->length());
             global_row_ids =
                 std::vector<uint64_t>(global_row_ids.begin(), global_row_ids.begin() + slice_end);

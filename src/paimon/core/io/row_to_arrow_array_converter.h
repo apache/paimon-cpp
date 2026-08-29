@@ -52,7 +52,7 @@ class RowToArrowArrayConverter {
         std::function<arrow::Status(const DataGetters& data_getter, int32_t pos)>;
     RowToArrowArrayConverter(int32_t reserve_count, std::vector<AppendValueFunc>&& appenders,
                              std::unique_ptr<arrow::StructBuilder>&& array_builder,
-                             std::unique_ptr<arrow::MemoryPool>&& arrow_pool);
+                             const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     static Result<AppendValueFunc> AppendField(bool use_view, arrow::ArrayBuilder* array_builder,
                                                int32_t* reserve_count);
@@ -72,7 +72,7 @@ class RowToArrowArrayConverter {
 
  protected:
     std::vector<int32_t> reserved_sizes_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::vector<AppendValueFunc> appenders_;
     std::unique_ptr<arrow::StructBuilder> array_builder_;
 };
@@ -86,9 +86,9 @@ template <typename T, typename R>
 RowToArrowArrayConverter<T, R>::RowToArrowArrayConverter(
     int32_t reserve_count, std::vector<RowToArrowArrayConverter<T, R>::AppendValueFunc>&& appenders,
     std::unique_ptr<arrow::StructBuilder>&& array_builder,
-    std::unique_ptr<arrow::MemoryPool>&& arrow_pool)
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : reserved_sizes_(reserve_count, -1),
-      arrow_pool_(std::move(arrow_pool)),
+      arrow_pool_(arrow_pool),
       appenders_(std::move(appenders)),
       array_builder_(std::move(array_builder)) {}
 
@@ -110,6 +110,7 @@ Result<BatchReader::ReadBatch> RowToArrowArrayConverter<T, R>::FinishAndAccumula
     std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
     return make_pair(std::move(c_array), std::move(c_schema));
 }
 

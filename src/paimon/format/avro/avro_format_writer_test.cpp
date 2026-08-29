@@ -121,12 +121,12 @@ class AvroFormatWriterTest : public ::testing::Test {
     void CheckResult(const std::string& file_path, int32_t row_count) const {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path));
         ASSERT_OK_AND_ASSIGN(auto file_reader,
-                             AvroFileBatchReader::Create(input_stream, 1024, pool_));
+                             AvroFileBatchReader::Create(input_stream, 1024, pool_, arrow_pool_));
         ASSERT_OK_AND_ASSIGN(uint64_t num_rows, file_reader->GetNumberOfRows());
         ASSERT_EQ(num_rows, row_count);
 
-        ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ::paimon::test::ReadResultCollector::CollectResult(file_reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto result_array, ::paimon::test::ReadResultCollector::CollectResult(
+                                                    std::move(file_reader)));
         const auto& struct_array = checked_pointer_cast<arrow::StructArray>(result_array->chunk(0));
         const auto& string_array = checked_pointer_cast<arrow::StringArray>(struct_array->field(0));
         ASSERT_TRUE(string_array);

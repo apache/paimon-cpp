@@ -35,6 +35,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/defs.h"
@@ -60,6 +61,7 @@ namespace paimon::test {
 class FieldMappingReaderTest : public ::testing::Test {
  public:
     void SetUp() override {
+        arrow_pool_ = GetSharedArrowPool(pool_);
         partition_ = BinaryRowGenerator::GenerateRow({10, 0}, pool_.get());
     }
     void TearDown() override {}
@@ -139,8 +141,9 @@ class FieldMappingReaderTest : public ::testing::Test {
             auto reader,
             FieldMappingReader::Create(
                 /*field_count=*/read_schema->num_fields(), std::move(orc_batch_reader), partition_,
-                std::move(mapping), /*skip_map_selected_keys_filter_field_ids=*/{}, pool_));
-        ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(reader.get()));
+                std::move(mapping), /*skip_map_selected_keys_filter_field_ids=*/{}, arrow_pool_));
+        ASSERT_OK_AND_ASSIGN(auto result_array,
+                             ReadResultCollector::CollectResult(std::move(reader)));
         if (expect_array == nullptr && result_array == nullptr) {
             // expect empty result
             return;
@@ -180,8 +183,9 @@ class FieldMappingReaderTest : public ::testing::Test {
             auto reader,
             FieldMappingReader::Create(
                 /*field_count=*/read_schema->num_fields(), std::move(orc_batch_reader), partition,
-                std::move(mapping), /*skip_map_selected_keys_filter_field_ids=*/{}, pool_));
-        ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(reader.get()));
+                std::move(mapping), /*skip_map_selected_keys_filter_field_ids=*/{}, arrow_pool_));
+        ASSERT_OK_AND_ASSIGN(auto result_array,
+                             ReadResultCollector::CollectResult(std::move(reader)));
         if (expect_array == nullptr && result_array == nullptr) {
             // expect empty result
             return;
@@ -198,6 +202,7 @@ class FieldMappingReaderTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::vector<DataField> data_fields_ = {DataField(0, arrow::field("f0", arrow::utf8())),
                                            DataField(1, arrow::field("f1", arrow::int32())),
                                            DataField(2, arrow::field("f2", arrow::int32())),
@@ -242,7 +247,7 @@ TEST_F(FieldMappingReaderTest, TestGenerateSinglePartitionArray) {
         auto mapping_reader,
         FieldMappingReader::Create(
             /*field_count=*/8, /*reader=*/nullptr, partition, std::move(field_mapping),
-            /*skip_map_selected_keys_filter_field_ids=*/{}, pool_));
+            /*skip_map_selected_keys_filter_field_ids=*/{}, arrow_pool_));
 
     {
         ASSERT_OK_AND_ASSIGN(auto p7_array, mapping_reader->GenerateSinglePartitionArray(
@@ -470,11 +475,12 @@ TEST_F(FieldMappingReaderTest, TestSchemaEvolutionAddedFieldInsideList) {
     ASSERT_OK_AND_ASSIGN(auto mapping, mapping_builder->CreateFieldMapping(data_fields));
     auto mock = std::make_unique<MockFileBatchReader>(
         data_array, arrow::struct_(data_schema->fields()), /*read_batch_size=*/8);
-    ASSERT_OK_AND_ASSIGN(auto reader, FieldMappingReader::Create(
-                                          read_schema->num_fields(), std::move(mock),
-                                          BinaryRow::EmptyRow(), std::move(mapping),
-                                          /*skip_map_selected_keys_filter_field_ids=*/{}, pool_));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        FieldMappingReader::Create(read_schema->num_fields(), std::move(mock),
+                                   BinaryRow::EmptyRow(), std::move(mapping),
+                                   /*skip_map_selected_keys_filter_field_ids=*/{}, arrow_pool_));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
 
     auto expect_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(read_schema->fields()), R"([
@@ -863,7 +869,7 @@ TEST_F(FieldMappingReaderTest, TestCreateFailFastOnInvalidMapSelectedKeysMetadat
                             /*field_count=*/1,
                             /*reader=*/nullptr,
                             /*partition=*/BinaryRow::EmptyRow(), std::move(field_mapping),
-                            /*skip_map_selected_keys_filter_field_ids=*/{}, pool_),
+                            /*skip_map_selected_keys_filter_field_ids=*/{}, arrow_pool_),
                         "Duplicate selected key 'a'");
 }
 }  // namespace paimon::test

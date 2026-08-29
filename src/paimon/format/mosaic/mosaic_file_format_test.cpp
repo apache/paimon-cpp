@@ -420,7 +420,7 @@ TEST_F(MosaicFileFormatTest, RowGroupPredicateFiltering) {
         PredicateBuilder::IsNull(/*field_index=*/1, /*field_name=*/"untracked", FieldType::INT);
     ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual_is_null_without_stats,
-                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
     ASSERT_TRUE(actual_is_null_without_stats->Equals(arrow::ChunkedArray(data)))
         << actual_is_null_without_stats->ToString();
 }

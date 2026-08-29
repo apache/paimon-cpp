@@ -80,8 +80,9 @@ class ParquetVectorIoTest : public ::testing::Test {
         std::unique_ptr<FileBatchReader> vector_reader;
         CreateVectorReader(file_path, arrow::schema(read_type->fields()), /*predicate=*/nullptr,
                            /*options=*/{}, /*batch_size=*/10, &vector_reader);
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                             paimon::test::ReadResultCollector::CollectResult(vector_reader.get()));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::ChunkedArray> actual,
+            paimon::test::ReadResultCollector::CollectResult(std::move(vector_reader)));
 
         arrow::Result<std::shared_ptr<arrow::Array>> expected_result =
             arrow::ipc::internal::json::ArrayFromJSON(read_type, json);
@@ -180,7 +181,7 @@ class ParquetVectorIoTest : public ::testing::Test {
                                            /*storage_read_bytes=*/nullptr, arrow_pool_,
                                            /*hints=*/std::nullopt));
         std::unique_ptr<FileBatchReader> vector_reader =
-            std::make_unique<VectorFileBatchReader>(std::move(reader), pool_);
+            std::make_unique<VectorFileBatchReader>(std::move(reader), arrow_pool_);
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
         ASSERT_OK(vector_reader->SetReadSchema(c_schema.get(), predicate,
@@ -209,8 +210,9 @@ class ParquetVectorIoTest : public ::testing::Test {
         std::unique_ptr<FileBatchReader> vector_reader;
         CreateVectorReader(file_path, logical_schema, /*predicate=*/nullptr, /*options=*/{},
                            /*batch_size=*/10, &vector_reader);
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                             paimon::test::ReadResultCollector::CollectResult(vector_reader.get()));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::ChunkedArray> actual,
+            paimon::test::ReadResultCollector::CollectResult(std::move(vector_reader)));
         ASSERT_EQ(actual->num_chunks(), 1);
         ASSERT_EQ(actual->type()->id(), arrow::Type::STRUCT);
         auto struct_array = checked_pointer_cast<arrow::StructArray>(actual->chunk(0));
@@ -288,7 +290,7 @@ TEST_F(ParquetVectorIoTest, WriteAndReadAllNullFixedSizeListWithArrowSchema) {
     CreateVectorReader(file_path, arrow::schema(logical_type->fields()), /*predicate=*/nullptr,
                        /*options=*/{}, /*batch_size=*/10, &reader);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
     arrow::Result<std::shared_ptr<arrow::Array>> expected_result =
         arrow::ipc::internal::json::ArrayFromJSON(logical_type, json);
     ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
@@ -350,7 +352,7 @@ TEST_F(ParquetVectorIoTest, ReadNestedFixedSizeListFile) {
     CreateVectorReader(file_path, arrow::schema(logical_type->fields()), /*predicate=*/nullptr,
                        /*options=*/{}, /*batch_size=*/10, &reader);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
     arrow::Result<std::shared_ptr<arrow::Array>> expected_result =
         arrow::ipc::internal::json::ArrayFromJSON(logical_type, json);
     ASSERT_TRUE(expected_result.ok()) << expected_result.status().ToString();
@@ -377,7 +379,7 @@ TEST_F(ParquetVectorIoTest, ReadVectorWithPredicatePushdown) {
     CreateVectorReader(file_path, arrow::schema(logical_type->fields()), predicate,
                        /*options=*/{}, /*batch_size=*/10, &reader);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
     arrow::Result<std::shared_ptr<arrow::Array>> expected_result =
         arrow::ipc::internal::json::ArrayFromJSON(
             logical_type, R"([[3, [4.0, 5.0, 6.0]], [4, [7.0, 8.0, 9.0]]])");
@@ -427,10 +429,6 @@ TEST_F(ParquetVectorIoTest, ReadMixedListAndFixedSizeListFixtures) {
                        arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3))});
     std::shared_ptr<arrow::DataType> logical_type = arrow::struct_(logical_schema->fields());
 
-    // A reader owns the memory pool that its batches are allocated from, so it has to outlive
-    // the chunks collected from it. This mirrors a scan, which holds every split reader until
-    // the whole result has been consumed.
-    std::vector<std::unique_ptr<FileBatchReader>> readers;
     arrow::ArrayVector chunks;
     for (const char* file_name : {"java_vector_nullable.parquet", "rust_vector_nullable.parquet"}) {
         std::string file_path =
@@ -439,8 +437,7 @@ TEST_F(ParquetVectorIoTest, ReadMixedListAndFixedSizeListFixtures) {
         CreateVectorReader(file_path, logical_schema, /*predicate=*/nullptr, /*options=*/{},
                            /*batch_size=*/10, &reader);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                             paimon::test::ReadResultCollector::CollectResult(reader.get()));
-        readers.push_back(std::move(reader));
+                             paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
         ASSERT_TRUE(actual->type()->Equals(logical_type))
             << file_name << ": " << actual->type()->ToString();
         chunks.insert(chunks.end(), actual->chunks().begin(), actual->chunks().end());

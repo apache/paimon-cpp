@@ -22,10 +22,16 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <vector>
 
+#include "arrow/api.h"
+#include "arrow/c/abi.h"
+#include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "arrow/status.h"
 #include "gtest/gtest.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 namespace {
@@ -64,6 +70,59 @@ class FailingMemoryPool : public MemoryPool {
  private:
     Mode mode_;
 };
+
+class TrackingMemoryPool : public MemoryPool {
+ public:
+    TrackingMemoryPool(bool* destroyed, int32_t* free_count)
+        : destroyed_(destroyed), free_count_(free_count), delegate_(GetDefaultPool()) {}
+
+    ~TrackingMemoryPool() override {
+        *destroyed_ = true;
+    }
+
+    void* Malloc(uint64_t size, uint64_t alignment = 0) override {
+        return delegate_->Malloc(size, alignment);
+    }
+
+    void* Realloc(void* p, size_t old_size, size_t new_size, uint64_t alignment = 0) override {
+        return delegate_->Realloc(p, old_size, new_size, alignment);
+    }
+
+    void Free(void* p, uint64_t size) override {
+        ++*free_count_;
+        delegate_->Free(p, size);
+    }
+
+    void Free(void* p, uint64_t size, uint64_t alignment) override {
+        ++*free_count_;
+        delegate_->Free(p, size, alignment);
+    }
+
+    uint64_t CurrentUsage() const override {
+        return delegate_->CurrentUsage();
+    }
+
+    uint64_t MaxMemoryUsage() const override {
+        return delegate_->MaxMemoryUsage();
+    }
+
+ private:
+    bool* destroyed_;
+    int32_t* free_count_;
+    std::shared_ptr<MemoryPool> delegate_;
+};
+
+struct TrackingArrowArrayPrivateData {
+    std::shared_ptr<void> lifetime;
+    std::vector<int32_t>* release_order;
+};
+
+void ReleaseTrackingArrowArray(ArrowArray* array) {
+    std::unique_ptr<TrackingArrowArrayPrivateData> data(
+        static_cast<TrackingArrowArrayPrivateData*>(array->private_data));
+    data->release_order->push_back(0);
+    array->release = nullptr;
+}
 
 }  // namespace
 
@@ -143,6 +202,90 @@ TEST(MemUtilsTest, TestReallocateOutOfMemory) {
     auto throw_pool =
         GetArrowPool(std::make_shared<FailingMemoryPool>(FailingMemoryPool::Mode::kThrowBadAlloc));
     ASSERT_TRUE(throw_pool->Reallocate(/*old_size=*/0, /*new_size=*/16, 64, &ptr).IsOutOfMemory());
+}
+
+TEST(MemUtilsTest, TestAddArrowArrayLifetimeComposesReleaseChain) {
+    std::vector<int32_t> release_order;
+    std::shared_ptr<void> original_lifetime(new int32_t(1), [&release_order](void* ptr) {
+        delete static_cast<int32_t*>(ptr);
+        release_order.push_back(1);
+    });
+    std::shared_ptr<void> inner_lifetime(new int32_t(2), [&release_order](void* ptr) {
+        delete static_cast<int32_t*>(ptr);
+        release_order.push_back(2);
+    });
+    std::shared_ptr<void> outer_lifetime(new int32_t(3), [&release_order](void* ptr) {
+        delete static_cast<int32_t*>(ptr);
+        release_order.push_back(3);
+    });
+    ArrowArray array{};
+    array.release = ReleaseTrackingArrowArray;
+    array.private_data = new TrackingArrowArrayPrivateData{original_lifetime, &release_order};
+
+    ASSERT_OK(AddArrowArrayLifetime(&array, inner_lifetime));
+    ASSERT_OK(AddArrowArrayLifetime(&array, outer_lifetime));
+    original_lifetime.reset();
+    inner_lifetime.reset();
+    outer_lifetime.reset();
+
+    ArrowArrayRelease(&array);
+    ASSERT_EQ(nullptr, array.release);
+    ASSERT_EQ(std::vector<int32_t>({0, 1, 2, 3}), release_order);
+}
+
+TEST(MemUtilsTest, TestAddArrowArrayLifetimeKeepsPoolAliveUntilOriginalRelease) {
+    bool pool_destroyed = false;
+    int32_t free_count = 0;
+    std::shared_ptr<MemoryPool> paimon_pool =
+        std::make_shared<TrackingMemoryPool>(&pool_destroyed, &free_count);
+    std::weak_ptr<MemoryPool> weak_paimon_pool = paimon_pool;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(paimon_pool);
+    ArrowArray c_array{};
+    {
+        arrow::Int32Builder builder(arrow_pool.get());
+        ASSERT_TRUE(builder.Append(42).ok());
+        arrow::Result<std::shared_ptr<arrow::Array>> array_result = builder.Finish();
+        ASSERT_TRUE(array_result.ok()) << array_result.status().ToString();
+        std::shared_ptr<arrow::Array> array = std::move(array_result).ValueOrDie();
+        ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+    }
+    ASSERT_OK(AddArrowArrayLifetime(&c_array, arrow_pool));
+
+    arrow_pool.reset();
+    paimon_pool.reset();
+    ASSERT_FALSE(weak_paimon_pool.expired());
+    ASSERT_FALSE(pool_destroyed);
+
+    ArrowArrayRelease(&c_array);
+    ASSERT_EQ(nullptr, c_array.release);
+    ASSERT_GT(free_count, 0);
+    ASSERT_TRUE(weak_paimon_pool.expired());
+    ASSERT_TRUE(pool_destroyed);
+}
+
+TEST(MemUtilsTest, TestAddArrowArrayLifetimeDeduplicatesSameOwner) {
+    std::vector<int32_t> release_order;
+    std::shared_ptr<void> lifetime = std::make_shared<int32_t>(1);
+    ArrowArray array{};
+    array.release = ReleaseTrackingArrowArray;
+    array.private_data = new TrackingArrowArrayPrivateData{nullptr, &release_order};
+
+    ASSERT_OK(AddArrowArrayLifetime(&array, lifetime));
+    const long use_count = lifetime.use_count();
+    ASSERT_OK(AddArrowArrayLifetime(&array, lifetime));
+    ASSERT_EQ(use_count, lifetime.use_count());
+
+    ArrowArrayRelease(&array);
+}
+
+TEST(MemUtilsTest, TestAddArrowArrayLifetimeRejectsInvalidInput) {
+    ArrowArray array{};
+    ASSERT_NOK(AddArrowArrayLifetime(nullptr, std::make_shared<int32_t>(1)));
+    ASSERT_NOK(AddArrowArrayLifetime(&array, std::make_shared<int32_t>(1)));
+
+    array.release = ReleaseTrackingArrowArray;
+    ASSERT_NOK(AddArrowArrayLifetime(&array, nullptr));
+    array.release = nullptr;
 }
 
 }  // namespace paimon::test

@@ -36,6 +36,7 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
@@ -93,8 +94,10 @@ class MergeFileSplitReadTest : public ::testing::Test,
         const std::shared_ptr<ReadContext>& read_context, int32_t schema_id = 0) {
         SchemaManager schema_manager(fs_, read_context->GetPath());
         EXPECT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(schema_id));
-        EXPECT_OK_AND_ASSIGN(auto context, InternalReadContext::Create(read_context, table_schema,
-                                                                       read_context->GetOptions()));
+        EXPECT_OK_AND_ASSIGN(
+            auto context,
+            InternalReadContext::Create(read_context, table_schema, read_context->GetOptions(),
+                                        GetSharedArrowPool(read_context->GetMemoryPool())));
         return context;
     }
 
@@ -362,11 +365,12 @@ class MergeFileSplitReadTest : public ::testing::Test,
                                    split_read->CreateReader(split));
             batch_readers.emplace_back(std::move(reader));
         }
-        return std::make_unique<ConcatBatchReader>(std::move(batch_readers), pool_);
+        return std::make_unique<ConcatBatchReader>(std::move(batch_readers), arrow_pool_);
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_ = GetSharedArrowPool(pool_);
     std::shared_ptr<FileSystem> fs_ = std::make_shared<LocalFileSystem>();
     std::shared_ptr<Executor> executor_ = CreateDefaultExecutor();
 };
@@ -649,7 +653,7 @@ TEST_P(MergeFileSplitReadTest, TestSimple) {
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, data_splits));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -763,7 +767,7 @@ TEST_P(MergeFileSplitReadTest, TestLookUp) {
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -834,7 +838,7 @@ TEST_P(MergeFileSplitReadTest, TestDeduplicateMergeEngineWithDeleteMsg) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -893,7 +897,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -951,7 +955,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1001,7 +1005,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTable) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1050,7 +1054,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTableWithReverseSequence) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1098,7 +1102,7 @@ TEST_P(MergeFileSplitReadTest, TestAggregateMergeEngine) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1145,7 +1149,7 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngine) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1190,7 +1194,7 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithIgnoreDelete) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1230,7 +1234,7 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithRemoveRecordOnDel
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1270,7 +1274,7 @@ TEST_P(MergeFileSplitReadTest, TestEmptyPlan) {
     std::vector<std::shared_ptr<DataSplit>> empty_data_split;
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, empty_data_split));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> read_result,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     // empty result with null pointer batch
     ASSERT_FALSE(read_result);
 }
@@ -1323,7 +1327,7 @@ TEST_P(MergeFileSplitReadTest, TestIOException) {
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
         auto batch_reader = CreateReader(internal_context, PrepareDataSplit());
         CHECK_HOOK_STATUS(batch_reader.status(), i);
-        auto read_result = ReadResultCollector::CollectResult(batch_reader.value().get());
+        auto read_result = ReadResultCollector::CollectResult(std::move(batch_reader).value());
         CHECK_HOOK_STATUS(read_result.status(), i);
         auto result_array = read_result.value();
         CheckResult(result_array, expected_array, read_schema);

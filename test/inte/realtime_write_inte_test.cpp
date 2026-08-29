@@ -316,7 +316,6 @@ class RealtimeWriteInteTest : public ::testing::Test {
     using Row = std::tuple<int64_t, std::string, std::string>;
 
     struct CollectedReadResult {
-        std::unique_ptr<BatchReader> reader;
         std::shared_ptr<arrow::ChunkedArray> data;
     };
 
@@ -633,8 +632,8 @@ class RealtimeWriteInteTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                                table_read->CreateReader(plan->Splits()));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
-                               ReadResultCollector::CollectResult(reader.get()));
-        return CollectedReadResult{std::move(reader), std::move(result)};
+                               ReadResultCollector::CollectResult(std::move(reader)));
+        return CollectedReadResult{std::move(result)};
     }
 
     void ReadPlanWithSchemaAndCheck(const std::shared_ptr<Plan>& plan,
@@ -654,7 +653,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                              table_read->CreateReader(plan->Splits()));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                             ReadResultCollector::CollectResult(reader.get()));
+                             ReadResultCollector::CollectResult(std::move(reader)));
 
         arrow::FieldVector result_fields = {arrow::field("_VALUE_KIND", arrow::int8())};
         result_fields.insert(result_fields.end(), read_schema->fields().begin(),
@@ -3027,7 +3026,7 @@ TEST_F(RealtimeWriteInteTest, TestReaderPinsMemoryAcrossRefresh) {
     ASSERT_LT(memory_usage_after_refresh, memory_usage_before_refresh);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadResultCollector::CollectResult(reader.get()));
+                         ReadResultCollector::CollectResult(std::move(reader)));
     std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
         {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int64()),
          arrow::field("payload", arrow::utf8()), arrow::field("pt", arrow::utf8())});

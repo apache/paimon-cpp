@@ -30,13 +30,16 @@ namespace paimon {
 class MemoryPool;
 
 ConcatBatchReader::ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&& readers,
-                                     const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)), readers_(std::move(readers)), current_(0) {}
+                                     const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool), readers_(std::move(readers)), current_(0) {}
 
 Result<BatchReader::ReadBatch> ConcatBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            NextBatchWithBitmap());
-    return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(
+        BatchReader::ReadBatch batch,
+        ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_));
+    return batch;
 }
 
 void ConcatBatchReader::Close() {

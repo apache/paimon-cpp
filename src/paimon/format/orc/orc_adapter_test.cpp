@@ -60,8 +60,8 @@ class OrcAdapterTest : public ::testing::Test,
     void SetUp() override {}
     void TearDown() override {}
 
-    std::pair<std::unique_ptr<::orc::RowReader>, std::unique_ptr<::orc::ColumnVectorBatch>>
-    GenerateOrcReadBatch(const std::shared_ptr<arrow::Array>& src_array) const {
+    std::shared_ptr<::orc::ColumnVectorBatch> GenerateOrcReadBatch(
+        const std::shared_ptr<arrow::Array>& src_array) const {
         auto [dict_key_size_threshold, enable_lazy_decoding] = GetParam();
         arrow::Schema src_schema(src_array->type()->fields());
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<::orc::Type> orc_type,
@@ -107,7 +107,12 @@ class OrcAdapterTest : public ::testing::Test,
         std::unique_ptr<::orc::RowReader> row_reader = reader->createRowReader(options);
         auto read_batch = row_reader->createRowBatch(src_array->length() + 10);
         [[maybe_unused]] bool not_eof = row_reader->next(*read_batch);
-        return std::make_pair(std::move(row_reader), std::move(read_batch));
+        std::shared_ptr<::orc::RowReader> row_reader_lifetime(std::move(row_reader));
+        return std::shared_ptr<::orc::ColumnVectorBatch>(
+            read_batch.release(), [row_reader_lifetime](::orc::ColumnVectorBatch* batch) {
+                delete batch;
+                (void)row_reader_lifetime;
+            });
     }
 };
 
@@ -385,7 +390,7 @@ TEST_P(OrcAdapterTest, TestEmptyBatch) {
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
     ])")
             .ValueOrDie());
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
@@ -419,7 +424,7 @@ TEST_P(OrcAdapterTest, TestDictionary) {
 
     // test with dict (f0), without dict (f1) orthogonal with enable_lazy_decoding = {true, false}
     // all 3 conditions are touched
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
         OrcAdapter::AppendBatch(arrow_type, read_batch.get(), arrow::default_memory_pool()));
@@ -449,7 +454,7 @@ TEST_P(OrcAdapterTest, TestShadowCopyWithBlob) {
         ["data", 4.0, 8.0, 70, 500, 50000, 40000, true, "data", true]
     ])")
             .ValueOrDie());
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
@@ -477,7 +482,7 @@ TEST_P(OrcAdapterTest, TestDeepCopyWithString) {
         ["data", "data"]
     ])")
             .ValueOrDie());
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
@@ -514,7 +519,7 @@ TEST_P(OrcAdapterTest, TestComplexTypeShallowCopyWithBlob) {
     ])")
             .ValueOrDie());
 
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
         OrcAdapter::AppendBatch(arrow_type, read_batch.get(), arrow::default_memory_pool()));
@@ -536,7 +541,7 @@ TEST_P(OrcAdapterTest, TestAppendBatchWithBinary) {
         ["data", "data"]
     ])")
             .ValueOrDie());
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
@@ -556,7 +561,7 @@ TEST_P(OrcAdapterTest, TestAppendBatchWithBinaryForAllNull) {
         [null]
     ])")
             .ValueOrDie());
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
@@ -578,7 +583,7 @@ TEST_P(OrcAdapterTest, TestWriteBatchWithLargeBinary) {
     ])")
             .ValueOrDie());
 
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
     auto* struct_batch = dynamic_cast<::orc::StructVectorBatch*>(read_batch.get());
     ASSERT_TRUE(struct_batch);
     ASSERT_EQ(1, struct_batch->fields.size());
@@ -632,7 +637,7 @@ TEST_P(OrcAdapterTest, TestDecimalAndTimestamp) {
     ])")
             .ValueOrDie());
 
-    auto [orc_reader_holder, read_batch] = GenerateOrcReadBatch(src_array);
+    auto read_batch = GenerateOrcReadBatch(src_array);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> target_array,
         OrcAdapter::AppendBatch(arrow_type, read_batch.get(), arrow::default_memory_pool()));

@@ -21,6 +21,7 @@
 
 #include <memory>
 
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/mosaic/mosaic_file_batch_reader.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/memory/memory_pool.h"
@@ -30,10 +31,13 @@ namespace paimon::mosaic {
 class MosaicReaderBuilder : public ReaderBuilder {
  public:
     explicit MosaicReaderBuilder(int32_t batch_size)
-        : batch_size_(batch_size), pool_(GetDefaultPool()) {}
+        : batch_size_(batch_size),
+          pool_(GetDefaultPool()),
+          arrow_pool_(GetSharedArrowPool(pool_)) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
+        arrow_pool_ = GetSharedArrowPool(pool);
         return this;
     }
 
@@ -42,12 +46,13 @@ class MosaicReaderBuilder : public ReaderBuilder {
         if (pool_ == nullptr) {
             return Status::Invalid("Mosaic reader memory pool is nullptr");
         }
-        return MosaicFileBatchReader::Create(input, batch_size_, pool_);
+        return MosaicFileBatchReader::Create(input, batch_size_, pool_, arrow_pool_);
     }
 
  private:
     int32_t batch_size_;
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace paimon::mosaic

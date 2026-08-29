@@ -70,15 +70,16 @@ class AvroFileBatchReaderTest : public ::testing::Test, public ::testing::WithPa
         ASSERT_OK(out->Close());
     }
 
-    std::pair<std::unique_ptr<FileBatchReader>, std::shared_ptr<arrow::ChunkedArray>> ReadData(
-        const std::string& file_path, int32_t read_batch_size) {
+    std::shared_ptr<arrow::ChunkedArray> ReadData(const std::string& file_path,
+                                                  int32_t read_batch_size) {
         EXPECT_OK_AND_ASSIGN(auto reader_builder,
                              file_format_->CreateReaderBuilder(read_batch_size));
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
         EXPECT_OK_AND_ASSIGN(auto batch_reader, reader_builder->Build(in));
         EXPECT_OK_AND_ASSIGN(auto result_array, ::paimon::test::ReadResultCollector::CollectResult(
                                                     batch_reader.get()));
-        return std::make_pair(std::move(batch_reader), result_array);
+        EXPECT_TRUE(batch_reader->GetReaderMetrics());
+        return result_array;
     }
 
  private:
@@ -90,7 +91,7 @@ class AvroFileBatchReaderTest : public ::testing::Test, public ::testing::WithPa
 
 TEST_F(AvroFileBatchReaderTest, TestReadDataWithNull) {
     std::string path = paimon::test::GetDataDir() + "/avro/data/avro_with_null";
-    auto [reader_holder, result_array] = ReadData(path, /*read_batch_size=*/1024);
+    auto result_array = ReadData(path, /*read_batch_size=*/1024);
 
     arrow::FieldVector fields = {
         arrow::field("_KEY_f0", arrow::utf8(), /*nullable=*/true),
@@ -113,8 +114,6 @@ TEST_F(AvroFileBatchReaderTest, TestReadDataWithNull) {
     ASSERT_TRUE(array_status.ok()) << array_status.ToString();
     ASSERT_TRUE(result_array->Equals(expected_array));
     ASSERT_TRUE(expected_array->Equals(result_array));
-    auto read_metrics = reader_holder->GetReaderMetrics();
-    ASSERT_TRUE(read_metrics);
 }
 
 TEST_F(AvroFileBatchReaderTest, TestReadWithDifferentBatchSize) {
@@ -152,7 +151,7 @@ TEST_F(AvroFileBatchReaderTest, TestReadWithDifferentBatchSize) {
     WriteData(src_array, file_path, /*compression=*/"zstd");
 
     for (int32_t batch_size : {1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1}) {
-        auto [reader_holder, result_array] = ReadData(file_path, batch_size);
+        auto result_array = ReadData(file_path, batch_size);
         std::shared_ptr<arrow::ChunkedArray> expected_array;
         auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(
             arrow_data_type, {data_str}, &expected_array);
@@ -164,7 +163,7 @@ TEST_F(AvroFileBatchReaderTest, TestReadWithDifferentBatchSize) {
 
 TEST_F(AvroFileBatchReaderTest, TestReadAllTypes) {
     std::string path = paimon::test::GetDataDir() + "/avro/data/avro_all_types";
-    auto [reader_holder, result_array] = ReadData(path, /*read_batch_size=*/1024);
+    auto result_array = ReadData(path, /*read_batch_size=*/1024);
 
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::boolean()),
@@ -229,8 +228,8 @@ TEST_P(AvroFileBatchReaderTest, TestReadTimestampTypes) {
                                           /*selection_bitmap=*/std::nullopt));
 
     // check array
-    ASSERT_OK_AND_ASSIGN(auto result_array,
-                         ::paimon::test::ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ::paimon::test::ReadResultCollector::CollectResult(
+                                                std::move(batch_reader)));
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     auto array_status =
         arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(read_fields), {R"([
@@ -275,8 +274,8 @@ TEST_F(AvroFileBatchReaderTest, TestReadMapTypes) {
                                           /*selection_bitmap=*/std::nullopt));
 
     // check array
-    ASSERT_OK_AND_ASSIGN(auto result_array,
-                         ::paimon::test::ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array, ::paimon::test::ReadResultCollector::CollectResult(
+                                                std::move(batch_reader)));
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     auto array_status =
         arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(read_fields), {R"([
@@ -523,7 +522,7 @@ TEST_F(AvroFileBatchReaderTest, TestReadBinaryWrittenFromBinaryAndLargeBinary) {
                                               /*selection_bitmap=*/std::nullopt));
 
         ASSERT_OK_AND_ASSIGN(auto result_array, ::paimon::test::ReadResultCollector::CollectResult(
-                                                    batch_reader.get()));
+                                                    std::move(batch_reader)));
         auto expected_array =
             arrow::ipc::internal::json::ArrayFromJSON(read_data_type, data_json).ValueOrDie();
         auto expected_chunked_array = std::make_shared<arrow::ChunkedArray>(expected_array);

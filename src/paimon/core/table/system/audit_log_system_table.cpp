@@ -69,14 +69,14 @@ class ChangelogBatchReader : public BatchReader {
     ChangelogBatchReader(std::unique_ptr<BatchReader> reader,
                          std::shared_ptr<arrow::Schema> output_schema, bool include_sequence_number,
                          std::shared_ptr<const ChangelogBatchConverter> converter,
-                         bool pack_update_before_after, const std::shared_ptr<MemoryPool>& pool)
+                         bool pack_update_before_after,
+                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
         : reader_(std::move(reader)),
           output_schema_(std::move(output_schema)),
           include_sequence_number_(include_sequence_number),
           converter_(std::move(converter)),
           pack_update_before_after_(pack_update_before_after),
-          arrow_pool_holder_(GetArrowPool(pool)),
-          arrow_pool_(arrow_pool_holder_.get()) {}
+          arrow_pool_(arrow_pool) {}
 
     Result<ReadBatch> NextBatch() override {
         while (true) {
@@ -124,8 +124,8 @@ class ChangelogBatchReader : public BatchReader {
                 if (!array) {
                     return Status::Invalid("cannot find ", field->name(), " in changelog batch");
                 }
-                PAIMON_ASSIGN_OR_RAISE(
-                    array, converter_->ConvertDataColumn(array, row_group_lengths, arrow_pool_));
+                PAIMON_ASSIGN_OR_RAISE(array, converter_->ConvertDataColumn(
+                                                  array, row_group_lengths, arrow_pool_.get()));
                 PAIMON_ASSIGN_OR_RAISE(array, CopyToStablePool(array));
                 output_arrays.push_back(array);
             }
@@ -137,6 +137,7 @@ class ChangelogBatchReader : public BatchReader {
             auto output_c_schema = std::make_unique<ArrowSchema>();
             PAIMON_RETURN_NOT_OK_FROM_ARROW(
                 arrow::ExportArray(*output_array, output_c_array.get(), output_c_schema.get()));
+            PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(output_c_array.get(), arrow_pool_));
             return std::make_pair(std::move(output_c_array), std::move(output_c_schema));
         }
     }
@@ -158,7 +159,7 @@ class ChangelogBatchReader : public BatchReader {
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::Array> combined,
-            arrow::Concatenate({pending_update_before_, struct_array}, arrow_pool_));
+            arrow::Concatenate({pending_update_before_, struct_array}, arrow_pool_.get()));
         pending_update_before_.reset();
         if (!combined || combined->type_id() != arrow::Type::STRUCT) {
             return Status::Invalid("failed to concatenate binlog struct batches");
@@ -213,7 +214,7 @@ class ChangelogBatchReader : public BatchReader {
         /// The imported data batch may release its C Arrow buffers after this wrapper returns.
         /// Keep returned system-table arrays independent of that input batch lifetime.
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> result,
-                                          arrow::Concatenate({array}, arrow_pool_));
+                                          arrow::Concatenate({array}, arrow_pool_.get()));
         return result;
     }
 
@@ -226,7 +227,7 @@ class ChangelogBatchReader : public BatchReader {
         }
         std::shared_ptr<arrow::Int8Array> value_kind_array =
             checked_pointer_cast<arrow::Int8Array>(value_kind);
-        arrow::StringBuilder builder(arrow_pool_);
+        arrow::StringBuilder builder(arrow_pool_.get());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(row_group_lengths.size()));
         int64_t offset = 0;
         for (int32_t row_group_length : row_group_lengths) {
@@ -257,7 +258,7 @@ class ChangelogBatchReader : public BatchReader {
         }
         std::shared_ptr<arrow::Int64Array> sequence_array =
             checked_pointer_cast<arrow::Int64Array>(sequence);
-        arrow::Int64Builder builder(arrow_pool_);
+        arrow::Int64Builder builder(arrow_pool_.get());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(row_group_lengths.size()));
         int64_t offset = 0;
         for (int32_t row_group_length : row_group_lengths) {
@@ -278,8 +279,7 @@ class ChangelogBatchReader : public BatchReader {
     bool include_sequence_number_;
     std::shared_ptr<const ChangelogBatchConverter> converter_;
     bool pack_update_before_after_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_holder_;
-    arrow::MemoryPool* arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<arrow::StructArray> pending_update_before_;
 };
 
@@ -289,11 +289,11 @@ class ChangelogTableRead : public TableRead {
                        std::shared_ptr<arrow::Schema> output_schema, bool include_sequence_number,
                        std::shared_ptr<const ChangelogBatchConverter> converter,
                        const std::shared_ptr<MemoryPool>& pool)
-        : TableRead(pool),
-          data_read_(std::move(data_read)),
+        : data_read_(std::move(data_read)),
           output_schema_(std::move(output_schema)),
           include_sequence_number_(include_sequence_number),
-          converter_(std::move(converter)) {}
+          converter_(std::move(converter)),
+          arrow_pool_(GetSharedArrowPool(pool)) {}
 
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const std::vector<std::shared_ptr<Split>>& splits) override {
@@ -308,13 +308,13 @@ class ChangelogTableRead : public TableRead {
                 PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, CreateReader(split));
                 readers.push_back(std::move(reader));
             }
-            return std::make_unique<ConcatBatchReader>(std::move(readers), GetMemoryPool());
+            return std::make_unique<ConcatBatchReader>(std::move(readers), arrow_pool_);
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                                data_read_->CreateReader(splits));
-        return CreateChangelogBatchReader(std::move(reader), output_schema_,
-                                          include_sequence_number_, converter_,
-                                          /*pack_update_before_after=*/false, GetMemoryPool());
+        return std::make_unique<ChangelogBatchReader>(
+            std::move(reader), output_schema_, include_sequence_number_, converter_,
+            /*pack_update_before_after=*/false, arrow_pool_);
     }
 
     Result<std::unique_ptr<BatchReader>> CreateReader(
@@ -330,9 +330,9 @@ class ChangelogTableRead : public TableRead {
             }
             pack_update_before_after = data_split->IsStreaming();
         }
-        return CreateChangelogBatchReader(std::move(reader), output_schema_,
-                                          include_sequence_number_, converter_,
-                                          pack_update_before_after, GetMemoryPool());
+        return std::make_unique<ChangelogBatchReader>(std::move(reader), output_schema_,
+                                                      include_sequence_number_, converter_,
+                                                      pack_update_before_after, arrow_pool_);
     }
 
  private:
@@ -340,6 +340,7 @@ class ChangelogTableRead : public TableRead {
     std::shared_ptr<arrow::Schema> output_schema_;
     bool include_sequence_number_;
     std::shared_ptr<const ChangelogBatchConverter> converter_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace
@@ -348,9 +349,9 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
     std::unique_ptr<BatchReader> reader, std::shared_ptr<arrow::Schema> output_schema,
     bool include_sequence_number, std::shared_ptr<const ChangelogBatchConverter> converter,
     bool pack_update_before_after, const std::shared_ptr<MemoryPool>& pool) {
-    return std::make_unique<ChangelogBatchReader>(std::move(reader), std::move(output_schema),
-                                                  include_sequence_number, std::move(converter),
-                                                  pack_update_before_after, pool);
+    return std::make_unique<ChangelogBatchReader>(
+        std::move(reader), std::move(output_schema), include_sequence_number, std::move(converter),
+        pack_update_before_after, GetSharedArrowPool(pool));
 }
 
 AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,

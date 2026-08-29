@@ -37,7 +37,7 @@ namespace {
 struct ArrowArrayPrivateData {
     void (*release)(ArrowArray*);
     void* private_data;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool;
+    std::shared_ptr<void> lifetime;
 };
 
 void ReleaseArrowArray(ArrowArray* array) {
@@ -48,7 +48,9 @@ void ReleaseArrowArray(ArrowArray* array) {
     array->release(array);
 }
 
-}  // namespace
+bool HasSameOwner(const std::shared_ptr<void>& lhs, const std::shared_ptr<void>& rhs) {
+    return !lhs.owner_before(rhs) && !rhs.owner_before(lhs);
+}
 
 class ArrowMemPoolAdaptor : public arrow::MemoryPool {
  public:
@@ -122,30 +124,40 @@ class ArrowMemPoolAdaptor : public arrow::MemoryPool {
     arrow::internal::MemoryPoolStats stats_;
 };
 
+}  // namespace
+
 std::unique_ptr<arrow::MemoryPool> GetArrowPool(const std::shared_ptr<MemoryPool>& pool) {
     return std::make_unique<ArrowMemPoolAdaptor>(pool);
 }
 
-Status RetainArrowArrayMemoryPool(ArrowArray* array,
-                                  const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
-    if (!array || !array->release) {
-        return Status::Invalid("cannot retain Arrow array memory pool");
+std::shared_ptr<arrow::MemoryPool> GetSharedArrowPool(const std::shared_ptr<MemoryPool>& pool) {
+    return std::make_shared<ArrowMemPoolAdaptor>(pool);
+}
+
+Status AddArrowArrayLifetime(ArrowArray* array, const std::shared_ptr<void>& lifetime) {
+    if (array == nullptr || array->release == nullptr) {
+        return Status::Invalid("cannot add lifetime to a released ArrowArray");
     }
-    if (!arrow_pool) {
-        ArrowArrayRelease(array);
-        return Status::Invalid("cannot retain Arrow array memory pool");
+    if (lifetime.use_count() == 0) {
+        return Status::Invalid("cannot add an empty lifetime to an ArrowArray");
     }
-    std::unique_ptr<ArrowArrayPrivateData> data;
+    if (array->release == ReleaseArrowArray) {
+        const ArrowArrayPrivateData* data =
+            static_cast<const ArrowArrayPrivateData*>(array->private_data);
+        if (HasSameOwner(data->lifetime, lifetime)) {
+            return Status::OK();
+        }
+    }
     try {
-        data = std::make_unique<ArrowArrayPrivateData>(
-            ArrowArrayPrivateData{array->release, array->private_data, arrow_pool});
+        std::unique_ptr<ArrowArrayPrivateData> data = std::make_unique<ArrowArrayPrivateData>(
+            ArrowArrayPrivateData{array->release, array->private_data, lifetime});
+        array->release = ReleaseArrowArray;
+        array->private_data = data.release();
+        return Status::OK();
     } catch (const std::bad_alloc&) {
-        ArrowArrayRelease(array);
-        return Status::OutOfMemory("failed to retain Arrow array memory pool");
+        array->release(array);
+        return Status::OutOfMemory("failed to add lifetime to an ArrowArray");
     }
-    array->private_data = data.release();
-    array->release = ReleaseArrowArray;
-    return Status::OK();
 }
 
 }  // namespace paimon

@@ -42,8 +42,8 @@ class MemoryPool;
 
 ManifestMetaReader::ManifestMetaReader(std::unique_ptr<BatchReader>&& reader,
                                        const std::shared_ptr<arrow::DataType>& target_type,
-                                       const std::shared_ptr<MemoryPool>& pool)
-    : reader_(std::move(reader)), target_type_(target_type), pool_(GetArrowPool(pool)) {}
+                                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : reader_(std::move(reader)), target_type_(target_type), pool_(arrow_pool) {}
 
 Result<BatchReader::ReadBatch> ManifestMetaReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(ReadBatch src_result, reader_->NextBatch());
@@ -62,6 +62,7 @@ Result<BatchReader::ReadBatch> ManifestMetaReader::NextBatch() {
 
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, target_c_arrow_array.get(), target_c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(target_c_arrow_array.get(), pool_));
     return std::make_pair(std::move(target_c_arrow_array), std::move(target_c_schema));
 }
 

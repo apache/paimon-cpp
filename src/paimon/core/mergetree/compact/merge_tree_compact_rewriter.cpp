@@ -24,6 +24,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/key_value_data_file_writer_factories.h"
 #include "paimon/core/io/key_value_meta_projection_consumer.h"
@@ -84,7 +85,8 @@ Result<std::unique_ptr<MergeTreeCompactRewriter>> MergeTreeCompactRewriter::Crea
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
+        InternalReadContext::Create(read_context, table_schema, options.ToMap(),
+                                    GetSharedArrowPool(read_context->GetMemoryPool())));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         path_factory_cache->GetOrCreatePathFactory(options.GetFileFormat()->Identifier()));

@@ -58,12 +58,11 @@ MosaicFileBatchReader::MosaicFileBatchReader(
 
 Result<std::unique_ptr<MosaicFileBatchReader>> MosaicFileBatchReader::Create(
     const std::shared_ptr<InputStream>& input, int32_t batch_size,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (input == nullptr || pool == nullptr || batch_size <= 0) {
         return Status::Invalid(
             "Mosaic reader requires non-null input and memory pool, and positive batch size");
     }
-    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
     PAIMON_ASSIGN_OR_RAISE(int64_t signed_length, input->Length());
     PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(signed_length, "Mosaic input length"));
     auto length = static_cast<uint64_t>(signed_length);
@@ -200,6 +199,7 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
     auto ffi_schema = std::make_unique<::ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*normalized_array, ffi_array.get(), ffi_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(ffi_array.get(), arrow_pool_));
     return std::make_pair(std::move(ffi_array), std::move(ffi_schema));
 }
 

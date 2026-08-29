@@ -29,6 +29,7 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
@@ -40,6 +41,7 @@ namespace paimon::test {
 class ConcatBatchReaderTest : public ::testing::Test {
     void SetUp() override {
         pool_ = GetDefaultPool();
+        arrow_pool_ = GetSharedArrowPool(pool_);
     }
     void CheckResult(const std::vector<std::string>& batches, const std::string& expected) {
         std::vector<std::pair<std::string, std::vector<int32_t>>> batches_with_bitmap;
@@ -71,9 +73,10 @@ class ConcatBatchReaderTest : public ::testing::Test {
                     data, data->type(), RoaringBitmap32::From(bitmap_data), batch_size);
                 readers.push_back(std::move(reader));
             }
-            auto concat_reader = std::make_unique<ConcatBatchReader>(std::move(readers), pool_);
+            auto concat_reader =
+                std::make_unique<ConcatBatchReader>(std::move(readers), arrow_pool_);
             ASSERT_OK_AND_ASSIGN(auto result_chunk_array,
-                                 ReadResultCollector::CollectResult(concat_reader.get()));
+                                 ReadResultCollector::CollectResult(std::move(concat_reader)));
             if (expected.empty()) {
                 ASSERT_FALSE(result_chunk_array);
                 return;
@@ -91,6 +94,7 @@ class ConcatBatchReaderTest : public ::testing::Test {
 
  private:
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 TEST_F(ConcatBatchReaderTest, TestSimple) {
     CheckResult({"[10, 11, 12, 13, 14]"}, "[10, 11, 12, 13, 14]");

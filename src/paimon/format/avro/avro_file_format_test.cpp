@@ -90,7 +90,7 @@ class AvroFileFormatTest : public testing::Test, public ::testing::WithParamInte
         ASSERT_OK(batch_reader->SetReadSchema(&c_schema, /*predicate=*/nullptr,
                                               /*selection_bitmap=*/std::nullopt));
         ASSERT_OK_AND_ASSIGN(auto output_array, ::paimon::test::ReadResultCollector::CollectResult(
-                                                    batch_reader.get()));
+                                                    std::move(batch_reader)));
         ASSERT_TRUE(output_array->Equals(arrow::ChunkedArray(input_array)))
             << output_array->ToString() << "\n vs \n"
             << input_array->ToString();

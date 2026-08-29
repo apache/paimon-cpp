@@ -143,9 +143,9 @@ Result<std::unique_ptr<FieldMappingReader>> FieldMappingReader::Create(
     int32_t field_count, std::unique_ptr<FileBatchReader>&& reader, const BinaryRow& partition,
     std::unique_ptr<FieldMapping>&& mapping,
     std::set<int32_t>&& skip_map_selected_keys_filter_field_ids,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     auto mapping_reader = std::unique_ptr<FieldMappingReader>(new FieldMappingReader(
-        field_count, std::move(reader), partition, std::move(mapping), pool));
+        field_count, std::move(reader), partition, std::move(mapping), arrow_pool));
 
     mapping_reader->need_mapping_ = false;
     mapping_reader->need_casting_ = false;
@@ -202,9 +202,9 @@ FieldMappingReader::FieldMappingReader(int32_t field_count,
                                        std::unique_ptr<FileBatchReader>&& reader,
                                        const BinaryRow& partition,
                                        std::unique_ptr<FieldMapping>&& mapping,
-                                       const std::shared_ptr<MemoryPool>& pool)
+                                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : field_count_(field_count),
-      arrow_pool_(GetArrowPool(pool)),
+      arrow_pool_(arrow_pool),
       reader_(std::move(reader)),
       partition_(partition),
       partition_info_(mapping->partition_info),
@@ -321,6 +321,7 @@ Result<BatchReader::ReadBatchWithBitmap> FieldMappingReader::NextBatchWithBitmap
     std::unique_ptr<ArrowSchema> target_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*arrow_array, target_c_arrow_array.get(), target_c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(target_c_arrow_array.get(), arrow_pool_));
     auto target_batch = std::make_pair(std::move(target_c_arrow_array), std::move(target_c_schema));
     return std::make_pair(std::move(target_batch), std::move(bitmap));
 }

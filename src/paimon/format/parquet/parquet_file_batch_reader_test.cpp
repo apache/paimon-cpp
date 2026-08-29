@@ -366,7 +366,7 @@ TEST_F(ParquetFileBatchReaderTest, TestReadBinaryWrittenFromBinaryAndLargeBinary
                 .ValueOrDie());
         auto expected_chunked_array = std::make_shared<arrow::ChunkedArray>(expected_array);
         ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                    parquet_batch_reader.get()));
+                                                    std::move(parquet_batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_chunked_array));
     };
 
@@ -382,7 +382,7 @@ TEST_F(ParquetFileBatchReaderTest, TestSimple) {
         file_name, schema_, /*predicate=*/nullptr, /*selection_bitmap=*/std::nullopt, batch_size_);
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result_array,
-        paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+        paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
     std::shared_ptr<arrow::ChunkedArray> expected_array =
         std::make_shared<arrow::ChunkedArray>(struct_array_);
     ASSERT_TRUE(result_array->Equals(*expected_array,
@@ -441,7 +441,7 @@ TEST_F(ParquetFileBatchReaderTest, TestSetReadSchema) {
     ASSERT_OK(parquet_batch_reader->SetReadSchema(c_read_schema.get(), predicate,
                                                   /*selection_bitmap=*/std::nullopt));
     ASSERT_OK_AND_ASSIGN(result_with_read_schema, paimon::test::ReadResultCollector::CollectResult(
-                                                      parquet_batch_reader.get()));
+                                                      std::move(parquet_batch_reader)));
     ASSERT_FALSE(result_with_read_schema);
 }
 
@@ -462,7 +462,7 @@ TEST_F(ParquetFileBatchReaderTest, TestSetReadSchemaWithLegacyParquetMissingFiel
                                       /*selection_bitmap=*/std::nullopt, batch_size_);
 
     ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                parquet_batch_reader.get()));
+                                                std::move(parquet_batch_reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -507,8 +507,7 @@ TEST_F(ParquetFileBatchReaderTest, TestNextBatchWithTargetSchema) {
         PrepareParquetFileBatchReader(file_name, read_schema, /*predicate=*/nullptr,
                                       /*selection_bitmap=*/std::nullopt, batch_size_);
     ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                parquet_batch_reader.get()));
-    parquet_batch_reader->Close();
+                                                std::move(parquet_batch_reader)));
     auto expected_read_array =
         arrow::StructArray::Make({struct_array_->field(4), struct_array_->field(9),
                                   struct_array_->field(10), struct_array_->field(12)},
@@ -529,8 +528,7 @@ TEST_F(ParquetFileBatchReaderTest, TestNextBatchWithOutofOrderTargetSchema) {
         PrepareParquetFileBatchReader(file_name, read_schema, /*predicate=*/nullptr,
                                       /*selection_bitmap=*/std::nullopt, batch_size_);
     ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                parquet_batch_reader.get()));
-    parquet_batch_reader->Close();
+                                                std::move(parquet_batch_reader)));
     auto expected_read_array =
         arrow::StructArray::Make({struct_array_->field(12), struct_array_->field(10),
                                   struct_array_->field(9), struct_array_->field(4)},
@@ -571,7 +569,7 @@ TEST_F(ParquetFileBatchReaderTest, TestNextBatchWithDictionary) {
                                           /*selection_bitmap=*/std::nullopt, /*batch_size=*/2);
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_array)) << result_array->ToString();
     };
     check_result(true);
@@ -608,7 +606,7 @@ TEST_F(ParquetFileBatchReaderTest, TestNestedStructChildProjectionRecall) {
                                       /*selection_bitmap=*/std::nullopt, /*batch_size=*/2);
 
     ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                parquet_batch_reader.get()));
+                                                std::move(parquet_batch_reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -651,7 +649,7 @@ TEST_F(ParquetFileBatchReaderTest, TestReadSchemaWithMapSelectedKeysMetadata) {
                                       /*selection_bitmap=*/std::nullopt, /*batch_size=*/2);
 
     ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                parquet_batch_reader.get()));
+                                                std::move(parquet_batch_reader)));
     auto expected_array = arrow::ChunkedArray::Make({write_array}).ValueOrDie();
     ASSERT_TRUE(result_array->Equals(expected_array))
         << "expected: " << expected_array->ToString() << "\nactual: " << result_array->ToString();
@@ -801,7 +799,7 @@ TEST_F(ParquetFileBatchReaderTest, TestNestedTimestampSecondReadFromMilliFile) {
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result_array,
-        paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+        paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
     auto expected_array = arrow::ChunkedArray::Make({write_array}).ValueOrDie();
     ASSERT_TRUE(result_array->Equals(expected_array))
         << "expected: " << expected_array->ToString() << "\nactual: " << result_array->ToString();
@@ -1029,7 +1027,7 @@ TEST_F(ParquetFileBatchReaderTest, TestBitmapRowGroupPushDownWithMultiRowGroups)
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result_array,
-        paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+        paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
 
     auto expected_array = arrow::ChunkedArray::Make({src_array->Slice(0, 6)}).ValueOrDie();
     ASSERT_TRUE(result_array->Equals(expected_array)) << result_array->ToString();
@@ -1068,7 +1066,7 @@ TEST_F(ParquetFileBatchReaderTest, TestBitmapPagePushDownWithMultiRowGroups) {
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result_array,
-        paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+        paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
 
     auto expected_array = arrow::ChunkedArray(src_array->Slice(3, 3));
     ASSERT_TRUE(result_array->Equals(expected_array)) << result_array->ToString();
@@ -1111,7 +1109,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapRowGroupPushDown) {
             file_path_, arrow_schema, predicate, bitmap, /*batch_size=*/length);
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
 
         auto expected_array =
             arrow::ChunkedArray::Make({src_array->Slice(0, 256), src_array->Slice(512, 256)})
@@ -1127,7 +1125,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapRowGroupPushDown) {
             file_path_, arrow_schema, predicate, bitmap, /*batch_size=*/length);
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
         ASSERT_FALSE(result_array);
     }
 }
@@ -1169,7 +1167,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapPagePushDown) {
                                           /*batch_size=*/length, /*enable_page_level_filter=*/true);
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
 
         auto expected_array =
             arrow::ChunkedArray::Make({src_array->Slice(100, 1), src_array->Slice(600, 1)})
@@ -1186,7 +1184,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPredicateAndBitmapPagePushDown) {
                                           /*batch_size=*/length, /*enable_page_level_filter=*/true);
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
         ASSERT_FALSE(result_array);
     }
 }
@@ -1276,7 +1274,7 @@ TEST_P(ParquetFileBatchReaderTest, TestTimestampType) {
             /*predicate=*/nullptr, /*selection_bitmap=*/std::nullopt, batch_size_);
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
         ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
     }
     {
@@ -1311,7 +1309,7 @@ TEST_P(ParquetFileBatchReaderTest, TestTimestampType) {
         // check array
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result_array,
-            paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader.get()));
+            paimon::test::ReadResultCollector::CollectResult(std::move(parquet_batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_array)) << result_array->ToString();
     }
 }
@@ -1397,7 +1395,7 @@ TEST_F(ParquetFileBatchReaderTest, TestAddMetadataPerFieldMetadata) {
 
     // Also verify data integrity — read it back and compare content.
     ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
-                                                parquet_batch_reader.get()));
+                                                std::move(parquet_batch_reader)));
     ASSERT_EQ(result_array->num_chunks(), 1);
     ASSERT_TRUE(data->Equals(*result_array->chunk(0))) << result_array->ToString();
 }
@@ -1709,7 +1707,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
 
     // Drain the file through the cache-backed stream.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         paimon::test::ReadResultCollector::CollectResult(parquet_batch_reader));
+                         paimon::test::ReadResultCollector::CollectResult(std::move(base_reader)));
     ASSERT_EQ(20, result->length());
 
     // The cache metrics must show that the data reads were served by the cache:

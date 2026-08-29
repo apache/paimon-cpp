@@ -30,6 +30,7 @@
 #include "paimon/cache/cache.h"
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
@@ -83,6 +84,7 @@ class ObjectsFile {
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<ObjectSerializer<T>> serializer_;
     std::shared_ptr<WriterBuilder> writer_builder_;
     std::unique_ptr<MetaToArrowArrayConverter> to_array_converter_;
@@ -107,6 +109,7 @@ ObjectsFile<T>::ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
                             const std::shared_ptr<MemoryPool>& pool)
     : path_factory_(path_factory),
       pool_(pool),
+      arrow_pool_(GetSharedArrowPool(pool)),
       serializer_(std::move(serializer)),
       writer_builder_(std::move(writer_builder)),
       file_system_(file_system),
@@ -187,7 +190,7 @@ Status ObjectsFile<T>::ReadArrowBatches(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> batch_reader,
                            reader_builder_->Build(file_input_stream));
     auto reader = std::make_unique<ManifestMetaReader>(std::move(batch_reader),
-                                                       serializer_->GetDataType(), pool_);
+                                                       serializer_->GetDataType(), arrow_pool_);
     while (true) {
         PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch arrow_array, reader->NextBatch());
         auto& c_array = arrow_array.first;

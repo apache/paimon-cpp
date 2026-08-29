@@ -20,6 +20,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/key_value_data_file_record_reader.h"
 #include "paimon/core/mergetree/lookup/file_position.h"
@@ -68,7 +69,8 @@ Result<std::unique_ptr<LookupLevels<T>>> LookupLevels<T>::Create(
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_read_context,
-        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
+        InternalReadContext::Create(read_context, table_schema, options.ToMap(),
+                                    GetSharedArrowPool(read_context->GetMemoryPool())));
     auto split_read = std::make_unique<RawFileSplitRead>(path_factory, internal_read_context, pool,
                                                          CreateDefaultExecutor());
 

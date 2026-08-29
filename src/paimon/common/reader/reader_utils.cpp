@@ -30,6 +30,7 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/status.h"
 #include "paimon/utils/roaring_bitmap32.h"
@@ -69,7 +70,8 @@ void ReaderUtils::ReleaseReadBatch(BatchReader::ReadBatch&& batch) {
 }
 
 Result<BatchReader::ReadBatch> ReaderUtils::ApplyBitmapToReadBatch(
-    BatchReader::ReadBatchWithBitmap&& batch_with_bitmap, arrow::MemoryPool* arrow_pool) {
+    BatchReader::ReadBatchWithBitmap&& batch_with_bitmap,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (BatchReader::IsEofBatch(batch_with_bitmap)) {
         return std::move(batch_with_bitmap.first);
     }
@@ -92,12 +94,13 @@ Result<BatchReader::ReadBatch> ReaderUtils::ApplyBitmapToReadBatch(
     PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector array_vec,
                            GenerateFilteredArrayVector(arrow_array, bitmap));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> result,
-                                      arrow::Concatenate(array_vec, arrow_pool));
+                                      arrow::Concatenate(array_vec, arrow_pool.get()));
     assert(result && result->length() > 0);
     std::unique_ptr<ArrowArray> result_c_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> result_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*result, result_c_array.get(), result_c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(result_c_array.get(), arrow_pool));
     return make_pair(std::move(result_c_array), std::move(result_c_schema));
 }
 
