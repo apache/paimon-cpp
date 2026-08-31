@@ -139,6 +139,7 @@ Status AddArrowArrayLifetime(ArrowArray* array, const std::shared_ptr<void>& lif
         return Status::Invalid("cannot add lifetime to a released ArrowArray");
     }
     if (lifetime.use_count() == 0) {
+        ArrowArrayRelease(array);
         return Status::Invalid("cannot add an empty lifetime to an ArrowArray");
     }
     if (array->release == ReleaseArrowArray) {
@@ -154,7 +155,7 @@ Status AddArrowArrayLifetime(ArrowArray* array, const std::shared_ptr<void>& lif
         array->private_data = data.release();
         return Status::OK();
     } catch (const std::bad_alloc&) {
-        array->release(array);
+        ArrowArrayRelease(array);
         return Status::OutOfMemory("failed to add lifetime to an ArrowArray");
     }
 }

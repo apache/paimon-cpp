@@ -41,7 +41,8 @@ PAIMON_EXPORT std::shared_ptr<arrow::MemoryPool> GetSharedArrowPool(
 ///
 /// The existing release callback and private data are preserved as a release chain, so this helper
 /// can be applied to arrays produced by Arrow libraries or format plugins without inspecting their
-/// private data.
+/// private data. Once a valid, unreleased array is passed in, this function releases it if
+/// retaining the lifetime fails.
 PAIMON_EXPORT Status AddArrowArrayLifetime(ArrowArray* array,
                                            const std::shared_ptr<void>& lifetime);
 

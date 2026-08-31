@@ -411,6 +411,7 @@ TEST_F(AvroFileBatchReaderTest, TestSetReadSchemaResetsReaderToFirstRow) {
 
     ASSERT_OK_AND_ASSIGN(auto projected_batch, reader->NextBatch());
     ASSERT_EQ(0, reader->GetPreviousBatchFileRowId(0).value());
+    reader.reset();
     auto projected_array =
         arrow::ImportArray(projected_batch.first.get(), projected_batch.second.get()).ValueOrDie();
     auto expected_projected_array = arrow::ipc::internal::json::ArrayFromJSON(

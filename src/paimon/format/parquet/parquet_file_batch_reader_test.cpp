@@ -1214,6 +1214,7 @@ TEST_F(ParquetFileBatchReaderTest, TestReadNoField) {
     ASSERT_TRUE(BatchReader::IsEofBatch(batch4));
     ASSERT_NOK(parquet_batch_reader->GetPreviousBatchFileRowId(0));
     parquet_batch_reader->Close();
+    parquet_batch_reader.reset();
 
     arrow::FieldVector fields;
     auto arrow_type = arrow::struct_(fields);

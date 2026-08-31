@@ -283,9 +283,12 @@ TEST(MemUtilsTest, TestAddArrowArrayLifetimeRejectsInvalidInput) {
     ASSERT_NOK(AddArrowArrayLifetime(nullptr, std::make_shared<int32_t>(1)));
     ASSERT_NOK(AddArrowArrayLifetime(&array, std::make_shared<int32_t>(1)));
 
+    std::vector<int32_t> release_order;
     array.release = ReleaseTrackingArrowArray;
+    array.private_data = new TrackingArrowArrayPrivateData{nullptr, &release_order};
     ASSERT_NOK(AddArrowArrayLifetime(&array, nullptr));
-    array.release = nullptr;
+    ASSERT_EQ(nullptr, array.release);
+    ASSERT_EQ(std::vector<int32_t>({0}), release_order);
 }
 
 }  // namespace paimon::test

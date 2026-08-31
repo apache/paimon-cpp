@@ -432,12 +432,12 @@ class VariantParquetTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(auto batch_with_bitmap, shredding_reader->NextBatchWithBitmap());
         ASSERT_FALSE(BatchReader::IsEofBatch(batch_with_bitmap));
         auto& [read_batch, bitmap] = batch_with_bitmap;
+        shredding_reader->Close();
+        shredding_reader.reset();
         auto imported = arrow::ImportArray(read_batch.first.get(), read_batch.second.get());
         ASSERT_TRUE(imported.ok()) << imported.status().ToString();
         auto result_struct = checked_pointer_cast<arrow::StructArray>(imported.ValueOrDie());
         *column = result_struct->field(1);
-        shredding_reader->Close();
-        shredding_reader.reset();
     }
 
     // `ReadColumn` for the cases whose second column is a struct.

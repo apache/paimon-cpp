@@ -267,6 +267,7 @@ TEST_F(MosaicFileFormatTest, SetReadSchemaResetsReaderToFirstRow) {
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch projected_batch, reader->NextBatch());
     ASSERT_OK_AND_ASSIGN(first_row, reader->GetPreviousBatchFileRowId(/*batch_row_id=*/0));
     ASSERT_EQ(first_row, 0);
+    reader.reset();
     std::shared_ptr<arrow::Array> projected_array =
         arrow::ImportArray(projected_batch.first.get(), projected_batch.second.get()).ValueOrDie();
     std::shared_ptr<arrow::Array> expected =

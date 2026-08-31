@@ -943,6 +943,7 @@ TEST_F(OrcFileBatchReaderTest, TestReadNoField) {
     ASSERT_NOK(orc_batch_reader->GetPreviousBatchFileRowId(0));
     ASSERT_TRUE(BatchReader::IsEofBatch(batch4));
     orc_batch_reader->Close();
+    orc_batch_reader.reset();
 
     arrow::FieldVector fields;
     auto arrow_type = arrow::struct_(fields);

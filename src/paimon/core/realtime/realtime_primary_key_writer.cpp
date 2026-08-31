@@ -158,7 +158,7 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
     int64_t next_offset, int64_t last_sequence_number,
     const std::shared_ptr<MemoryPool>& memory_pool)
     : memory_pool_(memory_pool),
-      arrow_pool_(GetArrowPool(memory_pool)),
+      arrow_pool_(GetSharedArrowPool(memory_pool)),
       realtime_store_(realtime_store),
       merge_tree_writer_(merge_tree_writer),
       realtime_context_(realtime_context),
@@ -205,7 +205,7 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
                                                arrow_pool_.get()));
     auto output = std::make_unique<ArrowArray>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*transport, output.get()));
-    PAIMON_RETURN_NOT_OK(RetainArrowArrayMemoryPool(output.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(output.get(), arrow_pool_));
     RecordBatchBuilder builder(output.get());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> transport_batch, builder.Finish());
     PAIMON_RETURN_NOT_OK(realtime_store_->Write(RealtimeWriteBatch{
