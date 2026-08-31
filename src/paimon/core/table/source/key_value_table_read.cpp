@@ -258,8 +258,7 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
                 realtime_context_impl->ReleaseReadView(realtime_split->OpaqueTicket()));
         }
     }
-    return std::make_unique<ConcatBatchReader>(std::move(readers),
-                                               context_->GetArrowMemoryPool());
+    return std::make_unique<ConcatBatchReader>(std::move(readers), context_->GetArrowMemoryPool());
 }
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateRealtimeReader(

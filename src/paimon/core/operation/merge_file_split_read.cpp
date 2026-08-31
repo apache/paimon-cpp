@@ -683,11 +683,10 @@ Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateProjectedReader(
     // KeyValueProjectionReader converts KeyValue objects to arrow array according to projection
     std::unique_ptr<BatchReader> projection_reader;
     if (!context_->EnableMultiThreadRowToBatch()) {
-        PAIMON_ASSIGN_OR_RAISE(
-            projection_reader,
-            KeyValueProjectionReader::Create(std::move(sort_merge_reader), raw_read_schema_,
-                                             projection_, options_.GetReadBatchSize(),
-                                             arrow_pool_));
+        PAIMON_ASSIGN_OR_RAISE(projection_reader,
+                               KeyValueProjectionReader::Create(
+                                   std::move(sort_merge_reader), raw_read_schema_, projection_,
+                                   options_.GetReadBatchSize(), arrow_pool_));
     } else {
         const int32_t thread_number = context_->GetRowToBatchThreadNumber();
         assert(thread_number > 0);
