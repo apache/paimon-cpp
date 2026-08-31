@@ -260,13 +260,15 @@ class FileStoreScan {
                                std::vector<ManifestEntry>* manifest_entries) const;
 
     Status ReadManifestEntriesWithCache(const Snapshot& snapshot,
-                                        const std::vector<ManifestFileMeta>& bucket_manifest_metas,
-                                        int32_t bucket,
+                                        const std::vector<ManifestFileMeta>& all_manifest_metas,
+                                        const std::optional<int32_t>& bucket,
                                         std::vector<ManifestEntry>* manifest_entries,
                                         bool* cache_hit) const;
-    std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const;
-    Result<SnapshotLiveManifestEntries> LoadSnapshotLiveManifestEntries(int32_t bucket) const;
-    Status StoreSnapshotLiveManifestEntries(int32_t bucket,
+    std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey(
+        const std::optional<int32_t>& bucket) const;
+    Result<SnapshotLiveManifestEntries> LoadSnapshotLiveManifestEntries(
+        const std::optional<int32_t>& bucket) const;
+    Status StoreSnapshotLiveManifestEntries(const std::optional<int32_t>& bucket,
                                             const SnapshotLiveManifestEntries& entries) const;
 
     Status ReadAndMergeBucketFileEntries(const std::vector<ManifestFileMeta>& manifest_metas,

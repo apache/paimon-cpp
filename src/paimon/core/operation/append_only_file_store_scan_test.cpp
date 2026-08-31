@@ -317,6 +317,35 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     ASSERT_OK(second_metrics->GetHistogramStats(ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION));
 }
 
+TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheWithoutBucketFilter) {
+    TimezoneGuard guard("Asia/Shanghai");
+    std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
+    auto cache = std::make_shared<LruCache>(/*max_weight=*/16 * 1024 * 1024);
+
+    auto scan_first = BuildScan(table_path, cache);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot_5,
+                         scan_first->GetSnapshotManager()->LoadSnapshot(/*snapshot_id=*/5));
+    scan_first->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto plan_first, scan_first->CreatePlan());
+    std::vector<std::string> first_file_names = SortedFileNames(plan_first->Files());
+    std::shared_ptr<Metrics> first_metrics = scan_first->GetScanMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t first_cache_enabled,
+                         first_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
+    ASSERT_OK_AND_ASSIGN(uint64_t first_cache_hit,
+                         first_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+    ASSERT_EQ(first_cache_enabled, 1);
+    ASSERT_EQ(first_cache_hit, 0);
+
+    auto scan_second = BuildScan(table_path, cache);
+    scan_second->WithSnapshot(snapshot_5);
+    ASSERT_OK_AND_ASSIGN(auto plan_second, scan_second->CreatePlan());
+    ASSERT_EQ(first_file_names, SortedFileNames(plan_second->Files()));
+    std::shared_ptr<Metrics> second_metrics = scan_second->GetScanMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t second_cache_hit,
+                         second_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+    ASSERT_EQ(second_cache_hit, 1);
+}
+
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {
     TimezoneGuard guard("Asia/Shanghai");
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";

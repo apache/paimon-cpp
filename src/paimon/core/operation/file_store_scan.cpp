@@ -150,12 +150,12 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         snapshot.has_value() && scan_mode_ == ScanMode::ALL &&
         core_options_.GetScanManifestEntryCacheMaxSnapshots() > 0 &&
         core_options_.GetCache() != nullptr && !table_path_.empty() &&
-        !row_range_index_.has_value() && bucket_filter_.has_value();
+        !row_range_index_.has_value();
     uint64_t lazy_decode_scanned_rows = 0;
     bool snapshot_cache_hit = false;
     if (use_snapshot_live_manifest_cache) {
         PAIMON_RETURN_NOT_OK(ReadManifestEntriesWithCache(snapshot.value(), all_manifest_file_metas,
-                                                          bucket_filter_.value(), &manifest_entries,
+                                                          bucket_filter_, &manifest_entries,
                                                           &snapshot_cache_hit));
         lazy_decode_scanned_rows = manifest_entries.size();
         std::vector<ManifestEntry> filtered_entries;
@@ -324,13 +324,13 @@ Status FileStoreScan::ReadManifestEntries(const std::vector<ManifestFileMeta>& m
     return ReadAndNoMergeFileEntries(manifest_metas, manifest_entries);
 }
 
-// Cache merged live manifest entries for one bucket before applying scan filters. Each cache value
-// keeps a bounded number of snapshot results for the same table/branch/bucket. Exact snapshot hits
-// can be returned directly; cache misses rebuild the target snapshot bucket from the target
-// snapshot's data manifests.
+// Cache merged live manifest entries before applying scan filters. Each cache value keeps a
+// bounded number of snapshot results for the same table/branch and optional bucket. Exact snapshot
+// hits can be returned directly; cache misses rebuild the target snapshot from its data manifests.
 Status FileStoreScan::ReadManifestEntriesWithCache(
     const Snapshot& snapshot, const std::vector<ManifestFileMeta>& all_manifest_metas,
-    int32_t bucket, std::vector<ManifestEntry>* manifest_entries, bool* cache_hit) const {
+    const std::optional<int32_t>& bucket, std::vector<ManifestEntry>* manifest_entries,
+    bool* cache_hit) const {
     Duration cache_load_duration;
     PAIMON_ASSIGN_OR_RAISE(SnapshotLiveManifestEntries cached_entries,
                            LoadSnapshotLiveManifestEntries(bucket));
@@ -347,16 +347,21 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
     }
     *cache_hit = false;
 
-    // Rebuild the target snapshot bucket from all manifests and write the live entries back to the
-    // cache.
-    std::vector<ManifestFileMeta> bucket_manifest_metas;
-    for (const auto& meta : all_manifest_metas) {
-        if (MayContainBucket(meta, bucket)) {
-            bucket_manifest_metas.push_back(meta);
+    if (bucket) {
+        std::vector<ManifestFileMeta> bucket_manifest_metas;
+        for (const auto& meta : all_manifest_metas) {
+            if (MayContainBucket(meta, bucket.value())) {
+                bucket_manifest_metas.push_back(meta);
+            }
         }
+        PAIMON_RETURN_NOT_OK(
+            ReadAndMergeBucketFileEntries(bucket_manifest_metas, bucket.value(), manifest_entries));
+    } else {
+        std::vector<ManifestEntry> unmerged_entries;
+        PAIMON_RETURN_NOT_OK(
+            ReadFileEntries(all_manifest_metas, &unmerged_entries, /*apply_scan_filter=*/false));
+        PAIMON_RETURN_NOT_OK(MergeLiveEntries(unmerged_entries, manifest_entries));
     }
-    PAIMON_RETURN_NOT_OK(
-        ReadAndMergeBucketFileEntries(bucket_manifest_metas, bucket, manifest_entries));
     std::vector<ManifestEntry> cache_entries = *manifest_entries;
     cached_entries.Put(snapshot.Id(), std::move(cache_entries));
     Duration cache_store_duration;
@@ -368,13 +373,15 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
     return Status::OK();
 }
 
-std::shared_ptr<CacheKey> FileStoreScan::SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const {
-    return CacheKey::ForSnapshotLiveManifestEntries(
-        table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket);
+std::shared_ptr<CacheKey> FileStoreScan::SnapshotLiveManifestEntriesCacheKey(
+    const std::optional<int32_t>& bucket) const {
+    const std::string branch = BranchManager::NormalizeBranch(core_options_.GetBranch());
+    return bucket ? CacheKey::ForSnapshotLiveManifestEntries(table_path_, branch, bucket.value())
+                  : CacheKey::ForSnapshotLiveManifestEntries(table_path_, branch);
 }
 
 Result<SnapshotLiveManifestEntries> FileStoreScan::LoadSnapshotLiveManifestEntries(
-    int32_t bucket) const {
+    const std::optional<int32_t>& bucket) const {
     auto supplier = [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
         return std::shared_ptr<CacheValue>();
     };
@@ -394,7 +401,7 @@ Result<SnapshotLiveManifestEntries> FileStoreScan::LoadSnapshotLiveManifestEntri
 }
 
 Status FileStoreScan::StoreSnapshotLiveManifestEntries(
-    int32_t bucket, const SnapshotLiveManifestEntries& entries) const {
+    const std::optional<int32_t>& bucket, const SnapshotLiveManifestEntries& entries) const {
     Result<std::shared_ptr<Bytes>> bytes_result = entries.Serialize(pool_);
     if (!bytes_result.ok()) {
         return Status::OK();
