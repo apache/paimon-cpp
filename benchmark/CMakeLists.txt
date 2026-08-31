@@ -63,6 +63,20 @@ if(PAIMON_BUILD_BENCHMARKS)
                          ${PAIMON_BENCHMARK_LINK_TOOLCHAIN}
                          EXTRA_INCLUDES
                          ${CMAKE_SOURCE_DIR})
+
+    add_paimon_benchmark(parquet_format_benchmark
+                         SOURCES
+                         parquet_format_benchmark.cpp
+                         STATIC_LINK_LIBS
+                         arrow
+                         parquet
+                         ${PAIMON_BENCHMARK_STATIC_LINK_LIBS}
+                         test_utils_static
+                         Threads::Threads
+                         ${PAIMON_BENCHMARK_PLATFORM_LINK_LIBS}
+                         ${PAIMON_BENCHMARK_LINK_TOOLCHAIN}
+                         EXTRA_INCLUDES
+                         ${CMAKE_SOURCE_DIR})
 endif()
 
 if(PAIMON_BUILD_TESTS)
@@ -73,5 +87,22 @@ if(PAIMON_BUILD_TESTS)
                     ${CMAKE_SOURCE_DIR}
                     STATIC_LINK_LIBS
                     paimon_shared
+                    ${GTEST_LINK_TOOLCHAIN})
+
+    # Guards the format-layer assumptions parquet_format_benchmark.cpp is built on. The benchmark
+    # itself is only compiled under PAIMON_BUILD_BENCHMARKS, which CI does not set, so this test is
+    # what keeps those assumptions covered.
+    add_paimon_test(parquet_format_benchmark_test
+                    SOURCES
+                    parquet_format_benchmark_test.cpp
+                    EXTRA_INCLUDES
+                    ${CMAKE_SOURCE_DIR}
+                    STATIC_LINK_LIBS
+                    arrow
+                    parquet
+                    paimon_shared
+                    ${PAIMON_LOCAL_FILE_SYSTEM_SHARED_LINK_LIBS}
+                    ${PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS}
+                    test_utils_static
                     ${GTEST_LINK_TOOLCHAIN})
 endif()

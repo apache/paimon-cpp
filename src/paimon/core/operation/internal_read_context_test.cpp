@@ -20,6 +20,7 @@
 
 #include <utility>
 
+#include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/table/special_fields.h"

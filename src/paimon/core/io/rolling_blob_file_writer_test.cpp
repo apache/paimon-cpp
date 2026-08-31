@@ -57,7 +57,8 @@ TEST_F(RollingBlobFileWriterTest, ValidateFileConsistency) {
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/0,
-        /*write_cols=*/std::vector<std::string>({"f0", "f1"}));
+        /*write_cols=*/std::vector<std::string>({"f0", "f1"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-xxx.blob", /*file_size=*/764, /*row_count=*/3,
@@ -70,7 +71,8 @@ TEST_F(RollingBlobFileWriterTest, ValidateFileConsistency) {
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/0,
-        /*write_cols=*/std::vector<std::string>({"blob"}));
+        /*write_cols=*/std::vector<std::string>({"blob"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     auto file_meta3 = std::make_shared<DataFileMeta>(
         "data-xxx.blob", /*file_size=*/3023, /*row_count=*/1,
@@ -83,7 +85,8 @@ TEST_F(RollingBlobFileWriterTest, ValidateFileConsistency) {
         /*creation_time=*/Timestamp(1724090888706ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt, /*first_row_id=*/3,
-        /*write_cols=*/std::vector<std::string>({"blob"}));
+        /*write_cols=*/std::vector<std::string>({"blob"}),
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_OK(RollingBlobFileWriter::ValidateFileConsistency(file_meta1, {file_meta2, file_meta3}));
     ASSERT_NOK_WITH_MSG(RollingBlobFileWriter::ValidateFileConsistency(file_meta1, {file_meta2}),
                         "This is a bug: The row count of main file and blob file does not match.");

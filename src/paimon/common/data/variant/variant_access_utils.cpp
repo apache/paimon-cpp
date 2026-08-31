@@ -26,6 +26,7 @@
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_defs.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/string_utils.h"
 
 namespace paimon {
 
@@ -61,7 +62,7 @@ std::vector<std::string> SplitDescription(const std::string& description) {
 }
 
 bool HasAccessDescription(const std::shared_ptr<arrow::Field>& field) {
-    return GetDescription(field).rfind(VariantAccessUtils::kMetadataKey, 0) == 0;
+    return StringUtils::StartsWith(GetDescription(field), VariantAccessUtils::kMetadataKey);
 }
 
 }  // namespace

@@ -22,6 +22,7 @@
 #include <memory>
 
 #include "paimon/memory/bytes.h"
+#include "paimon/result.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
@@ -31,7 +32,9 @@ class MemoryPool;
 /// Bloom filter 64 handle 64 bits hash.
 class PAIMON_EXPORT BloomFilter64 {
  public:
-    BloomFilter64(int64_t items, double fpp, const std::shared_ptr<MemoryPool>& pool);
+    static Result<BloomFilter64> Create(int64_t items, double fpp,
+                                        const std::shared_ptr<MemoryPool>& pool);
+
     class BitSet;
 
     BloomFilter64(int32_t num_hash_functions, std::unique_ptr<BitSet>&& bit_set);
@@ -54,6 +57,8 @@ class PAIMON_EXPORT BloomFilter64 {
         void Set(int32_t index);
         bool Get(int32_t index) const;
         int32_t BitSize() const;
+        int32_t ByteLength() const;
+        void ToByteArray(int32_t offset, int32_t length, char* bytes) const;
 
      private:
         static constexpr int8_t MASK = 0x07;
@@ -64,9 +69,11 @@ class PAIMON_EXPORT BloomFilter64 {
     };
 
  private:
+    BloomFilter64(int32_t num_hash_functions, std::unique_ptr<BitSet>&& bit_set,
+                  const std::shared_ptr<MemoryPool>& pool);
+
     static constexpr int32_t BYTE_SIZE = 8;
 
- private:
     int32_t num_bits_ = -1;
     int32_t num_hash_functions_ = -1;
     std::shared_ptr<MemoryPool> pool_;

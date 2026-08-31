@@ -20,6 +20,7 @@
 #include "paimon/core/io/key_value_data_file_writer_factory.h"
 
 #include <functional>
+#include <optional>
 #include <utility>
 
 #include "arrow/c/helpers.h"
@@ -37,14 +38,15 @@ KeyValueDataFileWriterFactory::KeyValueDataFileWriterFactory(
     const std::shared_ptr<arrow::Schema>& write_schema, int32_t level, FileSource file_source,
     const std::vector<std::string>& primary_keys,
     const std::shared_ptr<DataFilePathFactory>& path_factory, bool create_stats_extractor,
-    const std::shared_ptr<MemoryPool>& pool)
+    bool is_changelog, const std::shared_ptr<MemoryPool>& pool)
     : DataFileWriterFactory(options, schema_id, pool),
       write_schema_(write_schema),
       level_(level),
       file_source_(file_source),
       primary_keys_(primary_keys),
       path_factory_(path_factory),
-      create_stats_extractor_(create_stats_extractor) {}
+      create_stats_extractor_(create_stats_extractor),
+      is_changelog_(is_changelog) {}
 
 Result<std::unique_ptr<SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
 KeyValueDataFileWriterFactory::CreateWriter() const {
@@ -54,22 +56,50 @@ KeyValueDataFileWriterFactory::CreateWriter() const {
         return Status::OK();
     };
 
-    auto format = options_.GetWriteFileFormat(level_);
+    std::shared_ptr<FileFormat> format = GetFileFormat();
     PAIMON_ASSIGN_OR_RAISE(WriterResources resources,
                            CreateWriterResources(*format, write_schema_, create_stats_extractor_));
     auto writer = std::make_unique<KeyValueDataFileWriter>(
-        options_.GetWriteFileCompression(level_), std::move(converter), schema_id_, level_,
-        file_source_, primary_keys_, resources.stats_extractor, write_schema_,
-        path_factory_->IsExternalPath(), pool_);
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
-                           CreateFileIndexWriter(write_schema_, path_factory_));
-    if (file_index_writer) {
-        writer->SetFileIndexWriter(std::move(file_index_writer), write_schema_);
+        GetFileCompression(), std::move(converter), schema_id_, level_, file_source_, primary_keys_,
+        resources.stats_extractor, write_schema_, path_factory_->IsExternalPath(), pool_);
+    if (!is_changelog_) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
+                               CreateFileIndexWriter(write_schema_, path_factory_));
+        if (file_index_writer) {
+            writer->SetFileIndexWriter(std::move(file_index_writer), write_schema_);
+        }
     }
-    PAIMON_RETURN_NOT_OK(
-        writer->Init(options_.GetFileSystem(), path_factory_->NewPath(), resources.writer_builder));
+    PAIMON_RETURN_NOT_OK(writer->Init(options_.GetFileSystem(), NewFilePath(format->Identifier()),
+                                      resources.writer_builder));
     return std::unique_ptr<SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>(
         std::move(writer));
+}
+
+std::shared_ptr<FileFormat> KeyValueDataFileWriterFactory::GetFileFormat() const {
+    if (is_changelog_) {
+        std::shared_ptr<FileFormat> changelog_format = options_.GetChangelogFileFormat();
+        if (changelog_format) {
+            return changelog_format;
+        }
+    }
+    return options_.GetWriteFileFormat(level_);
+}
+
+std::string KeyValueDataFileWriterFactory::GetFileCompression() const {
+    if (is_changelog_) {
+        std::optional<std::string> changelog_compression = options_.GetChangelogFileCompression();
+        if (changelog_compression) {
+            return changelog_compression.value();
+        }
+    }
+    return options_.GetWriteFileCompression(level_);
+}
+
+std::string KeyValueDataFileWriterFactory::NewFilePath(const std::string& format_identifier) const {
+    if (is_changelog_) {
+        return path_factory_->NewChangelogPath(options_.ChangelogFilePrefix(), format_identifier);
+    }
+    return path_factory_->NewPath();
 }
 
 }  // namespace paimon

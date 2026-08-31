@@ -28,6 +28,7 @@
 #pragma once
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -36,9 +37,55 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/io/byte_order.h"
 #include "paimon/status.h"
 
 namespace paimon {
+
+inline constexpr uint32_t kCanonicalFloatNaNBits = 0x7fc00000;
+inline constexpr uint64_t kCanonicalDoubleNaNBits = 0x7ff8000000000000;
+
+template <typename FloatingPoint, typename Bits>
+inline FloatingPoint FloatingPointFromBits(Bits bits) {
+    static_assert(std::is_floating_point_v<FloatingPoint>);
+    static_assert(std::is_integral_v<Bits>);
+    static_assert(sizeof(FloatingPoint) == sizeof(Bits));
+    FloatingPoint value;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+inline float CanonicalizeFloatingPoint(float value) {
+    if (std::isnan(value)) {
+        return FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
+    }
+    return value;
+}
+
+inline double CanonicalizeFloatingPoint(double value) {
+    if (std::isnan(value)) {
+        return FloatingPointFromBits<double>(kCanonicalDoubleNaNBits);
+    }
+    return value;
+}
+
+inline int32_t CanonicalizeFloatToIntBits(float value) {
+    if (std::isnan(value)) {
+        return static_cast<int32_t>(kCanonicalFloatNaNBits);
+    }
+    int32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+inline int64_t CanonicalizeDoubleToLongBits(double value) {
+    if (std::isnan(value)) {
+        return static_cast<int64_t>(kCanonicalDoubleNaNBits);
+    }
+    int64_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
 
 template <typename To, typename From>
 constexpr bool InRange(From value) {
@@ -134,6 +181,32 @@ inline T EndianSwapValue(T v) {
         }
         return ret_val;
     }
+}
+
+template <typename T>
+inline T ToBigEndian(T value) {
+    if constexpr (SystemByteOrder() == ByteOrder::PAIMON_LITTLE_ENDIAN) {
+        return EndianSwapValue(value);
+    }
+    return value;
+}
+
+template <typename T>
+inline T ToLittleEndian(T value) {
+    if constexpr (SystemByteOrder() == ByteOrder::PAIMON_BIG_ENDIAN) {
+        return EndianSwapValue(value);
+    }
+    return value;
+}
+
+template <typename T>
+inline T FromBigEndian(T value) {
+    return ToBigEndian(value);
+}
+
+template <typename T>
+inline T FromLittleEndian(T value) {
+    return ToLittleEndian(value);
 }
 
 }  // namespace paimon

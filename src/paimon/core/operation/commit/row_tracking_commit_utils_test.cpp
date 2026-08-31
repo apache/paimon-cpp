@@ -61,7 +61,8 @@ class RowTrackingCommitUtilsTest : public testing::Test {
             /*embedded_index=*/nullptr, file_source,
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt,
-            /*first_row_id=*/std::nullopt, write_cols);
+            /*first_row_id=*/std::nullopt, write_cols,
+            /*column_max_sequence_numbers=*/std::nullopt);
         return ManifestEntry(FileKind::Add(), CreateIntRow(1), /*bucket=*/0, /*total_buckets=*/1,
                              file_meta);
     }
@@ -81,7 +82,8 @@ class RowTrackingCommitUtilsTest : public testing::Test {
             /*delete_row_count=*/std::nullopt,
             /*embedded_index=*/nullptr, file_source,
             /*value_stats_cols=*/std::nullopt,
-            /*external_path=*/std::nullopt, first_row_id, write_cols);
+            /*external_path=*/std::nullopt, first_row_id, write_cols,
+            /*column_max_sequence_numbers=*/std::nullopt);
         return ManifestEntry(FileKind::Add(), CreateIntRow(1), /*bucket=*/0, /*total_buckets=*/1,
                              file_meta);
     }

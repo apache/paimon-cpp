@@ -232,8 +232,11 @@ TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
 TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     ArrowRealtimeStoreFactory factory;
     std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
+    RealtimeStoreCreateRequest request{std::move(write_schema),
+                                       /*options=*/{}, pool_, RealtimeStoreMode::APPEND_ONLY,
+                                       StatisticsMode::FULL};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeStore> realtime_store,
-                         factory.Create(std::move(write_schema), StatisticsMode::FULL, {}, pool_));
+                         factory.Create(std::move(request)));
     std::shared_ptr<ArrowRealtimeStore> store =
         std::dynamic_pointer_cast<ArrowRealtimeStore>(realtime_store);
     ASSERT_NE(nullptr, store);

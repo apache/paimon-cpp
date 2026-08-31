@@ -101,7 +101,7 @@ class ManifestFileMergerTest : public testing::Test {
                 nullptr,  // not used
                 FileSource::Append(), /*value_stats_cols=*/std::nullopt,
                 /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-                /*write_cols=*/std::nullopt));
+                /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt));
     }
 
     ManifestFileMeta MakeManifest(const std::vector<ManifestEntry>& entries) {

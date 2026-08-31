@@ -115,7 +115,7 @@ class BucketedAppendCompactManagerTest : public testing::Test {
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     std::shared_ptr<DataFileMeta> NewNamedFile(const std::string& file_name, int64_t file_size,
@@ -135,7 +135,7 @@ class BucketedAppendCompactManagerTest : public testing::Test {
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     std::shared_ptr<BucketedDvMaintainer> CreateTestDvMaintainer(

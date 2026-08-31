@@ -47,26 +47,11 @@ Result<std::unique_ptr<FieldsComparator>> FieldsComparator::Create(
 Result<std::unique_ptr<FieldsComparator>> FieldsComparator::Create(
     const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
     bool is_ascending_order) {
-    return Create(input_data_field, sort_fields, is_ascending_order,
-                  /*use_java_floating_point_order=*/false);
-}
-
-Result<std::unique_ptr<FieldsComparator>> FieldsComparator::CreateWithJavaFloatingPointOrder(
-    const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
-    bool is_ascending_order) {
-    return Create(input_data_field, sort_fields, is_ascending_order,
-                  /*use_java_floating_point_order=*/true);
-}
-
-Result<std::unique_ptr<FieldsComparator>> FieldsComparator::Create(
-    const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
-    bool is_ascending_order, bool use_java_floating_point_order) {
     std::vector<FieldComparatorFunc> comparators;
     comparators.reserve(sort_fields.size());
     for (const auto& sort_field_idx : sort_fields) {
         const auto& type = input_data_field[sort_field_idx].Type();
-        PAIMON_ASSIGN_OR_RAISE(FieldComparatorFunc cmp,
-                               CompareField(sort_field_idx, type, use_java_floating_point_order));
+        PAIMON_ASSIGN_OR_RAISE(FieldComparatorFunc cmp, CompareField(sort_field_idx, type));
         comparators.emplace_back(cmp);
     }
     return std::unique_ptr<FieldsComparator>(
@@ -96,33 +81,32 @@ int32_t FieldsComparator::CompareTo(const InternalRow& lhs, const InternalRow& r
 }
 
 Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
-    int32_t field_idx, const std::shared_ptr<arrow::DataType>& input_type,
-    bool use_java_floating_point_order) {
+    int32_t field_idx, const std::shared_ptr<arrow::DataType>& input_type) {
     arrow::Type::type type = input_type->id();
     switch (type) {
         case arrow::Type::type::BOOL:
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     bool lvalue = lhs.GetBoolean(field_idx);
                     bool rvalue = rhs.GetBoolean(field_idx);
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::INT8:
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     int8_t lvalue = lhs.GetByte(field_idx);
                     int8_t rvalue = rhs.GetByte(field_idx);
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::INT16:
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     int16_t lvalue = lhs.GetShort(field_idx);
                     int16_t rvalue = rhs.GetShort(field_idx);
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::DATE32:
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     int32_t lvalue = lhs.GetDate(field_idx);
                     int32_t rvalue = rhs.GetDate(field_idx);
@@ -130,44 +114,36 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
                 });
 
         case arrow::Type::type::INT32:
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     int32_t lvalue = lhs.GetInt(field_idx);
                     int32_t rvalue = rhs.GetInt(field_idx);
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::INT64:
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     int64_t lvalue = lhs.GetLong(field_idx);
                     int64_t rvalue = rhs.GetLong(field_idx);
                     return lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1);
                 });
         case arrow::Type::type::FLOAT:
-            // The legacy branch does not define a strict order for NaN. Primary-key BTree index
-            // construction opts into the Java floating-point order instead.
-            return FieldsComparator::FieldComparatorFunc(
-                [field_idx, use_java_floating_point_order](const InternalRow& lhs,
-                                                           const InternalRow& rhs) -> int32_t {
+            return FieldComparatorFunc(
+                [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     float lvalue = lhs.GetFloat(field_idx);
                     float rvalue = rhs.GetFloat(field_idx);
-                    return use_java_floating_point_order
-                               ? CompareFloatingPoint(lvalue, rvalue)
-                               : (lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1));
+                    return CompareFloatingPoint(lvalue, rvalue);
                 });
         case arrow::Type::type::DOUBLE:
-            return FieldsComparator::FieldComparatorFunc(
-                [field_idx, use_java_floating_point_order](const InternalRow& lhs,
-                                                           const InternalRow& rhs) -> int32_t {
+            return FieldComparatorFunc(
+                [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     double lvalue = lhs.GetDouble(field_idx);
                     double rvalue = rhs.GetDouble(field_idx);
-                    return use_java_floating_point_order
-                               ? CompareFloatingPoint(lvalue, rvalue)
-                               : (lvalue == rvalue ? 0 : (lvalue < rvalue ? -1 : 1));
+                    return CompareFloatingPoint(lvalue, rvalue);
                 });
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY: {
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     auto lvalue = lhs.GetStringView(field_idx);
                     auto rvalue = rhs.GetStringView(field_idx);
@@ -178,7 +154,7 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
         case arrow::Type::type::TIMESTAMP: {
             auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(input_type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(timestamp_type);
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx, precision](const InternalRow& lhs, const InternalRow& rhs) -> int32_t {
                     Timestamp lvalue = lhs.GetTimestamp(field_idx, precision);
                     Timestamp rvalue = rhs.GetTimestamp(field_idx, precision);
@@ -189,7 +165,7 @@ Result<FieldsComparator::FieldComparatorFunc> FieldsComparator::CompareField(
             auto* decimal_type = checked_cast<arrow::Decimal128Type*>(input_type.get());
             auto precision = decimal_type->precision();
             auto scale = decimal_type->scale();
-            return FieldsComparator::FieldComparatorFunc(
+            return FieldComparatorFunc(
                 [field_idx, precision, scale](const InternalRow& lhs,
                                               const InternalRow& rhs) -> int32_t {
                     Decimal lvalue = lhs.GetDecimal(field_idx, precision, scale);

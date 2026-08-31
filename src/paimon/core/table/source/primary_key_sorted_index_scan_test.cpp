@@ -220,7 +220,8 @@ class PrimaryKeySortedIndexScanTest : public ::testing::Test {
             /*creation_time=*/Timestamp(1721643142456LL, 0), delete_row_count,
             /*embedded_index=*/nullptr, file_source,
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
-            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     Result<std::shared_ptr<IndexFileMeta>> BuildPayload(std::vector<int64_t> ordinals,
@@ -254,6 +255,23 @@ class PrimaryKeySortedIndexScanTest : public ::testing::Test {
             ordinals.push_back(i);
         }
         return BuildPayload(std::move(ordinals));
+    }
+
+    Result<std::shared_ptr<IndexFileMeta>> MakeMetadataPayload(
+        const std::string& name, const std::vector<PrimaryKeyIndexSourceFile>& sources,
+        int32_t data_level = 5) {
+        int64_t row_count = 0;
+        for (const PrimaryKeyIndexSourceFile& source : sources) {
+            row_count += source.row_count;
+        }
+        PAIMON_ASSIGN_OR_RAISE(PrimaryKeyIndexSourceMeta source_meta,
+                               PrimaryKeyIndexSourceMeta::Create(data_level, sources));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> source_meta_bytes,
+                               source_meta.Serialize(pool_));
+        return std::make_shared<IndexFileMeta>(
+            "btree", name, /*file_size=*/1, row_count, std::nullopt, std::nullopt,
+            GlobalIndexMeta(/*row_range_start=*/0, /*row_range_end=*/row_count - 1, kPriceFieldId,
+                            std::nullopt, /*index_meta=*/nullptr, source_meta_bytes));
     }
 
     std::shared_ptr<DataSplitImpl> MakeSplit(
@@ -433,6 +451,166 @@ TEST_F(PrimaryKeySortedIndexScanTest, GroupAndQueryAreSharedAcrossSourceFiles) {
     ASSERT_OK(PrimaryKeySortedIndexScan::Evaluate(plan, table_schema_, PriceEqual(10), definitions_,
                                                   reader_factory));
     ASSERT_EQ(1, *equal_call_count);
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, RetiredSourcesPreserveGroupOrdinalOffsets) {
+    const std::vector<PrimaryKeyIndexSourceFile> sources = {{"a-retired-prefix.parquet", 3},
+                                                            {"b-active-left.parquet", 4},
+                                                            {"c-retired-middle.parquet", 5},
+                                                            {"d-active-right.parquet", 6}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload,
+                         MakeMetadataPayload("payload.index", sources));
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("b-active-left.parquet", 4, 5, FileSource::Compact()),
+                   MakeDataFile("d-active-right.parquet", 6, 5, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::Plan plan,
+                         PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, {split}, definitions_,
+                                                               MakeEntries(payload)));
+    ASSERT_EQ(2, plan.Files().size());
+    ASSERT_EQ(plan.Files()[0].Group(kPriceFieldId), plan.Files()[1].Group(kPriceFieldId));
+    ASSERT_EQ(sources, plan.Files()[0].Group(kPriceFieldId)->SourceFiles());
+
+    RoaringBitmap64 group_positions;
+    group_positions.Add(3);
+    group_positions.Add(12);
+    auto equal_call_count = std::make_shared<int32_t>(0);
+    PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
+        [group_positions, equal_call_count](
+            const PrimaryKeySortedIndexScan::FilePlan& file,
+            const PrimaryKeyIndexDefinition& definition,
+            const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
+        return std::make_shared<StubGlobalIndexReader>(group_positions, equal_call_count);
+    };
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::EvaluatedPlan evaluated,
+                         PrimaryKeySortedIndexScan::Evaluate(plan, table_schema_, PriceEqual(10),
+                                                             definitions_, reader_factory));
+    ASSERT_EQ(1, *equal_call_count);
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> result_splits,
+                         PrimaryKeySortedIndexResult::ToSplits(evaluated));
+    ASSERT_EQ(2, result_splits.size());
+    for (size_t i = 0; i < result_splits.size(); i++) {
+        auto indexed = std::dynamic_pointer_cast<IndexedSplitImpl>(result_splits[i]);
+        ASSERT_TRUE(indexed != nullptr);
+        auto inner = std::dynamic_pointer_cast<DataSplitImpl>(indexed->GetDataSplit());
+        ASSERT_TRUE(inner != nullptr);
+        ASSERT_EQ(1, inner->DataFiles().size());
+        ASSERT_EQ(i == 0 ? "b-active-left.parquet" : "d-active-right.parquet",
+                  inner->DataFiles()[0]->file_name);
+        ASSERT_EQ(1, indexed->RowRanges().size());
+        ASSERT_EQ(0, indexed->RowRanges()[0].from);
+        ASSERT_EQ(0, indexed->RowRanges()[0].to);
+    }
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, SourceMovedToDifferentLevelFallsBack) {
+    const std::vector<PrimaryKeyIndexSourceFile> sources = {{"a-stays.parquet", 4},
+                                                            {"b-moved.parquet", 6}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload,
+                         MakeMetadataPayload("payload.index", sources, /*data_level=*/5));
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a-stays.parquet", 4, 5, FileSource::Compact()),
+                   MakeDataFile("b-moved.parquet", 6, 4, FileSource::Compact())},
+                  /*raw_convertible=*/true);
+
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::Plan plan,
+                         PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, {split}, definitions_,
+                                                               MakeEntries(payload)));
+
+    ASSERT_EQ(2, plan.Files().size());
+    ASSERT_NE(nullptr, plan.Files()[0].Group(kPriceFieldId));
+    ASSERT_EQ(nullptr, plan.Files()[1].Group(kPriceFieldId));
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, UpdatedFileFallsBackWhileOldIndexedFileKeepsDeletionFile) {
+    const std::vector<PrimaryKeyIndexSourceFile> old_sources = {{"a-retired-prefix.parquet", 3},
+                                                                {"b-active-old.parquet", 4},
+                                                                {"c-retired-middle.parquet", 5}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload,
+                         MakeMetadataPayload("old-payload.index", old_sources));
+    DeletionFile old_deletion_file("dv-old", /*offset=*/0, /*length=*/16, /*cardinality=*/1);
+    std::shared_ptr<DataSplitImpl> split = MakeSplit(
+        {MakeDataFile("b-active-old.parquet", 4, 5, FileSource::Compact()),
+         MakeDataFile("d-new.parquet", 6, 5, FileSource::Compact())},
+        /*raw_convertible=*/true, {std::optional<DeletionFile>(old_deletion_file), std::nullopt});
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::Plan plan,
+                         PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, {split}, definitions_,
+                                                               MakeEntries(payload)));
+    ASSERT_EQ(2, plan.Files().size());
+    ASSERT_TRUE(plan.Files()[0].Group(kPriceFieldId) != nullptr);
+    ASSERT_TRUE(plan.Files()[1].Groups().empty());
+
+    RoaringBitmap64 old_group_position;
+    old_group_position.Add(4);
+    PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
+        [old_group_position](
+            const PrimaryKeySortedIndexScan::FilePlan& file,
+            const PrimaryKeyIndexDefinition& definition,
+            const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
+        return std::make_shared<StubGlobalIndexReader>(old_group_position);
+    };
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::EvaluatedPlan evaluated,
+                         PrimaryKeySortedIndexScan::Evaluate(plan, table_schema_, PriceEqual(10),
+                                                             definitions_, reader_factory));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> result_splits,
+                         PrimaryKeySortedIndexResult::ToSplits(evaluated));
+    ASSERT_EQ(2, result_splits.size());
+
+    auto indexed_old = std::dynamic_pointer_cast<IndexedSplitImpl>(result_splits[0]);
+    ASSERT_TRUE(indexed_old != nullptr);
+    ASSERT_EQ(1, indexed_old->RowRanges().size());
+    ASSERT_EQ(1, indexed_old->RowRanges()[0].from);
+    ASSERT_EQ(1, indexed_old->RowRanges()[0].to);
+    auto old_file = std::dynamic_pointer_cast<DataSplitImpl>(indexed_old->GetDataSplit());
+    ASSERT_TRUE(old_file != nullptr);
+    ASSERT_EQ("b-active-old.parquet", old_file->DataFiles()[0]->file_name);
+    ASSERT_EQ(1, old_file->DeletionFiles().size());
+    ASSERT_TRUE(old_file->DeletionFiles()[0].has_value());
+    ASSERT_EQ("dv-old", old_file->DeletionFiles()[0]->path);
+
+    auto new_file = std::dynamic_pointer_cast<DataSplitImpl>(result_splits[1]);
+    ASSERT_TRUE(new_file != nullptr);
+    ASSERT_EQ("d-new.parquet", new_file->DataFiles()[0]->file_name);
+    ASSERT_FALSE(new_file->RawConvertible());
+    ASSERT_EQ(1, new_file->DeletionFiles().size());
+    ASSERT_FALSE(new_file->DeletionFiles()[0].has_value());
+}
+
+TEST_F(PrimaryKeySortedIndexScanTest, NoneligibleActiveSourceDoesNotInheritAcceptedGroup) {
+    const std::vector<PrimaryKeyIndexSourceFile> sources = {{"a-eligible.parquet", 4},
+                                                            {"b-append.parquet", 6}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload,
+                         MakeMetadataPayload("payload.index", sources));
+    std::shared_ptr<DataSplitImpl> split =
+        MakeSplit({MakeDataFile("a-eligible.parquet", 4, 5, FileSource::Compact()),
+                   MakeDataFile("b-append.parquet", 6, 5, FileSource::Append())},
+                  /*raw_convertible=*/true);
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::Plan plan,
+                         PrimaryKeySortedIndexScan::CreatePlan(kSnapshotId, {split}, definitions_,
+                                                               MakeEntries(payload)));
+    ASSERT_EQ(2, plan.Files().size());
+    ASSERT_TRUE(plan.Files()[0].Group(kPriceFieldId) != nullptr);
+    ASSERT_TRUE(plan.Files()[1].Groups().empty());
+
+    RoaringBitmap64 eligible_position;
+    eligible_position.Add(0);
+    PrimaryKeySortedIndexScan::ReaderFactory reader_factory =
+        [eligible_position](
+            const PrimaryKeySortedIndexScan::FilePlan& file,
+            const PrimaryKeyIndexDefinition& definition,
+            const PkSortedIndexGroup& group) -> Result<std::shared_ptr<GlobalIndexReader>> {
+        return std::make_shared<StubGlobalIndexReader>(eligible_position);
+    };
+    ASSERT_OK_AND_ASSIGN(PrimaryKeySortedIndexScan::EvaluatedPlan evaluated,
+                         PrimaryKeySortedIndexScan::Evaluate(plan, table_schema_, PriceEqual(10),
+                                                             definitions_, reader_factory));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> result_splits,
+                         PrimaryKeySortedIndexResult::ToSplits(evaluated));
+    ASSERT_EQ(2, result_splits.size());
+    ASSERT_TRUE(std::dynamic_pointer_cast<IndexedSplitImpl>(result_splits[0]) != nullptr);
+    auto append_fallback = std::dynamic_pointer_cast<DataSplitImpl>(result_splits[1]);
+    ASSERT_TRUE(append_fallback != nullptr);
+    ASSERT_EQ("b-append.parquet", append_fallback->DataFiles()[0]->file_name);
 }
 
 TEST_F(PrimaryKeySortedIndexScanTest, EmptyResultOmitsAllFiles) {

@@ -24,12 +24,31 @@
 #include <new>
 #include <string>
 
+#include "arrow/c/abi.h"
+#include "arrow/c/helpers.h"
 #include "arrow/memory_pool.h"
 #include "arrow/status.h"
 #include "fmt/format.h"
 #include "paimon/memory/memory_pool.h"
 
 namespace paimon {
+namespace {
+
+struct ArrowArrayPrivateData {
+    void (*release)(ArrowArray*);
+    void* private_data;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool;
+};
+
+void ReleaseArrowArray(ArrowArray* array) {
+    std::unique_ptr<ArrowArrayPrivateData> data(
+        static_cast<ArrowArrayPrivateData*>(array->private_data));
+    array->release = data->release;
+    array->private_data = data->private_data;
+    array->release(array);
+}
+
+}  // namespace
 
 class ArrowMemPoolAdaptor : public arrow::MemoryPool {
  public:
@@ -105,6 +124,28 @@ class ArrowMemPoolAdaptor : public arrow::MemoryPool {
 
 std::unique_ptr<arrow::MemoryPool> GetArrowPool(const std::shared_ptr<MemoryPool>& pool) {
     return std::make_unique<ArrowMemPoolAdaptor>(pool);
+}
+
+Status RetainArrowArrayMemoryPool(ArrowArray* array,
+                                  const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    if (!array || !array->release) {
+        return Status::Invalid("cannot retain Arrow array memory pool");
+    }
+    if (!arrow_pool) {
+        ArrowArrayRelease(array);
+        return Status::Invalid("cannot retain Arrow array memory pool");
+    }
+    std::unique_ptr<ArrowArrayPrivateData> data;
+    try {
+        data = std::make_unique<ArrowArrayPrivateData>(
+            ArrowArrayPrivateData{array->release, array->private_data, arrow_pool});
+    } catch (const std::bad_alloc&) {
+        ArrowArrayRelease(array);
+        return Status::OutOfMemory("failed to retain Arrow array memory pool");
+    }
+    array->private_data = data.release();
+    array->release = ReleaseArrowArray;
+    return Status::OK();
 }
 
 }  // namespace paimon

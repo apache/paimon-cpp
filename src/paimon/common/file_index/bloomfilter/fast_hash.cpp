@@ -27,6 +27,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/file_index_result.h"
@@ -58,17 +59,11 @@ Result<FastHash::HashFunction> FastHash::GetHashFunction(
             });
         case FieldType::FLOAT:
             return HashFunction([](const Literal& literal) -> int64_t {
-                auto raw_value = literal.GetValue<float>();
-                int32_t bits = 0;
-                std::memcpy(&bits, &raw_value, sizeof(raw_value));
-                return GetLongHash(bits);
+                return GetLongHash(CanonicalizeFloatToIntBits(literal.GetValue<float>()));
             });
         case FieldType::DOUBLE:
             return HashFunction([](const Literal& literal) -> int64_t {
-                auto raw_value = literal.GetValue<double>();
-                int64_t bits;
-                std::memcpy(&bits, &raw_value, sizeof(raw_value));
-                return GetLongHash(bits);
+                return GetLongHash(CanonicalizeDoubleToLongBits(literal.GetValue<double>()));
             });
         case FieldType::TIMESTAMP: {
             auto ts_type = checked_pointer_cast<arrow::TimestampType>(arrow_type);

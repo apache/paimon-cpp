@@ -35,7 +35,8 @@ namespace paimon::test {
 TEST(BloomFilterTest, TestOneSegmentBuilder) {
     int32_t items = 100;
     auto pool = GetDefaultPool();
-    auto bloom_filter = BloomFilter::Create(items, 0.01);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bloom_filter,
+                         BloomFilter::Create(items, 0.01));
     auto seg = MemorySegment::AllocateHeapMemory(1024, pool.get());
     ASSERT_OK(bloom_filter->SetMemorySegment(seg));
 
@@ -54,12 +55,32 @@ TEST(BloomFilterTest, TestOneSegmentBuilder) {
 }
 
 TEST(BloomFilterTest, TestEstimatedHashFunctions) {
-    ASSERT_EQ(7, BloomFilter::Create(1000, 0.01)->GetNumHashFunctions());
-    ASSERT_EQ(7, BloomFilter::Create(10000, 0.01)->GetNumHashFunctions());
-    ASSERT_EQ(7, BloomFilter::Create(100000, 0.01)->GetNumHashFunctions());
-    ASSERT_EQ(4, BloomFilter::Create(100000, 0.05)->GetNumHashFunctions());
-    ASSERT_EQ(7, BloomFilter::Create(1000000, 0.01)->GetNumHashFunctions());
-    ASSERT_EQ(4, BloomFilter::Create(1000000, 0.05)->GetNumHashFunctions());
+    auto get_num_hash_functions = [](int64_t expected_entries, double fpp) {
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<BloomFilter> bloom_filter,
+                             BloomFilter::Create(expected_entries, fpp));
+        return bloom_filter->GetNumHashFunctions();
+    };
+    ASSERT_EQ(7, get_num_hash_functions(1000, 0.01));
+    ASSERT_EQ(7, get_num_hash_functions(10000, 0.01));
+    ASSERT_EQ(7, get_num_hash_functions(100000, 0.01));
+    ASSERT_EQ(4, get_num_hash_functions(100000, 0.05));
+    ASSERT_EQ(7, get_num_hash_functions(1000000, 0.01));
+    ASSERT_EQ(4, get_num_hash_functions(1000000, 0.05));
+}
+
+TEST(BloomFilterTest, TestInvalidExpectedEntriesAndFpp) {
+    ASSERT_NOK_WITH_MSG(BloomFilter::Create(/*expected_entries=*/0, /*fpp=*/0.1),
+                        "expected entries must be greater than 0");
+    ASSERT_NOK_WITH_MSG(BloomFilter::Create(/*expected_entries=*/-1, /*fpp=*/0.1),
+                        "expected entries must be greater than 0");
+    ASSERT_NOK_WITH_MSG(BloomFilter::Create(/*expected_entries=*/100, /*fpp=*/0.0),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(BloomFilter::Create(/*expected_entries=*/100, /*fpp=*/-0.1),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(BloomFilter::Create(/*expected_entries=*/100, /*fpp=*/1.0),
+                        "fpp must be greater than 0 and less than 1");
+    ASSERT_NOK_WITH_MSG(BloomFilter::Create(/*expected_entries=*/100, /*fpp=*/1.1),
+                        "fpp must be greater than 0 and less than 1");
 }
 
 TEST(BloomFilterTest, TestBloomNumBits) {

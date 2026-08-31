@@ -223,6 +223,8 @@ DataSplitImpl::GetFileMetaSerializer(int32_t version, const std::shared_ptr<Memo
         return std::make_unique<DataFileMeta12Serializer>(pool);
     } else if (version == 7) {
         return std::make_unique<DataFileMetaFirstRowIdLegacySerializer>(pool);
+    } else if (version == 8) {
+        return std::make_unique<DataFileMetaWriteColsLegacySerializer>(pool);
     } else if (version == VERSION) {
         return std::make_unique<DataFileMetaSerializer>(pool);
     } else {

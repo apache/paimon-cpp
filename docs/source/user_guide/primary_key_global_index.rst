@@ -21,8 +21,8 @@ Primary Key Global Index
 Paimon 2.0 primary-key tables support *source-backed* global scalar indexes
 (``pk-btree`` / ``pk-bitmap``). Unlike the Data Evolution global indexes described in
 :doc:`global_index`, which address rows by a table-wide row id, a source-backed payload
-covers the complete active source set of one positive data level of one bucket, and its
-results are group ordinals that are localized back to per-file physical row positions.
+covers an immutable ordered source group from one positive data level of one bucket, and
+its results are group ordinals that are localized back to per-file physical row positions.
 
 paimon-cpp supports the BTree build, maintenance, and read lifecycle of this protocol for
 fixed-bucket primary-key tables. Compaction automatically builds one immutable payload for
@@ -44,21 +44,25 @@ The definitions follow the Java table options:
 Semantics
 ---------
 
-- A payload is only used when it provably covers the current active source set of its
-  data level: exactly one payload per level, source file names / order / row counts
-  identical to the active COMPACT files of that level, matching index type and field id,
-  and a row range of exactly ``[0, total source rows - 1]``. Anything else is treated as
-  uncovered and scanned normally.
+- A payload retains its complete ordered source list as the group-ordinal namespace. If
+  part of that list is not in the current scan because it was retired or safely pruned,
+  the payload can still cover the remaining files. There is at most one accepted payload
+  per data level. A payload is rejected if it has no active source at its metadata-declared
+  level, an active source's row count differs, its metadata or row range is invalid, or
+  another payload exists for that level. Active files without accepted coverage are scanned
+  normally.
 - Index construction reads every physical source row without applying deletion vectors,
-  orders source files by file name, and externally sorts ``(value, group row id)``. Missing,
-  duplicate, malformed, or stale payloads cause their complete level to be rebuilt. Data
-  files and the corresponding index ADD / DELETE entries are committed in the same
-  snapshot.
+  orders source files by file name, and externally sorts ``(value, group row id)``. During
+  maintenance, missing, duplicate, malformed, or incomplete payloads cause their complete current
+  level to be rebuilt. A payload that still covers every active source is reused even if it also
+  lists retired sources. Data files and the corresponding index ADD / DELETE entries are committed
+  in the same snapshot.
 - The builder uses the existing write-buffer and spill settings. A write context needs a
   temporary directory when a level exceeds the in-memory write buffer and spill is enabled.
-- If payload construction fails, the data-file transition is still committed and the affected
-  level remains uncovered; scans fall back to the data files and a later maintenance attempt can
-  rebuild the payload. Structural commit-increment errors are still rejected.
+- If payload construction fails, the data-file transition is still committed. Uncovered files at
+  that level fall back to scanning while any previously usable payload remains active, and a later
+  maintenance attempt can rebuild the complete current source group. Structural commit-increment
+  errors are still rejected.
 - Snapshot expiration retains payloads referenced by the snapshots in its retention set and
   current-branch live tags, and removes retired payloads before their index manifests, including
   payloads on an external index path. Expiration is rejected while another branch exists until

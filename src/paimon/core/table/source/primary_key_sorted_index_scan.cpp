@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cassert>
 #include <set>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -34,6 +35,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
+#include "paimon/core/index/pk/primary_key_index_source_policy.h"
 #include "paimon/core/index/pksorted/pk_sorted_bucket_index_state.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
@@ -385,9 +387,12 @@ Result<PrimaryKeySortedIndexScan::Plan> PrimaryKeySortedIndexScan::CreatePlan(
         if (payloads_iter != payloads_by_bucket.end()) {
             bucket_payloads = payloads_iter->second;
         }
-        std::set<std::pair<std::string, int64_t>> active_source_files;
+        std::set<std::tuple<int32_t, std::string, int64_t>> active_source_files;
         for (const std::shared_ptr<DataFileMeta>& data_file : bucket_entry.second) {
-            active_source_files.emplace(data_file->file_name, data_file->row_count);
+            if (data_file != nullptr && PrimaryKeyIndexSourcePolicy::ShouldRead(*data_file)) {
+                active_source_files.emplace(data_file->level, data_file->file_name,
+                                            data_file->row_count);
+            }
         }
         std::map<std::string, std::map<int32_t, std::shared_ptr<PkSortedIndexGroup>>>
             groups_by_source;
@@ -405,8 +410,8 @@ Result<PrimaryKeySortedIndexScan::Plan> PrimaryKeySortedIndexScan::CreatePlan(
                 definition_payloads);
             for (const std::shared_ptr<PkSortedIndexGroup>& group : state.Groups()) {
                 for (const PrimaryKeyIndexSourceFile& source_file : group->SourceFiles()) {
-                    if (active_source_files.count({source_file.file_name, source_file.row_count}) ==
-                        0) {
+                    if (active_source_files.count({group->DataLevel(), source_file.file_name,
+                                                   source_file.row_count}) == 0) {
                         continue;
                     }
                     groups_by_source[source_file.file_name][definition.FieldId()] = group;

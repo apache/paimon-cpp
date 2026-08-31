@@ -226,7 +226,7 @@ TEST_P(PostponeBucketWriterTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
@@ -308,7 +308,7 @@ TEST_P(PostponeBucketWriterTest, TestNestedType) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
@@ -474,7 +474,7 @@ TEST_P(PostponeBucketWriterTest, TestWriteMultiBatch) {
         /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
@@ -624,7 +624,7 @@ TEST_P(PostponeBucketWriterTest, TestMultiplePrepareCommit) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment1({expected_data_file_meta1}, /*deleted_files=*/{},
                                            /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment1, commit_increment1.GetNewFilesIncrement());
@@ -644,7 +644,7 @@ TEST_P(PostponeBucketWriterTest, TestMultiplePrepareCommit) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataIncrement expected_data_increment2({expected_data_file_meta2}, /*deleted_files=*/{},
                                            /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment2, commit_increment2.GetNewFilesIncrement());

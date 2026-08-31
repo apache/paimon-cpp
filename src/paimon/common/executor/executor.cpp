@@ -40,23 +40,26 @@ class DefaultExecutor : public Executor {
     uint32_t GetThreadNum() const override;
 
  private:
-    void WorkerThread();
+    struct State {
+        std::queue<std::function<void()>> tasks;
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool stop = false;
+    };
+
+    static void WorkerThread(std::shared_ptr<State> state);
     void ShutdownInternal(bool wait_for_pending_tasks);
 
  private:
     uint32_t thread_count_;
     std::vector<std::thread> workers_;
-    std::queue<std::function<void()>> tasks_;
-    std::mutex queue_mutex_;
-    std::condition_variable condition_;
-    bool stop_ = false;
-    int32_t active_tasks_ = 0;
+    std::shared_ptr<State> state_ = std::make_shared<State>();
 };
 
 DefaultExecutor::DefaultExecutor(uint32_t thread_count) : thread_count_(thread_count) {
     assert(thread_count > 0);
     for (uint32_t i = 0; i < thread_count_; ++i) {
-        workers_.emplace_back(&DefaultExecutor::WorkerThread, this);
+        workers_.emplace_back(&DefaultExecutor::WorkerThread, state_);
     }
 }
 
@@ -66,21 +69,25 @@ uint32_t DefaultExecutor::GetThreadNum() const {
 
 void DefaultExecutor::ShutdownInternal(bool wait_for_pending_tasks) {
     {
-        std::unique_lock<std::mutex> lock(queue_mutex_);
-        if (stop_) {
+        std::unique_lock<std::mutex> lock(state_->mutex);
+        if (state_->stop) {
             return;
         }
-        stop_ = true;
+        state_->stop = true;
         if (!wait_for_pending_tasks) {
             // Discard all pending tasks immediately.
             std::queue<std::function<void()>> empty;
-            tasks_.swap(empty);
+            state_->tasks.swap(empty);
         }
-        condition_.notify_all();
+        state_->condition.notify_all();
     }
     for (std::thread& worker : workers_) {
         if (worker.joinable()) {
-            worker.join();
+            if (worker.get_id() == std::this_thread::get_id()) {
+                worker.detach();
+            } else {
+                worker.join();
+            }
         }
     }
 }
@@ -100,38 +107,32 @@ void DefaultExecutor::Add(std::function<void()> func) {
         return;
     }
     {
-        std::unique_lock<std::mutex> lock(queue_mutex_);
-        if (stop_) {
+        std::unique_lock<std::mutex> lock(state_->mutex);
+        if (state_->stop) {
             return;
         }
-        tasks_.emplace(std::move(func));
+        state_->tasks.emplace(std::move(func));
     }
-    condition_.notify_one();
+    state_->condition.notify_one();
 }
 
-void DefaultExecutor::WorkerThread() {
+void DefaultExecutor::WorkerThread(std::shared_ptr<State> state) {
     while (true) {
         std::function<void()> task;
         {
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-            condition_.wait(lock, [this] { return stop_ || !tasks_.empty(); });
-            if (stop_ && tasks_.empty() && active_tasks_ == 0) {
-                condition_.notify_all();
+            std::unique_lock<std::mutex> lock(state->mutex);
+            state->condition.wait(lock, [&state] { return state->stop || !state->tasks.empty(); });
+            if (state->stop && state->tasks.empty()) {
+                state->condition.notify_all();
                 return;
             }
-            if (!tasks_.empty()) {
-                task = std::move(tasks_.front());
-                tasks_.pop();
-                ++active_tasks_;
+            if (!state->tasks.empty()) {
+                task = std::move(state->tasks.front());
+                state->tasks.pop();
             }
         }
         if (task) {
             task();
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-            --active_tasks_;
-            if (tasks_.empty() && active_tasks_ == 0) {
-                condition_.notify_all();
-            }
         }
     }
 }

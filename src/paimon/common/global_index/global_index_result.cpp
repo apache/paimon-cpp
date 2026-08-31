@@ -22,6 +22,7 @@
 #include "fmt/format.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/io/byte_array_input_stream.h"
@@ -37,8 +38,8 @@ void WriteBitmapAndScores(const RoaringBitmap64* bitmap, const std::vector<float
     out->WriteBytes(bitmap_bytes);
 
     out->WriteValue<int32_t>(scores.size());
-    for (auto score : scores) {
-        out->WriteValue<float>(score);
+    for (float score : scores) {
+        out->WriteValue<float>(CanonicalizeFloatingPoint(score));
     }
 }
 

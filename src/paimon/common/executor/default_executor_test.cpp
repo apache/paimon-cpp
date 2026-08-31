@@ -125,6 +125,57 @@ TEST(DefaultExecutorTest, TestAddTaskAfterShutdownNowIgnored) {
     ASSERT_EQ(executed_count.load(), 0);
 }
 
+TEST(DefaultExecutorTest, TestConcurrentShutdownNow) {
+    constexpr int32_t kShutdownThreadCount = 2;
+    constexpr int32_t kAttempts = 50;
+    for (int32_t attempt = 0; attempt < kAttempts; ++attempt) {
+        ASSERT_OK_AND_ASSIGN(auto executor, CreateDefaultExecutor(/*thread_count=*/4));
+        std::atomic<int32_t> ready_shutdown_count = 0;
+        std::promise<void> start_signal;
+        std::shared_future<void> start_future = start_signal.get_future().share();
+        std::vector<std::thread> shutdown_threads;
+        shutdown_threads.reserve(kShutdownThreadCount);
+
+        for (int32_t thread_index = 0; thread_index < kShutdownThreadCount; ++thread_index) {
+            shutdown_threads.emplace_back([&]() {
+                ++ready_shutdown_count;
+                start_future.wait();
+                executor->ShutdownNow();
+            });
+        }
+        for (int32_t retry = 0; retry < 100 && ready_shutdown_count.load() < kShutdownThreadCount;
+             ++retry) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const int32_t ready_count_before_start = ready_shutdown_count.load();
+        start_signal.set_value();
+        for (std::thread& shutdown_thread : shutdown_threads) {
+            shutdown_thread.join();
+        }
+        ASSERT_EQ(kShutdownThreadCount, ready_count_before_start);
+    }
+}
+
+TEST(DefaultExecutorTest, TestDestroyFromWorkerThread) {
+    std::unique_ptr<Executor> created = CreateDefaultExecutor();
+    std::shared_ptr<Executor> executor(std::move(created));
+    std::shared_ptr<Executor> task_executor = executor;
+    auto release = std::make_shared<std::promise<void>>();
+    std::shared_future<void> release_future = release->get_future().share();
+    auto destroyed = std::make_shared<std::promise<void>>();
+    std::future<void> future = destroyed->get_future();
+
+    executor->Add([executor = std::move(task_executor), release_future, destroyed]() mutable {
+        release_future.wait();
+        executor.reset();
+        destroyed->set_value();
+    });
+
+    executor.reset();
+    release->set_value();
+    ASSERT_EQ(std::future_status::ready, future.wait_for(std::chrono::seconds(5)));
+}
+
 TEST(DefaultExecutorTest, TestAddTaskFromMultipleThreads) {
     ASSERT_OK_AND_ASSIGN(auto executor, CreateDefaultExecutor(/*thread_count=*/4));
 

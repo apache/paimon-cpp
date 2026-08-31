@@ -108,11 +108,12 @@ VariantType OptionalStringValue(const std::map<std::string, std::string>& option
 
 Result<VariantType> OptionalLongValue(const std::map<std::string, std::string>& options,
                                       const std::string& key) {
-    if (options.find(key) == options.end()) {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> value,
+                           OptionsUtils::GetOptionalValueFromMap<int64_t>(options, key));
+    if (!value) {
         return VariantType(NullType());
     }
-    PAIMON_ASSIGN_OR_RAISE(int64_t value, OptionsUtils::GetValueFromMap<int64_t>(options, key));
-    return VariantType(value);
+    return VariantType(value.value());
 }
 
 Result<bool> IsEnabled(const GlobalSystemTableRegistryEntry& entry,

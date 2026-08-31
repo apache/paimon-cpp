@@ -17,7 +17,7 @@
  * under the License.
  */
 
-#include "paimon/common/data/shredding/map_shared_shredding_file_reader.h"
+#include "paimon/common/data/shredding/map_shared_shredding_read_plan_factory.h"
 
 #include <map>
 #include <memory>
@@ -33,6 +33,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/map_shredding_defs.h"
+#include "paimon/common/data/shredding/shredding_file_reader.h"
 #include "paimon/common/fs/external_path_provider.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/append/append_only_writer.h"
@@ -51,7 +52,7 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-class MapSharedShreddingFileReaderTest : public ::testing::Test {
+class MapSharedShreddingReadPlanFactoryTest : public ::testing::Test {
  public:
     void SetUp() override {
         pool_ = GetDefaultPool();
@@ -100,12 +101,12 @@ class MapSharedShreddingFileReaderTest : public ::testing::Test {
             .ValueOrDie();
     }
 
-    std::unique_ptr<MapSharedShreddingFileReader> WrapReader(
+    std::unique_ptr<ShreddingFileReader> WrapReader(
         std::unique_ptr<FileBatchReader>&& reader,
         const std::optional<std::string>& selected_keys_str = std::nullopt) const {
         EXPECT_OK_AND_ASSIGN(auto c_file_schema, reader->GetFileSchema());
         auto file_schema = arrow::ImportSchema(c_file_schema.get()).ValueOrDie();
-        std::map<std::string, std::unique_ptr<MapFieldReadPlan>> field_read_plans;
+        std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> field_read_plans;
         for (const auto& field : file_schema->fields()) {
             auto metadata = std::const_pointer_cast<arrow::KeyValueMetadata>(field->metadata());
             if (!MapSharedShreddingUtils::HasShreddingMetadata(metadata)) {
@@ -124,20 +125,22 @@ class MapSharedShreddingFileReaderTest : public ::testing::Test {
             EXPECT_TRUE(item_field);
             auto map_type = checked_pointer_cast<arrow::MapType>(arrow::map(
                 arrow::utf8(), arrow::field("value", item_field->type(), item_field->nullable())));
-            std::shared_ptr<arrow::Field> logical_map_field = field->WithType(map_type);
+            std::shared_ptr<arrow::Field> logical_map_field =
+                arrow::field(field->name(), map_type, field->nullable());
             if (selected_keys_str.has_value()) {
                 logical_map_field = logical_map_field->WithMetadata(arrow::KeyValueMetadata::Make(
                     {DataField::MAP_SELECTED_KEYS}, {selected_keys_str.value()}));
             }
-            EXPECT_OK_AND_ASSIGN(auto field_read_plan, MapFieldReadPlanFactory::CreateMapReadPlan(
-                                                           logical_map_field, meta));
+            EXPECT_OK_AND_ASSIGN(
+                auto field_read_plan,
+                MapSharedShreddingReadPlanFactory::CreateMapReadPlan(logical_map_field, meta));
             field_read_plans.emplace(field->name(), std::move(field_read_plan));
         }
-        return std::make_unique<MapSharedShreddingFileReader>(std::move(reader),
-                                                              std::move(field_read_plans), pool_);
+        return std::make_unique<ShreddingFileReader>(std::move(reader), std::move(field_read_plans),
+                                                     pool_);
     }
 
-    Result<std::unique_ptr<MapSharedShreddingFileReader>> CreateReader(
+    Result<std::unique_ptr<ShreddingFileReader>> CreateReader(
         std::shared_ptr<arrow::Array> physical_array = nullptr,
         std::shared_ptr<arrow::Schema> physical_schema = nullptr,
         const std::optional<std::string>& selected_keys = std::nullopt) const {
@@ -236,20 +239,7 @@ class MapSharedShreddingFileReaderTest : public ::testing::Test {
     };
 };
 
-TEST_F(MapSharedShreddingFileReaderTest, TestGetFileSchemaReturnsLogicalMapSchema) {
-    ASSERT_OK_AND_ASSIGN(auto reader, CreateReader());
-
-    ASSERT_OK_AND_ASSIGN(auto c_schema, reader->GetFileSchema());
-    auto schema = arrow::ImportSchema(c_schema.get()).ValueOrDie();
-
-    ASSERT_TRUE(schema->Equals(logical_schema_, /*check_metadata=*/false))
-        << "Expected:\n"
-        << logical_schema_->ToString() << "\nActual:\n"
-        << schema->ToString();
-    ASSERT_FALSE(schema->field(1)->HasMetadata());
-}
-
-TEST_F(MapSharedShreddingFileReaderTest, TestAllExistSelectedKeysWithoutOverflow) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestAllExistSelectedKeysWithoutOverflow) {
     ASSERT_OK_AND_ASSIGN(auto reader,
                          CreateReader(/*physical_array=*/nullptr, /*physical_schema=*/nullptr,
                                       /*selected_keys=*/"b"));
@@ -271,7 +261,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestAllExistSelectedKeysWithoutOverflow
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestAllExistSelectedKeysWithOverflow) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestAllExistSelectedKeysWithOverflow) {
     ASSERT_OK_AND_ASSIGN(auto reader,
                          CreateReader(/*physical_array=*/nullptr, /*physical_schema=*/nullptr,
                                       /*selected_keys=*/"a,c"));
@@ -293,7 +283,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestAllExistSelectedKeysWithOverflow) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjection) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSelectedKeysStructProjection) {
     ASSERT_OK_AND_ASSIGN(auto physical_schema, PhysicalSchemaWithMetadata());
     ASSERT_OK_AND_ASSIGN(auto physical_array, PhysicalArray());
     auto mock_reader = std::make_unique<MockFileBatchReader>(
@@ -306,13 +296,13 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjection) {
     auto selected_field = arrow::field(
         "tags", selected_type, /*nullable=*/true,
         arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,c,missing"}));
-    ASSERT_OK_AND_ASSIGN(
-        auto field_read_plan,
-        MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(selected_field, TagsMeta()));
-    std::map<std::string, std::unique_ptr<MapFieldReadPlan>> contexts;
+    ASSERT_OK_AND_ASSIGN(auto field_read_plan,
+                         MapSharedShreddingReadPlanFactory::CreateSharedSelectedKeysReadPlan(
+                             selected_field, TagsMeta()));
+    std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> contexts;
     contexts.emplace("tags", std::move(field_read_plan));
-    auto reader = std::make_unique<MapSharedShreddingFileReader>(std::move(mock_reader),
-                                                                 std::move(contexts), pool_);
+    auto reader =
+        std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts), pool_);
 
     auto read_schema =
         ExportSchema(arrow::schema({arrow::field("id", arrow::int32()), selected_field}));
@@ -333,7 +323,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjection) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesValueBuffers) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSelectedKeysStructProjectionSharesValueBuffers) {
     ASSERT_OK_AND_ASSIGN(auto physical_array, PhysicalArray());
     auto physical_root = checked_pointer_cast<arrow::StructArray>(physical_array);
     auto physical_tags =
@@ -347,11 +337,11 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesV
     auto selected_field = arrow::field(
         "tags", selected_type, /*nullable=*/true,
         arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,b,e,missing"}));
-    ASSERT_OK_AND_ASSIGN(
-        auto field_read_plan,
-        MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(selected_field, TagsMeta()));
+    ASSERT_OK_AND_ASSIGN(auto field_read_plan,
+                         MapSharedShreddingReadPlanFactory::CreateSharedSelectedKeysReadPlan(
+                             selected_field, TagsMeta()));
     ASSERT_OK_AND_ASSIGN(auto result,
-                         field_read_plan->Materialize(physical_tags, arrow::default_memory_pool()));
+                         field_read_plan->Assemble(physical_tags, arrow::default_memory_pool()));
     auto result_struct = checked_pointer_cast<arrow::StructArray>(result);
 
     auto expected = arrow::ipc::internal::json::ArrayFromJSON(selected_type, R"([
@@ -370,7 +360,8 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesV
     ASSERT_EQ(physical_tags->data()->buffers[0], result_struct->data()->buffers[0]);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesNestedValueBuffers) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest,
+       TestSelectedKeysStructProjectionSharesNestedValueBuffers) {
     auto item_type = arrow::list(arrow::int64());
     auto logical_schema =
         arrow::schema({arrow::field("id", arrow::int32()),
@@ -402,9 +393,9 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesN
                      arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"b"}));
     ASSERT_OK_AND_ASSIGN(
         auto field_read_plan,
-        MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(selected_field, meta));
+        MapSharedShreddingReadPlanFactory::CreateSharedSelectedKeysReadPlan(selected_field, meta));
     ASSERT_OK_AND_ASSIGN(auto result,
-                         field_read_plan->Materialize(physical_tags, arrow::default_memory_pool()));
+                         field_read_plan->Assemble(physical_tags, arrow::default_memory_pool()));
     auto result_struct = checked_pointer_cast<arrow::StructArray>(result);
     auto result_list = checked_pointer_cast<arrow::ListArray>(result_struct->field(0));
 
@@ -423,7 +414,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionSharesN
               result_list->data()->child_data[0]->buffers[1]);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionFromDefaultMap) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSelectedKeysStructProjectionFromDefaultMap) {
     auto map_type = checked_pointer_cast<arrow::MapType>(
         arrow::map(arrow::utf8(), arrow::field("value", arrow::int64())));
     auto file_schema =
@@ -446,12 +437,12 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionFromDef
         arrow::field("tags", selected_type, /*nullable=*/true,
                      arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,missing"}));
     ASSERT_OK_AND_ASSIGN(auto field_read_plan,
-                         MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
+                         MapSharedShreddingReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
                              file_schema->field(1), selected_field));
-    std::map<std::string, std::unique_ptr<MapFieldReadPlan>> contexts;
+    std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> contexts;
     contexts.emplace("tags", std::move(field_read_plan));
-    auto reader = std::make_unique<MapSharedShreddingFileReader>(std::move(mock_reader),
-                                                                 std::move(contexts), pool_);
+    auto reader =
+        std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts), pool_);
 
     auto read_schema =
         ExportSchema(arrow::schema({arrow::field("id", arrow::int32()), selected_field}));
@@ -471,15 +462,15 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSelectedKeysStructProjectionFromDef
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestInvalidSelectedKeysStructProjection) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestInvalidSelectedKeysStructProjection) {
     auto file_map_field = arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64()));
     auto mismatched_count_field =
         arrow::field("tags", arrow::struct_({arrow::field("a", arrow::int64())}), /*nullable=*/true,
                      arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,b"}));
-    ASSERT_NOK_WITH_MSG(MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(
+    ASSERT_NOK_WITH_MSG(MapSharedShreddingReadPlanFactory::CreateSharedSelectedKeysReadPlan(
                             mismatched_count_field, TagsMeta()),
                         "metadata size 2 does not match STRUCT field count 1");
-    ASSERT_NOK_WITH_MSG(MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
+    ASSERT_NOK_WITH_MSG(MapSharedShreddingReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
                             file_map_field, mismatched_count_field),
                         "metadata size 2 does not match STRUCT field count 1");
 
@@ -487,15 +478,15 @@ TEST_F(MapSharedShreddingFileReaderTest, TestInvalidSelectedKeysStructProjection
         "tags",
         arrow::struct_({arrow::field("a", arrow::int64()), arrow::field("b", arrow::utf8())}),
         /*nullable=*/true, arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a,b"}));
-    ASSERT_NOK_WITH_MSG(MapFieldReadPlanFactory::CreateSharedSelectedKeysReadPlan(
+    ASSERT_NOK_WITH_MSG(MapSharedShreddingReadPlanFactory::CreateSharedSelectedKeysReadPlan(
                             mismatched_type_field, TagsMeta()),
                         "must have the same value type");
-    ASSERT_NOK_WITH_MSG(MapFieldReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
+    ASSERT_NOK_WITH_MSG(MapSharedShreddingReadPlanFactory::CreateDefaultSelectedKeysReadPlan(
                             file_map_field, mismatched_type_field),
                         "must have the same value type");
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestPartialExistSelectedKeys) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestPartialExistSelectedKeys) {
     ASSERT_OK_AND_ASSIGN(auto reader,
                          CreateReader(/*physical_array=*/nullptr, /*physical_schema=*/nullptr,
                                       /*selected_keys=*/"a,c,missing"));
@@ -518,7 +509,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestPartialExistSelectedKeys) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestMissingSelectedKeysReadsWholeMap) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestMissingSelectedKeysReadsWholeMap) {
     ASSERT_OK_AND_ASSIGN(auto reader, CreateReader());
     auto read_schema = ExportSchema(ReadSchema(std::nullopt));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
@@ -538,7 +529,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestMissingSelectedKeysReadsWholeMap) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestSpecialSelectedKeys) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSpecialSelectedKeys) {
     MapSharedShreddingFieldMeta meta;
     meta.name_to_id = {{"", 0}, {"     ", 1}, {".", 2}, {"a", 3}};
     meta.field_to_columns = {{0, {0}}, {1, {1}}, {2, {0}}, {3, {1}}};
@@ -591,7 +582,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestSpecialSelectedKeys) {
     ])");
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestUnknownSelectedKeyReturnsEmptyMap) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestUnknownSelectedKeyReturnsEmptyMap) {
     ASSERT_OK_AND_ASSIGN(auto reader,
                          CreateReader(/*physical_array=*/nullptr, /*physical_schema=*/nullptr,
                                       /*selected_keys=*/"missing"));
@@ -614,7 +605,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestUnknownSelectedKeyReturnsEmptyMap) 
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestInvalidNullFieldMappingField) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestInvalidNullFieldMappingField) {
     ASSERT_OK_AND_ASSIGN(auto physical_schema, PhysicalSchemaWithMetadata());
     std::string json = R"([
         [1, [null, 10, null, null]]
@@ -631,7 +622,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestInvalidNullFieldMappingField) {
                         "__field_mapping cannot be null");
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestInvalidNullFieldMappingFieldElement) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestInvalidNullFieldMappingFieldElement) {
     ASSERT_OK_AND_ASSIGN(auto physical_schema, PhysicalSchemaWithMetadata());
     std::string json = R"([
         [1, [[0, null], 10, null, null]]
@@ -648,7 +639,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestInvalidNullFieldMappingFieldElement
                         "__field_mapping element cannot be null");
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestListValue) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestListValue) {
     std::shared_ptr<arrow::Schema> logical_schema = arrow::schema({
         arrow::field("id", arrow::int32()),
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::list(arrow::int32()))),
@@ -704,7 +695,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestListValue) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestOrcDictionaryEncodedStringValue) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestOrcDictionaryEncodedStringValue) {
     std::shared_ptr<arrow::Schema> logical_schema = arrow::schema({
         arrow::field("id", arrow::int32()),
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::utf8())),
@@ -764,7 +755,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestOrcDictionaryEncodedStringValue) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestOrcDictionaryEncodedStringListValue) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestOrcDictionaryEncodedStringListValue) {
     std::shared_ptr<arrow::Schema> logical_schema = arrow::schema({
         arrow::field("id", arrow::int32()),
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::list(arrow::utf8()))),
@@ -824,7 +815,7 @@ TEST_F(MapSharedShreddingFileReaderTest, TestOrcDictionaryEncodedStringListValue
     AssertChunkedArrayEquals(expected, actual);
 }
 
-TEST_F(MapSharedShreddingFileReaderTest, TestReadsRealFormatFile) {
+TEST_F(MapSharedShreddingReadPlanFactoryTest, TestReadsRealFormatFile) {
     // TODO(lisizhuo.lsz): support other format
     auto options = options_;
     std::string format = "orc";

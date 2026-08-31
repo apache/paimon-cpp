@@ -35,7 +35,7 @@ Paimon C++ currently provides:
 - **Scan**: batch and stream scan for append tables and primary key tables without changelog.
 - **Read**: append table read, primary key table read with deletion vector, and primary key table merge-on-read.
 - **Arrow integration**: batch read and write interfaces based on the [Arrow Columnar In-Memory Format](https://arrow.apache.org).
-- **File systems**: file system abstraction with built-in local and Jindo file system support.
+- **File systems**: file system abstraction with built-in local, Jindo, OSS, and S3 file system support.
 - **File formats**: file format abstraction with built-in ORC, Parquet, and Avro support.
 - **Runtime utilities**: memory pool and thread pool abstractions with default implementations.
 - **AI-Oriented Features**: supports RowTracking and DataEvolution mode and provides Global Index

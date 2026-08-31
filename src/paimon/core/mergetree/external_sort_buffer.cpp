@@ -222,10 +222,11 @@ Result<FileChannelInfo> ExternalSortBuffer::SpillToDisk(
         -> Result<std::unique_ptr<RowToArrowArrayConverter<KeyValue, KeyValueBatch>>> {
         return KeyValueMetaProjectionConsumer::Create(target_schema, pool);
     };
+    std::unique_ptr<AsyncKeyValueBatchProducer> producer =
+        std::make_unique<SortMergeReaderBatchProducer>(std::move(sorted_reader), write_batch_size);
     auto async_key_value_producer_consumer =
         std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
-            std::move(sorted_reader), create_consumer, write_batch_size,
-            /*projection_thread_num=*/1, pool_);
+            std::move(producer), create_consumer, /*projection_thread_num=*/1);
     auto close_guard = ScopeGuard([&]() { async_key_value_producer_consumer->Close(); });
 
     while (true) {

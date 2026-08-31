@@ -57,6 +57,20 @@ Status DecodeFieldToBuilder(const ::avro::NodePtr& avro_node,
                             ::avro::Decoder* decoder, arrow::ArrayBuilder* array_builder,
                             AvroDirectDecoder::DecodeContext* ctx);
 
+Status ReserveBuilderCapacityImpl(int64_t capacity, arrow::ArrayBuilder* array_builder) {
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(array_builder->Reserve(capacity));
+    if (array_builder->type()->id() != arrow::Type::STRUCT) {
+        return Status::OK();
+    }
+
+    auto* struct_builder = checked_cast<arrow::StructBuilder*>(array_builder);
+    for (int32_t i = 0; i < struct_builder->num_fields(); ++i) {
+        PAIMON_RETURN_NOT_OK(
+            ReserveBuilderCapacityImpl(capacity, struct_builder->field_builder(i)));
+    }
+    return Status::OK();
+}
+
 /// \brief Skip an Avro value based on its schema without decoding
 Status SkipAvroValue(const ::avro::NodePtr& avro_node, ::avro::Decoder* decoder) {
     switch (avro_node->type()) {
@@ -193,6 +207,7 @@ Status DecodeListToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* de
     // Read array block count
     int64_t block_count = decoder->arrayStart();
     while (block_count != 0) {
+        PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, value_builder));
         for (int64_t i = 0; i < block_count; ++i) {
             PAIMON_RETURN_NOT_OK(DecodeFieldToBuilder(element_node, /*projection=*/std::nullopt,
                                                       decoder, value_builder, ctx));
@@ -221,6 +236,8 @@ Status DecodeMapToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* dec
         // Read map block count
         int64_t block_count = decoder->mapStart();
         while (block_count != 0) {
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, key_builder));
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, item_builder));
             for (int64_t i = 0; i < block_count; ++i) {
                 PAIMON_RETURN_NOT_OK(DecodeFieldToBuilder(key_node, /*projection=*/std::nullopt,
                                                           decoder, key_builder, ctx));
@@ -248,6 +265,8 @@ Status DecodeMapToBuilder(const ::avro::NodePtr& avro_node, ::avro::Decoder* dec
         // Read array block count
         int64_t block_count = decoder->arrayStart();
         while (block_count != 0) {
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, key_builder));
+            PAIMON_RETURN_NOT_OK(ReserveBuilderCapacityImpl(block_count, item_builder));
             for (int64_t i = 0; i < block_count; ++i) {
                 PAIMON_RETURN_NOT_OK(DecodeFieldToBuilder(key_node, /*projection=*/std::nullopt,
                                                           decoder, key_builder, ctx));
@@ -445,6 +464,11 @@ Status AvroDirectDecoder::DecodeAvroToBuilder(const ::avro::NodePtr& avro_node,
                                               arrow::ArrayBuilder* array_builder,
                                               DecodeContext* ctx) {
     return DecodeFieldToBuilder(avro_node, projection, decoder, array_builder, ctx);
+}
+
+Status AvroDirectDecoder::ReserveBuilderCapacity(int64_t capacity,
+                                                 arrow::ArrayBuilder* array_builder) {
+    return ReserveBuilderCapacityImpl(capacity, array_builder);
 }
 
 }  // namespace paimon::avro

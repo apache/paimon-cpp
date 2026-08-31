@@ -60,7 +60,8 @@ class MergeTreeCompactManagerFactoryStrategyTest : public ::testing::Test {
             /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
-            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
         return {level, SortedRun::FromSingle(file_meta)};
     }
 
@@ -87,6 +88,7 @@ class MergeTreeCompactManagerFactoryStrategyTest : public ::testing::Test {
                                               /*cache_manager=*/nullptr,
                                               /*file_store_path_factory=*/nullptr,
                                               /*root_path=*/"",
+                                              /*ignore_previous_files=*/false,
                                               /*pool=*/nullptr);
     }
 };
@@ -332,7 +334,8 @@ TEST_F(MergeTreeCompactManagerFactoryWriteTest,
     ASSERT_NOK_WITH_MSG(CreateSingleStringFileStoreWrite(
                             {{"bucket", "1"}, {Options::CHANGELOG_PRODUCER, "full-compaction"}},
                             /*with_io_manager=*/false),
-                        "C++ Paimon does not support changelog-producer yet");
+                        "C++ Paimon only supports 'none', 'input' and 'lookup' "
+                        "changelog-producer now");
 }
 
 TEST_F(MergeTreeCompactManagerFactoryWriteTest,
@@ -377,13 +380,11 @@ TEST_F(MergeTreeCompactManagerFactoryWriteTest,
 }
 
 TEST_F(MergeTreeCompactManagerFactoryWriteTest,
-       TestCreateFileStoreWriteShouldFailWhenLookupChangelogConfigured) {
-    ASSERT_NOK_WITH_MSG(
-        CreateSingleStringFileStoreWrite({{"bucket", "1"},
-                                          {Options::DELETION_VECTORS_ENABLED, "true"},
-                                          {Options::CHANGELOG_PRODUCER, "lookup"}},
-                                         /*with_io_manager=*/true),
-        "C++ Paimon does not support changelog-producer yet");
+       TestCreateFileStoreWriteShouldSucceedWhenLookupChangelogConfigured) {
+    ASSERT_OK(CreateSingleStringFileStoreWrite({{"bucket", "1"},
+                                                {Options::DELETION_VECTORS_ENABLED, "true"},
+                                                {Options::CHANGELOG_PRODUCER, "lookup"}},
+                                               /*with_io_manager=*/true));
 }
 
 }  // namespace paimon::test
