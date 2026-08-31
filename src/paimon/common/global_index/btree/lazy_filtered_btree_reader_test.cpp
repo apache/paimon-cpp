@@ -428,11 +428,12 @@ TEST_F(LazyFilteredBTreeReaderTest, TestBlockCacheReuseAcrossIndexerInstances) {
     ASSERT_NOK_WITH_MSG(isolated_reader->VisitEqual(literal_1),
                         "unexpected input stream open for cached btree file");
 
+    auto third_schema = CreateArrowSchema();
     auto failing_file_reader =
         std::make_shared<FailingLazyFileReader>(GetGlobalIndexCacheNamespace(first_file_reader));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GlobalIndexReader> second_reader,
-        second_indexer->CreateReader(second_schema.get(), failing_file_reader, all_metas_, pool_));
+        second_indexer->CreateReader(third_schema.get(), failing_file_reader, all_metas_, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> second_result,
                          second_reader->VisitEqual(literal_1));
     CheckResult(second_result, {0, 1});
