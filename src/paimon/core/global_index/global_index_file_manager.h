@@ -22,6 +22,8 @@
 #include <memory>
 #include <string>
 
+#include "fmt/format.h"
+#include "paimon/common/global_index/cache_namespace_provider.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/core/index/index_path_factory.h"
 #include "paimon/fs/file_system.h"
@@ -30,11 +32,17 @@
 
 namespace paimon {
 /// Helper class for managing global index files.
-class GlobalIndexFileManager : public GlobalIndexFileReader, public GlobalIndexFileWriter {
+class GlobalIndexFileManager : public GlobalIndexFileReader,
+                               public GlobalIndexFileWriter,
+                               public CacheNamespaceProvider {
  public:
     GlobalIndexFileManager(const std::shared_ptr<FileSystem>& fs,
                            const std::shared_ptr<IndexPathFactory>& path_factory)
-        : GlobalIndexFileReader(CacheNamespaceFor(fs)), fs_(fs), path_factory_(path_factory) {}
+        : fs_(fs), path_factory_(path_factory) {}
+
+    std::string CacheNamespace() const override {
+        return fmt::format("filesystem:{}", fmt::ptr(fs_.get()));
+    }
 
     Result<std::unique_ptr<InputStream>> GetInputStream(
         const std::string& file_path) const override {

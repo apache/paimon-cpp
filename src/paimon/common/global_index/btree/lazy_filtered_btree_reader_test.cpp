@@ -28,6 +28,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/global_index/btree/btree_global_index_writer.h"
 #include "paimon/common/global_index/btree/btree_global_indexer.h"
+#include "paimon/common/global_index/cache_namespace_provider.h"
 #include "paimon/executor.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
@@ -69,10 +70,14 @@ class FakeLazyFileWriter : public GlobalIndexFileWriter {
     mutable int64_t file_counter_ = 0;
 };
 
-class FakeLazyFileReader : public GlobalIndexFileReader {
+class FakeLazyFileReader : public GlobalIndexFileReader, public CacheNamespaceProvider {
  public:
     FakeLazyFileReader(const std::shared_ptr<FileSystem>& fs, const std::string& base_path)
-        : GlobalIndexFileReader(CacheNamespaceFor(fs)), fs_(fs), base_path_(base_path) {}
+        : fs_(fs), base_path_(base_path) {}
+
+    std::string CacheNamespace() const override {
+        return fmt::format("filesystem:{}", fmt::ptr(fs_.get()));
+    }
 
     Result<std::unique_ptr<InputStream>> GetInputStream(
         const std::string& file_path) const override {
@@ -84,14 +89,21 @@ class FakeLazyFileReader : public GlobalIndexFileReader {
     std::string base_path_;
 };
 
-class FailingLazyFileReader : public GlobalIndexFileReader {
+class FailingLazyFileReader : public GlobalIndexFileReader, public CacheNamespaceProvider {
  public:
     explicit FailingLazyFileReader(std::string cache_namespace)
-        : GlobalIndexFileReader(std::move(cache_namespace)) {}
+        : cache_namespace_(std::move(cache_namespace)) {}
+
+    std::string CacheNamespace() const override {
+        return cache_namespace_;
+    }
 
     Result<std::unique_ptr<InputStream>> GetInputStream(const std::string&) const override {
         return Status::Invalid("unexpected input stream open for cached btree file");
     }
+
+ private:
+    std::string cache_namespace_;
 };
 
 class LazyFilteredBTreeReaderTest : public ::testing::Test {
@@ -417,7 +429,7 @@ TEST_F(LazyFilteredBTreeReaderTest, TestBlockCacheReuseAcrossIndexerInstances) {
                         "unexpected input stream open for cached btree file");
 
     auto failing_file_reader =
-        std::make_shared<FailingLazyFileReader>(first_file_reader->CacheNamespace());
+        std::make_shared<FailingLazyFileReader>(GetGlobalIndexCacheNamespace(first_file_reader));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GlobalIndexReader> second_reader,
         second_indexer->CreateReader(second_schema.get(), failing_file_reader, all_metas_, pool_));

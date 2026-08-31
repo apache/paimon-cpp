@@ -41,13 +41,15 @@ class PAIMON_EXPORT BlockCache {
 
     /// Creates a block cache whose pages survive this reader. The input stream is opened only on a
     /// cache miss, so a later reader can reuse cached pages without reopening the immutable file.
-    BlockCache(const std::string& cache_namespace, const std::string& file_path,
+    BlockCache(const std::string& cache_namespace,
+               const std::shared_ptr<void>& cache_namespace_owner, const std::string& file_path,
                InputStreamSupplier input_stream_supplier,
                const std::shared_ptr<CacheManager>& cache_manager,
                const std::shared_ptr<MemoryPool>& pool)
         : pool_(pool),
           cache_pool_(GetDefaultPool()),
           cache_namespace_(cache_namespace),
+          cache_namespace_owner_(cache_namespace_owner),
           file_path_(file_path),
           input_stream_supplier_(std::move(input_stream_supplier)),
           cache_manager_(cache_manager),
@@ -81,7 +83,10 @@ class PAIMON_EXPORT BlockCache {
             return cached_data;
         };
         if (retain_cached_pages_) {
-            return cache_manager_->GetPage(key, reader, /*eviction_callback=*/{});
+            return cache_manager_->GetPage(
+                key, reader, [owner = cache_namespace_owner_](const std::shared_ptr<CacheKey>&) {
+                    (void)owner;
+                });
         }
         auto it = blocks_.find(key);
         if (it == blocks_.end() || it->second.GetAccessCount() == CacheManager::REFRESH_COUNT) {
@@ -146,6 +151,7 @@ class PAIMON_EXPORT BlockCache {
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<MemoryPool> cache_pool_;
     std::string cache_namespace_;
+    std::shared_ptr<void> cache_namespace_owner_;
     std::string file_path_;
     std::shared_ptr<InputStream> in_;
     InputStreamSupplier input_stream_supplier_;

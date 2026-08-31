@@ -22,18 +22,25 @@
 #include <memory>
 #include <string>
 
-#include "paimon/result.h"
-#include "paimon/visibility.h"
-namespace paimon {
-class InputStream;
-/// Abstract interface for reading global index files from storage.
-class PAIMON_EXPORT GlobalIndexFileReader {
- public:
-    virtual ~GlobalIndexFileReader() = default;
+#include "fmt/format.h"
+#include "paimon/global_index/io/global_index_file_reader.h"
 
-    /// Opens an input stream for reading the specified global index file.
-    virtual Result<std::unique_ptr<InputStream>> GetInputStream(
-        const std::string& file_path) const = 0;
+namespace paimon {
+
+/// Internal extension for reader wrappers that can identify a shared storage backend.
+class CacheNamespaceProvider {
+ public:
+    virtual ~CacheNamespaceProvider() = default;
+    virtual std::string CacheNamespace() const = 0;
 };
+
+inline std::string GetGlobalIndexCacheNamespace(
+    const std::shared_ptr<GlobalIndexFileReader>& file_reader) {
+    const auto* provider = dynamic_cast<const CacheNamespaceProvider*>(file_reader.get());
+    if (provider) {
+        return provider->CacheNamespace();
+    }
+    return fmt::format("index-reader:{}", fmt::ptr(file_reader.get()));
+}
 
 }  // namespace paimon

@@ -30,6 +30,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "fmt/format.h"
+#include "paimon/common/global_index/cache_namespace_provider.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -507,11 +508,14 @@ Result<PrimaryKeySortedIndexScan::EvaluatedPlan> PrimaryKeySortedIndexScan::Eval
 }
 
 namespace {
-class FsGlobalIndexFileReader : public GlobalIndexFileReader {
+class FsGlobalIndexFileReader : public GlobalIndexFileReader, public CacheNamespaceProvider {
  public:
     explicit FsGlobalIndexFileReader(std::shared_ptr<FileSystem> file_system)
-        : GlobalIndexFileReader(CacheNamespaceFor(file_system)),
-          file_system_(std::move(file_system)) {}
+        : file_system_(std::move(file_system)) {}
+
+    std::string CacheNamespace() const override {
+        return fmt::format("filesystem:{}", fmt::ptr(file_system_.get()));
+    }
 
     Result<std::unique_ptr<InputStream>> GetInputStream(
         const std::string& file_path) const override {

@@ -27,6 +27,7 @@
 #include "paimon/common/global_index/btree/btree_global_index_reader.h"
 #include "paimon/common/global_index/btree/btree_index_meta.h"
 #include "paimon/common/global_index/btree/key_serializer.h"
+#include "paimon/common/global_index/cache_namespace_provider.h"
 #include "paimon/common/global_index/union_global_index_reader.h"
 #include "paimon/common/memory/memory_slice.h"
 #include "paimon/common/memory/memory_slice_input.h"
@@ -250,9 +251,9 @@ Result<std::shared_ptr<GlobalIndexReader>> LazyFilteredBTreeReader::CreateSingle
         }
         return input_stream;
     };
-    auto block_cache =
-        std::make_shared<BlockCache>(file_reader_->CacheNamespace(), meta.file_path,
-                                     std::move(input_stream_supplier), cache_manager_, pool_);
+    auto block_cache = std::make_shared<BlockCache>(
+        GetGlobalIndexCacheNamespace(file_reader_), file_reader_, meta.file_path,
+        std::move(input_stream_supplier), cache_manager_, pool_);
 
     // Read footer
     PAIMON_ASSIGN_OR_RAISE(MemorySegment footer_segment,
