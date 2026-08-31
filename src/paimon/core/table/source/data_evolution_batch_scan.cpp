@@ -25,19 +25,21 @@
 #include "paimon/core/global_index/global_index_scan_impl.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
-#include "paimon/global_index/global_index_scan.h"
 
 namespace paimon {
 DataEvolutionBatchScan::DataEvolutionBatchScan(
     const std::string& table_path, const std::shared_ptr<SnapshotReader>& snapshot_reader,
     std::unique_ptr<DataTableBatchScan>&& batch_scan,
+    const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<GlobalIndexResult>& global_index_result, const CoreOptions& core_options,
     const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Executor>& executor)
     : AbstractTableScan(core_options, snapshot_reader),
       pool_(pool),
       table_path_(table_path),
       batch_scan_(std::move(batch_scan)),
+      table_schema_(table_schema),
       global_index_result_(global_index_result),
       executor_(executor) {}
 
@@ -144,17 +146,25 @@ Result<std::shared_ptr<GlobalIndexResult>> DataEvolutionBatchScan::EvalGlobalInd
     }
     auto partition_filter = batch_scan_->GetPartitionPredicate();
     // TODO(lisizhuo.lsz): support time travel
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<GlobalIndexScan> index_scan,
-        GlobalIndexScan::Create(table_path_, core_options_.GetScanSnapshotId(), partition_filter,
-                                core_options_.ToMap(), core_options_.GetFileSystem(), executor_,
-                                pool_));
-    auto index_scan_impl = dynamic_cast<GlobalIndexScanImpl*>(index_scan.get());
-    if (!index_scan_impl) {
-        return Status::Invalid("invalid GlobalIndexScan, cannot cast to GlobalIndexScanImpl");
+    std::optional<Snapshot> snapshot;
+    const std::shared_ptr<SnapshotManager>& snapshot_manager =
+        snapshot_reader_->GetSnapshotManager();
+    if (const std::optional<int64_t>& snapshot_id = core_options_.GetScanSnapshotId()) {
+        PAIMON_ASSIGN_OR_RAISE(Snapshot loaded_snapshot,
+                               snapshot_manager->LoadSnapshot(snapshot_id.value()));
+        snapshot = std::move(loaded_snapshot);
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(snapshot, snapshot_manager->LatestSnapshot());
+    }
+    if (!snapshot) {
+        return Status::Invalid("not found latest snapshot");
     }
 
-    return index_scan_impl->Scan(predicate);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<GlobalIndexScanImpl> index_scan,
+        GlobalIndexScanImpl::Create(table_path_, table_schema_, snapshot.value(), partition_filter,
+                                    core_options_, executor_, pool_));
+    return index_scan->Scan(predicate);
 }
 
 }  // namespace paimon
