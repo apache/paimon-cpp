@@ -390,24 +390,28 @@ TEST_F(LazyFilteredBTreeReaderTest, TestBlockCacheReuseAcrossIndexerInstances) {
         {BtreeDefs::kBtreeIndexHighPriorityPoolRatio, "0.5"}};
     Literal literal_1(1);
 
-    ASSERT_OK_AND_ASSIGN(auto first_indexer, BTreeGlobalIndexer::Create(options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeGlobalIndexer> first_indexer,
+                         BTreeGlobalIndexer::Create(options));
     auto first_schema = CreateArrowSchema();
     auto first_file_reader = std::make_shared<FakeLazyFileReader>(fs_, base_path_);
     ASSERT_OK_AND_ASSIGN(
-        auto first_reader,
+        std::shared_ptr<GlobalIndexReader> first_reader,
         first_indexer->CreateReader(first_schema.get(), first_file_reader, all_metas_, pool_));
-    ASSERT_OK_AND_ASSIGN(auto first_result, first_reader->VisitEqual(literal_1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> first_result,
+                         first_reader->VisitEqual(literal_1));
     CheckResult(first_result, {0, 1});
     first_reader.reset();
     first_indexer.reset();
 
-    ASSERT_OK_AND_ASSIGN(auto second_indexer, BTreeGlobalIndexer::Create(options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeGlobalIndexer> second_indexer,
+                         BTreeGlobalIndexer::Create(options));
     auto second_schema = CreateArrowSchema();
     auto failing_file_reader = std::make_shared<FailingLazyFileReader>();
     ASSERT_OK_AND_ASSIGN(
-        auto second_reader,
+        std::shared_ptr<GlobalIndexReader> second_reader,
         second_indexer->CreateReader(second_schema.get(), failing_file_reader, all_metas_, pool_));
-    ASSERT_OK_AND_ASSIGN(auto second_result, second_reader->VisitEqual(literal_1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> second_result,
+                         second_reader->VisitEqual(literal_1));
     CheckResult(second_result, {0, 1});
 }
 

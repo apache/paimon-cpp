@@ -45,26 +45,36 @@
 #include "paimon/executor.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/memory/bytes.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
 namespace {
 
+struct SharedCacheManager {
+    SharedCacheManager(int64_t cache_size, double high_priority_pool_ratio)
+        : cache_pool(GetDefaultPool()),
+          cache_manager(std::make_shared<CacheManager>(cache_size, high_priority_pool_ratio)) {}
+
+    // Keep the allocator alive until after cache_manager releases all cached pages.
+    std::shared_ptr<MemoryPool> cache_pool;
+    std::shared_ptr<CacheManager> cache_manager;
+};
+
 std::shared_ptr<CacheManager> GetSharedCacheManager(int64_t cache_size,
                                                     double high_priority_pool_ratio) {
     using CacheConfig = std::pair<int64_t, double>;
     static std::mutex mutex;
-    static std::map<CacheConfig, std::shared_ptr<CacheManager>> cache_managers;
+    static std::map<CacheConfig, SharedCacheManager> cache_managers;
 
     std::lock_guard<std::mutex> lock(mutex);
     CacheConfig config(cache_size, high_priority_pool_ratio);
     auto iter = cache_managers.find(config);
     if (iter != cache_managers.end()) {
-        return iter->second;
+        return iter->second.cache_manager;
     }
-    auto cache_manager = std::make_shared<CacheManager>(cache_size, high_priority_pool_ratio);
-    cache_managers.emplace(config, cache_manager);
-    return cache_manager;
+    return cache_managers.emplace(config, SharedCacheManager(cache_size, high_priority_pool_ratio))
+        .first->second.cache_manager;
 }
 
 }  // namespace

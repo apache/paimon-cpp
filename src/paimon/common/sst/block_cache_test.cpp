@@ -211,7 +211,7 @@ TEST_F(BlockCacheTest, TestRetainedPagesAreReusedByLaterReader) {
 
     {
         BlockCache first_reader(file_path, supplier, cache_manager, retained_pool);
-        ASSERT_OK_AND_ASSIGN(auto segment, GetBlock(0, block_size, &first_reader));
+        ASSERT_OK_AND_ASSIGN(MemorySegment segment, GetBlock(0, block_size, &first_reader));
         ASSERT_EQ(segment.Get(0), static_cast<char>(0));
         ASSERT_EQ(input_stream_opens, 1);
     }
@@ -221,7 +221,7 @@ TEST_F(BlockCacheTest, TestRetainedPagesAreReusedByLaterReader) {
     ASSERT_TRUE(retained_pool_ref.expired());
     {
         BlockCache second_reader(file_path, supplier, cache_manager, pool_);
-        ASSERT_OK_AND_ASSIGN(auto cached_segment, GetBlock(0, block_size, &second_reader));
+        ASSERT_OK_AND_ASSIGN(MemorySegment cached_segment, GetBlock(0, block_size, &second_reader));
         ASSERT_EQ(cached_segment.Get(0), static_cast<char>(0));
         ASSERT_EQ(input_stream_opens, 1);
     }
