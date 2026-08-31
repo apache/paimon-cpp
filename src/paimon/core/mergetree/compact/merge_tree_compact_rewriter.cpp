@@ -92,7 +92,7 @@ Result<std::unique_ptr<MergeTreeCompactRewriter>> MergeTreeCompactRewriter::Crea
         std::unique_ptr<MergeFileSplitRead> merge_file_split_read,
         MergeFileSplitRead::Create(path_factory, internal_context, pool, CreateDefaultExecutor()));
     auto merge_function_wrapper_factory =
-        [](int32_t output_level) -> Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>> {
+        []() -> Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>> {
         return std::shared_ptr<MergeFunctionWrapper<KeyValue>>();
     };
 
@@ -201,7 +201,7 @@ MergeTreeCompactRewriter::CreateRawSortMergeReaderForSection(
 }
 
 Status MergeTreeCompactRewriter::MergeReadAndWrite(
-    int32_t output_level, bool drop_delete, const std::vector<SortedRun>& section,
+    bool drop_delete, const std::vector<SortedRun>& section,
     const MergeTreeCompactRewriter::KeyValueConsumerCreator& create_consumer,
     MergeTreeCompactRewriter::KeyValueRollingFileWriter* rolling_writer) {
     if (!merge_file_split_read_) {
@@ -212,7 +212,7 @@ Status MergeTreeCompactRewriter::MergeReadAndWrite(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            CreateDataFilePathFactory(options_.GetFileFormat()->Identifier()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MergeFunctionWrapper<KeyValue>> wrapper,
-                           merge_function_wrapper_factory_(output_level));
+                           merge_function_wrapper_factory_());
     merge_file_split_read_->SetMergeFunctionWrapper(wrapper);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<SortMergeReader> sort_merge_reader,
                            merge_file_split_read_->CreateSortMergeReaderForSection(

@@ -330,12 +330,13 @@ TEST_F(MergeTreeCompactManagerFactoryWriteTest,
 }
 
 TEST_F(MergeTreeCompactManagerFactoryWriteTest,
-       TestCreateFileStoreWriteShouldFailWhenFullCompactionChangelogConfigured) {
-    ASSERT_NOK_WITH_MSG(CreateSingleStringFileStoreWrite(
-                            {{"bucket", "1"}, {Options::CHANGELOG_PRODUCER, "full-compaction"}},
-                            /*with_io_manager=*/false),
-                        "C++ Paimon only supports 'none', 'input' and 'lookup' "
-                        "changelog-producer now");
+       TestWriteShouldSucceedWhenFullCompactionChangelogConfigured) {
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         CreateSingleStringFileStoreWrite(
+                             {{"bucket", "1"}, {Options::CHANGELOG_PRODUCER, "full-compaction"}},
+                             /*with_io_manager=*/false));
+    ASSERT_OK(WriteSingleStringRow(file_store_write.get(), /*bucket=*/0, "k1"));
+    ASSERT_OK(file_store_write->PrepareCommit(/*wait_compaction=*/true).status());
 }
 
 TEST_F(MergeTreeCompactManagerFactoryWriteTest,
