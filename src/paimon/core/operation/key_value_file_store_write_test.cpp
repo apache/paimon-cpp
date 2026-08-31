@@ -266,10 +266,10 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
             RealtimePrimaryKeyLayout::CreateSchema(value_fields);
         auto c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*transport_schema, c_schema.get()));
-        RealtimeQueryContext query_context{c_schema.get(), nullptr, false};
+        RealtimeQueryContext query_context{c_schema.get(), /*predicate=*/nullptr};
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::unique_ptr<BatchReader>> readers,
-            views[0].store->CreateQueryReaders(views[0].read_view, 0, query_context));
+            views[0].store->CreateQueryReaders(views[0].read_view, query_context));
         std::vector<std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>> rows;
         for (const std::unique_ptr<BatchReader>& reader : readers) {
             while (true) {

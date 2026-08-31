@@ -124,7 +124,6 @@ Result<std::shared_ptr<RealtimePrimaryKeyWriter>> RealtimePrimaryKeyWriter::Crea
     if (options.GetMergeEngine() != MergeEngine::DEDUPLICATE) {
         return Status::NotImplemented("PK realtime supports only the DEDUPLICATE merge engine");
     }
-    PAIMON_RETURN_NOT_OK(RealtimePrimaryKeyLayout::ValidateSchema(transport_schema));
     arrow::FieldVector key_fields;
     key_fields.reserve(trimmed_primary_keys.size());
     for (const std::string& key : trimmed_primary_keys) {
@@ -251,9 +250,8 @@ Status RealtimePrimaryKeyWriter::FlushSegment(const std::shared_ptr<RealtimeSegm
                            realtime_store_->CreateCommitReaders(segment));
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<KeyValueRecordReader>> realtime_primary_key_readers,
-        RealtimePrimaryKeyReaderFactory::CreateForCommit(std::move(readers), transport_schema_,
-                                                         sealed_offsets, key_schema_, write_schema_,
-                                                         memory_pool_));
+        RealtimePrimaryKeyReaderFactory::Create(std::move(readers), sealed_offsets, key_schema_,
+                                                write_schema_, memory_pool_));
     std::vector<std::unique_ptr<KeyValueRecordReader>> sorted_readers;
     sorted_readers.reserve(realtime_primary_key_readers.size());
     for (std::unique_ptr<KeyValueRecordReader>& realtime_primary_key_reader :

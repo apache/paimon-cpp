@@ -88,13 +88,13 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
     auto c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*transport_schema, c_schema.get()));
     ScopeGuard schema_guard([schema = c_schema.get()]() { ArrowSchemaRelease(schema); });
-    RealtimeQueryContext query_context{c_schema.get(), nullptr, false};
+    RealtimeQueryContext query_context{c_schema.get(), /*predicate=*/nullptr};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> batch_readers,
-                           memory.store->CreateQueryReaders(memory.read_view, 0, query_context));
+                           memory.store->CreateQueryReaders(memory.read_view, query_context));
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<KeyValueRecordReader>> realtime_primary_key_readers,
-        RealtimePrimaryKeyReaderFactory::CreateForQuery(
-            std::move(batch_readers), transport_schema,
+        RealtimePrimaryKeyReaderFactory::Create(
+            std::move(batch_readers),
             OffsetRange(split->CommittedEndOffset(), split->MemoryEndOffset()), key_schema,
             value_schema, memory_pool));
     std::vector<std::unique_ptr<KeyValueRecordReader>> result;

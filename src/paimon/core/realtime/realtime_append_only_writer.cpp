@@ -27,6 +27,7 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
@@ -42,6 +43,62 @@
 #include "paimon/realtime/realtime_context.h"
 
 namespace paimon {
+namespace {
+
+Result<std::shared_ptr<arrow::Schema>> AddRealtimeOffsetToSchema(
+    std::unique_ptr<::ArrowSchema>& write_schema) {
+    if (!write_schema || !write_schema->release) {
+        return Status::Invalid("real-time store write schema is null");
+    }
+    ScopeGuard schema_guard([schema = write_schema.get()]() { ArrowSchemaRelease(schema); });
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> input_schema,
+                                      arrow::ImportSchema(write_schema.get()));
+    schema_guard.Release();
+    arrow::FieldVector fields = {
+        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset())};
+    fields.insert(fields.end(), input_schema->fields().begin(), input_schema->fields().end());
+    std::shared_ptr<arrow::Schema> realtime_write_schema =
+        arrow::schema(std::move(fields), input_schema->metadata());
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::ExportSchema(*realtime_write_schema, write_schema.get()));
+    return realtime_write_schema;
+}
+
+Result<std::unique_ptr<RecordBatch>> AddRealtimeOffsetToBatch(
+    std::unique_ptr<RecordBatch>&& batch, const std::shared_ptr<arrow::Schema>& input_schema,
+    const std::shared_ptr<arrow::Schema>& realtime_write_schema, int64_t first_offset,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::Array> input,
+        arrow::ImportArray(batch->GetData(), arrow::struct_(input_schema->fields())));
+    if (!input || input->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid("append real-time write data is not a StructArray");
+    }
+    std::shared_ptr<arrow::StructArray> values = checked_pointer_cast<arrow::StructArray>(input);
+    arrow::Int64Builder offset_builder(arrow_pool.get());
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(offset_builder.Reserve(values->length()));
+    for (int64_t row = 0; row < values->length(); ++row) {
+        offset_builder.UnsafeAppend(first_offset + row);
+    }
+    std::shared_ptr<arrow::Array> offsets;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(offset_builder.Finish(&offsets));
+    arrow::ArrayVector fields = {std::move(offsets)};
+    fields.insert(fields.end(), values->fields().begin(), values->fields().end());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::StructArray> output,
+        arrow::StructArray::Make(std::move(fields), realtime_write_schema->fields()));
+    auto c_array = std::make_unique<ArrowArray>();
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*output, c_array.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), /*schema=*/nullptr, arrow_pool));
+    RecordBatchBuilder builder(c_array.get());
+    builder.SetRowKinds(batch->GetRowKind()).SetPartition(batch->GetPartition());
+    if (batch->HasSpecifiedBucket()) {
+        builder.SetBucket(batch->GetBucket());
+    }
+    return builder.Finish();
+}
+
+}  // namespace
 
 Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Create(
     const std::map<std::string, std::string>& partition, int32_t bucket,
@@ -56,27 +113,35 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                            RealtimeContextImpl::Cast(realtime_context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> realtime_write_schema,
+                           AddRealtimeOffsetToSchema(write_schema));
     RealtimeStoreCreateRequest request{std::move(write_schema), options, memory_pool,
                                        RealtimeStoreMode::APPEND_ONLY, statistics_mode};
     PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,
                            realtime_context_impl->GetOrCreateRealtimeStore(
                                std::move(request), RealtimePartitionBucket(partition, bucket)));
     return std::shared_ptr<RealtimeAppendOnlyWriter>(new RealtimeAppendOnlyWriter(
-        store_state.store, file_writer, input_schema, store_state.initial_offset, memory_pool));
+        store_state.store, file_writer, input_schema, realtime_write_schema,
+        store_state.initial_offset, memory_pool));
 }
 
 RealtimeAppendOnlyWriter::RealtimeAppendOnlyWriter(
     const std::shared_ptr<RealtimeStore>& realtime_store,
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
-    const std::shared_ptr<arrow::Schema>& input_schema, int64_t next_offset,
+    const std::shared_ptr<arrow::Schema>& input_schema,
+    const std::shared_ptr<arrow::Schema>& realtime_write_schema, int64_t next_offset,
     const std::shared_ptr<MemoryPool>& memory_pool)
     : arrow_pool_(GetArrowPool(memory_pool)),
       realtime_store_(realtime_store),
       file_writer_(file_writer),
       input_schema_(input_schema),
+      realtime_write_schema_(realtime_write_schema),
       next_offset_(next_offset) {}
 
 Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
+    if (!batch || !batch->GetData()) {
+        return Status::Invalid("append real-time write batch is null");
+    }
     for (RecordBatch::RowKind row_kind : batch->GetRowKind()) {
         if (row_kind != RecordBatch::RowKind::INSERT) {
             PAIMON_ASSIGN_OR_RAISE(const RowKind* kind,
@@ -96,7 +161,12 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         return Status::Invalid("real-time offset range exceeds INT64_MAX");
     }
     OffsetRange range(next_offset_, next_offset_ + row_count);
-    PAIMON_RETURN_NOT_OK(realtime_store_->Write(RealtimeWriteBatch{std::move(batch), range}));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<RecordBatch> realtime_batch,
+        AddRealtimeOffsetToBatch(std::move(batch), input_schema_, realtime_write_schema_,
+                                 next_offset_, arrow_pool_));
+    PAIMON_RETURN_NOT_OK(
+        realtime_store_->Write(RealtimeWriteBatch{std::move(realtime_batch), range}));
     next_offset_ += row_count;
     return Status::OK();
 }
@@ -158,6 +228,9 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
         }
         PAIMON_ASSIGN_OR_RAISE(struct_array, ArrowUtils::RemoveFieldFromStructArray(
                                                  struct_array, SpecialFields::ValueKind().Name()));
+        PAIMON_ASSIGN_OR_RAISE(struct_array,
+                               ArrowUtils::RemoveFieldFromStructArray(
+                                   struct_array, SpecialFields::RealtimeOffset().Name()));
         if (!struct_array->type()->Equals(arrow::struct_(input_schema_->fields()))) {
             return Status::Invalid(
                 "real-time store commit reader schema does not match table write schema");

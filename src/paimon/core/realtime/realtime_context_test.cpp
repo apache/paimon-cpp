@@ -62,7 +62,7 @@ class TestingRealtimeStore : public RealtimeStore {
         return std::make_shared<TestingReadView>();
     }
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
-        const std::shared_ptr<RealtimeReadView>&, int64_t, const RealtimeQueryContext&) override {
+        const std::shared_ptr<RealtimeReadView>&, const RealtimeQueryContext&) override {
         return std::vector<std::unique_ptr<BatchReader>>();
     }
     Status AdvanceCommittedOffset(int64_t committed_offset) override {

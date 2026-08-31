@@ -122,9 +122,9 @@ class DelegatingRealtimeStore : public RealtimeStore {
     }
 
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
-        const std::shared_ptr<RealtimeReadView>& view, int64_t offset_begin,
+        const std::shared_ptr<RealtimeReadView>& view,
         const RealtimeQueryContext& context) override {
-        return delegate_->CreateQueryReaders(view, offset_begin, context);
+        return delegate_->CreateQueryReaders(view, context);
     }
 
     Status AdvanceCommittedOffset(int64_t committed_offset) override {
@@ -183,7 +183,7 @@ class QueryTrackingRealtimeStore final : public DelegatingRealtimeStore {
     }
 
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
-        const std::shared_ptr<RealtimeReadView>& view, int64_t offset_begin,
+        const std::shared_ptr<RealtimeReadView>& view,
         const RealtimeQueryContext& context) override {
         if (context.predicate) {
             saw_query_predicate_->store(true, std::memory_order_release);
@@ -194,7 +194,7 @@ class QueryTrackingRealtimeStore final : public DelegatingRealtimeStore {
         if (!tracking_view) {
             return Status::Invalid("query tracking store received an unexpected read view");
         }
-        return delegate_->CreateQueryReaders(tracking_view->Delegate(), offset_begin, context);
+        return delegate_->CreateQueryReaders(tracking_view->Delegate(), context);
     }
 
  private:
@@ -763,12 +763,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(
             *RealtimePrimaryKeyLayout::CreateSchema(value_schema->fields()), read_schema.get()));
         ScopeGuard schema_guard([schema = read_schema.get()]() { ArrowSchemaRelease(schema); });
-        RealtimeQueryContext query_context{read_schema.get(), /*predicate=*/nullptr,
-                                           /*enable_predicate_pushdown=*/false};
+        RealtimeQueryContext query_context{read_schema.get(), /*predicate=*/nullptr};
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::unique_ptr<BatchReader>> readers,
-            views[0].store->CreateQueryReaders(views[0].read_view,
-                                               /*offset_begin=*/0, query_context));
+            views[0].store->CreateQueryReaders(views[0].read_view, query_context));
         std::vector<int64_t> sequences;
         for (const std::unique_ptr<BatchReader>& reader : readers) {
             while (true) {
@@ -2332,7 +2330,8 @@ TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTick
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
                          TableRead::Create(std::move(read_context)));
-    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()), "does not support Test");
+    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
+                        "cannot cast predicate unsupported");
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(rows, actual_rows);

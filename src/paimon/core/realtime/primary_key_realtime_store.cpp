@@ -206,8 +206,7 @@ class PrimaryKeyRealtimeStore::Impl {
     }
 
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
-        const std::shared_ptr<RealtimeReadView>& view, int64_t,
-        const RealtimeQueryContext& context) {
+        const std::shared_ptr<RealtimeReadView>& view, const RealtimeQueryContext& context) {
         std::shared_ptr<ReadView> typed = std::dynamic_pointer_cast<ReadView>(view);
         if (!typed) {
             return Status::Invalid("read view was not created by the PK real-time store");
@@ -295,9 +294,8 @@ Result<std::shared_ptr<RealtimeReadView>> PrimaryKeyRealtimeStore::AcquireReadVi
     return impl_->AcquireReadView();
 }
 Result<std::vector<std::unique_ptr<BatchReader>>> PrimaryKeyRealtimeStore::CreateQueryReaders(
-    const std::shared_ptr<RealtimeReadView>& view, int64_t offset,
-    const RealtimeQueryContext& context) {
-    return impl_->CreateQueryReaders(view, offset, context);
+    const std::shared_ptr<RealtimeReadView>& view, const RealtimeQueryContext& context) {
+    return impl_->CreateQueryReaders(view, context);
 }
 Status PrimaryKeyRealtimeStore::AdvanceCommittedOffset(int64_t committed_end_offset) {
     return impl_->AdvanceCommittedOffset(committed_end_offset);

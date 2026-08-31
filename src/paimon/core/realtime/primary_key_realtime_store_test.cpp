@@ -207,9 +207,8 @@ TEST(PrimaryKeyRealtimeStoreTest, TestSlicedReadersExportZeroOffsets) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*schema, c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
-                                 /*enable_predicate_pushdown=*/false};
-    ASSERT_OK_AND_ASSIGN(readers, store->CreateQueryReaders(view, /*offset_begin=*/0, context));
+    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+    ASSERT_OK_AND_ASSIGN(readers, store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
     AssertSlicedBatch(readers[0].get());
 }
@@ -253,10 +252,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestReclaimKeepsReadView) {
 
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*TransportSchema(), c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
-                                 /*enable_predicate_pushdown=*/false};
+    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                         store->CreateQueryReaders(retained_view, /*offset_begin=*/0, context));
+                         store->CreateQueryReaders(retained_view, context));
     ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(std::move(readers)));
     ASSERT_NE(std::string::npos, actual.find("\"one\""));
     ASSERT_NE(std::string::npos, actual.find("\"two\""));
@@ -276,10 +274,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*TransportSchema(), c_schema.get()).ok());
-    RealtimeQueryContext context{/*read_schema=*/c_schema.get(), /*predicate=*/nullptr,
-                                 /*enable_predicate_pushdown=*/false};
+    RealtimeQueryContext context{/*read_schema=*/c_schema.get(), /*predicate=*/nullptr};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                         store->CreateQueryReaders(view, /*offset_begin=*/0, context));
+                         store->CreateQueryReaders(view, context));
     ASSERT_EQ(2, readers.size());
     ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(std::move(readers)));
     ASSERT_NE(std::string::npos, actual.find("\"one\""));
@@ -303,10 +300,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryBatchOutlivesStoreAndReader) {
 
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*stored_schema, c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
-                                 /*enable_predicate_pushdown=*/false};
+    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                         store->CreateQueryReaders(view, /*offset_begin=*/0, context));
+                         store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
     view.reset();
     store.reset();
@@ -361,10 +357,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
         RealtimePrimaryKeyLayout::CreateSchema(requested_value_fields);
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*requested_schema, c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
-                                 /*enable_predicate_pushdown=*/false};
+    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                         store->CreateQueryReaders(view, /*offset_begin=*/0, context));
+                         store->CreateQueryReaders(view, context));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());
     readers.clear();
     arrow::Result<std::shared_ptr<arrow::Array>> import_result =

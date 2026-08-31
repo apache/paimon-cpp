@@ -19,14 +19,18 @@
 
 #include "paimon/core/table/source/append_only_table_read.h"
 
+#include <map>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
@@ -34,9 +38,11 @@
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_offset_batch_reader.h"
 #include "paimon/core/realtime/realtime_reader.h"
 #include "paimon/core/table/source/append_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/status.h"
@@ -152,16 +158,27 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
         readers.push_back(std::move(disk_reader));
     }
 
+    arrow::FieldVector realtime_read_fields = {
+        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset())};
+    realtime_read_fields.insert(realtime_read_fields.end(),
+                                context_->GetReadSchema()->fields().begin(),
+                                context_->GetReadSchema()->fields().end());
+    std::shared_ptr<arrow::Schema> realtime_read_schema =
+        arrow::schema(std::move(realtime_read_fields), context_->GetReadSchema()->metadata());
     auto c_read_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportSchema(*context_->GetReadSchema(), c_read_schema.get()));
+        arrow::ExportSchema(*realtime_read_schema, c_read_schema.get()));
     ScopeGuard schema_guard([schema = c_read_schema.get()]() { ArrowSchemaRelease(schema); });
-    RealtimeQueryContext query_context{c_read_schema.get(), context_->GetPredicate(),
-                                       /*enable_predicate_pushdown=*/true};
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<std::unique_ptr<BatchReader>> memory_readers,
-        memory.store->CreateQueryReaders(memory.read_view, realtime_split->CommittedEndOffset(),
-                                         query_context));
+    std::map<std::string, int32_t> realtime_field_name_to_index;
+    for (int32_t i = 0; i < realtime_read_schema->num_fields(); ++i) {
+        realtime_field_name_to_index.emplace(realtime_read_schema->field(i)->name(), i);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> realtime_predicate,
+                           PredicateUtils::CreatePickedFieldFilter(context_->GetPredicate(),
+                                                                   realtime_field_name_to_index));
+    RealtimeQueryContext query_context{c_read_schema.get(), std::move(realtime_predicate)};
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> memory_readers,
+                           memory.store->CreateQueryReaders(memory.read_view, query_context));
     const size_t first_memory_reader = readers.size();
     readers.reserve(readers.size() + memory_readers.size());
     for (std::unique_ptr<BatchReader>& memory_reader : memory_readers) {
@@ -173,6 +190,9 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
         if (!memory_reader) {
             return Status::Invalid("append-only real-time store returned a null query reader");
         }
+        memory_reader = std::make_unique<RealtimeOffsetBatchReader>(
+            std::move(memory_reader),
+            OffsetRange(realtime_split->CommittedEndOffset(), realtime_split->MemoryEndOffset()));
         if (context_->EnablePredicateFilter() && context_->GetPredicate()) {
             PAIMON_ASSIGN_OR_RAISE(
                 memory_reader,
