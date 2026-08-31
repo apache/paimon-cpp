@@ -44,8 +44,8 @@ class CatalogUtils {
     /// Fails when `identifier` carries a "$branch_" suffix.
     static Status CheckNotBranch(const Identifier& identifier, const std::string& action);
 
-    /// Fails when `db_name` cannot be used as a single path component; such a name would let
-    /// the database path escape the warehouse, e.g. "../outside".
+    /// Fails when `db_name` cannot be used as a single path component, which is required to
+    /// keep the database path under the warehouse.
     static Status CheckValidDatabaseName(const std::string& db_name);
 
     /// Fails when any component parsed out of the identifier's table name (data table name,

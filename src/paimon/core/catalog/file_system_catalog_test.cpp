@@ -1270,7 +1270,7 @@ TEST(FileSystemCatalogTest, TestDropTableWithBranchExternalPaths) {
     ASSERT_FALSE(external_exists);
 }
 
-TEST(FileSystemCatalogTest, TestRejectNamesEscapingWarehouse) {
+TEST(FileSystemCatalogTest, TestRejectInvalidNames) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
     options[Options::FILE_FORMAT] = "orc";
@@ -1278,27 +1278,26 @@ TEST(FileSystemCatalogTest, TestRejectNamesEscapingWarehouse) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto fs = core_options.GetFileSystem();
-    // The warehouse is nested inside the test directory, so that a name escaping the
-    // warehouse would become visible right next to it.
+    // The warehouse is nested inside the test directory, so that the test can assert the
+    // surrounding directory stays untouched.
     std::string warehouse = PathUtil::JoinPath(dir->Str(), "warehouse");
     ASSERT_OK(fs->Mkdirs(warehouse));
-    std::string escaped_db_path = PathUtil::JoinPath(dir->Str(), "outside.db");
+    std::string outer_db_path = PathUtil::JoinPath(dir->Str(), "outside.db");
     FileSystemCatalog catalog(fs, warehouse, options);
 
-    // Creating a database whose name escapes the warehouse must fail without creating
-    // anything outside of the warehouse.
+    // A rejected database name must fail without creating anything on disk.
     ASSERT_NOK_WITH_MSG(catalog.CreateDatabase("../outside", {}, /*ignore_if_exists=*/false),
                         "cannot contain path separators");
-    ASSERT_OK_AND_ASSIGN(bool escaped_exists, fs->Exists(escaped_db_path));
-    ASSERT_FALSE(escaped_exists);
+    ASSERT_OK_AND_ASSIGN(bool path_exists, fs->Exists(outer_db_path));
+    ASSERT_FALSE(path_exists);
 
-    // A directory that already exists outside of the warehouse must not be deletable.
-    ASSERT_OK(fs->Mkdirs(escaped_db_path));
+    // A directory that already exists next to the warehouse must not be deleted either.
+    ASSERT_OK(fs->Mkdirs(outer_db_path));
     ASSERT_NOK_WITH_MSG(catalog.DropDatabase("../outside", /*ignore_if_not_exists=*/true,
                                              /*cascade=*/true),
                         "cannot contain path separators");
-    ASSERT_OK_AND_ASSIGN(escaped_exists, fs->Exists(escaped_db_path));
-    ASSERT_TRUE(escaped_exists);
+    ASSERT_OK_AND_ASSIGN(path_exists, fs->Exists(outer_db_path));
+    ASSERT_TRUE(path_exists);
 
     ASSERT_NOK_WITH_MSG(catalog.DatabaseExists("../outside"), "cannot contain path separators");
     ASSERT_NOK_WITH_MSG(catalog.ListTables("../outside"), "cannot contain path separators");
@@ -1314,36 +1313,36 @@ TEST(FileSystemCatalogTest, TestRejectNamesEscapingWarehouse) {
                                       /*ignore_if_exists=*/false));
     }
 
-    // All table entries reject escaping names before touching the file system. The schema is
+    // All table entries reject invalid names before touching the file system. The schema is
     // never imported on these paths, so a single exported schema can be reused.
     ::ArrowSchema schema;
     ASSERT_TRUE(arrow::ExportSchema(typed_schema, &schema).ok());
-    const Identifier escaped_db_table("../outside", "t");
-    const Identifier escaped_table("db1", "../evil");
-    ASSERT_NOK_WITH_MSG(catalog.CreateTable(escaped_db_table, &schema, {}, {}, options, false),
+    const Identifier rejected_db_table("../outside", "t");
+    const Identifier rejected_table("db1", "../evil");
+    ASSERT_NOK_WITH_MSG(catalog.CreateTable(rejected_db_table, &schema, {}, {}, options, false),
                         "cannot contain path separators");
-    ASSERT_NOK_WITH_MSG(catalog.CreateTable(escaped_table, &schema, {}, {}, options, false),
+    ASSERT_NOK_WITH_MSG(catalog.CreateTable(rejected_table, &schema, {}, {}, options, false),
                         "cannot contain path separators");
     ArrowSchemaRelease(&schema);
 
-    ASSERT_NOK_WITH_MSG(catalog.GetTableLocation(escaped_table), "cannot contain path separators");
-    ASSERT_NOK_WITH_MSG(catalog.GetTable(escaped_table), "cannot contain path separators");
-    ASSERT_NOK_WITH_MSG(catalog.TableExists(escaped_table), "cannot contain path separators");
-    ASSERT_NOK_WITH_MSG(catalog.DropTable(escaped_table, /*ignore_if_not_exists=*/true),
+    ASSERT_NOK_WITH_MSG(catalog.GetTableLocation(rejected_table), "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.GetTable(rejected_table), "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.TableExists(rejected_table), "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.DropTable(rejected_table, /*ignore_if_not_exists=*/true),
                         "cannot contain path separators");
-    ASSERT_NOK_WITH_MSG(catalog.RenameTable(Identifier("db1", "t"), escaped_table,
+    ASSERT_NOK_WITH_MSG(catalog.RenameTable(Identifier("db1", "t"), rejected_table,
                                             /*ignore_if_not_exists=*/false),
                         "cannot contain path separators");
 
-    // The branch component of a table name and the branch argument end up in the path too.
+    // The branch component of a table name and the branch argument become path components too.
     ASSERT_NOK_WITH_MSG(catalog.GetTableLocation(Identifier("db1", "t$branch_../../x")),
                         "branch name cannot contain path separators");
     ASSERT_NOK_WITH_MSG(catalog.ListSnapshots(Identifier("db1", "t"), "../../x"),
                         "branch name cannot contain path separators");
 
-    // Nothing escaped the warehouse and the valid table is untouched.
-    ASSERT_OK_AND_ASSIGN(escaped_exists, fs->Exists(PathUtil::JoinPath(dir->Str(), "db1.db")));
-    ASSERT_FALSE(escaped_exists);
+    // The surrounding directory is untouched and the valid table still works.
+    ASSERT_OK_AND_ASSIGN(path_exists, fs->Exists(PathUtil::JoinPath(dir->Str(), "db1.db")));
+    ASSERT_FALSE(path_exists);
     ASSERT_OK_AND_ASSIGN(bool table_exists, catalog.TableExists(Identifier("db1", "t")));
     ASSERT_TRUE(table_exists);
 }
