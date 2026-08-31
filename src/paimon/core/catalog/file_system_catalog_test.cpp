@@ -1270,4 +1270,140 @@ TEST(FileSystemCatalogTest, TestDropTableWithBranchExternalPaths) {
     ASSERT_FALSE(external_exists);
 }
 
+TEST(FileSystemCatalogTest, TestRejectNamesEscapingWarehouse) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = core_options.GetFileSystem();
+    // The warehouse is nested inside the test directory, so that a name escaping the
+    // warehouse would become visible right next to it.
+    std::string warehouse = PathUtil::JoinPath(dir->Str(), "warehouse");
+    ASSERT_OK(fs->Mkdirs(warehouse));
+    std::string escaped_db_path = PathUtil::JoinPath(dir->Str(), "outside.db");
+    FileSystemCatalog catalog(fs, warehouse, options);
+
+    // Creating a database whose name escapes the warehouse must fail without creating
+    // anything outside of the warehouse.
+    ASSERT_NOK_WITH_MSG(catalog.CreateDatabase("../outside", {}, /*ignore_if_exists=*/false),
+                        "cannot contain path separators");
+    ASSERT_OK_AND_ASSIGN(bool escaped_exists, fs->Exists(escaped_db_path));
+    ASSERT_FALSE(escaped_exists);
+
+    // A directory that already exists outside of the warehouse must not be deletable.
+    ASSERT_OK(fs->Mkdirs(escaped_db_path));
+    ASSERT_NOK_WITH_MSG(catalog.DropDatabase("../outside", /*ignore_if_not_exists=*/true,
+                                             /*cascade=*/true),
+                        "cannot contain path separators");
+    ASSERT_OK_AND_ASSIGN(escaped_exists, fs->Exists(escaped_db_path));
+    ASSERT_TRUE(escaped_exists);
+
+    ASSERT_NOK_WITH_MSG(catalog.DatabaseExists("../outside"), "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.ListTables("../outside"), "cannot contain path separators");
+    ASSERT_EQ(catalog.GetDatabaseLocation("../outside"), "");
+
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
+    arrow::Schema typed_schema(fields);
+    ASSERT_OK(catalog.CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+    {
+        ::ArrowSchema schema;
+        ASSERT_TRUE(arrow::ExportSchema(typed_schema, &schema).ok());
+        ASSERT_OK(catalog.CreateTable(Identifier("db1", "t"), &schema, {}, {}, options,
+                                      /*ignore_if_exists=*/false));
+    }
+
+    // All table entries reject escaping names before touching the file system. The schema is
+    // never imported on these paths, so a single exported schema can be reused.
+    ::ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(typed_schema, &schema).ok());
+    const Identifier escaped_db_table("../outside", "t");
+    const Identifier escaped_table("db1", "../evil");
+    ASSERT_NOK_WITH_MSG(catalog.CreateTable(escaped_db_table, &schema, {}, {}, options, false),
+                        "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.CreateTable(escaped_table, &schema, {}, {}, options, false),
+                        "cannot contain path separators");
+    ArrowSchemaRelease(&schema);
+
+    ASSERT_NOK_WITH_MSG(catalog.GetTableLocation(escaped_table), "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.GetTable(escaped_table), "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.TableExists(escaped_table), "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.DropTable(escaped_table, /*ignore_if_not_exists=*/true),
+                        "cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.RenameTable(Identifier("db1", "t"), escaped_table,
+                                            /*ignore_if_not_exists=*/false),
+                        "cannot contain path separators");
+
+    // The branch component of a table name and the branch argument end up in the path too.
+    ASSERT_NOK_WITH_MSG(catalog.GetTableLocation(Identifier("db1", "t$branch_../../x")),
+                        "branch name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.ListSnapshots(Identifier("db1", "t"), "../../x"),
+                        "branch name cannot contain path separators");
+
+    // Nothing escaped the warehouse and the valid table is untouched.
+    ASSERT_OK_AND_ASSIGN(escaped_exists, fs->Exists(PathUtil::JoinPath(dir->Str(), "db1.db")));
+    ASSERT_FALSE(escaped_exists);
+    ASSERT_OK_AND_ASSIGN(bool table_exists, catalog.TableExists(Identifier("db1", "t")));
+    ASSERT_TRUE(table_exists);
+}
+
+TEST(FileSystemCatalogTest, TestIdentifierNameValidationRules) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(catalog.CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
+    arrow::Schema typed_schema(fields);
+    struct InvalidName {
+        std::string name;
+        std::string db_error;
+        // An empty table name is already rejected by the identifier itself.
+        std::string table_error;
+    };
+    const std::vector<InvalidName> invalid_names = {
+        {"", "cannot be empty or whitespace", "Invalid table name"},
+        {"   ", "cannot be empty or whitespace", "cannot be empty or whitespace"},
+        {".", "cannot be '.' or '..'", "cannot be '.' or '..'"},
+        {"..", "cannot be '.' or '..'", "cannot be '.' or '..'"},
+        {"../escaped", "cannot contain path separators", "cannot contain path separators"},
+        {"nested/name", "cannot contain path separators", "cannot contain path separators"},
+        {"back\\slash", "cannot contain path separators", "cannot contain path separators"},
+        {"line\nfeed", "cannot contain control characters", "cannot contain control characters"},
+        {std::string("nul\0byte", 8), "cannot contain control characters",
+         "cannot contain control characters"},
+    };
+    ::ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(typed_schema, &schema).ok());
+    for (const auto& invalid_name : invalid_names) {
+        ASSERT_NOK_WITH_MSG(catalog.CreateDatabase(invalid_name.name, {},
+                                                   /*ignore_if_exists=*/true),
+                            invalid_name.db_error);
+        ASSERT_NOK_WITH_MSG(catalog.CreateTable(Identifier("db1", invalid_name.name), &schema, {},
+                                                {}, options, /*ignore_if_exists=*/true),
+                            invalid_name.table_error);
+    }
+    ArrowSchemaRelease(&schema);
+
+    // Names that merely contain a dot or non-ascii characters stay usable.
+    for (const std::string& db_name : {"my.db", "a..b", "数据"}) {
+        ASSERT_OK(catalog.CreateDatabase(db_name, {}, /*ignore_if_exists=*/false));
+        ASSERT_OK_AND_ASSIGN(bool db_exists, catalog.DatabaseExists(db_name));
+        ASSERT_TRUE(db_exists);
+    }
+    for (const std::string& table_name : {"orders", "订单"}) {
+        ::ArrowSchema valid_schema;
+        ASSERT_TRUE(arrow::ExportSchema(typed_schema, &valid_schema).ok());
+        ASSERT_OK(catalog.CreateTable(Identifier("db1", table_name), &valid_schema, {}, {}, options,
+                                      /*ignore_if_exists=*/false));
+        ASSERT_OK_AND_ASSIGN(bool table_exists, catalog.TableExists(Identifier("db1", table_name)));
+        ASSERT_TRUE(table_exists);
+    }
+}
+
 }  // namespace paimon::test

@@ -70,7 +70,12 @@ class FileSystemCatalog : public Catalog {
                                                     const std::string& branch) const override;
 
  private:
-    static std::string NewDatabasePath(const std::string& warehouse, const std::string& db_name);
+    /// Fails when `db_name` cannot be used as a single path component, so that the returned
+    /// path always stays under `warehouse`.
+    static Result<std::string> NewDatabasePath(const std::string& warehouse,
+                                               const std::string& db_name);
+    /// Fails when the database name or any component of the table name cannot be used as a
+    /// single path component, so that the returned path always stays under `warehouse`.
     static Result<std::string> NewDataTablePath(const std::string& warehouse,
                                                 const Identifier& identifier);
     static Result<bool> IsSpecifiedSystemTable(const Identifier& identifier);
