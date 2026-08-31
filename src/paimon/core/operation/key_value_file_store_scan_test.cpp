@@ -70,12 +70,13 @@ class KeyValueFileStoreScanTest : public testing::Test {
     Result<std::unique_ptr<KeyValueFileStoreScan>> CreateFileStoreScan(
         const std::string& table_path, const std::shared_ptr<ScanFilter>& scan_filter,
         int32_t table_schema_id, int32_t snapshot_id) const {
-        std::map<std::string, std::string> options_map = {{Options::MANIFEST_FORMAT, "orc"}};
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options_map));
-        auto fs = core_options.GetFileSystem();
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions bootstrap_options, CoreOptions::FromMap({}));
+        auto fs = bootstrap_options.GetFileSystem();
         auto schema_manager = std::make_shared<SchemaManager>(fs, table_path);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
                                schema_manager->ReadSchema(table_schema_id));
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                               CoreOptions::FromMap(table_schema->Options()));
 
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
