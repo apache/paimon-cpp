@@ -19,6 +19,7 @@
 #include "paimon/common/predicate/literal_set.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -85,6 +86,29 @@ TEST_F(LiteralSetTest, TestSparseIntegers) {
                      .ValueOrDie();
     ASSERT_EQ(Probe(*literal_set, array, /*negate=*/false), std::vector<char>({1, 0, 1, 0, 1, 0}));
     ASSERT_EQ(Probe(*literal_set, array, /*negate=*/true), std::vector<char>({0, 1, 0, 1, 0, 0}));
+}
+
+TEST_F(LiteralSetTest, TestInt64FullSpan) {
+    // The full int64 range used to wrap the dense span to zero and index out of bounds.
+    auto literal_set =
+        LiteralSet::CreateOrNull(FieldType::BIGINT, {Literal(std::numeric_limits<int64_t>::min()),
+                                                     Literal(std::numeric_limits<int64_t>::max())});
+    ASSERT_TRUE(literal_set);
+
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(
+                     arrow::int64(), R"([-9223372036854775808, 0, 9223372036854775807, null])")
+                     .ValueOrDie();
+    ASSERT_EQ(Probe(*literal_set, array, /*negate=*/false), std::vector<char>({1, 0, 1, 0}));
+    ASSERT_EQ(Probe(*literal_set, array, /*negate=*/true), std::vector<char>({0, 1, 0, 0}));
+
+    ASSERT_OK_AND_ASSIGN(bool min_hit,
+                         literal_set->TestValue(Literal(std::numeric_limits<int64_t>::min()),
+                                                /*negate=*/false));
+    ASSERT_OK_AND_ASSIGN(bool max_hit,
+                         literal_set->TestValue(Literal(std::numeric_limits<int64_t>::max()),
+                                                /*negate=*/false));
+    ASSERT_TRUE(min_hit);
+    ASSERT_TRUE(max_hit);
 }
 
 TEST_F(LiteralSetTest, TestTinyIntAndSmallInt) {
@@ -212,6 +236,28 @@ TEST_F(LiteralSetTest, TestDictionaryString) {
     ASSERT_TRUE(literal_set->MatchesArrowType(*array));
     ASSERT_EQ(Probe(*literal_set, array, /*negate=*/false), std::vector<char>({1, 0, 1, 1, 0, 1}));
     ASSERT_EQ(Probe(*literal_set, array, /*negate=*/true), std::vector<char>({0, 1, 0, 0, 0, 0}));
+}
+
+TEST_F(LiteralSetTest, TestDictionaryWithNullValue) {
+    // A null dictionary value reads back as an empty string on the fallback path, so rows that
+    // reference it must probe against the empty literal.
+    auto dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"([null, "a"])").ValueOrDie();
+    auto indices = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0, 1, null, 0])")
+                       .ValueOrDie();
+    auto dict_type = arrow::dictionary(arrow::int32(), arrow::utf8());
+    auto array = arrow::DictionaryArray::FromArrays(dict_type, indices, dictionary).ValueOrDie();
+
+    auto set_with_empty =
+        LiteralSet::CreateOrNull(FieldType::STRING, {StringLiteral("a"), StringLiteral("")});
+    ASSERT_TRUE(set_with_empty);
+    ASSERT_EQ(Probe(*set_with_empty, array, /*negate=*/false), std::vector<char>({1, 1, 0, 1}));
+    ASSERT_EQ(Probe(*set_with_empty, array, /*negate=*/true), std::vector<char>({0, 0, 0, 0}));
+
+    auto set_without_empty = LiteralSet::CreateOrNull(FieldType::STRING, {StringLiteral("a")});
+    ASSERT_TRUE(set_without_empty);
+    ASSERT_EQ(Probe(*set_without_empty, array, /*negate=*/false), std::vector<char>({0, 1, 0, 0}));
+    ASSERT_EQ(Probe(*set_without_empty, array, /*negate=*/true), std::vector<char>({1, 0, 0, 1}));
 }
 
 TEST_F(LiteralSetTest, TestNullLiteralIgnoredForIn) {

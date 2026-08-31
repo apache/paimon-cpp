@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -999,6 +1000,34 @@ TEST_F(PredicateTest, TestInAfterRebind) {
         arrow::FieldVector({arrow::field("f0", bigint_type), arrow::field("f1", bigint_type)}));
     ASSERT_TRUE(rebound->Test(arrow_schema, CreateBigIntRow({0, 1})).value());
     ASSERT_FALSE(rebound->Test(arrow_schema, CreateBigIntRow({1, 2})).value());
+}
+
+TEST_F(PredicateTest, TestInt64BoundaryIn) {
+    // Building the lookup for the full int64 range used to crash with an out of bounds dense
+    // bitmap index; construction itself is part of what this test guards.
+    std::vector<Literal> literals = {Literal(std::numeric_limits<int64_t>::min()),
+                                     Literal(std::numeric_limits<int64_t>::max())};
+    auto in_base =
+        PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT, literals);
+    auto in_predicate = std::dynamic_pointer_cast<PredicateFilter>(in_base);
+    ASSERT_TRUE(in_predicate);
+    auto not_in_base = PredicateBuilder::NotIn(/*field_index=*/0, /*field_name=*/"f0",
+                                               FieldType::BIGINT, literals);
+    auto not_in_predicate = std::dynamic_pointer_cast<PredicateFilter>(not_in_base);
+    ASSERT_TRUE(not_in_predicate);
+
+    auto f0 = arrow::ipc::internal::json::ArrayFromJSON(
+                  arrow::int64(), R"([-9223372036854775808, 0, 9223372036854775807, null])")
+                  .ValueOrDie();
+    std::shared_ptr<arrow::DataType> src_type =
+        arrow::struct_({arrow::field("f0", arrow::int64())});
+    std::shared_ptr<arrow::Array> struct_array =
+        arrow::StructArray::Make({f0}, src_type->fields()).ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto in_valid, in_predicate->Test(*struct_array));
+    ASSERT_EQ(in_valid, std::vector<char>({1, 0, 1, 0}));
+    ASSERT_OK_AND_ASSIGN(auto not_in_valid, not_in_predicate->Test(*struct_array));
+    ASSERT_EQ(not_in_valid, std::vector<char>({0, 1, 0, 0}));
 }
 
 TEST_F(PredicateTest, TestAnd) {

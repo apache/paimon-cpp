@@ -169,7 +169,13 @@ bool LiteralSet::BuildIntegers(const std::vector<Literal>& literals) {
     const auto [min_it, max_it] = std::minmax_element(values.begin(), values.end());
     min_ = *min_it;
     max_ = *max_it;
-    const uint64_t span = static_cast<uint64_t>(max_) - static_cast<uint64_t>(min_) + 1;
+    // For the full int64 range `max_ - min_ + 1` wraps the unsigned span to zero, which would
+    // create an empty dense bitmap and index out of bounds. Such a span always exceeds the dense
+    // threshold, so force the sparse path whenever the subtraction overflows int64_t.
+    const bool span_overflows = min_ < 0 && max_ > std::numeric_limits<int64_t>::max() + min_;
+    const uint64_t span = span_overflows
+                              ? MAX_DENSE_SPAN + 1
+                              : static_cast<uint64_t>(max_) - static_cast<uint64_t>(min_) + 1;
     if (span <= MAX_DENSE_SPAN && span <= DENSE_SPAN_FACTOR * values.size()) {
         dense_.assign(static_cast<size_t>(span), false);
         for (int64_t value : values) {
@@ -269,12 +275,14 @@ void LiteralSet::TestDictionaryArray(const arrow::DictionaryArray& dict_array, b
     const auto& dictionary = checked_cast<const DictArrayType&>(*dict_array.dictionary());
     const auto& indices = checked_cast<const IndicesArrayType&>(*dict_array.indices());
     const int64_t dict_length = dictionary.length();
-    // Probe the dictionary once and then only follow indices, O(dict_size + rows).
+    // Probe the dictionary once and then only follow indices, O(dict_size + rows). A null
+    // dictionary value reads back as an empty string through `GetLiteralFromDictionaryArray`
+    // (its offsets are equal), so probe it as an empty value to keep the semantics identical.
     std::vector<char> dict_hits(dict_length, 0);
     for (int64_t i = 0; i < dict_length; i++) {
-        if (!dictionary.IsNull(i)) {
-            dict_hits[i] = static_cast<char>(ContainsBinary(dictionary.GetView(i)));
-        }
+        const std::string_view value =
+            dictionary.IsNull(i) ? std::string_view() : dictionary.GetView(i);
+        dict_hits[i] = static_cast<char>(ContainsBinary(value));
     }
     for (int64_t i = 0; i < dict_array.length(); i++) {
         if (dict_array.IsNull(i)) {

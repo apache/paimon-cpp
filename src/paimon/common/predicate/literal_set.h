@@ -78,6 +78,9 @@ class LiteralSet {
 
  private:
     explicit LiteralSet(FieldType field_type) : field_type_(field_type) {}
+    // `binary_set_` views into `binary_storage_`, so copying would leave dangling views.
+    LiteralSet(const LiteralSet&) = delete;
+    LiteralSet& operator=(const LiteralSet&) = delete;
 
     // Each builder returns false when the literals cannot be represented, which turns into a
     // `nullptr` from `CreateOrNull`.
