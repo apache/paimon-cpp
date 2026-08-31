@@ -250,8 +250,9 @@ Result<std::shared_ptr<GlobalIndexReader>> LazyFilteredBTreeReader::CreateSingle
         }
         return input_stream;
     };
-    auto block_cache = std::make_shared<BlockCache>(
-        meta.file_path, std::move(input_stream_supplier), cache_manager_, pool_);
+    auto block_cache =
+        std::make_shared<BlockCache>(file_reader_->CacheNamespace(), meta.file_path,
+                                     std::move(input_stream_supplier), cache_manager_, pool_);
 
     // Read footer
     PAIMON_ASSIGN_OR_RAISE(MemorySegment footer_segment,

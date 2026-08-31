@@ -41,11 +41,13 @@ class PAIMON_EXPORT BlockCache {
 
     /// Creates a block cache whose pages survive this reader. The input stream is opened only on a
     /// cache miss, so a later reader can reuse cached pages without reopening the immutable file.
-    BlockCache(const std::string& file_path, InputStreamSupplier input_stream_supplier,
+    BlockCache(const std::string& cache_namespace, const std::string& file_path,
+               InputStreamSupplier input_stream_supplier,
                const std::shared_ptr<CacheManager>& cache_manager,
                const std::shared_ptr<MemoryPool>& pool)
         : pool_(pool),
           cache_pool_(GetDefaultPool()),
+          cache_namespace_(cache_namespace),
           file_path_(file_path),
           input_stream_supplier_(std::move(input_stream_supplier)),
           cache_manager_(cache_manager),
@@ -58,7 +60,10 @@ class PAIMON_EXPORT BlockCache {
     Result<MemorySegment> GetBlock(
         int64_t position, int32_t length, bool is_index,
         std::function<Result<MemorySegment>(const MemorySegment&)> decompress_func) {
-        auto key = CacheKey::ForPosition(file_path_, position, length, is_index);
+        auto key =
+            retain_cached_pages_
+                ? CacheKey::ForPosition(cache_namespace_, file_path_, position, length, is_index)
+                : CacheKey::ForPosition(file_path_, position, length, is_index);
         auto reader = [&](const std::shared_ptr<paimon::CacheKey>&) -> Result<MemorySegment> {
             PAIMON_ASSIGN_OR_RAISE(MemorySegment compress_data, ReadFrom(position, length));
             if (!decompress_func) {
@@ -140,6 +145,7 @@ class PAIMON_EXPORT BlockCache {
  private:
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<MemoryPool> cache_pool_;
+    std::string cache_namespace_;
     std::string file_path_;
     std::shared_ptr<InputStream> in_;
     InputStreamSupplier input_stream_supplier_;

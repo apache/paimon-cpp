@@ -510,7 +510,8 @@ namespace {
 class FsGlobalIndexFileReader : public GlobalIndexFileReader {
  public:
     explicit FsGlobalIndexFileReader(std::shared_ptr<FileSystem> file_system)
-        : file_system_(std::move(file_system)) {}
+        : GlobalIndexFileReader(CacheNamespaceFor(file_system)),
+          file_system_(std::move(file_system)) {}
 
     Result<std::unique_ptr<InputStream>> GetInputStream(
         const std::string& file_path) const override {

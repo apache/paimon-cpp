@@ -28,9 +28,10 @@ namespace paimon {
 
 class PositionCacheKey : public CacheKey {
  public:
-    PositionCacheKey(const std::string& file_path, int64_t position, int32_t length, bool is_index,
-                     CacheKind kind)
+    PositionCacheKey(const std::string& cache_namespace, const std::string& file_path,
+                     int64_t position, int32_t length, bool is_index, CacheKind kind)
         : CacheKey(kind),
+          cache_namespace_(cache_namespace),
           file_path_(file_path),
           position_(position),
           length_(length),
@@ -45,6 +46,7 @@ class PositionCacheKey : public CacheKey {
  private:
     static constexpr uint64_t HASH_CONSTANT = 0x9e3779b97f4a7c15ULL;
 
+    const std::string cache_namespace_;
     const std::string file_path_;
     const int64_t position_;
     const int32_t length_;

@@ -18,15 +18,13 @@
 
 #include "paimon/common/io/cache/cache_key.h"
 
-#include <optional>
-
 namespace paimon {
 namespace {
 
 class SnapshotLiveManifestEntriesCacheKey : public CacheKey {
  public:
     SnapshotLiveManifestEntriesCacheKey(const std::string& table_path, const std::string& branch,
-                                        const std::optional<int32_t>& bucket)
+                                        int32_t bucket)
         : CacheKey(CacheKind::SNAPSHOT_LIVE_MANIFEST),
           table_path_(table_path),
           branch_(branch),
@@ -49,11 +47,7 @@ class SnapshotLiveManifestEntriesCacheKey : public CacheKey {
         size_t seed = 0;
         seed ^= std::hash<std::string>{}(table_path_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
         seed ^= std::hash<std::string>{}(branch_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
-        seed ^= std::hash<bool>{}(bucket_.has_value()) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
-        if (bucket_) {
-            seed ^=
-                std::hash<int32_t>{}(bucket_.value()) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
-        }
+        seed ^= std::hash<int32_t>{}(bucket_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
         seed ^= std::hash<int32_t>{}(static_cast<int32_t>(GetKind())) + HASH_CONSTANT +
                 (seed << 6) + (seed >> 2);
         return seed;
@@ -64,27 +58,30 @@ class SnapshotLiveManifestEntriesCacheKey : public CacheKey {
 
     const std::string table_path_;
     const std::string branch_;
-    const std::optional<int32_t> bucket_;
+    const int32_t bucket_;
 };
 
 }  // namespace
 
 std::shared_ptr<CacheKey> CacheKey::ForPosition(const std::string& file_path, int64_t position,
                                                 int32_t length, bool is_index) {
-    return std::make_shared<PositionCacheKey>(file_path, position, length, is_index,
-                                              CacheKind::DEFAULT);
+    return std::make_shared<PositionCacheKey>(/*cache_namespace=*/"", file_path, position, length,
+                                              is_index, CacheKind::DEFAULT);
+}
+
+std::shared_ptr<CacheKey> CacheKey::ForPosition(const std::string& cache_namespace,
+                                                const std::string& file_path, int64_t position,
+                                                int32_t length, bool is_index) {
+    return std::make_shared<PositionCacheKey>(cache_namespace, file_path, position, length,
+                                              is_index, CacheKind::DEFAULT);
 }
 
 std::shared_ptr<CacheKey> CacheKey::ForKind(const std::string& file_path, int64_t position,
                                             int32_t length, CacheKind kind) {
-    auto key = std::make_shared<PositionCacheKey>(file_path, position, length,
-                                                  /*is_index=*/false, kind);
+    auto key =
+        std::make_shared<PositionCacheKey>(/*cache_namespace=*/"", file_path, position, length,
+                                           /*is_index=*/false, kind);
     return key;
-}
-
-std::shared_ptr<CacheKey> CacheKey::ForSnapshotLiveManifestEntries(const std::string& table_path,
-                                                                   const std::string& branch) {
-    return std::make_shared<SnapshotLiveManifestEntriesCacheKey>(table_path, branch, std::nullopt);
 }
 
 std::shared_ptr<CacheKey> CacheKey::ForSnapshotLiveManifestEntries(const std::string& table_path,
@@ -110,12 +107,14 @@ bool PositionCacheKey::Equals(const CacheKey& other) const {
     if (!rhs) {
         return false;
     }
-    return file_path_ == rhs->file_path_ && position_ == rhs->position_ &&
-           length_ == rhs->length_ && is_index_ == rhs->is_index_ && GetKind() == rhs->GetKind();
+    return cache_namespace_ == rhs->cache_namespace_ && file_path_ == rhs->file_path_ &&
+           position_ == rhs->position_ && length_ == rhs->length_ && is_index_ == rhs->is_index_ &&
+           GetKind() == rhs->GetKind();
 }
 
 size_t PositionCacheKey::HashCode() const {
     size_t seed = 0;
+    seed ^= std::hash<std::string>{}(cache_namespace_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
     seed ^= std::hash<std::string>{}(file_path_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
     seed ^= std::hash<int64_t>{}(position_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
     seed ^= std::hash<int32_t>{}(length_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);

@@ -34,7 +34,7 @@ class GlobalIndexFileManager : public GlobalIndexFileReader, public GlobalIndexF
  public:
     GlobalIndexFileManager(const std::shared_ptr<FileSystem>& fs,
                            const std::shared_ptr<IndexPathFactory>& path_factory)
-        : fs_(fs), path_factory_(path_factory) {}
+        : GlobalIndexFileReader(CacheNamespaceFor(fs)), fs_(fs), path_factory_(path_factory) {}
 
     Result<std::unique_ptr<InputStream>> GetInputStream(
         const std::string& file_path) const override {

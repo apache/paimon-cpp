@@ -19,6 +19,7 @@
 #include "paimon/common/global_index/btree/btree_global_indexer.h"
 
 #include <climits>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -45,36 +46,40 @@
 #include "paimon/executor.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/memory/bytes.h"
-#include "paimon/memory/memory_pool.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
 namespace {
 
-struct SharedCacheManager {
-    SharedCacheManager(int64_t cache_size, double high_priority_pool_ratio)
-        : cache_pool(GetDefaultPool()),
-          cache_manager(std::make_shared<CacheManager>(cache_size, high_priority_pool_ratio)) {}
-
-    // Keep the allocator alive until after cache_manager releases all cached pages.
-    std::shared_ptr<MemoryPool> cache_pool;
-    std::shared_ptr<CacheManager> cache_manager;
-};
-
 std::shared_ptr<CacheManager> GetSharedCacheManager(int64_t cache_size,
                                                     double high_priority_pool_ratio) {
     using CacheConfig = std::pair<int64_t, double>;
+    struct Entry {
+        std::shared_ptr<CacheManager> manager;
+        std::list<CacheConfig>::iterator lru_position;
+    };
+    static constexpr size_t kMaxConfigurations = 4;
     static std::mutex mutex;
-    static std::map<CacheConfig, SharedCacheManager> cache_managers;
+    static std::list<CacheConfig> lru_configs;
+    static std::map<CacheConfig, Entry> cache_managers;
 
     std::lock_guard<std::mutex> lock(mutex);
     CacheConfig config(cache_size, high_priority_pool_ratio);
     auto iter = cache_managers.find(config);
     if (iter != cache_managers.end()) {
-        return iter->second.cache_manager;
+        lru_configs.splice(lru_configs.begin(), lru_configs, iter->second.lru_position);
+        return iter->second.manager;
     }
-    return cache_managers.emplace(config, SharedCacheManager(cache_size, high_priority_pool_ratio))
-        .first->second.cache_manager;
+
+    lru_configs.push_front(config);
+    auto manager = std::make_shared<CacheManager>(cache_size, high_priority_pool_ratio);
+    cache_managers.emplace(config, Entry{manager, lru_configs.begin()});
+    if (cache_managers.size() > kMaxConfigurations) {
+        CacheConfig evicted = lru_configs.back();
+        lru_configs.pop_back();
+        cache_managers.erase(evicted);
+    }
+    return manager;
 }
 
 }  // namespace

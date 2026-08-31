@@ -352,10 +352,7 @@ TEST_P(PrimaryKeySortedIndexInteTest, MultiSourceOrdinalsBecomeBoundedFileLocalR
     }
     ASSERT_GE(source_files.size(), 2);
     ASSERT_EQ(200, selected_rows);
-    // HistoricalSnapshotsMixedFilesAndDisabledIndex may already have populated the process-wide
-    // immutable BTree cache for this fixture. A cold scan opens the single index file; a warm scan
-    // opens none. Multiple source files must never cause more than one distinct index file open.
-    ASSERT_LE(tracking_file_system->OpenedIndexPaths().size(), 1);
+    ASSERT_EQ(1, tracking_file_system->OpenedIndexPaths().size());
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows,
                          Read(/*partitioned=*/false, predicate, plan->Splits(), /*options=*/{},

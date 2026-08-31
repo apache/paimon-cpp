@@ -72,7 +72,7 @@ class FakeLazyFileWriter : public GlobalIndexFileWriter {
 class FakeLazyFileReader : public GlobalIndexFileReader {
  public:
     FakeLazyFileReader(const std::shared_ptr<FileSystem>& fs, const std::string& base_path)
-        : fs_(fs), base_path_(base_path) {}
+        : GlobalIndexFileReader(CacheNamespaceFor(fs)), fs_(fs), base_path_(base_path) {}
 
     Result<std::unique_ptr<InputStream>> GetInputStream(
         const std::string& file_path) const override {
@@ -86,6 +86,9 @@ class FakeLazyFileReader : public GlobalIndexFileReader {
 
 class FailingLazyFileReader : public GlobalIndexFileReader {
  public:
+    explicit FailingLazyFileReader(std::string cache_namespace)
+        : GlobalIndexFileReader(std::move(cache_namespace)) {}
+
     Result<std::unique_ptr<InputStream>> GetInputStream(const std::string&) const override {
         return Status::Invalid("unexpected input stream open for cached btree file");
     }
@@ -406,7 +409,15 @@ TEST_F(LazyFilteredBTreeReaderTest, TestBlockCacheReuseAcrossIndexerInstances) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BTreeGlobalIndexer> second_indexer,
                          BTreeGlobalIndexer::Create(options));
     auto second_schema = CreateArrowSchema();
-    auto failing_file_reader = std::make_shared<FailingLazyFileReader>();
+    auto isolated_file_reader = std::make_shared<FailingLazyFileReader>("other-backend");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<GlobalIndexReader> isolated_reader,
+        second_indexer->CreateReader(second_schema.get(), isolated_file_reader, all_metas_, pool_));
+    ASSERT_NOK_WITH_MSG(isolated_reader->VisitEqual(literal_1),
+                        "unexpected input stream open for cached btree file");
+
+    auto failing_file_reader =
+        std::make_shared<FailingLazyFileReader>(first_file_reader->CacheNamespace());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<GlobalIndexReader> second_reader,
         second_indexer->CreateReader(second_schema.get(), failing_file_reader, all_metas_, pool_));

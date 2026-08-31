@@ -24,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "paimon/core/manifest/manifest_entry.h"
@@ -42,13 +43,15 @@ class SnapshotLiveManifestEntries {
  public:
     struct Entry {
         int64_t snapshot_id;
+        std::string snapshot_generation;
         std::shared_ptr<const std::vector<ManifestEntry>> entries;
     };
 
     explicit SnapshotLiveManifestEntries(int32_t max_snapshots);
 
     std::optional<Entry> LatestBeforeOrEqual(int64_t snapshot_id) const;
-    void Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries);
+    void Put(int64_t snapshot_id, const std::string& snapshot_generation,
+             std::vector<ManifestEntry>&& entries);
     size_t Size() const;
 
     Result<std::shared_ptr<Bytes>> Serialize(const std::shared_ptr<MemoryPool>& pool) const;
@@ -59,7 +62,11 @@ class SnapshotLiveManifestEntries {
  private:
     void EvictIfNeeded();
 
-    std::map<int64_t, std::shared_ptr<const std::vector<ManifestEntry>>> entries_by_snapshot_;
+    struct StoredEntry {
+        std::string snapshot_generation;
+        std::shared_ptr<const std::vector<ManifestEntry>> entries;
+    };
+    std::map<int64_t, StoredEntry> entries_by_snapshot_;
     int32_t max_snapshots_;
 };
 

@@ -203,11 +203,12 @@ TEST_F(FileStoreScanTest, TestSnapshotLiveManifestEntries) {
     snapshot1.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0,
                            /*total_buckets=*/1, file1);
     SnapshotLiveManifestEntries entries(/*max_snapshots=*/2);
-    entries.Put(/*snapshot_id=*/1, std::move(snapshot1));
+    entries.Put(/*snapshot_id=*/1, /*snapshot_generation=*/"generation-1", std::move(snapshot1));
     ASSERT_EQ(entries.Size(), 1);
     auto hit = entries.LatestBeforeOrEqual(/*snapshot_id=*/1);
     ASSERT_TRUE(hit);
     ASSERT_EQ(hit->snapshot_id, 1);
+    ASSERT_EQ(hit->snapshot_generation, "generation-1");
     ASSERT_EQ(hit->entries->size(), 1);
     ASSERT_EQ((*hit->entries)[0].FileName(), "file-1");
     auto latest_before_2 = entries.LatestBeforeOrEqual(/*snapshot_id=*/2);
@@ -225,13 +226,13 @@ TEST_F(FileStoreScanTest, TestSnapshotLiveManifestEntries) {
                                 /*write_cols=*/std::nullopt));
     snapshot3.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0,
                            /*total_buckets=*/1, file3);
-    entries.Put(/*snapshot_id=*/3, std::move(snapshot3));
+    entries.Put(/*snapshot_id=*/3, /*snapshot_generation=*/"generation-3", std::move(snapshot3));
 
     auto latest_before_4 = entries.LatestBeforeOrEqual(/*snapshot_id=*/4);
     ASSERT_TRUE(latest_before_4);
     ASSERT_EQ(latest_before_4->snapshot_id, 3);
 
-    entries.Put(/*snapshot_id=*/5, {});
+    entries.Put(/*snapshot_id=*/5, /*snapshot_generation=*/"generation-5", {});
     ASSERT_EQ(entries.Size(), 2);
     ASSERT_FALSE(entries.LatestBeforeOrEqual(/*snapshot_id=*/1));
     ASSERT_TRUE(entries.LatestBeforeOrEqual(/*snapshot_id=*/3));
@@ -251,8 +252,9 @@ TEST_F(FileStoreScanTest, TestSnapshotLiveManifestEntriesSerialization) {
     manifest_entries.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0,
                                   /*total_buckets=*/1, file1);
     SnapshotLiveManifestEntries entries(/*max_snapshots=*/2);
-    entries.Put(/*snapshot_id=*/1, std::move(manifest_entries));
-    entries.Put(/*snapshot_id=*/3, {});
+    entries.Put(/*snapshot_id=*/1, /*snapshot_generation=*/"generation-1",
+                std::move(manifest_entries));
+    entries.Put(/*snapshot_id=*/3, /*snapshot_generation=*/"generation-3", {});
 
     ASSERT_OK_AND_ASSIGN(auto bytes, entries.Serialize(GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(auto deserialized,
@@ -262,6 +264,7 @@ TEST_F(FileStoreScanTest, TestSnapshotLiveManifestEntriesSerialization) {
     auto hit = deserialized.LatestBeforeOrEqual(/*snapshot_id=*/2);
     ASSERT_TRUE(hit);
     ASSERT_EQ(hit->snapshot_id, 1);
+    ASSERT_EQ(hit->snapshot_generation, "generation-1");
     ASSERT_EQ(hit->entries->size(), 1);
     ASSERT_EQ((*hit->entries)[0].FileName(), "file-1");
     ASSERT_EQ(deserialized.LatestBeforeOrEqual(/*snapshot_id=*/4)->snapshot_id, 3);

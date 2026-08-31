@@ -391,15 +391,22 @@ TEST_F(LruCacheTest, TestForSnapshotLiveManifestEntries) {
     auto bucket_key = CacheKey::ForSnapshotLiveManifestEntries("table_path", "main", 1);
     auto hash_in_path_key = CacheKey::ForSnapshotLiveManifestEntries("table#path", "main", 0);
     auto hash_in_branch_key = CacheKey::ForSnapshotLiveManifestEntries("table", "path#main", 0);
-    auto all_buckets_key = CacheKey::ForSnapshotLiveManifestEntries("table_path", "main");
 
     ASSERT_EQ(CacheKind::SNAPSHOT_LIVE_MANIFEST, main_key->GetKind());
     ASSERT_TRUE(CacheKeyEqual()(main_key, same_key));
     ASSERT_FALSE(CacheKeyEqual()(main_key, branch_key));
     ASSERT_FALSE(CacheKeyEqual()(main_key, table_key));
     ASSERT_FALSE(CacheKeyEqual()(main_key, bucket_key));
-    ASSERT_FALSE(CacheKeyEqual()(main_key, all_buckets_key));
     ASSERT_FALSE(CacheKeyEqual()(hash_in_path_key, hash_in_branch_key));
+}
+
+TEST_F(LruCacheTest, TestPositionKeyIncludesBackendNamespace) {
+    auto first = CacheKey::ForPosition("backend-a", "same-path", 0, 64, /*is_index=*/false);
+    auto same = CacheKey::ForPosition("backend-a", "same-path", 0, 64, /*is_index=*/false);
+    auto other = CacheKey::ForPosition("backend-b", "same-path", 0, 64, /*is_index=*/false);
+
+    ASSERT_TRUE(CacheKeyEqual()(first, same));
+    ASSERT_FALSE(CacheKeyEqual()(first, other));
 }
 
 /// Verifies that multiple evictions happen when a single large entry is inserted.
