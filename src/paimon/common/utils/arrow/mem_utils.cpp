@@ -142,8 +142,7 @@ Status AddArrowArrayLifetime(ArrowArray* array, const std::shared_ptr<void>& lif
         return Status::Invalid("cannot add an empty lifetime to an ArrowArray");
     }
     if (array->release == ReleaseArrowArray) {
-        const ArrowArrayPrivateData* data =
-            static_cast<const ArrowArrayPrivateData*>(array->private_data);
+        const auto* data = static_cast<const ArrowArrayPrivateData*>(array->private_data);
         if (HasSameOwner(data->lifetime, lifetime)) {
             return Status::OK();
         }
