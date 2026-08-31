@@ -1340,6 +1340,16 @@ TEST(FileSystemCatalogTest, TestRejectInvalidNames) {
     ASSERT_NOK_WITH_MSG(catalog.ListSnapshots(Identifier("db1", "t"), "../../x"),
                         "branch name cannot contain path separators");
 
+    // A system table identifier keeps its own branch component, which the entries resolving the
+    // data table must reject as well.
+    const Identifier rejected_branch_system_table("db1", "t$branch_../../x$snapshots");
+    ASSERT_NOK_WITH_MSG(catalog.TableExists(rejected_branch_system_table),
+                        "branch name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.LoadTableSchema(rejected_branch_system_table),
+                        "branch name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(catalog.GetTable(rejected_branch_system_table),
+                        "branch name cannot contain path separators");
+
     // The surrounding directory is untouched and the valid table still works.
     ASSERT_OK_AND_ASSIGN(path_exists, fs->Exists(PathUtil::JoinPath(dir->Str(), "db1.db")));
     ASSERT_FALSE(path_exists);

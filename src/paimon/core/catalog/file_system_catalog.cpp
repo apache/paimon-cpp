@@ -105,6 +105,9 @@ Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const 
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
         return GlobalSystemTableLoader::IsSupported(identifier.GetTableName(), catalog_options_);
     }
+    // The branch component is dropped when the data table identifier is rebuilt below, so the
+    // identifier is validated as a whole here.
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
@@ -289,6 +292,9 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
                                system_table->ArrowSchema());
         return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
     }
+    // The branch component is dropped when the data table identifier is rebuilt below, so the
+    // identifier is validated as a whole here.
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
