@@ -97,7 +97,7 @@ bool StringUtils::EndsWith(const std::string& str, const std::string& suffix) {
 bool StringUtils::IsBlank(std::string_view str) {
     size_t offset = 0;
     while (offset < str.size()) {
-        const uint8_t first = static_cast<uint8_t>(str[offset]);
+        const auto first = static_cast<uint8_t>(str[offset]);
         uint32_t code_point = 0;
         size_t length = 0;
         if (first <= 0x7f) {
@@ -119,7 +119,7 @@ bool StringUtils::IsBlank(std::string_view str) {
             return false;
         }
         for (size_t i = 1; i < length; ++i) {
-            const uint8_t continuation = static_cast<uint8_t>(str[offset + i]);
+            const auto continuation = static_cast<uint8_t>(str[offset + i]);
             if ((continuation & 0xc0) != 0x80) {
                 return false;
             }
