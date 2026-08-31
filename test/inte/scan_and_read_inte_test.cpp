@@ -2153,7 +2153,7 @@ TEST_P(ScanAndReadInteTest, TestPkScanWithPostponeBucket) {
                                arrow::field("_VALUE_KIND", arrow::int8()));
 
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format},
                                                   {Options::TARGET_FILE_SIZE, "1024"},
                                                   {Options::BUCKET, "-2"},

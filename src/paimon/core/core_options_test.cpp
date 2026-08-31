@@ -37,7 +37,9 @@ namespace paimon::test {
 
 TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
-    ASSERT_EQ(core_options.GetManifestFormat()->Identifier(), "avro");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> manifest_format,
+                         core_options.GetManifestFormat(/*write=*/false));
+    ASSERT_EQ(manifest_format->Identifier(), "avro");
     ASSERT_EQ(core_options.GetFileFormat()->Identifier(), "parquet");
     ASSERT_EQ(nullptr, core_options.GetChangelogFileFormat());
     ASSERT_EQ(core_options.GetWriteFileFormat(0)->Identifier(), "parquet");
@@ -193,6 +195,23 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(BucketFunctionType::DEFAULT, core_options.GetBucketFunctionType());
 }
 
+TEST(CoreOptionsTest, GetManifestFormatForReadAndWrite) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions default_options, CoreOptions::FromMap({}));
+    ASSERT_OK(default_options.GetManifestFormat(/*write=*/true));
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions avro_options,
+                         CoreOptions::FromMap({{Options::MANIFEST_FORMAT, "AvRo"}}));
+    ASSERT_OK(avro_options.GetManifestFormat(/*write=*/true));
+
+    ASSERT_OK_AND_ASSIGN(CoreOptions legacy_options,
+                         CoreOptions::FromMap({{Options::MANIFEST_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> legacy_manifest_format,
+                         legacy_options.GetManifestFormat(/*write=*/false));
+    ASSERT_EQ(legacy_manifest_format->Identifier(), "orc");
+    ASSERT_NOK_WITH_MSG(legacy_options.GetManifestFormat(/*write=*/true),
+                        "manifest.format 'orc' is read-only");
+}
+
 TEST(CoreOptionsTest, TestFromMap) {
     std::map<std::string, std::string> options = {
         {Options::FILE_SYSTEM, "Local"},
@@ -339,7 +358,8 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(core_options.GetWriteFileFormat(1)->Identifier(), "orc");
     ASSERT_EQ(core_options.GetWriteFileFormat(3)->Identifier(), "parquet");
 
-    auto manifest_format = core_options.GetManifestFormat();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> manifest_format,
+                         core_options.GetManifestFormat(/*write=*/false));
     ASSERT_EQ(manifest_format->Identifier(), "avro");
 
     ASSERT_EQ(3, core_options.GetBucket());

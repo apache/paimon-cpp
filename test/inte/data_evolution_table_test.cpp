@@ -79,7 +79,7 @@ class DataEvolutionTableTest : public ::testing::Test,
     }
 
     void CreateTable(const std::vector<std::string>& partition_keys) const {
-        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                       {Options::FILE_FORMAT, FileFormat()},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
@@ -160,7 +160,7 @@ class DataEvolutionTableTest : public ::testing::Test,
     std::map<std::string, std::string> CreateDataEvolutionTable(
         bool deletion_vectors_enabled,
         const std::map<std::string, std::string>& extra_options = {}) const {
-        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                       {Options::FILE_FORMAT, FileFormat()},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
@@ -864,7 +864,7 @@ TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) 
         arrow::field("map2", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1192,7 +1192,7 @@ TEST_P(DataEvolutionTableTest, TestMoreData) {
 
 TEST_P(DataEvolutionTableTest, TestOnlyRowTrackingEnabled) {
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1236,7 +1236,7 @@ TEST_P(DataEvolutionTableTest, TestExternalPath) {
     std::string external_test_dir = external_dir->Str();
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1488,7 +1488,7 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
     }
     std::vector<std::string> partition_keys = {"f1"};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, FileFormat()},
+        {Options::MANIFEST_FORMAT, "avro"},        {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "true"}, {"parquet.write.max-row-group-length", "1"}};
     if (file_format == "mosaic") {
@@ -2136,7 +2136,7 @@ TEST_P(DataEvolutionTableTest, TestFormatPredicatePushDownWithoutFileIndex) {
     std::map<std::string, std::string> options = {{Options::FILE_INDEX_READ_ENABLED, "false"},
                                                   {Options::WRITE_BATCH_SIZE, "1"},
                                                   {"parquet.page.size", "1"},
-                                                  {"parquet.enable-dictionary", "false"},
+                                                  {"parquet.enable.dictionary", "false"},
                                                   {"parquet.write.enable-page-index", "true"},
                                                   {"parquet.read.enable-page-index-filter", "true"},
                                                   {"orc.stripe.size", "1"},
@@ -2187,7 +2187,7 @@ TEST_P(DataEvolutionTableTest, TestPredicate) {
         return;
     }
     if (FileFormat() == "mosaic") {
-        CreateTable(/*partition_keys=*/{}, {{Options::MANIFEST_FORMAT, "orc"},
+        CreateTable(/*partition_keys=*/{}, {{Options::MANIFEST_FORMAT, "avro"},
                                             {Options::FILE_FORMAT, FileFormat()},
                                             {Options::FILE_SYSTEM, "local"},
                                             {Options::ROW_TRACKING_ENABLED, "true"},
@@ -2331,7 +2331,7 @@ TEST_P(DataEvolutionTableTest, TestIOException) {
 }
 
 TEST_P(DataEvolutionTableTest, TestWithRowIds) {
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, FileFormat()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},

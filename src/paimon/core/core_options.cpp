@@ -610,7 +610,7 @@ struct CoreOptions::Impl {
 
     // Parse manifest file configurations: format, compression, merge, and compaction thresholds.
     Status ParseManifestOptions(const ConfigParser& parser) {
-        // Parse manifest.format - manifest file format, default "avro"
+        // Parse manifest.format for reading legacy manifests; only avro is writable.
         PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
             Options::MANIFEST_FORMAT, /*default_identifier=*/"avro", &manifest_file_format));
         // Parse manifest.compression - manifest file compression, default "zstd"
@@ -1143,7 +1143,13 @@ std::string CoreOptions::GetPartitionDefaultName() const {
     return impl_->partition_default_name;
 }
 
-std::shared_ptr<FileFormat> CoreOptions::GetManifestFormat() const {
+Result<std::shared_ptr<FileFormat>> CoreOptions::GetManifestFormat(bool write) const {
+    const std::string& identifier = impl_->manifest_file_format->Identifier();
+    if (write && identifier != "avro") {
+        return Status::Invalid(fmt::format(
+            "manifest.format '{}' is read-only; only 'avro' can be used for writing manifests",
+            identifier));
+    }
     return impl_->manifest_file_format;
 }
 

@@ -75,14 +75,16 @@ class ExpireSnapshotsTest : public testing::Test {
         test_data_path_ = "tmp";
         path_factory_ = CreateFactory(test_data_path_);
 
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> manifest_format,
+                             options.GetManifestFormat(/*write=*/false));
         ASSERT_OK_AND_ASSIGN(
             manifest_list_,
-            ManifestList::Create(fs_, options.GetManifestFormat(), options.GetManifestCompression(),
+            ManifestList::Create(fs_, manifest_format, options.GetManifestCompression(),
                                  path_factory_, options.GetCache(), mem_pool_));
 
         ASSERT_OK_AND_ASSIGN(
             manifest_file_,
-            ManifestFile::Create(fs_, options.GetManifestFormat(), options.GetManifestCompression(),
+            ManifestFile::Create(fs_, manifest_format, options.GetManifestCompression(),
                                  path_factory_, options.GetManifestTargetFileSize(), mem_pool_,
                                  options, partition_schema_));
     }

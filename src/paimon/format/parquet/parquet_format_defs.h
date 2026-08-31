@@ -41,7 +41,7 @@ namespace paimon::parquet {
 static inline const char PARQUET_BLOCK_SIZE[] = "parquet.block.size";
 static inline const char PARQUET_PAGE_SIZE[] = "parquet.page.size";
 static inline const char PARQUET_DICTIONARY_PAGE_SIZE[] = "parquet.dictionary.page.size";
-static inline const char PARQUET_ENABLE_DICTIONARY[] = "parquet.enable-dictionary";
+static inline const char PARQUET_ENABLE_DICTIONARY[] = "parquet.enable.dictionary";
 static inline const char PARQUET_WRITER_VERSION[] = "parquet.writer.version";
 static inline const char PARQUET_WRITE_MAX_ROW_GROUP_LENGTH[] =
     "parquet.write.max-row-group-length";

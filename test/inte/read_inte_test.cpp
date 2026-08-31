@@ -1016,7 +1016,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedPrimaryKeyProjectionAndPredicateP
         {Options::BUCKET_KEY, "k"},
         {Options::WRITE_BATCH_SIZE, "1"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
         {"parquet.write.max-row-group-length", "1"},
         {"parquet.read.enable-page-index-filter", "true"}};
@@ -1239,8 +1239,8 @@ TEST(SystemTableReadInteTest, TestReadFilesSystemTableForPartitionedTable) {
     };
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
-                                                  {Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::BUCKET, "1"}};
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -1363,8 +1363,8 @@ TEST(SystemTableReadInteTest, TestReadFilesSystemTableForDatePartition) {
     };
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
-                                                  {Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::BUCKET, "1"},
                                                   {Options::BUCKET_KEY, "v"}};
     auto dir = UniqueTestDirectory::Create();
@@ -4284,8 +4284,8 @@ TEST(SystemTableReadInteTest, TestReadGlobalAllTableOptions) {
 
 TEST(SystemTableReadInteTest, TestReadGlobalTables) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
-                                                  {Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::BUCKET, "1"},
                                                   {"owner", "alice"},
                                                   {"createdAt", "1000"},
@@ -4402,8 +4402,8 @@ TEST(SystemTableReadInteTest, TestReadGlobalTables) {
 
 TEST(SystemTableReadInteTest, TestReadGlobalPartitions) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
-                                                  {Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::BUCKET, "1"},
                                                   {Options::BUCKET_KEY, "v"}};
     auto dir = UniqueTestDirectory::Create();
@@ -4489,8 +4489,8 @@ TEST(SystemTableReadInteTest, TestGlobalSystemTablesPropagateCorruptSchema) {
 
 TEST(SystemTableReadInteTest, TestPartitionsSystemTablePropagatesCorruptSnapshot) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
-                                                  {Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::BUCKET, "1"},
                                                   {Options::BUCKET_KEY, "v"}};
     auto dir = UniqueTestDirectory::Create();
@@ -4524,8 +4524,8 @@ TEST(SystemTableReadInteTest, TestPartitionsSystemTablePropagatesCorruptSnapshot
 
 TEST(SystemTableReadInteTest, TestPartitionsSystemTablePropagatesCorruptManifest) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
-                                                  {Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::BUCKET, "1"},
                                                   {Options::BUCKET_KEY, "v"}};
     auto dir = UniqueTestDirectory::Create();

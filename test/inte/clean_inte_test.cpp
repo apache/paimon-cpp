@@ -190,7 +190,7 @@ class CleanInteTest : public testing::Test {
 };
 
 TEST_F(CleanInteTest, TestExpireSnapshotFailover) {
-    std::string test_data_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
+    std::string test_data_path = paimon::test::GetDataDir() + "/parquet/append_09.db/append_09/";
     std::map<std::string, std::string> clean_options = {
         {Options::MANIFEST_TARGET_FILE_SIZE, "8mb"},
         {Options::FILE_SYSTEM, "local"},
@@ -218,7 +218,7 @@ TEST_F(CleanInteTest, TestExpireSnapshotFailover) {
         std::string table_path = dir->Str();
         ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
         ASSERT_OK(file_system_->Delete(PathUtil::JoinPath(
-            table_path, "manifest/manifest-list-616d1847-a02c-495f-9cca-2c8b7def0fec-1")));
+            table_path, "manifest/manifest-list-55a3b658-08e3-40aa-b692-29dc1e3ebbdc-1")));
         CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<CommitContext> commit_context,
@@ -233,7 +233,7 @@ TEST_F(CleanInteTest, TestExpireSnapshotFailover) {
         std::string table_path = dir->Str();
         ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
         ASSERT_OK(file_system_->Delete(PathUtil::JoinPath(
-            table_path, "f1=10/bucket-1/data-10b9eea8-241d-4e4b-8ab8-2a82d72d79a2-0.orc")));
+            table_path, "f1=10/bucket-1/data-7a912f84-04b7-4bbb-8dc6-53f4a292ea25-0.parquet")));
         CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<CommitContext> commit_context,
@@ -272,7 +272,7 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshot) {
     ASSERT_TRUE(dir);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "orc"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
@@ -416,7 +416,7 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshotWithIOException) {
     auto schema =
         arrow::schema(arrow::FieldVector({string_field, int_field, int_field1, double_field}));
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "orc"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
@@ -583,7 +583,7 @@ TEST_F(CleanInteTest, TestOrphanFilesClean) {
     ASSERT_TRUE(arrow::ExportSchema(*schema, &arrow_schema).ok());
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "orc"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
@@ -701,7 +701,7 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithFileRetainCondition) {
     ASSERT_TRUE(arrow::ExportSchema(*schema, &arrow_schema).ok());
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "orc"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
@@ -817,7 +817,7 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithIOException) {
     ASSERT_TRUE(dir);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "orc"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},

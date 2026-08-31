@@ -164,7 +164,8 @@ struct PAIMON_EXPORT Options {
     /// Default value is 8MB.
     static const char MANIFEST_TARGET_FILE_SIZE[];
 
-    /// "manifest.format" - Specify the message format of manifest files.
+    /// "manifest.format" - Deprecated compatibility option for reading legacy manifests.
+    /// Avro is the only writable manifest format; non-Avro formats are read-only.
     /// Default value is avro.
     static const char MANIFEST_FORMAT[];
 

@@ -2237,7 +2237,7 @@ TEST_P(WriteAndReadInteTest, TestPKWithParquetPageIndexFilter) {
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "1"},
@@ -2253,7 +2253,7 @@ TEST_P(WriteAndReadInteTest, TestPKWithParquetPageIndexFilter) {
         // filter is enabled below).
         {Options::WRITE_BATCH_SIZE, "1"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
     };
     ASSERT_OK_AND_ASSIGN(auto helper,
@@ -2352,7 +2352,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilter) {
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "-1"},
@@ -2363,7 +2363,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilter) {
         // without row-level filter the reader output is precisely that one row.
         {Options::WRITE_BATCH_SIZE, "1"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
     };
     ASSERT_OK_AND_ASSIGN(auto helper,
@@ -2459,7 +2459,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
                                  arrow::field("f1", arrow::utf8())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "-1"},
@@ -2469,7 +2469,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
         // in 4 row groups of 4 single-row pages.
         {Options::WRITE_BATCH_SIZE, "1"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
         {"parquet.write.max-row-group-length", "4"},
         {"parquet.read.enable-page-index-filter", "true"},
@@ -2546,7 +2546,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetMetadataCache) {
                                  arrow::field("f1", arrow::int32())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},      {Options::FILE_FORMAT, "parquet"},
+        {Options::MANIFEST_FORMAT, "avro"},     {Options::FILE_FORMAT, "parquet"},
         {Options::TARGET_FILE_SIZE, "1048576"}, {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, "local"},
     };
@@ -2892,7 +2892,7 @@ TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPredicate) {
         {Options::FILE_SYSTEM, file_system},
         {Options::WRITE_BATCH_SIZE, "1"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
         {"parquet.write.max-row-group-length", "1"},
         {"parquet.read.enable-page-index-filter", "true"},

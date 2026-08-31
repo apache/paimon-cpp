@@ -37,6 +37,14 @@ bool IsTrimCharacter(unsigned char c) {
     return c <= 0x20;
 }
 
+bool IsJavaWhitespace(uint32_t code_point) {
+    return (code_point >= 0x0009 && code_point <= 0x000d) ||
+           (code_point >= 0x001c && code_point <= 0x0020) || code_point == 0x1680 ||
+           (code_point >= 0x2000 && code_point <= 0x2006) ||
+           (code_point >= 0x2008 && code_point <= 0x200a) || code_point == 0x2028 ||
+           code_point == 0x2029 || code_point == 0x205f || code_point == 0x3000;
+}
+
 char ToAsciiLower(unsigned char c) {
     return c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : static_cast<char>(c);
 }
@@ -85,16 +93,52 @@ bool StringUtils::EndsWith(const std::string& str, const std::string& suffix) {
     size_t s2 = suffix.size();
     return (s1 >= s2) && (str.compare(s1 - s2, s2, suffix) == 0);
 }
-bool StringUtils::IsNullOrWhitespaceOnly(const std::string& str) {
-    if (str.empty()) {
-        return true;
-    }
-    for (char c : str) {
-        if (!std::isspace(static_cast<unsigned char>(c))) {
+
+bool StringUtils::IsBlank(std::string_view str) {
+    size_t offset = 0;
+    while (offset < str.size()) {
+        const uint8_t first = static_cast<uint8_t>(str[offset]);
+        uint32_t code_point = 0;
+        size_t length = 0;
+        if (first <= 0x7f) {
+            code_point = first;
+            length = 1;
+        } else if (first >= 0xc2 && first <= 0xdf) {
+            code_point = first & 0x1f;
+            length = 2;
+        } else if (first >= 0xe0 && first <= 0xef) {
+            code_point = first & 0x0f;
+            length = 3;
+        } else if (first >= 0xf0 && first <= 0xf4) {
+            code_point = first & 0x07;
+            length = 4;
+        } else {
             return false;
         }
+        if (offset + length > str.size()) {
+            return false;
+        }
+        for (size_t i = 1; i < length; ++i) {
+            const uint8_t continuation = static_cast<uint8_t>(str[offset + i]);
+            if ((continuation & 0xc0) != 0x80) {
+                return false;
+            }
+            code_point = (code_point << 6) | (continuation & 0x3f);
+        }
+        if ((length == 3 && code_point < 0x800) || (length == 4 && code_point < 0x10000) ||
+            (code_point >= 0xd800 && code_point <= 0xdfff) || code_point > 0x10ffff) {
+            return false;
+        }
+        if (!IsJavaWhitespace(code_point)) {
+            return false;
+        }
+        offset += length;
     }
     return true;
+}
+
+bool StringUtils::IsNullOrWhitespaceOnly(const std::string& str) {
+    return IsBlank(str);
 }
 
 void StringUtils::Trim(std::string* str) {

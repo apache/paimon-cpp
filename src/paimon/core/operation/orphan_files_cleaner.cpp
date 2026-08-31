@@ -194,20 +194,20 @@ Result<std::unique_ptr<OrphanFilesCleaner>> OrphanFilesCleaner::Create(
             global_index_external_path, options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
     auto snapshot_manager =
         std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ManifestList> manifest_list,
-        ManifestList::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory, options.GetCache(),
-                             ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
+                           options.GetManifestFormat(/*write=*/false));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
+                           ManifestList::Create(options.GetFileSystem(), manifest_format,
+                                                options.GetManifestCompression(), path_factory,
+                                                options.GetCache(), ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<arrow::Schema> partition_schema,
         FieldMapping::GetPartitionSchema(arrow_schema, table_schema.value()->PartitionKeys()));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory,
-                             options.GetManifestTargetFileSize(), ctx->GetMemoryPool(), options,
-                             partition_schema));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestFile> manifest_file,
+                           ManifestFile::Create(options.GetFileSystem(), manifest_format,
+                                                options.GetManifestCompression(), path_factory,
+                                                options.GetManifestTargetFileSize(),
+                                                ctx->GetMemoryPool(), options, partition_schema));
     return std::make_unique<OrphanFilesCleanerImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, ctx->GetRootPath(), options,
         snapshot_manager, schema->PartitionKeys(), manifest_file, manifest_list,

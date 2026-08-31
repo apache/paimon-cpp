@@ -77,6 +77,20 @@ TEST(ParquetWriterBuilderTest, PrepareWriterProperties) {
     ASSERT_EQ(3, properties->default_column_properties().compression_level());
 }
 
+TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithDictionaryDisabled) {
+    arrow::FieldVector fields;
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::MANIFEST_FORMAT, "parquet"},
+        {"parquet.enable.dictionary", "false"},
+    };
+    ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<::parquet::WriterProperties> properties,
+                         builder.PrepareWriterProperties("zstd"));
+    ASSERT_FALSE(properties->default_column_properties().dictionary_enabled());
+}
+
 TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithFileBlockSize) {
     arrow::FieldVector fields;
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);

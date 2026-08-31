@@ -409,7 +409,7 @@ TEST_P(WriteInteTest, TestAppendTableBatchWrite) {
     auto schema = arrow::schema(fields);
 
     auto file_format = GetParam();
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format},
                                                   {Options::TARGET_FILE_SIZE, "1024"},
                                                   {Options::BUCKET, "-1"},
@@ -514,7 +514,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithOneBucket) {
 
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
         {Options::BUCKET_KEY, "f5"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -668,7 +668,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithPartitionAndMultiBuckets) {
     std::vector<std::string> partition_keys = {"f2", "f1"};
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "2"},
         {Options::BUCKET_KEY, "f0"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -824,7 +824,7 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
 
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
         {Options::BUCKET_KEY, "f5"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -974,7 +974,7 @@ TEST_P(WriteInteTest, TestPkTableStreamWrite) {
     std::vector<std::string> partition_keys = {"f1"};
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "2"},
         {Options::BUCKET_KEY, "f0"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -1250,7 +1250,7 @@ TEST_P(WriteInteTest, TestPkTableBatchWrite) {
     std::vector<std::string> partition_keys = {"f1"};
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "2"},
         {Options::BUCKET_KEY, "f0"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -1411,7 +1411,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
     std::vector<std::string> partition_keys = {};
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "2"},
         {Options::BUCKET_KEY, "f0"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -1650,7 +1650,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
     std::vector<std::string> partition_keys = {};
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
         {Options::BUCKET_KEY, "f5"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -1822,7 +1822,7 @@ TEST_P(WriteInteTest, TestPkTableForceLookup) {
     std::vector<std::string> partition_keys = {};
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
         {Options::BUCKET_KEY, "f0"},         {Options::FILE_SYSTEM, "local"},
         {Options::FORCE_LOOKUP, "true"},     {Options::WRITE_ONLY, "true"}};
@@ -1883,7 +1883,7 @@ TEST_P(WriteInteTest, TestPkTableEnableDeletionVector) {
     std::vector<std::string> primary_keys = {"f0", "f1"};
     std::vector<std::string> partition_keys = {};
     auto file_format = GetParam();
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format},
                                                   {Options::TARGET_FILE_SIZE, "1024"},
                                                   {Options::BUCKET, "1"},
@@ -1943,7 +1943,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
     std::vector<std::string> primary_keys = {"f0", "f1"};
     std::vector<std::string> partition_keys = {"f1"};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "2"},
         {Options::BUCKET_KEY, "f0"},         {Options::FILE_SYSTEM, "local"},
     };
@@ -2235,7 +2235,7 @@ TEST_F(WriteInteTest, TestAppendTableWriteWithAlterTable) {
         arrow::field("e", arrow::int32()),
     };
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::TARGET_FILE_SIZE, "1024"},
                                                   {Options::FILE_SYSTEM, "local"}};
     ASSERT_OK_AND_ASSIGN(auto helper,
@@ -2314,7 +2314,7 @@ TEST_F(WriteInteTest, TestPKTableWriteWithAlterTable) {
         arrow::field("v2", arrow::int32()),
     };
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::TARGET_FILE_SIZE, "1024"},
                                                   {Options::FILE_SYSTEM, "local"}};
     ASSERT_OK_AND_ASSIGN(auto helper,
@@ -2409,7 +2409,7 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
         {Options::FILE_FORMAT, file_format},
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
         {Options::BUCKET, "2"},
@@ -2513,7 +2513,7 @@ TEST_P(WriteInteTest, TestWriteWithFieldId) {
     ::ArrowSchema c_schema;
     ASSERT_TRUE(arrow::ExportType(*arrow_data_type, &c_schema).ok());
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
@@ -2744,7 +2744,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithExternalPath) {
 
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -3177,7 +3177,7 @@ TEST_P(WriteInteTest, TestWriteWithIOException) {
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
         {Options::FILE_FORMAT, file_format},
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
         {Options::BUCKET, "2"},
@@ -3237,7 +3237,7 @@ TEST_P(WriteInteTest, TestCommitWithIOException) {
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
         {Options::FILE_FORMAT, file_format},
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
         {Options::BUCKET, "2"},
@@ -3309,7 +3309,7 @@ TEST_P(WriteInteTest, TestWriteMemoryUse) {
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
         {Options::FILE_FORMAT, file_format},
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::FILE_SYSTEM, "local"},
         {Options::BUCKET, "2"},
@@ -3375,7 +3375,7 @@ TEST_P(WriteInteTest, TestAppendTableWithAllNull) {
 
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, "local"},
     };
@@ -3415,7 +3415,7 @@ TEST_P(WriteInteTest, TestPkTablePostponeBucket) {
     auto schema = arrow::schema(fields);
     std::vector<std::string> primary_keys = {"f0", "f1"};
     auto file_format = GetParam();
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format},
                                                   {Options::TARGET_FILE_SIZE, "1024"},
                                                   {Options::BUCKET, "-2"},
@@ -3510,7 +3510,7 @@ TEST_F(WriteInteTest, TestBranchWrite) {
     ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
 
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_SYSTEM, "local"}};
     WriteContextBuilder context_builder(table_path, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
@@ -3611,7 +3611,7 @@ TEST_P(WriteInteTest, TestDataEvolutionWrite) {
     auto file_format = GetParam();
     auto dir = UniqueTestDirectory::Create();
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
-                                                  {Options::MANIFEST_FORMAT, "orc"},
+                                                  {Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"},
                                                   {Options::FILE_SYSTEM, "local"}};
@@ -3803,7 +3803,7 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithBlobType) {
 
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},       {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},      {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "700"},      {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
         {Options::FILE_SYSTEM, "local"},         {Options::BLOB_AS_DESCRIPTOR, "true"}};
@@ -3914,7 +3914,7 @@ TEST_P(WriteInteTest, TestAppendTableWithDateFieldAsPartitionField) {
     auto schema = arrow::schema(fields);
 
     auto file_format = GetParam();
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format},
                                                   {Options::TARGET_FILE_SIZE, "1024"},
                                                   {Options::BUCKET, "-1"},
@@ -4570,7 +4570,7 @@ TEST_P(WriteInteTest, TestPkSpillableWithIOException) {
     std::vector<std::string> partition_keys = {"f1"};
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, file_format},
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "2"},
         {Options::BUCKET_KEY, "f0"},         {Options::FILE_SYSTEM, "local"},
         {Options::WRITE_BUFFER_SIZE, "1"},   {Options::WRITE_BUFFER_SPILLABLE, "true"},
@@ -4681,7 +4681,7 @@ TEST_P(WriteInteTest, TestAppendTableWriteWithMultipleBlobFields) {
     auto schema = arrow::schema(fields);
 
     auto file_format = GetParam();
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format},
                                                   {Options::BUCKET, "-1"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -4826,7 +4826,7 @@ TEST_P(WriteInteTest, TestRowTrackingPartitionGroupOnCommit) {
 
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -4941,7 +4941,7 @@ TEST_P(WriteInteTest, TestRowTrackingPartitionGroupOnCommitDisabled) {
 
     auto file_format = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -5039,7 +5039,7 @@ TEST_P(WriteInteTest, TestMultipleBlobFieldsSplitByTargetSize) {
 
     auto file_format = GetParam();
     // Set a very small blob target file size to force splitting
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format},
                                                   {Options::BUCKET, "-1"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},

@@ -84,7 +84,7 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
     }
 
     void CreateTable(const std::vector<std::string>& partition_keys) const {
-        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                       {Options::FILE_FORMAT, file_format_},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
@@ -259,7 +259,7 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndex) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
 
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -318,7 +318,7 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithMismatchedDimension) {
                                                          {"lumina.search.parallel_number", "10"}};
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, file_format_},
+        {Options::MANIFEST_FORMAT, "avro"},        {Options::FILE_FORMAT, file_format_},
         {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::READ_BATCH_SIZE, "1"}};
 
@@ -361,7 +361,7 @@ TEST_P(GlobalIndexTest, TestWriteAndQueryLuminaIndexWithOrcDictionaryStringTags)
          R"([{"key_name":"color","type":"enum","value_type":"string"},)"
          R"({"key_name":"labels","type":"enum","value_type":"string"}])"}};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, file_format_},
+        {Options::MANIFEST_FORMAT, "avro"},        {Options::FILE_FORMAT, file_format_},
         {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
         {Options::DATA_EVOLUTION_ENABLED, "true"}, {"orc.dictionary-key-size-threshold", "1"},
         {"orc.read.enable-lazy-decoding", "true"}};
@@ -956,7 +956,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndexWithPartition) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1097,7 +1097,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndexWithScore) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1243,7 +1243,7 @@ TEST_P(GlobalIndexTest, TestWriteAndQueryLuminaIndexWithTagNullAndEmptyValues) {
          R"({"key_name":"scores","type":"range","value_type":"float"},)"
          R"({"key_name":"category","type":"enum","value_type":"int32"},)"
          R"({"key_name":"category_ids","type":"enum","value_type":"int32"}])"}};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1851,7 +1851,7 @@ TEST_P(GlobalIndexTest, TestScanIndexWithTwoIndexes) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1919,7 +1919,7 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithExternalPath) {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::list(arrow::float32())),
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1986,7 +1986,7 @@ TEST_P(GlobalIndexTest, TestIOException) {
     ])")
                          .ValueOrDie();
 
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -2312,7 +2312,7 @@ TEST_P(GlobalIndexTest, TestLuceneWriteCommitScanReadIndexWithScore) {
         {"lucene-fts.write.omit-term-freq-and-position", "false"},
         {"lucene-fts.write.tmp.directory", tmp_dir->Str()}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -2398,7 +2398,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadLuceneIndexWithPartition) {
         {"lucene-fts.write.omit-term-freq-and-position", "false"},
         {"lucene-fts.write.tmp.directory", tmp_dir->Str()}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -2761,7 +2761,7 @@ TEST_P(GlobalIndexTest, TestBTreeEmptyStringKeyPredicates) {
 TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndexWithPartition) {
     // BTree index with partitioned table. Each partition's data is sorted by f0 independently.
     auto schema = arrow::schema(fields_);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -2906,7 +2906,7 @@ TEST_P(GlobalIndexTest, TestBTreeWithPartitionAndCustomExecutor) {
     // Test that UnionGlobalIndexReader uses a custom 8-thread executor to read
     // btree indexes from two partitions in parallel.
     auto schema = arrow::schema(fields_);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -3327,7 +3327,7 @@ TEST_P(GlobalIndexTest, TestBTreeWithLumina) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
+    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "avro"},
                                                   {Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},

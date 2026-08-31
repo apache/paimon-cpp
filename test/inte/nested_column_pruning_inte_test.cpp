@@ -1164,7 +1164,7 @@ TEST_P(NestedColumnPruningInteTest, NestedStructMapSelectedKeysWithPredicate) {
         {Options::BUCKET, "-1"},
         {Options::WRITE_BATCH_SIZE, "1"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
         {"parquet.write.max-row-group-length", "1"},
         {"parquet.read.enable-page-index-filter", "true"},

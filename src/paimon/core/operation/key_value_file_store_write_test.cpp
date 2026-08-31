@@ -437,7 +437,7 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriterRestoreKeepsValueStats) {
     std::map<std::string, std::string> options = {
         {Options::BUCKET, "1"},
         {Options::FILE_FORMAT, "orc"},
-        {Options::MANIFEST_FORMAT, "orc"},
+        {Options::MANIFEST_FORMAT, "avro"},
         {Options::MANIFEST_DELETE_FILE_DROP_STATS, "true"}};
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(dir->Str(), options));
     ASSERT_OK(catalog->CreateDatabase("foo", {}, /*ignore_if_exists=*/false));

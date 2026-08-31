@@ -90,7 +90,8 @@ class TableScanImpl {
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
         const ScanContext* context) {
         auto fs = core_options.GetFileSystem();
-        auto manifest_file_format = core_options.GetManifestFormat();
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_file_format,
+                               core_options.GetManifestFormat(/*write=*/false));
         std::string branch = BranchManager::NormalizeBranch(core_options.GetBranch());
         auto snapshot_manager = std::make_shared<SnapshotManager>(fs, context->GetPath(), branch);
         // TODO(liancheng.lsz): support fallback branch in scan
@@ -172,11 +173,13 @@ class TableScanImpl {
     static Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
         const CoreOptions& core_options, const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<MemoryPool>& memory_pool) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
-                               IndexManifestFile::Create(
-                                   core_options.GetFileSystem(), core_options.GetManifestFormat(),
-                                   core_options.GetManifestCompression(), path_factory,
-                                   core_options.GetBucket(), memory_pool, core_options));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
+                               core_options.GetManifestFormat(/*write=*/false));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<IndexManifestFile> index_manifest_file,
+            IndexManifestFile::Create(core_options.GetFileSystem(), manifest_format,
+                                      core_options.GetManifestCompression(), path_factory,
+                                      core_options.GetBucket(), memory_pool, core_options));
         return std::make_unique<IndexFileHandler>(
             core_options.GetFileSystem(), std::move(index_manifest_file),
             std::make_shared<IndexFilePathFactories>(path_factory),

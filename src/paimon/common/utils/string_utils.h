@@ -31,6 +31,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -95,6 +96,10 @@ class PAIMON_EXPORT StringUtils {
     static bool StartsWith(const std::string& str, const std::string& prefix, size_t start_pos = 0);
 
     static bool EndsWith(const std::string& str, const std::string& suffix);
+
+    /// Returns true if the string is empty or contains only characters recognized by Java
+    /// Character.isWhitespace.
+    static bool IsBlank(std::string_view str);
 
     static bool IsNullOrWhitespaceOnly(const std::string& str);
 

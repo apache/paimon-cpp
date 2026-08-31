@@ -70,11 +70,13 @@ class IndexFileHandlerTest : public testing::Test {
                 global_index_external_path,
                 /*index_file_in_data_file_dir=*/core_options.IndexFileInDataFileDir(),
                 memory_pool_));
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
-                               IndexManifestFile::Create(
-                                   core_options.GetFileSystem(), core_options.GetManifestFormat(),
-                                   core_options.GetManifestCompression(), path_factory,
-                                   core_options.GetBucket(), memory_pool_, core_options));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
+                               core_options.GetManifestFormat(/*write=*/false));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<IndexManifestFile> index_manifest_file,
+            IndexManifestFile::Create(core_options.GetFileSystem(), manifest_format,
+                                      core_options.GetManifestCompression(), path_factory,
+                                      core_options.GetBucket(), memory_pool_, core_options));
         auto path_factories = std::make_shared<IndexFilePathFactories>(path_factory);
         return std::make_unique<IndexFileHandler>(
             core_options.GetFileSystem(), std::move(index_manifest_file), path_factories,
