@@ -123,17 +123,15 @@ Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexTest::Cr
     std::shared_ptr<arrow::Array> arrow_array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Finish(&arrow_array));
     // Wrap in StructArray (single field) as required by RangeBitmapFileIndexWriter
-    arrow::FieldVector fields = {arrow::field("test_field", arrow_type)};
+    auto field = arrow::field("test_field", arrow_type);
+    arrow::FieldVector fields = {field};
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
                                       arrow::StructArray::Make({arrow_array}, fields));
     auto c_array = std::make_unique<::ArrowArray>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*struct_array, c_array.get()));
-    // Create schema for the field
-    const auto schema = arrow::schema({arrow::field("test_field", arrow_type)});
     // Create writer
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<RangeBitmapFileIndexWriter> writer,
-        RangeBitmapFileIndexWriter::Create(schema, "test_field", options, pool_));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RangeBitmapFileIndexWriter> writer,
+                           RangeBitmapFileIndexWriter::Create(field, options, pool_));
     // Add the batch
     PAIMON_RETURN_NOT_OK(writer->AddBatch(c_array.get()));
     // Get serialized payload

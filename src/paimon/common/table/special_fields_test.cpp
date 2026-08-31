@@ -55,6 +55,13 @@ TEST(SpecialFieldsTest, TestIndexScore) {
     ASSERT_EQ(SpecialFields::IndexScore().Type()->id(), arrow::Type::FLOAT);
 }
 
+TEST(SpecialFieldsTest, TestRealtimeOffset) {
+    ASSERT_EQ(SpecialFields::RealtimeOffset().Id(), SpecialFieldIds::REALTIME_OFFSET);
+    ASSERT_EQ(SpecialFields::RealtimeOffset().Name(), "_REALTIME_OFFSET");
+    ASSERT_EQ(SpecialFields::RealtimeOffset().Type()->id(), arrow::Type::INT64);
+    ASSERT_FALSE(SpecialFields::RealtimeOffset().Nullable());
+}
+
 TEST(SpecialFieldsTest, TestKeyValueSpecialFieldCount) {
     ASSERT_EQ(SpecialFields::KEY_VALUE_SPECIAL_FIELD_COUNT, 2);
 }
@@ -66,6 +73,7 @@ TEST(SpecialFieldsTest, TestIsSystemField) {
     ASSERT_TRUE(SpecialFields::IsSystemField("rowkind"));
     ASSERT_TRUE(SpecialFields::IsSystemField("_ROW_ID"));
     ASSERT_TRUE(SpecialFields::IsSystemField("_INDEX_SCORE"));
+    ASSERT_TRUE(SpecialFields::IsSystemField("_REALTIME_OFFSET"));
     ASSERT_TRUE(SpecialFields::IsSystemField("_KEY_0"));
 }
 

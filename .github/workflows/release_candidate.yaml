@@ -131,7 +131,7 @@ jobs:
           name: source-archive
           path: release/ci
 
-      - name: Install Rust toolchain (tantivy-fts)
+      - name: Install Rust toolchain (Mosaic and tantivy-fts)
         shell: bash
         run: ci/scripts/setup_rust.sh
 

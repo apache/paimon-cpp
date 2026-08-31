@@ -1,11 +1,13 @@
 /*
- * Copyright 2026-present Alibaba Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +21,7 @@
 #include <stdexcept>
 
 #include "fmt/format.h"
+#include "paimon/common/utils/options_utils.h"
 #include "rapidjson/error/en.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -27,13 +30,7 @@ namespace paimon {
 
 std::map<std::string, std::string> RestUtil::ExtractPrefixMap(
     const std::map<std::string, std::string>& options, const std::string& prefix) {
-    std::map<std::string, std::string> result;
-    for (const auto& [key, value] : options) {
-        if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0) {
-            result[key.substr(prefix.size())] = value;
-        }
-    }
-    return result;
+    return OptionsUtils::FetchOptionsWithPrefix(prefix, options);
 }
 
 std::string RestUtil::ExtractRequestId(const std::map<std::string, std::string>& headers) {

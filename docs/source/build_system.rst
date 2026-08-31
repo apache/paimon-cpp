@@ -106,6 +106,8 @@ Paimon provides a set of built-in optional plugins that you can link to as neede
 
   - ``Paimon::paimon_local_file_system_shared``
   - ``Paimon::paimon_jindo_file_system_shared``
+  - ``Paimon::paimon_oss_file_system_shared``
+  - ``Paimon::paimon_s3_file_system_shared``
 
 - Index plugins:
 

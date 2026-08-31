@@ -161,7 +161,9 @@ class FileStoreScan {
     }
 
     std::shared_ptr<Metrics> GetScanMetrics() const {
-        return metrics_;
+        auto snapshot = std::make_shared<MetricsImpl>();
+        snapshot->Overwrite(metrics_);
+        return snapshot;
     }
 
     static Result<std::shared_ptr<PredicateFilter>> CreatePartitionPredicate(
@@ -260,7 +262,8 @@ class FileStoreScan {
     Status ReadManifestEntriesWithCache(const Snapshot& snapshot,
                                         const std::vector<ManifestFileMeta>& bucket_manifest_metas,
                                         int32_t bucket,
-                                        std::vector<ManifestEntry>* manifest_entries) const;
+                                        std::vector<ManifestEntry>* manifest_entries,
+                                        bool* cache_hit) const;
     std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const;
     Result<SnapshotLiveManifestEntries> LoadSnapshotLiveManifestEntries(int32_t bucket) const;
     Status StoreSnapshotLiveManifestEntries(int32_t bucket,

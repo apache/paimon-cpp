@@ -84,9 +84,19 @@ TEST(OptionsUtilsTest, TestGetOptionalValueFromMap) {
 }
 
 TEST(OptionsUtilsTest, TestFetchOptionsWithPrefix) {
-    std::map<std::string, std::string> options = {{"key1", "value1"}, {"test.key2", "value2"}};
+    std::map<std::string, std::string> options = {
+        {"key1", "value1"}, {"test.", "empty-key"}, {"test.key2", "value2"}};
     auto new_options = OptionsUtils::FetchOptionsWithPrefix("test.", options);
     std::map<std::string, std::string> expected = {{"key2", "value2"}};
     ASSERT_EQ(expected, new_options);
+}
+
+TEST(OptionsUtilsTest, TestGetNonEmptyValueFromMap) {
+    std::map<std::string, std::string> options = {{"present", "value"}, {"empty", ""}};
+    ASSERT_OK_AND_ASSIGN(std::string value,
+                         OptionsUtils::GetNonEmptyValueFromMap(options, "present"));
+    ASSERT_EQ("value", value);
+    ASSERT_TRUE(OptionsUtils::GetNonEmptyValueFromMap(options, "missing").status().IsNotExist());
+    ASSERT_TRUE(OptionsUtils::GetNonEmptyValueFromMap(options, "empty").status().IsInvalid());
 }
 }  // namespace paimon::test

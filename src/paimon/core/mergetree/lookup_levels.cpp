@@ -66,14 +66,9 @@ Result<std::unique_ptr<LookupLevels<T>>> LookupLevels<T>::Create(
         .WithMemoryPool(pool);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
-    // TODO(xinyu.lxy): temporarily disabled pre-buffer for parquet, which may cause high memory
-    // usage during compaction. Will fix via parquet format refactor.
-    auto new_options = options.ToMap();
-    if (new_options.find("parquet.read.enable-pre-buffer") == new_options.end()) {
-        new_options["parquet.read.enable-pre-buffer"] = "false";
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_read_context,
-                           InternalReadContext::Create(read_context, table_schema, new_options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<InternalReadContext> internal_read_context,
+        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
     auto split_read = std::make_unique<RawFileSplitRead>(path_factory, internal_read_context, pool,
                                                          CreateDefaultExecutor());
 
@@ -162,8 +157,8 @@ LookupLevels<T>::LookupLevels(
       lookup_store_factory_(lookup_store_factory),
       lookup_file_cache_(lookup_file_cache),
       remote_lookup_file_manager_(remote_lookup_file_manager) {
-    if constexpr (std::is_same_v<T, FilePosition>) {
-        // if T is FilePosition, only read key fields to create sst file is enough
+    if constexpr (std::is_same_v<T, FilePosition> || std::is_same_v<T, bool>) {
+        // FilePosition and first-row lookup do not persist values, so reading key fields is enough.
         value_schema_ = key_schema_;
     } else {
         value_schema_ = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
@@ -332,16 +327,6 @@ std::optional<std::string> LookupLevels<T>::TryToDownloadRemoteSst(
 template <typename T>
 Status LookupLevels<T>::CreateSstFileFromDataFile(const std::shared_ptr<DataFileMeta>& file,
                                                   const std::string& kv_file_path) {
-    if constexpr (std::is_same_v<T, bool>) {
-        // Short-circuit logic: if T is bool, just write empty lookup file.
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<BloomFilter> bloom_filter,
-            LookupStoreFactory::BfGenerator(file->row_count, options_, pool_.get()));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<LookupStoreWriter> kv_writer,
-            lookup_store_factory_->CreateWriter(fs_, kv_file_path, bloom_filter, pool_));
-        return kv_writer->Close();
-    }
     // Prepare reader to iterate KeyValue
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<FileBatchReader>> raw_readers,

@@ -24,10 +24,12 @@
 #include "arrow/util/compression.h"
 #include "arrow/util/type_fwd.h"
 #include "fmt/format.h"
+#include "paimon/common/options/memory_size.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/defs.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/format/parquet/parquet_format_writer.h"
 #include "paimon/status.h"
@@ -77,9 +79,14 @@ Result<std::shared_ptr<::parquet::WriterProperties>> ParquetWriterBuilder::Prepa
         builder.compression_level(file_compression_level);
     }
 
-    PAIMON_ASSIGN_OR_RAISE(int64_t row_group_size, OptionsUtils::GetValueFromMap<int64_t>(
-                                                       options_, PARQUET_BLOCK_SIZE,
-                                                       ::parquet::DEFAULT_MAX_ROW_GROUP_SIZE));
+    int64_t row_group_size = ::parquet::DEFAULT_MAX_ROW_GROUP_SIZE;
+    auto file_block_size = options_.find(Options::FILE_BLOCK_SIZE);
+    if (file_block_size != options_.end()) {
+        PAIMON_ASSIGN_OR_RAISE(row_group_size, MemorySize::ParseBytes(file_block_size->second));
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(row_group_size, OptionsUtils::GetValueFromMap<int64_t>(
+                                                   options_, PARQUET_BLOCK_SIZE, row_group_size));
+    }
     builder.max_row_group_size(row_group_size);
 
     PAIMON_ASSIGN_OR_RAISE(int64_t page_size,

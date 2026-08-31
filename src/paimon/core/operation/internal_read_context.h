@@ -74,6 +74,9 @@ class InternalReadContext {
     bool EnablePrefetch() const {
         return read_context_->EnablePrefetch();
     }
+    bool EnableLateMaterializing() const {
+        return read_context_->EnableLateMaterializing();
+    }
     uint32_t GetPrefetchBatchCount() const {
         return read_context_->GetPrefetchBatchCount();
     }

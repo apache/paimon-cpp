@@ -319,7 +319,8 @@ TEST_F(FileIndexEvaluatorTest, TestEvaluateEmbeddingIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/embedded_index, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     CheckResult(/*data_file_path_factory=*/nullptr, data_file_meta);
 }
 
@@ -339,7 +340,8 @@ TEST_F(FileIndexEvaluatorTest, TestEvaluateNoEmbeddingIndex) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto data_file_path_factory = std::make_shared<DataFilePathFactory>();
     ASSERT_OK(data_file_path_factory->Init(path + "/bucket-0/", /*format_identifier=*/"orc",
                                            /*data_file_prefix=*/"data-", nullptr));
@@ -374,7 +376,8 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto data_file_path_factory = std::make_shared<DataFilePathFactory>();
     ASSERT_OK(data_file_path_factory->Init(path + "/bucket-0/", /*format_identifier=*/"orc",
                                            /*data_file_prefix=*/"data-", nullptr));
@@ -408,7 +411,8 @@ TEST_F(FileIndexEvaluatorTest, TestInvalidEvaluate) {
         /*creation_time=*/Timestamp(0ll, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto predicate =
         PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
     ASSERT_NOK_WITH_MSG(

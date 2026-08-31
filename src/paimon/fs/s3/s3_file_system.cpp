@@ -71,11 +71,6 @@ Result<int64_t> ParseNonNegativeInt64(const std::string& value, const std::strin
     return *result;
 }
 
-int64_t ParseModificationTime(const std::string& value) {
-    time_t seconds = curl_getdate(value.c_str(), nullptr);
-    return seconds == static_cast<time_t>(-1) ? 0 : static_cast<int64_t>(seconds) * 1000;
-}
-
 std::string XmlUnescape(const std::string& value) {
     const std::pair<const char*, const char*> entities[] = {
         {"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&apos;", "'"}};
@@ -580,22 +575,22 @@ bool IsIpAddressAuthority(const std::string& authority) {
 }
 
 const char* AwsDnsSuffixForRegion(const std::string& region) {
-    if (region.rfind("cn-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "cn-")) {
         return "amazonaws.com.cn";
     }
-    if (region.rfind("eusc-de-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "eusc-de-")) {
         return "amazonaws.eu";
     }
-    if (region.rfind("us-iso-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "us-iso-")) {
         return "c2s.ic.gov";
     }
-    if (region.rfind("us-isob-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "us-isob-")) {
         return "sc2s.sgov.gov";
     }
-    if (region.rfind("eu-isoe-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "eu-isoe-")) {
         return "cloud.adc-e.uk";
     }
-    if (region.rfind("us-isof-", 0) == 0) {
+    if (StringUtils::StartsWith(region, "us-isof-")) {
         return "csp.hci.ic.gov";
     }
     return "amazonaws.com";
@@ -662,10 +657,10 @@ class S3ObjectStoreClient : public ObjectStoreClient,
         if (length == response.headers.end()) {
             return Status::IOError("HeadObject response is missing Content-Length");
         }
-        int64_t modification_time = 0;
+        int64_t modification_time = FileStatus::kUnknownModificationTime;
         auto modified = response.headers.find("last-modified");
         if (modified != response.headers.end()) {
-            modification_time = ParseModificationTime(modified->second);
+            modification_time = ObjectStoreFileSystemUtils::ParseModificationTime(modified->second);
         }
         PAIMON_ASSIGN_OR_RAISE(int64_t object_size,
                                ParseNonNegativeInt64(length->second, "Content-Length"));
@@ -712,10 +707,10 @@ class S3ObjectStoreClient : public ObjectStoreClient,
             PAIMON_ASSIGN_OR_RAISE(std::string decoded_key, PercentDecode(*key, "Key"));
             PAIMON_ASSIGN_OR_RAISE(int64_t object_size,
                                    ParseNonNegativeInt64(*size, "ListObjectsV2 Size"));
-            int64_t modified = 0;
+            int64_t modified = FileStatus::kUnknownModificationTime;
             auto last_modified = TagValue(block, "LastModified");
             if (last_modified) {
-                modified = ParseModificationTime(*last_modified);
+                modified = ObjectStoreFileSystemUtils::ParseModificationTime(*last_modified);
             }
             result.objects.push_back(ObjectMetadata{decoded_key, object_size, modified});
         }

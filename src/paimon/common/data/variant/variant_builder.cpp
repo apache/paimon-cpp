@@ -30,6 +30,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_defs.h"
+#include "paimon/common/utils/math.h"
 #include "rapidjson/error/en.h"
 #include "rapidjson/memorystream.h"
 #include "rapidjson/reader.h"
@@ -339,8 +340,7 @@ Status VariantBuilder::AppendLong(int64_t l) {
 Status VariantBuilder::AppendDouble(double d) {
     PAIMON_RETURN_NOT_OK(CheckCapacity(1 + 8));
     write_buffer_[write_pos_++] = VariantBinaryUtil::PrimitiveHeader(VariantDefs::kDouble);
-    int64_t bits;
-    memcpy(&bits, &d, sizeof(bits));
+    const int64_t bits = CanonicalizeDoubleToLongBits(d);
     VariantBinaryUtil::WriteLong(bits, 8, write_buffer_.data(), write_pos_);
     write_pos_ += 8;
     return Status::OK();
@@ -409,8 +409,7 @@ Status VariantBuilder::AppendTimestampNtz(int64_t micros_since_epoch) {
 Status VariantBuilder::AppendFloat(float f) {
     PAIMON_RETURN_NOT_OK(CheckCapacity(1 + 4));
     write_buffer_[write_pos_++] = VariantBinaryUtil::PrimitiveHeader(VariantDefs::kFloat);
-    int32_t bits;
-    memcpy(&bits, &f, sizeof(bits));
+    const int32_t bits = CanonicalizeFloatToIntBits(f);
     VariantBinaryUtil::WriteLong(bits, 4, write_buffer_.data(), write_pos_);
     write_pos_ += 4;
     return Status::OK();

@@ -43,7 +43,6 @@
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/manifest/snapshot_live_manifest_entries.h"
-#include "paimon/core/operation/metrics/scan_metrics.h"
 #include "paimon/core/partition/partition_info.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
@@ -58,6 +57,7 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/predicate_utils.h"
 #include "paimon/scan_context.h"
+#include "paimon/table/source/scan_metrics.h"
 
 namespace paimon {
 enum class FieldType;
@@ -136,6 +136,9 @@ Result<std::vector<PartitionEntry>> FileStoreScan::ReadPartitionEntries() const 
 
 Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() const {
     Duration duration;
+    Duration manifest_read_duration;
+    metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION, 0);
+    metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_STORE_DURATION, 0);
     std::optional<Snapshot> snapshot;
     std::vector<ManifestFileMeta> all_manifest_file_metas;
     std::vector<ManifestFileMeta> filtered_manifest_file_metas;
@@ -148,9 +151,13 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         core_options_.GetScanManifestEntryCacheMaxSnapshots() > 0 &&
         core_options_.GetCache() != nullptr && !table_path_.empty() &&
         !row_range_index_.has_value() && bucket_filter_.has_value();
+    uint64_t lazy_decode_scanned_rows = 0;
+    bool snapshot_cache_hit = false;
     if (use_snapshot_live_manifest_cache) {
-        PAIMON_RETURN_NOT_OK(ReadManifestEntriesWithCache(
-            snapshot.value(), all_manifest_file_metas, bucket_filter_.value(), &manifest_entries));
+        PAIMON_RETURN_NOT_OK(ReadManifestEntriesWithCache(snapshot.value(), all_manifest_file_metas,
+                                                          bucket_filter_.value(), &manifest_entries,
+                                                          &snapshot_cache_hit));
+        lazy_decode_scanned_rows = manifest_entries.size();
         std::vector<ManifestEntry> filtered_entries;
         filtered_entries.reserve(manifest_entries.size());
         for (auto& entry : manifest_entries) {
@@ -161,8 +168,15 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         }
         manifest_entries = std::move(filtered_entries);
     } else {
+        lazy_decode_scanned_rows = std::accumulate(
+            filtered_manifest_file_metas.begin(), filtered_manifest_file_metas.end(), uint64_t{0},
+            [](uint64_t sum, const ManifestFileMeta& meta) {
+                return sum + static_cast<uint64_t>(meta.NumAddedFiles() + meta.NumDeletedFiles());
+            });
         PAIMON_RETURN_NOT_OK(ReadManifestEntries(filtered_manifest_file_metas, &manifest_entries));
     }
+    const uint64_t lazy_decode_materialized_rows = manifest_entries.size();
+    const uint64_t manifest_read_duration_ms = manifest_read_duration.Get();
     PAIMON_ASSIGN_OR_RAISE(manifest_entries,
                            PostFilterManifestEntries(std::move(manifest_entries)));
 
@@ -208,6 +222,22 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         ScanMetrics::LAST_SCAN_SKIPPED_TABLE_FILES,
         std::max(int64_t{0}, all_data_files - static_cast<int64_t>(manifest_entries.size())));
     metrics_->SetCounter(ScanMetrics::LAST_SCAN_RESULTED_TABLE_FILES, manifest_entries.size());
+    metrics_->SetCounter(ScanMetrics::LAST_MANIFEST_READ_DURATION, manifest_read_duration_ms);
+    metrics_->ObserveHistogram(ScanMetrics::MANIFEST_READ_DURATION,
+                               static_cast<double>(manifest_read_duration_ms));
+    metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED,
+                         use_snapshot_live_manifest_cache ? 1 : 0);
+    metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_HIT, snapshot_cache_hit ? 1 : 0);
+    Result<uint64_t> cache_hits = metrics_->GetCounter(ScanMetrics::SNAPSHOT_CACHE_HITS);
+    Result<uint64_t> cache_misses = metrics_->GetCounter(ScanMetrics::SNAPSHOT_CACHE_MISSES);
+    metrics_->SetCounter(ScanMetrics::SNAPSHOT_CACHE_HITS,
+                         (cache_hits.ok() ? cache_hits.value() : 0) + (snapshot_cache_hit ? 1 : 0));
+    metrics_->SetCounter(ScanMetrics::SNAPSHOT_CACHE_MISSES,
+                         (cache_misses.ok() ? cache_misses.value() : 0) +
+                             (use_snapshot_live_manifest_cache && !snapshot_cache_hit ? 1 : 0));
+    metrics_->SetCounter(ScanMetrics::LAST_LAZY_DECODE_SCANNED_ROWS, lazy_decode_scanned_rows);
+    metrics_->SetCounter(ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS,
+                         lazy_decode_materialized_rows);
     return std::make_shared<FileStoreScan::RawPlan>(scan_mode_, snapshot,
                                                     std::move(manifest_entries));
 }
@@ -245,6 +275,8 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
             return manifest_list_->ReadDataManifests(snapshot, manifests);
         case ScanMode::DELTA:
             return manifest_list_->ReadDeltaManifests(snapshot, manifests);
+        case ScanMode::CHANGELOG:
+            return manifest_list_->ReadChangelogManifests(snapshot, manifests);
         default:
             return Status::NotImplemented("Unknown scan mode ",
                                           std::to_string(static_cast<int32_t>(scan_mode_)));
@@ -298,15 +330,22 @@ Status FileStoreScan::ReadManifestEntries(const std::vector<ManifestFileMeta>& m
 // snapshot's data manifests.
 Status FileStoreScan::ReadManifestEntriesWithCache(
     const Snapshot& snapshot, const std::vector<ManifestFileMeta>& all_manifest_metas,
-    int32_t bucket, std::vector<ManifestEntry>* manifest_entries) const {
+    int32_t bucket, std::vector<ManifestEntry>* manifest_entries, bool* cache_hit) const {
+    Duration cache_load_duration;
     PAIMON_ASSIGN_OR_RAISE(SnapshotLiveManifestEntries cached_entries,
                            LoadSnapshotLiveManifestEntries(bucket));
+    const uint64_t cache_load_duration_ms = cache_load_duration.Get();
+    metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION, cache_load_duration_ms);
+    metrics_->ObserveHistogram(ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION,
+                               static_cast<double>(cache_load_duration_ms));
     std::optional<SnapshotLiveManifestEntries::Entry> cached =
         cached_entries.LatestBeforeOrEqual(snapshot.Id());
     if (cached && cached->snapshot_id == snapshot.Id()) {
+        *cache_hit = true;
         *manifest_entries = *cached->entries;
         return Status::OK();
     }
+    *cache_hit = false;
 
     // Rebuild the target snapshot bucket from all manifests and write the live entries back to the
     // cache.
@@ -320,7 +359,12 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
         ReadAndMergeBucketFileEntries(bucket_manifest_metas, bucket, manifest_entries));
     std::vector<ManifestEntry> cache_entries = *manifest_entries;
     cached_entries.Put(snapshot.Id(), std::move(cache_entries));
+    Duration cache_store_duration;
     PAIMON_RETURN_NOT_OK(StoreSnapshotLiveManifestEntries(bucket, cached_entries));
+    const uint64_t cache_store_duration_ms = cache_store_duration.Get();
+    metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_STORE_DURATION, cache_store_duration_ms);
+    metrics_->ObserveHistogram(ScanMetrics::SNAPSHOT_CACHE_STORE_DURATION,
+                               static_cast<double>(cache_store_duration_ms));
     return Status::OK();
 }
 

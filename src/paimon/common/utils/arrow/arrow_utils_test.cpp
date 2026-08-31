@@ -20,6 +20,7 @@
 #include "paimon/common/utils/arrow/arrow_utils.h"
 
 #include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
@@ -499,6 +500,33 @@ TEST(ArrowUtilsTest, TestNormalizeRecordBatchOffsets) {
         std::shared_ptr<arrow::RecordBatch> unchanged_batch,
         ArrowUtils::NormalizeRecordBatchOffsets(normalized_batch, arrow::default_memory_pool()));
     ASSERT_EQ(unchanged_batch.get(), normalized_batch.get());
+}
+
+TEST(ArrowUtilsTest, TestNormalizeArrayOffsetsSlicesZeroOffsetStructChildren) {
+    std::shared_ptr<arrow::Array> ints =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2, 3]").ValueOrDie();
+    std::shared_ptr<arrow::Array> texts =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b", "c", "d"])")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> array =
+        arrow::StructArray::Make({ints, texts}, std::vector<std::string>{"i", "s"}).ValueOrDie();
+    std::shared_ptr<arrow::Array> sliced = array->Slice(/*offset=*/0, /*length=*/2);
+    ASSERT_EQ(0, sliced->offset());
+    ASSERT_EQ(4, sliced->data()->child_data[0]->length);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> normalized,
+                         ArrowUtils::NormalizeArrayOffsets(sliced, arrow::default_memory_pool()));
+    ASSERT_TRUE(normalized->Equals(sliced));
+    ASSERT_EQ(0, normalized->offset());
+    ASSERT_EQ(2, normalized->data()->child_data[0]->length);
+    ASSERT_EQ(2, normalized->data()->child_data[1]->length);
+
+    ::ArrowArray c_array = {};
+    ::ArrowSchema c_schema = {};
+    ASSERT_TRUE(arrow::ExportArray(*normalized, &c_array, &c_schema).ok());
+    std::shared_ptr<arrow::RecordBatch> batch =
+        arrow::ImportRecordBatch(&c_array, &c_schema).ValueOrDie();
+    ASSERT_EQ(2, batch->num_rows());
 }
 
 namespace {

@@ -49,7 +49,7 @@ Result<std::unique_ptr<LocalFile>> LocalFile::Create(const std::string& path_str
     // local file system does not support path_string with scheme, e.g., "file:/tmp" will be
     // rewritten to "/tmp"
     PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(path_string));
-    if (!path.scheme.empty() && StringUtils::ToLowerCase(path.scheme) != "file") {
+    if (!path.scheme.empty() && !StringUtils::EqualsIgnoreCase(path.scheme, "file")) {
         return Status::Invalid(fmt::format("invalid scheme {} for local file system", path.scheme));
     }
     if (path.path.empty() || path.path[0] != '/') {

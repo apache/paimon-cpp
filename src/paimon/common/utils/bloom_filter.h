@@ -22,7 +22,7 @@
 #include <memory>
 
 #include "paimon/common/utils/bit_set.h"
-#include "paimon/memory/bytes.h"
+#include "paimon/result.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
@@ -30,9 +30,9 @@ namespace paimon {
 /// Bloom filter based on MemorySegment.
 class PAIMON_EXPORT BloomFilter {
  public:
-    static int32_t OptimalNumOfBits(int64_t expect_entries, double fpp);
-    static int32_t OptimalNumOfHashFunctions(int64_t expect_entries, int64_t bit_size);
-    static std::shared_ptr<BloomFilter> Create(int64_t expect_entries, double fpp);
+    static int32_t OptimalNumOfBits(int64_t expected_entries, double fpp);
+    static int32_t OptimalNumOfHashFunctions(int64_t expected_entries, int64_t bit_size);
+    static Result<std::shared_ptr<BloomFilter>> Create(int64_t expected_entries, double fpp);
 
  public:
     BloomFilter(int64_t expected_entries, int32_t byte_length);

@@ -72,6 +72,10 @@ class WriteBuffer {
     /// @return list of KeyValueRecordReaders built from buffered data
     Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateReaders();
 
+    /// Create KeyValueRecordReaders containing the raw input records without merging duplicate
+    /// keys. The caller should invoke Clear() after consuming the readers.
+    Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateRawReaders();
+
     /// Try to spill current buffered data. Return false when the call completed normally but the
     /// caller should fall back to FlushWriteBuffer before buffering more data.
     Result<bool> FlushMemory();

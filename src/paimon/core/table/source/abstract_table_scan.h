@@ -39,6 +39,10 @@ class AbstractTableScan : public TableScan {
                       const std::shared_ptr<SnapshotReader>& snapshot_reader)
         : core_options_(core_options), snapshot_reader_(snapshot_reader) {}
 
+    std::shared_ptr<Metrics> GetMetrics() const override {
+        return snapshot_reader_->GetMetrics();
+    }
+
  protected:
     Result<std::shared_ptr<StartingScanner>> CreateStartingScanner(bool is_streaming) const {
         const auto& snapshot_manager = snapshot_reader_->GetSnapshotManager();

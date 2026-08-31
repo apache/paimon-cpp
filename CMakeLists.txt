@@ -60,7 +60,9 @@ option(PAIMON_USE_UBSAN "Use Undefined Behavior Sanitizer" OFF)
 option(PAIMON_USE_CXX11_ABI "Use C++11 ABI" ON)
 option(PAIMON_ENABLE_AVRO "Whether to enable avro file format" ON)
 option(PAIMON_ENABLE_ORC "Whether to enable orc file format" ON)
+option(PAIMON_ENABLE_MOSAIC "Whether to enable mosaic file format (Rust FFI)" OFF)
 option(PAIMON_ENABLE_JINDO "Whether to enable jindo file system" OFF)
+option(PAIMON_ENABLE_OSS "Whether to enable OSS SDK v2 file system" OFF)
 option(PAIMON_ENABLE_S3 "Whether to enable S3 file system" OFF)
 option(PAIMON_ENABLE_NETWORK_TESTS
        "Whether to enable tests that access real remote services over the network" OFF)
@@ -76,8 +78,10 @@ endif()
 if(PAIMON_ENABLE_REST)
     add_definitions(-DPAIMON_ENABLE_REST)
 endif()
-# libcurl backs the HTTP client shared by the S3 file system and the rest catalog.
-if(PAIMON_ENABLE_S3 OR PAIMON_ENABLE_REST)
+# libcurl supports the REST and S3 HTTP clients, the OSS SDK transport, and object store timestamps.
+if(PAIMON_ENABLE_OSS
+   OR PAIMON_ENABLE_S3
+   OR PAIMON_ENABLE_REST)
     find_package(CURL REQUIRED)
 endif()
 if(PAIMON_ENABLE_REST)
@@ -86,8 +90,14 @@ endif()
 if(PAIMON_ENABLE_AVRO)
     add_definitions(-DPAIMON_ENABLE_AVRO)
 endif()
+if(PAIMON_ENABLE_MOSAIC)
+    add_definitions(-DPAIMON_ENABLE_MOSAIC)
+endif()
 if(PAIMON_ENABLE_JINDO)
     add_definitions(-DPAIMON_ENABLE_JINDO)
+endif()
+if(PAIMON_ENABLE_OSS)
+    add_definitions(-DPAIMON_ENABLE_OSS)
 endif()
 if(PAIMON_ENABLE_S3)
     add_definitions(-DPAIMON_ENABLE_S3)
@@ -388,6 +398,11 @@ if(PAIMON_BUILD_TESTS OR PAIMON_BUILD_BENCHMARKS)
     paimon_link_libraries_whole_archive(PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS
                                         paimon_parquet_file_format_static)
 
+    if(PAIMON_ENABLE_MOSAIC)
+        paimon_link_libraries_whole_archive(PAIMON_MOSAIC_FILE_FORMAT_STATIC_LINK_LIBS
+                                            paimon_mosaic_file_format_static)
+    endif()
+
     if(PAIMON_ENABLE_ORC)
         paimon_link_libraries_whole_archive(PAIMON_ORC_FILE_FORMAT_STATIC_LINK_LIBS
                                             paimon_orc_file_format_static)
@@ -439,6 +454,14 @@ if(PAIMON_BUILD_TESTS)
     paimon_link_libraries_whole_archive(PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS
                                         paimon_parquet_file_format_static)
 
+    if(PAIMON_ENABLE_MOSAIC)
+        paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
+                                           paimon_mosaic_file_format_shared)
+        list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
+        paimon_link_libraries_whole_archive(PAIMON_MOSAIC_FILE_FORMAT_STATIC_LINK_LIBS
+                                            paimon_mosaic_file_format_static)
+    endif()
+
     if(PAIMON_ENABLE_ORC)
         paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
                                            paimon_orc_file_format_shared)
@@ -454,6 +477,13 @@ if(PAIMON_BUILD_TESTS)
                                             paimon_jindo_file_system_static)
         paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
                                            paimon_jindo_file_system_shared)
+        list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
+    endif()
+    if(PAIMON_ENABLE_OSS)
+        paimon_link_libraries_whole_archive(PAIMON_OSS_FILE_SYSTEM_STATIC_LINK_LIBS
+                                            paimon_oss_file_system_static)
+        paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
+                                           paimon_oss_file_system_shared)
         list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
     endif()
     if(PAIMON_ENABLE_S3)
@@ -515,11 +545,15 @@ add_subdirectory(src/paimon/fs/local)
 if(PAIMON_ENABLE_JINDO)
     add_subdirectory(src/paimon/fs/jindo)
 endif()
+add_subdirectory(src/paimon/fs/oss)
 add_subdirectory(src/paimon/fs/s3)
 add_subdirectory(src/paimon/format/blob)
 add_subdirectory(src/paimon/format/orc)
 add_subdirectory(src/paimon/format/parquet)
 add_subdirectory(src/paimon/format/avro)
+if(PAIMON_ENABLE_MOSAIC)
+    add_subdirectory(src/paimon/format/mosaic)
+endif()
 if(PAIMON_ENABLE_LUMINA)
     add_subdirectory(src/paimon/global_index/lumina)
 endif()

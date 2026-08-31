@@ -59,6 +59,13 @@ TEST_F(DataFilePathFactoryTest, TestNewPath) {
     ASSERT_EQ(factory_.NewPathFromName("index-file"), "/tmp/index-file");
 }
 
+TEST_F(DataFilePathFactoryTest, TestNewChangelogPath) {
+    std::string path = factory_.NewChangelogPath("changes-", "parquet");
+
+    ASSERT_TRUE(path.find("/tmp/changes-") != std::string::npos);
+    ASSERT_TRUE(StringUtils::EndsWith(path, ".parquet"));
+}
+
 TEST_F(DataFilePathFactoryTest, TestNewPathWithDataFilePrefixAndExternalPath) {
     DataFilePathFactory factory;
     ASSERT_OK_AND_ASSIGN(
@@ -97,7 +104,7 @@ TEST_F(DataFilePathFactoryTest, TestToPath) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/"file:/test/bucket-0/example.txt", /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_EQ(factory_.ToPath(file_meta), "file:/test/bucket-0/example.txt");
 }
 
@@ -118,7 +125,7 @@ TEST_F(DataFilePathFactoryTest, TestToAlignedPath) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/"file:/test/bucket-0/data-0.txt", /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     ASSERT_EQ(factory_.ToAlignedPath("index-0", file_meta), "file:/test/bucket-0/index-0");
 
@@ -135,7 +142,8 @@ TEST_F(DataFilePathFactoryTest, TestCollectFiles) {
         /*creation_time=*/Timestamp(1737111915429ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_EQ(factory_.CollectFiles(file_meta), std::vector<std::string>({"/tmp/data-0.txt"}));
 
     file_meta->extra_files = {"data-0.index", "data-1.index"};

@@ -25,10 +25,10 @@
 
 #include "arrow/c/bridge.h"
 #include "paimon/common/file_index/bloomfilter/fast_hash.h"
-#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/bloom_filter64.h"
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/file_index_result.h"
+#include "paimon/file_index/file_index_writer.h"
 #include "paimon/file_index/file_indexer.h"
 #include "paimon/result.h"
 namespace paimon {
@@ -55,11 +55,37 @@ class BloomFilterFileIndex : public FileIndexer {
         const std::shared_ptr<MemoryPool>& pool) const override;
 
     Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
-        ::ArrowSchema* arrow_schema, const std::shared_ptr<MemoryPool>& pool) const override {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::DataType> arrow_type,
-                                          arrow::ImportType(arrow_schema));
-        return Status::NotImplemented("do not support index writer in bloom filter");
-    }
+        ::ArrowSchema* arrow_schema, const std::shared_ptr<MemoryPool>& pool) const override;
+
+    static constexpr int32_t kDefaultItems = 1000000;
+    static constexpr double kDefaultFpp = 0.1;
+    static constexpr char kItems[] = "items";
+    static constexpr char kFpp[] = "fpp";
+
+ private:
+    std::map<std::string, std::string> options_;
+};
+
+class BloomFilterFileIndexWriter : public FileIndexWriter {
+ public:
+    static Result<std::shared_ptr<BloomFilterFileIndexWriter>> Create(
+        const std::shared_ptr<arrow::Field>& field,
+        const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool);
+
+    Status AddBatch(::ArrowArray* batch) override;
+
+    Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const override;
+
+ private:
+    BloomFilterFileIndexWriter(const std::shared_ptr<arrow::DataType>& struct_type,
+                               const FastHash::HashFunction& hash_function, BloomFilter64&& filter,
+                               const std::shared_ptr<MemoryPool>& pool);
+
+ private:
+    std::shared_ptr<arrow::DataType> struct_type_;
+    FastHash::HashFunction hash_function_;
+    BloomFilter64 filter_;
+    std::shared_ptr<MemoryPool> pool_;
 };
 
 class BloomFilterFileIndexReader : public FileIndexReader {

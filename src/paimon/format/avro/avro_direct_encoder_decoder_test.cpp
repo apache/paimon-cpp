@@ -361,6 +361,33 @@ TEST_F(AvroDirectEncoderDecoderTest, TestRecordType) {
     CheckResult(schema_json, input_array, &struct_builder);
 }
 
+TEST_F(AvroDirectEncoderDecoderTest, TestReserveBuilderCapacity) {
+    std::shared_ptr<arrow::DataType> nested_type = arrow::struct_({
+        arrow::field("id", arrow::int32()),
+        arrow::field("nested", arrow::struct_({arrow::field("value", arrow::int64())})),
+        arrow::field("items", arrow::list(arrow::int32())),
+    });
+    arrow::Result<std::unique_ptr<arrow::ArrayBuilder>> builder_result =
+        arrow::MakeBuilder(nested_type);
+    ASSERT_TRUE(builder_result.ok()) << builder_result.status().ToString();
+    std::unique_ptr<arrow::ArrayBuilder> builder = std::move(builder_result).ValueOrDie();
+
+    constexpr int64_t capacity = 1024;
+    ASSERT_OK(AvroDirectDecoder::ReserveBuilderCapacity(capacity, builder.get()));
+
+    auto* root_builder = checked_cast<arrow::StructBuilder*>(builder.get());
+    ASSERT_GE(root_builder->capacity(), capacity);
+    ASSERT_GE(root_builder->field_builder(0)->capacity(), capacity);
+
+    auto* nested_builder = checked_cast<arrow::StructBuilder*>(root_builder->field_builder(1));
+    ASSERT_GE(nested_builder->capacity(), capacity);
+    ASSERT_GE(nested_builder->field_builder(0)->capacity(), capacity);
+
+    auto* list_builder = checked_cast<arrow::ListBuilder*>(root_builder->field_builder(2));
+    ASSERT_GE(list_builder->capacity(), capacity);
+    ASSERT_EQ(list_builder->value_builder()->capacity(), 0);
+}
+
 TEST_F(AvroDirectEncoderDecoderTest, TestDecodeWithProjection) {
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::boolean()),

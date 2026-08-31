@@ -22,11 +22,15 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/key_value.h"
+#include "paimon/core/mergetree/compact/changelog_result.h"
 #include "paimon/core/mergetree/compact/merge_tree_compact_rewriter.h"
 namespace paimon {
 /// A `MergeTreeCompactRewriter` which produces changelog files while performing compaction.
 class ChangelogMergeTreeRewriter : public MergeTreeCompactRewriter {
  public:
+    using ChangelogMergeFunctionWrapperFactory =
+        std::function<Result<std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>>(int32_t)>;
+
     Result<CompactResult> Rewrite(int32_t output_level, bool drop_delete,
                                   const std::vector<std::vector<SortedRun>>& sections) override;
 
@@ -42,6 +46,8 @@ class ChangelogMergeTreeRewriter : public MergeTreeCompactRewriter {
         const std::shared_ptr<FileStorePathFactoryCache>& path_factory_cache,
         std::unique_ptr<MergeFileSplitRead>&& merge_file_split_read,
         MergeFunctionWrapperFactory merge_function_wrapper_factory,
+        ChangelogMergeFunctionWrapperFactory changelog_merge_function_wrapper_factory,
+        bool produce_changelog,
         const std::shared_ptr<CancellationController>& cancellation_controller,
         const std::shared_ptr<MemoryPool>& pool);
 
@@ -85,5 +91,8 @@ class ChangelogMergeTreeRewriter : public MergeTreeCompactRewriter {
     Result<CompactResult> RewriteOrProduceChangelog(
         int32_t output_level, const std::vector<std::vector<SortedRun>>& sections, bool drop_delete,
         bool rewrite_compact_file);
+
+    ChangelogMergeFunctionWrapperFactory changelog_merge_function_wrapper_factory_;
+    bool produce_changelog_;
 };
 }  // namespace paimon

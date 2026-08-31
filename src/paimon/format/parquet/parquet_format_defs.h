@@ -99,7 +99,7 @@ static inline const char PARQUET_READ_PREDICATE_NODE_COUNT_LIMIT[] =
 static inline const char PARQUET_READ_ENABLE_PAGE_INDEX_FILTER[] =
     "parquet.read.enable-page-index-filter";
 
-// Default is true. Compaction will set to false to reduce memory consumption.
+// Default is true.
 static inline const char PARQUET_READ_ENABLE_PRE_BUFFER[] = "parquet.read.enable-pre-buffer";
 
 static constexpr uint32_t DEFAULT_PARQUET_READ_CACHE_OPTION_PREFETCH_LIMIT = 0;

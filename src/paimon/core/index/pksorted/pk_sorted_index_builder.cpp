@@ -146,8 +146,8 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     }
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldsComparator> unique_comparator,
-                           FieldsComparator::CreateWithJavaFloatingPointOrder(
-                               {field_}, {0}, /*is_ascending_order=*/true));
+                           FieldsComparator::Create({field_}, {0},
+                                                    /*is_ascending_order=*/true));
     auto comparator = std::shared_ptr<FieldsComparator>(std::move(unique_comparator));
     DataField row_id_field(std::numeric_limits<int32_t>::max(),
                            arrow::field(kRowIdFieldName, arrow::int64(), false));
@@ -157,8 +157,8 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     auto sequence_comparator =
         std::shared_ptr<FieldsComparator>(std::move(unique_sequence_comparator));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldsComparator> unique_in_memory_comparator,
-                           FieldsComparator::CreateWithJavaFloatingPointOrder(
-                               {field_, row_id_field}, {0, 1}, /*is_ascending_order=*/true));
+                           FieldsComparator::Create({field_, row_id_field}, {0, 1},
+                                                    /*is_ascending_order=*/true));
     auto in_memory_comparator =
         std::shared_ptr<FieldsComparator>(std::move(unique_in_memory_comparator));
     auto value_schema = arrow::schema({field_.ArrowField(), row_id_field.ArrowField()});

@@ -64,7 +64,7 @@ class ManifestEntryWriterTest : public ::testing::Test {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, first_row_id,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         return {FileKind::Add(), BinaryRowGenerator::GenerateRow({10}, pool_.get()), /*bucket=*/0,
                 /*total_buckets=*/-1, meta};
     }
@@ -126,7 +126,8 @@ TEST_F(ManifestEntryWriterTest, TestSimple) {
         /*creation_time=*/Timestamp(1743525392885ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     auto meta2 = std::make_shared<DataFileMeta>(
         "data-5858a84b-7081-4618-b828-ae3918c5e1f6-0.orc", /*file_size=*/943, /*row_count=*/4,
@@ -144,7 +145,8 @@ TEST_F(ManifestEntryWriterTest, TestSimple) {
         /*creation_time=*/Timestamp(1743525392921ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     auto entry1 = ManifestEntry(FileKind::Add(), BinaryRowGenerator::GenerateRow({10}, pool_.get()),
                                 0, 2, meta1);

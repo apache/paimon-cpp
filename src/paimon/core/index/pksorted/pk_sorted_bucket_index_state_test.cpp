@@ -53,20 +53,37 @@ class PkSortedBucketIndexStateTest : public ::testing::Test {
             /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/std::nullopt,
             /*embedded_index=*/nullptr, file_source, /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     /// Builds a payload whose source metadata lists the given sources in the given order.
-    std::shared_ptr<IndexFileMeta> MakePayload(
-        int32_t field_id, const std::string& index_type, int32_t data_level,
-        const std::vector<PrimaryKeyIndexSourceFile>& sources, int64_t total_row_count,
-        int64_t row_range_start, int64_t row_range_end) const {
+    std::shared_ptr<IndexFileMeta> MakeNamedPayload(
+        const std::string& payload_name, int32_t field_id, const std::string& index_type,
+        int32_t data_level, const std::vector<PrimaryKeyIndexSourceFile>& sources,
+        int64_t total_row_count, int64_t row_range_start, int64_t row_range_end) const {
         EXPECT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta source_meta,
                              PrimaryKeyIndexSourceMeta::Create(data_level, sources));
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<Bytes> source_meta_bytes,
                              source_meta.Serialize(pool_));
-        return MakePayloadWithSourceMetaBytes(field_id, index_type, total_row_count,
+        return MakePayloadWithSourceMetaBytes(payload_name, field_id, index_type, total_row_count,
                                               row_range_start, row_range_end, source_meta_bytes);
+    }
+
+    std::shared_ptr<IndexFileMeta> MakePayload(
+        int32_t field_id, const std::string& index_type, int32_t data_level,
+        const std::vector<PrimaryKeyIndexSourceFile>& sources, int64_t total_row_count,
+        int64_t row_range_start, int64_t row_range_end) const {
+        return MakeNamedPayload("payload.index", field_id, index_type, data_level, sources,
+                                total_row_count, row_range_start, row_range_end);
+    }
+
+    std::shared_ptr<IndexFileMeta> MakeNamedPayload(
+        const std::string& payload_name, int32_t field_id, const std::string& index_type,
+        int32_t data_level, const std::vector<PrimaryKeyIndexSourceFile>& sources,
+        int64_t total_row_count) const {
+        return MakeNamedPayload(payload_name, field_id, index_type, data_level, sources,
+                                total_row_count, /*row_range_start=*/0,
+                                /*row_range_end=*/total_row_count - 1);
     }
 
     std::shared_ptr<IndexFileMeta> MakePayload(
@@ -77,13 +94,13 @@ class PkSortedBucketIndexStateTest : public ::testing::Test {
     }
 
     std::shared_ptr<IndexFileMeta> MakePayloadWithSourceMetaBytes(
-        int32_t field_id, const std::string& index_type, int64_t total_row_count,
-        int64_t row_range_start, int64_t row_range_end,
+        const std::string& payload_name, int32_t field_id, const std::string& index_type,
+        int64_t total_row_count, int64_t row_range_start, int64_t row_range_end,
         const std::shared_ptr<Bytes>& source_meta_bytes) const {
         GlobalIndexMeta global_index_meta(row_range_start, row_range_end, field_id,
                                           /*extra_field_ids=*/std::nullopt,
                                           /*index_meta=*/nullptr, source_meta_bytes);
-        return std::make_shared<IndexFileMeta>(index_type, /*file_name=*/"payload.index",
+        return std::make_shared<IndexFileMeta>(index_type, payload_name,
                                                /*file_size=*/2048, total_row_count,
                                                /*dv_ranges=*/std::nullopt,
                                                /*external_path=*/std::nullopt, global_index_meta);
@@ -159,23 +176,86 @@ TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadWithMismatchedSourceRowCount)
     ASSERT_EQ(2, state.UncoveredSourceFiles().size());
 }
 
-TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadsCoveringWrongSourceSet) {
+TEST_F(PkSortedBucketIndexStateTest, AcceptsActiveSubsetAndLeavesOtherFilesUncovered) {
     std::vector<std::shared_ptr<DataFileMeta>> data_files = {
         MakeDataFile("a", 100, 5, FileSource::Compact()),
         MakeDataFile("b", 200, 5, FileSource::Compact())};
-    std::shared_ptr<IndexFileMeta> missing_source_payload =
-        MakePayload(7, "btree", 5, {{"a", 100}}, 100);
-    std::shared_ptr<IndexFileMeta> extra_source_payload =
-        MakePayload(7, "btree", 5, {{"a", 100}, {"b", 200}, {"c", 50}}, 350);
-    PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
-        7, "btree", data_files, {missing_source_payload, extra_source_payload});
-    ASSERT_TRUE(state.Groups().empty());
-    ASSERT_EQ(2, state.RejectedPayloads().size());
-    ASSERT_TRUE(state.CoveredSourceFiles().empty());
-    ASSERT_EQ(2, state.UncoveredSourceFiles().size());
+    std::shared_ptr<IndexFileMeta> subset_payload = MakePayload(7, "btree", 5, {{"a", 100}}, 100);
+    PkSortedBucketIndexState state =
+        PkSortedBucketIndexState::FromActiveDataFiles(7, "btree", data_files, {subset_payload});
+    ASSERT_EQ(1, state.Groups().size());
+    ASSERT_EQ(subset_payload, state.Groups()[0]->Payload());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}}), state.CoveredSourceFiles());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"b", 200}}), state.UncoveredSourceFiles());
+    ASSERT_TRUE(state.RejectedPayloads().empty());
 }
 
-TEST_F(PkSortedBucketIndexStateTest, RejectsBothPayloadsWhenLevelHasTwoCandidates) {
+TEST_F(PkSortedBucketIndexStateTest, RejectsMultiplePayloadGroupsAtSameLevel) {
+    std::vector<std::shared_ptr<DataFileMeta>> data_files = {
+        MakeDataFile("a", 100, 5, FileSource::Compact()),
+        MakeDataFile("b", 200, 5, FileSource::Compact()),
+        MakeDataFile("c", 50, 5, FileSource::Compact())};
+    std::shared_ptr<IndexFileMeta> first_payload =
+        MakeNamedPayload("first.index", 7, "btree", 5, {{"a", 100}, {"b", 200}}, 300);
+    std::shared_ptr<IndexFileMeta> second_payload =
+        MakeNamedPayload("second.index", 7, "btree", 5, {{"c", 50}}, 50);
+    PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
+        7, "btree", data_files, {second_payload, first_payload});
+    ASSERT_TRUE(state.Groups().empty());
+    ASSERT_TRUE(state.CoveredSourceFiles().empty());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}, {"b", 200}, {"c", 50}}),
+              state.UncoveredSourceFiles());
+    ASSERT_EQ(2, state.RejectedPayloads().size());
+}
+
+TEST_F(PkSortedBucketIndexStateTest, RetainsRetiredSourcesButCoversOnlyActiveIntersection) {
+    std::vector<std::shared_ptr<DataFileMeta>> data_files = {
+        MakeDataFile("a", 100, 5, FileSource::Compact()),
+        MakeDataFile("b", 200, 5, FileSource::Compact())};
+    std::shared_ptr<IndexFileMeta> mixed_payload =
+        MakeNamedPayload("mixed.index", 7, "btree", 5, {{"a", 100}, {"retired", 50}}, 150);
+    PkSortedBucketIndexState state =
+        PkSortedBucketIndexState::FromActiveDataFiles(7, "btree", data_files, {mixed_payload});
+    ASSERT_EQ(1, state.Groups().size());
+    ASSERT_EQ(mixed_payload, state.Groups()[0]->Payload());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}, {"retired", 50}}),
+              state.Groups()[0]->SourceFiles());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"a", 100}}), state.CoveredSourceFiles());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"b", 200}}), state.UncoveredSourceFiles());
+    ASSERT_TRUE(state.RejectedPayloads().empty());
+}
+
+TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadWhoseSourcesAreAllRetired) {
+    std::vector<std::shared_ptr<DataFileMeta>> data_files = {
+        MakeDataFile("active", 100, 5, FileSource::Compact())};
+    std::shared_ptr<IndexFileMeta> retired_payload =
+        MakePayload(7, "btree", 5, {{"retired", 50}}, 50);
+    PkSortedBucketIndexState state =
+        PkSortedBucketIndexState::FromActiveDataFiles(7, "btree", data_files, {retired_payload});
+    ASSERT_TRUE(state.Groups().empty());
+    ASSERT_TRUE(state.CoveredSourceFiles().empty());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"active", 100}}),
+              state.UncoveredSourceFiles());
+    ASSERT_EQ((std::vector<std::shared_ptr<IndexFileMeta>>{retired_payload}),
+              state.RejectedPayloads());
+}
+
+TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadForDifferentActiveDataLevel) {
+    std::vector<std::shared_ptr<DataFileMeta>> data_files = {
+        MakeDataFile("active", 100, 4, FileSource::Compact())};
+    std::shared_ptr<IndexFileMeta> wrong_level_payload =
+        MakePayload(7, "btree", 5, {{"active", 100}}, 100);
+    PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
+        7, "btree", data_files, {wrong_level_payload});
+    ASSERT_TRUE(state.Groups().empty());
+    ASSERT_TRUE(state.CoveredSourceFiles().empty());
+    ASSERT_EQ((std::vector<PrimaryKeyIndexSourceFile>{{"active", 100}}),
+              state.UncoveredSourceFiles());
+    ASSERT_EQ((std::vector<std::shared_ptr<IndexFileMeta>>{wrong_level_payload}),
+              state.RejectedPayloads());
+}
+
+TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadsClaimingTheSameActiveSources) {
     std::vector<std::shared_ptr<DataFileMeta>> data_files = {
         MakeDataFile("a", 100, 5, FileSource::Compact()),
         MakeDataFile("b", 200, 5, FileSource::Compact())};
@@ -268,9 +348,9 @@ TEST_F(PkSortedBucketIndexStateTest, RejectsPayloadWithCorruptSourceMeta) {
     // Version 1 followed by a truncated data level.
     std::shared_ptr<Bytes> corrupt_source_meta =
         std::make_shared<Bytes>(std::string("\x00\x00\x00\x01\x00\x00", 6), pool_.get());
-    std::shared_ptr<IndexFileMeta> payload =
-        MakePayloadWithSourceMetaBytes(7, "btree", /*total_row_count=*/300, /*row_range_start=*/0,
-                                       /*row_range_end=*/299, corrupt_source_meta);
+    std::shared_ptr<IndexFileMeta> payload = MakePayloadWithSourceMetaBytes(
+        "payload.index", 7, "btree", /*total_row_count=*/300,
+        /*row_range_start=*/0, /*row_range_end=*/299, corrupt_source_meta);
     PkSortedBucketIndexState state =
         PkSortedBucketIndexState::FromActiveDataFiles(7, "btree", data_files, {payload});
     ASSERT_TRUE(state.Groups().empty());

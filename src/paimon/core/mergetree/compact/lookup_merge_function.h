@@ -100,6 +100,11 @@ class LookupMergeFunction : public MergeFunction {
         return high_level_idx;
     }
 
+    const KeyValue* PickHighLevel() const {
+        std::optional<int32_t> high_level_idx = PickHighLevelIdx();
+        return high_level_idx ? &candidates_[high_level_idx.value()] : nullptr;
+    }
+
  private:
     std::unique_ptr<MergeFunction> merge_function_;
     std::vector<KeyValue> candidates_;

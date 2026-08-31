@@ -33,6 +33,7 @@
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/projected_array.h"
@@ -42,22 +43,6 @@
 
 namespace paimon {
 namespace {
-
-uint64_t GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data) {
-    uint64_t result = 0;
-    for (const std::shared_ptr<arrow::Buffer>& buffer : data->buffers) {
-        if (buffer) {
-            result += static_cast<uint64_t>(buffer->size());
-        }
-    }
-    for (const std::shared_ptr<arrow::ArrayData>& child : data->child_data) {
-        result += GetArrayMemoryUsage(child);
-    }
-    if (data->dictionary) {
-        result += GetArrayMemoryUsage(data->dictionary);
-    }
-    return result;
-}
 
 bool SupportsMinMax(const std::shared_ptr<arrow::DataType>& type) {
     switch (type->id()) {
@@ -393,11 +378,11 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
     if (building_range_ && write_batch.offset_range.begin != building_range_->end) {
         return Status::Invalid("real-time offset ranges must be contiguous");
     }
-    uint64_t memory_usage = GetArrayMemoryUsage(struct_array->data());
+    uint64_t memory_usage = ArrowUtils::GetArrayMemoryUsage(struct_array->data());
     if (statistics) {
-        memory_usage += GetArrayMemoryUsage(statistics->min_values->data()) +
-                        GetArrayMemoryUsage(statistics->max_values->data()) +
-                        GetArrayMemoryUsage(statistics->null_counts->data());
+        memory_usage += ArrowUtils::GetArrayMemoryUsage(statistics->min_values->data()) +
+                        ArrowUtils::GetArrayMemoryUsage(statistics->max_values->data()) +
+                        ArrowUtils::GetArrayMemoryUsage(statistics->null_counts->data());
     }
     building_memory_usage_ += memory_usage;
     building_batches_.push_back(

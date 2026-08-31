@@ -24,6 +24,7 @@
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
@@ -60,12 +61,26 @@ TEST(SchemaValidationTest, TestSimple) {
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 }
 
+TEST(SchemaValidationTest, TestRealtimeOffsetIsGloballyReserved) {
+    auto schema = arrow::schema({arrow::field("_REALTIME_OFFSET", arrow::int64())});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, {}));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "field name '_REALTIME_OFFSET' in schema cannot be special field");
+}
+
 TEST(SchemaValidationTest, TestVectorType) {
     auto vector_field = arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3));
     auto schema = arrow::schema({arrow::field("id", arrow::int64()), vector_field});
     std::map<std::string, std::string> parquet_options = {{Options::BUCKET, "-1"},
                                                           {Options::FILE_FORMAT, "parquet"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, parquet_options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    parquet_options[Options::FILE_FORMAT] = "PARQUET";
+    ASSERT_OK_AND_ASSIGN(table_schema,
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, parquet_options));
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
@@ -122,6 +137,75 @@ TEST(SchemaValidationTest, TestVectorType) {
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                         "VECTOR fields in data-evolution tables are not implemented yet.");
 }
+
+#ifdef PAIMON_ENABLE_MOSAIC
+TEST(SchemaValidationTest, TestMosaicDataTypes) {
+    std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                  {Options::FILE_FORMAT, "mosaic"}};
+    arrow::FieldVector supported_fields = {
+        arrow::field("f0", arrow::boolean()),
+        arrow::field("f1", arrow::int8()),
+        arrow::field("f2", arrow::int16()),
+        arrow::field("f3", arrow::int32()),
+        arrow::field("f4", arrow::int64()),
+        arrow::field("f5", arrow::float32()),
+        arrow::field("f6", arrow::float64()),
+        arrow::field("f7", arrow::utf8()),
+        arrow::field("f8", arrow::binary()),
+        arrow::field("f9", arrow::date32()),
+        arrow::field("f10", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f11", arrow::decimal128(38, 2)),
+        arrow::field("f12", arrow::list(arrow::float32())),
+        arrow::field("f13", arrow::map(arrow::int8(), arrow::int16())),
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(/*schema_id=*/0, arrow::schema(supported_fields),
+                                             /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    arrow::FieldVector unsupported_fields = {
+        arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())})),
+        VariantTypeUtils::ToArrowField("variant"),
+        arrow::field("vector", arrow::fixed_size_list(arrow::float32(), 3)),
+        arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("nested_row",
+                     arrow::list(arrow::struct_({arrow::field("value", arrow::int32())}))),
+    };
+    std::vector<std::string> expected_errors = {"type ROW", "type VARIANT", "type VECTOR",
+                                                "TIMESTAMP(0)", "type ROW"};
+    for (size_t i = 0; i < unsupported_fields.size(); ++i) {
+        SCOPED_TRACE("field=" + unsupported_fields[i]->name());
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(/*schema_id=*/0, arrow::schema({unsupported_fields[i]}),
+                                /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            expected_errors[i]);
+    }
+
+    std::shared_ptr<arrow::Field> blob_field = BlobUtils::ToArrowField("blob", false);
+    std::map<std::string, std::string> blob_options = {
+        {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, "mosaic"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+    };
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        TableSchema::Create(/*schema_id=*/0,
+                            arrow::schema({arrow::field("id", arrow::int32()), blob_field}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, blob_options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    blob_options[Options::BLOB_DESCRIPTOR_FIELD] = "blob";
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        TableSchema::Create(/*schema_id=*/0,
+                            arrow::schema({arrow::field("id", arrow::int32()), blob_field}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, blob_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type BLOB");
+}
+#endif
 
 TEST(SchemaValidationTest, TestRowTracking) {
     auto f0 = arrow::field("f0", arrow::utf8());
@@ -652,7 +736,18 @@ TEST(SchemaValidationTest, ValidateDeletionVector) {
             std::shared_ptr<TableSchema> table_schema,
             TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                            "C++ Paimon does not support changelog-producer yet");
+                            "C++ Paimon only supports 'none', 'input' and 'lookup' "
+                            "changelog-producer now");
+    }
+    {
+        std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                      {Options::BUCKET_KEY, "f0"},
+                                                      {Options::DELETION_VECTORS_ENABLED, "true"},
+                                                      {Options::CHANGELOG_PRODUCER, "input"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> table_schema,
+            TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
     }
     {
         std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
@@ -901,6 +996,41 @@ TEST(SchemaValidationTest, ValidateInvalidConfiguration) {
                             "define primary keys.");
     }
     {
+        std::map<std::string, std::string> options = {
+            {Options::CHANGELOG_PRODUCER, "input"},
+            {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE, "true"}};
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{"f0"}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "'changelog-producer.row-deduplicate' is only valid for 'lookup' or "
+                            "'full-compaction' changelog producer");
+    }
+    {
+        std::map<std::string, std::string> options = {
+            {Options::CHANGELOG_PRODUCER, "input"},
+            {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, "f1"}};
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{"f0"}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "'changelog-producer.row-deduplicate-ignore-fields' is only valid when "
+                            "'changelog-producer.row-deduplicate' is true");
+    }
+    {
+        std::map<std::string, std::string> options = {
+            {Options::CHANGELOG_PRODUCER, "input"},
+            {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE, "true"},
+            {Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, "missing"}};
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{"f0"}, options));
+        ASSERT_NOK_WITH_MSG(
+            SchemaValidation::ValidateTableSchema(*table_schema),
+            "Fields [\"missing\"] configured in "
+            "'changelog-producer.row-deduplicate-ignore-fields' can not be found in table schema");
+    }
+    {
         auto invalid_field = arrow::field("_SEQUENCE_NUMBER", arrow::int64());
         arrow::FieldVector invalid_fields = fields;
         invalid_fields.push_back(invalid_field);
@@ -931,15 +1061,18 @@ TEST(SchemaValidationTest, ValidateInvalidConfiguration) {
                              TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                                  /*primary_keys=*/{"f0"}, options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                            "C++ Paimon does not support changelog-producer yet");
+                            "Only support 'none' and 'lookup' changelog-producer on FIRST_ROW "
+                            "merge engine");
     }
     {
-        std::map<std::string, std::string> options = {{Options::CHANGELOG_PRODUCER, "lookup"}};
+        std::map<std::string, std::string> options = {
+            {Options::CHANGELOG_PRODUCER, "full-compaction"}};
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                              TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                                  /*primary_keys=*/{"f0"}, options));
-        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                            "C++ Paimon does not support changelog-producer yet");
+        ASSERT_NOK_WITH_MSG(
+            SchemaValidation::ValidateTableSchema(*table_schema),
+            "C++ Paimon only supports 'none', 'input' and 'lookup' changelog-producer now.");
     }
     // test for row tracking
     {
@@ -1218,6 +1351,16 @@ TEST(SchemaValidationTest, TestMapSharedShreddingCompression) {
     }
     {
         auto options = base_options;
+        options[Options::CHANGELOG_FILE_COMPRESSION] = "snappy";
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "MAP shared-shredding only supports none/lz4/zstd compression, but "
+                            "changelog-file.compression is snappy.");
+    }
+    {
+        auto options = base_options;
         options.erase("fields.f1.map.storage-layout");
         options[Options::FILE_COMPRESSION] = "snappy";
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
@@ -1266,6 +1409,16 @@ TEST(SchemaValidationTest, TestMapSharedShreddingFileFormat) {
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                             "MAP shared-shredding only supports parquet/orc file formats, but "
                             "file.format.per.level.1 is avro.");
+    }
+    {
+        auto options = base_options;
+        options[Options::CHANGELOG_FILE_FORMAT] = "avro";
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                                 /*primary_keys=*/{}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            "MAP shared-shredding only supports parquet/orc file formats, but "
+                            "changelog-file.format is avro.");
     }
 }
 

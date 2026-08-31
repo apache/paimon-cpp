@@ -59,7 +59,7 @@ class MemoryPool;
 /// @note: Unlike the Java implementation where variable-length data may span multiple
 /// MemorySegments, in this C++ implementation both the fixed-length part and the
 /// variable-length part reside within a single MemorySegment.
-class BinaryRow final : public BinarySection, public InternalRow, public DataSetters {
+class PAIMON_EXPORT BinaryRow final : public BinarySection, public InternalRow, public DataSetters {
  public:
     BinaryRow() : BinaryRow(0) {}
     explicit BinaryRow(int32_t arity);

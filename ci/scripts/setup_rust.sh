@@ -15,12 +15,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Install the Rust toolchain + cbindgen required to build the
-# tantivy-fts FFI crate (crates/tantivy_ffi) from CI.
+# Install the Rust toolchain used by the Mosaic and tantivy-fts FFI builds, plus cbindgen required
+# by tantivy-fts.
 #
 # The dev container (see .devcontainer/) already has these preinstalled;
-# this script is for the GitHub Actions runners. Called by
-# .github/workflows/build_and_test.yaml before ci/scripts/build_paimon.sh.
+# this script is for the GitHub Actions runners and is called before ci/scripts/build_paimon.sh.
 #
 # Idempotent: a second invocation is a no-op when the tools already exist.
 

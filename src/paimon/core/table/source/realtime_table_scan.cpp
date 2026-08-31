@@ -108,7 +108,7 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
     for (const std::shared_ptr<Split>& split : disk_splits) {
         std::shared_ptr<DataSplitImpl> data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
         if (!data_split) {
-            return Status::Invalid("real-time append scan requires process-local data splits");
+            return Status::Invalid("real-time scan requires process-local data splits");
         }
         std::vector<std::pair<std::string, std::string>> partition_values;
         PAIMON_ASSIGN_OR_RAISE(partition_values,
@@ -152,16 +152,17 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
             continue;
         }
 
-        // Append tables can schedule all but the tail disk split independently. The tail split
-        // carries the immutable memory view so disk and memory are still concatenated by one
-        // RealtimeSplit without collapsing the whole partition-bucket into one scheduling unit.
-        auto tail_disk_split = std::prev(grouped_disk_splits.end());
-        result.insert(result.end(), grouped_disk_splits.begin(), tail_disk_split);
-        std::vector<std::shared_ptr<Split>> realtime_disk_splits;
-        realtime_disk_splits.push_back(std::move(*tail_disk_split));
         RealtimePartitionBucketView& memory = memory_iter->second;
+        if (!pk_table_) {
+            // Append tables can schedule all but the tail disk split independently. The tail split
+            // carries the immutable memory view so disk and memory are still concatenated by one
+            // RealtimeSplit without collapsing the whole partition-bucket into one scheduling unit.
+            auto tail_disk_split = std::prev(grouped_disk_splits.end());
+            result.insert(result.end(), grouped_disk_splits.begin(), tail_disk_split);
+            grouped_disk_splits.erase(grouped_disk_splits.begin(), tail_disk_split);
+        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Split> realtime_split,
-                               create_realtime_split(key, std::move(realtime_disk_splits), memory));
+                               create_realtime_split(key, std::move(grouped_disk_splits), memory));
         result.push_back(std::move(realtime_split));
         active_memory.erase(memory_iter);
     }
@@ -176,7 +177,7 @@ Result<std::vector<std::shared_ptr<Split>>> RealtimeTableScan::CreateRealtimeSpl
     return result;
 }
 
-RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
+RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan, bool pk_table,
                                      const std::shared_ptr<RealtimeContextImpl>& realtime_context,
                                      const std::shared_ptr<FileStorePathFactory>& path_factory,
                                      const std::shared_ptr<SnapshotManager>& snapshot_manager,
@@ -184,6 +185,7 @@ RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
                                      const std::shared_ptr<ScanFilter>& scan_filter,
                                      int64_t read_view_ttl_millis)
     : disk_scan_(std::move(disk_scan)),
+      pk_table_(pk_table),
       realtime_context_(realtime_context),
       path_factory_(path_factory),
       snapshot_manager_(snapshot_manager),

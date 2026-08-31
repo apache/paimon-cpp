@@ -38,12 +38,21 @@ namespace paimon {
 
 namespace {
 
-bool HasNonZeroOffset(const std::shared_ptr<arrow::ArrayData>& data) {
+bool NeedsNormalization(const std::shared_ptr<arrow::ArrayData>& data) {
     if (data->offset != 0) {
         return true;
     }
+    if (data->type->id() == arrow::Type::STRUCT) {
+        for (const auto& child : data->child_data) {
+            // StructArray::Slice(0, length) shortens only the parent ArrayData. Its children may
+            // still describe the full unsliced arrays, which cannot be imported as a RecordBatch.
+            if (child->length != data->length) {
+                return true;
+            }
+        }
+    }
     for (const auto& child : data->child_data) {
-        if (HasNonZeroOffset(child)) {
+        if (NeedsNormalization(child)) {
             return true;
         }
     }
@@ -234,7 +243,7 @@ Result<std::shared_ptr<arrow::ArrayData>> RebaseFixedWidth(
 /// proportional to the number of rows instead of the number of value bytes.
 Result<std::shared_ptr<arrow::ArrayData>> RebaseToZeroOffset(
     const std::shared_ptr<arrow::ArrayData>& data, arrow::MemoryPool* pool) {
-    if (!HasNonZeroOffset(data)) {
+    if (!NeedsNormalization(data)) {
         return data;
     }
     // An empty array may not carry the buffers the layouts below slice.
@@ -355,6 +364,22 @@ void ArrowUtils::TraverseArray(const std::shared_ptr<arrow::Array>& array) {
     }
 }
 
+uint64_t ArrowUtils::GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data) {
+    uint64_t result = 0;
+    for (const std::shared_ptr<arrow::Buffer>& buffer : data->buffers) {
+        if (buffer) {
+            result += static_cast<uint64_t>(buffer->size());
+        }
+    }
+    for (const std::shared_ptr<arrow::ArrayData>& child : data->child_data) {
+        result += GetArrayMemoryUsage(child);
+    }
+    if (data->dictionary) {
+        result += GetArrayMemoryUsage(data->dictionary);
+    }
+    return result;
+}
+
 bool ArrowUtils::EqualsIgnoreNullable(const std::shared_ptr<arrow::DataType>& type,
                                       const std::shared_ptr<arrow::DataType>& other_type) {
     if (type->id() != other_type->id() || type->num_fields() != other_type->num_fields()) {
@@ -443,21 +468,26 @@ Result<std::shared_ptr<arrow::RecordBatch>> ArrowUtils::NormalizeRecordBatchOffs
     arrow::ArrayVector normalized_columns;
     for (int32_t i = 0; i < record_batch->num_columns(); ++i) {
         const std::shared_ptr<arrow::Array>& column = record_batch->column(i);
-        if (!HasNonZeroOffset(column->data())) {
+        if (!NeedsNormalization(column->data())) {
             continue;
         }
         if (normalized_columns.empty()) {
             normalized_columns = record_batch->columns();
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> normalized_data,
-                               RebaseToZeroOffset(column->data(), pool));
-        normalized_columns[i] = arrow::MakeArray(normalized_data);
+        PAIMON_ASSIGN_OR_RAISE(normalized_columns[i], NormalizeArrayOffsets(column, pool));
     }
     if (normalized_columns.empty()) {
         return record_batch;
     }
     return arrow::RecordBatch::Make(record_batch->schema(), record_batch->num_rows(),
                                     std::move(normalized_columns));
+}
+
+Result<std::shared_ptr<arrow::Array>> ArrowUtils::NormalizeArrayOffsets(
+    const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ArrayData> normalized_data,
+                           RebaseToZeroOffset(array->data(), pool));
+    return arrow::MakeArray(normalized_data);
 }
 
 Result<arrow::Compression::type> ArrowUtils::GetCompressionType(const std::string& compression) {

@@ -61,15 +61,13 @@ class PAIMON_EXPORT RangeBitmapFileIndex final : public FileIndexer {
 class RangeBitmapFileIndexWriter final : public FileIndexWriter {
  public:
     static Result<std::shared_ptr<RangeBitmapFileIndexWriter>> Create(
-        const std::shared_ptr<arrow::Schema>& arrow_schema, const std::string& field_name,
+        const std::shared_ptr<arrow::Field>& field,
         const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool);
 
     Status AddBatch(::ArrowArray* batch) override;
     Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const override;
 
     RangeBitmapFileIndexWriter(const std::shared_ptr<arrow::DataType>& struct_type,
-                               const std::shared_ptr<arrow::DataType>& arrow_type,
-                               const std::map<std::string, std::string>& options,
                                const std::shared_ptr<MemoryPool>& pool,
                                const std::shared_ptr<KeyFactory>& key_factory,
                                std::unique_ptr<RangeBitmap::Appender> appender);
@@ -78,8 +76,6 @@ class RangeBitmapFileIndexWriter final : public FileIndexWriter {
     /// @note struct_type_ contains only one field with arrow_type_, used for import from C
     /// interface.
     std::shared_ptr<arrow::DataType> struct_type_;
-    std::shared_ptr<arrow::DataType> arrow_type_;
-    std::map<std::string, std::string> options_;
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<KeyFactory> key_factory_;
     std::unique_ptr<RangeBitmap::Appender> appender_;

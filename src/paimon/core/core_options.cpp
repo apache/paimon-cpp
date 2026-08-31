@@ -19,6 +19,7 @@
 #include "paimon/core/core_options.h"
 
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -51,14 +52,9 @@ class ConfigParser {
     // Parse basic type configurations
     template <typename T>
     Status Parse(const std::string& key, T* value) const {
-        auto iter = config_map_.find(key);
-        if (iter != config_map_.end()) {
-            auto result = StringUtils::StringToValue<T>(iter->second);
-            if (result) {
-                *value = result.value();
-                return Status::OK();
-            }
-            return Status::Invalid(fmt::format("Invalid Config [{}: {}]", key, iter->second));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<T> parsed_value, GetOptionalValue<T>(key));
+        if (parsed_value) {
+            *value = parsed_value.value();
         }
         return Status::OK();  // Return success even if the configuration does not exist
     }
@@ -66,14 +62,9 @@ class ConfigParser {
     // Parse optional basic type configurations
     template <typename T>
     Status Parse(const std::string& key, std::optional<T>* value) const {
-        auto iter = config_map_.find(key);
-        if (iter != config_map_.end()) {
-            auto result = StringUtils::StringToValue<T>(iter->second);
-            if (result) {
-                *value = result.value();
-                return Status::OK();
-            }
-            return Status::Invalid(fmt::format("Invalid Config [{}: {}]", key, iter->second));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<T> parsed_value, GetOptionalValue<T>(key));
+        if (parsed_value) {
+            *value = parsed_value.value();
         }
         return Status::OK();  // Return success even if the configuration does not exist
     }
@@ -82,23 +73,26 @@ class ConfigParser {
     template <typename T>
     Status ParseList(const std::string& key, const std::string& delimiter, std::vector<T>* list,
                      bool need_trim = false) const {
-        auto iter = config_map_.find(key);
-        if (iter != config_map_.end()) {
-            auto value_str_vec = StringUtils::Split(iter->second, delimiter, /*ignore_empty=*/true);
-            for (auto& value_str : value_str_vec) {
-                if (need_trim) {
-                    StringUtils::Trim(&value_str);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> config_value,
+                               GetOptionalValue<std::string>(key));
+        if (!config_value) {
+            return Status::OK();
+        }
+        auto value_str_vec =
+            StringUtils::Split(config_value.value(), delimiter, /*ignore_empty=*/true);
+        for (auto& value_str : value_str_vec) {
+            if (need_trim) {
+                StringUtils::Trim(&value_str);
+            }
+            if constexpr (std::is_same_v<T, std::string>) {
+                list->emplace_back(value_str);
+            } else {
+                auto value = StringUtils::StringToValue<T>(value_str);
+                if (!value) {
+                    return Status::Invalid(
+                        fmt::format("Invalid Config [{}: {}]", key, config_value.value()));
                 }
-                if constexpr (std::is_same_v<T, std::string>) {
-                    list->emplace_back(value_str);
-                } else {
-                    auto value = StringUtils::StringToValue<T>(value_str);
-                    if (!value) {
-                        return Status::Invalid(
-                            fmt::format("Invalid Config [{}: {}]", key, iter->second));
-                    }
-                    list->emplace_back(value.value());
-                }
+                list->emplace_back(value.value());
             }
         }
         return Status::OK();  // Return success even if the configuration does not exist
@@ -109,9 +103,10 @@ class ConfigParser {
     Status ParseMemorySize(const std::string& key, T* value) const {
         static_assert(std::is_same_v<T, int64_t> || std::is_same_v<T, std::optional<int64_t>>,
                       "ParseMemorySize only supports int64_t and std::optional<int64_t>");
-        auto iter = config_map_.find(key);
-        if (iter != config_map_.end()) {
-            PAIMON_ASSIGN_OR_RAISE(*value, MemorySize::ParseBytes(iter->second));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> config_value,
+                               GetOptionalValue<std::string>(key));
+        if (config_value) {
+            PAIMON_ASSIGN_OR_RAISE(*value, MemorySize::ParseBytes(config_value.value()));
         }
         return Status::OK();
     }
@@ -121,9 +116,10 @@ class ConfigParser {
     Status ParseTimeDuration(const std::string& key, T* value) const {
         static_assert(std::is_same_v<T, int64_t> || std::is_same_v<T, std::optional<int64_t>>,
                       "ParseTimeDuration only supports int64_t and std::optional<int64_t>");
-        auto iter = config_map_.find(key);
-        if (iter != config_map_.end()) {
-            PAIMON_ASSIGN_OR_RAISE(*value, TimeDuration::Parse(iter->second));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> config_value,
+                               GetOptionalValue<std::string>(key));
+        if (config_value) {
+            PAIMON_ASSIGN_OR_RAISE(*value, TimeDuration::Parse(config_value.value()));
         }
         return Status::OK();
     }
@@ -132,14 +128,10 @@ class ConfigParser {
     template <typename Factory, typename ObjectType>
     Status ParseObject(const std::string& key, const std::string& default_identifier,
                        std::shared_ptr<ObjectType>* value) const {
-        auto iter = config_map_.find(key);
-        if (iter != config_map_.end()) {
-            std::string normalized_value = StringUtils::ToLowerCase(iter->second);
-            PAIMON_ASSIGN_OR_RAISE(*value, Factory::Get(normalized_value, config_map_));
-        } else {
-            PAIMON_ASSIGN_OR_RAISE(
-                *value, Factory::Get(StringUtils::ToLowerCase(default_identifier), config_map_));
-        }
+        PAIMON_ASSIGN_OR_RAISE(std::string identifier, OptionsUtils::GetValueFromMap<std::string>(
+                                                           config_map_, key, default_identifier));
+        PAIMON_ASSIGN_OR_RAISE(*value,
+                               Factory::Get(StringUtils::ToLowerCase(identifier), config_map_));
         return Status::OK();
     }
 
@@ -152,11 +144,10 @@ class ConfigParser {
             *value = specified_file_system;
             return Status::OK();
         }
-        std::string default_fs_identifier = "local";
-        auto iter = config_map_.find(Options::FILE_SYSTEM);
-        if (iter != config_map_.end()) {
-            default_fs_identifier = StringUtils::ToLowerCase(iter->second);
-        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::string default_fs_identifier,
+            OptionsUtils::GetValueFromMap<std::string>(config_map_, Options::FILE_SYSTEM, "local"));
+        default_fs_identifier = StringUtils::ToLowerCase(default_fs_identifier);
         *value = std::make_shared<ResolvingFileSystem>(fs_scheme_to_identifier_map,
                                                        default_fs_identifier, config_map_);
         return Status::OK();
@@ -164,151 +155,81 @@ class ConfigParser {
 
     // Parse SortOrder
     Status ParseSortOrder(SortOrder* sort_order) const {
-        auto iter = config_map_.find(Options::SEQUENCE_FIELD_SORT_ORDER);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "ascending") {
-                *sort_order = SortOrder::ASCENDING;
-            } else if (str == "descending") {
-                *sort_order = SortOrder::DESCENDING;
-            } else {
-                return Status::Invalid(fmt::format("invalid sort order: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(
+            Options::SEQUENCE_FIELD_SORT_ORDER,
+            {{"ascending", SortOrder::ASCENDING}, {"descending", SortOrder::DESCENDING}},
+            "sort order", sort_order);
     }
 
     // Parse LookupCompactMode
     Status ParseLookupCompactMode(LookupCompactMode* mode) const {
-        auto iter = config_map_.find(Options::LOOKUP_COMPACT);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "radical") {
-                *mode = LookupCompactMode::RADICAL;
-            } else if (str == "gentle") {
-                *mode = LookupCompactMode::GENTLE;
-            } else {
-                return Status::Invalid(fmt::format("invalid lookup mode: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(
+            Options::LOOKUP_COMPACT,
+            {{"radical", LookupCompactMode::RADICAL}, {"gentle", LookupCompactMode::GENTLE}},
+            "lookup mode", mode);
     }
 
     // Parse SortEngine
     Status ParseSortEngine(SortEngine* sort_engine) const {
-        auto iter = config_map_.find(Options::SORT_ENGINE);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "min-heap") {
-                *sort_engine = SortEngine::MIN_HEAP;
-            } else if (str == "loser-tree") {
-                *sort_engine = SortEngine::LOSER_TREE;
-            } else {
-                return Status::Invalid(fmt::format("invalid sort engine: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(
+            Options::SORT_ENGINE,
+            {{"min-heap", SortEngine::MIN_HEAP}, {"loser-tree", SortEngine::LOSER_TREE}},
+            "sort engine", sort_engine);
     }
 
     // Parse MergeEngine
     Status ParseMergeEngine(MergeEngine* merge_engine) const {
-        auto iter = config_map_.find(Options::MERGE_ENGINE);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "deduplicate") {
-                *merge_engine = MergeEngine::DEDUPLICATE;
-            } else if (str == "partial-update") {
-                *merge_engine = MergeEngine::PARTIAL_UPDATE;
-            } else if (str == "aggregation") {
-                *merge_engine = MergeEngine::AGGREGATE;
-            } else if (str == "first-row") {
-                *merge_engine = MergeEngine::FIRST_ROW;
-            } else {
-                return Status::Invalid(fmt::format("invalid merge engine: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(Options::MERGE_ENGINE,
+                         {{"deduplicate", MergeEngine::DEDUPLICATE},
+                          {"partial-update", MergeEngine::PARTIAL_UPDATE},
+                          {"aggregation", MergeEngine::AGGREGATE},
+                          {"first-row", MergeEngine::FIRST_ROW}},
+                         "merge engine", merge_engine);
     }
 
     // Parse VariantShreddingInferenceMode
     Status ParseVariantShreddingInferenceMode(VariantShreddingInferenceMode* inference_mode) const {
-        auto iter = config_map_.find(Options::VARIANT_SHREDDING_INFERENCE_MODE);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "per-file") {
-                *inference_mode = VariantShreddingInferenceMode::PER_FILE;
-            } else if (str == "adaptive") {
-                *inference_mode = VariantShreddingInferenceMode::ADAPTIVE;
-            } else {
-                return Status::Invalid(
-                    fmt::format("invalid variant shredding inference mode: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(Options::VARIANT_SHREDDING_INFERENCE_MODE,
+                         {{"per-file", VariantShreddingInferenceMode::PER_FILE},
+                          {"adaptive", VariantShreddingInferenceMode::ADAPTIVE}},
+                         "variant shredding inference mode", inference_mode);
     }
 
     // Parse ChangelogProducer
     Status ParseChangelogProducer(ChangelogProducer* changelog_producer) const {
-        auto iter = config_map_.find(Options::CHANGELOG_PRODUCER);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "none") {
-                *changelog_producer = ChangelogProducer::NONE;
-            } else if (str == "input") {
-                *changelog_producer = ChangelogProducer::INPUT;
-            } else if (str == "full-compaction") {
-                *changelog_producer = ChangelogProducer::FULL_COMPACTION;
-            } else if (str == "lookup") {
-                *changelog_producer = ChangelogProducer::LOOKUP;
-            } else {
-                return Status::Invalid(fmt::format("invalid changelog producer: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(Options::CHANGELOG_PRODUCER,
+                         {{"none", ChangelogProducer::NONE},
+                          {"input", ChangelogProducer::INPUT},
+                          {"full-compaction", ChangelogProducer::FULL_COMPACTION},
+                          {"lookup", ChangelogProducer::LOOKUP}},
+                         "changelog producer", changelog_producer);
     }
 
     // Parse ExternalPathStrategy
     Status ParseExternalPathStrategy(ExternalPathStrategy* external_path_strategy) const {
-        auto iter = config_map_.find(Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "none") {
-                *external_path_strategy = ExternalPathStrategy::NONE;
-            } else if (str == "specific-fs") {
-                *external_path_strategy = ExternalPathStrategy::SPECIFIC_FS;
-            } else if (str == "round-robin") {
-                *external_path_strategy = ExternalPathStrategy::ROUND_ROBIN;
-            } else {
-                return Status::Invalid(fmt::format("invalid external path strategy: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY,
+                         {{"none", ExternalPathStrategy::NONE},
+                          {"specific-fs", ExternalPathStrategy::SPECIFIC_FS},
+                          {"round-robin", ExternalPathStrategy::ROUND_ROBIN}},
+                         "external path strategy", external_path_strategy);
     }
 
     // Parse BucketFunctionType
     Status ParseBucketFunctionType(BucketFunctionType* bucket_function_type) const {
-        auto iter = config_map_.find(Options::BUCKET_FUNCTION_TYPE);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            if (str == "default") {
-                *bucket_function_type = BucketFunctionType::DEFAULT;
-            } else if (str == "mod") {
-                *bucket_function_type = BucketFunctionType::MOD;
-            } else if (str == "hive") {
-                *bucket_function_type = BucketFunctionType::HIVE;
-            } else {
-                return Status::Invalid(fmt::format("invalid bucket function type: {}", str));
-            }
-        }
-        return Status::OK();
+        return ParseEnum(Options::BUCKET_FUNCTION_TYPE,
+                         {{"default", BucketFunctionType::DEFAULT},
+                          {"mod", BucketFunctionType::MOD},
+                          {"hive", BucketFunctionType::HIVE}},
+                         "bucket function type", bucket_function_type);
     }
 
     // Parse StartupMode
     Status ParseStartupMode(StartupMode* startup_mode) const {
-        auto iter = config_map_.find(Options::SCAN_MODE);
-        if (iter != config_map_.end()) {
-            std::string str = StringUtils::ToLowerCase(iter->second);
-            PAIMON_ASSIGN_OR_RAISE(*startup_mode, StartupMode::FromString(str));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> value,
+                               GetOptionalValue<std::string>(Options::SCAN_MODE));
+        if (value) {
+            PAIMON_ASSIGN_OR_RAISE(
+                *startup_mode, StartupMode::FromString(StringUtils::ToLowerCase(value.value())));
         }
         return Status::OK();
     }
@@ -372,16 +293,44 @@ class ConfigParser {
     }
 
  private:
-    const std::map<std::string, std::string> config_map_;
+    template <typename T>
+    Status ParseEnum(const std::string& key,
+                     std::initializer_list<std::pair<const char*, T>> candidates,
+                     const std::string& error_name, T* value) const {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> config_value,
+                               GetOptionalValue<std::string>(key));
+        if (!config_value) {
+            return Status::OK();
+        }
+        std::string normalized_value = StringUtils::ToLowerCase(config_value.value());
+        for (const auto& [candidate, candidate_value] : candidates) {
+            if (normalized_value == candidate) {
+                *value = candidate_value;
+                return Status::OK();
+            }
+        }
+        return Status::Invalid(fmt::format("invalid {}: {}", error_name, normalized_value));
+    }
+
+    template <typename T>
+    Result<std::optional<T>> GetOptionalValue(const std::string& key) const {
+        Result<std::optional<T>> result =
+            OptionsUtils::GetOptionalValueFromMap<T>(config_map_, key);
+        if (!result.ok()) {
+            return Status::Invalid(
+                fmt::format("Invalid Config [{}: {}]", key, config_map_.at(key)));
+        }
+        return result.value();
+    }
+
+    const std::map<std::string, std::string>& config_map_;
 };
 
 // Impl is a private implementation of CoreOptions,
 // storing various configurable fields and their default values.
 struct CoreOptions::Impl {
     int64_t page_size = 64 * 1024;
-    std::optional<int64_t> target_file_size;
     int64_t target_file_row_num = std::numeric_limits<int64_t>::max();
-    std::optional<int64_t> blob_target_file_size;
     int64_t source_split_target_size = 128 * 1024 * 1024;
     int64_t source_split_open_file_cost = 4 * 1024 * 1024;
     int64_t manifest_target_file_size = 8 * 1024 * 1024;
@@ -392,20 +341,33 @@ struct CoreOptions::Impl {
     int64_t commit_timeout = std::numeric_limits<int64_t>::max();
     int64_t commit_min_retry_wait = 10;
     int64_t commit_max_retry_wait = 10 * 1000;
-    bool realtime_enabled = false;
     int64_t realtime_read_view_ttl_millis = 5 * 60 * 1000;
-    StatisticsMode realtime_store_statistics_mode = StatisticsMode::NONE;
+    int64_t write_buffer_spill_max_disk_size = std::numeric_limits<int64_t>::max();
+    double variant_shredding_min_field_cardinality_ratio = 0.1;
+    double variant_shredding_adaptive_retention_ratio = 0.05;
+    double lookup_cache_bloom_filter_fpp = 0.05;
+    int64_t cache_page_size = 64 * 1024;  // 64KB
+    int64_t lookup_cache_max_memory = 256 * 1024 * 1024;
+    double lookup_cache_high_prio_pool_ratio = 0.25;
+    int64_t lookup_cache_file_retention_ms = 1 * 3600 * 1000;  // 1 hour
+    int64_t lookup_cache_max_disk_size = INT64_MAX;
 
+    std::optional<int64_t> target_file_size;
+    std::optional<int64_t> blob_target_file_size;
     std::shared_ptr<FileFormat> file_format;
     std::shared_ptr<FileSystem> file_system;
     std::shared_ptr<FileFormat> manifest_file_format;
     std::shared_ptr<Cache> cache;
-
     std::optional<int64_t> scan_snapshot_id;
     std::optional<int64_t> scan_timestamp_millis;
+    std::optional<int64_t> optimized_compaction_interval;
+    std::optional<int64_t> compaction_total_size_threshold;
+    std::optional<int64_t> compaction_incremental_size_threshold;
+    std::shared_ptr<FileFormat> changelog_file_format;
     ExpireConfig expire_config;
     std::vector<std::string> sequence_field;
     std::vector<std::string> remove_record_on_sequence_group;
+    std::vector<std::string> changelog_row_deduplicate_ignore_fields;
     std::vector<std::string> blob_fields;
     std::vector<std::string> blob_descriptor_fields;
     std::vector<std::string> blob_view_fields;
@@ -416,20 +378,25 @@ struct CoreOptions::Impl {
     std::string manifest_compression = "zstd";
     std::string branch = BranchManager::DEFAULT_MAIN_BRANCH;
     std::string data_file_prefix = "data-";
+    std::string changelog_file_prefix = "changelog-";
     std::string file_system_scheme_to_identifier_map_str;
-
     std::optional<std::string> field_default_func;
     std::optional<std::string> scan_fallback_branch;
     std::optional<std::string> data_file_external_paths;
     std::optional<std::string> blob_view_upstream_warehouse;
-
+    std::optional<std::string> changelog_file_compression;
+    std::optional<std::string> global_index_external_path;
+    std::optional<std::string> scan_tag_name;
+    CompressOptions lookup_compress_options{"zstd", 1};
+    CompressOptions spill_compress_options{"zstd", 1};
     std::map<std::string, std::string> raw_options;
+    std::map<int32_t, std::shared_ptr<FileFormat>> file_format_per_level;
+    std::map<int32_t, std::string> file_compression_per_level;
 
+    StatisticsMode realtime_store_statistics_mode = StatisticsMode::NONE;
     int32_t bucket = -1;
-
     int32_t manifest_merge_min_count = 30;
     int32_t scan_manifest_entry_cache_max_snapshots = 0;
-    bool scan_manifest_entry_lazy_decode_enabled = true;
     int32_t read_batch_size = 1024;
     int32_t write_batch_size = 1024;
     int32_t local_sort_max_num_file_handles = 128;
@@ -438,85 +405,68 @@ struct CoreOptions::Impl {
     int32_t compaction_max_size_amplification_percent = 200;
     int32_t compaction_size_ratio = 1;
     int32_t num_sorted_runs_compaction_trigger = 5;
-    std::optional<int32_t> num_sorted_runs_stop_trigger;
-    std::optional<int32_t> num_levels;
-
     SortOrder sequence_field_sort_order = SortOrder::ASCENDING;
     MergeEngine merge_engine = MergeEngine::DEDUPLICATE;
     SortEngine sort_engine = SortEngine::LOSER_TREE;
     ChangelogProducer changelog_producer = ChangelogProducer::NONE;
     ExternalPathStrategy external_path_strategy = ExternalPathStrategy::NONE;
     LookupCompactMode lookup_compact_mode = LookupCompactMode::RADICAL;
-    std::optional<int32_t> lookup_compact_max_interval;
     BucketFunctionType bucket_function_type = BucketFunctionType::DEFAULT;
-
     int32_t file_compression_zstd_level = 1;
-    int64_t write_buffer_spill_max_disk_size = std::numeric_limits<int64_t>::max();
+    CoreOptions::SequenceNumberInitMode write_sequence_number_init_mode =
+        CoreOptions::SequenceNumberInitMode::SCAN;
+    VariantShreddingInferenceMode variant_shredding_inference_mode =
+        VariantShreddingInferenceMode::PER_FILE;
+    int32_t variant_shredding_max_schema_width = 300;
+    int32_t variant_shredding_max_schema_depth = 50;
+    int32_t variant_shredding_max_infer_buffer_row = 4096;
+    int32_t variant_shredding_adaptive_max_infer_buffer_row = 256;
+    int32_t compact_off_peak_start_hour = -1;
+    int32_t compact_off_peak_end_hour = -1;
+    int32_t compact_off_peak_ratio = 0;
+    int32_t lookup_remote_level_threshold = INT32_MIN;
+    std::optional<int32_t> num_sorted_runs_stop_trigger;
+    std::optional<int32_t> num_levels;
+    std::optional<int32_t> lookup_compact_max_interval;
+    std::optional<int32_t> global_index_thread_num;
 
+    bool realtime_enabled = false;
+    bool scan_manifest_entry_lazy_decode_enabled = true;
     bool ignore_delete = false;
     bool manifest_delete_file_drop_stats = false;
     bool write_buffer_spillable = true;
     bool write_only = false;
     bool bucket_append_ordered = false;
-    CoreOptions::SequenceNumberInitMode write_sequence_number_init_mode =
-        CoreOptions::SequenceNumberInitMode::SCAN;
     bool deletion_vectors_enabled = false;
     bool deletion_vectors_bitmap64 = false;
     bool force_lookup = false;
     bool lookup_wait = true;
+    bool changelog_row_deduplicate = false;
     bool partial_update_remove_record_on_delete = false;
     bool aggregation_remove_record_on_delete = false;
     bool table_read_sequence_number_enabled = false;
     bool key_value_sequence_number_enabled = false;
     bool file_index_read_enabled = true;
     bool enable_adaptive_prefetch_strategy = true;
+    bool prefetch_io_metrics_enabled = false;
     bool index_file_in_data_file_dir = false;
     bool row_tracking_enabled = false;
     bool row_tracking_partition_group_on_commit = true;
     bool data_evolution_enabled = false;
     bool variant_infer_shredding_schema = false;
-    VariantShreddingInferenceMode variant_shredding_inference_mode =
-        VariantShreddingInferenceMode::PER_FILE;
-    int32_t variant_shredding_max_schema_width = 300;
-    int32_t variant_shredding_max_schema_depth = 50;
-    double variant_shredding_min_field_cardinality_ratio = 0.1;
-    int32_t variant_shredding_max_infer_buffer_row = 4096;
-    int32_t variant_shredding_adaptive_max_infer_buffer_row = 256;
-    double variant_shredding_adaptive_retention_ratio = 0.05;
     bool blob_view_resolve_enabled = true;
     bool blob_as_descriptor = false;
-    std::optional<bool> blob_split_by_file_size;
     bool legacy_partition_name_enabled = true;
     bool global_index_enabled = true;
-    std::optional<int32_t> global_index_thread_num;
     bool commit_force_compact = false;
     bool commit_discard_duplicate_files = false;
     bool dynamic_partition_overwrite = true;
     bool overwrite_upgrade = true;
     bool compaction_force_rewrite_all_files = false;
     bool compaction_force_up_level_0 = false;
-    std::optional<std::string> global_index_external_path;
-
-    std::optional<std::string> scan_tag_name;
-    std::optional<int64_t> optimized_compaction_interval;
-    std::optional<int64_t> compaction_total_size_threshold;
-    std::optional<int64_t> compaction_incremental_size_threshold;
-    int32_t compact_off_peak_start_hour = -1;
-    int32_t compact_off_peak_end_hour = -1;
-    int32_t compact_off_peak_ratio = 0;
     bool lookup_cache_bloom_filter = true;
-    double lookup_cache_bloom_filter_fpp = 0.05;
     bool lookup_remote_file_enabled = false;
-    int32_t lookup_remote_level_threshold = INT32_MIN;
-    CompressOptions lookup_compress_options{"zstd", 1};
-    CompressOptions spill_compress_options{"zstd", 1};
-    int64_t cache_page_size = 64 * 1024;  // 64KB
-    std::map<int32_t, std::shared_ptr<FileFormat>> file_format_per_level;
-    std::map<int32_t, std::string> file_compression_per_level;
-    int64_t lookup_cache_max_memory = 256 * 1024 * 1024;
-    double lookup_cache_high_prio_pool_ratio = 0.25;
-    int64_t lookup_cache_file_retention_ms = 1 * 3600 * 1000;  // 1 hour
-    int64_t lookup_cache_max_disk_size = INT64_MAX;
+    std::optional<bool> blob_split_by_file_size;
 
     // Parse basic table options: bucket, partition, file sizes, batch sizes, file system, etc.
     Status ParseBasicOptions(
@@ -590,6 +540,8 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseExternalPathStrategy(&external_path_strategy));
         // Parse data-file.prefix - file name prefix of data files, default "data-"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::DATA_FILE_PREFIX, &data_file_prefix));
+        // Parse changelog-file.prefix - file name prefix of changelog files, default "changelog-"
+        PAIMON_RETURN_NOT_OK(parser.Parse(Options::CHANGELOG_FILE_PREFIX, &changelog_file_prefix));
         // Parse row-tracking.enabled - whether to enable unique row id for append table
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::ROW_TRACKING_ENABLED, &row_tracking_enabled));
@@ -638,6 +590,14 @@ struct CoreOptions::Impl {
             Options::FILE_FORMAT, /*default_identifier=*/"parquet", &file_format));
         // Parse file.compression - default file compression, default "zstd"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::FILE_COMPRESSION, &file_compression));
+        // Parse changelog-file.format - no default value
+        if (parser.ContainsKey(Options::CHANGELOG_FILE_FORMAT)) {
+            PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
+                Options::CHANGELOG_FILE_FORMAT, file_format->Identifier(), &changelog_file_format));
+        }
+        // Parse changelog-file.compression - no default value
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse(Options::CHANGELOG_FILE_COMPRESSION, &changelog_file_compression));
         // Parse file.compression.zstd-level - zstd compression level, default 1
         PAIMON_RETURN_NOT_OK(
             parser.Parse(Options::FILE_COMPRESSION_ZSTD_LEVEL, &file_compression_zstd_level));
@@ -768,6 +728,13 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::FIELDS_DEFAULT_AGG_FUNC, &field_default_func));
         // Parse changelog-producer - whether to double write to a changelog file, default "none"
         PAIMON_RETURN_NOT_OK(parser.ParseChangelogProducer(&changelog_producer));
+        // Parse changelog-producer.row-deduplicate - skip unchanged row changelogs
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE,
+                                                &changelog_row_deduplicate));
+        // Parse changelog-producer.row-deduplicate-ignore-fields - ignored comparison fields
+        PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(
+            Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, Options::FIELDS_SEPARATOR,
+            &changelog_row_deduplicate_ignore_fields, /*need_trim=*/true));
         // Parse partial-update.remove-record-on-delete - remove whole row on delete
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
                                                 &partial_update_remove_record_on_delete));
@@ -828,6 +795,8 @@ struct CoreOptions::Impl {
         }
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
                                                 &scan_manifest_entry_lazy_decode_enabled));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::PREFETCH_IO_METRICS_ENABLED, &prefetch_io_metrics_enabled));
         // Parse scan.fallback-branch - fallback branch when partition not found
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_FALLBACK_BRANCH, &scan_fallback_branch));
         // Parse branch - branch name, default "main"
@@ -1425,6 +1394,10 @@ bool CoreOptions::EnableAdaptivePrefetchStrategy() const {
     return impl_->enable_adaptive_prefetch_strategy;
 }
 
+bool CoreOptions::PrefetchIoMetricsEnabled() const {
+    return impl_->prefetch_io_metrics_enabled;
+}
+
 Result<std::optional<std::string>> CoreOptions::GetFieldAggFunc(
     const std::string& field_name) const {
     ConfigParser parser(impl_->raw_options);
@@ -1618,6 +1591,26 @@ int64_t CoreOptions::DeletionVectorTargetFileSize() const {
 
 ChangelogProducer CoreOptions::GetChangelogProducer() const {
     return impl_->changelog_producer;
+}
+
+bool CoreOptions::ChangelogRowDeduplicate() const {
+    return impl_->changelog_row_deduplicate;
+}
+
+const std::vector<std::string>& CoreOptions::GetChangelogRowDeduplicateIgnoreFields() const {
+    return impl_->changelog_row_deduplicate_ignore_fields;
+}
+
+std::string CoreOptions::ChangelogFilePrefix() const {
+    return impl_->changelog_file_prefix;
+}
+
+std::shared_ptr<FileFormat> CoreOptions::GetChangelogFileFormat() const {
+    return impl_->changelog_file_format;
+}
+
+std::optional<std::string> CoreOptions::GetChangelogFileCompression() const {
+    return impl_->changelog_file_compression;
 }
 
 LookupStrategy CoreOptions::GetLookupStrategy() const {

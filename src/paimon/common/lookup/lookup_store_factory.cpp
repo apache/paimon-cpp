@@ -36,7 +36,8 @@ Result<std::shared_ptr<BloomFilter>> LookupStoreFactory::BfGenerator(int64_t row
     if (row_count <= 0 || !options.LookupCacheBloomFilterEnabled()) {
         return std::shared_ptr<BloomFilter>();
     }
-    auto bloom_filter = BloomFilter::Create(row_count, options.GetLookupCacheBloomFilterFpp());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BloomFilter> bloom_filter,
+                           BloomFilter::Create(row_count, options.GetLookupCacheBloomFilterFpp()));
     MemorySegment memory_segment =
         MemorySegment::AllocateHeapMemory(bloom_filter->ByteLength(), pool);
     PAIMON_RETURN_NOT_OK(bloom_filter->SetMemorySegment(memory_segment));

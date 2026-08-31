@@ -73,6 +73,8 @@ void StringUtilsTest::CheckOverFlowAndUnderFlow(const std::string& over_flow,
 }
 
 TEST_F(StringUtilsTest, TestReplaceAll) {
+    ASSERT_EQ("abc", StringUtils::Replace("abc", "", "x"));
+    ASSERT_EQ("", StringUtils::Replace("", "a", "b"));
     {
         std::string origin = "how is is you";
         std::string expect = "how are are you";
@@ -118,6 +120,8 @@ TEST_F(StringUtilsTest, TestReplaceAll) {
 }
 
 TEST_F(StringUtilsTest, TestReplaceLast) {
+    ASSERT_EQ("abc", StringUtils::ReplaceLast("abc", "", "x"));
+    ASSERT_EQ("", StringUtils::ReplaceLast("", "a", "b"));
     {
         std::string origin = "a/b/c//";
         std::string expect = "a/b/c/_";
@@ -140,6 +144,7 @@ TEST_F(StringUtilsTest, TestReplaceLast) {
 }
 
 TEST_F(StringUtilsTest, TestReplaceWithMaxCount) {
+    ASSERT_EQ("abc", StringUtils::Replace("abc", "a", "b", 0));
     {
         std::string origin = "how is is you";
         std::string expect = "how are is you";
@@ -236,6 +241,13 @@ TEST_F(StringUtilsTest, TestToUpperCase) {
     }
 }
 
+TEST_F(StringUtilsTest, TestEqualsIgnoreCase) {
+    ASSERT_TRUE(StringUtils::EqualsIgnoreCase("", ""));
+    ASSERT_TRUE(StringUtils::EqualsIgnoreCase("AbC-123", "aBc-123"));
+    ASSERT_FALSE(StringUtils::EqualsIgnoreCase("abc", "abcd"));
+    ASSERT_FALSE(StringUtils::EqualsIgnoreCase("abc", "abx"));
+}
+
 TEST_F(StringUtilsTest, TestStartsWith) {
     {
         std::string str = "abcde";
@@ -261,6 +273,26 @@ TEST_F(StringUtilsTest, TestStartsWith) {
         std::string str = "";
         ASSERT_TRUE(StringUtils::StartsWith(str, ""));
     }
+    {
+        std::string str = "abc";
+        ASSERT_TRUE(StringUtils::StartsWith(str, "", /*start_pos=*/3));
+        ASSERT_FALSE(StringUtils::StartsWith(str, "", /*start_pos=*/4));
+        ASSERT_FALSE(StringUtils::StartsWith(str, "a", /*start_pos=*/4));
+    }
+}
+
+TEST_F(StringUtilsTest, TestTrim) {
+    std::string value = " \tabc\r\n";
+    StringUtils::Trim(&value);
+    ASSERT_EQ("abc", value);
+
+    value = "\t\r\n";
+    StringUtils::Trim(&value);
+    ASSERT_TRUE(value.empty());
+
+    value.clear();
+    StringUtils::Trim(&value);
+    ASSERT_TRUE(value.empty());
 }
 TEST_F(StringUtilsTest, TestEndsWith) {
     {

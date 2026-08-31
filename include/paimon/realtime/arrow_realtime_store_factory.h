@@ -27,10 +27,7 @@ namespace paimon {
 class PAIMON_EXPORT ArrowRealtimeStoreFactory : public RealtimeStoreFactory {
  public:
     /// Creates an Arrow-backed store for one partition and bucket.
-    Result<std::shared_ptr<RealtimeStore>> Create(
-        std::unique_ptr<::ArrowSchema> write_schema, StatisticsMode statistics_mode,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<MemoryPool>& memory_pool) override;
+    Result<std::shared_ptr<RealtimeStore>> Create(RealtimeStoreCreateRequest&& request) override;
 };
 
 }  // namespace paimon

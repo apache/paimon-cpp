@@ -198,7 +198,7 @@ class FileStoreCommitImplTest : public testing::Test {
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*external_path=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         return ManifestEntry(kind, partition, bucket, total_buckets, data_file_meta);
     }
 
@@ -223,7 +223,7 @@ class FileStoreCommitImplTest : public testing::Test {
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*external_path=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         return ManifestEntry(kind, BinaryRow::EmptyRow(), 0, 2, data_file_meta);
     }
 
@@ -278,7 +278,7 @@ class FileStoreCommitImplTest : public testing::Test {
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     std::shared_ptr<DataFileMeta> CreateAppendDataFileMeta(const std::string& file_name,
@@ -294,7 +294,7 @@ class FileStoreCommitImplTest : public testing::Test {
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     bool IsStringInSet(const std::set<std::string>& strSet, const std::string& target) {

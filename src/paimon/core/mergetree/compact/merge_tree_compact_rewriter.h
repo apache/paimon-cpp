@@ -92,6 +92,8 @@ class MergeTreeCompactRewriter : public CompactRewriter {
 
     Result<std::unique_ptr<KeyValueRollingFileWriter>> CreateRollingRowWriter(int32_t level);
 
+    Result<std::unique_ptr<KeyValueRollingFileWriter>> CreateRollingChangelogWriter(int32_t level);
+
     Result<KeyValueConsumerCreator> GenerateKeyValueConsumer() const;
 
     Status MergeReadAndWrite(int32_t output_level, bool drop_delete,
@@ -99,6 +101,13 @@ class MergeTreeCompactRewriter : public CompactRewriter {
                              const KeyValueConsumerCreator& create_consumer,
                              KeyValueRollingFileWriter* rolling_writer,
                              std::vector<std::shared_ptr<KeyValueMergeReader>>* reader_holders_ptr);
+
+    Result<std::unique_ptr<SortMergeReader>> CreateRawSortMergeReaderForSection(
+        const std::vector<SortedRun>& section);
+
+    bool IsCancelled() const {
+        return cancellation_controller_->IsCancelled();
+    }
 
  protected:
     CoreOptions options_;
@@ -108,7 +117,6 @@ class MergeTreeCompactRewriter : public CompactRewriter {
     Result<std::shared_ptr<DataFilePathFactory>> CreateDataFilePathFactory(
         const std::string& format);
 
- private:
     std::shared_ptr<MemoryPool> pool_;
     BinaryRow partition_;
     int32_t bucket_;

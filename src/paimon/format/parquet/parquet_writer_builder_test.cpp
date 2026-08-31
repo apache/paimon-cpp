@@ -77,6 +77,21 @@ TEST(ParquetWriterBuilderTest, PrepareWriterProperties) {
     ASSERT_EQ(3, properties->default_column_properties().compression_level());
 }
 
+TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithFileBlockSize) {
+    arrow::FieldVector fields;
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::MANIFEST_FORMAT, "parquet"},
+        {PARQUET_BLOCK_SIZE, "2048"},
+        {Options::FILE_BLOCK_SIZE, "8 KB"},
+    };
+    ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<::parquet::WriterProperties> properties,
+                         builder.PrepareWriterProperties("zstd"));
+    ASSERT_EQ(properties->max_row_group_size(), 8 * 1024);
+}
+
 TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithZstdLevelPriority) {
     arrow::FieldVector fields;
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);

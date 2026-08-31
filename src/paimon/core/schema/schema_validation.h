@@ -66,7 +66,7 @@ class SchemaValidation {
     static Status ValidateFieldsPrefix(const TableSchema& schema, const CoreOptions& options);
     static Status ValidateSequenceField(const TableSchema& schema, const CoreOptions& options);
     static Status ValidateSequenceGroup(const TableSchema& schema, const CoreOptions& options);
-    static Status ValidateChangelogProducer(const CoreOptions& options);
+    static Status ValidateChangelogProducer(const TableSchema& schema, const CoreOptions& options);
     static Status ValidateForDeletionVectors(const CoreOptions& options);
     static Status ValidatePrimaryKeyBTreeIndexes(const TableSchema& schema,
                                                  const CoreOptions& options);
@@ -74,6 +74,10 @@ class SchemaValidation {
     static Status ValidateRowTracking(const TableSchema& table_schema, const CoreOptions& options);
 
     static Status ValidateBlobFields(const TableSchema& schema, const CoreOptions& options);
+
+    static Status ValidateMosaicDataFields(const TableSchema& schema, const CoreOptions& options);
+
+    static Status ValidateMosaicDataField(const std::shared_ptr<arrow::Field>& field);
 
     static Status ValidateMapStorageLayout(const TableSchema& schema, const CoreOptions& options);
 

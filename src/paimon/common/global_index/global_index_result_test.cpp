@@ -19,9 +19,12 @@
 
 #include "paimon/global_index/global_index_result.h"
 
+#include <cmath>
+#include <cstdint>
 #include <utility>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/testing/utils/testharness.h"
@@ -142,6 +145,29 @@ TEST_F(GlobalIndexResultTest, TestSerializeAndDeserializeWithScore) {
     ASSERT_OK_AND_ASSIGN(auto serialize_bytes, GlobalIndexResult::Serialize(index_result, pool));
     ASSERT_EQ(byte_buffer, std::vector<uint8_t>(serialize_bytes->data(),
                                                 serialize_bytes->data() + serialize_bytes->size()));
+}
+
+TEST_F(GlobalIndexResultTest, TestSerializeCanonicalizesNaNScore) {
+    auto pool = GetDefaultPool();
+    const auto payload_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto canonical_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
+    auto index_result = std::make_shared<BitmapScoredGlobalIndexResult>(
+        RoaringBitmap64::From({1}), std::vector<float>{payload_nan});
+    auto canonical_index_result = std::make_shared<BitmapScoredGlobalIndexResult>(
+        RoaringBitmap64::From({1}), std::vector<float>{canonical_nan});
+
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> serialized,
+                         GlobalIndexResult::Serialize(index_result, pool));
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> canonical_serialized,
+                         GlobalIndexResult::Serialize(canonical_index_result, pool));
+    ASSERT_EQ(*serialized, *canonical_serialized);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<GlobalIndexResult> deserialized,
+        GlobalIndexResult::Deserialize(serialized->data(), serialized->size(), pool));
+    auto scored_result = std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(deserialized);
+    ASSERT_TRUE(scored_result);
+    ASSERT_TRUE(std::isnan(scored_result->GetScores()[0]));
 }
 
 TEST_F(GlobalIndexResultTest, TestInvalidSerialize) {

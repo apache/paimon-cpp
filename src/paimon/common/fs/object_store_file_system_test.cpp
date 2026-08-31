@@ -33,6 +33,17 @@
 namespace paimon::test {
 namespace {
 
+TEST(ObjectStoreFileSystemTest, TestParseModificationTime) {
+    ASSERT_EQ(1704067200000,
+              ObjectStoreFileSystemUtils::ParseModificationTime("2024-01-01T00:00:00.000Z"));
+    ASSERT_EQ(1704067200123,
+              ObjectStoreFileSystemUtils::ParseModificationTime("2024-01-01T08:00:00.123+08:00"));
+    ASSERT_EQ(1704067200000,
+              ObjectStoreFileSystemUtils::ParseModificationTime("Mon, 01 Jan 2024 00:00:00 GMT"));
+    ASSERT_EQ(FileStatus::kUnknownModificationTime,
+              ObjectStoreFileSystemUtils::ParseModificationTime("not-a-timestamp"));
+}
+
 using Range = std::pair<int64_t, int64_t>;
 
 class MockObjectStoreClient : public ObjectStoreClient {

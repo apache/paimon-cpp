@@ -23,14 +23,12 @@
 
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
-#include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/scope_guard.h"
-#include "paimon/core/io/key_value_data_file_writer_factory.h"
+#include "paimon/core/io/key_value_data_file_writer_factories.h"
 #include "paimon/core/io/key_value_meta_projection_consumer.h"
 #include "paimon/core/io/key_value_record_reader.h"
 #include "paimon/core/io/row_to_arrow_array_converter.h"
-#include "paimon/core/io/shredding_key_value_data_file_writer_factory.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/format/file_format.h"
@@ -84,14 +82,9 @@ Result<std::unique_ptr<MergeTreeCompactRewriter>> MergeTreeCompactRewriter::Crea
         .WithMemoryPool(pool);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
-    // TODO(xinyu.lxy): temporarily disabled pre-buffer for parquet, which may cause high memory
-    // usage during compaction. Will fix via parquet format refactor.
-    auto new_options = options.ToMap();
-    if (new_options.find("parquet.read.enable-pre-buffer") == new_options.end()) {
-        new_options["parquet.read.enable-pre-buffer"] = "false";
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
-                           InternalReadContext::Create(read_context, table_schema, new_options));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<InternalReadContext> internal_context,
+        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         path_factory_cache->GetOrCreatePathFactory(options.GetFileFormat()->Identifier()));
@@ -138,20 +131,31 @@ MergeTreeCompactRewriter::CreateRollingRowWriter(int32_t level) {
     auto format = options_.GetWriteFileFormat(level);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            CreateDataFilePathFactory(format->Identifier()));
-    std::shared_ptr<SingleFileWriterFactory<KeyValueBatch, std::shared_ptr<DataFileMeta>>> factory;
     PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ShreddingWritePlanFactory> plan_factory,
-        ShreddingWritePlanFactories::SelectActive(options_, write_schema_, pool_));
-    if (plan_factory != nullptr) {
-        factory = std::make_shared<ShreddingKeyValueDataFileWriterFactory>(
+        std::shared_ptr<KeyValueDataFileWriterFactories::WriterFactory> factory,
+        KeyValueDataFileWriterFactories::Create(
             options_, schema_id_, write_schema_, level, FileSource::Compact(),
             trimmed_primary_keys_, data_file_path_factory, /*create_stats_extractor=*/true,
-            plan_factory, pool_);
-    } else {
-        factory = std::make_shared<KeyValueDataFileWriterFactory>(
-            options_, schema_id_, write_schema_, level, FileSource::Compact(),
-            trimmed_primary_keys_, data_file_path_factory, /*create_stats_extractor=*/true, pool_);
+            /*is_changelog=*/false, pool_));
+    return std::make_unique<MergeTreeCompactRewriter::KeyValueRollingFileWriter>(
+        options_.GetTargetFileSize(/*has_primary_key=*/true),
+        /*target_file_row_num=*/std::numeric_limits<int64_t>::max(), factory);
+}
+
+Result<std::unique_ptr<MergeTreeCompactRewriter::KeyValueRollingFileWriter>>
+MergeTreeCompactRewriter::CreateRollingChangelogWriter(int32_t level) {
+    std::shared_ptr<FileFormat> format = options_.GetChangelogFileFormat();
+    if (!format) {
+        format = options_.GetWriteFileFormat(level);
     }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
+                           CreateDataFilePathFactory(format->Identifier()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<KeyValueDataFileWriterFactories::WriterFactory> factory,
+        KeyValueDataFileWriterFactories::Create(
+            options_, schema_id_, write_schema_, level, FileSource::Append(), trimmed_primary_keys_,
+            data_file_path_factory, /*create_stats_extractor=*/true,
+            /*is_changelog=*/true, pool_));
     return std::make_unique<MergeTreeCompactRewriter::KeyValueRollingFileWriter>(
         options_.GetTargetFileSize(/*has_primary_key=*/true),
         /*target_file_row_num=*/std::numeric_limits<int64_t>::max(), factory);
@@ -181,6 +185,19 @@ Result<std::shared_ptr<DataFilePathFactory>> MergeTreeCompactRewriter::CreateDat
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
                            path_factory_cache_->GetOrCreatePathFactory(format));
     return path_factory->CreateDataFilePathFactory(partition_, bucket_);
+}
+
+Result<std::unique_ptr<SortMergeReader>>
+MergeTreeCompactRewriter::CreateRawSortMergeReaderForSection(
+    const std::vector<SortedRun>& section) {
+    if (!merge_file_split_read_) {
+        return Status::Invalid(
+            "merge_file_split_read in MergeTreeCompactRewriter cannot be nullptr");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
+                           CreateDataFilePathFactory(options_.GetFileFormat()->Identifier()));
+    return merge_file_split_read_->CreateRawSortMergeReaderForSection(
+        section, partition_, dv_factory_, /*predicate=*/nullptr, data_file_path_factory);
 }
 
 Status MergeTreeCompactRewriter::MergeReadAndWrite(
@@ -227,11 +244,12 @@ Status MergeTreeCompactRewriter::MergeReadAndWrite(
         return Status::OK();
     }
 
-    // consumer batch size is WriteBatchSize
+    std::unique_ptr<AsyncKeyValueBatchProducer> producer =
+        std::make_unique<SortMergeReaderBatchProducer>(std::move(sort_merge_reader),
+                                                       options_.GetWriteBatchSize());
     auto async_key_value_producer_consumer =
         std::make_shared<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
-            std::move(sort_merge_reader), create_consumer, options_.GetWriteBatchSize(),
-            /*projection_thread_num=*/1, pool_);
+            std::move(producer), create_consumer, /*projection_thread_num=*/1);
     reader_holders.push_back(async_key_value_producer_consumer);
     // read KeyValueBatch from SortMergeReader and write to RollingWriter
     while (true) {

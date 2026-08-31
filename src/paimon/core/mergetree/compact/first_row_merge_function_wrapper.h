@@ -24,7 +24,9 @@
 #include <optional>
 #include <utility>
 
+#include "paimon/common/data/serializer/row_compacted_serializer.h"
 #include "paimon/core/key_value.h"
+#include "paimon/core/mergetree/compact/changelog_result.h"
 #include "paimon/core/mergetree/compact/first_row_merge_function.h"
 #include "paimon/core/mergetree/compact/merge_function_wrapper.h"
 #include "paimon/result.h"
@@ -32,12 +34,15 @@
 
 namespace paimon {
 /// Wrapper for `MergeFunction`s to produce changelog by lookup for first row.
-class FirstRowMergeFunctionWrapper : public MergeFunctionWrapper<KeyValue> {
+class FirstRowMergeFunctionWrapper : public MergeFunctionWrapper<ChangelogResult> {
  public:
     FirstRowMergeFunctionWrapper(
         std::unique_ptr<FirstRowMergeFunction>&& merge_function,
-        std::function<Result<bool>(const std::shared_ptr<InternalRow>&)> contains)
-        : merge_function_(std::move(merge_function)), contains_(std::move(contains)) {}
+        std::function<Result<bool>(const std::shared_ptr<InternalRow>&)> contains,
+        std::unique_ptr<RowCompactedSerializer>&& value_serializer)
+        : merge_function_(std::move(merge_function)),
+          contains_(std::move(contains)),
+          value_serializer_(std::move(value_serializer)) {}
 
     void Reset() override {
         merge_function_->Reset();
@@ -47,11 +52,13 @@ class FirstRowMergeFunctionWrapper : public MergeFunctionWrapper<KeyValue> {
         return merge_function_->Add(std::move(kv));
     }
 
-    Result<std::optional<KeyValue>> GetResult() override {
+    Result<std::optional<ChangelogResult>> GetResult() override {
         PAIMON_ASSIGN_OR_RAISE(std::optional<KeyValue> result, merge_function_->GetResult());
+        ChangelogResult changelog_result;
         if (merge_function_->ContainsHighLevel()) {
+            changelog_result.result = std::move(result);
             Reset();
-            return result;
+            return std::optional<ChangelogResult>(std::move(changelog_result));
         }
         if (!result) {
             Reset();
@@ -62,17 +69,27 @@ class FirstRowMergeFunctionWrapper : public MergeFunctionWrapper<KeyValue> {
         if (contains) {
             // empty
             Reset();
-            return std::optional<KeyValue>();
+            return std::optional<ChangelogResult>(std::move(changelog_result));
         }
-        // new record, output changelog
-        // TODO(xinyu.lxy) support changelog
+        // TODO(lisizhuo.lsz): avoid serialize & deserialize here.
+        if (value_serializer_) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes,
+                                   value_serializer_->SerializeToBytes(*result->value));
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InternalRow> changelog_value,
+                                   value_serializer_->Deserialize(bytes));
+            changelog_result.changelogs.emplace_back(result->value_kind, result->sequence_number,
+                                                     result->level, result->key,
+                                                     std::move(changelog_value));
+        }
+        changelog_result.result = std::move(result);
         Reset();
-        return result;
+        return std::optional<ChangelogResult>(std::move(changelog_result));
     }
 
  private:
     std::unique_ptr<FirstRowMergeFunction> merge_function_;
     std::function<Result<bool>(const std::shared_ptr<InternalRow>&)> contains_;
+    std::unique_ptr<RowCompactedSerializer> value_serializer_;
 };
 
 }  // namespace paimon

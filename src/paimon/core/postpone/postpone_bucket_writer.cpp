@@ -31,10 +31,8 @@
 #include "arrow/c/helpers.h"
 #include "arrow/scalar.h"
 #include "fmt/format.h"
-#include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/table/special_fields.h"
-#include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -43,8 +41,7 @@
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/data_increment.h"
-#include "paimon/core/io/key_value_data_file_writer_factory.h"
-#include "paimon/core/io/shredding_key_value_data_file_writer_factory.h"
+#include "paimon/core/io/key_value_data_file_writer_factories.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/format/file_format.h"
@@ -55,27 +52,12 @@ namespace paimon {
 class InternalRow;
 class MemoryPool;
 
-namespace {
-
-std::shared_ptr<arrow::Schema> BuildPostponeBucketWriteSchema(
-    const std::shared_ptr<arrow::Schema>& value_schema) {
-    arrow::FieldVector target_fields;
-    target_fields.push_back(
-        DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
-    target_fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind()));
-    target_fields.insert(target_fields.end(), value_schema->fields().begin(),
-                         value_schema->fields().end());
-    return arrow::schema(target_fields);
-}
-
-}  // namespace
-
 Result<std::unique_ptr<PostponeBucketWriter>> PostponeBucketWriter::Create(
     const std::vector<std::string>& trimmed_primary_keys,
     const std::shared_ptr<DataFilePathFactory>& path_factory, int64_t schema_id,
     const std::shared_ptr<arrow::Schema>& value_schema, const CoreOptions& options,
     const std::shared_ptr<MemoryPool>& pool) {
-    auto write_schema = BuildPostponeBucketWriteSchema(value_schema);
+    auto write_schema = SpecialFields::CompleteSequenceAndValueKindField(value_schema);
     return std::unique_ptr<PostponeBucketWriter>(new PostponeBucketWriter(
         trimmed_primary_keys, path_factory, schema_id, value_schema, write_schema, options, pool));
 }
@@ -258,20 +240,12 @@ PostponeBucketWriter::PrepareMinMaxKey(
 
 Result<std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
 PostponeBucketWriter::CreateRollingRowWriter() const {
-    std::shared_ptr<SingleFileWriterFactory<KeyValueBatch, std::shared_ptr<DataFileMeta>>> factory;
     PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ShreddingWritePlanFactory> plan_factory,
-        ShreddingWritePlanFactories::SelectActive(options_, write_schema_, pool_));
-    if (plan_factory != nullptr) {
-        factory = std::make_shared<ShreddingKeyValueDataFileWriterFactory>(
-            options_, schema_id_, write_schema_, /*level=*/0, FileSource::Append(),
-            trimmed_primary_keys_, path_factory_, /*create_stats_extractor=*/false, plan_factory,
-            pool_);
-    } else {
-        factory = std::make_shared<KeyValueDataFileWriterFactory>(
-            options_, schema_id_, write_schema_, /*level=*/0, FileSource::Append(),
-            trimmed_primary_keys_, path_factory_, /*create_stats_extractor=*/false, pool_);
-    }
+        std::shared_ptr<KeyValueDataFileWriterFactories::WriterFactory> factory,
+        KeyValueDataFileWriterFactories::Create(options_, schema_id_, write_schema_, /*level=*/0,
+                                                FileSource::Append(), trimmed_primary_keys_,
+                                                path_factory_, /*create_stats_extractor=*/false,
+                                                /*is_changelog=*/false, pool_));
     return std::make_unique<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>(
         options_.GetTargetFileSize(/*has_primary_key=*/true), options_.GetTargetFileRowNum(),
         factory);

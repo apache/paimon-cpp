@@ -19,12 +19,37 @@
 
 #include "paimon/common/utils/math.h"
 
+#include <array>
+#include <cstring>
 #include <limits>
 
 #include "gtest/gtest.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+TEST(MathTest, FloatingPointNaNCanonicalization) {
+    const auto float_nan = CanonicalizeFloatingPoint(FloatingPointFromBits<float>(0xffc12345U));
+    uint32_t float_nan_bits;
+    std::memcpy(&float_nan_bits, &float_nan, sizeof(float_nan_bits));
+    ASSERT_EQ(kCanonicalFloatNaNBits, float_nan_bits);
+    ASSERT_EQ(static_cast<int32_t>(kCanonicalFloatNaNBits),
+              CanonicalizeFloatToIntBits(FloatingPointFromBits<float>(0x7fa12345U)));
+
+    const auto double_nan =
+        CanonicalizeFloatingPoint(FloatingPointFromBits<double>(0xfff8123456789abcULL));
+    uint64_t double_nan_bits;
+    std::memcpy(&double_nan_bits, &double_nan, sizeof(double_nan_bits));
+    ASSERT_EQ(kCanonicalDoubleNaNBits, double_nan_bits);
+    ASSERT_EQ(static_cast<int64_t>(kCanonicalDoubleNaNBits),
+              CanonicalizeDoubleToLongBits(FloatingPointFromBits<double>(0x7ff123456789abcdULL)));
+
+    const float negative_zero = CanonicalizeFloatingPoint(-0.0f);
+    uint32_t negative_zero_bits;
+    std::memcpy(&negative_zero_bits, &negative_zero, sizeof(negative_zero_bits));
+    ASSERT_EQ(0x80000000U, negative_zero_bits);
+    ASSERT_EQ(0x3ff0000000000000, CanonicalizeDoubleToLongBits(1.0));
+}
 
 // Test case: Test EndianSwapValue for different integral types
 TEST(MathTest, EndianSwapValue) {
@@ -42,6 +67,22 @@ TEST(MathTest, EndianSwapValue) {
     uint64_t value64 = 0x123456789ABCDEF0;
     uint64_t swapped64 = EndianSwapValue(value64);
     ASSERT_EQ(swapped64, 0xF0DEBC9A78563412);
+}
+
+TEST(MathTest, ToEndian) {
+    constexpr uint32_t kValue = 0x12345678;
+
+    const uint32_t big_endian = ToBigEndian(kValue);
+    std::array<uint8_t, sizeof(big_endian)> big_endian_bytes{};
+    std::memcpy(big_endian_bytes.data(), &big_endian, sizeof(big_endian));
+    ASSERT_EQ((std::array<uint8_t, 4>{0x12, 0x34, 0x56, 0x78}), big_endian_bytes);
+    ASSERT_EQ(kValue, FromBigEndian(big_endian));
+
+    const uint32_t little_endian = ToLittleEndian(kValue);
+    std::array<uint8_t, sizeof(little_endian)> little_endian_bytes{};
+    std::memcpy(little_endian_bytes.data(), &little_endian, sizeof(little_endian));
+    ASSERT_EQ((std::array<uint8_t, 4>{0x78, 0x56, 0x34, 0x12}), little_endian_bytes);
+    ASSERT_EQ(kValue, FromLittleEndian(little_endian));
 }
 
 TEST(MathTest, InRange) {

@@ -1,0 +1,201 @@
+{
+  "version": 3,
+  "id": 0,
+  "fields": [
+    {
+      "id": 0,
+      "name": "id",
+      "type": "INT NOT NULL"
+    },
+    {
+      "id": 1,
+      "name": "f_boolean",
+      "type": "BOOLEAN"
+    },
+    {
+      "id": 2,
+      "name": "f_tinyint",
+      "type": "TINYINT"
+    },
+    {
+      "id": 3,
+      "name": "f_smallint",
+      "type": "SMALLINT"
+    },
+    {
+      "id": 4,
+      "name": "f_bigint",
+      "type": "BIGINT"
+    },
+    {
+      "id": 5,
+      "name": "f_float",
+      "type": "FLOAT"
+    },
+    {
+      "id": 6,
+      "name": "f_double",
+      "type": "DOUBLE"
+    },
+    {
+      "id": 7,
+      "name": "f_char",
+      "type": "CHAR(8)"
+    },
+    {
+      "id": 8,
+      "name": "f_varchar",
+      "type": "VARCHAR(64)"
+    },
+    {
+      "id": 9,
+      "name": "f_binary",
+      "type": "BINARY(8)"
+    },
+    {
+      "id": 10,
+      "name": "f_varbinary",
+      "type": "VARBINARY(64)"
+    },
+    {
+      "id": 11,
+      "name": "f_date",
+      "type": "DATE"
+    },
+    {
+      "id": 12,
+      "name": "f_ts_3",
+      "type": "TIMESTAMP(3)"
+    },
+    {
+      "id": 13,
+      "name": "f_ts_6",
+      "type": "TIMESTAMP(6)"
+    },
+    {
+      "id": 14,
+      "name": "f_ts_9",
+      "type": "TIMESTAMP(9)"
+    },
+    {
+      "id": 15,
+      "name": "f_ltz_3",
+      "type": "TIMESTAMP(3) WITH LOCAL TIME ZONE"
+    },
+    {
+      "id": 16,
+      "name": "f_ltz_6",
+      "type": "TIMESTAMP(6) WITH LOCAL TIME ZONE"
+    },
+    {
+      "id": 17,
+      "name": "f_ltz_9",
+      "type": "TIMESTAMP(9) WITH LOCAL TIME ZONE"
+    },
+    {
+      "id": 18,
+      "name": "f_decimal_1_0",
+      "type": "DECIMAL(1, 0)"
+    },
+    {
+      "id": 19,
+      "name": "f_decimal_18_2",
+      "type": "DECIMAL(18, 2)"
+    },
+    {
+      "id": 20,
+      "name": "f_decimal_19_2",
+      "type": "DECIMAL(19, 2)"
+    },
+    {
+      "id": 21,
+      "name": "f_decimal_38_18",
+      "type": "DECIMAL(38, 18)"
+    },
+    {
+      "id": 22,
+      "name": "f_array_int",
+      "type": {
+        "type": "ARRAY",
+        "element": "INT",
+        "nullable": true
+      }
+    },
+    {
+      "id": 23,
+      "name": "f_map_numeric",
+      "type": {
+        "type": "MAP<TINYINT NOT NULL, SMALLINT>",
+        "key": "TINYINT NOT NULL",
+        "value": "SMALLINT",
+        "nullable": true
+      }
+    },
+    {
+      "id": 24,
+      "name": "f_map_string_bigint",
+      "type": {
+        "type": "MAP<STRING NOT NULL, BIGINT>",
+        "key": "STRING NOT NULL",
+        "value": "BIGINT",
+        "nullable": true
+      }
+    },
+    {
+      "id": 25,
+      "name": "f_array_array_int",
+      "type": {
+        "type": "ARRAY",
+        "element": {
+          "type": "ARRAY",
+          "element": "INT",
+          "nullable": true
+        },
+        "nullable": true
+      }
+    },
+    {
+      "id": 26,
+      "name": "f_array_map",
+      "type": {
+        "type": "ARRAY",
+        "element": {
+          "type": "MAP<STRING NOT NULL, INT>",
+          "key": "STRING NOT NULL",
+          "value": "INT",
+          "nullable": true
+        },
+        "nullable": true
+      }
+    },
+    {
+      "id": 27,
+      "name": "f_map_array",
+      "type": {
+        "type": "MAP<STRING NOT NULL, ARRAY<INT>>",
+        "key": "STRING NOT NULL",
+        "value": {
+          "type": "ARRAY",
+          "element": "INT",
+          "nullable": true
+        },
+        "nullable": true
+      }
+    }
+  ],
+  "highestFieldId": 27,
+  "partitionKeys": [],
+  "primaryKeys": [],
+  "options": {
+    "bucket": "-1",
+    "file.block-size": "1 B",
+    "file.format": "mosaic",
+    "manifest.format": "avro",
+    "mosaic.num-buckets": "4",
+    "mosaic.stats-columns": "id,f_varchar,f_date,f_ts_3,f_ltz_9,f_decimal_18_2",
+    "target-file-size": "64 MB",
+    "write.batch-size": "2"
+  },
+  "comment": null,
+  "timeMillis": 1787569308159
+}

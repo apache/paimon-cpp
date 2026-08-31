@@ -19,8 +19,17 @@
 Benchmark Usage
 ================
 
-Paimon C++ provides Google Benchmark based cases for append-table write/read and
-primary-key table write/MOR read paths. Benchmarks are disabled by default.
+Paimon C++ provides Google Benchmark based cases at two levels:
+
+``paimon-read-write-benchmark``
+   Table-level cases for append-table write/read and primary-key table write/MOR
+   read paths.
+
+``paimon-parquet-format-benchmark``
+   Format-level cases that drive the Parquet writer and reader directly, without
+   catalog lookup, split planning, merge/sort or commit.
+
+Benchmarks are disabled by default.
 
 Build
 =====
@@ -29,13 +38,14 @@ Enable benchmarks when configuring CMake::
 
    cmake -S . -B build -DPAIMON_BUILD_BENCHMARKS=ON
    cmake --build build --target paimon-read-write-benchmark
+   cmake --build build --target paimon-parquet-format-benchmark
 
 Run all benchmark cases through CTest::
 
    cmake --build build --target benchmark
 
-Custom Options
-==============
+Table-level Custom Options
+==========================
 
 ``paimon-read-write-benchmark`` accepts Google Benchmark options plus the Paimon
 specific options below:
@@ -88,3 +98,97 @@ MOR read from an existing table::
        --paimon_source_table_path /path/table \
        --paimon_pk_columns=id \
        --benchmark_filter=BM_MOR_Read/4
+
+Parquet Format Benchmark
+========================
+
+``paimon-parquet-format-benchmark`` takes only Google Benchmark options. It
+generates its own data and writes it to a temporary directory, so it needs no
+source file or table.
+
+Two things shape how the results should be read:
+
+- Every axis is swept on its own rather than as a combined matrix, so each
+  case answers one question and a change can be attributed to it.
+- Writes go through the local FileSystem into a temporary directory, so
+  absolute numbers carry the cost of that path. Comparisons are meaningful
+  only under the same environment and methodology - the same machine, build
+  configuration and options - which is what makes a before/after comparison
+  useful.
+
+Writer cases (``BM_ParquetWrite_*``) cover flat primitives, ``VARCHAR`` at low /
+medium / high cardinality with and without file-level dictionary encoding,
+already dictionary-encoded ``VARCHAR`` / ``INTEGER`` input arrays against their
+flat equivalents, ``DECIMAL`` at precision 9 / 18 / 38, nested ``STRUCT`` /
+``LIST`` / ``VECTOR`` / ``MAP``, null density from 0 to 100 percent, rows per
+``AddBatch`` call, column count at a fixed row count, row group size, the
+writer memory threshold that triggers a byte-based row-group flush, and the
+codecs Parquet accepts - ``none``, ``snappy``, ``gzip``, ``brotli``, ``zstd``,
+``lz4_raw`` and ``lz4_hadoop``. Note that ``lz4`` is deliberately not among
+them: it resolves to Arrow's ``LZ4_FRAME``, which
+``parquet::IsCodecSupported`` rejects.
+
+The two dictionary axes are different questions. ``BM_ParquetWrite_String`` and
+``BM_ParquetWrite_StringNoDictionary`` vary whether the *file* is dictionary
+encoded; ``BM_ParquetWrite_Dictionary*`` vary whether the *input array* already
+is, which is what decides whether Arrow can pass indices through to Parquet or
+has to materialize them first.
+
+Reader cases (``BM_ParquetRead_*``) cover full scan, single-column projection,
+predicate-filtered reads at varying selectivity with page-index filtering on and
+off, skip-heavy reads driven by a strided selection bitmap, null density,
+``DECIMAL`` at precision 9 / 18 / 38, ``DOUBLE``, dictionary-encoded against
+plain-encoded files, rows per ``NextBatch`` call, and nested column reads.
+
+Every case reports ``ns_per_row`` next to ``bytes_per_row`` - ``file_bytes`` for
+writes, ``read_bytes`` for reads - so a change that trades CPU for size is
+visible in both directions. Read cases additionally report ``rows_read``,
+``batches``, and ``row_groups`` / ``row_groups_after_filter`` from the reader's
+own metrics.
+
+Compare filtered cases on ``ns_per_input_row`` and ``bytes_per_input_row``, not
+``ns_per_row`` and ``bytes_per_row``. The latter pair divides by the rows a case
+actually materialized, so pruning shrinks numerator and denominator together and
+they can rise even as the run gets faster; the ``_input_row`` pair divides by the
+rows the file holds, which every setting shares.
+
+``row_groups_after_filter`` counts row groups only. It does not show page-level
+pruning: on the ordered ``id`` column both page-index settings usually keep the
+same row groups, and the page-index gain shows up in ``rows_read``,
+``read_bytes`` and ``ns_per_input_row`` instead.
+
+A case that cannot run - an unsupported codec, a schema the reader rejects -
+calls ``SkipWithError`` and makes the process exit non-zero, so ``ctest -L
+benchmark`` fails instead of reporting a silent skip. Read cases also assert on
+the number of rows they materialized, so a fixture that stopped producing rows
+fails rather than looking fast.
+
+Because the benchmark is only compiled under ``PAIMON_BUILD_BENCHMARKS``, the
+format-layer assumptions it relies on are covered separately by
+``paimon-parquet-format-benchmark-test``, which builds with the normal test
+suite.
+
+Each read case scans a file that is generated once on first use and reused for
+the rest of the run, so a filtered run only pays to build the fixtures its own
+cases need.
+
+All Parquet writer cases::
+
+   paimon-parquet-format-benchmark --benchmark_filter=BM_ParquetWrite
+
+Page-index filtering at 1% selectivity, on and off - compare ``rows_read``,
+``read_bytes`` and ``ns_per_input_row`` between the two::
+
+   paimon-parquet-format-benchmark \
+       --benchmark_filter='BM_ParquetRead_Filtered/keep_pct:1/'
+
+Read batch size sweep, repeated for a stable comparison::
+
+   paimon-parquet-format-benchmark \
+       --benchmark_filter=BM_ParquetRead_BatchSize \
+       --benchmark_repetitions=5 \
+       --benchmark_report_aggregates_only=true
+
+Null density on both sides, to see what definition levels cost::
+
+   paimon-parquet-format-benchmark --benchmark_filter='Parquet(Write|Read)_Nulls'

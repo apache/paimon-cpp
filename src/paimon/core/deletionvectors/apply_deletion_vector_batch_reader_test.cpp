@@ -87,7 +87,8 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
                         prefetch_batch_count, batch_size, prefetch_batch_count * 2,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
-                        /*read_ahead_cache_enabled=*/true, CacheConfig(), pool_));
+                        /*read_ahead_cache_enabled=*/true, CacheConfig(),
+                        /*enable_io_metrics=*/false, pool_));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);

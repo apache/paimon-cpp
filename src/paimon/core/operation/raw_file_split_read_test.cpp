@@ -67,7 +67,7 @@ class RawFileSplitReadTest : public ::testing::Test {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder1(BinaryRowGenerator::GenerateRow({10, 0}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -91,7 +91,7 @@ class RawFileSplitReadTest : public ::testing::Test {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder2(BinaryRowGenerator::GenerateRow({20, 1}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -115,7 +115,7 @@ class RawFileSplitReadTest : public ::testing::Test {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder3(BinaryRowGenerator::GenerateRow({10, 1}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -462,7 +462,7 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder(BinaryRowGenerator::GenerateRow({10, 0}, pool_.get()),
                                        /*bucket=*/0, /*bucket_path=*/
                                        paimon::test::GetDataDir() +

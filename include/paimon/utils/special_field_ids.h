@@ -42,6 +42,8 @@ class SpecialFieldIds {
 
     /// Special field ID reserved for index score. Value: CPP_FIELD_ID_END - 1
     inline static constexpr int32_t INDEX_SCORE = CPP_FIELD_ID_END - 1;
+    /// Special field ID reserved for realtime offset. Value: CPP_FIELD_ID_END - 2
+    inline static constexpr int32_t REALTIME_OFFSET = CPP_FIELD_ID_END - 2;
 
     /// Lowest field ID reserved for system fields; IDs at or above it are excluded from the
     /// highest field ID of a schema. Value: INT32_MAX / 2

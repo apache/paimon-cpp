@@ -20,7 +20,6 @@
 #pragma once
 
 #include <cassert>
-#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -42,15 +41,13 @@ class DataField;
 /// A `Comparator` that compares the file store key.
 class FieldsComparator {
  public:
+    using FieldComparatorFunc =
+        std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
+
     static Result<std::unique_ptr<FieldsComparator>> Create(
         const std::vector<DataField>& input_data_field, bool is_ascending_order);
 
     static Result<std::unique_ptr<FieldsComparator>> Create(
-        const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
-        bool is_ascending_order);
-
-    /// Create a comparator with Java's floating-point total order for source-backed indexes.
-    static Result<std::unique_ptr<FieldsComparator>> CreateWithJavaFloatingPointOrder(
         const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
         bool is_ascending_order);
 
@@ -88,9 +85,6 @@ class FieldsComparator {
     }
 
  private:
-    using FieldComparatorFunc =
-        std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
-
     FieldsComparator(bool is_ascending_order, const std::vector<int32_t>& sort_fields,
                      std::vector<FieldComparatorFunc>&& comparators)
         : is_ascending_order_(is_ascending_order),
@@ -99,13 +93,8 @@ class FieldsComparator {
         assert(comparators_.size() == sort_fields_.size());
     }
 
-    static Result<std::unique_ptr<FieldsComparator>> Create(
-        const std::vector<DataField>& input_data_field, const std::vector<int32_t>& sort_fields,
-        bool is_ascending_order, bool use_java_floating_point_order);
-
     static Result<FieldComparatorFunc> CompareField(
-        int32_t field_idx, const std::shared_ptr<arrow::DataType>& input_type,
-        bool use_java_floating_point_order);
+        int32_t field_idx, const std::shared_ptr<arrow::DataType>& input_type);
 
  private:
     bool is_ascending_order_;

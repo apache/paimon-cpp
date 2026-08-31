@@ -40,7 +40,8 @@ std::shared_ptr<DataFileMeta> CreateDataFileMeta(const std::string& file_name) {
         /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/std::nullopt,
         /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
-        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 ManifestEntry CreateManifestEntry(int32_t total_buckets, const std::string& file_name) {

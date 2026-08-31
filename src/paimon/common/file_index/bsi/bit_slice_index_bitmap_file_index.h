@@ -22,15 +22,15 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "arrow/c/bridge.h"
 #include "arrow/type.h"
-#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/file_index_result.h"
+#include "paimon/file_index/file_index_writer.h"
 #include "paimon/file_index/file_indexer.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/result.h"
@@ -54,13 +54,11 @@ class BitSliceIndexBitmapFileIndex : public FileIndexer {
         const std::shared_ptr<MemoryPool>& pool) const override;
 
     Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
-        ::ArrowSchema* arrow_schema, const std::shared_ptr<MemoryPool>& pool) const override {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::DataType> arrow_type,
-                                          arrow::ImportType(arrow_schema));
-        return Status::NotImplemented("do not support index writer in bsi");
-    }
+        ::ArrowSchema* arrow_schema, const std::shared_ptr<MemoryPool>& pool) const override;
 
     using ValueMapperType = std::function<Result<int64_t>(const Literal& literal)>;
+
+    static constexpr int8_t VERSION_1 = 1;
 
  private:
     static Result<ValueMapperType> GetValueMapper(
@@ -74,9 +72,29 @@ class BitSliceIndexBitmapFileIndex : public FileIndexer {
         }
         return static_cast<int64_t>(literal.GetValue<T>());
     }
+};
+
+class BitSliceIndexBitmapFileIndexWriter : public FileIndexWriter {
+ public:
+    BitSliceIndexBitmapFileIndexWriter(
+        const std::shared_ptr<arrow::Field>& field,
+        const BitSliceIndexBitmapFileIndex::ValueMapperType& value_mapper,
+        const std::shared_ptr<MemoryPool>& pool);
+
+    Status AddBatch(::ArrowArray* batch) override;
+
+    Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const override;
 
  private:
-    static constexpr int8_t VERSION_1 = 1;
+    std::shared_ptr<arrow::DataType> struct_type_;
+    std::string field_name_;
+    BitSliceIndexBitmapFileIndex::ValueMapperType value_mapper_;
+    std::vector<std::optional<int64_t>> values_;
+    int64_t positive_min_ = 0;
+    int64_t positive_max_ = 0;
+    int64_t negative_min_ = 0;
+    int64_t negative_max_ = 0;
+    std::shared_ptr<MemoryPool> pool_;
 };
 
 class BitSliceIndexBitmapFileIndexReader

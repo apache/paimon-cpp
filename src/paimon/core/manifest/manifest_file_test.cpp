@@ -153,7 +153,7 @@ TEST_F(ManifestFileTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry1 =
         ManifestEntry(FileKind::Delete(), BinaryRowGenerator::GenerateRow({10}, pool.get()),
                       /*bucket=*/1, /*total_buckets=*/2, file_meta1);
@@ -171,7 +171,7 @@ TEST_F(ManifestFileTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry2 =
         ManifestEntry(FileKind::Delete(), BinaryRowGenerator::GenerateRow({10}, pool.get()),
                       /*bucket=*/1, /*total_buckets=*/2, file_meta2);
@@ -189,7 +189,7 @@ TEST_F(ManifestFileTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry3 =
         ManifestEntry(FileKind::Delete(), BinaryRowGenerator::GenerateRow({10}, pool.get()),
                       /*bucket=*/1, /*total_buckets=*/2, file_meta3);
@@ -207,7 +207,7 @@ TEST_F(ManifestFileTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry4 =
         ManifestEntry(FileKind::Delete(), BinaryRowGenerator::GenerateRow({10}, pool.get()),
                       /*bucket=*/1, /*total_buckets=*/2, file_meta4);
@@ -225,7 +225,7 @@ TEST_F(ManifestFileTest, TestSimple) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Compact(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry5 =
         ManifestEntry(FileKind::Add(), BinaryRowGenerator::GenerateRow({10}, pool.get()),
                       /*bucket=*/1, /*total_buckets=*/2, file_meta5);
@@ -437,7 +437,7 @@ TEST_F(ManifestFileTest, TestWithNullCount) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry1 =
         ManifestEntry(FileKind::Add(), BinaryRowGenerator::GenerateRow({10}, pool.get()),
                       /*bucket=*/1, /*total_buckets=*/2, file_meta1);
@@ -464,7 +464,7 @@ TEST_F(ManifestFileTest, TestWithNullCount) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry2 =
         ManifestEntry(FileKind::Add(), BinaryRowGenerator::GenerateRow({20}, pool.get()),
                       /*bucket=*/0, /*total_buckets=*/2, file_meta2);
@@ -501,7 +501,7 @@ TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon09) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry = ManifestEntry(FileKind::Add(), /*partition=*/BinaryRow::EmptyRow(),
                                         /*bucket=*/0, /*total_buckets=*/-1, file_meta);
 
@@ -540,7 +540,7 @@ TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon11) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto manifest_entry = ManifestEntry(FileKind::Add(), /*partition=*/BinaryRow::EmptyRow(),
                                         /*bucket=*/0, /*total_buckets=*/-1, file_meta);
 

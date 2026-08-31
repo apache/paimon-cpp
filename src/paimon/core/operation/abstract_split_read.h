@@ -107,26 +107,22 @@ class AbstractSplitRead : public SplitRead {
 
     Result<std::unique_ptr<FileBatchReader>> CreateFileBatchReader(
         const std::string& file_format_identifier, const std::string& data_file_path,
-        int64_t data_file_size, const ReaderBuilder* reader_builder) const;
+        int64_t data_file_size, std::unique_ptr<ReaderBuilder> reader_builder) const;
 
     // return nullptr if data file is skipped by index or dv
     Result<std::unique_ptr<FileBatchReader>> CreateFieldMappingReader(
         const std::string& data_file_path, const std::shared_ptr<DataFileMeta>& file_meta,
-        const BinaryRow& partition, const ReaderBuilder* reader_builder,
+        const BinaryRow& partition, std::unique_ptr<ReaderBuilder> reader_builder,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
 
+    /// The returned field ID set contains MAP fields handled by shredding read plans. It tells
+    /// FieldMappingReader to skip its generic selected-key filtering because the plans have already
+    /// applied any requested key selection.
     Result<std::pair<std::unique_ptr<FileBatchReader>, std::set<int32_t>>>
-    ApplySharedShreddingReaderIfNeeded(std::unique_ptr<FileBatchReader>&& file_reader,
-                                       const std::shared_ptr<arrow::Schema>& read_schema) const;
-
-    /// Wraps the reader with a `ShreddingFileReader` when any read variant column needs
-    /// reassembly or path extraction; a plain read of an unshredded variant column is passed
-    /// through untouched.
-    Result<std::unique_ptr<FileBatchReader>> ApplyVariantShreddingReaderIfNeeded(
-        std::unique_ptr<FileBatchReader>&& file_reader,
-        const std::shared_ptr<arrow::Schema>& read_schema) const;
+    ApplyShreddingReaderIfNeeded(std::unique_ptr<FileBatchReader>&& file_reader,
+                                 const std::shared_ptr<arrow::Schema>& read_schema) const;
 
     static bool NeedCompleteRowTrackingFields(bool row_tracking_enabled,
                                               const std::shared_ptr<arrow::Schema>& read_schema);

@@ -19,9 +19,13 @@
 #include "paimon/common/file_index/bsi/bit_slice_index_bitmap_file_index.h"
 
 #include <cstdint>
+#include <string>
 #include <utility>
 
+#include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
@@ -60,6 +64,24 @@ class BitSliceIndexBitmapIndexReaderTest : public ::testing::Test {
             << ", expected=" << RoaringBitmap32::From(expected).ToString();
     }
 
+    Result<PAIMON_UNIQUE_PTR<Bytes>> WriteIndex(const std::shared_ptr<arrow::DataType>& data_type,
+                                                const std::string& json) const {
+        const std::shared_ptr<arrow::Schema> schema =
+            arrow::schema({arrow::field("f0", data_type)});
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()), json)
+                .ValueOrDie();
+        ::ArrowSchema c_schema;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &c_schema));
+        BitSliceIndexBitmapFileIndex file_index({});
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexWriter> writer,
+                               file_index.CreateWriter(&c_schema, pool_));
+        ::ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        PAIMON_RETURN_NOT_OK(writer->AddBatch(&c_array));
+        return writer->SerializedBytes();
+    }
+
  private:
     std::shared_ptr<MemoryPool> pool_;
 };
@@ -75,48 +97,75 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestMix) {
         0, 0, 0, 2,  58, 48, 0,  0, 1, 0, 0,  0, 0, 0, 2, 0,  16, 0,  0,  0,  3, 0, 4, 0,  5,
         0, 0, 0, 0,  2,  58, 48, 0, 0, 1, 0,  0, 0, 0, 0, 0,  0,  16, 0,  0,  0, 5, 0, 58, 48,
         0, 0, 1, 0,  0,  0,  0,  0, 1, 0, 16, 0, 0, 0, 3, 0,  4,  0};
+    const auto check_mix_reader = [this](const std::shared_ptr<FileIndexReader>& reader) {
+        // test equal
+        CheckResult(reader->VisitEqual(Literal(2)).value(), {1, 7});
+        CheckResult(reader->VisitEqual(Literal(-2)).value(), {3, 4});
+        CheckResult(reader->VisitEqual(Literal(100)).value(), {});
+
+        // test not equal
+        CheckResult(reader->VisitNotEqual(Literal(2)).value(), {0, 3, 4, 5, 8, 9});
+        CheckResult(reader->VisitNotEqual(Literal(-2)).value(), {0, 1, 5, 7, 8, 9});
+        CheckResult(reader->VisitNotEqual(Literal(100)).value(), {0, 1, 3, 4, 5, 7, 8, 9});
+
+        // test in
+        CheckResult(reader->VisitIn({Literal(-1), Literal(1), Literal(2), Literal(3)}).value(),
+                    {0, 1, 5, 7});
+
+        // test not in
+        CheckResult(reader->VisitNotIn({Literal(-1), Literal(1), Literal(2), Literal(3)}).value(),
+                    {3, 4, 8, 9});
+
+        // test null
+        CheckResult(reader->VisitIsNull().value(), {2, 6, 10});
+
+        // test not null
+        CheckResult(reader->VisitIsNotNull().value(), {0, 1, 3, 4, 5, 7, 8, 9});
+
+        // test less than
+        CheckResult(reader->VisitLessThan(Literal(2)).value(), {0, 3, 4, 5, 8});
+        CheckResult(reader->VisitLessOrEqual(Literal(2)).value(), {0, 1, 3, 4, 5, 7, 8});
+        CheckResult(reader->VisitLessThan(Literal(-1)).value(), {3, 4});
+        CheckResult(reader->VisitLessOrEqual(Literal(-1)).value(), {3, 4, 5});
+
+        // test greater than
+        CheckResult(reader->VisitGreaterThan(Literal(-2)).value(), {0, 1, 5, 7, 8, 9});
+        CheckResult(reader->VisitGreaterOrEqual(Literal(-2)).value(), {0, 1, 3, 4, 5, 7, 8, 9});
+        CheckResult(reader->VisitGreaterThan(Literal(2)).value(), {9});
+        CheckResult(reader->VisitGreaterOrEqual(Literal(2)).value(), {1, 7, 9});
+    };
+
+    ASSERT_OK_AND_ASSIGN(
+        PAIMON_UNIQUE_PTR<Bytes> written_bytes,
+        WriteIndex(arrow::int32(),
+                   R"([[1], [2], [null], [-2], [-2], [-1], [null], [2], [0], [5], [null]])"));
+    auto written_stream =
+        std::make_shared<ByteArrayInputStream>(written_bytes->data(), written_bytes->size());
+    BitSliceIndexBitmapFileIndex file_index({});
+    ASSERT_OK_AND_ASSIGN(auto written_reader,
+                         file_index.CreateReader(CreateArrowSchema(arrow::int32()).get(),
+                                                 /*start=*/0, /*length=*/written_bytes->size(),
+                                                 written_stream, pool_));
+    check_mix_reader(written_reader);
+
+    // Reading the Java-produced fixture below. C++ and Java may choose different valid portable
+    // roaring containers for the same bitmap, so their complete byte streams need not be identical.
     auto input_stream =
         std::make_shared<ByteArrayInputStream>(index_bytes.data(), index_bytes.size());
-    BitSliceIndexBitmapFileIndex file_index({});
     ASSERT_OK_AND_ASSIGN(
-        auto reader,
+        auto java_bytes_reader,
         file_index.CreateReader(CreateArrowSchema(arrow::int32()).get(),
                                 /*start=*/0, /*length=*/index_bytes.size(), input_stream, pool_));
-    // test equal
-    CheckResult(reader->VisitEqual(Literal(2)).value(), {1, 7});
-    CheckResult(reader->VisitEqual(Literal(-2)).value(), {3, 4});
-    CheckResult(reader->VisitEqual(Literal(100)).value(), {});
+    check_mix_reader(java_bytes_reader);
+}
 
-    // test not equal
-    CheckResult(reader->VisitNotEqual(Literal(2)).value(), {0, 3, 4, 5, 8, 9});
-    CheckResult(reader->VisitNotEqual(Literal(-2)).value(), {0, 1, 5, 7, 8, 9});
-    CheckResult(reader->VisitNotEqual(Literal(100)).value(), {0, 1, 3, 4, 5, 7, 8, 9});
+TEST_F(BitSliceIndexBitmapIndexReaderTest, TestWriterRejectsInt64MinAndUnsupportedType) {
+    ASSERT_NOK_WITH_MSG(WriteIndex(arrow::int64(), R"([[-9223372036854775808]])"),
+                        "bsi index does not support INT64_MIN for field 'f0'");
 
-    // test in
-    CheckResult(reader->VisitIn({Literal(-1), Literal(1), Literal(2), Literal(3)}).value(),
-                {0, 1, 5, 7});
-
-    // test not in
-    CheckResult(reader->VisitNotIn({Literal(-1), Literal(1), Literal(2), Literal(3)}).value(),
-                {3, 4, 8, 9});
-
-    // test null
-    CheckResult(reader->VisitIsNull().value(), {2, 6, 10});
-
-    // test not null
-    CheckResult(reader->VisitIsNotNull().value(), {0, 1, 3, 4, 5, 7, 8, 9});
-
-    // test less than
-    CheckResult(reader->VisitLessThan(Literal(2)).value(), {0, 3, 4, 5, 8});
-    CheckResult(reader->VisitLessOrEqual(Literal(2)).value(), {0, 1, 3, 4, 5, 7, 8});
-    CheckResult(reader->VisitLessThan(Literal(-1)).value(), {3, 4});
-    CheckResult(reader->VisitLessOrEqual(Literal(-1)).value(), {3, 4, 5});
-
-    // test greater than
-    CheckResult(reader->VisitGreaterThan(Literal(-2)).value(), {0, 1, 5, 7, 8, 9});
-    CheckResult(reader->VisitGreaterOrEqual(Literal(-2)).value(), {0, 1, 3, 4, 5, 7, 8, 9});
-    CheckResult(reader->VisitGreaterThan(Literal(2)).value(), {9});
-    CheckResult(reader->VisitGreaterOrEqual(Literal(2)).value(), {1, 7, 9});
+    BitSliceIndexBitmapFileIndex file_index({});
+    ASSERT_NOK_WITH_MSG(file_index.CreateWriter(CreateArrowSchema(arrow::boolean()).get(), pool_),
+                        "BitSliceIndexBitmapFileIndex only support");
 }
 
 TEST_F(BitSliceIndexBitmapIndexReaderTest, TestPositiveOnly) {

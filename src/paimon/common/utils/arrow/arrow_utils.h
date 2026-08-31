@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "arrow/api.h"
@@ -48,6 +49,8 @@ class PAIMON_EXPORT ArrowUtils {
     // avoid subsequent multi-threading problems.
     static void TraverseArray(const std::shared_ptr<arrow::Array>& array);
 
+    static uint64_t GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data);
+
     static Result<std::shared_ptr<arrow::StructArray>> RemoveFieldFromStructArray(
         const std::shared_ptr<arrow::StructArray>& struct_array, const std::string& field_name);
 
@@ -56,6 +59,11 @@ class PAIMON_EXPORT ArrowUtils {
     /// wherever the layout allows it; only layouts that cannot be rebased fall back to a full copy.
     static Result<std::shared_ptr<arrow::RecordBatch>> NormalizeRecordBatchOffsets(
         const std::shared_ptr<arrow::RecordBatch>& record_batch, arrow::MemoryPool* pool);
+
+    /// Returns an Array with zero offsets. Struct children are also sliced to the parent's visible
+    /// range so the result can be exported and imported as a RecordBatch.
+    static Result<std::shared_ptr<arrow::Array>> NormalizeArrayOffsets(
+        const std::shared_ptr<arrow::Array>& array, arrow::MemoryPool* pool);
 
     static bool EqualsIgnoreNullable(const std::shared_ptr<arrow::DataType>& type,
                                      const std::shared_ptr<arrow::DataType>& other_type);

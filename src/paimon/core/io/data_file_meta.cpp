@@ -72,7 +72,8 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMeta::ForAppend(
         file_name, file_size, row_count, EmptyMinKey(), EmptyMaxKey(), SimpleStats::EmptyStats(),
         row_stats, min_sequence_number, max_sequence_number, schema_id, DUMMY_LEVEL, extra_files,
         Timestamp(/*millisecond=*/local_micro / 1000, /*nano_of_millisecond=*/0), 0ll,
-        embedded_index, file_source, value_stats_cols, external_path, first_row_id, write_cols);
+        embedded_index, file_source, value_stats_cols, external_path, first_row_id, write_cols,
+        /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 Result<std::shared_ptr<DataFileMeta>> DataFileMeta::Upgrade(int32_t new_level) const {
@@ -84,7 +85,7 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMeta::Upgrade(int32_t new_level) c
         file_name, file_size, row_count, min_key, max_key, key_stats, value_stats,
         min_sequence_number, max_sequence_number, schema_id, new_level, extra_files, creation_time,
         delete_row_count, embedded_index, file_source, value_stats_cols, external_path,
-        first_row_id, write_cols);
+        first_row_id, write_cols, column_max_sequence_numbers);
 }
 
 std::shared_ptr<DataFileMeta> DataFileMeta::CopyWithExtraFiles(
@@ -93,7 +94,16 @@ std::shared_ptr<DataFileMeta> DataFileMeta::CopyWithExtraFiles(
         file_name, file_size, row_count, min_key, max_key, key_stats, value_stats,
         min_sequence_number, max_sequence_number, schema_id, level, new_extra_files, creation_time,
         delete_row_count, embedded_index, file_source, value_stats_cols, external_path,
-        first_row_id, write_cols);
+        first_row_id, write_cols, column_max_sequence_numbers);
+}
+
+std::shared_ptr<DataFileMeta> DataFileMeta::CopyWithColumnMaxSequenceNumbers(
+    const std::optional<std::vector<int64_t>>& new_column_max_sequence_numbers) const {
+    return std::make_shared<DataFileMeta>(
+        file_name, file_size, row_count, min_key, max_key, key_stats, value_stats,
+        min_sequence_number, max_sequence_number, schema_id, level, extra_files, creation_time,
+        delete_row_count, embedded_index, file_source, value_stats_cols, external_path,
+        first_row_id, write_cols, new_column_max_sequence_numbers);
 }
 
 std::shared_ptr<DataFileMeta> DataFileMeta::CopyWithoutStats() const {
@@ -101,7 +111,7 @@ std::shared_ptr<DataFileMeta> DataFileMeta::CopyWithoutStats() const {
         file_name, file_size, row_count, min_key, max_key, key_stats, SimpleStats::EmptyStats(),
         min_sequence_number, max_sequence_number, schema_id, level, extra_files, creation_time,
         delete_row_count, embedded_index, file_source, std::vector<std::string>(), external_path,
-        first_row_id, write_cols);
+        first_row_id, write_cols, column_max_sequence_numbers);
 }
 
 DataFileMeta::DataFileMeta(
@@ -113,7 +123,8 @@ DataFileMeta::DataFileMeta(
     const std::shared_ptr<Bytes>& _embedded_index, const std::optional<FileSource>& _file_source,
     const std::optional<std::vector<std::string>>& _value_stats_cols,
     const std::optional<std::string>& _external_path, const std::optional<int64_t>& _first_row_id,
-    const std::optional<std::vector<std::string>>& _write_cols)
+    const std::optional<std::vector<std::string>>& _write_cols,
+    const std::optional<std::vector<int64_t>>& _column_max_sequence_numbers)
     : file_name(_file_name),
       file_size(_file_size),
       row_count(_row_count),
@@ -133,7 +144,8 @@ DataFileMeta::DataFileMeta(
       value_stats_cols(_value_stats_cols),
       external_path(_external_path),
       first_row_id(_first_row_id),
-      write_cols(_write_cols) {}
+      write_cols(_write_cols),
+      column_max_sequence_numbers(_column_max_sequence_numbers) {}
 
 Result<std::string> DataFileMeta::FileFormat() const {
     size_t last_dot_index = file_name.find_last_of(".");
@@ -198,7 +210,8 @@ bool DataFileMeta::operator==(const DataFileMeta& other) const {
            creation_time == other.creation_time && delete_row_count == other.delete_row_count &&
            file_source == other.file_source && value_stats_cols == other.value_stats_cols &&
            external_path == other.external_path && first_row_id == other.first_row_id &&
-           write_cols == other.write_cols;
+           write_cols == other.write_cols &&
+           column_max_sequence_numbers == other.column_max_sequence_numbers;
 }
 
 bool DataFileMeta::operator!=(const DataFileMeta& other) const {
@@ -243,7 +256,8 @@ bool DataFileMeta::TEST_Equal(const DataFileMeta& other) const {
            level == other.level && delete_row_count == other.delete_row_count &&
            file_source == other.file_source && value_stats_cols == other.value_stats_cols &&
            compare_optional_ignore_name(external_path, other.external_path) &&
-           first_row_id == other.first_row_id && write_cols == other.write_cols;
+           first_row_id == other.first_row_id && write_cols == other.write_cols &&
+           column_max_sequence_numbers == other.column_max_sequence_numbers;
 }
 
 std::string DataFileMeta::ToString() const {
@@ -261,7 +275,8 @@ std::string DataFileMeta::ToString() const {
         "{}, "
         "keyStats: {}, valueStats: {}, minSequenceNumber: {}, maxSequenceNumber: {}, schemaId: "
         "{}, level: {}, extraFiles: {}, creationTime: {}, deleteRowCount: {}, fileSource: {}, "
-        "valueStatsCols: {}, externalPath: {}, firstRowId: {}, writeCols: {}}}",
+        "valueStatsCols: {}, externalPath: {}, firstRowId: {}, writeCols: {}, "
+        "columnMaxSequenceNumbers: {}}}",
         file_name, file_size, row_count,
         embedded_index == nullptr ? "null"
                                   : std::string(embedded_index->data(), embedded_index->size()),
@@ -275,7 +290,10 @@ std::string DataFileMeta::ToString() const {
             : fmt::format("{}", fmt::join(value_stats_cols.value(), ", ")),
         external_path == std::nullopt ? "null" : external_path.value(),
         first_row_id == std::nullopt ? "null" : std::to_string(first_row_id.value()),
-        write_cols == std::nullopt ? "null" : fmt::format("{}", write_cols.value()));
+        write_cols == std::nullopt ? "null" : fmt::format("{}", write_cols.value()),
+        column_max_sequence_numbers == std::nullopt
+            ? "null"
+            : fmt::format("{}", column_max_sequence_numbers.value()));
 }
 
 int64_t DataFileMeta::GetMaxSequenceNumber(
@@ -315,6 +333,9 @@ const std::shared_ptr<arrow::DataType>& DataFileMeta::DataType() {
          arrow::field("_FIRST_ROW_ID", arrow::int64(), /*nullable=*/true),
          arrow::field("_WRITE_COLS",
                       arrow::list(arrow::field("item", arrow::utf8(), /*nullable=*/false)),
+                      /*nullable=*/true),
+         arrow::field("_WRITE_COLS_SEQUENCES",
+                      arrow::list(arrow::field("item", arrow::int64(), /*nullable=*/false)),
                       /*nullable=*/true)});
     return schema;
 }

@@ -50,24 +50,18 @@ class PAIMON_EXPORT StringUtils {
  public:
     /// Replaces all occurrences of a string within another string.
     ///
-    /// A `null` reference passed to this method is a no-op.
-    ///
     /// <pre>
-    /// StringUtils::Replace(null, *, *)        = null
     /// StringUtils::Replace("", *, *)          = ""
-    /// StringUtils::Replace("any", null, *)    = "any"
-    /// StringUtils::Replace("any", *, null)    = "any"
     /// StringUtils::Replace("any", "", *)      = "any"
-    /// StringUtils::Replace("aba", "a", null)  = "aba"
     /// StringUtils::Replace("aba", "a", "")    = "b"
     /// StringUtils::Replace("aba", "a", "z")   = "zbz"
     /// </pre>
     ///
     /// @see #replace(string text, string search_string, string replacement, int max)
-    /// @param text text to search and replace in, may be null
-    /// @param search_string the String to search for, may be null
-    /// @param replacement the String to replace it with, may be null
-    /// @return the text with any replacements processed, `null` if null string input
+    /// @param text text to search and replace in
+    /// @param search_string the String to search for
+    /// @param replacement the String to replace it with
+    /// @return the text with any replacements processed
     static std::string Replace(const std::string& text, const std::string& search_string,
                                const std::string& replacement) {
         return Replace(text, search_string, replacement, -1);
@@ -76,16 +70,10 @@ class PAIMON_EXPORT StringUtils {
     /// Replaces a String with another String inside a larger String, for the first `max` values of
     /// the search String.
     ///
-    /// A `null` reference passed to this method is a no-op.
-    ///
     /// <pre>
-    /// StringUtils::Replace(null, *, *, *)         = null
     /// StringUtils::Replace("", *, *, *)           = ""
-    /// StringUtils::Replace("any", null, *, *)     = "any"
-    /// StringUtils::Replace("any", *, null, *)     = "any"
     /// StringUtils::Replace("any", "", *, *)       = "any"
     /// StringUtils::Replace("any", *, *, 0)        = "any"
-    /// StringUtils::Replace("abaa", "a", null, -1) = "abaa"
     /// StringUtils::Replace("abaa", "a", "", -1)   = "b"
     /// StringUtils::Replace("abaa", "a", "z", 0)   = "abaa"
     /// StringUtils::Replace("abaa", "a", "z", 1)   = "zbaa"
@@ -93,11 +81,11 @@ class PAIMON_EXPORT StringUtils {
     /// StringUtils::Replace("abaa", "a", "z", -1)  = "zbzz"
     /// </pre>
     ///
-    /// @param text text to search and replace in, may be null
-    /// @param search_string the String to search for, may be null
-    /// @param replacement the String to replace it with, may be null
+    /// @param text text to search and replace in
+    /// @param search_string the String to search for
+    /// @param replacement the String to replace it with
     /// @param max maximum number of values to replace, or `-1` if no maximum
-    /// @return the text with any replacements processed, `null` if null string input
+    /// @return the text with any replacements processed
     static std::string Replace(const std::string& text, const std::string& search_string,
                                const std::string& replacement, int32_t max);
 
@@ -114,6 +102,9 @@ class PAIMON_EXPORT StringUtils {
 
     static std::string ToLowerCase(const std::string& str);
     static std::string ToUpperCase(const std::string& str);
+
+    /// Compares two strings using ASCII case folding.
+    static bool EqualsIgnoreCase(const std::string& left, const std::string& right);
 
     template <typename T>
     static std::string VectorToString(const std::vector<T>& vec) {

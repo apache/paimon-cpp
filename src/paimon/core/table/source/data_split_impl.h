@@ -35,6 +35,7 @@
 #include "paimon/core/io/data_file_meta_12_serializer.h"
 #include "paimon/core/io/data_file_meta_first_row_id_legacy_serializer.h"
 #include "paimon/core/io/data_file_meta_serializer.h"
+#include "paimon/core/io/data_file_meta_write_cols_legacy_serializer.h"
 #include "paimon/core/table/source/deletion_file.h"
 #include "paimon/table/source/data_split.h"
 
@@ -44,7 +45,7 @@ namespace paimon {
 class DataSplitImpl : public DataSplit {
  public:
     static constexpr int64_t MAGIC = -2394839472490812314L;
-    static constexpr int32_t VERSION = 8;
+    static constexpr int32_t VERSION = 9;
 
     int64_t SnapshotId() const {
         return snapshot_id_;

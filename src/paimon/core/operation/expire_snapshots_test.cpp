@@ -185,7 +185,7 @@ class ExpireSnapshotsTest : public testing::Test {
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*external_path=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         return ManifestEntry(kind, row, bucket, /*total_buckets=*/3, data_file_meta);
     }
 

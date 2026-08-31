@@ -24,6 +24,7 @@
 
 #include "paimon/format/column_stats.h"
 #include "paimon/result.h"
+#include "paimon/visibility.h"
 
 namespace paimon {
 
@@ -31,7 +32,7 @@ class SimpleStats;
 class ColumnStats;
 class MemoryPool;
 
-class SimpleStatsConverter {
+class PAIMON_EXPORT SimpleStatsConverter {
  public:
     static Result<SimpleStats> ToBinary(const std::vector<std::shared_ptr<ColumnStats>>& stats,
                                         MemoryPool* pool);

@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "arrow/c/abi.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/realtime/offset_range.h"
 #include "paimon/record_batch.h"
@@ -41,10 +42,33 @@ namespace paimon {
 class MemoryPool;
 class Predicate;
 
-/// A table record batch and its framework-assigned contiguous offset range.
+enum class PAIMON_EXPORT RealtimeStoreMode {
+    APPEND_ONLY,
+    PRIMARY_KEY,
+};
+
+/// Parameters used by a `RealtimeStoreFactory` to create a store.
+struct PAIMON_EXPORT RealtimeStoreCreateRequest {
+    /// Schema whose ownership is transferred to the factory. Append mode receives the complete
+    /// table write schema. Primary-key mode receives the realtime primary-key transport schema:
+    /// [_VALUE_KIND, _SEQUENCE_NUMBER, _REALTIME_OFFSET, table write fields].
+    std::unique_ptr<::ArrowSchema> write_schema;
+    /// Table options available to the store implementation.
+    std::map<std::string, std::string> options;
+    /// Memory pool for allocations retained by the store.
+    std::shared_ptr<MemoryPool> memory_pool;
+    /// Table mode implemented by the store.
+    RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
+    /// Statistics collected by append-only stores.
+    StatisticsMode statistics_mode = StatisticsMode::NONE;
+};
+
+/// A record batch and its framework-assigned contiguous offset range.
 ///
-/// The batch contains only table write fields. Row `i` is associated with
-/// `offset_range.begin + i`; the offset is progress metadata and is not a table field.
+/// Append-mode batches contain table write fields, and row `i` has offset
+/// `offset_range.begin + i`. Primary-key batches use the realtime primary-key transport schema,
+/// are sorted by full primary key then sequence number, and retain the original offset in
+/// `_REALTIME_OFFSET`.
 struct PAIMON_EXPORT RealtimeWriteBatch {
     /// Input batch whose ownership is transferred to `RealtimeStore::Write`.
     std::unique_ptr<RecordBatch> batch;
@@ -79,7 +103,11 @@ class PAIMON_EXPORT RealtimeReadView {
 
 /// Parameters used by a `RealtimeStore` to create readers for a query.
 struct PAIMON_EXPORT RealtimeQueryContext {
-    /// Requested output fields before the mandatory leading `_VALUE_KIND` field is added.
+    /// Append mode receives the requested output fields before the mandatory leading
+    /// `_VALUE_KIND` field is added. Primary-key mode receives the requested realtime primary-key
+    /// transport schema.
+    /// This schema is borrowed and remains valid only during `CreateQueryReaders`; plugins must
+    /// import or copy it synchronously.
     ::ArrowSchema* read_schema;
     /// Predicate using field indexes from `read_schema`.
     std::shared_ptr<Predicate> predicate;
@@ -116,9 +144,10 @@ class PAIMON_EXPORT RealtimeStore {
 
     /// Creates readers that expose all rows in a sealed segment for Paimon file writing.
     ///
-    /// Concatenating the returned readers must produce every sealed row exactly once and in write
-    /// order. Each output batch contains `_VALUE_KIND` followed by all fields from the factory's
-    /// `write_schema`.
+    /// The returned readers collectively expose every sealed row exactly once. Append-mode readers
+    /// preserve write order and contain `_VALUE_KIND` followed by table write fields. Primary-key
+    /// readers use the realtime primary-key transport schema; each reader's complete stream is
+    /// sorted by full primary key then sequence number.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) = 0;
 
@@ -128,13 +157,16 @@ class PAIMON_EXPORT RealtimeStore {
     /// also provide a consistent snapshot when a write or seal is in progress.
     virtual Result<std::shared_ptr<RealtimeReadView>> AcquireReadView() = 0;
 
-    /// Creates readers over rows in `view` whose offsets are greater than or equal to
-    /// `offset_begin`.
+    /// Creates readers over rows in `view`. Append mode returns rows whose offsets are greater than
+    /// or equal to `offset_begin`; primary-key mode ignores `offset_begin`.
     ///
-    /// Each output batch contains `_VALUE_KIND` first, followed by the fields requested by
-    /// `context.read_schema` except a duplicate `_VALUE_KIND`. Concatenating all returned readers
-    /// must produce every matching row once. Paimon retains `view` for the lifetime of the
-    /// resulting framework reader.
+    /// Append-mode batches contain `_VALUE_KIND` followed by the requested fields except a
+    /// duplicate `_VALUE_KIND`, and collectively expose every matching row exactly once.
+    /// Primary-key batches use the requested realtime primary-key transport schema, including
+    /// nested field-ID alignment, and may contain multiple mutations per key; each reader's
+    /// complete stream is sorted by full primary key then sequence number, and the readers
+    /// collectively expose every raw mutation exactly once. Paimon retains `view` for the lifetime
+    /// of the resulting framework reader.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
         const std::shared_ptr<RealtimeReadView>& view, int64_t offset_begin,
         const RealtimeQueryContext& context) = 0;
@@ -158,15 +190,9 @@ class PAIMON_EXPORT RealtimeStoreFactory {
     virtual ~RealtimeStoreFactory() = default;
 
     /// Creates a store configured with the supplied schema, statistics, options, and memory pool.
-    /// @param write_schema Complete table write schema whose ownership is transferred to the
-    /// factory. The factory may consume it or retain it in the created store.
-    /// @param statistics_mode Framework-parsed statistics collection mode.
-    /// @param options Effective table options available to the store.
-    /// @param memory_pool Memory pool provided by the write context.
-    virtual Result<std::shared_ptr<RealtimeStore>> Create(
-        std::unique_ptr<::ArrowSchema> write_schema, StatisticsMode statistics_mode,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<MemoryPool>& memory_pool) = 0;
+    /// Creates a store for the requested table mode.
+    /// The factory consumes `request`, including ownership of `request.write_schema`.
+    virtual Result<std::shared_ptr<RealtimeStore>> Create(RealtimeStoreCreateRequest&& request) = 0;
 };
 
 }  // namespace paimon

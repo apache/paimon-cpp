@@ -19,7 +19,6 @@
 
 #include "paimon/common/types/data_type_json_parser.h"
 
-#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -331,10 +330,7 @@ std::vector<Token> Tokenize(const std::string& chars) {
                 builder.clear();
                 cursor = ConsumeIdentifier(chars, cursor, builder);
                 auto token = builder.str();
-                auto normalized_token = token;
-                std::transform(normalized_token.begin(), normalized_token.end(),
-                               normalized_token.begin(),
-                               [](unsigned char c) { return std::toupper(c); });
+                std::string normalized_token = StringUtils::ToUpperCase(token);
                 if (Keywords().find(normalized_token) != Keywords().end()) {
                     tokens.emplace_back(TokenType::KEYWORD, cursor, normalized_token);
                 } else {

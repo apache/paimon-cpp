@@ -71,7 +71,7 @@ class PAIMON_EXPORT BitmapFileIndex : public FileIndexer {
 class BitmapFileIndexWriter : public FileIndexWriter {
  public:
     static Result<std::shared_ptr<BitmapFileIndexWriter>> Create(
-        const std::shared_ptr<arrow::Schema>& arrow_schema, const std::string& field_name,
+        const std::shared_ptr<arrow::Field>& field,
         const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool);
 
     Status AddBatch(::ArrowArray* batch) override;

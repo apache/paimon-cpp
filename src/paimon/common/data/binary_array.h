@@ -52,7 +52,7 @@ class MemorySegment;
 /// [size(int)] + [null bits(4-byte word boundaries)] + [values or offset&length] + [variable length
 /// part].
 
-class BinaryArray final : public BinarySection, public InternalArray {
+class PAIMON_EXPORT BinaryArray final : public BinarySection, public InternalArray {
  public:
     BinaryArray() = default;
 

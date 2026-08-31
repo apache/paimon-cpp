@@ -1,11 +1,13 @@
 /*
- * Copyright 2026-present Alibaba Inc.
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -50,7 +52,7 @@ constexpr const char kPathOption[] = "path";
 // `BranchManager::IsMainBranch`, which names the branch directory of a table, stays
 // case-sensitive: this normalization only decides how a table is addressed on the server.
 std::optional<std::string> NormalizeBranch(std::optional<std::string> branch) {
-    if (branch && StringUtils::ToLowerCase(branch.value()) == Identifier::kDefaultMainBranch) {
+    if (branch && StringUtils::EqualsIgnoreCase(branch.value(), Identifier::kDefaultMainBranch)) {
         return std::nullopt;
     }
     return branch;

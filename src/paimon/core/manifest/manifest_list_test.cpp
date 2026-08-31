@@ -25,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/format/file_format.h"
@@ -139,6 +140,33 @@ TEST_F(ManifestListTest, TestEmptyManifestList) {
         ReadManifestFileMeta("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
                              "manifest-list-616d1847-a02c-495f-9cca-2c8b7def0fec-0", pool);
     ASSERT_EQ(manifest_file_metas.size(), 0);
+}
+
+TEST_F(ManifestListTest, TestReadChangelogManifests) {
+    auto pool = GetDefaultPool();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto manifest_list = CreateManifestList("orc", dir->Str(), pool);
+    ManifestFileMeta expected_meta(
+        "changelog-manifest", /*file_size=*/100, /*num_added_files=*/1,
+        /*num_deleted_files=*/0, SimpleStats::EmptyStats(), /*schema_id=*/0,
+        /*min_bucket=*/0, /*max_bucket=*/0, /*min_level=*/0, /*max_level=*/0,
+        /*min_row_id=*/std::nullopt, /*max_row_id=*/std::nullopt);
+    ASSERT_OK_AND_ASSIGN(auto changelog_manifest_list, manifest_list->Write({expected_meta}));
+    Snapshot snapshot(
+        /*id=*/1, /*schema_id=*/0, /*base_manifest_list=*/"",
+        /*base_manifest_list_size=*/std::nullopt, /*delta_manifest_list=*/"",
+        /*delta_manifest_list_size=*/std::nullopt,
+        /*changelog_manifest_list=*/changelog_manifest_list.first,
+        /*changelog_manifest_list_size=*/changelog_manifest_list.second,
+        /*index_manifest=*/std::nullopt, /*commit_user=*/"user", /*commit_identifier=*/1,
+        Snapshot::CommitKind::Append(), /*time_millis=*/0, /*total_record_count=*/1,
+        /*delta_record_count=*/1, /*changelog_record_count=*/1, /*watermark=*/std::nullopt,
+        /*statistics=*/std::nullopt, /*properties=*/std::nullopt, /*next_row_id=*/std::nullopt);
+
+    std::vector<ManifestFileMeta> actual_metas;
+    ASSERT_OK(manifest_list->ReadChangelogManifests(snapshot, &actual_metas));
+    ASSERT_EQ(std::vector<ManifestFileMeta>({expected_meta}), actual_metas);
 }
 
 TEST_F(ManifestListTest, TestManifestListCompatibleWithJavaPaimon09) {

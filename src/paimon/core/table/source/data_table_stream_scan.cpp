@@ -26,6 +26,7 @@
 #include "paimon/core/options/changelog_producer.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/source/plan_impl.h"
+#include "paimon/core/table/source/snapshot/changelog_follow_up_scanner.h"
 #include "paimon/core/table/source/snapshot/delta_follow_up_scanner.h"
 #include "paimon/core/table/source/snapshot/follow_up_scanner.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
@@ -55,10 +56,15 @@ Result<std::shared_ptr<Plan>> DataTableStreamScan::CreatePlan() {
 
 Result<std::shared_ptr<Plan>> DataTableStreamScan::TryFirstPlan() {
     std::shared_ptr<StartingScanner::ScanResult> scan_result;
-    if (core_options_.GetChangelogProducer() == ChangelogProducer::LOOKUP) {
-        return Status::NotImplemented("do not support lookup changelog producer");
-    } else if (core_options_.GetChangelogProducer() == ChangelogProducer::FULL_COMPACTION) {
+    if (core_options_.GetChangelogProducer() == ChangelogProducer::FULL_COMPACTION) {
         return Status::NotImplemented("do not support full compaction changelog producer");
+    } else if (core_options_.GetChangelogProducer() == ChangelogProducer::LOOKUP) {
+        // Level-0 files will be compacted later to produce changelog records. Exclude them from
+        // the initial full scan so that the same changes are not emitted both in the full phase
+        // and again in the incremental changelog phase.
+        snapshot_reader_->WithLevelFilter([](int32_t level) -> bool { return level > 0; });
+        PAIMON_ASSIGN_OR_RAISE(scan_result, starting_scanner_->Scan(snapshot_reader_));
+        snapshot_reader_->WithLevelFilter([](int32_t) -> bool { return true; });
     } else {
         PAIMON_ASSIGN_OR_RAISE(scan_result, starting_scanner_->Scan(snapshot_reader_));
     }
@@ -85,6 +91,9 @@ Result<std::shared_ptr<Plan>> DataTableStreamScan::NextPlan() {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan,
                                    follow_up_scanner_->Scan(snapshot.value(), snapshot_reader_));
             next_snapshot_id_.value()++;
+            if (plan->Splits().empty()) {
+                continue;
+            }
             return plan;
         } else {
             next_snapshot_id_.value()++;
@@ -122,8 +131,19 @@ Result<std::optional<Snapshot>> DataTableStreamScan::GetNextSnapshot(
 
 Status DataTableStreamScan::InitScanner() {
     PAIMON_ASSIGN_OR_RAISE(starting_scanner_, CreateStartingScanner(/*is_streaming=*/true));
-    follow_up_scanner_ = std::make_shared<DeltaFollowUpScanner>();
-    return Status::OK();
+    switch (core_options_.GetChangelogProducer()) {
+        case ChangelogProducer::NONE:
+            follow_up_scanner_ = std::make_shared<DeltaFollowUpScanner>();
+            return Status::OK();
+        case ChangelogProducer::INPUT:
+        case ChangelogProducer::LOOKUP:
+            follow_up_scanner_ = std::make_shared<ChangelogFollowUpScanner>();
+            return Status::OK();
+        case ChangelogProducer::FULL_COMPACTION:
+            return Status::NotImplemented("do not support full compaction changelog producer");
+        default:
+            return Status::NotImplemented("unknown changelog producer");
+    }
 }
 
 }  // namespace paimon

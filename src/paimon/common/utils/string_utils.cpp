@@ -30,8 +30,28 @@
 #include "paimon/status.h"
 
 namespace paimon {
+namespace {
+
+bool IsTrimCharacter(unsigned char c) {
+    // Match the characters removed by Java String::trim for the ASCII strings handled here.
+    return c <= 0x20;
+}
+
+char ToAsciiLower(unsigned char c) {
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : static_cast<char>(c);
+}
+
+char ToAsciiUpper(unsigned char c) {
+    return c >= 'a' && c <= 'z' ? static_cast<char>(c - ('a' - 'A')) : static_cast<char>(c);
+}
+
+}  // namespace
+
 std::string StringUtils::Replace(const std::string& text, const std::string& search_string,
                                  const std::string& replacement, int32_t max) {
+    if (text.empty() || search_string.empty() || max == 0) {
+        return text;
+    }
     std::string str = text;
     size_t pos = str.find(search_string);
     int32_t count = 0;
@@ -45,6 +65,9 @@ std::string StringUtils::Replace(const std::string& text, const std::string& sea
 
 std::string StringUtils::ReplaceLast(const std::string& text, const std::string& old_str,
                                      const std::string& new_str) {
+    if (text.empty() || old_str.empty()) {
+        return text;
+    }
     std::string str = text;
     size_t pos = str.rfind(old_str);
     if (pos != std::string::npos) {
@@ -54,7 +77,8 @@ std::string StringUtils::ReplaceLast(const std::string& text, const std::string&
 }
 
 bool StringUtils::StartsWith(const std::string& str, const std::string& prefix, size_t start_pos) {
-    return (str.size() >= prefix.size()) && (str.compare(start_pos, prefix.size(), prefix) == 0);
+    return start_pos <= str.size() && prefix.size() <= str.size() - start_pos &&
+           str.compare(start_pos, prefix.size(), prefix) == 0;
 }
 bool StringUtils::EndsWith(const std::string& str, const std::string& suffix) {
     size_t s1 = str.size();
@@ -74,24 +98,43 @@ bool StringUtils::IsNullOrWhitespaceOnly(const std::string& str) {
 }
 
 void StringUtils::Trim(std::string* str) {
-    str->erase(str->find_last_not_of(' ') + 1);
-    str->erase(0, str->find_first_not_of(' '));
+    auto first = std::find_if_not(str->begin(), str->end(),
+                                  [](unsigned char c) { return IsTrimCharacter(c); });
+    auto last = std::find_if_not(str->rbegin(), str->rend(), [](unsigned char c) {
+                    return IsTrimCharacter(c);
+                }).base();
+    if (first >= last) {
+        str->clear();
+        return;
+    }
+    *str = std::string(first, last);
 }
 
 std::string StringUtils::ToLowerCase(const std::string& str) {
     std::string result;
     result.reserve(str.length());
-    std::transform(str.begin(), str.end(), std::back_inserter(result),
-                   [](unsigned char c) { return std::tolower(c); });
+    std::transform(str.begin(), str.end(), std::back_inserter(result), ToAsciiLower);
     return result;
 }
 
 std::string StringUtils::ToUpperCase(const std::string& str) {
     std::string result;
     result.reserve(str.length());
-    std::transform(str.begin(), str.end(), std::back_inserter(result),
-                   [](unsigned char c) { return std::toupper(c); });
+    std::transform(str.begin(), str.end(), std::back_inserter(result), ToAsciiUpper);
     return result;
+}
+
+bool StringUtils::EqualsIgnoreCase(const std::string& left, const std::string& right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < left.size(); ++i) {
+        if (ToAsciiLower(static_cast<unsigned char>(left[i])) !=
+            ToAsciiLower(static_cast<unsigned char>(right[i]))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::vector<std::string> StringUtils::Split(const std::string& text, const std::string& sep_str,

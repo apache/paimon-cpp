@@ -209,7 +209,8 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         ReadContextBuilder read_context_builder(table_path);
         read_context_builder.SetReadFieldNames(read_schema)
             .SetPredicate(predicate)
-            .WithFileSystem(fs_);
+            .WithFileSystem(fs_)
+            .EnableLateMaterializing(false);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));

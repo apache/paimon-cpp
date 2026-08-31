@@ -554,7 +554,8 @@ TEST_F(DataEvolutionFileStoreScanTest, TestFilterEntryByRowRanges) {
         /*creation_time=*/Timestamp(1737111915429ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/100, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ManifestEntry entry(FileKind::Add(), BinaryRow::EmptyRow(), /*bucket=*/0, /*total_buckets=*/1,
                         file);
     {
@@ -574,7 +575,7 @@ TEST_F(DataEvolutionFileStoreScanTest, TestFilterEntryByRowRanges) {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         ManifestEntry entry_without_first_row_id(FileKind::Add(), BinaryRow::EmptyRow(),
                                                  /*bucket=*/0, /*total_buckets=*/1,
                                                  file_without_first_row_id);

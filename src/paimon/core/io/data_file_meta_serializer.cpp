@@ -24,6 +24,7 @@
 #include <string>
 #include <utility>
 
+#include "paimon/common/data/binary_array.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/data/internal_row.h"
@@ -41,7 +42,7 @@ class InternalArray;
 class MemoryPool;
 
 Result<BinaryRow> DataFileMetaSerializer::ToRow(const std::shared_ptr<DataFileMeta>& meta) const {
-    BinaryRow row(20);
+    BinaryRow row(NumFields());
     BinaryRowWriter writer(&row, 32 * 1024, pool_.get());
     writer.WriteString(0, BinaryString::FromString(meta->file_name, pool_.get()));
     writer.WriteLong(1, meta->file_size);
@@ -94,6 +95,12 @@ Result<BinaryRow> DataFileMetaSerializer::ToRow(const std::shared_ptr<DataFileMe
     } else {
         writer.WriteArray(
             19, InternalRowUtils::ToNotNullStringArrayData(meta->write_cols.value(), pool_));
+    }
+    if (meta->column_max_sequence_numbers == std::nullopt) {
+        writer.SetNullAt(20);
+    } else {
+        writer.WriteArray(
+            20, BinaryArray::FromLongArray(meta->column_max_sequence_numbers.value(), pool_.get()));
     }
     writer.Complete();
     return row;
@@ -160,6 +167,15 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMetaSerializer::FromRow(
         }
         write_cols = InternalRowUtils::FromNotNullStringArrayData(array.get());
     }
+
+    std::optional<std::vector<int64_t>> column_max_sequence_numbers;
+    if (!row.IsNullAt(20)) {
+        std::shared_ptr<InternalArray> array = row.GetArray(20);
+        if (array == nullptr) {
+            return Status::Invalid("invalid column max sequence numbers");
+        }
+        PAIMON_ASSIGN_OR_RAISE(column_max_sequence_numbers, array->ToLongArray());
+    }
     PAIMON_ASSIGN_OR_RAISE(BinaryRow min_values, SerializationUtils::DeserializeBinaryRow(min_key));
     PAIMON_ASSIGN_OR_RAISE(BinaryRow max_values, SerializationUtils::DeserializeBinaryRow(max_key));
     PAIMON_ASSIGN_OR_RAISE(SimpleStats key_stats,
@@ -171,7 +187,7 @@ Result<std::shared_ptr<DataFileMeta>> DataFileMetaSerializer::FromRow(
         min_sequence_number, max_sequence_number, schema_id, level,
         InternalRowUtils::FromStringArrayData(extra_files.get()), creation_time, delete_row_count,
         embedded_file_index, file_source, std::optional<std::vector<std::string>>(value_stats_cols),
-        external_path, first_row_id, write_cols);
+        external_path, first_row_id, write_cols, column_max_sequence_numbers);
 }
 
 }  // namespace paimon

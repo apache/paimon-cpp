@@ -62,7 +62,7 @@ ManifestEntry CreateEntry(const FileKind& kind, int32_t partition, int32_t bucke
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     return ManifestEntry(kind, part, bucket, /*total_buckets=*/10, file_meta);
 }
 

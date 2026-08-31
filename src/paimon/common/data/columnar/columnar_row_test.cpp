@@ -70,6 +70,16 @@ TEST(ColumnarRowTest, TestSimple) {
     ASSERT_EQ(row.GetDouble(6), 5.5);
     ASSERT_EQ(row.GetString(7).ToString(), "Hello");
     ASSERT_EQ(std::string(row.GetStringView(7)), "Hello");
+
+    row.SetRowId(3);
+    ASSERT_TRUE(row.GetBoolean(0));
+    ASSERT_EQ(row.GetByte(1), 3);
+    ASSERT_EQ(row.GetShort(2), 7);
+    ASSERT_EQ(row.GetInt(3), 13);
+    ASSERT_EQ(row.GetLong(4), 18);
+    ASSERT_EQ(row.GetFloat(5), 3.3f);
+    ASSERT_EQ(row.GetDouble(6), 8.8);
+    ASSERT_EQ(std::string(row.GetStringView(7)), "WORLD");
 }
 
 TEST(ColumnarRowRefTest, TestSimple) {

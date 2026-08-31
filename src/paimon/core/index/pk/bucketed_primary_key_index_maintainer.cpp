@@ -29,6 +29,7 @@
 #include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/index/index_file_handler.h"
+#include "paimon/core/index/pk/primary_key_index_source_file.h"
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
 #include "paimon/core/index/pksorted/pk_sorted_bucket_index_state.h"
 #include "paimon/core/index/pksorted/pk_sorted_index_builder.h"
@@ -98,6 +99,22 @@ void AddUniquePayload(const std::shared_ptr<IndexFileMeta>& payload,
 bool IsPrimaryKeyBTreePayload(const std::shared_ptr<IndexFileMeta>& payload) {
     return payload != nullptr && payload->IndexType() == BtreeDefs::kIdentifier &&
            IndexFileHandler::IsPrimaryKeySourceIndex(*payload);
+}
+
+bool CoversAllSources(const std::vector<PrimaryKeyIndexSourceFile>& group_sources,
+                      const std::vector<PrimaryKeyIndexSourceFile>& desired_sources) {
+    size_t group_index = 0;
+    for (const PrimaryKeyIndexSourceFile& desired : desired_sources) {
+        while (group_index < group_sources.size() &&
+               group_sources[group_index].file_name < desired.file_name) {
+            group_index++;
+        }
+        if (group_index == group_sources.size() || group_sources[group_index] != desired) {
+            return false;
+        }
+        group_index++;
+    }
+    return true;
 }
 
 }  // namespace
@@ -203,9 +220,9 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
         }
         PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
             field.definition.FieldId(), field.definition.IndexType(), active_data, field_payloads);
-        std::set<int32_t> current_levels;
+        std::map<int32_t, std::shared_ptr<PkSortedIndexGroup>> current_groups_by_level;
         for (const std::shared_ptr<PkSortedIndexGroup>& group : state.Groups()) {
-            current_levels.insert(group->DataLevel());
+            current_groups_by_level.emplace(group->DataLevel(), group);
         }
         for (const std::shared_ptr<IndexFileMeta>& rejected : state.RejectedPayloads()) {
             AddUniquePayload(rejected, &deleted_identities, &deleted_payloads);
@@ -223,7 +240,14 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
                          const std::shared_ptr<DataFileMeta>& right) {
                           return left->file_name < right->file_name;
                       });
-            if (current_levels.count(level_files.first) > 0) {
+            std::vector<PrimaryKeyIndexSourceFile> desired_sources;
+            desired_sources.reserve(level_files.second.size());
+            for (const std::shared_ptr<DataFileMeta>& file : level_files.second) {
+                desired_sources.emplace_back(file->file_name, file->row_count);
+            }
+            auto current_group = current_groups_by_level.find(level_files.first);
+            if (current_group != current_groups_by_level.end() &&
+                CoversAllSources(current_group->second->SourceFiles(), desired_sources)) {
                 continue;
             }
             Result<std::shared_ptr<IndexFileMeta>> build_result =
@@ -232,10 +256,14 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
                 PAIMON_LOG_WARN(
                     GetLogger(),
                     "Failed to build primary-key BTree index for column %s at data level %d; "
-                    "committing that level without an index payload. %s",
+                    "leaving uncovered files on normal scan fallback. %s",
                     field.definition.Column().c_str(), level_files.first,
                     build_result.status().ToString().c_str());
                 continue;
+            }
+            if (current_group != current_groups_by_level.end()) {
+                AddUniquePayload(current_group->second->Payload(), &deleted_identities,
+                                 &deleted_payloads);
             }
             AddUniquePayload(std::move(build_result).value(), &new_identities, &new_payloads);
         }

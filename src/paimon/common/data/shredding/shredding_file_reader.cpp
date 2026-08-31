@@ -84,7 +84,7 @@ Result<BatchReader::ReadBatchWithBitmap> ShreddingFileReader::NextBatchWithBitma
     auto& [c_array, c_schema] = batch;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
-    if (arrow_array->type_id() != arrow::Type::STRUCT) {
+    if (!arrow_array || arrow_array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("cannot cast batch to StructArray in ShreddingFileReader");
     }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(arrow_array);

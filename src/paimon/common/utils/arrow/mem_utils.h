@@ -23,11 +23,17 @@
 
 #include "arrow/memory_pool.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/status.h"
 #include "paimon/visibility.h"
+
+struct ArrowArray;
 
 namespace paimon {
 
 PAIMON_EXPORT std::unique_ptr<arrow::MemoryPool> GetArrowPool(
     const std::shared_ptr<MemoryPool>& pool);
+
+Status RetainArrowArrayMemoryPool(ArrowArray* array,
+                                  const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
 }  // namespace paimon

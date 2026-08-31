@@ -33,10 +33,12 @@
 #include "paimon/core/table/system/audit_log_system_table.h"
 #include "paimon/core/table/system/binlog_system_table.h"
 #include "paimon/core/table/system/read_optimized_system_table.h"
+#include "paimon/core/table/system/system_table_scan.h"
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/metrics.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -197,6 +199,17 @@ TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) 
     std::shared_ptr<FileSystem> shared_fs(std::move(fs));
     ASSERT_NOK_WITH_MSG(SystemTableLoader::LoadFromPath(shared_fs, "/tmp/warehouse/sys/tables", {}),
                         "global system table requires catalog context: tables");
+}
+
+TEST(SystemTableTest, TestScanMetricsAreSnapshots) {
+    SystemTableScan scan("/tmp/table");
+    std::shared_ptr<Metrics> metrics = scan.GetMetrics();
+    ASSERT_TRUE(metrics);
+    metrics->SetCounter("external", 1);
+
+    std::shared_ptr<Metrics> second_metrics = scan.GetMetrics();
+    ASSERT_TRUE(second_metrics);
+    ASSERT_NOK_WITH_MSG(second_metrics->GetCounter("external"), "metric 'external' not found");
 }
 
 }  // namespace paimon::test

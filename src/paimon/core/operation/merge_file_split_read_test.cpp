@@ -40,6 +40,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/key_value_in_memory_record_reader.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -51,7 +52,6 @@
 #include "paimon/executor.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
-#include "paimon/metrics.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
@@ -66,6 +66,7 @@ class FileSystem;
 }  // namespace paimon
 
 namespace paimon::test {
+
 // Parameter: min_heap/loser_tree; enable/disable IO prefetch; enable/disable multi thread row to
 // batch
 class MergeFileSplitReadTest : public ::testing::Test,
@@ -137,7 +138,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta1_2 = std::make_shared<DataFileMeta>(
             "data-c80ccf0f-6387-4cbc-8889-ade8cef54c43-1.parquet", /*file_size=*/3370,
             /*row_count=*/4,
@@ -154,7 +155,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta1_3 = std::make_shared<DataFileMeta>(
             "data-c80ccf0f-6387-4cbc-8889-ade8cef54c43-2.parquet", /*file_size=*/3252,
             /*row_count=*/1,
@@ -173,7 +174,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder1(BinaryRowGenerator::GenerateRow({0, 0}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -200,7 +201,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta2_2 = std::make_shared<DataFileMeta>(
             "data-24f8588c-d950-4e44-9d99-a023ea65a136-1.parquet", /*file_size=*/3229,
             /*row_count=*/1,
@@ -218,7 +219,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder2(BinaryRowGenerator::GenerateRow({0, 1}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -246,7 +247,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta3_2 = std::make_shared<DataFileMeta>(
             "data-184f2304-49fd-4916-ba07-037757e904eb-1.parquet", /*file_size=*/3259,
             /*row_count=*/1,
@@ -264,7 +265,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder3(BinaryRowGenerator::GenerateRow({1, 0}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -296,7 +297,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         auto meta1_2 = std::make_shared<DataFileMeta>(
             "data-d03e13e5-5e2e-463a-b53a-8d44e4dc9141-1.parquet",
             /*file_size=*/2623, /*row_count=*/
@@ -314,7 +315,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
             /*delete_row_count=*/2, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder1(
             /*partition=*/BinaryRow::EmptyRow(),
             /*bucket=*/0, /*bucket_path=*/
@@ -328,9 +329,8 @@ class MergeFileSplitReadTest : public ::testing::Test,
         return {data_split1};
     }
 
-    Result<std::unique_ptr<BatchReader>> CreateReader(
-        const std::shared_ptr<InternalReadContext>& internal_context,
-        const std::vector<std::shared_ptr<DataSplit>>& data_splits) {
+    Result<std::unique_ptr<MergeFileSplitRead>> CreateMergeFileSplitRead(
+        const std::shared_ptr<InternalReadContext>& internal_context) {
         const auto& core_options = internal_context->GetCoreOptions();
         const auto& table_schema = internal_context->GetTableSchema();
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
@@ -347,9 +347,14 @@ class MergeFileSplitReadTest : public ::testing::Test,
                 core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
                 external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
                 pool_));
-        PAIMON_ASSIGN_OR_RAISE(auto split_read,
-                               MergeFileSplitRead::Create(path_factory, std::move(internal_context),
-                                                          pool_, executor_));
+        return MergeFileSplitRead::Create(path_factory, internal_context, pool_, executor_);
+    }
+
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const std::shared_ptr<InternalReadContext>& internal_context,
+        const std::vector<std::shared_ptr<DataSplit>>& data_splits) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MergeFileSplitRead> split_read,
+                               CreateMergeFileSplitRead(internal_context));
         std::vector<std::unique_ptr<BatchReader>> batch_readers;
         batch_readers.reserve(data_splits.size());
         for (const auto& split : data_splits) {
@@ -666,6 +671,73 @@ TEST_P(MergeFileSplitReadTest, TestSimple) {
     CheckResult(result_array, expected_array, read_schema);
 }
 
+TEST_P(MergeFileSplitReadTest, TestRealtimeReadConcatenatesOrderedDiskSections) {
+    std::string path =
+        paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
+    ReadContextBuilder context_builder(path);
+    std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k0", arrow::int32())),
+                                              DataField(1, arrow::field("k1", arrow::int32())),
+                                              DataField(5, arrow::field("s1", arrow::utf8())),
+                                              DataField(6, arrow::field("v0", arrow::float64()))};
+    std::shared_ptr<arrow::Schema> read_schema =
+        DataField::ConvertDataFieldsToArrowSchema(raw_read_fields);
+    ASSERT_TRUE(read_schema);
+
+    context_builder.SetReadFieldNames({"k0", "k1", "s1", "v0"});
+    context_builder.SetOptions(
+        {{Options::SEQUENCE_FIELD, "s0,s1"}, {Options::MERGE_ENGINE, "deduplicate"}});
+    AddOptions(&context_builder);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
+    std::shared_ptr<InternalReadContext> internal_context = CreateInternalReadContext(read_context);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MergeFileSplitRead> split_read,
+                         CreateMergeFileSplitRead(internal_context));
+
+    std::shared_ptr<arrow::DataType> memory_type =
+        arrow::struct_(split_read->GetValueSchema()->fields());
+    std::shared_ptr<arrow::StructArray> memory_array =
+        std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(memory_type, R"([
+                [100, 200, "memory-late",   10000.0, "zzzz"],
+                [1,     1, "memory-delete",  1100.0, "zzzz"],
+                [0,     0, "memory-first",   1000.0, "zzzz"],
+                [50,    0, "memory-middle",  5000.0, "zzzz"]
+            ])")
+                .ValueOrDie());
+    std::vector<std::unique_ptr<KeyValueRecordReader>> memory_readers;
+    memory_readers.push_back(std::make_unique<KeyValueInMemoryRecordReader>(
+        /*last_sequence_num=*/9, memory_array,
+        std::vector<RecordBatch::RowKind>(
+            {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE,
+             RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::INSERT}),
+        std::vector<std::string>({"k0", "k1"}), std::vector<std::string>({"s0", "s1"}),
+        /*sequence_fields_ascending=*/true, split_read->GetKeyComparator(), pool_));
+
+    std::vector<std::shared_ptr<Split>> disk_splits = {PrepareDataSplit().front()};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                         split_read->CreateRealtimeReader(disk_splits, std::move(memory_readers)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
+                         ReadResultCollector::CollectResult(batch_reader.get()));
+
+    arrow::FieldVector fields_with_row_kind = read_schema->fields();
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto expected_status =
+        arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(fields_with_row_kind), {R"([
+            [0,   0,   0, "memory-first",  1000.0],
+            [0,   0,   1, "you",             11.1],
+            [0,   1,   0, "later",           12.2],
+            [0,   1,   2, "!",               13.3],
+            [0,  50,   0, "memory-middle", 5000.0],
+            [0, 100, 200, "memory-late", 10000.0]
+        ])"},
+                                                         &expected_array);
+    ASSERT_TRUE(expected_status.ok());
+    CheckResult(result_array, expected_array, read_schema);
+    ASSERT_TRUE(batch_reader->GetReaderMetrics());
+    batch_reader->Close();
+}
+
 TEST_P(MergeFileSplitReadTest, TestLookUp) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
@@ -798,6 +870,7 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
                                 {Options::MERGE_ENGINE, "deduplicate"},
                                 {Options::IGNORE_DELETE, "true"}});
+    context_builder.EnableLateMaterializing(false);
     AddOptions(&context_builder);
 
     // less_than will be ignore as it is partition predicate
@@ -835,6 +908,63 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
                         [0, 1, 0, "!",     "driver",   13.3, false],
                         [0, 2, 0, "!",     "driver",   13.3, false],
                         [0, 1, 1, "you",   "zoo",      130.0, false]
+
+    ])"},
+                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    CheckResult(result_array, expected_array, read_schema);
+}
+
+TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
+    std::string path =
+        paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
+    ReadContextBuilder context_builder(path);
+
+    std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
+                                              DataField(3, arrow::field("p1", arrow::int32())),
+                                              DataField(5, arrow::field("s1", arrow::utf8())),
+                                              DataField(4, arrow::field("s0", arrow::utf8())),
+                                              DataField(6, arrow::field("v0", arrow::float64())),
+                                              DataField(7, arrow::field("v1", arrow::boolean()))};
+    auto read_schema = DataField::ConvertDataFieldsToArrowSchema(raw_read_fields);
+    ASSERT_TRUE(read_schema);
+
+    context_builder.SetReadFieldNames({"k1", "p1", "s1", "s0", "v0", "v1"});
+    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
+                                {Options::MERGE_ENGINE, "deduplicate"},
+                                {Options::IGNORE_DELETE, "true"}});
+    AddOptions(&context_builder);
+    context_builder.EnableLateMaterializing(true);
+    // key predicate, always pushed down into the data files
+    auto greater_or_equal = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k1",
+                                                             FieldType::INT, Literal(1));
+    // value predicate, only pushed down when a section holds a single sorted run
+    auto greater_than = PredicateBuilder::GreaterThan(/*field_index=*/4, /*field_name=*/"v0",
+                                                      FieldType::DOUBLE, Literal(12.0));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate_result,
+                         PredicateBuilder::And({greater_or_equal, greater_than}));
+    context_builder.SetPredicate(predicate_result);
+    context_builder.EnablePredicateFilter(true).EnableLateMaterializing(true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
+
+    auto internal_context = CreateInternalReadContext(read_context);
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
+                         ReadResultCollector::CollectResult(batch_reader.get()));
+
+    auto fields_with_row_kind = read_schema->fields();
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+
+    // Only the merged rows with k1 >= 1 and v0 > 12.0 remain.
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status =
+        arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(fields_with_row_kind), {R"([
+                        [0, 1, 0, "!",      "driver", 13.3, false],
+                        [0, 2, 0, "!",      "driver", 13.3, false],
+                        [0, 200, 0, "number", "max",  140.4, false],
+                        [0, 1, 1, "you",    "zoo",    130.0, false]
 
     ])"},
                                                          &expected_array);
@@ -1235,7 +1365,7 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
         /*delete_row_count=*/1, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     auto meta2 = std::make_shared<DataFileMeta>(
         "data-6871b960-edd9-40fc-9859-aaca9ea205cf-0.orc", /*file_size=*/887, /*row_count=*/5,
         /*min_key=*/BinaryRowGenerator::GenerateRow({std::string("Alex"), 0}, pool_.get()),
@@ -1253,7 +1383,7 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     DataSplitImpl::Builder builder(
         BinaryRowGenerator::GenerateRow({10}, pool_.get()),
         /*bucket=*/1, /*bucket_path=*/

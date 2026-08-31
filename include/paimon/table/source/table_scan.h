@@ -23,6 +23,7 @@
 
 #include "paimon/result.h"
 #include "paimon/table/source/plan.h"
+#include "paimon/table/source/scan_metrics.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
 
@@ -44,5 +45,11 @@ class PAIMON_EXPORT TableScan {
     ///
     /// @return A Result containing a shared pointer to the created `Plan` or an error status.
     virtual Result<std::shared_ptr<Plan>> CreatePlan() = 0;
+
+    /// Retrieve metrics related to scan planning operations.
+    ///
+    /// @return A point-in-time snapshot of scan metrics. Mutating the returned object does not
+    /// affect metrics collected by this scan.
+    virtual std::shared_ptr<Metrics> GetMetrics() const;
 };
 }  // namespace paimon

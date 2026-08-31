@@ -74,7 +74,7 @@ class SequenceSnapshotPropertiesTest : public testing::Test {
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*external_path=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 
     ManifestEntry CreateEntry(const FileKind& kind, int64_t max_sequence_number) const {
@@ -115,7 +115,7 @@ TEST_F(SequenceSnapshotPropertiesTest, MaxSequenceNumberTrailingCharacters) {
     std::map<std::string, std::string> properties{
         {SequenceSnapshotProperties::kMaxSequenceNumberKey, "123abc"}};
     ASSERT_NOK_WITH_MSG(SequenceSnapshotProperties::MaxSequenceNumber(MakeSnapshot(properties)),
-                        "trailing characters are not allowed");
+                        "Invalid sequence.generation.max-sequence-number value '123abc'");
 }
 
 TEST_F(SequenceSnapshotPropertiesTest, MaxSequenceNumberNotANumber) {

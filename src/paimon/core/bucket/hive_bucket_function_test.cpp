@@ -18,12 +18,12 @@
 
 #include "paimon/core/bucket/hive_bucket_function.h"
 
-#include <cstring>
 #include <limits>
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/core/bucket/hive_hasher.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/binary_row_generator.h"
@@ -110,18 +110,6 @@ class HiveBucketFunctionTest : public ::testing::Test {
     BinaryRow CreateShortRow(int16_t value) {
         auto pool = GetDefaultPool();
         return BinaryRowGenerator::GenerateRow({value}, pool.get());
-    }
-
-    float FloatFromBits(uint32_t bits) {
-        float value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
-    }
-
-    double DoubleFromBits(uint64_t bits) {
-        double value;
-        std::memcpy(&value, &bits, sizeof(value));
-        return value;
     }
 };
 
@@ -235,11 +223,12 @@ TEST_F(HiveBucketFunctionTest, TestFloatNaNCanonicalizationCompatibleWithJava) {
     ASSERT_OK_AND_ASSIGN(auto func, HiveBucketFunction::Create(field_types));
 
     // Verified with Java HiveBucketFunction:
-    // Float.NaN, Float.intBitsToFloat(0x7fa12345), and Float.intBitsToFloat(0x7fc00000)
-    // all hash through Float.floatToIntBits(...) = 0x7fc00000.
+    // Float.NaN, a payload NaN, and the canonical NaN all hash through
+    // Float.floatToIntBits(...) to kCanonicalFloatNaNBits.
     ASSERT_EQ(344, func->Bucket(CreateFloatRow(std::numeric_limits<float>::quiet_NaN()), 1000));
-    ASSERT_EQ(344, func->Bucket(CreateFloatRow(FloatFromBits(0x7FA12345U)), 1000));
-    ASSERT_EQ(344, func->Bucket(CreateFloatRow(FloatFromBits(0x7FC00000U)), 1000));
+    ASSERT_EQ(344, func->Bucket(CreateFloatRow(FloatingPointFromBits<float>(0x7FA12345U)), 1000));
+    ASSERT_EQ(344, func->Bucket(
+                       CreateFloatRow(FloatingPointFromBits<float>(kCanonicalFloatNaNBits)), 1000));
 }
 
 TEST_F(HiveBucketFunctionTest, TestDoubleNaNCanonicalizationCompatibleWithJava) {
@@ -248,10 +237,14 @@ TEST_F(HiveBucketFunctionTest, TestDoubleNaNCanonicalizationCompatibleWithJava) 
 
     // Verified with Java HiveBucketFunction:
     // Double.NaN, Double.longBitsToDouble(0x7ff123456789abcd), and canonical NaN
-    // all hash through Double.doubleToLongBits(...) = 0x7ff8000000000000.
+    // All NaNs hash through Double.doubleToLongBits(...) to kCanonicalDoubleNaNBits.
     ASSERT_EQ(360, func->Bucket(CreateDoubleRow(std::numeric_limits<double>::quiet_NaN()), 1000));
-    ASSERT_EQ(360, func->Bucket(CreateDoubleRow(DoubleFromBits(0x7FF123456789ABCDULL)), 1000));
-    ASSERT_EQ(360, func->Bucket(CreateDoubleRow(DoubleFromBits(0x7FF8000000000000ULL)), 1000));
+    ASSERT_EQ(
+        360,
+        func->Bucket(CreateDoubleRow(FloatingPointFromBits<double>(0x7FF123456789ABCDULL)), 1000));
+    ASSERT_EQ(360,
+              func->Bucket(CreateDoubleRow(FloatingPointFromBits<double>(kCanonicalDoubleNaNBits)),
+                           1000));
 }
 
 TEST_F(HiveBucketFunctionTest, TestTinyintNegativeValuesCompatibleWithJava) {

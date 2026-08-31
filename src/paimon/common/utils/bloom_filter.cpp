@@ -25,29 +25,35 @@
 
 namespace paimon {
 
-int32_t BloomFilter::OptimalNumOfBits(int64_t expect_entries, double fpp) {
-    if (expect_entries <= 0 || fpp <= 0.0 || fpp >= 1.0) {
+int32_t BloomFilter::OptimalNumOfBits(int64_t expected_entries, double fpp) {
+    if (expected_entries <= 0 || fpp <= 0.0 || fpp >= 1.0) {
         return 0;
     }
-    double result = -static_cast<double>(expect_entries) * log(fpp) / (log(2) * log(2));
+    double result = -static_cast<double>(expected_entries) * log(fpp) / (log(2) * log(2));
     if (result > INT32_MAX) return INT32_MAX;
     if (result < 0) return 0;
     return static_cast<int32_t>(result);
 }
 
-int32_t BloomFilter::OptimalNumOfHashFunctions(int64_t expect_entries, int64_t bit_size) {
-    if (expect_entries <= 0) {
+int32_t BloomFilter::OptimalNumOfHashFunctions(int64_t expected_entries, int64_t bit_size) {
+    if (expected_entries <= 0) {
         return 1;
     }
-    double ratio = static_cast<double>(bit_size) / static_cast<double>(expect_entries);
+    double ratio = static_cast<double>(bit_size) / static_cast<double>(expected_entries);
     double result = ratio * std::log(2.0);
     return std::max(1, static_cast<int32_t>(std::round(result)));
 }
 
-std::shared_ptr<BloomFilter> BloomFilter::Create(int64_t expect_entries, double fpp) {
+Result<std::shared_ptr<BloomFilter>> BloomFilter::Create(int64_t expected_entries, double fpp) {
+    if (expected_entries <= 0) {
+        return Status::Invalid("expected entries must be greater than 0 for bloom filter");
+    }
+    if (!std::isfinite(fpp) || fpp <= 0.0 || fpp >= 1.0) {
+        return Status::Invalid("fpp must be greater than 0 and less than 1 for bloom filter");
+    }
     auto bytes =
-        static_cast<int32_t>(ceil(BloomFilter::OptimalNumOfBits(expect_entries, fpp) / 8.0));
-    return std::make_shared<BloomFilter>(expect_entries, bytes);
+        static_cast<int32_t>(ceil(BloomFilter::OptimalNumOfBits(expected_entries, fpp) / 8.0));
+    return std::make_shared<BloomFilter>(expected_entries, bytes);
 }
 
 BloomFilter::BloomFilter(int64_t expected_entries, int32_t byte_length)

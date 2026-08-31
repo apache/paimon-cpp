@@ -38,10 +38,12 @@ class AsyncKeyValueProjectionReader : public BatchReader {
             -> Result<std::unique_ptr<RowToArrowArrayConverter<KeyValue, BatchReader::ReadBatch>>> {
             return KeyValueProjectionConsumer::Create(target_schema, target_to_src_mapping, pool);
         };
+        std::unique_ptr<AsyncKeyValueBatchProducer> producer =
+            std::make_unique<SortMergeReaderBatchProducer>(std::move(sort_merge_reader),
+                                                           batch_size);
         producer_and_consumer_ =
             std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, BatchReader::ReadBatch>>(
-                std::move(sort_merge_reader), create_consumer, batch_size, projection_thread_num,
-                pool);
+                std::move(producer), create_consumer, projection_thread_num);
     }
 
     Result<BatchReader::ReadBatch> NextBatch() override {

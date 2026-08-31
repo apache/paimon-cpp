@@ -21,13 +21,16 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/builder_base.h"
 #include "gtest/gtest.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/data_file_meta_write_cols_legacy_serializer.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/io/byte_array_input_stream.h"
@@ -49,7 +52,9 @@ class DataFileMetaSerializerTest : public testing::Test {
     }
 
  private:
-    std::shared_ptr<DataFileMeta> GetDataFileMeta() {
+    std::shared_ptr<DataFileMeta> GetDataFileMeta(
+        const std::optional<std::vector<int64_t>>& column_max_sequence_numbers =
+            std::vector<int64_t>{16, 32}) {
         return std::make_shared<DataFileMeta>(
             "some_file_name", 1024, 8, DataFileMeta::EmptyMinKey(), DataFileMeta::EmptyMaxKey(),
             SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), /*min_seq_no=*/16,
@@ -58,7 +63,8 @@ class DataFileMetaSerializerTest : public testing::Test {
             /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/3,
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::optional<std::string>(),
-            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            column_max_sequence_numbers);
     }
 
     const int32_t TRIES = 100;
@@ -68,12 +74,22 @@ class DataFileMetaSerializerTest : public testing::Test {
 
 TEST_F(DataFileMetaSerializerTest, TestToFromRow) {
     DataFileMetaSerializer serializer(memory_pool_);
+    ASSERT_EQ(serializer.NumFields(), 21);
     auto expected = GetDataFileMeta();
     for (int32_t i = 0; i < TRIES; i++) {
         ASSERT_OK_AND_ASSIGN(auto row, serializer.ToRow(expected));
         ASSERT_OK_AND_ASSIGN(auto actual, serializer.FromRow(row));
         ASSERT_EQ(expected->ToString(), actual->ToString());
     }
+}
+
+TEST_F(DataFileMetaSerializerTest, TestLegacySerializerSchema) {
+    DataFileMetaWriteColsLegacySerializer serializer(memory_pool_);
+    ASSERT_EQ(serializer.NumFields(), 20);
+    auto legacy_type =
+        checked_pointer_cast<arrow::StructType>(DataFileMetaWriteColsLegacySerializer::DataType());
+    ASSERT_EQ(legacy_type->num_fields(), 20);
+    ASSERT_EQ(legacy_type->field(19)->name(), "_WRITE_COLS");
 }
 
 TEST_F(DataFileMetaSerializerTest, TestSerialize) {

@@ -177,9 +177,10 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexFile::BuildFromSortedReader(
          pool]() -> Result<std::unique_ptr<RowToArrowArrayConverter<KeyValue, KeyValueBatch>>> {
         return KeyValueMetaProjectionConsumer::Create(projection_schema, pool);
     };
+    std::unique_ptr<AsyncKeyValueBatchProducer> batch_producer =
+        std::make_unique<SortMergeReaderBatchProducer>(std::move(sorted_reader), write_batch_size);
     auto producer = std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
-        std::move(sorted_reader), create_consumer, write_batch_size,
-        /*projection_thread_num=*/1, pool);
+        std::move(batch_producer), create_consumer, /*consumer_thread_num=*/1);
     ScopeGuard close_guard([&]() { producer->Close(); });
     int64_t rows_written = 0;
     while (true) {

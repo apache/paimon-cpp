@@ -88,6 +88,23 @@ Result<bool> HasHistoricalPrimaryKeyBTreeDefinition(
     return false;
 }
 
+Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& realtime_context,
+                                        const std::shared_ptr<SnapshotManager>& snapshot_manager,
+                                        const CoreOptions& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
+                           snapshot_manager->LatestSnapshot());
+    if (latest_snapshot) {
+        PAIMON_ASSIGN_OR_RAISE(
+            RealtimeOffsetMap realtime_committed_offsets,
+            RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                               RealtimeContextImpl::Cast(realtime_context));
+        PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
+            latest_snapshot->Id(), realtime_committed_offsets));
+    }
+    return Status::OK();
+}
+
 }  // namespace
 
 Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithProgress(int64_t) {
@@ -176,17 +193,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             if (options.DeletionVectorsEnabled()) {
                 return Status::Invalid("real-time append write does not support deletion vectors");
             }
-            PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
-                                   snapshot_manager->LatestSnapshot());
-            if (latest_snapshot) {
-                PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap realtime_committed_offsets,
-                                       RealtimeCommitProperties::ReadOffsets(
-                                           latest_snapshot, options.GetFileSystem()));
-                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                                       RealtimeContextImpl::Cast(ctx->GetRealtimeContext()));
-                PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
-                    latest_snapshot->Id(), realtime_committed_offsets));
-            }
+            PAIMON_RETURN_NOT_OK(RestoreRealtimeCommittedProgress(ctx->GetRealtimeContext(),
+                                                                  snapshot_manager, options));
         }
         std::shared_ptr<arrow::Schema> write_schema = arrow_schema;
         const auto& write_field_names = ctx->GetWriteSchema();
@@ -230,7 +238,16 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     } else {
         // pk table
         if (ctx->GetRealtimeContext()) {
-            return Status::Invalid("real-time write currently supports append tables only");
+            PAIMON_RETURN_NOT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *schema));
+            if (ignore_previous_files) {
+                return Status::NotImplemented(
+                    "PK realtime requires restore from the latest snapshot");
+            }
+            if (!ctx->GetWriteSchema().empty()) {
+                return Status::NotImplemented("PK realtime does not support a custom write schema");
+            }
+            PAIMON_RETURN_NOT_OK(RestoreRealtimeCommittedProgress(ctx->GetRealtimeContext(),
+                                                                  snapshot_manager, options));
         }
         if (options.GetBucket() == BucketModeDefine::POSTPONE_BUCKET) {
             return PostponeBucketFileStoreWrite::Create(
@@ -333,7 +350,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             primary_key_index_maintainer_factory, io_manager, key_comparator,
             sequence_fields_comparator, merge_function_wrapper, options, ignore_previous_files,
             ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(),
-            ctx->GetExecutor(), ctx->GetMemoryPool());
+            ctx->GetRealtimeContext(), ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 }
 

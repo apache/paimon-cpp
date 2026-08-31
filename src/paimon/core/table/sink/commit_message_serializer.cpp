@@ -38,6 +38,7 @@
 #include "paimon/core/io/data_file_meta_12_serializer.h"
 #include "paimon/core/io/data_file_meta_first_row_id_legacy_serializer.h"
 #include "paimon/core/io/data_file_meta_serializer.h"
+#include "paimon/core/io/data_file_meta_write_cols_legacy_serializer.h"
 #include "paimon/core/io/data_increment.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/object_serializer.h"
@@ -46,7 +47,7 @@
 namespace paimon {
 class MemoryPool;
 
-const int32_t CommitMessageSerializer::CURRENT_VERSION = 12;
+const int32_t CommitMessageSerializer::CURRENT_VERSION = 13;
 
 CommitMessageSerializer::CommitMessageSerializer(const std::shared_ptr<MemoryPool>& pool)
     : memory_pool_(pool),
@@ -204,16 +205,25 @@ Result<std::shared_ptr<CommitMessage>> CommitMessageSerializer::Deserialize(int3
                                                                             DataInputStream* in) {
     if (version == CURRENT_VERSION) {
         return Deserialize(version, data_file_serializer_.get(), index_entry_serializer_.get(), in);
+    } else if (version == 12) {
+        auto data_file_meta_write_cols_legacy_serializer =
+            std::make_unique<DataFileMetaWriteColsLegacySerializer>(memory_pool_);
+        return Deserialize(version, data_file_meta_write_cols_legacy_serializer.get(),
+                           index_entry_serializer_.get(), in);
     } else if (version == 11) {
+        auto data_file_meta_write_cols_legacy_serializer =
+            std::make_unique<DataFileMetaWriteColsLegacySerializer>(memory_pool_);
         auto index_entry_v4_deserializer =
             std::make_unique<IndexFileMetaV4Deserializer>(memory_pool_);
-        return Deserialize(version, data_file_serializer_.get(), index_entry_v4_deserializer.get(),
-                           in);
+        return Deserialize(version, data_file_meta_write_cols_legacy_serializer.get(),
+                           index_entry_v4_deserializer.get(), in);
     } else if (version == 9 || version == 10) {
+        auto data_file_meta_write_cols_legacy_serializer =
+            std::make_unique<DataFileMetaWriteColsLegacySerializer>(memory_pool_);
         auto index_entry_v3_deserializer =
             std::make_unique<IndexFileMetaV3Deserializer>(memory_pool_);
-        return Deserialize(version, data_file_serializer_.get(), index_entry_v3_deserializer.get(),
-                           in);
+        return Deserialize(version, data_file_meta_write_cols_legacy_serializer.get(),
+                           index_entry_v3_deserializer.get(), in);
     } else if (version == 8) {
         auto data_file_meta_first_row_id_legacy_serializer =
             std::make_unique<DataFileMetaFirstRowIdLegacySerializer>(memory_pool_);

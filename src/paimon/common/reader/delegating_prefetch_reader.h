@@ -45,7 +45,7 @@ class DelegatingPrefetchReader : public FileBatchReader {
     }
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        return GetReader()->GetReaderMetrics();
+        return prefetch_reader_->GetReaderMetrics();
     }
 
     Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override {

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+#include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -26,6 +28,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -56,17 +59,20 @@ TEST(IndexedSplitTest, TestSimple) {
         "file1.orc", 100l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 50l, 249l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765535214349l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta2 = std::make_shared<DataFileMeta>(
         "file2.orc", 101l, 100l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 250l, 349l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765535214349l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta3 = std::make_shared<DataFileMeta>(
         "file3.orc", 102l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 1000l, 1199l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765535214349l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
@@ -82,8 +88,11 @@ TEST(IndexedSplitTest, TestSimple) {
 
     ASSERT_EQ(*result_indexed_split, *expected_indexed_split) << result_indexed_split->ToString();
     ASSERT_OK_AND_ASSIGN(std::string serialize_bytes, Split::Serialize(result_indexed_split, pool));
-    ASSERT_EQ(serialize_bytes,
-              std::string(reinterpret_cast<char*>(split_bytes.data()), split_bytes.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> roundtrip,
+                         Split::Deserialize(serialize_bytes.data(), serialize_bytes.size(), pool));
+    auto roundtrip_indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(roundtrip);
+    ASSERT_EQ(*roundtrip_indexed_split, *expected_indexed_split)
+        << roundtrip_indexed_split->ToString();
 }
 
 TEST(IndexedSplitTest, TestIndexedSplitWithScore) {
@@ -107,17 +116,20 @@ TEST(IndexedSplitTest, TestIndexedSplitWithScore) {
         "file1.orc", 100l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 50l, 249l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765549435648l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 50l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta2 = std::make_shared<DataFileMeta>(
         "file2.orc", 101l, 100l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 250l, 349l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765549435649l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 250l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto meta3 = std::make_shared<DataFileMeta>(
         "file3.orc", 102l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 1000l, 1199l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(1765549435649l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),
@@ -139,8 +151,39 @@ TEST(IndexedSplitTest, TestIndexedSplitWithScore) {
             "rowRanges=[[55, 56],[270, 270],[1001, 1002]], scores=[1.01,2.1,-1.32,4.23,50.74]") !=
         std::string::npos);
     ASSERT_OK_AND_ASSIGN(std::string serialize_bytes, Split::Serialize(result_indexed_split, pool));
-    ASSERT_EQ(serialize_bytes,
-              std::string(reinterpret_cast<char*>(split_bytes.data()), split_bytes.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> roundtrip,
+                         Split::Deserialize(serialize_bytes.data(), serialize_bytes.size(), pool));
+    auto roundtrip_indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(roundtrip);
+    ASSERT_EQ(*roundtrip_indexed_split, *expected_indexed_split)
+        << roundtrip_indexed_split->ToString();
+}
+
+TEST(IndexedSplitTest, TestSerializeCanonicalizesNaNScore) {
+    auto pool = GetDefaultPool();
+    DataSplitImpl::Builder builder(
+        /*partition=*/BinaryRow::EmptyRow(),
+        /*bucket=*/0, /*bucket_path=*/"bucket-0",
+        /*data_files=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> data_split, builder.Build());
+
+    const auto payload_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto canonical_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
+    auto indexed_split = std::make_shared<IndexedSplitImpl>(
+        data_split, std::vector<Range>{Range(0, 0)}, std::vector<float>{payload_nan});
+    auto canonical_indexed_split = std::make_shared<IndexedSplitImpl>(
+        data_split, std::vector<Range>{Range(0, 0)}, std::vector<float>{canonical_nan});
+
+    ASSERT_OK_AND_ASSIGN(std::string serialized, Split::Serialize(indexed_split, pool));
+    ASSERT_OK_AND_ASSIGN(std::string canonical_serialized,
+                         Split::Serialize(canonical_indexed_split, pool));
+    ASSERT_EQ(serialized, canonical_serialized);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Split> roundtrip,
+                         Split::Deserialize(serialized.data(), serialized.size(), pool));
+    auto roundtrip_indexed_split = std::dynamic_pointer_cast<IndexedSplitImpl>(roundtrip);
+    ASSERT_TRUE(roundtrip_indexed_split);
+    ASSERT_EQ(roundtrip_indexed_split->Scores().size(), 1);
+    ASSERT_TRUE(std::isnan(roundtrip_indexed_split->Scores()[0]));
 }
 
 TEST(IndexedSplitTest, TestValidate) {
@@ -148,7 +191,8 @@ TEST(IndexedSplitTest, TestValidate) {
         "file.orc", 1l, 200l, BinaryRow::EmptyRow(), BinaryRow::EmptyRow(),
         SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), 1000l, 1199l, 0, 0,
         std::vector<std::optional<std::string>>(), Timestamp(0l, 0), 0, nullptr,
-        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt);
+        FileSource::Append(), std::nullopt, std::nullopt, 1000l, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRow::EmptyRow(),

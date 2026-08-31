@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include "arrow/type_fwd.h"
 #include "paimon/common/types/data_field.h"
@@ -66,13 +67,20 @@ struct SpecialFields {
         return data_field;
     }
 
+    static const DataField& RealtimeOffset() {
+        static const DataField data_field =
+            DataField(SpecialFieldIds::REALTIME_OFFSET,
+                      arrow::field("_REALTIME_OFFSET", arrow::int64(), false));
+        return data_field;
+    }
+
     static bool IsSystemField(const std::string& field_name) {
         if (StringUtils::StartsWith(field_name, KEY_FIELD_PREFIX)) {
             return true;
         }
         return field_name == SequenceNumber().Name() || field_name == ValueKind().Name() ||
                field_name == RowKind().Name() || field_name == RowId().Name() ||
-               field_name == IndexScore().Name();
+               field_name == IndexScore().Name() || field_name == RealtimeOffset().Name();
     }
 
     // TODO(xinyu.lxy): add a func to complete row-tracking fields

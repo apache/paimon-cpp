@@ -58,7 +58,8 @@ struct DataFileMeta {
                  const std::optional<std::vector<std::string>>& _value_stats_cols,
                  const std::optional<std::string>& _external_path,
                  const std::optional<int64_t>& _first_row_id,
-                 const std::optional<std::vector<std::string>>& _write_cols);
+                 const std::optional<std::vector<std::string>>& _write_cols,
+                 const std::optional<std::vector<int64_t>>& _column_max_sequence_numbers);
 
     static Result<std::shared_ptr<DataFileMeta>> ForAppend(
         const std::string& file_name, int64_t file_size, int64_t row_count,
@@ -82,6 +83,9 @@ struct DataFileMeta {
     /// Create a copy of this DataFileMeta with the given extra files.
     std::shared_ptr<DataFileMeta> CopyWithExtraFiles(
         const std::vector<std::optional<std::string>>& new_extra_files) const;
+
+    std::shared_ptr<DataFileMeta> CopyWithColumnMaxSequenceNumbers(
+        const std::optional<std::vector<int64_t>>& new_column_max_sequence_numbers) const;
 
     /// Create a copy without value statistics. All other metadata is preserved.
     ///
@@ -167,5 +171,12 @@ struct DataFileMeta {
     std::optional<int64_t> first_row_id;
 
     std::optional<std::vector<std::string>> write_cols;
+
+    /// Maximum sequence number per physical table field after data-evolution compaction.
+    ///
+    /// Values follow the table-field order selected by `write_cols` when it is non-null (system
+    /// fields are ignored), or the file schema field order otherwise. A null value means that only
+    /// the file-level sequence range is available.
+    std::optional<std::vector<int64_t>> column_max_sequence_numbers;
 };
 }  // namespace paimon

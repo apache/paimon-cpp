@@ -43,7 +43,8 @@ class ManifestEntrySerializerTest : public testing::Test {
             /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/3,
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::optional<std::string>(),
-            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+            /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+            /*column_max_sequence_numbers=*/std::nullopt);
     }
 };
 TEST_F(ManifestEntrySerializerTest, TestToFromRow) {
