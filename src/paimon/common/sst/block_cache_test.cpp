@@ -65,6 +65,10 @@ class BlockCacheTest : public ::testing::Test {
                                           is_index);
     }
 
+    Result<std::unique_ptr<InputStream>> OpenTestFile(const std::string& path) const {
+        return fs_->Open(path);
+    }
+
  private:
     std::unique_ptr<UniqueTestDirectory> dir_;
     std::shared_ptr<FileSystem> fs_;
@@ -187,6 +191,42 @@ TEST_F(BlockCacheTest, TestClose) {
     ASSERT_FALSE(ContainsBlock(1, block_size, &block_cache));
     ASSERT_FALSE(ContainsBlock(2, block_size, &block_cache));
     ASSERT_EQ(cache_manager->DataCache()->Size(), 0);
+}
+
+TEST_F(BlockCacheTest, TestRetainedPagesAreReusedByLaterReader) {
+    const int32_t block_size = 64;
+    auto file_path = dir_->Str() + "/retained.data";
+    ASSERT_OK(WriteTestFile(file_path, /*num_blocks=*/1, block_size));
+
+    auto cache_manager = std::make_shared<CacheManager>(block_size * 2, 0.0);
+    std::shared_ptr<MemoryPool> retained_pool = GetMemoryPool();
+    std::weak_ptr<MemoryPool> retained_pool_ref = retained_pool;
+    int32_t input_stream_opens = 0;
+    BlockCache::InputStreamSupplier supplier =
+        [this, &input_stream_opens, file_path]() -> Result<std::shared_ptr<InputStream>> {
+        input_stream_opens++;
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream, OpenTestFile(file_path));
+        return input_stream;
+    };
+
+    {
+        BlockCache first_reader(file_path, supplier, cache_manager, retained_pool);
+        ASSERT_OK_AND_ASSIGN(auto segment, GetBlock(0, block_size, &first_reader));
+        ASSERT_EQ(segment.Get(0), static_cast<char>(0));
+        ASSERT_EQ(input_stream_opens, 1);
+    }
+    ASSERT_EQ(cache_manager->DataCache()->Size(), 1);
+
+    retained_pool.reset();
+    ASSERT_TRUE(retained_pool_ref.expired());
+    {
+        BlockCache second_reader(file_path, supplier, cache_manager, pool_);
+        ASSERT_OK_AND_ASSIGN(auto cached_segment, GetBlock(0, block_size, &second_reader));
+        ASSERT_EQ(cached_segment.Get(0), static_cast<char>(0));
+        ASSERT_EQ(input_stream_opens, 1);
+    }
+
+    cache_manager->DataCache()->InvalidateAll();
 }
 
 /// Verifies that two BlockCache instances sharing the same CacheManager have independent blocks_

@@ -84,6 +84,13 @@ class FakeLazyFileReader : public GlobalIndexFileReader {
     std::string base_path_;
 };
 
+class FailingLazyFileReader : public GlobalIndexFileReader {
+ public:
+    Result<std::unique_ptr<InputStream>> GetInputStream(const std::string&) const override {
+        return Status::Invalid("unexpected input stream open for cached btree file");
+    }
+};
+
 class LazyFilteredBTreeReaderTest : public ::testing::Test {
  public:
     void SetUp() override {
@@ -375,6 +382,33 @@ TEST_F(LazyFilteredBTreeReaderTest, TestReaderCacheReuse) {
     Literal literal_2(2);
     ASSERT_OK_AND_ASSIGN(auto result2, reader->VisitEqual(literal_2));
     CheckResult(result2, {3, 4});
+}
+
+TEST_F(LazyFilteredBTreeReaderTest, TestBlockCacheReuseAcrossIndexerInstances) {
+    std::map<std::string, std::string> options = {
+        {BtreeDefs::kBtreeIndexCacheSize, "1MB"},
+        {BtreeDefs::kBtreeIndexHighPriorityPoolRatio, "0.5"}};
+    Literal literal_1(1);
+
+    ASSERT_OK_AND_ASSIGN(auto first_indexer, BTreeGlobalIndexer::Create(options));
+    auto first_schema = CreateArrowSchema();
+    auto first_file_reader = std::make_shared<FakeLazyFileReader>(fs_, base_path_);
+    ASSERT_OK_AND_ASSIGN(
+        auto first_reader,
+        first_indexer->CreateReader(first_schema.get(), first_file_reader, all_metas_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto first_result, first_reader->VisitEqual(literal_1));
+    CheckResult(first_result, {0, 1});
+    first_reader.reset();
+    first_indexer.reset();
+
+    ASSERT_OK_AND_ASSIGN(auto second_indexer, BTreeGlobalIndexer::Create(options));
+    auto second_schema = CreateArrowSchema();
+    auto failing_file_reader = std::make_shared<FailingLazyFileReader>();
+    ASSERT_OK_AND_ASSIGN(
+        auto second_reader,
+        second_indexer->CreateReader(second_schema.get(), failing_file_reader, all_metas_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto second_result, second_reader->VisitEqual(literal_1));
+    CheckResult(second_result, {0, 1});
 }
 
 // --- Empty files list ---
