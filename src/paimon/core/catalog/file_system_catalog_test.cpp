@@ -1400,12 +1400,12 @@ TEST(FileSystemCatalogTest, TestIdentifierNameValidationRules) {
     ArrowSchemaRelease(&schema);
 
     // Names that merely contain a dot or non-ascii characters stay usable.
-    for (const std::string& db_name : {"my.db", "a..b", "数据"}) {
+    for (const char* db_name : {"my.db", "a..b", "数据"}) {
         ASSERT_OK(catalog.CreateDatabase(db_name, {}, /*ignore_if_exists=*/false));
         ASSERT_OK_AND_ASSIGN(bool db_exists, catalog.DatabaseExists(db_name));
         ASSERT_TRUE(db_exists);
     }
-    for (const std::string& table_name : {"orders", "订单"}) {
+    for (const char* table_name : {"orders", "订单"}) {
         ::ArrowSchema valid_schema;
         ASSERT_TRUE(arrow::ExportSchema(typed_schema, &valid_schema).ok());
         ASSERT_OK(catalog.CreateTable(Identifier("db1", table_name), &valid_schema, {}, {}, options,
