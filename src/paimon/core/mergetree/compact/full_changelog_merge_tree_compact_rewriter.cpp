@@ -97,7 +97,7 @@ FullChangelogMergeTreeCompactRewriter::Create(
     }
     ChangelogMergeFunctionWrapperFactory changelog_merge_function_wrapper_factory =
         [data_schema, trimmed_primary_keys, options, max_level, value_equalizer,
-         pool](int32_t /*output_level*/)
+         pool]([[maybe_unused]] int32_t output_level)
         -> Result<std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>> {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MergeFunction> merge_function,
                                PrimaryKeyTableUtils::CreateMergeFunction(
