@@ -81,7 +81,7 @@ class PredicateBatchReaderTest : public ::testing::Test {
                      const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
         ASSERT_OK_AND_ASSIGN(auto predicate_reader,
                              PredicateBatchReader::Create(std::move(reader), predicate,
-                                                          GetSharedArrowPool(GetDefaultPool())));
+                                                          GetArrowPool(GetDefaultPool())));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
                              ReadResultCollector::CollectResult(std::move(predicate_reader)));
         if (expected_array) {
@@ -205,9 +205,9 @@ TEST_F(PredicateBatchReaderTest, TestFullAndEmptyCase) {
 TEST_F(PredicateBatchReaderTest, TestInvalidInput) {
     auto data_array = PrepareArray(8);
     auto reader = std::make_unique<MockFileBatchReader>(data_array, data_type_, /*batch_size=*/10);
-    ASSERT_NOK_WITH_MSG(PredicateBatchReader::Create(std::move(reader), nullptr,
-                                                     GetSharedArrowPool(GetDefaultPool())),
-                        "create predicate batch reader failed. predicate is nullptr");
+    ASSERT_NOK_WITH_MSG(
+        PredicateBatchReader::Create(std::move(reader), nullptr, GetArrowPool(GetDefaultPool())),
+        "create predicate batch reader failed. predicate is nullptr");
 }
 
 }  // namespace paimon::test

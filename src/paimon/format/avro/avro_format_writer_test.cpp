@@ -119,9 +119,8 @@ class AvroFormatWriterTest : public ::testing::Test {
 
     void CheckResult(const std::string& file_path, int32_t row_count) const {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path));
-        ASSERT_OK_AND_ASSIGN(
-            auto file_reader,
-            AvroFileBatchReader::Create(input_stream, 1024, pool_, GetSharedArrowPool(pool_)));
+        ASSERT_OK_AND_ASSIGN(auto file_reader, AvroFileBatchReader::Create(
+                                                   input_stream, 1024, pool_, GetArrowPool(pool_)));
         ASSERT_OK_AND_ASSIGN(uint64_t num_rows, file_reader->GetNumberOfRows());
         ASSERT_EQ(num_rows, row_count);
 

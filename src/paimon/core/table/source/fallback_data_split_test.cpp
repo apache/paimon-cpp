@@ -72,7 +72,7 @@ TEST(FallbackTableReadTest, RoutesIndexedSplitToMainTable) {
     TrackingTableRead* main_table_ptr = main_table.get();
     TrackingTableRead* fallback_table_ptr = fallback_table.get();
     FallbackTableRead table_read(std::move(main_table), std::move(fallback_table),
-                                 GetSharedArrowPool(pool));
+                                 GetArrowPool(pool));
 
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0, /*bucket_path=*/"",
                                    /*data_files=*/{});

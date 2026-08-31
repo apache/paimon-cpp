@@ -363,8 +363,7 @@ class MergeFileSplitReadTest : public ::testing::Test,
                                    split_read->CreateReader(split));
             batch_readers.emplace_back(std::move(reader));
         }
-        return std::make_unique<ConcatBatchReader>(std::move(batch_readers),
-                                                   GetSharedArrowPool(pool_));
+        return std::make_unique<ConcatBatchReader>(std::move(batch_readers), GetArrowPool(pool_));
     }
 
  private:

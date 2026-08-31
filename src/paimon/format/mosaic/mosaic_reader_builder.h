@@ -31,13 +31,15 @@ namespace paimon::mosaic {
 class MosaicReaderBuilder : public ReaderBuilder {
  public:
     explicit MosaicReaderBuilder(int32_t batch_size)
-        : batch_size_(batch_size),
-          pool_(GetDefaultPool()),
-          arrow_pool_(GetSharedArrowPool(pool_)) {}
+        : batch_size_(batch_size), pool_(GetDefaultPool()), arrow_pool_(GetArrowPool(pool_)) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
-        arrow_pool_ = GetSharedArrowPool(pool);
+        if (pool == nullptr) {
+            arrow_pool_.reset();
+        } else {
+            arrow_pool_ = GetArrowPool(pool);
+        }
         return this;
     }
 

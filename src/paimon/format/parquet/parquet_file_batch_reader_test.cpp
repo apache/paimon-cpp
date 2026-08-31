@@ -76,6 +76,12 @@ class Predicate;
 
 namespace paimon::parquet::test {
 
+TEST(ParquetReaderBuilderTest, RejectsNullMemoryPool) {
+    ParquetReaderBuilder builder(/*options=*/{}, /*batch_size=*/10);
+    builder.WithMemoryPool(nullptr);
+    ASSERT_NOK_WITH_MSG(builder.Build(nullptr), "Parquet reader memory pool is nullptr");
+}
+
 std::string SerializeSchemaToString(const std::shared_ptr<arrow::Schema>& schema) {
     std::shared_ptr<arrow::Buffer> serialized = arrow::ipc::SerializeSchema(*schema).ValueOrDie();
     return std::string(reinterpret_cast<const char*>(serialized->data()),

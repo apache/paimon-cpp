@@ -237,7 +237,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::AssembleFul
     std::unique_ptr<::ArrowSchema> c_schema = std::make_unique<::ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*full_struct, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return std::make_pair(std::move(c_array), std::move(c_schema));
 }
 

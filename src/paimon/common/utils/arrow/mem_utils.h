@@ -28,13 +28,11 @@
 #include "paimon/visibility.h"
 
 struct ArrowArray;
+struct ArrowSchema;
 
 namespace paimon {
 
-PAIMON_EXPORT std::unique_ptr<arrow::MemoryPool> GetArrowPool(
-    const std::shared_ptr<MemoryPool>& pool);
-
-PAIMON_EXPORT std::shared_ptr<arrow::MemoryPool> GetSharedArrowPool(
+PAIMON_EXPORT std::shared_ptr<arrow::MemoryPool> GetArrowPool(
     const std::shared_ptr<MemoryPool>& pool);
 
 /// Keep an additional resource alive until the ArrowArray is released.
@@ -42,8 +40,9 @@ PAIMON_EXPORT std::shared_ptr<arrow::MemoryPool> GetSharedArrowPool(
 /// The existing release callback and private data are preserved as a release chain, so this helper
 /// can be applied to arrays produced by Arrow libraries or format plugins without inspecting their
 /// private data. Once a valid, unreleased array is passed in, this function releases it if
-/// retaining the lifetime fails.
-PAIMON_EXPORT Status AddArrowArrayLifetime(ArrowArray* array,
+/// retaining the lifetime fails. If a paired schema was exported, pass it so the schema is also
+/// released on failure; otherwise, pass nullptr.
+PAIMON_EXPORT Status AddArrowArrayLifetime(ArrowArray* array, ArrowSchema* schema,
                                            const std::shared_ptr<void>& lifetime);
 
 }  // namespace paimon

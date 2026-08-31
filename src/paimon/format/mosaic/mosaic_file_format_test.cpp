@@ -182,7 +182,7 @@ class MosaicFileFormatTest : public ::testing::Test {
     std::shared_ptr<LocalFileSystem> file_system_;
     std::unique_ptr<paimon::test::UniqueTestDirectory> directory_;
     std::shared_ptr<MemoryPool> pool_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_F(MosaicFileFormatTest, WriteThenRead) {
@@ -198,6 +198,13 @@ TEST_F(MosaicFileFormatTest, WriteThenRead) {
 
     ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/2));
     AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 5, 8});
+}
+
+TEST_F(MosaicFileFormatTest, ReaderBuilderRejectsNullMemoryPool) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/2));
+    reader_builder->WithMemoryPool(nullptr);
+    ASSERT_NOK_WITH_MSG(reader_builder->Build(nullptr), "Mosaic reader memory pool is nullptr");
 }
 
 TEST_F(MosaicFileFormatTest, EmptyProjectionPreservesRowCount) {

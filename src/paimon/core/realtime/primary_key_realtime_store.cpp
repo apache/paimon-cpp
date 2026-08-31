@@ -112,7 +112,7 @@ class StoredBatchReader final : public BatchReader {
             ArrowUtils::NormalizeRecordBatchOffsets(record_batch, arrow_pool_.get()));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
             arrow::ExportRecordBatch(*normalized_batch, array.get(), schema.get()));
-        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(array.get(), arrow_pool_));
+        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(array.get(), schema.get(), arrow_pool_));
         data_.reset();
         arrow_pool_.reset();
         export_guard.Release();
@@ -276,7 +276,7 @@ Result<std::shared_ptr<PrimaryKeyRealtimeStore>> PrimaryKeyRealtimeStore::Create
     if (!memory_pool) {
         return Status::Invalid("PK real-time store memory pool is null");
     }
-    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(memory_pool);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(memory_pool);
     return std::shared_ptr<PrimaryKeyRealtimeStore>(new PrimaryKeyRealtimeStore(
         std::make_unique<Impl>(transport_schema, std::move(arrow_pool))));
 }

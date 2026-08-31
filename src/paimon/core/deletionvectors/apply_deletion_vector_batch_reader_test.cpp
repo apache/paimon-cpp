@@ -70,7 +70,7 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
     void CheckResult(const std::string& data_str, const std::vector<char>& dv_data,
                      const std::string& expected_str) {
         std::shared_ptr<MemoryPool> pool = GetDefaultPool();
-        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
         auto f1 = arrow::ipc::internal::json::ArrayFromJSON(int_type_, data_str).ValueOrDie();
         std::shared_ptr<arrow::Array> data =
             arrow::StructArray::Make({f1}, target_type_->fields()).ValueOrDie();

@@ -81,7 +81,7 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteRowKindBatchReader::NextBatchWi
         arrow::StructArray::Make(fields_with_row_kind, field_names_with_row_kind_));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*array_with_row_kind, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return batch_with_bitmap;
 }
 

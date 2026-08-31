@@ -90,7 +90,7 @@ Result<BatchReader::ReadBatch> BlobViewResolvingBatchReader::NextBatch() {
                                       arrow::StructArray::Make(new_fields, field_names));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*resolved_struct_array, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return batch;
 }
 

@@ -36,17 +36,24 @@ class BlobReaderBuilder : public ReaderBuilder {
     BlobReaderBuilder(int32_t batch_size, const std::map<std::string, std::string>& options)
         : batch_size_(batch_size),
           pool_(GetDefaultPool()),
-          arrow_pool_(GetSharedArrowPool(pool_)),
+          arrow_pool_(GetArrowPool(pool_)),
           options_(options) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
-        arrow_pool_ = GetSharedArrowPool(pool);
+        if (pool == nullptr) {
+            arrow_pool_.reset();
+        } else {
+            arrow_pool_ = GetArrowPool(pool);
+        }
         return this;
     }
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& input_stream) const override {
+        if (pool_ == nullptr) {
+            return Status::Invalid("Blob reader memory pool is nullptr");
+        }
         PAIMON_ASSIGN_OR_RAISE(
             bool blob_as_descriptor,
             OptionsUtils::GetValueFromMap<bool>(options_, Options::BLOB_AS_DESCRIPTOR, false));

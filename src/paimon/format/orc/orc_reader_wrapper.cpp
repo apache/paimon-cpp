@@ -84,7 +84,7 @@ Result<BatchReader::ReadBatch> OrcReaderWrapper::Next() {
             std::shared_ptr<arrow::Array> array,
             OrcAdapter::AppendBatch(target_type_, orc_batch.get(), read_memory_->arrow_pool.get()));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
-        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), read_memory_));
+        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), read_memory_));
         next_row_ = GetRowNumber() + orc_batch->numElements;
         guard.Release();
     } catch (const std::exception& e) {

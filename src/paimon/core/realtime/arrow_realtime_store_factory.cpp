@@ -44,7 +44,7 @@ Result<std::shared_ptr<RealtimeStore>> ArrowRealtimeStoreFactory::Create(
                                       arrow::ImportSchema(request.write_schema.get()));
     switch (request.mode) {
         case RealtimeStoreMode::APPEND_ONLY: {
-            std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(request.memory_pool);
+            std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(request.memory_pool);
             return std::make_shared<ArrowRealtimeStore>(imported_schema, request.statistics_mode,
                                                         request.memory_pool, arrow_pool);
         }

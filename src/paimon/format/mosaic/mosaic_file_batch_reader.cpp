@@ -199,7 +199,7 @@ Result<BatchReader::ReadBatch> MosaicFileBatchReader::NextBatch() {
     auto ffi_schema = std::make_unique<::ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*normalized_array, ffi_array.get(), ffi_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(ffi_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(ffi_array.get(), ffi_schema.get(), arrow_pool_));
     return std::make_pair(std::move(ffi_array), std::move(ffi_schema));
 }
 

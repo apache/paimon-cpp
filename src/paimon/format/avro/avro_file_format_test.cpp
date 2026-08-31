@@ -29,6 +29,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/format/avro/avro_reader_builder.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/format/format_writer.h"
@@ -101,6 +102,12 @@ class AvroFileFormatTest : public testing::Test, public ::testing::WithParamInte
     std::shared_ptr<FileSystem> fs_;
     std::unique_ptr<paimon::test::UniqueTestDirectory> dir_;
 };
+
+TEST(AvroReaderBuilderTest, RejectsNullMemoryPool) {
+    AvroReaderBuilder builder(/*batch_size=*/1024);
+    builder.WithMemoryPool(nullptr);
+    ASSERT_NOK_WITH_MSG(builder.Build(nullptr), "Avro reader memory pool is nullptr");
+}
 
 INSTANTIATE_TEST_SUITE_P(Compression, AvroFileFormatTest,
                          ::testing::ValuesIn(std::vector<std::string>(

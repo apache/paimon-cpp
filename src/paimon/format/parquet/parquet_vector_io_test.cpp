@@ -107,7 +107,7 @@ class ParquetVectorIoTest : public ::testing::Test {
                              fs_->Create(file_path, /*overwrite=*/false));
         ::parquet::WriterProperties::Builder properties_builder;
         properties_builder.max_row_group_length(max_row_group_length);
-        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<ParquetFormatWriter> writer,
             ParquetFormatWriter::Create(out, arrow::schema(write_type->fields()),
@@ -138,7 +138,7 @@ class ParquetVectorIoTest : public ::testing::Test {
                              fs_->Create(file_path, /*overwrite=*/false));
         auto arrow_out = std::make_shared<ArrowOutputStreamAdapter>(out);
         ::parquet::WriterProperties::Builder properties_builder;
-        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
         std::shared_ptr<::parquet::ArrowWriterProperties> arrow_properties =
             ::parquet::ArrowWriterProperties::Builder().store_schema()->build();
         arrow::Status status = ::parquet::arrow::WriteTable(
@@ -152,7 +152,7 @@ class ParquetVectorIoTest : public ::testing::Test {
                       std::shared_ptr<arrow::StructType>* file_type_out) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
         ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
-        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
         auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool);
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<ParquetFileBatchReader> reader,
@@ -175,7 +175,7 @@ class ParquetVectorIoTest : public ::testing::Test {
                             std::unique_ptr<FileBatchReader>* vector_reader_out) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
         ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
-        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool_);
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
         auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool);
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<ParquetFileBatchReader> reader,

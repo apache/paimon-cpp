@@ -110,7 +110,7 @@ Result<BatchReader::ReadBatch> RowToArrowArrayConverter<T, R>::FinishAndAccumula
     std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return make_pair(std::move(c_array), std::move(c_schema));
 }
 

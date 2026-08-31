@@ -77,7 +77,7 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
             ASSERT_OK_AND_ASSIGN(auto data_evolution_file_reader,
                                  DataEvolutionFileReader::Create(
                                      std::move(readers), read_schema, batch_size, reader_offsets,
-                                     field_offsets, GetSharedArrowPool(pool_)));
+                                     field_offsets, GetArrowPool(pool_)));
             // check metrics, data_evolution_file_reader collects all row of each
             // MockFileBatchReader
             auto metrics = data_evolution_file_reader->GetReaderMetrics();
@@ -111,7 +111,7 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
         readers.push_back(std::move(file_batch_reader));
         DataEvolutionFileReader fake_data_evolution_reader(
             std::move(readers), /*read_schema=*/arrow::schema({}), read_batch_size,
-            /*reader_offsets=*/{}, /*field_offsets=*/{}, GetSharedArrowPool(pool_));
+            /*reader_offsets=*/{}, /*field_offsets=*/{}, GetArrowPool(pool_));
         arrow::ArrayVector result_array_vec;
         while (true) {
             ASSERT_OK_AND_ASSIGN(auto result_array,
@@ -148,7 +148,7 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
         arrow::FieldVector read_fields;
         auto read_schema = arrow::schema(read_fields);
         ASSERT_NOK_WITH_MSG(DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10,
-                                                            {}, {}, GetSharedArrowPool(pool_)),
+                                                            {}, {}, GetArrowPool(pool_)),
                             "read schema must not be empty");
     }
     {
@@ -163,7 +163,7 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
         std::vector<int32_t> field_offsets = {0, 1, 0};
         ASSERT_NOK_WITH_MSG(
             DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10, reader_offsets,
-                                            field_offsets, GetSharedArrowPool(pool_)),
+                                            field_offsets, GetArrowPool(pool_)),
             "read schema, row offsets and field offsets must have the same size");
     }
     {
@@ -178,7 +178,7 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
         std::vector<int32_t> field_offsets = {0, 1, 1, 0};
         ASSERT_NOK_WITH_MSG(
             DataEvolutionFileReader::Create({}, read_schema, /*read_batch_size=*/10, reader_offsets,
-                                            field_offsets, GetSharedArrowPool(pool_)),
+                                            field_offsets, GetArrowPool(pool_)),
             "readers must not be empty");
     }
     {
@@ -194,10 +194,10 @@ TEST_F(DataEvolutionFileReaderTest, TestInvalid) {
         auto read_schema = arrow::schema(read_fields);
         std::vector<int32_t> reader_offsets = {0, 0, 1, 1};
         std::vector<int32_t> field_offsets = {0, 1, 1, 0};
-        ASSERT_NOK_WITH_MSG(DataEvolutionFileReader::Create(
-                                std::move(readers), read_schema, /*read_batch_size=*/10,
-                                reader_offsets, field_offsets, GetSharedArrowPool(pool_)),
-                            "reader offset is out of range of readers");
+        ASSERT_NOK_WITH_MSG(
+            DataEvolutionFileReader::Create(std::move(readers), read_schema, /*read_batch_size=*/10,
+                                            reader_offsets, field_offsets, GetArrowPool(pool_)),
+            "reader offset is out of range of readers");
     }
 }
 
@@ -638,7 +638,7 @@ TEST_P(DataEvolutionFileReaderTest, TestSingleReaderRowCountMismatch) {
     ASSERT_OK_AND_ASSIGN(
         auto data_evolution_file_reader,
         DataEvolutionFileReader::Create(std::move(readers), read_schema, /*read_batch_size=*/10,
-                                        reader_offsets, field_offsets, GetSharedArrowPool(pool_)));
+                                        reader_offsets, field_offsets, GetArrowPool(pool_)));
     // array0 has 6 rows but array1 only has 5 rows
     ASSERT_NOK_WITH_MSG(
         paimon::test::ReadResultCollector::CollectResult(std::move(data_evolution_file_reader)),

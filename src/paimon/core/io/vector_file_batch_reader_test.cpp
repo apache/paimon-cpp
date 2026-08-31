@@ -62,7 +62,7 @@ TEST(VectorFileBatchReaderTest, ConvertSchemaAndNextBatch) {
         std::make_unique<MockFileBatchReader>(physical_array, physical_type, /*batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
     MockFileBatchReader* inner_reader = mock_reader.get();
-    VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
+    VectorFileBatchReader reader(std::move(mock_reader), GetArrowPool(GetDefaultPool()));
 
     ASSERT_TRUE(VectorFileBatchReader::ContainsVector(arrow::schema(logical_type->fields())));
     ASSERT_FALSE(VectorFileBatchReader::ContainsVector(arrow::schema(physical_type->fields())));
@@ -99,7 +99,7 @@ TEST(VectorFileBatchReaderTest, KeepFixedSizeListFileSchema) {
     mock_reader->EnableRandomizeBatchSize(false);
     MockFileBatchReader* inner_reader = mock_reader.get();
     auto reader = std::make_unique<VectorFileBatchReader>(std::move(mock_reader),
-                                                          GetSharedArrowPool(GetDefaultPool()));
+                                                          GetArrowPool(GetDefaultPool()));
 
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
@@ -139,7 +139,7 @@ TEST(VectorFileBatchReaderTest, NormalizeFixedSizeListElementField) {
         std::make_unique<MockFileBatchReader>(file_array, file_type, /*batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
     auto reader = std::make_unique<VectorFileBatchReader>(std::move(mock_reader),
-                                                          GetSharedArrowPool(GetDefaultPool()));
+                                                          GetArrowPool(GetDefaultPool()));
 
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
@@ -179,7 +179,7 @@ TEST(VectorFileBatchReaderTest, ConvertNestedVectorsWithBitmap) {
                                                              /*read_batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
     auto reader = std::make_unique<VectorFileBatchReader>(std::move(mock_reader),
-                                                          GetSharedArrowPool(GetDefaultPool()));
+                                                          GetArrowPool(GetDefaultPool()));
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
     ASSERT_OK(reader->SetReadSchema(&c_read_schema, /*predicate=*/nullptr,
@@ -209,7 +209,7 @@ TEST(VectorFileBatchReaderTest, RejectInvalidVectorValues) {
         auto mock_reader = std::make_unique<MockFileBatchReader>(physical_array, physical_type,
                                                                  /*read_batch_size=*/10);
         mock_reader->EnableRandomizeBatchSize(false);
-        VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
+        VectorFileBatchReader reader(std::move(mock_reader), GetArrowPool(GetDefaultPool()));
         ArrowSchema c_read_schema;
         ASSERT_TRUE(
             arrow::ExportSchema(*arrow::schema(logical_type->fields()), &c_read_schema).ok());
@@ -228,7 +228,7 @@ TEST(VectorFileBatchReaderTest, RejectInvalidFixedSizeListVectorValues) {
     auto mock_reader = std::make_unique<MockFileBatchReader>(physical_array, physical_type,
                                                              /*read_batch_size=*/10);
     mock_reader->EnableRandomizeBatchSize(false);
-    VectorFileBatchReader reader(std::move(mock_reader), GetSharedArrowPool(GetDefaultPool()));
+    VectorFileBatchReader reader(std::move(mock_reader), GetArrowPool(GetDefaultPool()));
     ArrowSchema c_read_schema;
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(physical_type->fields()), &c_read_schema).ok());
     ASSERT_OK(reader.SetReadSchema(&c_read_schema, /*predicate=*/nullptr,

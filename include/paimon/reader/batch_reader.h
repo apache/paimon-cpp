@@ -43,12 +43,12 @@ class PAIMON_EXPORT BatchReader {
     /// If EOF is reached, returns an OK status with a nullptr array. Returns an error status only
     /// for critical failures (e.g., IO errors). Once an error is returned, this method must not be
     /// retried, as it will repeatedly return the same error code.
-    /// \note IMPORTANT: A non-EOF ArrowArray and all its nested child arrays must have offset 0 to
+    /// @warning A non-EOF ArrowArray and all its nested child arrays must have offset 0 to
     /// avoid potential issues during conversion through the Arrow C Data Interface.
-    /// \note A returned ArrowArray must retain every allocator and plugin resource needed by its
+    /// @warning A returned ArrowArray must retain every allocator and plugin resource needed by its
     /// release callback, so it remains releasable after this reader is destroyed.
-    /// \note Consumers must treat the returned ArrowArray and ArrowSchema as one complete Arrow C
-    /// Data Interface ownership unit. Moving or retaining an individual child ArrowArray without
+    /// @warning Consumers must treat the returned ArrowArray and ArrowSchema as one complete Arrow
+    /// C Data Interface ownership unit. Moving or retaining an individual child ArrowArray without
     /// its root array is unsupported because resource lifetimes are retained by the root array's
     /// release chain.
     ///
@@ -63,12 +63,12 @@ class PAIMON_EXPORT BatchReader {
     /// If EOF is reached, returns an OK status with a nullptr array. Returns an error status only
     /// for critical failures (e.g., IO errors). Once an error is returned, this method must not be
     /// retried, as it will repeatedly return the same error code.
-    /// \note IMPORTANT: A non-EOF ArrowArray and all its nested child arrays must have offset 0 to
+    /// @warning A non-EOF ArrowArray and all its nested child arrays must have offset 0 to
     /// avoid potential issues during conversion through the Arrow C Data Interface.
-    /// \note A returned ArrowArray must retain every allocator and plugin resource needed by its
+    /// @warning A returned ArrowArray must retain every allocator and plugin resource needed by its
     /// release callback, so it remains releasable after this reader is destroyed.
-    /// \note Consumers must treat the returned ArrowArray and ArrowSchema as one complete Arrow C
-    /// Data Interface ownership unit. Moving or retaining an individual child ArrowArray without
+    /// @warning Consumers must treat the returned ArrowArray and ArrowSchema as one complete Arrow
+    /// C Data Interface ownership unit. Moving or retaining an individual child ArrowArray without
     /// its root array is unsupported because resource lifetimes are retained by the root array's
     /// release chain.
     ///

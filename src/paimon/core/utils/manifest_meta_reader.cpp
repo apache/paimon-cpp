@@ -62,7 +62,8 @@ Result<BatchReader::ReadBatch> ManifestMetaReader::NextBatch() {
 
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, target_c_arrow_array.get(), target_c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(target_c_arrow_array.get(), pool_));
+    PAIMON_RETURN_NOT_OK(
+        AddArrowArrayLifetime(target_c_arrow_array.get(), target_c_schema.get(), pool_));
     return std::make_pair(std::move(target_c_arrow_array), std::move(target_c_schema));
 }
 

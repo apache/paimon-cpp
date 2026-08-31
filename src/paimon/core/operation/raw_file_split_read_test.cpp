@@ -173,8 +173,8 @@ class RawFileSplitReadTest : public ::testing::Test {
                                  split_read->CreateReader(split));
             batch_readers.emplace_back(std::move(reader));
         }
-        auto batch_reader = std::make_unique<ConcatBatchReader>(std::move(batch_readers),
-                                                                GetSharedArrowPool(pool_));
+        auto batch_reader =
+            std::make_unique<ConcatBatchReader>(std::move(batch_readers), GetArrowPool(pool_));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(std::move(batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_array));
@@ -425,7 +425,7 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, split_read->CreateReader(data_split));
     batch_readers.push_back(std::move(reader));
     auto batch_reader =
-        std::make_unique<ConcatBatchReader>(std::move(batch_readers), GetSharedArrowPool(pool_));
+        std::make_unique<ConcatBatchReader>(std::move(batch_readers), GetArrowPool(pool_));
     ASSERT_OK_AND_ASSIGN(auto result_array,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_EQ(result_array, nullptr);

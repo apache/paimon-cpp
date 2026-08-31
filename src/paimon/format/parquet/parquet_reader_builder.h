@@ -51,12 +51,16 @@ class ParquetReaderBuilder : public ReaderBuilder {
     ParquetReaderBuilder(const std::map<std::string, std::string>& options, int32_t batch_size)
         : batch_size_(batch_size),
           pool_(GetDefaultPool()),
-          arrow_pool_(GetSharedArrowPool(pool_)),
+          arrow_pool_(GetArrowPool(pool_)),
           options_(options) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
-        arrow_pool_ = GetSharedArrowPool(pool);
+        if (pool == nullptr) {
+            arrow_pool_.reset();
+        } else {
+            arrow_pool_ = GetArrowPool(pool);
+        }
         return this;
     }
 
@@ -72,6 +76,9 @@ class ParquetReaderBuilder : public ReaderBuilder {
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
+        if (pool_ == nullptr) {
+            return Status::Invalid("Parquet reader memory pool is nullptr");
+        }
         try {
             PAIMON_ASSIGN_OR_RAISE(int64_t file_length, path->Length());
             std::string file_uri;

@@ -109,7 +109,7 @@ ObjectsFile<T>::ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
                             const std::shared_ptr<MemoryPool>& pool)
     : path_factory_(path_factory),
       pool_(pool),
-      arrow_pool_(GetSharedArrowPool(pool)),
+      arrow_pool_(GetArrowPool(pool)),
       serializer_(std::move(serializer)),
       writer_builder_(std::move(writer_builder)),
       file_system_(file_system),

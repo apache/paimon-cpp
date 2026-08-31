@@ -109,7 +109,7 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
                                       arrow::StructArray::Make(array_vec, field_names_with_score_));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*array_with_score, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return batch_with_bitmap;
 }
 }  // namespace paimon

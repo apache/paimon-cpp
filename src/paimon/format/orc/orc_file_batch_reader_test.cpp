@@ -40,6 +40,7 @@
 #include "paimon/format/orc/orc_memory_pool.h"
 #include "paimon/format/orc/orc_metrics.h"
 #include "paimon/format/orc/orc_output_stream_impl.h"
+#include "paimon/format/orc/orc_reader_builder.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/testing/utils/read_result_collector.h"
@@ -47,6 +48,12 @@
 #include "paimon/testing/utils/timezone_guard.h"
 
 namespace paimon::orc::test {
+
+TEST(OrcReaderBuilderTest, RejectsNullMemoryPool) {
+    OrcReaderBuilder builder(/*options=*/{}, /*batch_size=*/10);
+    builder.WithMemoryPool(nullptr);
+    ASSERT_NOK_WITH_MSG(builder.Build(nullptr), "ORC reader memory pool is nullptr");
+}
 
 std::string SerializeSchemaToString(const std::shared_ptr<arrow::Schema>& schema) {
     std::shared_ptr<arrow::Buffer> serialized = arrow::ipc::SerializeSchema(*schema).ValueOrDie();

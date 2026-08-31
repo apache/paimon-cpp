@@ -103,7 +103,8 @@ Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithB
     std::unique_ptr<ArrowSchema> target_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, target_c_arrow_array.get(), target_c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(target_c_arrow_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(
+        AddArrowArrayLifetime(target_c_arrow_array.get(), target_c_schema.get(), arrow_pool_));
     auto target_batch = std::make_pair(std::move(target_c_arrow_array), std::move(target_c_schema));
     return ReaderUtils::AddAllValidBitmap(std::move(target_batch));
 }

@@ -32,7 +32,7 @@ namespace paimon::orc {
 
 struct OrcReadMemory {
     explicit OrcReadMemory(const std::shared_ptr<MemoryPool>& pool)
-        : arrow_pool(GetSharedArrowPool(pool)), orc_pool(std::make_shared<OrcMemoryPool>(pool)) {}
+        : arrow_pool(GetArrowPool(pool)), orc_pool(std::make_shared<OrcMemoryPool>(pool)) {}
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool;
     std::shared_ptr<::orc::MemoryPool> orc_pool;

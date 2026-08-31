@@ -76,7 +76,7 @@ class InMemorySystemTableRead : public TableRead {
  public:
     InMemorySystemTableRead(std::shared_ptr<const InMemorySystemTable> table,
                             const std::shared_ptr<MemoryPool>& memory_pool)
-        : table_(std::move(table)), arrow_pool_(GetSharedArrowPool(memory_pool)) {}
+        : table_(std::move(table)), arrow_pool_(GetArrowPool(memory_pool)) {}
 
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const std::vector<std::shared_ptr<Split>>& splits) override {

@@ -69,7 +69,7 @@ class CompleteRowKindBatchReaderTest : public ::testing::Test {
         EXPECT_OK(orc_batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
                                                   /*selection_bitmap=*/std::nullopt));
         return std::make_unique<CompleteRowKindBatchReader>(std::move(orc_batch_reader),
-                                                            GetSharedArrowPool(pool_));
+                                                            GetArrowPool(pool_));
     }
 
     std::unique_ptr<BatchReader> PrepareCompleteRowKindBatchReader(
@@ -77,7 +77,7 @@ class CompleteRowKindBatchReaderTest : public ::testing::Test {
         auto file_batch_reader =
             std::make_unique<MockFileBatchReader>(src_array, src_array->type(), batch_size);
         return std::make_unique<CompleteRowKindBatchReader>(std::move(file_batch_reader),
-                                                            GetSharedArrowPool(pool_));
+                                                            GetArrowPool(pool_));
     }
 
  private:

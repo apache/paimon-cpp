@@ -90,9 +90,9 @@ TEST(ReaderUtilsTest, TestCollectResultReleasesBufferedBatchesOnError) {
     auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[1]").ValueOrDie();
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, ReadResultCollector::GetReadBatch(array));
 
-    std::shared_ptr<int> lifetime = std::make_shared<int>(1);
-    std::weak_ptr<int> weak_lifetime = lifetime;
-    ASSERT_OK(AddArrowArrayLifetime(batch.first.get(), lifetime));
+    std::shared_ptr<int32_t> lifetime = std::make_shared<int32_t>(1);
+    std::weak_ptr<int32_t> weak_lifetime = lifetime;
+    ASSERT_OK(AddArrowArrayLifetime(batch.first.get(), batch.second.get(), lifetime));
     lifetime.reset();
 
     auto reader = std::make_unique<ErrorAfterOneBatchReader>(std::move(batch));

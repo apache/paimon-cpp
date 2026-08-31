@@ -222,8 +222,8 @@ TEST(MemUtilsTest, TestAddArrowArrayLifetimeComposesReleaseChain) {
     array.release = ReleaseTrackingArrowArray;
     array.private_data = new TrackingArrowArrayPrivateData{original_lifetime, &release_order};
 
-    ASSERT_OK(AddArrowArrayLifetime(&array, inner_lifetime));
-    ASSERT_OK(AddArrowArrayLifetime(&array, outer_lifetime));
+    ASSERT_OK(AddArrowArrayLifetime(&array, /*schema=*/nullptr, inner_lifetime));
+    ASSERT_OK(AddArrowArrayLifetime(&array, /*schema=*/nullptr, outer_lifetime));
     original_lifetime.reset();
     inner_lifetime.reset();
     outer_lifetime.reset();
@@ -239,7 +239,7 @@ TEST(MemUtilsTest, TestAddArrowArrayLifetimeKeepsPoolAliveUntilOriginalRelease) 
     std::shared_ptr<MemoryPool> paimon_pool =
         std::make_shared<TrackingMemoryPool>(&pool_destroyed, &free_count);
     std::weak_ptr<MemoryPool> weak_paimon_pool = paimon_pool;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(paimon_pool);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(paimon_pool);
     ArrowArray c_array{};
     {
         arrow::Int32Builder builder(arrow_pool.get());
@@ -249,7 +249,7 @@ TEST(MemUtilsTest, TestAddArrowArrayLifetimeKeepsPoolAliveUntilOriginalRelease) 
         std::shared_ptr<arrow::Array> array = std::move(array_result).ValueOrDie();
         ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
     }
-    ASSERT_OK(AddArrowArrayLifetime(&c_array, arrow_pool));
+    ASSERT_OK(AddArrowArrayLifetime(&c_array, /*schema=*/nullptr, arrow_pool));
 
     arrow_pool.reset();
     paimon_pool.reset();
@@ -270,9 +270,9 @@ TEST(MemUtilsTest, TestAddArrowArrayLifetimeDeduplicatesSameOwner) {
     array.release = ReleaseTrackingArrowArray;
     array.private_data = new TrackingArrowArrayPrivateData{nullptr, &release_order};
 
-    ASSERT_OK(AddArrowArrayLifetime(&array, lifetime));
+    ASSERT_OK(AddArrowArrayLifetime(&array, /*schema=*/nullptr, lifetime));
     const int64_t use_count = lifetime.use_count();
-    ASSERT_OK(AddArrowArrayLifetime(&array, lifetime));
+    ASSERT_OK(AddArrowArrayLifetime(&array, /*schema=*/nullptr, lifetime));
     ASSERT_EQ(use_count, lifetime.use_count());
 
     ArrowArrayRelease(&array);
@@ -280,14 +280,29 @@ TEST(MemUtilsTest, TestAddArrowArrayLifetimeDeduplicatesSameOwner) {
 
 TEST(MemUtilsTest, TestAddArrowArrayLifetimeRejectsInvalidInput) {
     ArrowArray array{};
-    ASSERT_NOK(AddArrowArrayLifetime(nullptr, std::make_shared<int32_t>(1)));
-    ASSERT_NOK(AddArrowArrayLifetime(&array, std::make_shared<int32_t>(1)));
+    ASSERT_NOK(AddArrowArrayLifetime(nullptr, /*schema=*/nullptr, std::make_shared<int32_t>(1)));
+    ASSERT_NOK(AddArrowArrayLifetime(&array, /*schema=*/nullptr, std::make_shared<int32_t>(1)));
 
     std::vector<int32_t> release_order;
     array.release = ReleaseTrackingArrowArray;
     array.private_data = new TrackingArrowArrayPrivateData{nullptr, &release_order};
-    ASSERT_NOK(AddArrowArrayLifetime(&array, nullptr));
+    ASSERT_NOK(AddArrowArrayLifetime(&array, /*schema=*/nullptr, nullptr));
     ASSERT_EQ(nullptr, array.release);
+    ASSERT_EQ(std::vector<int32_t>({0}), release_order);
+}
+
+TEST(MemUtilsTest, TestAddArrowArrayLifetimeReleasesPairedSchemaOnFailure) {
+    std::vector<int32_t> release_order;
+    ArrowArray array{};
+    array.release = ReleaseTrackingArrowArray;
+    array.private_data = new TrackingArrowArrayPrivateData{nullptr, &release_order};
+    ArrowSchema schema{};
+    ASSERT_TRUE(
+        arrow::ExportSchema(*arrow::schema({arrow::field("value", arrow::int32())}), &schema).ok());
+
+    ASSERT_NOK(AddArrowArrayLifetime(&array, &schema, nullptr));
+    ASSERT_EQ(nullptr, array.release);
+    ASSERT_EQ(nullptr, schema.release);
     ASSERT_EQ(std::vector<int32_t>({0}), release_order);
 }
 

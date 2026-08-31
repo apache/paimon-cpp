@@ -100,7 +100,8 @@ Result<BatchReader::ReadBatch> ReaderUtils::ApplyBitmapToReadBatch(
     std::unique_ptr<ArrowSchema> result_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*result, result_c_array.get(), result_c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(result_c_array.get(), arrow_pool));
+    PAIMON_RETURN_NOT_OK(
+        AddArrowArrayLifetime(result_c_array.get(), result_c_schema.get(), arrow_pool));
     return make_pair(std::move(result_c_array), std::move(result_c_schema));
 }
 

@@ -325,7 +325,7 @@ Result<BatchReader::ReadBatch> BlobFileBatchReader::NextBatch() {
     std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*blob_array, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     previous_batch_start_pos_ = current_pos_;
     current_pos_ += rows_to_read;
     previous_batch_row_count_ = c_array->length;

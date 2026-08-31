@@ -38,12 +38,19 @@ class OrcReaderBuilder : public ReaderBuilder {
           options_(options) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
-        read_memory_ = std::make_shared<OrcReadMemory>(pool);
+        if (pool == nullptr) {
+            read_memory_.reset();
+        } else {
+            read_memory_ = std::make_shared<OrcReadMemory>(pool);
+        }
         return this;
     }
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
+        if (read_memory_ == nullptr) {
+            return Status::Invalid("ORC reader memory pool is nullptr");
+        }
         PAIMON_ASSIGN_OR_RAISE(uint64_t natural_read_size,
                                OptionsUtils::GetValueFromMap<uint64_t>(
                                    options_, ORC_NATURAL_READ_SIZE, DEFAULT_NATURAL_READ_SIZE));

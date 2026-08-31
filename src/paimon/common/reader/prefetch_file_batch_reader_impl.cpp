@@ -654,7 +654,7 @@ Status PrefetchFileBatchReaderImpl::HandleReadResult(
                 ArrowUtils::NormalizeArrayOffsets(sliced_array, arrow_pool_.get()));
             PAIMON_RETURN_NOT_OK_FROM_ARROW(
                 arrow::ExportArray(*normalized_array, c_array.get(), c_schema.get()));
-            PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+            PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
             bitmap.RemoveRange(slice_end, array->length());
             global_row_ids =
                 std::vector<uint64_t>(global_row_ids.begin(), global_row_ids.begin() + slice_end);

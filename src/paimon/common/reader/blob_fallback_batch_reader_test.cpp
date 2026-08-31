@@ -118,9 +118,9 @@ class BlobFallbackBatchReaderTest : public ::testing::Test {
                 for (const auto& specs : group_specs) {
                     groups.push_back(MakeGroup(specs, file_batch_size));
                 }
-                ASSERT_OK_AND_ASSIGN(auto reader, BlobFallbackBatchReader::Create(
-                                                      std::move(groups), read_schema_, batch_size,
-                                                      GetSharedArrowPool(pool_)));
+                ASSERT_OK_AND_ASSIGN(
+                    auto reader, BlobFallbackBatchReader::Create(std::move(groups), read_schema_,
+                                                                 batch_size, GetArrowPool(pool_)));
                 ASSERT_OK_AND_ASSIGN(auto result, paimon::test::ReadResultCollector::CollectResult(
                                                       std::move(reader)));
                 auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_array);
@@ -292,7 +292,7 @@ TEST_F(BlobFallbackBatchReaderTest, TestRowTrackingFieldsPreserved) {
 
                     ASSERT_OK_AND_ASSIGN(auto reader, BlobFallbackBatchReader::Create(
                                                           std::move(groups), schema, batch_size,
-                                                          GetSharedArrowPool(pool_)));
+                                                          GetArrowPool(pool_)));
                     ASSERT_OK_AND_ASSIGN(
                         auto result,
                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
@@ -320,7 +320,7 @@ TEST_F(BlobFallbackBatchReaderTest, TestMisalignedGroupsFail) {
     groups.push_back(MakeGroup({SegmentSpec::File({"b0", "b1"})}, 1024));
     ASSERT_OK_AND_ASSIGN(auto reader,
                          BlobFallbackBatchReader::Create(std::move(groups), read_schema_, 1024,
-                                                         GetSharedArrowPool(pool_)));
+                                                         GetArrowPool(pool_)));
     ASSERT_NOK_WITH_MSG(reader->NextBatch(), "same number of rows");
 }
 
@@ -329,7 +329,7 @@ TEST_F(BlobFallbackBatchReaderTest, TestCreateValidation) {
     std::vector<std::vector<BlobFallbackBatchReader::Segment>> single_group;
     single_group.push_back(MakeGroup({SegmentSpec::File({"b0"})}, 1024));
     ASSERT_NOK_WITH_MSG(BlobFallbackBatchReader::Create(std::move(single_group), read_schema_, 1024,
-                                                        GetSharedArrowPool(pool_)),
+                                                        GetArrowPool(pool_)),
                         "at least two sequence groups");
 
     // the read schema must contain a blob field
@@ -338,16 +338,16 @@ TEST_F(BlobFallbackBatchReaderTest, TestCreateValidation) {
     groups.push_back(MakeGroup({SegmentSpec::File({"b1"})}, 1024));
     auto plain_schema =
         arrow::schema({arrow::field("not_blob", arrow::large_binary(), /*nullable=*/true)});
-    ASSERT_NOK_WITH_MSG(BlobFallbackBatchReader::Create(std::move(groups), plain_schema, 1024,
-                                                        GetSharedArrowPool(pool_)),
-                        "should contain a blob field");
+    ASSERT_NOK_WITH_MSG(
+        BlobFallbackBatchReader::Create(std::move(groups), plain_schema, 1024, GetArrowPool(pool_)),
+        "should contain a blob field");
 
     // groups must not be empty
     std::vector<std::vector<BlobFallbackBatchReader::Segment>> with_empty_group;
     with_empty_group.push_back(MakeGroup({SegmentSpec::File({"b0"})}, 1024));
     with_empty_group.emplace_back();
     ASSERT_NOK_WITH_MSG(BlobFallbackBatchReader::Create(std::move(with_empty_group), read_schema_,
-                                                        1024, GetSharedArrowPool(pool_)),
+                                                        1024, GetArrowPool(pool_)),
                         "should not be empty");
 
     // a gap segment must cover at least one selected row id
@@ -355,7 +355,7 @@ TEST_F(BlobFallbackBatchReaderTest, TestCreateValidation) {
     with_empty_gap.push_back(MakeGroup({SegmentSpec::File({"b0"})}, 1024));
     with_empty_gap.push_back(MakeGroup({SegmentSpec::GapRanges({})}, 1024));
     ASSERT_NOK_WITH_MSG(BlobFallbackBatchReader::Create(std::move(with_empty_gap), read_schema_,
-                                                        1024, GetSharedArrowPool(pool_)),
+                                                        1024, GetArrowPool(pool_)),
                         "at least one selected row id");
 }
 

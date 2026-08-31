@@ -137,11 +137,10 @@ class FieldMappingReaderTest : public ::testing::Test {
                                    /*batch_size=*/1);
 
         ASSERT_OK_AND_ASSIGN(
-            auto reader,
-            FieldMappingReader::Create(
-                /*field_count=*/read_schema->num_fields(), std::move(orc_batch_reader), partition_,
-                std::move(mapping), /*skip_map_selected_keys_filter_field_ids=*/{},
-                GetSharedArrowPool(pool_)));
+            auto reader, FieldMappingReader::Create(
+                             /*field_count=*/read_schema->num_fields(), std::move(orc_batch_reader),
+                             partition_, std::move(mapping),
+                             /*skip_map_selected_keys_filter_field_ids=*/{}, GetArrowPool(pool_)));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(std::move(reader)));
         if (expect_array == nullptr && result_array == nullptr) {
@@ -180,11 +179,10 @@ class FieldMappingReaderTest : public ::testing::Test {
             /*predicate=*/mapping->non_partition_info.non_partition_filter, /*batch_size=*/1);
 
         ASSERT_OK_AND_ASSIGN(
-            auto reader,
-            FieldMappingReader::Create(
-                /*field_count=*/read_schema->num_fields(), std::move(orc_batch_reader), partition,
-                std::move(mapping), /*skip_map_selected_keys_filter_field_ids=*/{},
-                GetSharedArrowPool(pool_)));
+            auto reader, FieldMappingReader::Create(
+                             /*field_count=*/read_schema->num_fields(), std::move(orc_batch_reader),
+                             partition, std::move(mapping),
+                             /*skip_map_selected_keys_filter_field_ids=*/{}, GetArrowPool(pool_)));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(std::move(reader)));
         if (expect_array == nullptr && result_array == nullptr) {
@@ -247,7 +245,7 @@ TEST_F(FieldMappingReaderTest, TestGenerateSinglePartitionArray) {
         auto mapping_reader,
         FieldMappingReader::Create(
             /*field_count=*/8, /*reader=*/nullptr, partition, std::move(field_mapping),
-            /*skip_map_selected_keys_filter_field_ids=*/{}, GetSharedArrowPool(pool_)));
+            /*skip_map_selected_keys_filter_field_ids=*/{}, GetArrowPool(pool_)));
 
     {
         ASSERT_OK_AND_ASSIGN(auto p7_array, mapping_reader->GenerateSinglePartitionArray(
@@ -479,7 +477,7 @@ TEST_F(FieldMappingReaderTest, TestSchemaEvolutionAddedFieldInsideList) {
                          FieldMappingReader::Create(read_schema->num_fields(), std::move(mock),
                                                     BinaryRow::EmptyRow(), std::move(mapping),
                                                     /*skip_map_selected_keys_filter_field_ids=*/{},
-                                                    GetSharedArrowPool(pool_)));
+                                                    GetArrowPool(pool_)));
     ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
 
     auto expect_array =
@@ -865,12 +863,11 @@ TEST_F(FieldMappingReaderTest, TestCreateFailFastOnInvalidMapSelectedKeysMetadat
         /*partition_info=*/PartitionInfo(), std::move(non_part_info),
         /*non_exist_field_info=*/std::nullopt);
 
-    ASSERT_NOK_WITH_MSG(
-        FieldMappingReader::Create(
-            /*field_count=*/1,
-            /*reader=*/nullptr,
-            /*partition=*/BinaryRow::EmptyRow(), std::move(field_mapping),
-            /*skip_map_selected_keys_filter_field_ids=*/{}, GetSharedArrowPool(pool_)),
-        "Duplicate selected key 'a'");
+    ASSERT_NOK_WITH_MSG(FieldMappingReader::Create(
+                            /*field_count=*/1,
+                            /*reader=*/nullptr,
+                            /*partition=*/BinaryRow::EmptyRow(), std::move(field_mapping),
+                            /*skip_map_selected_keys_filter_field_ids=*/{}, GetArrowPool(pool_)),
+                        "Duplicate selected key 'a'");
 }
 }  // namespace paimon::test

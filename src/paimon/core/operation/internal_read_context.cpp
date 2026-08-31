@@ -285,7 +285,7 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     if (!context->GetMemoryPool()) {
         return Status::Invalid("memory pool is null");
     }
-    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(context->GetMemoryPool());
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(context->GetMemoryPool());
     return std::unique_ptr<InternalReadContext>(
         new InternalReadContext(context, table_schema, read_schema, core_options, arrow_pool));
 }

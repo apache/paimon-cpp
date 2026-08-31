@@ -60,7 +60,7 @@ Result<std::unique_ptr<KeyValueMetaProjectionConsumer>> KeyValueMetaProjectionCo
                         target_to_src_mapping.size()));
     }
 
-    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
     // target fields of output array: special fields + value fields
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(

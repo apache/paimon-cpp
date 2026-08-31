@@ -264,7 +264,7 @@ Result<BatchReader::ReadBatch> VectorFileBatchReader::ConvertBatch(ReadBatch&& b
     PAIMON_ASSIGN_OR_RAISE(array, ConvertToReadType(array, read_type_, arrow_pool_.get()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return std::move(batch);
 }
 

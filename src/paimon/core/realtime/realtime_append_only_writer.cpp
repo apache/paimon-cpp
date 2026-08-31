@@ -70,7 +70,7 @@ RealtimeAppendOnlyWriter::RealtimeAppendOnlyWriter(
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
     const std::shared_ptr<arrow::Schema>& input_schema, int64_t next_offset,
     const std::shared_ptr<MemoryPool>& memory_pool)
-    : arrow_pool_(GetSharedArrowPool(memory_pool)),
+    : arrow_pool_(GetArrowPool(memory_pool)),
       realtime_store_(realtime_store),
       file_writer_(file_writer),
       input_schema_(input_schema),

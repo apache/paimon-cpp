@@ -149,7 +149,7 @@ CompleteRowTrackingFieldsBatchReader::NextBatchWithBitmap() {
         arrow::StructArray::Make(sub_array_vec, read_schema_->field_names()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, c_array.get(), c_schema.get()));
-    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return std::move(src_array_with_bitmap);
 }
 

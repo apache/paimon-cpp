@@ -33,18 +33,23 @@ namespace paimon::avro {
 class AvroReaderBuilder : public ReaderBuilder {
  public:
     explicit AvroReaderBuilder(int32_t batch_size)
-        : batch_size_(batch_size),
-          pool_(GetDefaultPool()),
-          arrow_pool_(GetSharedArrowPool(pool_)) {}
+        : batch_size_(batch_size), pool_(GetDefaultPool()), arrow_pool_(GetArrowPool(pool_)) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
-        arrow_pool_ = GetSharedArrowPool(pool);
+        if (pool == nullptr) {
+            arrow_pool_.reset();
+        } else {
+            arrow_pool_ = GetArrowPool(pool);
+        }
         return this;
     }
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
+        if (pool_ == nullptr) {
+            return Status::Invalid("Avro reader memory pool is nullptr");
+        }
         return AvroFileBatchReader::Create(path, batch_size_, pool_, arrow_pool_);
     }
 

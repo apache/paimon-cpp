@@ -133,7 +133,7 @@ class ConcatBatchReaderTest : public ::testing::Test {
                 readers.push_back(std::move(reader));
             }
             auto concat_reader =
-                std::make_unique<ConcatBatchReader>(std::move(readers), GetSharedArrowPool(pool_));
+                std::make_unique<ConcatBatchReader>(std::move(readers), GetArrowPool(pool_));
             ASSERT_OK_AND_ASSIGN(auto result_chunk_array,
                                  ReadResultCollector::CollectResult(std::move(concat_reader)));
             if (expected.empty()) {
@@ -249,7 +249,7 @@ TEST_F(ConcatBatchReaderTest, TestReleaseReaderAtEof) {
         std::make_unique<MockFileBatchReader>(data, data->type(), /*read_batch_size=*/1));
     lifetime.reset();
 
-    ConcatBatchReader reader(std::move(readers), GetSharedArrowPool(pool_));
+    ConcatBatchReader reader(std::move(readers), GetArrowPool(pool_));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, reader.NextBatchWithBitmap());
     ASSERT_FALSE(BatchReader::IsEofBatch(batch));
     ASSERT_TRUE(weak_lifetime.expired());
@@ -271,7 +271,7 @@ TEST_F(ConcatBatchReaderTest, TestCollectMetricsAfterReleasingReaders) {
         std::make_unique<MockFileBatchReader>(data2, type, /*read_batch_size=*/1),
         /*latency=*/17, /*io_count=*/3));
     auto concat_reader =
-        std::make_unique<ConcatBatchReader>(std::move(readers), GetSharedArrowPool(pool_));
+        std::make_unique<ConcatBatchReader>(std::move(readers), GetArrowPool(pool_));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadResultCollector::CollectResult(concat_reader.get()));

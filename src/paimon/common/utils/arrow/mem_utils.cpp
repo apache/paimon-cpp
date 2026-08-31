@@ -126,20 +126,20 @@ class ArrowMemPoolAdaptor : public arrow::MemoryPool {
 
 }  // namespace
 
-std::unique_ptr<arrow::MemoryPool> GetArrowPool(const std::shared_ptr<MemoryPool>& pool) {
-    return std::make_unique<ArrowMemPoolAdaptor>(pool);
-}
-
-std::shared_ptr<arrow::MemoryPool> GetSharedArrowPool(const std::shared_ptr<MemoryPool>& pool) {
+std::shared_ptr<arrow::MemoryPool> GetArrowPool(const std::shared_ptr<MemoryPool>& pool) {
     return std::make_shared<ArrowMemPoolAdaptor>(pool);
 }
 
-Status AddArrowArrayLifetime(ArrowArray* array, const std::shared_ptr<void>& lifetime) {
+Status AddArrowArrayLifetime(ArrowArray* array, ArrowSchema* schema,
+                             const std::shared_ptr<void>& lifetime) {
     if (array == nullptr || array->release == nullptr) {
         return Status::Invalid("cannot add lifetime to a released ArrowArray");
     }
     if (lifetime.use_count() == 0) {
         ArrowArrayRelease(array);
+        if (schema != nullptr && schema->release != nullptr) {
+            ArrowSchemaRelease(schema);
+        }
         return Status::Invalid("cannot add an empty lifetime to an ArrowArray");
     }
     if (array->release == ReleaseArrowArray) {
@@ -148,16 +148,11 @@ Status AddArrowArrayLifetime(ArrowArray* array, const std::shared_ptr<void>& lif
             return Status::OK();
         }
     }
-    try {
-        std::unique_ptr<ArrowArrayPrivateData> data = std::make_unique<ArrowArrayPrivateData>(
-            ArrowArrayPrivateData{array->release, array->private_data, lifetime});
-        array->release = ReleaseArrowArray;
-        array->private_data = data.release();
-        return Status::OK();
-    } catch (const std::bad_alloc&) {
-        ArrowArrayRelease(array);
-        return Status::OutOfMemory("failed to add lifetime to an ArrowArray");
-    }
+    std::unique_ptr<ArrowArrayPrivateData> data = std::make_unique<ArrowArrayPrivateData>(
+        ArrowArrayPrivateData{array->release, array->private_data, lifetime});
+    array->release = ReleaseArrowArray;
+    array->private_data = data.release();
+    return Status::OK();
 }
 
 }  // namespace paimon

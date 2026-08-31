@@ -27,7 +27,7 @@ Result<std::unique_ptr<MetaToArrowArrayConverter>> MetaToArrowArrayConverter::Cr
         return Status::Invalid("meta_data_type in MetaToArrowArrayConverter must be struct type");
     }
     auto struct_type = checked_pointer_cast<arrow::StructType>(meta_data_type);
-    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetSharedArrowPool(pool);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
         arrow_pool.get(), arrow::struct_(struct_type->fields()), &array_builder));

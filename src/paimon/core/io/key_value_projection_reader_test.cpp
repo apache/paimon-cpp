@@ -96,14 +96,14 @@ class KeyValueProjectionReaderTest : public testing::Test,
         if (!multi_thread_row_to_batch) {
             EXPECT_OK_AND_ASSIGN(
                 auto projection_reader,
-                KeyValueProjectionReader::Create(
-                    std::move(sort_merge_reader), target_schema, target_to_src_mapping,
-                    /*batch_size=*/batch_size, GetSharedArrowPool(pool_)));
+                KeyValueProjectionReader::Create(std::move(sort_merge_reader), target_schema,
+                                                 target_to_src_mapping,
+                                                 /*batch_size=*/batch_size, GetArrowPool(pool_)));
             return std::move(projection_reader);
         } else {
             return std::make_unique<AsyncKeyValueProjectionReader>(
                 std::move(sort_merge_reader), target_schema, target_to_src_mapping, batch_size,
-                /*projection_thread_num=*/3, GetSharedArrowPool(pool_));
+                /*projection_thread_num=*/3, GetArrowPool(pool_));
         }
     }
 
