@@ -33,15 +33,18 @@ class AsyncKeyValueProjectionReader : public BatchReader {
                                   const std::shared_ptr<arrow::Schema>& target_schema,
                                   const std::vector<int32_t>& target_to_src_mapping,
                                   int32_t batch_size, int32_t projection_thread_num,
-                                  const std::shared_ptr<MemoryPool>& pool) {
-        auto create_consumer = [target_schema, target_to_src_mapping, pool]()
+                                  const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+        auto create_consumer = [target_schema, target_to_src_mapping, arrow_pool]()
             -> Result<std::unique_ptr<RowToArrowArrayConverter<KeyValue, BatchReader::ReadBatch>>> {
-            return KeyValueProjectionConsumer::Create(target_schema, target_to_src_mapping, pool);
+            return KeyValueProjectionConsumer::Create(target_schema, target_to_src_mapping,
+                                                      arrow_pool);
         };
+        std::unique_ptr<AsyncKeyValueBatchProducer> producer =
+            std::make_unique<SortMergeReaderBatchProducer>(std::move(sort_merge_reader),
+                                                           batch_size);
         producer_and_consumer_ =
             std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, BatchReader::ReadBatch>>(
-                std::move(sort_merge_reader), create_consumer, batch_size, projection_thread_num,
-                pool);
+                std::move(producer), create_consumer, projection_thread_num);
     }
 
     Result<BatchReader::ReadBatch> NextBatch() override {

@@ -26,6 +26,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/executor.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
@@ -49,7 +50,6 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
         int_type_ = arrow::int32();
         target_type_ = arrow::struct_({arrow::field("f1", int_type_)});
 
-        pool_ = GetDefaultPool();
         fs_ = std::make_shared<MockFileSystem>();
         ASSERT_OK_AND_ASSIGN(executor_, CreateDefaultExecutor(/*thread_count=*/2));
     }
@@ -69,13 +69,15 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
 
     void CheckResult(const std::string& data_str, const std::vector<char>& dv_data,
                      const std::string& expected_str) {
+        std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+        std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
         auto f1 = arrow::ipc::internal::json::ArrayFromJSON(int_type_, data_str).ValueOrDie();
         std::shared_ptr<arrow::Array> data =
             arrow::StructArray::Make({f1}, target_type_->fields()).ValueOrDie();
 
         int32_t prefetch_batch_count = 3;
         for (int32_t batch_size : {1, 2, 4, 10}) {
-            auto dv = DeletionVector::FromPrimitiveArray(dv_data, pool_.get());
+            auto dv = DeletionVector::FromPrimitiveArray(dv_data, pool.get());
             std::unique_ptr<FileBatchReader> file_batch_reader;
             bool enable_prefetch = GetParam();
             if (enable_prefetch) {
@@ -87,7 +89,8 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
                         prefetch_batch_count, batch_size, prefetch_batch_count * 2,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
-                        /*read_ahead_cache_enabled=*/true, CacheConfig(), pool_));
+                        /*read_ahead_cache_enabled=*/true, CacheConfig(),
+                        /*enable_io_metrics=*/false, pool, arrow_pool));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);
@@ -113,7 +116,6 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
  private:
     std::shared_ptr<arrow::DataType> int_type_;
     std::shared_ptr<arrow::DataType> target_type_;
-    std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<Executor> executor_;
 };

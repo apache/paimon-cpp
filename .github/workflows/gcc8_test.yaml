@@ -60,6 +60,9 @@ jobs:
           ls -la
       - name: Checkout paimon-cpp
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Install Rust toolchain (Mosaic)
+        shell: bash
+        run: ci/scripts/setup_rust.sh
       - name: Setup ccache
         uses: ./.github/actions/setup-ccache
         with:

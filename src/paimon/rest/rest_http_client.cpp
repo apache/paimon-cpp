@@ -228,7 +228,8 @@ std::string RestHttpClient::NormalizeUri(const std::string& uri) {
     while (!normalized.empty() && normalized.back() == '/') {
         normalized.pop_back();
     }
-    if (normalized.rfind("http://", 0) != 0 && normalized.rfind("https://", 0) != 0) {
+    if (!StringUtils::StartsWith(normalized, "http://") &&
+        !StringUtils::StartsWith(normalized, "https://")) {
         normalized = "http://" + normalized;
     }
     return normalized;

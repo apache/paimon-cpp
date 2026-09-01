@@ -54,7 +54,7 @@ std::shared_ptr<DataFileMeta> CreateDataFileMeta(const std::string& file_name) {
         /*min_sequence_number=*/0, /*max_sequence_number=*/0, /*schema_id=*/0,
         DataFileMeta::DUMMY_LEVEL, std::vector<std::optional<std::string>>{}, Timestamp(0, 0),
         std::nullopt, nullptr, FileSource::Append(), std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt);
+        std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 }  // namespace

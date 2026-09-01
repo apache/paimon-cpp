@@ -24,6 +24,7 @@
 
 #include "fmt/format.h"
 #include "paimon/catalog_options.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/sensitive_config_utils.h"
 #include "paimon/logging.h"
@@ -61,13 +62,13 @@ RestApi::RestApi(std::unique_ptr<RestHttpClient> client,
 Result<std::unique_ptr<RestApi>> RestApi::Create(const std::map<std::string, std::string>& options,
                                                  const std::string& warehouse, bool config_required,
                                                  const RestHttpClient::Config& http_config) {
-    auto uri_iter = options.find(CatalogOptions::URI);
-    if (uri_iter == options.end() || uri_iter->second.empty()) {
+    Result<std::string> uri = OptionsUtils::GetNonEmptyValueFromMap(options, CatalogOptions::URI);
+    if (!uri.ok()) {
         return Status::Invalid(fmt::format("option '{}' must be configured for the rest catalog",
                                            CatalogOptions::URI));
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RestHttpClient> client,
-                           RestHttpClient::Create(uri_iter->second, http_config));
+                           RestHttpClient::Create(uri.value(), http_config));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<AuthProvider> auth_provider,
                            AuthProvider::Create(options));
 

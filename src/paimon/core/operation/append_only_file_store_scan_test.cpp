@@ -31,7 +31,6 @@
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/partition_entry.h"
-#include "paimon/core/operation/metrics/scan_metrics.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
@@ -45,6 +44,7 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/source/scan_metrics.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
@@ -173,7 +173,20 @@ TEST(AppendOnlyFileStoreScanTest, TestScanDurationMetric) {
                          metrics->GetCounter(ScanMetrics::LAST_SCAN_DURATION));
     ASSERT_OK_AND_ASSIGN(HistogramStats stats,
                          metrics->GetHistogramStats(ScanMetrics::SCAN_DURATION));
+    ASSERT_OK_AND_ASSIGN(uint64_t manifest_read_duration,
+                         metrics->GetCounter(ScanMetrics::LAST_MANIFEST_READ_DURATION));
+    ASSERT_OK_AND_ASSIGN(HistogramStats manifest_stats,
+                         metrics->GetHistogramStats(ScanMetrics::MANIFEST_READ_DURATION));
+    ASSERT_OK_AND_ASSIGN(uint64_t scanned_rows,
+                         metrics->GetCounter(ScanMetrics::LAST_LAZY_DECODE_SCANNED_ROWS));
+    ASSERT_OK_AND_ASSIGN(uint64_t materialized_rows,
+                         metrics->GetCounter(ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS));
     ASSERT_EQ(stats.count, kPlanCount);
+    ASSERT_EQ(manifest_stats.count, kPlanCount);
+    ASSERT_LE(manifest_stats.min, static_cast<double>(manifest_read_duration));
+    ASSERT_LE(static_cast<double>(manifest_read_duration), manifest_stats.max);
+    ASSERT_GT(scanned_rows, 0);
+    ASSERT_GE(scanned_rows, materialized_rows);
     ASSERT_LE(stats.min, stats.max);
     ASSERT_LE(stats.min, static_cast<double>(last_scan_duration));
     ASSERT_LE(static_cast<double>(last_scan_duration), stats.max);
@@ -268,12 +281,40 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     scan_first->WithSnapshot(snapshot_5);
     ASSERT_OK_AND_ASSIGN(auto plan_first, scan_first->CreatePlan());
     std::vector<std::string> first_file_names = SortedFileNames(plan_first->Files());
+    std::shared_ptr<Metrics> first_metrics = scan_first->GetScanMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t first_cache_enabled,
+                         first_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
+    ASSERT_OK_AND_ASSIGN(uint64_t first_cache_hit,
+                         first_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+    ASSERT_OK_AND_ASSIGN(uint64_t first_cache_misses,
+                         first_metrics->GetCounter(ScanMetrics::SNAPSHOT_CACHE_MISSES));
+    ASSERT_OK(first_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION));
+    ASSERT_OK(first_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_STORE_DURATION));
+    ASSERT_OK(first_metrics->GetHistogramStats(ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION));
+    ASSERT_OK(first_metrics->GetHistogramStats(ScanMetrics::SNAPSHOT_CACHE_STORE_DURATION));
+    ASSERT_EQ(first_cache_enabled, 1);
+    ASSERT_EQ(first_cache_hit, 0);
+    ASSERT_EQ(first_cache_misses, 1);
 
     // Second scan on the same snapshot should read the same bucket live entries from cache.
     auto scan_second = BuildScan(table_path, cache, /*bucket=*/0);
     scan_second->WithSnapshot(snapshot_5);
     ASSERT_OK_AND_ASSIGN(auto plan_second, scan_second->CreatePlan());
     ASSERT_EQ(first_file_names, SortedFileNames(plan_second->Files()));
+    std::shared_ptr<Metrics> second_metrics = scan_second->GetScanMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t second_cache_hit,
+                         second_metrics->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+    ASSERT_OK_AND_ASSIGN(uint64_t second_cache_hits,
+                         second_metrics->GetCounter(ScanMetrics::SNAPSHOT_CACHE_HITS));
+    ASSERT_OK_AND_ASSIGN(uint64_t scanned_rows,
+                         second_metrics->GetCounter(ScanMetrics::LAST_LAZY_DECODE_SCANNED_ROWS));
+    ASSERT_OK_AND_ASSIGN(
+        uint64_t materialized_rows,
+        second_metrics->GetCounter(ScanMetrics::LAST_LAZY_DECODE_MATERIALIZED_ROWS));
+    ASSERT_EQ(second_cache_hit, 1);
+    ASSERT_EQ(second_cache_hits, 1);
+    ASSERT_GE(scanned_rows, materialized_rows);
+    ASSERT_OK(second_metrics->GetHistogramStats(ScanMetrics::SNAPSHOT_CACHE_LOAD_DURATION));
 }
 
 TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCacheRebuildOnMiss) {

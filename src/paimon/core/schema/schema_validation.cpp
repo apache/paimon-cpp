@@ -52,6 +52,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/defs.h"
+#include "paimon/format/file_format.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -100,7 +101,7 @@ Status ValidateSharedShreddingFileFormat(const std::string& option_key,
 }
 
 Status ValidateVectorFileFormat(const std::string& option_key, const std::string& file_format) {
-    if (StringUtils::ToLowerCase(file_format) != "parquet") {
+    if (!StringUtils::EqualsIgnoreCase(file_format, "parquet")) {
         return Status::Invalid(
             fmt::format("VECTOR currently only supports parquet data files, but {} is {}.",
                         option_key, file_format));
@@ -163,14 +164,8 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateFieldsPrefix(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateSequenceField(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateSequenceGroup(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateChangelogProducer(schema, options));
 
-    ChangelogProducer changelog_producer = options.GetChangelogProducer();
-    if (schema.PrimaryKeys().empty() && changelog_producer != ChangelogProducer::NONE) {
-        return Status::Invalid(
-            fmt::format("Can not set {} on table without primary keys, please define primary keys.",
-                        Options::CHANGELOG_PRODUCER));
-    }
-    PAIMON_RETURN_NOT_OK(ValidateChangelogProducer(options));
     PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
         options.GetExpireConfig().GetSnapshotRetainMin() > 0,
         std::string(Options::SNAPSHOT_NUM_RETAINED_MIN) + " should be at least 1"));
@@ -197,6 +192,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
 
     PAIMON_RETURN_NOT_OK(ValidateRowTracking(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateMosaicDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     return Status::OK();
@@ -323,10 +319,41 @@ Status SchemaValidation::ValidateBucket(const TableSchema& schema, const CoreOpt
     return Status::OK();
 }
 
-Status SchemaValidation::ValidateChangelogProducer(const CoreOptions& options) {
-    return Preconditions::CheckState(options.GetChangelogProducer() == ChangelogProducer::NONE,
-                                     "C++ Paimon does not support changelog-producer yet. Please "
-                                     "keep changelog-producer as 'none'.");
+Status SchemaValidation::ValidateChangelogProducer(const TableSchema& schema,
+                                                   const CoreOptions& options) {
+    ChangelogProducer changelog_producer = options.GetChangelogProducer();
+    if (schema.PrimaryKeys().empty() && changelog_producer != ChangelogProducer::NONE) {
+        return Status::Invalid(
+            fmt::format("Can not set {} on table without primary keys, please define primary keys.",
+                        Options::CHANGELOG_PRODUCER));
+    }
+
+    bool row_deduplicate = options.ChangelogRowDeduplicate();
+    const std::vector<std::string>& ignore_fields =
+        options.GetChangelogRowDeduplicateIgnoreFields();
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        ignore_fields.empty() || row_deduplicate, "'{}' is only valid when '{}' is true.",
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS,
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        ObjectUtils::ContainsAll(schema.FieldNames(), ignore_fields),
+        "Fields {} configured in '{}' can not be found in table schema.", ignore_fields,
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        !row_deduplicate || changelog_producer == ChangelogProducer::LOOKUP ||
+            changelog_producer == ChangelogProducer::FULL_COMPACTION,
+        "'{}' is only valid for 'lookup' or 'full-compaction' changelog producer.",
+        Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        changelog_producer == ChangelogProducer::NONE ||
+            changelog_producer == ChangelogProducer::INPUT ||
+            changelog_producer == ChangelogProducer::LOOKUP,
+        "C++ Paimon only supports 'none', 'input' and 'lookup' changelog-producer now."));
+    return Preconditions::CheckState(
+        options.GetMergeEngine() != MergeEngine::FIRST_ROW ||
+            changelog_producer == ChangelogProducer::NONE ||
+            changelog_producer == ChangelogProducer::LOOKUP,
+        "Only support 'none' and 'lookup' changelog-producer on FIRST_ROW merge engine");
 }
 
 Status SchemaValidation::ValidateForDeletionVectors(const CoreOptions& options) {
@@ -561,6 +588,76 @@ Status SchemaValidation::ValidateBlobFields(const TableSchema& schema, const Cor
     return Status::OK();
 }
 
+Status SchemaValidation::ValidateMosaicDataField(const std::shared_ptr<arrow::Field>& field) {
+    if (VariantTypeUtils::IsVariantField(field)) {
+        return Status::Invalid("Mosaic file format does not support type VARIANT");
+    }
+    if (BlobUtils::IsBlobField(field)) {
+        return Status::Invalid("Mosaic file format does not support type BLOB");
+    }
+
+    const std::shared_ptr<arrow::DataType>& type = field->type();
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::DATE32:
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+        case arrow::Type::TIME32:
+        case arrow::Type::DECIMAL128:
+            return Status::OK();
+        case arrow::Type::TIMESTAMP: {
+            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*type);
+            if (timestamp_type.unit() == arrow::TimeUnit::SECOND) {
+                return Status::Invalid("Mosaic file format does not support TIMESTAMP(0)");
+            }
+            return Status::OK();
+        }
+        case arrow::Type::LIST:
+            return ValidateMosaicDataField(type->field(0));
+        case arrow::Type::MAP: {
+            const auto& map_type = checked_cast<const arrow::MapType&>(*type);
+            PAIMON_RETURN_NOT_OK(ValidateMosaicDataField(map_type.key_field()));
+            return ValidateMosaicDataField(map_type.item_field());
+        }
+        case arrow::Type::FIXED_SIZE_LIST:
+            return Status::Invalid("Mosaic file format does not support type VECTOR");
+        case arrow::Type::STRUCT:
+            return Status::Invalid("Mosaic file format does not support type ROW");
+        default:
+            break;
+    }
+    return Status::Invalid(
+        fmt::format("Mosaic file format does not support type {}", type->ToString()));
+}
+
+Status SchemaValidation::ValidateMosaicDataFields(const TableSchema& schema,
+                                                  const CoreOptions& options) {
+    if (StringUtils::ToLowerCase(options.GetFileFormat()->Identifier()) != "mosaic") {
+        return Status::OK();
+    }
+
+    const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
+    const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
+                                                      inline_blob_fields.end());
+    // Match Java SchemaValidation by validating only fields stored in the normal data file. C++
+    // permits BLOB only as a top-level field; descriptor and view fields are inline, so Mosaic
+    // must reject them here.
+    for (const DataField& field : schema.Fields()) {
+        if (BlobUtils::IsBlobField(field.ArrowField()) &&
+            inline_blob_field_set.count(field.Name()) == 0) {
+            continue;
+        }
+        PAIMON_RETURN_NOT_OK(ValidateMosaicDataField(field.ArrowField()));
+    }
+    return Status::OK();
+}
+
 Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
                                                   const CoreOptions& options) {
     // Extract all field names that have map.storage-layout configured from options
@@ -654,10 +751,20 @@ Status SchemaValidation::ValidateMapStorageLayout(const TableSchema& schema,
                                                            options.GetFileFormat()->Identifier()));
     PAIMON_RETURN_NOT_OK(ValidatePerLevelOption(options_map, Options::FILE_FORMAT_PER_LEVEL,
                                                 ValidateSharedShreddingFileFormat));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(ValidateSharedShreddingFileFormat(Options::CHANGELOG_FILE_FORMAT,
+                                                               changelog_format->Identifier()));
+    }
     PAIMON_RETURN_NOT_OK(ValidateSharedShreddingCompression(Options::FILE_COMPRESSION,
                                                             options.GetFileCompression()));
     PAIMON_RETURN_NOT_OK(ValidatePerLevelOption(options_map, Options::FILE_COMPRESSION_PER_LEVEL,
                                                 ValidateSharedShreddingCompression));
+    std::optional<std::string> changelog_compression = options.GetChangelogFileCompression();
+    if (changelog_compression) {
+        PAIMON_RETURN_NOT_OK(ValidateSharedShreddingCompression(Options::CHANGELOG_FILE_COMPRESSION,
+                                                                changelog_compression.value()));
+    }
 
     return Status::OK();
 }

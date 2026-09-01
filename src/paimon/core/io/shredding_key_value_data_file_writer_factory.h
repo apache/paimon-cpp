@@ -41,7 +41,7 @@ class ShreddingKeyValueDataFileWriterFactory : public KeyValueDataFileWriterFact
         const std::shared_ptr<arrow::Schema>& write_schema, int32_t level, FileSource file_source,
         const std::vector<std::string>& primary_keys,
         const std::shared_ptr<DataFilePathFactory>& path_factory, bool create_stats_extractor,
-        const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory,
+        const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory, bool is_changelog,
         const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::unique_ptr<SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>

@@ -41,6 +41,9 @@ class DataField;
 /// A `Comparator` that compares the file store key.
 class FieldsComparator {
  public:
+    using FieldComparatorFunc =
+        std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
+
     static Result<std::unique_ptr<FieldsComparator>> Create(
         const std::vector<DataField>& input_data_field, bool is_ascending_order);
 
@@ -82,9 +85,6 @@ class FieldsComparator {
     }
 
  private:
-    using FieldComparatorFunc =
-        std::function<int32_t(const InternalRow& lhs, const InternalRow& rhs)>;
-
     FieldsComparator(bool is_ascending_order, const std::vector<int32_t>& sort_fields,
                      std::vector<FieldComparatorFunc>&& comparators)
         : is_ascending_order_(is_ascending_order),

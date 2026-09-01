@@ -30,6 +30,7 @@
 #include "paimon/result.h"
 
 namespace arrow {
+class MemoryPool;
 class Schema;
 }  // namespace arrow
 
@@ -74,6 +75,9 @@ class InternalReadContext {
     bool EnablePrefetch() const {
         return read_context_->EnablePrefetch();
     }
+    bool EnableLateMaterializing() const {
+        return read_context_->EnableLateMaterializing();
+    }
     uint32_t GetPrefetchBatchCount() const {
         return read_context_->GetPrefetchBatchCount();
     }
@@ -88,6 +92,9 @@ class InternalReadContext {
     }
     std::shared_ptr<MemoryPool> GetMemoryPool() const {
         return read_context_->GetMemoryPool();
+    }
+    const std::shared_ptr<arrow::MemoryPool>& GetArrowMemoryPool() const {
+        return arrow_pool_;
     }
     std::shared_ptr<Executor> GetExecutor() const {
         return read_context_->GetExecutor();
@@ -116,7 +123,8 @@ class InternalReadContext {
     InternalReadContext(const std::shared_ptr<ReadContext>& read_context,
                         const std::shared_ptr<TableSchema>& table_schema,
                         const std::shared_ptr<arrow::Schema>& read_schema,
-                        const CoreOptions& options);
+                        const CoreOptions& options,
+                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     static std::optional<DataField> TryResolveSpecialFieldById(int32_t field_id,
                                                                const CoreOptions& core_options);
@@ -129,6 +137,7 @@ class InternalReadContext {
     std::shared_ptr<ReadContext> read_context_;
     std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<arrow::Schema> read_schema_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
 };
 

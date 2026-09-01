@@ -50,7 +50,7 @@ class PartitionEntryTest : public testing::Test {
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
     }
 };
 

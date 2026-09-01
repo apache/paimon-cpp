@@ -20,6 +20,7 @@
 
 #include "fmt/format.h"
 #include "paimon/catalog_options.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/url_utils.h"
 #include "paimon/rest/dlf_auth.h"
@@ -50,22 +51,24 @@ Result<std::map<std::string, std::string>> BearTokenAuthProvider::MergeAuthHeade
 
 Result<std::unique_ptr<AuthProvider>> AuthProvider::Create(
     const std::map<std::string, std::string>& options) {
-    auto provider_iter = options.find(CatalogOptions::TOKEN_PROVIDER);
-    if (provider_iter == options.end() || provider_iter->second.empty()) {
+    Result<std::string> provider_value =
+        OptionsUtils::GetNonEmptyValueFromMap(options, CatalogOptions::TOKEN_PROVIDER);
+    if (!provider_value.ok()) {
         return Status::Invalid(fmt::format("option '{}' must be configured for the rest catalog",
                                            CatalogOptions::TOKEN_PROVIDER));
     }
     // Matched leniently in lower case; other clients may match provider names
     // case-sensitively, so the exact "bear" and "dlf" spellings are portable.
-    std::string provider = StringUtils::ToLowerCase(provider_iter->second);
+    std::string provider = StringUtils::ToLowerCase(provider_value.value());
     if (provider == "bear") {
-        auto token_iter = options.find(CatalogOptions::TOKEN);
-        if (token_iter == options.end() || token_iter->second.empty()) {
+        Result<std::string> token =
+            OptionsUtils::GetNonEmptyValueFromMap(options, CatalogOptions::TOKEN);
+        if (!token.ok()) {
             return Status::Invalid(
                 fmt::format("option '{}' must be configured for the bear token provider",
                             CatalogOptions::TOKEN));
         }
-        return std::make_unique<BearTokenAuthProvider>(token_iter->second);
+        return std::make_unique<BearTokenAuthProvider>(token.value());
     }
     if (provider == "dlf") {
         return DlfAuthProvider::Create(options);

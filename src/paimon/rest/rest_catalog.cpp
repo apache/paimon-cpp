@@ -52,7 +52,7 @@ constexpr const char kPathOption[] = "path";
 // `BranchManager::IsMainBranch`, which names the branch directory of a table, stays
 // case-sensitive: this normalization only decides how a table is addressed on the server.
 std::optional<std::string> NormalizeBranch(std::optional<std::string> branch) {
-    if (branch && StringUtils::ToLowerCase(branch.value()) == Identifier::kDefaultMainBranch) {
+    if (branch && StringUtils::EqualsIgnoreCase(branch.value(), Identifier::kDefaultMainBranch)) {
         return std::nullopt;
     }
     return branch;

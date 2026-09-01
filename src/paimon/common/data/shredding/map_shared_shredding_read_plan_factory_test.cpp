@@ -35,6 +35,7 @@
 #include "paimon/common/data/shredding/map_shredding_defs.h"
 #include "paimon/common/data/shredding/shredding_file_reader.h"
 #include "paimon/common/fs/external_path_provider.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/append/append_only_writer.h"
 #include "paimon/core/compact/noop_compact_manager.h"
@@ -137,7 +138,7 @@ class MapSharedShreddingReadPlanFactoryTest : public ::testing::Test {
             field_read_plans.emplace(field->name(), std::move(field_read_plan));
         }
         return std::make_unique<ShreddingFileReader>(std::move(reader), std::move(field_read_plans),
-                                                     pool_);
+                                                     GetArrowPool(pool_));
     }
 
     Result<std::unique_ptr<ShreddingFileReader>> CreateReader(
@@ -246,7 +247,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestAllExistSelectedKeysWithoutOve
     auto read_schema = ExportSchema(ReadSchema("b"));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -268,7 +269,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestAllExistSelectedKeysWithOverfl
     auto read_schema = ExportSchema(ReadSchema("a,c"));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -301,14 +302,14 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSelectedKeysStructProjection) 
                              selected_field, TagsMeta()));
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> contexts;
     contexts.emplace("tags", std::move(field_read_plan));
-    auto reader =
-        std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts), pool_);
+    auto reader = std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts),
+                                                        GetArrowPool(pool_));
 
     auto read_schema =
         ExportSchema(arrow::schema({arrow::field("id", arrow::int32()), selected_field}));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     auto expected_type = arrow::struct_({arrow::field("id", arrow::int32()), selected_field});
     std::shared_ptr<arrow::ChunkedArray> expected;
@@ -441,14 +442,14 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSelectedKeysStructProjectionFr
                              file_schema->field(1), selected_field));
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> contexts;
     contexts.emplace("tags", std::move(field_read_plan));
-    auto reader =
-        std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts), pool_);
+    auto reader = std::make_unique<ShreddingFileReader>(std::move(mock_reader), std::move(contexts),
+                                                        GetArrowPool(pool_));
 
     auto read_schema =
         ExportSchema(arrow::schema({arrow::field("id", arrow::int32()), selected_field}));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     auto expected_type = arrow::struct_({arrow::field("id", arrow::int32()), selected_field});
     std::shared_ptr<arrow::ChunkedArray> expected;
@@ -494,7 +495,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestPartialExistSelectedKeys) {
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
 
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -514,7 +515,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestMissingSelectedKeysReadsWholeM
     auto read_schema = ExportSchema(ReadSchema(std::nullopt));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -551,7 +552,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestSpecialSelectedKeys) {
         auto read_schema = ExportSchema(ReadSchema(selected_keys));
         ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                         /*selection_bitmap=*/std::nullopt));
-        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
         std::shared_ptr<arrow::ChunkedArray> expected;
         ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -590,7 +591,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestUnknownSelectedKeyReturnsEmpty
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
 
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -618,7 +619,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestInvalidNullFieldMappingField) 
     auto read_schema = ExportSchema(ReadSchema("a"));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(reader.get()),
+    ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(std::move(reader)),
                         "__field_mapping cannot be null");
 }
 
@@ -635,7 +636,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestInvalidNullFieldMappingFieldEl
     auto read_schema = ExportSchema(ReadSchema("b"));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(reader.get()),
+    ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(std::move(reader)),
                         "__field_mapping element cannot be null");
 }
 
@@ -680,7 +681,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestListValue) {
     auto read_schema = ExportSchema(arrow::schema(std::move(read_fields)));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
@@ -741,7 +742,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestOrcDictionaryEncodedStringValu
     auto read_schema = ExportSchema(arrow::schema(std::move(read_fields)));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_(logical_schema->fields()), {R"([
@@ -801,7 +802,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestOrcDictionaryEncodedStringList
     auto read_schema = ExportSchema(arrow::schema(std::move(read_fields)));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_(logical_schema->fields()), {R"([
@@ -852,7 +853,7 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestReadsRealFormatFile) {
     auto read_schema = ExportSchema(ReadSchema("a,c"));
     ASSERT_OK(reader->SetReadSchema(read_schema.get(), /*predicate=*/nullptr,
                                     /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
 
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(

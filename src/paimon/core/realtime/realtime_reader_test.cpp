@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "paimon/arrow/abi.h"
 #include "paimon/testing/utils/testharness.h"
@@ -37,6 +38,8 @@ class TestingReadView : public RealtimeReadView {
 
 class TestingBatchReader : public BatchReader {
  public:
+    explicit TestingBatchReader(int32_t* close_count = nullptr) : close_count_(close_count) {}
+
     Result<ReadBatch> NextBatch() override {
         return MakeEofBatch();
     }
@@ -45,7 +48,14 @@ class TestingBatchReader : public BatchReader {
         return nullptr;
     }
 
-    void Close() override {}
+    void Close() override {
+        if (close_count_) {
+            ++(*close_count_);
+        }
+    }
+
+ private:
+    int32_t* close_count_;
 };
 
 TEST(RealtimeReaderTest, TestRejectsIncompleteReader) {
@@ -55,6 +65,20 @@ TEST(RealtimeReaderTest, TestRejectsIncompleteReader) {
     ASSERT_NOK_WITH_MSG(RealtimeReader::Create(std::make_shared<TestingReadView>(),
                                                /*reader=*/nullptr),
                         "inner reader is null");
+}
+
+TEST(RealtimeReaderTest, TestCloseReleasesResources) {
+    int32_t close_count = 0;
+    std::shared_ptr<TestingReadView> read_view = std::make_shared<TestingReadView>();
+    std::weak_ptr<TestingReadView> weak_read_view = read_view;
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RealtimeReader> reader,
+        RealtimeReader::Create(std::move(read_view),
+                               std::make_unique<TestingBatchReader>(&close_count)));
+    ASSERT_FALSE(weak_read_view.expired());
+    reader->Close();
+    ASSERT_EQ(1, close_count);
+    ASSERT_TRUE(weak_read_view.expired());
 }
 
 }  // namespace

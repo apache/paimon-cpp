@@ -91,13 +91,12 @@ class PAIMON_EXPORT Literal {
     std::string ToString() const;
 
     /// Gets the hash code for this literal.
-    /// @note HashCode() hashes the exact bit representation (including Decimal scale), while
-    /// operator== delegates to CompareTo() which uses numeric equality (e.g. decimals with
-    /// different scales can compare equal). This means the hash-equality contract (equal objects
-    /// must have equal hashes) may be violated for Decimal literals with different scales. In
-    /// practice this is safe because all current std::unordered_map<Literal, ...> usages (bitmap
-    /// file index) only store values from the same column, which guarantees a fixed precision and
-    /// scale.
+    /// @note HashCode() canonicalizes all floating-point NaNs so that values considered equal by
+    /// CompareTo() have the same hash. Decimal values include their scale in the hash, while
+    /// CompareTo() uses numeric equality, so Decimal literals with different scales can still
+    /// violate the hash-equality contract. In practice this is safe because all current
+    /// std::unordered_map<Literal, ...> usages only store values from the same column, which has a
+    /// fixed precision and scale.
     size_t HashCode() const;
 
     /// Compares this literal with another literal. The comparison follows SQL semantics for the

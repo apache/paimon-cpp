@@ -40,6 +40,7 @@
 #include "arrow/util/thread_pool.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
@@ -154,6 +155,7 @@ ParquetFileBatchReader::ParquetFileBatchReader(
       arrow_pool_(arrow_pool),
       input_stream_(std::move(input_stream)),
       reader_(std::move(reader)),
+      read_ranges_(reader_->GetAllRowGroupRanges()),
       metrics_(std::make_shared<MetricsImpl>()),
       storage_read_bytes_(std::move(storage_read_bytes)),
       logger_(Logger::GetLogger("ParquetFileBatchReader")) {}
@@ -309,6 +311,7 @@ Status ParquetFileBatchReader::SetReadSchema(
 
         PAIMON_RETURN_NOT_OK(UpdateAllTargetRowRanges(target_row_groups));
         PAIMON_RETURN_NOT_OK(reader_->PrepareForReadingLazy(target_row_groups, column_indices));
+        PAIMON_RETURN_NOT_OK(reader_->ApplyReadRanges(read_ranges_));
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetFileBatchReader::SetReadSchema")
     return Status::OK();
@@ -635,6 +638,7 @@ Result<BatchReader::ReadBatch> ParquetFileBatchReader::NextBatch() {
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
+        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
 
         read_rows_ += array->length();
         read_batch_count_++;

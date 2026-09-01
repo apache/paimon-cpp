@@ -88,7 +88,7 @@ class MergeTreeCompactRewriterTest : public testing::Test {
                              fs->Open(compact_file_name));
         ASSERT_OK_AND_ASSIGN(auto file_batch_reader, reader_builder->Build(input_stream));
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(file_batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(file_batch_reader)));
         // handle type nullable, as result_array does not have not null flag
         result_array = result_array->View(expected_array->type()).ValueOrDie();
 
@@ -148,7 +148,8 @@ TEST_F(MergeTreeCompactRewriterTest, TestSimple) {
                                           pool_.get()),
         /*min_sequence_number=*/0l, /*max_sequence_number=*/10l, /*schema_id=*/0, /*level=*/5,
         std::vector<std::optional<std::string>>(), Timestamp(0l, 0), /*delete_row_count=*/0,
-        nullptr, FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        nullptr, FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_TRUE(expected_file_meta->TEST_Equal(*compact_file_meta));
     // check compact file exist
     std::string compact_file_name =
@@ -245,7 +246,8 @@ TEST_F(MergeTreeCompactRewriterTest, TestNotDropDelete) {
                                           pool_.get()),
         /*min_sequence_number=*/0l, /*max_sequence_number=*/11l, /*schema_id=*/0, /*level=*/5,
         std::vector<std::optional<std::string>>(), Timestamp(0l, 0), /*delete_row_count=*/2,
-        nullptr, FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        nullptr, FileSource::Compact(), std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_TRUE(expected_file_meta->TEST_Equal(*compact_file_meta));
 
     std::string compact_file_name =

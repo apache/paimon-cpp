@@ -37,10 +37,11 @@ ShreddingKeyValueDataFileWriterFactory::ShreddingKeyValueDataFileWriterFactory(
     const std::shared_ptr<arrow::Schema>& write_schema, int32_t level, FileSource file_source,
     const std::vector<std::string>& primary_keys,
     const std::shared_ptr<DataFilePathFactory>& path_factory, bool create_stats_extractor,
-    const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory,
+    const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory, bool is_changelog,
     const std::shared_ptr<MemoryPool>& pool)
     : KeyValueDataFileWriterFactory(options, schema_id, write_schema, level, file_source,
-                                    primary_keys, path_factory, create_stats_extractor, pool),
+                                    primary_keys, path_factory, create_stats_extractor,
+                                    is_changelog, pool),
       plan_factory_(plan_factory) {}
 
 Result<std::unique_ptr<SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
@@ -48,7 +49,7 @@ ShreddingKeyValueDataFileWriterFactory::CreateWriter() const {
     if (!plan_factory_) {
         return Status::Invalid("Shredding key-value writer requires a write-plan factory.");
     }
-    const std::string format_identifier = options_.GetWriteFileFormat(level_)->Identifier();
+    const std::string format_identifier = GetFileFormat()->Identifier();
     if (plan_factory_->ShouldInferWritePlan()) {
         auto create_inner = [this](const std::shared_ptr<ShreddingBatchConverter>& converter) {
             return CreateShreddedWriter(converter);
@@ -74,7 +75,8 @@ ShreddingKeyValueDataFileWriterFactory::CreateShreddedWriter(
             [factory = plan_factory_, converter]() { return factory->OnFileCompleted(converter); });
         return writer;
     }
-    auto format = options_.GetWriteFileFormat(level_);
+    std::shared_ptr<FileFormat> format = GetFileFormat();
+    std::string compression = GetFileCompression();
     std::shared_ptr<arrow::Schema> file_schema = converter->GetPhysicalSchema();
     std::function<Status(KeyValueBatch&&, ::ArrowArray*)> batch_converter =
         [converter](KeyValueBatch key_value_batch, ::ArrowArray* array) -> Status {
@@ -86,18 +88,19 @@ ShreddingKeyValueDataFileWriterFactory::CreateShreddedWriter(
     PAIMON_ASSIGN_OR_RAISE(WriterResources resources,
                            CreateWriterResources(*format, file_schema, create_stats_extractor_));
     auto writer = std::make_unique<KeyValueDataFileWriter>(
-        options_.GetWriteFileCompression(level_), std::move(batch_converter), schema_id_, level_,
-        file_source_, primary_keys_, resources.stats_extractor, file_schema,
-        path_factory_->IsExternalPath(), pool_);
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
-                           CreateFileIndexWriter(write_schema_, path_factory_));
-    if (file_index_writer) {
-        writer->SetFileIndexWriter(std::move(file_index_writer), write_schema_);
+        compression, std::move(batch_converter), schema_id_, level_, file_source_, primary_keys_,
+        resources.stats_extractor, file_schema, path_factory_->IsExternalPath(), pool_);
+    if (!is_changelog_) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
+                               CreateFileIndexWriter(write_schema_, path_factory_));
+        if (file_index_writer) {
+            writer->SetFileIndexWriter(std::move(file_index_writer), write_schema_);
+        }
     }
-    PAIMON_RETURN_NOT_OK(
-        writer->Init(options_.GetFileSystem(), path_factory_->NewPath(), resources.writer_builder));
+    PAIMON_RETURN_NOT_OK(writer->Init(options_.GetFileSystem(), NewFilePath(format->Identifier()),
+                                      resources.writer_builder));
     ShreddingWritePlanFactory::MetadataFinalizer finalizer =
-        plan_factory_->CreateMetadataFinalizer(converter, options_.GetWriteFileCompression(level_));
+        plan_factory_->CreateMetadataFinalizer(converter, compression);
     if (finalizer) {
         writer->SetMetadataFinalizer(std::move(finalizer));
     }

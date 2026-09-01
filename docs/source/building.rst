@@ -178,6 +178,8 @@ boolean flags to ``cmake``.
 * ``-DPAIMON_ENABLE_ORC=ON``: Paimon integration with Apache ORC
 * ``-DPAIMON_ENABLE_AVRO=ON``: Apache Avro libraries and Paimon integration
 * ``-DPAIMON_ENABLE_JINDO=ON``: Support for Alibaba Jindo filesystems
+* ``-DPAIMON_ENABLE_OSS=ON``: Support for Alibaba Cloud OSS through OSS SDK V2
+* ``-DPAIMON_ENABLE_S3=ON``: Support for Amazon S3-compatible filesystems
 * ``-DPAIMON_ENABLE_LUMINA=ON``: Support for the Lumina vector index. Requires
   Linux ``x86_64``; see :ref:`cpp-building-platforms`.
 * ``-DPAIMON_ENABLE_LUCENE=ON``: Support for Lucene full-text search indexes

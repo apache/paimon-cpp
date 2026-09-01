@@ -63,7 +63,7 @@ ManifestEntry CreateManifestEntry(const std::string& file_name, const FileKind& 
         /*value_stats_cols=*/std::nullopt,
         /*external_path=*/std::nullopt,
         /*first_row_id=*/std::nullopt,
-        /*write_cols=*/std::nullopt);
+        /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 
     return ManifestEntry(kind, CreateIntRow(partition_value), /*bucket=*/0, /*total_buckets=*/1,
                          file_meta);

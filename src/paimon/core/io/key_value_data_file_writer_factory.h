@@ -38,6 +38,7 @@ namespace paimon {
 
 class CoreOptions;
 class DataFilePathFactory;
+class FileFormat;
 class MemoryPool;
 
 class KeyValueDataFileWriterFactory
@@ -49,19 +50,24 @@ class KeyValueDataFileWriterFactory
                                   FileSource file_source,
                                   const std::vector<std::string>& primary_keys,
                                   const std::shared_ptr<DataFilePathFactory>& path_factory,
-                                  bool create_stats_extractor,
+                                  bool create_stats_extractor, bool is_changelog,
                                   const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::unique_ptr<SingleFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
     CreateWriter() const override;
 
  protected:
+    std::shared_ptr<FileFormat> GetFileFormat() const;
+    std::string GetFileCompression() const;
+    std::string NewFilePath(const std::string& format_identifier) const;
+
     std::shared_ptr<arrow::Schema> write_schema_;
     int32_t level_;
     FileSource file_source_;
     std::vector<std::string> primary_keys_;
     std::shared_ptr<DataFilePathFactory> path_factory_;
     bool create_stats_extractor_;
+    bool is_changelog_;
 };
 
 }  // namespace paimon

@@ -33,6 +33,7 @@
 #include "paimon/common/data/shredding/shredding_file_reader.h"
 #include "paimon/common/data/variant/variant_shredding_read_plan_factory.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
+#include "paimon/common/reader/late_materializing_reader_builder.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/table/special_fields.h"
@@ -67,6 +68,7 @@ AbstractSplitRead::AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>
                                      const std::shared_ptr<MemoryPool>& memory_pool,
                                      const std::shared_ptr<Executor>& executor)
     : pool_(memory_pool),
+      arrow_pool_(context->GetArrowMemoryPool()),
       executor_(executor),
       path_factory_(path_factory),
       options_(context->GetCoreOptions()),
@@ -96,7 +98,7 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
                                PrepareReaderBuilder(data_file_identifier, extra_format_options));
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileBatchReader> file_reader,
-            CreateFieldMappingReader(data_file_path, file, partition, reader_builder.get(),
+            CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
                                      field_mapping_builder.get(), dv_factory, row_ranges,
                                      data_file_path_factory));
         if (file_reader) {
@@ -120,7 +122,7 @@ Result<std::unique_ptr<BatchReader>> AbstractSplitRead::ApplyPredicateFilterIfNe
     if (!context_->EnablePredicateFilter() || predicate == nullptr) {
         return std::move(reader);
     }
-    return PredicateBatchReader::Create(std::move(reader), predicate, pool_);
+    return PredicateBatchReader::Create(std::move(reader), predicate, arrow_pool_);
 }
 
 Result<std::unique_ptr<ReaderBuilder>> AbstractSplitRead::PrepareReaderBuilder(
@@ -151,18 +153,23 @@ Result<std::unique_ptr<ReaderBuilder>> AbstractSplitRead::PrepareReaderBuilder(
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReader(
     const std::string& file_format_identifier, const std::string& data_file_path,
-    int64_t data_file_size, const ReaderBuilder* reader_builder) const {
+    int64_t data_file_size, std::unique_ptr<ReaderBuilder> reader_builder) const {
+    if (context_->EnableLateMaterializing()) {
+        reader_builder = std::make_unique<LateMaterializingReaderBuilder>(std::move(reader_builder),
+                                                                          arrow_pool_);
+    }
+    // TODO(xinyu.lxy): test format table for mosaic format
     if (context_->EnablePrefetch() && file_format_identifier != "blob" &&
-        file_format_identifier != "avro") {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<PrefetchFileBatchReaderImpl> prefetch_reader,
-            PrefetchFileBatchReaderImpl::Create(
-                data_file_path, data_file_size, reader_builder, options_.GetFileSystem(),
-                context_->GetPrefetchMaxParallelNum(), options_.GetReadBatchSize(),
-                context_->GetPrefetchBatchCount(), options_.EnableAdaptivePrefetchStrategy(),
-                executor_,
-                /*initialize_read_ranges=*/false, context_->ReadAheadCacheEnabled(),
-                context_->GetCacheConfig(), pool_));
+        file_format_identifier != "avro" && file_format_identifier != "mosaic") {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<PrefetchFileBatchReaderImpl> prefetch_reader,
+                               PrefetchFileBatchReaderImpl::Create(
+                                   data_file_path, data_file_size, reader_builder.get(),
+                                   options_.GetFileSystem(), context_->GetPrefetchMaxParallelNum(),
+                                   options_.GetReadBatchSize(), context_->GetPrefetchBatchCount(),
+                                   options_.EnableAdaptivePrefetchStrategy(), executor_,
+                                   /*initialize_read_ranges=*/false,
+                                   context_->ReadAheadCacheEnabled(), context_->GetCacheConfig(),
+                                   options_.PrefetchIoMetricsEnabled(), pool_, arrow_pool_));
         return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
     } else {
         PAIMON_ASSIGN_OR_RAISE(
@@ -174,7 +181,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFileBatchReade
 
 Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingReader(
     const std::string& data_file_path, const std::shared_ptr<DataFileMeta>& file_meta,
-    const BinaryRow& partition, const ReaderBuilder* reader_builder,
+    const BinaryRow& partition, std::unique_ptr<ReaderBuilder> reader_builder,
     const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
     const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
@@ -214,9 +221,9 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
     PAIMON_ASSIGN_OR_RAISE(std::string file_format_identifier, file_meta->FileFormat());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> file_reader,
                            CreateFileBatchReader(file_format_identifier, data_file_path,
-                                                 file_meta->file_size, reader_builder));
+                                                 file_meta->file_size, std::move(reader_builder)));
     if (VectorFileBatchReader::ContainsVector(read_schema)) {
-        file_reader = std::make_unique<VectorFileBatchReader>(std::move(file_reader), pool_);
+        file_reader = std::make_unique<VectorFileBatchReader>(std::move(file_reader), arrow_pool_);
     }
     std::set<int32_t> skip_map_selected_keys_filter_field_ids;
     if (file_format_identifier != "blob") {
@@ -235,7 +242,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
         }
         file_reader = std::make_unique<CompleteRowTrackingFieldsBatchReader>(
             std::move(file_reader), file_meta->first_row_id, file_meta->max_sequence_number,
-            file_field_names, pool_);
+            file_field_names, arrow_pool_);
     }
     const auto& predicate = field_mapping->non_partition_info.non_partition_filter;
     auto all_data_schema = DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
@@ -248,11 +255,11 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
         return std::unique_ptr<FileBatchReader>();
     }
 
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<FieldMappingReader> mapping_reader,
-        FieldMappingReader::Create(field_mapping_builder->GetReadFieldCount(),
-                                   std::move(final_reader), partition, std::move(field_mapping),
-                                   std::move(skip_map_selected_keys_filter_field_ids), pool_));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldMappingReader> mapping_reader,
+                           FieldMappingReader::Create(
+                               field_mapping_builder->GetReadFieldCount(), std::move(final_reader),
+                               partition, std::move(field_mapping),
+                               std::move(skip_map_selected_keys_filter_field_ids), arrow_pool_));
     return mapping_reader;
 }
 
@@ -320,8 +327,8 @@ AbstractSplitRead::ApplyShreddingReaderIfNeeded(
     }
 
     if (!plans.empty()) {
-        file_reader =
-            std::make_unique<ShreddingFileReader>(std::move(file_reader), std::move(plans), pool_);
+        file_reader = std::make_unique<ShreddingFileReader>(std::move(file_reader),
+                                                            std::move(plans), arrow_pool_);
     }
     return std::make_pair(std::move(file_reader), std::move(handled_shared_shredding_field_ids));
 }

@@ -27,6 +27,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -46,12 +47,18 @@ namespace paimon::test {
 namespace {
 class TrackingTableRead : public TableRead {
  public:
-    explicit TrackingTableRead(const std::shared_ptr<MemoryPool>& pool) : TableRead(pool) {}
-
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const std::shared_ptr<Split>& split) override {
         last_split_ = split;
         return std::unique_ptr<BatchReader>();
+    }
+
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const std::vector<std::shared_ptr<Split>>& splits) override {
+        if (splits.size() != 1) {
+            return Status::Invalid("tracking table read expects one split");
+        }
+        return CreateReader(splits[0]);
     }
 
     std::shared_ptr<Split> last_split_;
@@ -60,11 +67,12 @@ class TrackingTableRead : public TableRead {
 
 TEST(FallbackTableReadTest, RoutesIndexedSplitToMainTable) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
-    auto main_table = std::make_unique<TrackingTableRead>(pool);
-    auto fallback_table = std::make_unique<TrackingTableRead>(pool);
+    auto main_table = std::make_unique<TrackingTableRead>();
+    auto fallback_table = std::make_unique<TrackingTableRead>();
     TrackingTableRead* main_table_ptr = main_table.get();
     TrackingTableRead* fallback_table_ptr = fallback_table.get();
-    FallbackTableRead table_read(std::move(main_table), std::move(fallback_table), pool);
+    FallbackTableRead table_read(std::move(main_table), std::move(fallback_table),
+                                 GetArrowPool(pool));
 
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0, /*bucket_path=*/"",
                                    /*data_files=*/{});
@@ -115,7 +123,8 @@ TEST(FallbackDataSplitTest, TestDeserialize) {
         /*creation_time=*/Timestamp(1755880762233ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-43880011-d066-4255-ad65-891d79cde23b-0.parquet", /*file_size=*/891, /*row_count=*/1,
         /*min_key=*/BinaryRow::EmptyRow(),
@@ -129,7 +138,8 @@ TEST(FallbackDataSplitTest, TestDeserialize) {
         /*creation_time=*/Timestamp(1755884315482ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     DataSplitImpl::Builder builder(
         /*partition=*/BinaryRowGenerator::GenerateRow({1}, pool.get()),
@@ -185,7 +195,8 @@ TEST(FallbackDataSplitTest, TestDeserialize2) {
         /*creation_time=*/Timestamp(1755880762585ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
     auto file_meta2 = std::make_shared<DataFileMeta>(
         "data-625b3277-84d3-4320-80b9-89a5075bf5fd-0.parquet", /*file_size=*/891, /*row_count=*/1,
         /*min_key=*/BinaryRow::EmptyRow(),
@@ -199,7 +210,8 @@ TEST(FallbackDataSplitTest, TestDeserialize2) {
         /*creation_time=*/Timestamp(1755884315889ll, 0),
         /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
         /*value_stats_cols=*/std::nullopt,
-        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt);
+        /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
+        /*column_max_sequence_numbers=*/std::nullopt);
 
     std::vector<DataSplit::SimpleDataFileMeta> file_list;
     file_list.emplace_back(

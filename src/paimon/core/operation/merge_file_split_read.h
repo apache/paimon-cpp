@@ -74,7 +74,8 @@ class MergeFunctionWrapper;
 /// files->KeyValueProjectionReader/AsyncKeyValueProjectionReader
 /// ->DropDeleteReader->SortMergeReader->ConcatKeyValueRecordReader->KeyValueDataFileRecordReader
 /// ->FieldMappingReader->(ApplyDeletionVectorBatchReader)->(ShreddingFileReader)
-/// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)->FormatReader
+/// ->(DelegatingPrefetchReader)->(PrefetchFileBatchReader)
+/// ->(LateMaterializingFileBatchReader)->FormatReader
 class MergeFileSplitRead : public AbstractSplitRead {
  public:
     static Result<std::unique_ptr<MergeFileSplitRead>> Create(
@@ -103,6 +104,12 @@ class MergeFileSplitRead : public AbstractSplitRead {
         DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory, bool drop_delete);
 
+    /// Creates a min-heap reader which only sorts records and preserves duplicate keys.
+    Result<std::unique_ptr<SortMergeReader>> CreateRawSortMergeReaderForSection(
+        const std::vector<SortedRun>& section, const BinaryRow& partition,
+        DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory);
+
     std::shared_ptr<FileStorePathFactory> GetPathFactory() const {
         return path_factory_;
     }
@@ -116,10 +123,20 @@ class MergeFileSplitRead : public AbstractSplitRead {
         return value_schema_;
     }
 
+    std::shared_ptr<arrow::Schema> GetKeySchema() const {
+        return key_schema_;
+    }
+
+    Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
+        const std::vector<std::shared_ptr<Split>>& disk_splits,
+        std::vector<std::unique_ptr<KeyValueRecordReader>>&& additional_readers);
+
     void SetMergeFunctionWrapper(
         const std::shared_ptr<MergeFunctionWrapper<KeyValue>>& merge_function_wrapper);
 
  private:
+    class RealtimeReaderBuilder;
+
     Result<std::unique_ptr<BatchReader>> CreateMergeReader(
         const std::shared_ptr<DataSplitImpl>& data_split,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory);
@@ -133,6 +150,26 @@ class MergeFileSplitRead : public AbstractSplitRead {
         DeletionVector::Factory dv_factory,
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory);
 
+    Status CreateDiskSections(const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+                              const std::vector<std::optional<DeletionFile>>& deletion_files,
+                              DeletionVector::Factory* dv_factory,
+                              std::vector<std::vector<SortedRun>>* sections) const;
+
+    Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateRecordReadersForSection(
+        const std::vector<SortedRun>& section, const BinaryRow& partition,
+        DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
+
+    Result<std::unique_ptr<BatchReader>> CreateProjectedReader(
+        std::unique_ptr<SortMergeReader>&& sort_merge_reader,
+        const std::shared_ptr<Predicate>& predicate, bool complete_row_kind);
+
+    Result<std::unique_ptr<SortMergeReader>> CreateSortMergeReaderForSection(
+        const std::vector<SortedRun>& section, const BinaryRow& partition,
+        DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory, bool drop_delete,
+        const std::shared_ptr<MergeFunctionWrapper<KeyValue>>& merge_function_wrapper);
+
     Result<std::unique_ptr<KeyValueRecordReader>> CreateReaderForRun(
         const BinaryRow& partition, const SortedRun& sorted_run, DeletionVector::Factory dv_factory,
         const std::shared_ptr<Predicate>& predicate,
@@ -140,6 +177,10 @@ class MergeFileSplitRead : public AbstractSplitRead {
 
     Result<std::unique_ptr<SortMergeReader>> CreateSortMergeReader(
         std::vector<std::unique_ptr<KeyValueRecordReader>>&& record_readers);
+
+    Result<std::unique_ptr<SortMergeReader>> CreateSortMergeReader(
+        std::vector<std::unique_ptr<KeyValueRecordReader>>&& record_readers,
+        const std::shared_ptr<MergeFunctionWrapper<KeyValue>>& merge_function_wrapper) const;
 
     Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>> GetMergeFunctionWrapper();
 

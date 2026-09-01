@@ -49,7 +49,7 @@ std::shared_ptr<DataFileMeta> NewAppendFile(const std::string& file_name, int64_
         /*max_sequence_number=*/first_row_id + row_count - 1, /*schema_id=*/0, /*level=*/0,
         std::vector<std::optional<std::string>>(), Timestamp(0l, 0), /*delete_row_count=*/0,
         /*embedded_index=*/nullptr, FileSource::Append(), std::nullopt, std::nullopt, first_row_id,
-        std::nullopt);
+        std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
 }
 
 std::shared_ptr<Plan> NewDataPlan(std::vector<std::shared_ptr<DataFileMeta>> files) {

@@ -134,6 +134,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/starts_with.cpp
     common/reader/batch_reader.cpp
     common/reader/concat_batch_reader.cpp
+    common/reader/late_materializing_file_batch_reader.cpp
     common/reader/predicate_batch_reader.cpp
     common/reader/prefetch_file_batch_reader_impl.cpp
     common/reader/reader_utils.cpp
@@ -200,7 +201,7 @@ set(PAIMON_REST_LINK_LIBS)
 if(PAIMON_ENABLE_REST)
     set(PAIMON_REST_LINK_LIBS OpenSSL::Crypto)
 endif()
-if(PAIMON_ENABLE_S3)
+if(PAIMON_ENABLE_OSS OR PAIMON_ENABLE_S3)
     list(APPEND PAIMON_COMMON_SRCS common/fs/object_store_file_system.cpp)
 endif()
 
@@ -274,6 +275,7 @@ set(PAIMON_CORE_SRCS
     core/io/data_file_meta_first_row_id_legacy_serializer.cpp
     core/io/data_file_meta.cpp
     core/io/data_file_meta_serializer.cpp
+    core/io/data_file_meta_write_cols_legacy_serializer.cpp
     core/io/data_file_path_factory.cpp
     core/io/data_file_index_writer.cpp
     core/io/file_index_options.cpp
@@ -286,6 +288,7 @@ set(PAIMON_CORE_SRCS
     core/io/vector_file_batch_reader.cpp
     core/io/file_index_evaluator.cpp
     core/io/key_value_data_file_record_reader.cpp
+    core/io/key_value_data_file_writer_factories.cpp
     core/io/key_value_data_file_writer_factory.cpp
     core/io/key_value_data_file_writer.cpp
     core/io/key_value_in_memory_record_reader.cpp
@@ -382,9 +385,12 @@ set(PAIMON_CORE_SRCS
     core/operation/write_restore.cpp
     core/realtime/arrow_realtime_store.cpp
     core/realtime/arrow_realtime_store_factory.cpp
+    core/realtime/realtime_primary_key_reader.cpp
+    core/realtime/primary_key_realtime_store.cpp
     core/realtime/realtime_append_only_writer.cpp
     core/realtime/realtime_context.cpp
     core/realtime/realtime_context_impl.cpp
+    core/realtime/realtime_primary_key_writer.cpp
     core/postpone/postpone_bucket_writer.cpp
     core/schema/arrow_schema_validator.cpp
     core/schema/schema_manager.cpp
@@ -606,6 +612,7 @@ if(PAIMON_BUILD_TESTS)
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp
                     common/reader/concat_batch_reader_test.cpp
+                    common/reader/late_materializing_file_batch_reader_test.cpp
                     common/reader/predicate_batch_reader_test.cpp
                     common/reader/prefetch_file_batch_reader_impl_test.cpp
                     common/reader/reader_utils_test.cpp
@@ -787,6 +794,8 @@ if(PAIMON_BUILD_TESTS)
                     core/manifest/index_manifest_file_handler_test.cpp
                     core/memory/writer_memory_manager_test.cpp
                     core/realtime/arrow_realtime_store_test.cpp
+                    core/realtime/primary_key_realtime_store_test.cpp
+                    core/realtime/realtime_primary_key_reader_test.cpp
                     core/realtime/realtime_context_test.cpp
                     core/realtime/realtime_reader_test.cpp
                     core/mergetree/levels_test.cpp
@@ -811,6 +820,7 @@ if(PAIMON_BUILD_TESTS)
                     core/mergetree/compact/deduplicate_merge_function_test.cpp
                     core/mergetree/compact/first_row_merge_function_test.cpp
                     core/mergetree/compact/first_row_merge_function_wrapper_test.cpp
+                    core/mergetree/compact/internal_row_equalizer_test.cpp
                     core/mergetree/compact/interval_partition_test.cpp
                     core/mergetree/compact/lookup_changelog_merge_function_wrapper_test.cpp
                     core/mergetree/compact/lookup_merge_tree_compact_rewriter_test.cpp
@@ -945,7 +955,7 @@ if(PAIMON_BUILD_TESTS)
     endif()
 
     set(PAIMON_OBJECT_STORE_FS_TEST_SOURCES)
-    if(PAIMON_ENABLE_S3)
+    if(PAIMON_ENABLE_OSS OR PAIMON_ENABLE_S3)
         list(APPEND PAIMON_OBJECT_STORE_FS_TEST_SOURCES
              common/fs/object_store_file_system_test.cpp)
     endif()

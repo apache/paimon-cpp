@@ -29,6 +29,7 @@
 #include "fmt/ranges.h"
 #include "gtest/gtest.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/executor.h"
@@ -60,10 +61,11 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
     }
     void TearDown() override {}
 
-    void CheckResult(BatchReader* apply_bitmap_batch_reader,
+    void CheckResult(std::unique_ptr<BatchReader> apply_bitmap_batch_reader,
                      const std::shared_ptr<arrow::ChunkedArray>& expected_chunk_array) {
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_chunk_array,
-                             ReadResultCollector::CollectResult(apply_bitmap_batch_reader));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::ChunkedArray> result_chunk_array,
+            ReadResultCollector::CollectResult(std::move(apply_bitmap_batch_reader)));
         if (expected_chunk_array) {
             ASSERT_TRUE(result_chunk_array);
             ASSERT_EQ(expected_chunk_array->length(), result_chunk_array->length());
@@ -97,7 +99,8 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
                         prefetch_batch_count, batch_size, prefetch_batch_count * 2,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
-                        /*read_ahead_cache_enabled=*/true, CacheConfig(), pool_));
+                        /*read_ahead_cache_enabled=*/true, CacheConfig(),
+                        /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);
@@ -105,14 +108,14 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
             auto apply_bitmap_batch_reader = std::make_unique<ApplyBitmapIndexBatchReader>(
                 std::move(file_batch_reader), std::move(bitmap_index));
             if (expected_str.empty()) {
-                CheckResult(apply_bitmap_batch_reader.get(), nullptr);
+                CheckResult(std::move(apply_bitmap_batch_reader), nullptr);
             } else {
                 auto expected =
                     arrow::ipc::internal::json::ArrayFromJSON(int_type_, expected_str).ValueOrDie();
                 std::shared_ptr<arrow::Array> expect_array =
                     arrow::StructArray::Make({expected}, target_type_->fields()).ValueOrDie();
                 auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expect_array);
-                CheckResult(apply_bitmap_batch_reader.get(), expected_chunk_array);
+                CheckResult(std::move(apply_bitmap_batch_reader), expected_chunk_array);
             }
         }
     }

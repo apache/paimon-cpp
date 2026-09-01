@@ -19,7 +19,11 @@
 
 #include "paimon/common/global_index/btree/key_serializer.h"
 
+#include <cstdint>
+#include <string>
+
 #include "gtest/gtest.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/testing/utils/testharness.h"
@@ -206,6 +210,30 @@ TEST_F(KeySerializerTest, SerializeAndDeserializeAllTypes) {
         ASSERT_NOK_WITH_MSG(KeySerializer::SerializeKey(literal, arrow::binary(), pool_.get()),
                             "Not support serialize BINARY type in BTreeGlobalIndex");
     }
+}
+
+TEST_F(KeySerializerTest, CanonicalizesFloatingPointNaN) {
+    const auto float_nan = FloatingPointFromBits<float>(0xffc12345U);
+    const auto canonical_float_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> float_bytes,
+        KeySerializer::SerializeKey(Literal(float_nan), arrow::float32(), pool_.get()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> canonical_float_bytes,
+        KeySerializer::SerializeKey(Literal(canonical_float_nan), arrow::float32(), pool_.get()));
+    ASSERT_EQ(std::string(float_bytes->data(), float_bytes->size()),
+              std::string(canonical_float_bytes->data(), canonical_float_bytes->size()));
+
+    const auto double_nan = FloatingPointFromBits<double>(0xfff8123456789abcULL);
+    const auto canonical_double_nan = FloatingPointFromBits<double>(kCanonicalDoubleNaNBits);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> double_bytes,
+        KeySerializer::SerializeKey(Literal(double_nan), arrow::float64(), pool_.get()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> canonical_double_bytes,
+        KeySerializer::SerializeKey(Literal(canonical_double_nan), arrow::float64(), pool_.get()));
+    ASSERT_EQ(std::string(double_bytes->data(), double_bytes->size()),
+              std::string(canonical_double_bytes->data(), canonical_double_bytes->size()));
 }
 
 TEST_F(KeySerializerTest, RejectsMalformedSerializedKeys) {

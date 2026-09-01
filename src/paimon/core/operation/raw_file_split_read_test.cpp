@@ -29,6 +29,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -67,7 +68,7 @@ class RawFileSplitReadTest : public ::testing::Test {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder1(BinaryRowGenerator::GenerateRow({10, 0}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -91,7 +92,7 @@ class RawFileSplitReadTest : public ::testing::Test {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder2(BinaryRowGenerator::GenerateRow({20, 1}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -115,7 +116,7 @@ class RawFileSplitReadTest : public ::testing::Test {
             /*delete_row_count=*/0, /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt, /*external_path=*/std::nullopt,
             /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder3(BinaryRowGenerator::GenerateRow({10, 1}, pool_.get()),
                                         /*bucket=*/0, /*bucket_path=*/
                                         paimon::test::GetDataDir() +
@@ -137,13 +138,13 @@ class RawFileSplitReadTest : public ::testing::Test {
                            "multi_partition_append_table";
         ReadContextBuilder context_builder(path);
         context_builder.SetReadFieldNames(read_schema->field_names());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
 
-        ASSERT_OK_AND_ASSIGN(auto internal_context,
-                             InternalReadContext::Create(std::move(read_context), table_schema,
-                                                         table_schema->Options()));
+        ASSERT_OK_AND_ASSIGN(
+            auto internal_context,
+            InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
         auto data_splits = PrepareDataSplits();
         const auto& core_options = internal_context->GetCoreOptions();
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
@@ -172,9 +173,10 @@ class RawFileSplitReadTest : public ::testing::Test {
                                  split_read->CreateReader(split));
             batch_readers.emplace_back(std::move(reader));
         }
-        auto batch_reader = std::make_unique<ConcatBatchReader>(std::move(batch_readers), pool_);
+        auto batch_reader =
+            std::make_unique<ConcatBatchReader>(std::move(batch_readers), GetArrowPool(pool_));
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         ASSERT_TRUE(result_array->Equals(expected_array));
     }
 
@@ -383,13 +385,13 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
                        "/orc/multi_partition_append_table.db/"
                        "multi_partition_append_table";
     ReadContextBuilder context_builder(path);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
 
-    ASSERT_OK_AND_ASSIGN(auto internal_context,
-                         InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+    ASSERT_OK_AND_ASSIGN(
+        auto internal_context,
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
     const auto& core_options = internal_context->GetCoreOptions();
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
@@ -422,8 +424,10 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
     std::vector<std::unique_ptr<BatchReader>> batch_readers;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, split_read->CreateReader(data_split));
     batch_readers.push_back(std::move(reader));
-    auto batch_reader = std::make_unique<ConcatBatchReader>(std::move(batch_readers), pool_);
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    auto batch_reader =
+        std::make_unique<ConcatBatchReader>(std::move(batch_readers), GetArrowPool(pool_));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_EQ(result_array, nullptr);
 }
 
@@ -432,12 +436,12 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
                        "/orc/pk_table_with_total_buckets.db/pk_table_with_total_buckets";
     ReadContextBuilder context_builder(path);
     context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), read_context->GetPath());
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> internal_context,
-                         InternalReadContext::Create(std::move(read_context), table_schema,
-                                                     table_schema->Options()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> internal_context,
+        InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                          CreateDefaultExecutor(/*thread_count=*/2));
     auto split_read = std::make_unique<RawFileSplitRead>(
@@ -462,7 +466,7 @@ TEST_F(RawFileSplitReadTest, TestMatch) {
             /*embedded_index=*/nullptr, FileSource::Append(),
             /*value_stats_cols=*/std::nullopt,
             /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt,
-            /*write_cols=*/std::nullopt);
+            /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         DataSplitImpl::Builder builder(BinaryRowGenerator::GenerateRow({10, 0}, pool_.get()),
                                        /*bucket=*/0, /*bucket_path=*/
                                        paimon::test::GetDataDir() +

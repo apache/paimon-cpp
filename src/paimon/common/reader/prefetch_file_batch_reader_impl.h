@@ -45,13 +45,20 @@
 
 struct ArrowSchema;
 
+namespace arrow {
+class MemoryPool;
+}  // namespace arrow
+
 namespace paimon {
 
+class MemoryPool;
 class ReaderBuilder;
 class FileSystem;
 class Executor;
 class Predicate;
 class Metrics;
+struct PrefetchMetricsState;
+struct PrefetchIoMetricsState;
 
 class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
  public:
@@ -61,7 +68,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         uint32_t prefetch_max_parallel_num, int32_t batch_size, uint32_t prefetch_batch_count,
         bool enable_adaptive_prefetch_strategy, const std::shared_ptr<Executor>& executor,
         bool initialize_read_ranges, bool read_ahead_cache_enabled, const CacheConfig& cache_config,
-        const std::shared_ptr<MemoryPool>& pool);
+        bool enable_io_metrics, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~PrefetchFileBatchReaderImpl() override;
 
@@ -80,7 +88,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     Status SeekToRow(uint64_t row_number) override;
     Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override;
     Result<uint64_t> GetNumberOfRows() const override;
-    uint64_t GetNextRowToRead() const override;
+    Result<uint64_t> GetNextRowToRead() const override;
     void Close() override;
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
 
@@ -113,7 +121,9 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     PrefetchFileBatchReaderImpl(
         const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
-        const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache);
+        const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
+        const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Status CleanUp();
     void Workloop();
@@ -160,6 +170,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     std::condition_variable cv_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<ReadAheadCache> cache_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 
     mutable std::shared_mutex rw_mutex_;
     std::unique_ptr<std::thread> background_thread_;
@@ -171,5 +182,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     const uint32_t prefetch_queue_capacity_;
     const bool enable_adaptive_prefetch_strategy_;
     int32_t parallel_num_;
+    std::shared_ptr<PrefetchMetricsState> prefetch_metrics_;
+    std::shared_ptr<PrefetchIoMetricsState> io_metrics_;
 };
 }  // namespace paimon

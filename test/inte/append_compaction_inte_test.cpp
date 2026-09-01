@@ -155,6 +155,9 @@ class AppendCompactionInteTest : public testing::Test,
 std::vector<std::string> GetTestValuesForAppendCompactionInteTest() {
     std::vector<std::string> values;
     values.emplace_back("parquet");
+#ifdef PAIMON_ENABLE_MOSAIC
+    values.emplace_back("mosaic");
+#endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
 #endif
@@ -254,7 +257,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompaction) {
 
 TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompactionWithMapSharedShredding) {
     auto file_format = GetParam();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 
@@ -381,7 +384,8 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompactionWithMap
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto actual,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         auto expected_type = arrow::struct_({
             arrow::field("_VALUE_KIND", arrow::int8()),

@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -37,21 +38,80 @@
 namespace paimon {
 template <typename T, typename R>
 class AsyncKeyValueConsumer;
-class MemoryPool;
 class Metrics;
 
-// Asynchronous iterate SortMergeReader (producer) and row-to-array conversion (consumer), support
-// multi-threaded conversion, R can be BatchReader::ReadBatch, KeyValueBatch
+enum class AsyncKeyValueBatchType {
+    DATA,
+    CHANGELOG,
+};
+
+struct AsyncKeyValueRowsBatch {
+    AsyncKeyValueBatchType type = AsyncKeyValueBatchType::DATA;
+    std::vector<KeyValue> rows;
+};
+
+class AsyncKeyValueBatchSink {
+ public:
+    virtual ~AsyncKeyValueBatchSink() = default;
+
+    virtual Status Write(AsyncKeyValueBatchType type, std::vector<KeyValue>&& rows) = 0;
+
+    virtual bool IsCancelled() const = 0;
+};
+
+class AsyncKeyValueBatchProducer {
+ public:
+    virtual ~AsyncKeyValueBatchProducer() = default;
+
+    virtual Status Produce(AsyncKeyValueBatchSink* sink) = 0;
+
+    virtual std::shared_ptr<Metrics> GetReaderMetrics() const;
+
+    virtual void Close() {}
+
+ protected:
+    // Limits the number of rows sent to one Arrow projection call.
+    static int32_t NormalizeProjectionBatchSize(int32_t batch_size) {
+        return std::min(batch_size, MAX_PROJECTION_BATCH_SIZE);
+    }
+
+ private:
+    static constexpr int32_t MAX_PROJECTION_BATCH_SIZE = 100000;
+};
+
+class SortMergeReaderBatchProducer : public AsyncKeyValueBatchProducer {
+ public:
+    SortMergeReaderBatchProducer(std::unique_ptr<SortMergeReader>&& sort_merge_reader,
+                                 int32_t batch_size);
+
+    Status Produce(AsyncKeyValueBatchSink* sink) override;
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override;
+
+    void Close() override;
+
+ private:
+    std::unique_ptr<SortMergeReader> sort_merge_reader_;
+    int32_t batch_size_;
+    bool closed_ = false;
+};
+
+template <typename R>
+struct AsyncKeyValueResultBatch {
+    AsyncKeyValueBatchType type = AsyncKeyValueBatchType::DATA;
+    R result;
+};
+
+// Asynchronous iterates AsyncKeyValueBatchProducer(producer) and row-to-array conversion
+// (consumer), support multi-threaded conversion, R can be BatchReader::ReadBatch or KeyValueBatch.
 template <typename T, typename R>
 class AsyncKeyValueProducerAndConsumer {
  public:
     using ConsumerCreator =
         std::function<Result<std::unique_ptr<RowToArrowArrayConverter<T, R>>>()>;
 
-    AsyncKeyValueProducerAndConsumer(std::unique_ptr<SortMergeReader>&& sort_merge_reader,
-                                     ConsumerCreator create_consumer, int32_t batch_size,
-                                     int32_t consumer_thread_num,
-                                     const std::shared_ptr<MemoryPool>& pool);
+    AsyncKeyValueProducerAndConsumer(std::unique_ptr<AsyncKeyValueBatchProducer>&& producer,
+                                     ConsumerCreator create_consumer, int32_t consumer_thread_num);
 
     ~AsyncKeyValueProducerAndConsumer() {
         CleanUp();
@@ -59,20 +119,19 @@ class AsyncKeyValueProducerAndConsumer {
 
     Result<R> NextBatch();
 
+    Result<AsyncKeyValueResultBatch<R>> NextBatchWithType();
+
     std::shared_ptr<Metrics> GetReaderMetrics() const {
-        return sort_merge_reader_->GetReaderMetrics();
+        return producer_->GetReaderMetrics();
     }
 
     void Close() {
         CleanUp();
-        sort_merge_reader_->Close();
+        producer_->Close();
     }
 
  private:
     static constexpr int32_t RESULT_BATCH_COUNT = 3;
-
-    // in case write batch size is too large and overflow arrow array
-    static constexpr int32_t MAX_PROJECTION_BATCH_SIZE = 100000;
 
     void CleanUpQueue();
     Status ProduceLoop();
@@ -81,11 +140,9 @@ class AsyncKeyValueProducerAndConsumer {
     Status CheckStatusAndCleanUp();
 
  private:
-    int32_t batch_size_;
     int32_t consumer_thread_num_;
-    std::shared_ptr<MemoryPool> pool_;
-    std::unique_ptr<SortMergeReader> sort_merge_reader_;
     ConsumerCreator create_consumer_;
+    std::unique_ptr<AsyncKeyValueBatchProducer> producer_;
 
     // produce: merge sort KeyValue and push result KeyValue to kv_queue_, consume: project KeyValue
     // to arrow array and push result array to result_queue_
@@ -94,18 +151,18 @@ class AsyncKeyValueProducerAndConsumer {
     std::shared_future<Status> producer_future_;
     std::vector<std::unique_ptr<AsyncKeyValueConsumer<T, R>>> consumers_;
     std::atomic<int32_t> consumer_finished_count_ = 0;
-    tbb::concurrent_bounded_queue<std::vector<KeyValue>> kv_queue_;
-    tbb::concurrent_bounded_queue<R> result_queue_;
+    tbb::concurrent_bounded_queue<AsyncKeyValueRowsBatch> kv_queue_;
+    tbb::concurrent_bounded_queue<AsyncKeyValueResultBatch<R>> result_queue_;
 };
 
 template <typename T, typename R>
 class AsyncKeyValueConsumer {
  public:
-    AsyncKeyValueConsumer(std::unique_ptr<RowToArrowArrayConverter<T, R>>&& key_value_consumer,
+    AsyncKeyValueConsumer(std::unique_ptr<RowToArrowArrayConverter<T, R>>&& consumer,
                           std::atomic<bool>& consume_finished,
                           std::atomic<int32_t>& consumer_finished_count,
-                          tbb::concurrent_bounded_queue<std::vector<KeyValue>>& kv_queue,
-                          tbb::concurrent_bounded_queue<R>& result_queue);
+                          tbb::concurrent_bounded_queue<AsyncKeyValueRowsBatch>& kv_queue,
+                          tbb::concurrent_bounded_queue<AsyncKeyValueResultBatch<R>>& result_queue);
 
     ~AsyncKeyValueConsumer() {
         CleanUp();
@@ -118,12 +175,12 @@ class AsyncKeyValueConsumer {
     Status ConsumeLoop();
 
  private:
-    std::unique_ptr<RowToArrowArrayConverter<T, R>> key_value_consumer_;
+    std::unique_ptr<RowToArrowArrayConverter<T, R>> consumer_;
     std::shared_future<Status> consumer_future_;
     std::atomic<bool>& consume_finished_;
     std::atomic<int32_t>& consumer_finished_count_;
-    tbb::concurrent_bounded_queue<std::vector<KeyValue>>& kv_queue_;
-    tbb::concurrent_bounded_queue<R>& result_queue_;
+    tbb::concurrent_bounded_queue<AsyncKeyValueRowsBatch>& kv_queue_;
+    tbb::concurrent_bounded_queue<AsyncKeyValueResultBatch<R>>& result_queue_;
 };
 
 }  // namespace paimon
