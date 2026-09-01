@@ -22,6 +22,8 @@
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/common/utils/path_util.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -66,6 +68,28 @@ Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::str
         return Status::Invalid(fmt::format(
             "Cannot '{}' for branch table '{}', please modify the table with the default branch.",
             action, identifier.ToString()));
+    }
+    return Status::OK();
+}
+
+Status CatalogUtils::CheckValidDatabaseName(const std::string& db_name) {
+    return PathUtil::CheckSinglePathComponent("database", db_name);
+}
+
+Status CatalogUtils::CheckValidTableName(const Identifier& identifier) {
+    PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
+    PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("table", data_table_name));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
+    if (branch) {
+        // The branch of an identifier selects the same directory as the `branch` option, so both
+        // go through the same check.
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(branch.value()));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table,
+                           identifier.GetSystemTableName());
+    if (system_table) {
+        PAIMON_RETURN_NOT_OK(
+            PathUtil::CheckSinglePathComponent("system table", system_table.value()));
     }
     return Status::OK();
 }

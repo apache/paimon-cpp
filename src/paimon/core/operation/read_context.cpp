@@ -278,6 +278,8 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot read with empty table path");
     }
+    // The branch names a directory under the table path, so it must stay a single path component.
+    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(impl_->branch_));
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0");
     }

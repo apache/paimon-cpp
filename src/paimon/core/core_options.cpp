@@ -799,8 +799,14 @@ struct CoreOptions::Impl {
             parser.Parse<bool>(Options::PREFETCH_IO_METRICS_ENABLED, &prefetch_io_metrics_enabled));
         // Parse scan.fallback-branch - fallback branch when partition not found
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_FALLBACK_BRANCH, &scan_fallback_branch));
+        if (scan_fallback_branch) {
+            PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(scan_fallback_branch.value()));
+        }
         // Parse branch - branch name, default "main"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::BRANCH, &branch));
+        // Both branches name a directory under the table root, so they must stay a single path
+        // component.
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(branch));
         // Parse scan.tag-name - optional tag name for "from-snapshot" scan mode
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::SCAN_TAG_NAME, &scan_tag_name));
         return Status::OK();

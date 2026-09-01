@@ -162,19 +162,20 @@ class PAIMON_EXPORT Catalog {
 
     /// Returns the expected location of a specified database.
     ///
-    /// @note This does not check whether the database actually exists.
-    ///
     /// @param db_name The name of the database to get the location for.
-    /// @return A string representing the expected location of the database.
-    virtual std::string GetDatabaseLocation(const std::string& db_name) const = 0;
+    /// @return A result containing the expected location of the database, or an error status on
+    /// failure. An implementation that builds the location from the warehouse path, such as the
+    /// file system catalog, answers without checking whether the database exists. One that resolves
+    /// the location on a server, such as the REST catalog, propagates the server's error and so
+    /// fails for a database that does not exist.
+    virtual Result<std::string> GetDatabaseLocation(const std::string& db_name) const = 0;
 
     /// Returns the expected location of a specified table.
     ///
-    /// @note This does not check whether the table actually exists.
-    ///
     /// @param identifier The table identifier containing database and table name.
     /// @return A result containing the expected location of the table, or an error status on
-    /// failure.
+    /// failure. Whether a missing table is an error depends on the implementation, in the same way
+    /// as for `GetDatabaseLocation`.
     virtual Result<std::string> GetTableLocation(const Identifier& identifier) const = 0;
 
     /// Returns the root path of the catalog.

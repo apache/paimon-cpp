@@ -42,6 +42,7 @@
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -170,12 +171,16 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
     Result<std::shared_ptr<Plan>> ScanGlobalIndexAndData(
         const std::string& table_path, const std::shared_ptr<Predicate>& predicate,
         const std::map<std::string, std::string>& options = {},
-        const std::shared_ptr<GlobalIndexResult>& index_result = nullptr) const {
+        const std::shared_ptr<GlobalIndexResult>& index_result = nullptr,
+        const std::shared_ptr<Cache>& cache = nullptr) const {
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.SetPredicate(predicate)
             .SetOptions(options)
             .SetGlobalIndexResult(index_result)
             .WithFileSystem(fs_);
+        if (cache) {
+            scan_context_builder.WithCache(cache);
+        }
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());
@@ -1424,6 +1429,21 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
     // write and commit global index
     ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", "bitmap", /*options=*/{},
                          Range(0, 7)));
+
+    {
+        auto cache = std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 64 * 1024 * 1024);
+        auto predicate =
+            PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                    Literal(FieldType::STRING, "Alice", 5));
+        ASSERT_OK(ScanGlobalIndexAndData(table_path, predicate, /*options=*/{},
+                                         /*index_result=*/nullptr, cache));
+        ASSERT_GE(cache->GetCount(CacheKind::MANIFEST), 2);
+        int64_t first_supplier_calls = cache->SupplierCallCount(CacheKind::MANIFEST);
+
+        ASSERT_OK(ScanGlobalIndexAndData(table_path, predicate, /*options=*/{},
+                                         /*index_result=*/nullptr, cache));
+        ASSERT_EQ(cache->SupplierCallCount(CacheKind::MANIFEST), first_supplier_calls);
+    }
 
     // scan and read with global index
     {

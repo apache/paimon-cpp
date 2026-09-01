@@ -93,8 +93,8 @@ LookupMergeTreeCompactRewriter<T>::Create(
         MergeFileSplitRead::Create(path_factory, internal_context, pool, CreateDefaultExecutor()));
 
     MergeFunctionWrapperFactory merge_function_wrapper_factory =
-        [data_schema, options, trimmed_primary_keys, pool](
-            int32_t /*output_level*/) -> Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>> {
+        [data_schema, options, trimmed_primary_keys,
+         pool]() -> Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>> {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MergeFunction> merge_function,
                                PrimaryKeyTableUtils::CreateMergeFunction(
                                    data_schema, trimmed_primary_keys, options, pool));

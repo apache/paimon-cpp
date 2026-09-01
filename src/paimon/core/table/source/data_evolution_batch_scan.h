@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/abstract_table_scan.h"
 #include "paimon/core/table/source/data_table_batch_scan.h"
 #include "paimon/result.h"
@@ -36,6 +37,7 @@ class DataEvolutionBatchScan : public AbstractTableScan {
     DataEvolutionBatchScan(const std::string& table_path,
                            const std::shared_ptr<SnapshotReader>& snapshot_reader,
                            std::unique_ptr<DataTableBatchScan>&& batch_scan,
+                           const std::shared_ptr<TableSchema>& table_schema,
                            const std::shared_ptr<GlobalIndexResult>& global_index_result,
                            const CoreOptions& core_options, const std::shared_ptr<MemoryPool>& pool,
                            const std::shared_ptr<Executor>& executor);
@@ -56,12 +58,12 @@ class DataEvolutionBatchScan : public AbstractTableScan {
     };
 
     Result<std::optional<EvaluatedGlobalIndex>> EvalGlobalIndex() const;
-    Result<std::optional<int64_t>> ResolveGlobalIndexSnapshotId() const;
 
  private:
     std::shared_ptr<MemoryPool> pool_;
     std::string table_path_;
     std::unique_ptr<DataTableBatchScan> batch_scan_;
+    std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<GlobalIndexResult> global_index_result_;
     std::shared_ptr<Executor> executor_;
 };
