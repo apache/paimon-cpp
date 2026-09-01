@@ -473,6 +473,14 @@ TEST_F(LiteralConverterTest, TestLiteralsToArray) {
         FieldType::BIGINT, {Literal(4l), Literal(FieldType::BIGINT), Literal(-5l)},
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([4, null, -5])").ValueOrDie());
     CheckLiteralsToArray(
+        FieldType::FLOAT, {Literal(4.5f), Literal(FieldType::FLOAT), Literal(-5.25f)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::float32(), R"([4.5, null, -5.25])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::DOUBLE, {Literal(4.5), Literal(FieldType::DOUBLE), Literal(-5.25)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::float64(), R"([4.5, null, -5.25])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
         FieldType::DATE,
         {Literal(FieldType::DATE, 0), Literal(FieldType::DATE), Literal(FieldType::DATE, -5)},
         arrow::ipc::internal::json::ArrayFromJSON(arrow::date32(), R"([0, null, -5])")
@@ -512,12 +520,6 @@ TEST_F(LiteralConverterTest, TestLiteralsToArrayUnsupportedType) {
         LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(Decimal(21, 3, 0))}),
         "Not support converting literals of DECIMAL type to an arrow array");
     // the field types no caller asks for yet
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::FLOAT, {Literal(4.0f)}),
-                        "Not support converting literals of FLOAT type to an arrow array");
-    ASSERT_NOK_WITH_MSG(
-        LiteralConverter::ConvertLiteralsToArray(FieldType::DOUBLE, {Literal(4.05)}),
-        "Not support converting literals of DOUBLE type to an arrow array");
-    // and the ones a `Literal` holds no value for
     ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::BLOB, {}),
                         "Not support converting literals of BLOB type to an arrow array");
     ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::ARRAY, {}),

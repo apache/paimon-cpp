@@ -18,6 +18,7 @@
 
 #include "paimon/common/predicate/multi_literals_leaf_function.h"
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -32,6 +33,7 @@
 #include "paimon/common/predicate/in.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/predicate/not_in.h"
+#include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -252,17 +254,74 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestEmptyLiterals) {
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestTypesOffTheValueSetPath) {
-    // FLOAT and DOUBLE hash their raw bits, so they keep the row by row comparison path, as do
-    // TIMESTAMP and DECIMAL. The result must stay the same either way.
-    auto double_array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::float64(), R"([1.0, 2.5, null])")
-            .ValueOrDie();
-    ASSERT_EQ(EvalIn({Literal(1.0), Literal(3.0)}, double_array), std::vector<char>({1, 0, 0}));
-    ASSERT_EQ(EvalNotIn({Literal(1.0), Literal(3.0)}, double_array), std::vector<char>({0, 1, 0}));
+    // The arrow type of a TIMESTAMP carries a time unit that a `FieldType` alone does not pin down,
+    // so TIMESTAMP keeps the row by row comparison path. The result must stay the same either way.
+    arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MILLI),
+                                    arrow::default_memory_pool());
+    ASSERT_TRUE(builder.Append(1000).ok());
+    ASSERT_TRUE(builder.Append(2000).ok());
+    ASSERT_TRUE(builder.AppendNull().ok());
+    std::shared_ptr<arrow::Array> timestamp_array;
+    ASSERT_TRUE(builder.Finish(&timestamp_array).ok());
+
+    const std::vector<Literal> literals = {Literal(Timestamp::FromEpochMillis(1000))};
+    ASSERT_EQ(EvalIn(literals, timestamp_array), std::vector<char>({1, 0, 0}));
+    ASSERT_EQ(EvalNotIn(literals, timestamp_array), std::vector<char>({0, 1, 0}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestFloatAndDouble) {
+    auto double_array = arrow::ipc::internal::json::ArrayFromJSON(
+                            arrow::float64(), R"([1.0, 2.5, -3.25, Inf, -Inf, null])")
+                            .ValueOrDie();
+    const std::vector<Literal> double_literals = {Literal(1.0), Literal(-3.25),
+                                                  Literal(std::numeric_limits<double>::infinity())};
+    ASSERT_EQ(EvalIn(double_literals, double_array), std::vector<char>({1, 0, 1, 1, 0, 0}));
+    ASSERT_EQ(EvalNotIn(double_literals, double_array), std::vector<char>({0, 1, 0, 0, 1, 0}));
 
     auto float_array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::float32(), R"([1.5, 2.5])").ValueOrDie();
-    ASSERT_EQ(EvalIn({Literal(1.5f)}, float_array), std::vector<char>({1, 0}));
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::float32(), R"([1.5, 2.5, -Inf, null])")
+            .ValueOrDie();
+    const std::vector<Literal> float_literals = {Literal(1.5f),
+                                                 Literal(-std::numeric_limits<float>::infinity())};
+    ASSERT_EQ(EvalIn(float_literals, float_array), std::vector<char>({1, 0, 1, 0}));
+    ASSERT_EQ(EvalNotIn(float_literals, float_array), std::vector<char>({0, 1, 0, 0}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestNegativeZeroDoesNotMatchPositiveZero) {
+    // `FieldsComparator::CompareFloatingPoint` orders `-0.0 < +0.0`, so they are two distinct
+    // values. `is_in` agrees only because it hashes the raw bits of a float, which arrow's own
+    // comment marks as something it would rather change. Should it ever hash equal floats alike,
+    // `-0.0` would start matching `IN (0.0)` and this assertion is what catches the divergence.
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::float64(), R"([0.0, -0.0, 1.0])")
+                     .ValueOrDie();
+    ASSERT_EQ(EvalIn({Literal(0.0)}, array), std::vector<char>({1, 0, 0}));
+    ASSERT_EQ(EvalIn({Literal(-0.0)}, array), std::vector<char>({0, 1, 0}));
+    ASSERT_EQ(EvalNotIn({Literal(0.0)}, array), std::vector<char>({0, 1, 1}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestNanLiteralStaysOffTheValueSetPath) {
+    // `is_in` hashes the raw bits of a float, so a NaN literal would only match the column NaNs
+    // carrying the very same bit pattern, while `FieldsComparator::CompareFloatingPoint` makes
+    // every NaN equal. A NaN literal therefore keeps the row by row path, where the sign flipped
+    // NaN below still matches.
+    const double canonical_nan = std::numeric_limits<double>::quiet_NaN();
+    arrow::DoubleBuilder builder;
+    ASSERT_TRUE(builder.Append(canonical_nan).ok());
+    ASSERT_TRUE(builder.Append(-canonical_nan).ok());
+    ASSERT_TRUE(builder.Append(1.0).ok());
+    ASSERT_TRUE(builder.AppendNull().ok());
+    std::shared_ptr<arrow::Array> array;
+    ASSERT_TRUE(builder.Finish(&array).ok());
+
+    ASSERT_EQ(EvalIn({Literal(canonical_nan)}, array), std::vector<char>({1, 1, 0, 0}));
+    ASSERT_EQ(EvalNotIn({Literal(canonical_nan)}, array), std::vector<char>({0, 0, 1, 0}));
+    ASSERT_EQ(EvalIn({Literal(1.0), Literal(canonical_nan)}, array),
+              std::vector<char>({1, 1, 1, 0}));
+
+    // With no NaN in the value set the two paths agree, because a column NaN then matches no
+    // literal either way.
+    ASSERT_EQ(EvalIn({Literal(1.0)}, array), std::vector<char>({0, 0, 1, 0}));
+    ASSERT_EQ(EvalNotIn({Literal(1.0)}, array), std::vector<char>({1, 1, 0, 0}));
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestMixedLiteralTypesReportTheError) {

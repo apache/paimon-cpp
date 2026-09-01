@@ -18,6 +18,7 @@
 
 #include "paimon/common/predicate/multi_literals_leaf_function.h"
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -32,12 +33,16 @@
 
 namespace paimon {
 namespace {
-/// The field types `arrow::compute::is_in` can stand in for `Literal::CompareTo`. It compares by
-/// hash, so the field types whose `Literal` equality is not that of their arrow representation are
-/// left out: `FLOAT` and `DOUBLE` hash the raw bits, so the NaNs `Literal::HashCode` canonicalizes
-/// would stop matching, and `DECIMAL` compares across scales. They are also the field types
-/// `LiteralConverter::ConvertLiteralsToArray` writes today, and the check keeps one it starts
-/// writing from reaching `is_in` on its own.
+/// The field types `arrow::compute::is_in` can stand in for `Literal::CompareTo`. These are also
+/// the field types `LiteralConverter::ConvertLiteralsToArray` writes today, and the check keeps one
+/// it starts writing from reaching `is_in` on its own.
+///
+/// `DECIMAL` and `TIMESTAMP` are left out because their arrow types are parameterized, by precision
+/// and scale and by time unit, which a `FieldType` alone does not pin down. `is_in` does compare a
+/// decimal value set against a column of another scale correctly, but it gets there by casting the
+/// whole column, which overflows into an error where `Literal::CompareTo` merely finds no match.
+/// `FLOAT` and `DOUBLE` agree on every value but NaN, which `MakeInValueSet` keeps off this path
+/// on its own.
 bool CanProbeWithIsIn(FieldType field_type) {
     switch (field_type) {
         case FieldType::BOOLEAN:
@@ -45,10 +50,24 @@ bool CanProbeWithIsIn(FieldType field_type) {
         case FieldType::SMALLINT:
         case FieldType::INT:
         case FieldType::BIGINT:
+        case FieldType::FLOAT:
+        case FieldType::DOUBLE:
         case FieldType::DATE:
         case FieldType::STRING:
         case FieldType::BINARY:
             return true;
+        default:
+            return false;
+    }
+}
+
+/// Whether `literal` holds a floating point NaN.
+bool IsNanLiteral(const Literal& literal) {
+    switch (literal.GetType()) {
+        case FieldType::FLOAT:
+            return std::isnan(literal.GetValue<float>());
+        case FieldType::DOUBLE:
+            return std::isnan(literal.GetValue<double>());
         default:
             return false;
     }
@@ -59,7 +78,7 @@ bool CanProbeWithIsIn(FieldType field_type) {
 ///
 /// @param negate `false` for `IN`, `true` for `NOT IN`.
 /// @return `nullptr` when the literals cannot be probed by `is_in`, which covers the field types
-///         `CanProbeWithIsIn` rejects, and `NOT IN` holding a null literal, which
+///         `CanProbeWithIsIn` rejects, a NaN literal, and `NOT IN` holding a null literal, which
 ///         `NotIn::InnerTest` makes false for every row. This never fails.
 std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literals, bool negate) {
     if (literals.empty()) {
@@ -82,6 +101,13 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
         // A literal typed differently makes `Literal::CompareTo` fail, keep that on the row by row
         // path.
         if (!literal.IsNull() && literal.GetType() != field_type) {
+            return nullptr;
+        }
+        // `is_in` hashes the raw bits of a float, so a NaN literal would only match the column NaNs
+        // carrying the very same bit pattern, while `FieldsComparator::CompareFloatingPoint` makes
+        // every NaN equal. Keep a NaN literal on the row by row path. With none in the value set
+        // the two agree, because a column NaN then matches no literal either way.
+        if (!literal.IsNull() && IsNanLiteral(literal)) {
             return nullptr;
         }
         // `NotIn::InnerTest` returns false as soon as it meets a null literal, so no row can match

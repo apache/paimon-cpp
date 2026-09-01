@@ -326,6 +326,12 @@ Result<std::shared_ptr<arrow::Array>> LiteralConverter::ConvertLiteralsToArray(
         case FieldType::BIGINT:
             return BuildArray<arrow::Int64Builder>(
                 literals, [](const Literal& literal) { return literal.GetValue<int64_t>(); });
+        case FieldType::FLOAT:
+            return BuildArray<arrow::FloatBuilder>(
+                literals, [](const Literal& literal) { return literal.GetValue<float>(); });
+        case FieldType::DOUBLE:
+            return BuildArray<arrow::DoubleBuilder>(
+                literals, [](const Literal& literal) { return literal.GetValue<double>(); });
         case FieldType::DATE:
             return BuildArray<arrow::Date32Builder>(
                 literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); });
