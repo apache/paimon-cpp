@@ -40,6 +40,7 @@
 #include "arrow/util/thread_pool.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
@@ -637,6 +638,7 @@ Result<BatchReader::ReadBatch> ParquetFileBatchReader::NextBatch() {
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
+        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
 
         read_rows_ += array->length();
         read_batch_count_++;

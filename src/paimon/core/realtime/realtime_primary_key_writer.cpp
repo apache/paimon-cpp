@@ -205,7 +205,7 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
                                                arrow_pool_.get()));
     auto output = std::make_unique<ArrowArray>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*transport, output.get()));
-    PAIMON_RETURN_NOT_OK(RetainArrowArrayMemoryPool(output.get(), arrow_pool_));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(output.get(), /*schema=*/nullptr, arrow_pool_));
     RecordBatchBuilder builder(output.get());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> transport_batch, builder.Finish());
     PAIMON_RETURN_NOT_OK(realtime_store_->Write(RealtimeWriteBatch{

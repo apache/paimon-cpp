@@ -35,6 +35,7 @@
 #include "paimon/macros.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -94,18 +95,13 @@ void AssertOffsetsZero(const ArrowArray* array) {
     }
 }
 
-Result<std::string> ReadJson(const std::vector<std::unique_ptr<BatchReader>>& readers) {
+Result<std::string> ReadJson(std::vector<std::unique_ptr<BatchReader>> readers) {
     std::vector<std::shared_ptr<arrow::Array>> batches;
-    for (const std::unique_ptr<BatchReader>& reader : readers) {
-        while (true) {
-            PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
-            if (BatchReader::IsEofBatch(batch)) {
-                break;
-            }
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                std::shared_ptr<arrow::Array> array,
-                arrow::ImportArray(batch.first.get(), batch.second.get()));
-            batches.push_back(std::move(array));
+    for (std::unique_ptr<BatchReader>& reader : readers) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
+                               ReadResultCollector::CollectResult(std::move(reader)));
+        if (result) {
+            batches.insert(batches.end(), result->chunks().begin(), result->chunks().end());
         }
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> result,
@@ -151,16 +147,13 @@ TEST(PrimaryKeyRealtimeStoreTest, TestCommitReaderPerStoredBatch) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateCommitReaders(segment.value()));
     ASSERT_EQ(2, readers.size());
-    ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(readers));
+    ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(std::move(readers)));
     ASSERT_EQ(
         "-- is_valid: all not null\n-- child 0 type: int8\n  [\n    1,\n    0,\n    2\n  ]\n-- "
         "child 1 type: int64\n  [\n    6,\n    5,\n    7\n  ]\n-- child 2 type: int64\n  [\n    "
         "1,\n    0,\n    2\n  ]\n-- child 3 type: int64\n  [\n    1,\n    3,\n    2\n  ]\n-- child "
         "4 type: string\n  [\n    \"before\",\n    \"three\",\n    \"after\"\n  ]",
         actual);
-    for (const std::unique_ptr<BatchReader>& reader : readers) {
-        reader->Close();
-    }
 }
 
 void AssertSlicedBatch(BatchReader* reader) {
@@ -264,7 +257,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestReclaimKeepsReadView) {
                                  /*enable_predicate_pushdown=*/false};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(retained_view, /*offset_begin=*/0, context));
-    ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(readers));
+    ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(std::move(readers)));
     ASSERT_NE(std::string::npos, actual.find("\"one\""));
     ASSERT_NE(std::string::npos, actual.find("\"two\""));
     ASSERT_NE(std::string::npos, actual.find("\"three\""));
@@ -288,12 +281,12 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, /*offset_begin=*/0, context));
     ASSERT_EQ(2, readers.size());
-    ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(readers));
+    ASSERT_OK_AND_ASSIGN(std::string actual, ReadJson(std::move(readers)));
     ASSERT_NE(std::string::npos, actual.find("\"one\""));
     ASSERT_NE(std::string::npos, actual.find("\"two\""));
 }
 
-TEST(PrimaryKeyRealtimeStoreTest, TestQueryPoolOutlivesStoreReaderAndExport) {
+TEST(PrimaryKeyRealtimeStoreTest, TestQueryBatchOutlivesStoreAndReader) {
     const std::shared_ptr<arrow::Schema> stored_schema = TransportSchema();
     std::shared_ptr<MemoryPool> pool = GetMemoryPool();
     std::weak_ptr<MemoryPool> pool_lifetime = pool;
@@ -322,11 +315,13 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryPoolOutlivesStoreReaderAndExport) {
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());
     ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    readers.clear();
+    ASSERT_FALSE(pool_lifetime.expired());
+
     arrow::Result<std::shared_ptr<arrow::Array>> import_result =
         arrow::ImportArray(batch.first.get(), batch.second.get());
     ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();
     std::shared_ptr<arrow::Array> imported = std::move(import_result).ValueOrDie();
-    readers.clear();
     ASSERT_FALSE(pool_lifetime.expired());
     imported.reset();
     ASSERT_TRUE(pool_lifetime.expired());
@@ -371,6 +366,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, /*offset_begin=*/0, context));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());
+    readers.clear();
     arrow::Result<std::shared_ptr<arrow::Array>> import_result =
         arrow::ImportArray(batch.first.get(), batch.second.get());
     ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();
