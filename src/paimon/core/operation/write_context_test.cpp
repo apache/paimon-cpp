@@ -100,6 +100,20 @@ TEST(WriteContextTest, TestSetOptionsOverridesAddedOptions) {
     ASSERT_EQ(expected_options, ctx->GetOptions());
 }
 
+TEST(WriteContextTest, TestRejectBranchLeavingRootPath) {
+    // The branch names a directory under the root path, so a value that is not a single path
+    // component is rejected when the context is built.
+    WriteContextBuilder builder("table_root_path", "commit_user_1");
+    builder.WithBranch("rt/../../../../../outside");
+    ASSERT_NOK_WITH_MSG(builder.Finish(), "branch name cannot contain path separators");
+
+    // An empty branch selects the main branch and stays accepted.
+    WriteContextBuilder main_builder("table_root_path", "commit_user_1");
+    main_builder.WithBranch("");
+    ASSERT_OK_AND_ASSIGN(auto ctx, main_builder.Finish());
+    ASSERT_EQ("", ctx->GetBranch());
+}
+
 TEST(WriteContextTest, TestSetWriteBufferSpillThreadNumber) {
     WriteContextBuilder builder("table_root_path", "commit_user_1");
     builder.SetWriteBufferSpillThreadNumber(2);

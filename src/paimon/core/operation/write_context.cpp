@@ -198,6 +198,8 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");
     }
+    // The branch names a directory under the root path, so it must stay a single path component.
+    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(impl_->branch_));
     bool enable_multi_thread_spill = impl_->spill_thread_number_ > 0;
     if (enable_multi_thread_spill) {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(

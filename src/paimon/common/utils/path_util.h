@@ -52,6 +52,15 @@ class PAIMON_EXPORT PathUtil {
     static Result<Path> ToPath(const std::string& path) noexcept;
     static Result<std::string> NormalizePath(const std::string& path) noexcept;
 
+    /// Fails when `name` cannot be used as a single path component, which is required to keep a
+    /// path built with `JoinPath` under the directory it is joined to: `name` must not be empty
+    /// or whitespace-only, must not be "." or "..", and must contain neither a path separator
+    /// nor a control character. `kind` names the rejected value in the error message, which
+    /// reads "<kind> name <reason>: '<name>'" and escapes the control characters of `name`.
+    ///
+    /// The check is purely lexical and needs no IO.
+    static Status CheckSinglePathComponent(const std::string& kind, const std::string& name);
+
  private:
     static std::string NormalizeInnerPath(const std::string& path) noexcept;
 };
