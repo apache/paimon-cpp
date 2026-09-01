@@ -55,12 +55,15 @@ class BranchManager {
         return PathUtil::CheckSinglePathComponent("branch", branch);
     }
 
-    /// Returns the table root path for the selected branch.
+    /// Returns the table root path for the selected branch. A branch that `NormalizeBranch` maps
+    /// to `main` resolves to the table root, so that a caller passing a raw option value cannot
+    /// end up with a directory of its own.
     static std::string BranchPath(const std::string& table_root, const std::string& branch) {
-        return IsMainBranch(branch)
-                   ? table_root
-                   : PathUtil::JoinPath(table_root,
-                                        "/branch/" + std::string(BRANCH_PREFIX) + branch);
+        const std::string normalized = NormalizeBranch(branch);
+        if (IsMainBranch(normalized)) {
+            return table_root;
+        }
+        return PathUtil::JoinPath(table_root, "/branch/" + std::string(BRANCH_PREFIX) + normalized);
     }
 
     /// Returns whether the branch is the default main branch.

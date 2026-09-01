@@ -41,6 +41,10 @@ TEST(BranchManagerTest, TestNormalizeBranch) {
 TEST(BranchManagerTest, TestBranchPath) {
     ASSERT_EQ(BranchManager::BranchPath("/root", BranchManager::DEFAULT_MAIN_BRANCH), "/root");
     ASSERT_EQ(BranchManager::BranchPath("/root", "data"), "/root/branch/branch-data");
+    // A branch `NormalizeBranch` maps to `main` resolves to the table root, so that a raw option
+    // value cannot select a directory the main branch never writes to.
+    ASSERT_EQ(BranchManager::BranchPath("/root", ""), "/root");
+    ASSERT_EQ(BranchManager::BranchPath("/root", "   "), "/root");
 }
 
 TEST(BranchManagerTest, TestCheckValidBranch) {
