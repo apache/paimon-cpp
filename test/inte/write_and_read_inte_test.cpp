@@ -759,6 +759,8 @@ TEST_P(WriteAndReadInteTest, TestFullCompactionChangelogStreamRead) {
     auto expected_type =
         arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), fields[0], fields[1]});
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> changelog_splits, helper->Scan());
+    ASSERT_TRUE(changelog_splits.empty());
+    ASSERT_OK_AND_ASSIGN(changelog_splits, helper->Scan());
     ASSERT_FALSE(changelog_splits.empty());
     ASSERT_OK_AND_ASSIGN(bool initial_success,
                          helper->ReadAndCheckResult(expected_type, changelog_splits,
