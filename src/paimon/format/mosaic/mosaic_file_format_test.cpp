@@ -182,7 +182,7 @@ class MosaicFileFormatTest : public ::testing::Test {
     std::shared_ptr<LocalFileSystem> file_system_;
     std::unique_ptr<paimon::test::UniqueTestDirectory> directory_;
     std::shared_ptr<MemoryPool> pool_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 TEST_F(MosaicFileFormatTest, WriteThenRead) {
@@ -198,6 +198,13 @@ TEST_F(MosaicFileFormatTest, WriteThenRead) {
 
     ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/2));
     AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 5, 8});
+}
+
+TEST_F(MosaicFileFormatTest, ReaderBuilderRejectsNullMemoryPool) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReaderBuilder> reader_builder,
+                         format_->CreateReaderBuilder(/*batch_size=*/2));
+    reader_builder->WithMemoryPool(nullptr);
+    ASSERT_NOK_WITH_MSG(reader_builder->Build(nullptr), "Mosaic reader memory pool is nullptr");
 }
 
 TEST_F(MosaicFileFormatTest, EmptyProjectionPreservesRowCount) {
@@ -267,6 +274,7 @@ TEST_F(MosaicFileFormatTest, SetReadSchemaResetsReaderToFirstRow) {
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch projected_batch, reader->NextBatch());
     ASSERT_OK_AND_ASSIGN(first_row, reader->GetPreviousBatchFileRowId(/*batch_row_id=*/0));
     ASSERT_EQ(first_row, 0);
+    reader.reset();
     std::shared_ptr<arrow::Array> projected_array =
         arrow::ImportArray(projected_batch.first.get(), projected_batch.second.get()).ValueOrDie();
     std::shared_ptr<arrow::Array> expected =
@@ -420,7 +428,7 @@ TEST_F(MosaicFileFormatTest, RowGroupPredicateFiltering) {
         PredicateBuilder::IsNull(/*field_index=*/1, /*field_name=*/"untracked", FieldType::INT);
     ASSERT_OK(reader->SetReadSchema(&ffi_schema, predicate, /*selection_bitmap=*/std::nullopt));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual_is_null_without_stats,
-                         paimon::test::ReadResultCollector::CollectResult(reader.get()));
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
     ASSERT_TRUE(actual_is_null_without_stats->Equals(arrow::ChunkedArray(data)))
         << actual_is_null_without_stats->ToString();
 }

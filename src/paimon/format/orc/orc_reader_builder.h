@@ -33,15 +33,24 @@ namespace paimon::orc {
 class OrcReaderBuilder : public ReaderBuilder {
  public:
     OrcReaderBuilder(const std::map<std::string, std::string>& options, int32_t batch_size)
-        : batch_size_(batch_size), pool_(GetDefaultPool()), options_(options) {}
+        : batch_size_(batch_size),
+          read_memory_(std::make_shared<OrcReadMemory>(GetDefaultPool())),
+          options_(options) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
-        pool_ = pool;
+        if (pool == nullptr) {
+            read_memory_.reset();
+        } else {
+            read_memory_ = std::make_shared<OrcReadMemory>(pool);
+        }
         return this;
     }
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
+        if (read_memory_ == nullptr) {
+            return Status::Invalid("ORC reader memory pool is nullptr");
+        }
         PAIMON_ASSIGN_OR_RAISE(uint64_t natural_read_size,
                                OptionsUtils::GetValueFromMap<uint64_t>(
                                    options_, ORC_NATURAL_READ_SIZE, DEFAULT_NATURAL_READ_SIZE));
@@ -51,12 +60,13 @@ class OrcReaderBuilder : public ReaderBuilder {
 
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OrcInputStreamImpl> input_stream,
                                OrcInputStreamImpl::Create(path, natural_read_size));
-        return OrcFileBatchReader::Create(std::move(input_stream), pool_, options_, batch_size_);
+        return OrcFileBatchReader::Create(std::move(input_stream), read_memory_, options_,
+                                          batch_size_);
     }
 
  private:
     int32_t batch_size_ = -1;
-    std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<OrcReadMemory> read_memory_;
     std::map<std::string, std::string> options_;
 };
 }  // namespace paimon::orc

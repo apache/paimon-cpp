@@ -40,11 +40,11 @@ AvroFileBatchReader::AvroFileBatchReader(const std::shared_ptr<InputStream>& inp
                                          const std::shared_ptr<::arrow::DataType>& file_data_type,
                                          std::unique_ptr<::avro::DataFileReaderBase>&& reader,
                                          std::unique_ptr<arrow::ArrayBuilder>&& array_builder,
-                                         std::unique_ptr<arrow::MemoryPool>&& arrow_pool,
+                                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                                          int32_t batch_size,
                                          const std::shared_ptr<MemoryPool>& pool)
     : pool_(pool),
-      arrow_pool_(std::move(arrow_pool)),
+      arrow_pool_(arrow_pool),
       input_stream_(input_stream),
       file_data_type_(file_data_type),
       reader_(std::move(reader)),
@@ -65,7 +65,7 @@ void AvroFileBatchReader::DoClose() {
 
 Result<std::unique_ptr<AvroFileBatchReader>> AvroFileBatchReader::Create(
     const std::shared_ptr<InputStream>& input_stream, int32_t batch_size,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (batch_size <= 0) {
         return Status::Invalid(
             fmt::format("invalid batch size {}, must be larger than 0", batch_size));
@@ -75,12 +75,11 @@ Result<std::unique_ptr<AvroFileBatchReader>> AvroFileBatchReader::Create(
     const auto& avro_file_schema = reader->dataSchema();
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<::arrow::DataType> file_data_type,
                            AvroSchemaConverter::AvroSchemaToArrowDataType(avro_file_schema));
-    auto arrow_pool = GetArrowPool(pool);
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> array_builder,
                                       arrow::MakeBuilder(file_data_type, arrow_pool.get()));
     return std::unique_ptr<AvroFileBatchReader>(
         new AvroFileBatchReader(input_stream, file_data_type, std::move(reader),
-                                std::move(array_builder), std::move(arrow_pool), batch_size, pool));
+                                std::move(array_builder), arrow_pool, batch_size, pool));
 }
 
 Result<std::unique_ptr<::avro::DataFileReaderBase>> AvroFileBatchReader::CreateDataFileReader(
@@ -134,6 +133,7 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
+        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
         previous_batch_row_count_ = c_array->length;
         return make_pair(std::move(c_array), std::move(c_schema));
     } catch (const ::avro::Exception& e) {

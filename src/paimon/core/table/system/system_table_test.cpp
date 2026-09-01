@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/core/schema/table_schema.h"
@@ -121,7 +122,7 @@ TEST(SystemTableTest, TestStreamingBinlogPacksUpdateAcrossBatches) {
         /*pack_update_before_after=*/true, GetDefaultPool());
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         ReadResultCollector::CollectResult(reader.get()));
+                         ReadResultCollector::CollectResult(std::move(reader)));
     std::shared_ptr<arrow::Array> expected_array =
         arrow::ipc::internal::json::ArrayFromJSON(actual->type(), R"([
                 ["+I", 10, ["a"], [1]],
@@ -154,7 +155,7 @@ TEST(SystemTableTest, TestStreamingBinlogEmitsUnmatchedUpdateBefore) {
         /*pack_update_before_after=*/true, GetDefaultPool());
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         ReadResultCollector::CollectResult(reader.get()));
+                         ReadResultCollector::CollectResult(std::move(reader)));
     std::shared_ptr<arrow::Array> expected_array =
         arrow::ipc::internal::json::ArrayFromJSON(actual->type(), R"([
                 ["-U", ["b"], [2]]
@@ -163,6 +164,42 @@ TEST(SystemTableTest, TestStreamingBinlogEmitsUnmatchedUpdateBefore) {
     auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
     ASSERT_TRUE(actual->Equals(*expected))
         << "expected: " << expected->ToString() << "\nactual: " << actual->ToString();
+}
+
+TEST(SystemTableTest, TestChangelogBatchOutlivesReader) {
+    std::unique_ptr<MemoryPool> unique_pool = GetMemoryPool();
+    std::shared_ptr<MemoryPool> pool = std::move(unique_pool);
+    std::weak_ptr<MemoryPool> weak_pool = pool;
+    std::shared_ptr<arrow::DataType> input_type = arrow::struct_({
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("pk", arrow::utf8()),
+    });
+    std::shared_ptr<arrow::Array> input =
+        arrow::ipc::internal::json::ArrayFromJSON(input_type, R"([[0, "a"]])").ValueOrDie();
+    std::shared_ptr<arrow::Schema> output_schema = arrow::schema({
+        arrow::field("rowkind", arrow::utf8(), /*nullable=*/false),
+        arrow::field("pk", arrow::list(arrow::utf8())),
+    });
+    std::unique_ptr<BatchReader> reader = CreateChangelogBatchReader(
+        std::make_unique<MockFileBatchReader>(input, input_type, /*read_batch_size=*/1),
+        output_schema,
+        /*include_sequence_number=*/false, CreateBinlogBatchConverter(),
+        /*pack_update_before_after=*/true, pool);
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_GT(pool->CurrentUsage(), 0);
+    reader.reset();
+    pool.reset();
+    ASSERT_FALSE(weak_pool.expired());
+
+    auto& [c_array, c_schema] = batch;
+    arrow::Result<std::shared_ptr<arrow::Array>> imported =
+        arrow::ImportArray(c_array.get(), c_schema.get());
+    ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+    std::shared_ptr<arrow::Array> output = std::move(imported).ValueOrDie();
+    ASSERT_EQ(output->length(), 1);
+    output.reset();
+    ASSERT_TRUE(weak_pool.expired());
 }
 
 TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {

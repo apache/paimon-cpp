@@ -38,13 +38,16 @@
 namespace paimon {
 CompleteIndexScoreBatchReader::CompleteIndexScoreBatchReader(
     std::unique_ptr<BatchReader>&& reader, const std::vector<float>& scores,
-    const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)), reader_(std::move(reader)), scores_(scores) {}
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool), reader_(std::move(reader)), scores_(scores) {}
 
 Result<BatchReader::ReadBatch> CompleteIndexScoreBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            NextBatchWithBitmap());
-    return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(
+        BatchReader::ReadBatch batch,
+        ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_));
+    return batch;
 }
 
 void CompleteIndexScoreBatchReader::UpdateScoreFieldIndex(const arrow::StructType* struct_type) {
@@ -106,6 +109,7 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreBatchReader::NextBatc
                                       arrow::StructArray::Make(array_vec, field_names_with_score_));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*array_with_score, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return batch_with_bitmap;
 }
 }  // namespace paimon

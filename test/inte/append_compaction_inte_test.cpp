@@ -384,7 +384,8 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompactionWithMap
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto actual,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         auto expected_type = arrow::struct_({
             arrow::field("_VALUE_KIND", arrow::int8()),
