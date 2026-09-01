@@ -125,6 +125,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/like.cpp
     common/predicate/literal_converter.cpp
     common/predicate/literal.cpp
+    common/predicate/multi_literals_leaf_function.cpp
     common/predicate/not_equal.cpp
     common/predicate/not_in.cpp
     common/predicate/or.cpp
@@ -605,6 +606,7 @@ if(PAIMON_BUILD_TESTS)
                     common/options/time_duration_test.cpp
                     common/predicate/literal_converter_test.cpp
                     common/predicate/literal_test.cpp
+                    common/predicate/multi_literals_leaf_function_test.cpp
                     common/predicate/predicate_test.cpp
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp

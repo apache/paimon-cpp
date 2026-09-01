@@ -50,6 +50,18 @@ class PAIMON_EXPORT LiteralConverter {
     static Result<std::vector<Literal>> ConvertLiteralsFromArray(const arrow::Array& array,
                                                                  bool own_data);
 
+    /// Collects the literals into an arrow array, the reverse of `ConvertLiteralsFromArray`.
+    ///
+    /// @param field_type The field type shared by every literal, it picks the arrow type.
+    /// @param literals The literals to convert, a null literal is written as a null, so the result
+    ///                 has one entry per literal.
+    /// @return `Status::Invalid` for a field type this does not write, which is every one outside
+    ///         `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `DATE`, `STRING` and `BINARY`.
+    ///         `TIMESTAMP` and `DECIMAL` are among them because their arrow type carries a unit or
+    ///         a precision and a scale that the literals alone do not settle.
+    static Result<std::shared_ptr<arrow::Array>> ConvertLiteralsToArray(
+        const FieldType& field_type, const std::vector<Literal>& literals);
+
     static Result<Literal> ConvertLiteralsFromString(const FieldType& type,
                                                      const std::string& value_str);
 

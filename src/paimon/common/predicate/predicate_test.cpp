@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,10 +30,12 @@
 #include "arrow/api.h"
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_array.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/defs.h"
 #include "paimon/memory/memory_pool.h"
@@ -936,6 +939,95 @@ TEST_F(PredicateTest, TestLargeNotInNull) {
     ASSERT_FALSE(StatsCheck(*predicate, 3ll, {FieldStats(6ll, 7ll, 0ll)}));
     ASSERT_FALSE(StatsCheck(*predicate, 1ll, {FieldStats(std::nullopt, std::nullopt, 1ll)}));
     ASSERT_FALSE(StatsCheck(*predicate, 3ll, {FieldStats(29ll, 32ll, 0ll)}));
+}
+
+TEST_F(PredicateTest, TestLargeStringIn) {
+    auto string_type = arrow::utf8();
+    std::vector<Literal> literals;
+    literals.reserve(1000);
+    for (int32_t i = 0; i < 1000; i++) {
+        std::string value = fmt::format("key-{}", i);
+        literals.emplace_back(FieldType::STRING, value.data(), value.size());
+    }
+    auto in_base =
+        PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING, literals);
+    auto in_predicate = std::dynamic_pointer_cast<PredicateFilter>(in_base);
+    ASSERT_TRUE(in_predicate);
+    auto not_in_base = PredicateBuilder::NotIn(/*field_index=*/0, /*field_name=*/"f0",
+                                               FieldType::STRING, literals);
+    auto not_in_predicate = std::dynamic_pointer_cast<PredicateFilter>(not_in_base);
+    ASSERT_TRUE(not_in_predicate);
+
+    auto f0 = arrow::ipc::internal::json::ArrayFromJSON(
+                  string_type, R"(["key-0", "key-999", "key-1000", "other", "", null])")
+                  .ValueOrDie();
+    std::shared_ptr<arrow::DataType> src_type = arrow::struct_({arrow::field("f0", string_type)});
+    std::shared_ptr<arrow::Array> struct_array =
+        arrow::StructArray::Make({f0}, src_type->fields()).ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto in_valid, in_predicate->Test(*struct_array));
+    ASSERT_EQ(in_valid, std::vector<char>({1, 1, 0, 0, 0, 0}));
+    ASSERT_OK_AND_ASSIGN(auto not_in_valid, not_in_predicate->Test(*struct_array));
+    ASSERT_EQ(not_in_valid, std::vector<char>({0, 0, 1, 1, 1, 0}));
+}
+
+TEST_F(PredicateTest, TestInAfterRebind) {
+    auto bigint_type = arrow::int64();
+    auto predicate_base = PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0",
+                                               FieldType::BIGINT, {Literal(1l), Literal(3l)});
+    auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicateImpl>(predicate_base);
+    ASSERT_TRUE(leaf_predicate);
+
+    // Rebinding shares the prebuilt lookup structure, results must stay identical.
+    auto renamed = leaf_predicate->NewLeafPredicate(/*new_field_name=*/"f1");
+    ASSERT_EQ(renamed->FieldName(), "f1");
+    auto rebound = renamed->NewLeafPredicate(/*new_field_index=*/1);
+    ASSERT_EQ(rebound->FieldIndex(), 1);
+
+    auto f0 =
+        arrow::ipc::internal::json::ArrayFromJSON(bigint_type, R"([3, 2, 1, 0])").ValueOrDie();
+    auto f1 =
+        arrow::ipc::internal::json::ArrayFromJSON(bigint_type, R"([1, 2, 3, null])").ValueOrDie();
+    std::shared_ptr<arrow::DataType> src_type =
+        arrow::struct_({arrow::field("f0", bigint_type), arrow::field("f1", bigint_type)});
+    std::shared_ptr<arrow::Array> struct_array =
+        arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto is_valid, rebound->Test(*struct_array));
+    ASSERT_EQ(is_valid, std::vector<char>({1, 0, 1, 0}));
+
+    auto arrow_schema = arrow::schema(
+        arrow::FieldVector({arrow::field("f0", bigint_type), arrow::field("f1", bigint_type)}));
+    ASSERT_TRUE(rebound->Test(arrow_schema, CreateBigIntRow({0, 1})).value());
+    ASSERT_FALSE(rebound->Test(arrow_schema, CreateBigIntRow({1, 2})).value());
+}
+
+TEST_F(PredicateTest, TestInt64BoundaryIn) {
+    // Building the lookup for the full int64 range used to crash with an out of bounds dense
+    // bitmap index; construction itself is part of what this test guards.
+    std::vector<Literal> literals = {Literal(std::numeric_limits<int64_t>::min()),
+                                     Literal(std::numeric_limits<int64_t>::max())};
+    auto in_base =
+        PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT, literals);
+    auto in_predicate = std::dynamic_pointer_cast<PredicateFilter>(in_base);
+    ASSERT_TRUE(in_predicate);
+    auto not_in_base = PredicateBuilder::NotIn(/*field_index=*/0, /*field_name=*/"f0",
+                                               FieldType::BIGINT, literals);
+    auto not_in_predicate = std::dynamic_pointer_cast<PredicateFilter>(not_in_base);
+    ASSERT_TRUE(not_in_predicate);
+
+    auto f0 = arrow::ipc::internal::json::ArrayFromJSON(
+                  arrow::int64(), R"([-9223372036854775808, 0, 9223372036854775807, null])")
+                  .ValueOrDie();
+    std::shared_ptr<arrow::DataType> src_type =
+        arrow::struct_({arrow::field("f0", arrow::int64())});
+    std::shared_ptr<arrow::Array> struct_array =
+        arrow::StructArray::Make({f0}, src_type->fields()).ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto in_valid, in_predicate->Test(*struct_array));
+    ASSERT_EQ(in_valid, std::vector<char>({1, 0, 1, 0}));
+    ASSERT_OK_AND_ASSIGN(auto not_in_valid, not_in_predicate->Test(*struct_array));
+    ASSERT_EQ(not_in_valid, std::vector<char>({0, 1, 0, 0}));
 }
 
 TEST_F(PredicateTest, TestAnd) {

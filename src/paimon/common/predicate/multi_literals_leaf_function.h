@@ -23,27 +23,18 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
 #include "paimon/common/predicate/leaf_function.h"
-#include "paimon/common/predicate/literal_converter.h"
-#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
 
 class MultiLiteralsLeafFunction : public LeafFunction {
  public:
+    /// Probes the whole batch with `arrow::compute::is_in` when the literals allow it, and falls
+    /// back to comparing every row against every literal otherwise. Every `LeafFunction` is a
+    /// shared stateless singleton, so the value set is built per batch; that costs `O(literals)`
+    /// and buys an `O(rows)` probe.
     Result<std::vector<char>> Test(const arrow::Array& array,
-                                   const std::vector<Literal>& literals) const override {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::vector<Literal> array_values,
-            LiteralConverter::ConvertLiteralsFromArray(array, /*own_data=*/false));
-        std::vector<char> is_valid(array.length(), false);
-        for (int64_t i = 0; i < array.length(); i++) {
-            if (!array.IsNull(i)) {
-                PAIMON_ASSIGN_OR_RAISE(is_valid[i], Test(array_values[i], literals));
-            }
-        }
-        return is_valid;
-    }
+                                   const std::vector<Literal>& literals) const override;
 
     Result<bool> Test(int64_t row_count, const Literal& min_value, const Literal& max_value,
                       const std::optional<int64_t>& null_count,

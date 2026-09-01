@@ -77,6 +77,16 @@ class LiteralConverterTest : public ::testing::Test {
             ASSERT_EQ(result, expected[i]);
         }
     }
+
+    void CheckLiteralsToArray(const FieldType& type, const std::vector<Literal>& literals,
+                              const std::shared_ptr<arrow::Array>& expected) const {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                             LiteralConverter::ConvertLiteralsToArray(type, literals));
+        ASSERT_TRUE(array->Equals(*expected))
+            << "actual: " << array->ToString() << ", expected: " << expected->ToString();
+        // the array reads back as the literals it was built from, the null ones included
+        CheckResult(array, literals);
+    }
 };
 
 TEST_F(LiteralConverterTest, TestBooleanLiteral) {
@@ -436,6 +446,88 @@ TEST_F(LiteralConverterTest, TestDictType) {
                     {Literal(FieldType::STRING, "bar", 3), Literal(FieldType::STRING, "baz", 3),
                      Literal(FieldType::STRING, "foo", 3), Literal(FieldType::STRING, "baz", 3),
                      Literal(FieldType::STRING, "foo", 3), Literal(FieldType::STRING)}));
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArray) {
+    // every case keeps a null literal, which is written as a null of the same arrow type
+    CheckLiteralsToArray(
+        FieldType::BOOLEAN, {Literal(true), Literal(FieldType::BOOLEAN), Literal(false)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::boolean(), R"([true, null, false])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::TINYINT,
+        {Literal(static_cast<int8_t>(4)), Literal(FieldType::TINYINT),
+         Literal(static_cast<int8_t>(-5))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int8(), R"([4, null, -5])").ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::SMALLINT,
+        {Literal(static_cast<int16_t>(45)), Literal(FieldType::SMALLINT),
+         Literal(static_cast<int16_t>(-55))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int16(), R"([45, null, -55])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::INT, {Literal(456), Literal(FieldType::INT), Literal(-567)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([456, null, -567])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::BIGINT, {Literal(4l), Literal(FieldType::BIGINT), Literal(-5l)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([4, null, -5])").ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::DATE,
+        {Literal(FieldType::DATE, 0), Literal(FieldType::DATE), Literal(FieldType::DATE, -5)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::date32(), R"([0, null, -5])")
+            .ValueOrDie());
+    std::string str = "苹果";
+    CheckLiteralsToArray(
+        FieldType::STRING,
+        {Literal(FieldType::STRING, "apple", 5), Literal(FieldType::STRING),
+         Literal(FieldType::STRING, str.data(), str.size())},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["apple", null, "苹果"])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::BINARY,
+        {Literal(FieldType::BINARY, "apple", 5), Literal(FieldType::BINARY),
+         Literal(FieldType::BINARY, str.data(), str.size())},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::binary(), R"(["apple", null, "苹果"])")
+            .ValueOrDie());
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {
+    // no literal at all still gives an array typed after the field type
+    CheckLiteralsToArray(
+        FieldType::INT, {},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([])").ValueOrDie());
+    // and a field type is all a null literal needs to be written
+    CheckLiteralsToArray(
+        FieldType::STRING, {Literal(FieldType::STRING), Literal(FieldType::STRING)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"([null, null])").ValueOrDie());
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArrayUnsupportedType) {
+    // the field types whose arrow type the literals alone do not settle
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
+                            FieldType::TIMESTAMP, {Literal(Timestamp(59123l, 456789))}),
+                        "Not support converting literals of TIMESTAMP type to an arrow array");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(Decimal(21, 3, 0))}),
+        "Not support converting literals of DECIMAL type to an arrow array");
+    // the field types no caller asks for yet
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::FLOAT, {Literal(4.0f)}),
+                        "Not support converting literals of FLOAT type to an arrow array");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DOUBLE, {Literal(4.05)}),
+        "Not support converting literals of DOUBLE type to an arrow array");
+    // and the ones a `Literal` holds no value for
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::BLOB, {}),
+                        "Not support converting literals of BLOB type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::ARRAY, {}),
+                        "Not support converting literals of ARRAY type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::MAP, {}),
+                        "Not support converting literals of MAP type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::STRUCT, {}),
+                        "Not support converting literals of STRUCT type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::UNKNOWN, {}),
+                        "Not support converting literals of UNKNOWN");
 }
 
 }  // namespace paimon::test

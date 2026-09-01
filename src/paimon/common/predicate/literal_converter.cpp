@@ -25,12 +25,15 @@
 #include "arrow/array/array_decimal.h"
 #include "arrow/array/array_dict.h"
 #include "arrow/array/array_primitive.h"
+#include "arrow/array/builder_binary.h"
+#include "arrow/array/builder_primitive.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/data/internal_row.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
@@ -283,5 +286,59 @@ std::vector<Literal> LiteralConverter::GetLiteralFromTimestampArray(const arrow:
         }
     }
     return literals;
+}
+
+namespace {
+// Appends every literal, read by `extract`, to a `BuilderType`, keeping a null literal a null.
+template <typename BuilderType, typename Extract>
+Result<std::shared_ptr<arrow::Array>> BuildArray(const std::vector<Literal>& literals,
+                                                 Extract extract) {
+    BuilderType builder;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
+    for (const auto& literal : literals) {
+        if (literal.IsNull()) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
+            continue;
+        }
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(extract(literal)));
+    }
+    std::shared_ptr<arrow::Array> array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&array));
+    return array;
+}
+}  // namespace
+
+Result<std::shared_ptr<arrow::Array>> LiteralConverter::ConvertLiteralsToArray(
+    const FieldType& field_type, const std::vector<Literal>& literals) {
+    switch (field_type) {
+        case FieldType::BOOLEAN:
+            return BuildArray<arrow::BooleanBuilder>(
+                literals, [](const Literal& literal) { return literal.GetValue<bool>(); });
+        case FieldType::TINYINT:
+            return BuildArray<arrow::Int8Builder>(
+                literals, [](const Literal& literal) { return literal.GetValue<int8_t>(); });
+        case FieldType::SMALLINT:
+            return BuildArray<arrow::Int16Builder>(
+                literals, [](const Literal& literal) { return literal.GetValue<int16_t>(); });
+        case FieldType::INT:
+            return BuildArray<arrow::Int32Builder>(
+                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); });
+        case FieldType::BIGINT:
+            return BuildArray<arrow::Int64Builder>(
+                literals, [](const Literal& literal) { return literal.GetValue<int64_t>(); });
+        case FieldType::DATE:
+            return BuildArray<arrow::Date32Builder>(
+                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); });
+        case FieldType::STRING:
+            return BuildArray<arrow::StringBuilder>(
+                literals, [](const Literal& literal) { return literal.GetValue<std::string>(); });
+        case FieldType::BINARY:
+            return BuildArray<arrow::BinaryBuilder>(
+                literals, [](const Literal& literal) { return literal.GetValue<std::string>(); });
+        default:
+            return Status::Invalid(
+                fmt::format("Not support converting literals of {} type to an arrow array",
+                            FieldTypeUtils::FieldTypeToString(field_type)));
+    }
 }
 }  // namespace paimon
