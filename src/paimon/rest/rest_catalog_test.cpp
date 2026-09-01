@@ -446,8 +446,12 @@ TEST_F(RestCatalogTest, DatabaseOperations) {
 
     ASSERT_OK_AND_ASSIGN(std::string db1_location, catalog->GetDatabaseLocation("db1"));
     ASSERT_EQ("wh1/db1.db", db1_location);
-    ASSERT_OK_AND_ASSIGN(std::string db3_location, catalog->GetDatabaseLocation("db3"));
-    ASSERT_EQ("", db3_location);
+    // the location is resolved on the server, so an unknown database is reported as an error
+    Status no_location = catalog->GetDatabaseLocation("db3").status();
+    ASSERT_TRUE(no_location.IsNotExist()) << no_location.ToString();
+    // the virtual "sys" database is never asked about and has no location
+    ASSERT_OK_AND_ASSIGN(std::string sys_location, catalog->GetDatabaseLocation("sys"));
+    ASSERT_EQ("", sys_location);
 
     ASSERT_OK(catalog->DropDatabase("db2", /*ignore_if_not_exists=*/false, /*cascade=*/false));
     ASSERT_OK(catalog->DropDatabase("db2", /*ignore_if_not_exists=*/true, /*cascade=*/false));

@@ -164,13 +164,8 @@ Result<std::string> RestCatalog::GetDatabaseLocation(const std::string& db_name)
     if (CatalogUtils::IsSystemDatabase(db_name)) {
         return std::string();
     }
-    Result<GetDatabaseResponse> response = api_->GetDatabase(db_name);
-    if (!response.ok()) {
-        PAIMON_LOG_WARN(logger_, "failed to get location of database %s: %s", db_name.c_str(),
-                        response.status().ToString().c_str());
-        return std::string();
-    }
-    return response.value().GetLocation();
+    PAIMON_ASSIGN_OR_RAISE(GetDatabaseResponse response, api_->GetDatabase(db_name));
+    return response.GetLocation();
 }
 
 Result<std::vector<std::string>> RestCatalog::ListTables(const std::string& db_name) const {
