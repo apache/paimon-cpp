@@ -68,7 +68,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         uint32_t prefetch_max_parallel_num, int32_t batch_size, uint32_t prefetch_batch_count,
         bool enable_adaptive_prefetch_strategy, const std::shared_ptr<Executor>& executor,
         bool initialize_read_ranges, bool read_ahead_cache_enabled, const CacheConfig& cache_config,
-        bool enable_io_metrics, const std::shared_ptr<MemoryPool>& pool);
+        bool enable_io_metrics, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~PrefetchFileBatchReaderImpl() override;
 
@@ -122,7 +123,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
         const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Status CleanUp();
     void Workloop();
@@ -169,7 +170,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     std::condition_variable cv_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<ReadAheadCache> cache_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 
     mutable std::shared_mutex rw_mutex_;
     std::unique_ptr<std::thread> background_thread_;

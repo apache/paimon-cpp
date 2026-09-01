@@ -280,7 +280,8 @@ class AppendOnlyWriterTest : public testing::Test {
         auto c_file_schema = reader->GetFileSchema().value();
         ASSERT_OK(reader->SetReadSchema(c_file_schema.get(), /*predicate=*/nullptr,
                                         /*selection_bitmap=*/std::nullopt));
-        ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto result_array,
+                             ReadResultCollector::CollectResult(std::move(reader)));
         ASSERT_TRUE(expected_array->Equals(result_array))
             << "Expected:\n"
             << expected_array->ToString() << "\nActual:\n"
@@ -816,7 +817,8 @@ TEST_F(AppendOnlyWriterTest, TestWriteWithOnlyBlobField) {
     ASSERT_TRUE(arrow::ExportSchema(*schema, &c_blob_schema).ok());
     ASSERT_OK(blob_reader->SetReadSchema(&c_blob_schema, /*predicate=*/nullptr,
                                          /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(auto actual_array, ReadResultCollector::CollectResult(blob_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual_array,
+                         ReadResultCollector::CollectResult(std::move(blob_reader)));
     auto expected_struct_array =
         arrow::StructArray::Make({blob_array}, {blob_field->name()}).ValueOrDie();
     auto expected_array = std::make_shared<arrow::ChunkedArray>(expected_struct_array);

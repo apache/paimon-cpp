@@ -30,12 +30,38 @@
 #include "arrow/c/abi.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon::test {
+namespace {
+
+class ErrorAfterOneBatchReader : public BatchReader {
+ public:
+    explicit ErrorAfterOneBatchReader(ReadBatch batch) : batch_(std::move(batch)) {}
+
+    Result<ReadBatch> NextBatch() override {
+        if (batch_.first) {
+            return std::move(batch_);
+        }
+        return Status::IOError("expected test error");
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return nullptr;
+    }
+
+    void Close() override {}
+
+ private:
+    ReadBatch batch_;
+};
+
+}  // namespace
+
 TEST(ReaderUtilsTest, TestAddAllValidBitmap) {
     auto check_result = [](const std::string& src_str) {
         if (src_str.empty()) {
@@ -59,15 +85,32 @@ TEST(ReaderUtilsTest, TestAddAllValidBitmap) {
     check_result("[10, 20, 30]");
     check_result("");
 }
+
+TEST(ReaderUtilsTest, TestCollectResultReleasesBufferedBatchesOnError) {
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[1]").ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, ReadResultCollector::GetReadBatch(array));
+
+    std::shared_ptr<int32_t> lifetime = std::make_shared<int32_t>(1);
+    std::weak_ptr<int32_t> weak_lifetime = lifetime;
+    ASSERT_OK(AddArrowArrayLifetime(batch.first.get(), batch.second.get(), lifetime));
+    lifetime.reset();
+
+    auto reader = std::make_unique<ErrorAfterOneBatchReader>(std::move(batch));
+    ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(std::move(reader)),
+                        "expected test error");
+    ASSERT_TRUE(weak_lifetime.expired());
+}
+
 TEST(ReaderUtilsTest, TestApplyBitmapToReadBatch) {
     auto check_result = [](const std::string& src_str, const std::vector<int32_t>& bitmap_vec,
                            const std::string& target_str, const std::string& erro_msg = "") {
+        std::shared_ptr<arrow::MemoryPool> arrow_pool(arrow::default_memory_pool(),
+                                                      [](arrow::MemoryPool*) {});
         auto bitmap = RoaringBitmap32::From(bitmap_vec);
         if (src_str.empty()) {
             auto batch_with_bitmap = std::make_pair(BatchReader::MakeEofBatch(), std::move(bitmap));
-            ASSERT_OK_AND_ASSIGN(auto result_batch,
-                                 ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap),
-                                                                     arrow::default_memory_pool()));
+            ASSERT_OK_AND_ASSIGN(auto result_batch, ReaderUtils::ApplyBitmapToReadBatch(
+                                                        std::move(batch_with_bitmap), arrow_pool));
             ASSERT_TRUE(BatchReader::IsEofBatch(result_batch));
             return;
         }
@@ -78,14 +121,13 @@ TEST(ReaderUtilsTest, TestApplyBitmapToReadBatch) {
         ASSERT_OK_AND_ASSIGN(auto src_batch, ReadResultCollector::GetReadBatch(src_array));
         auto batch_with_bitmap = std::make_pair(std::move(src_batch), std::move(bitmap));
         if (!erro_msg.empty()) {
-            ASSERT_NOK_WITH_MSG(ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap),
-                                                                    arrow::default_memory_pool()),
-                                erro_msg);
+            ASSERT_NOK_WITH_MSG(
+                ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool),
+                erro_msg);
             return;
         }
-        ASSERT_OK_AND_ASSIGN(auto result_batch,
-                             ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap),
-                                                                 arrow::default_memory_pool()));
+        ASSERT_OK_AND_ASSIGN(auto result_batch, ReaderUtils::ApplyBitmapToReadBatch(
+                                                    std::move(batch_with_bitmap), arrow_pool));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::GetArray(std::move(result_batch)));
         ASSERT_TRUE(result_array->Equals(target_array));

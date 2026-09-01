@@ -107,7 +107,7 @@ class PostponeBucketWriterTest : public ::testing::Test,
         ASSERT_OK(batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
                                               /*selection_bitmap=*/std::nullopt));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         ASSERT_TRUE(expected_array->Equals(result_array)) << result_array->ToString() << "\n != \n"
                                                           << expected_array->ToString();
     }

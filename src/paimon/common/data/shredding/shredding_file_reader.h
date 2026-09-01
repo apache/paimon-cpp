@@ -38,7 +38,7 @@ class ShreddingFileReader : public FileBatchReader {
  public:
     ShreddingFileReader(std::unique_ptr<FileBatchReader>&& reader,
                         std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>>&& plans,
-                        const std::shared_ptr<MemoryPool>& pool);
+                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override;
 

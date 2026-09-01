@@ -33,6 +33,7 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
 TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     // no read schema is specified, read all fields
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";

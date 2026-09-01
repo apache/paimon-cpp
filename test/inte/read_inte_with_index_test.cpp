@@ -94,7 +94,7 @@ class ReadInteWithIndexTest : public testing::Test,
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
 
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         ::arrow::PrettyPrintOptions print_option;
         print_option.container_window = 100;
         if (expected_array) {
@@ -975,19 +975,18 @@ TEST_P(ReadInteWithIndexTest, TestSimple) {
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split));
     ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
     ASSERT_TRUE(result_array);
     ASSERT_TRUE(result_array->Equals(*expected_array));
 
     // test metrics
     if (file_format == "orc") {
-        auto read_metrics = batch_reader->GetReaderMetrics();
         ASSERT_OK_AND_ASSIGN(uint64_t io_count, read_metrics->GetCounter("orc.read.io.count"));
         ASSERT_GT(io_count, 0);
         ASSERT_OK_AND_ASSIGN(uint64_t latency,
                              read_metrics->GetCounter("orc.read.inclusive.latency.us"));
         ASSERT_GT(latency, 0);
     }
-    batch_reader->Close();
 }
 
 TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
@@ -1043,18 +1042,24 @@ TEST_P(ReadInteWithIndexTest, TestReadWithLimits) {
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split));
     // simulate read limits, only read 3 batches
+    std::vector<BatchReader::ReadBatch> batches;
     for (int32_t i = 0; i < 3; i++) {
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, batch_reader->NextBatch());
+        batches.push_back(std::move(batch));
+    }
+    batch_reader->Close();
+    std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
+    batch_reader.reset();
+
+    for (BatchReader::ReadBatch& batch : batches) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
                              ReadResultCollector::GetArray(std::move(batch)));
         ASSERT_TRUE(array);
         ASSERT_EQ(array->length(), 1);
     }
-    batch_reader->Close();
 
     // test metrics
     if (file_format == "orc") {
-        auto read_metrics = batch_reader->GetReaderMetrics();
         ASSERT_TRUE(read_metrics);
         ASSERT_OK_AND_ASSIGN(uint64_t io_count, read_metrics->GetCounter("orc.read.io.count"));
         ASSERT_GT(io_count, 0);
@@ -1294,7 +1299,8 @@ TEST_P(ReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader,
                          table_read->CreateReader(std::vector<std::shared_ptr<Split>>{split}));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // Only the two "Bob" rows match the predicate.
     std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -2601,7 +2607,8 @@ TEST_P(ReadInteWithIndexTest, TestWithIOException) {
         CHECK_HOOK_STATUS(table_read.status(), i);
         Result<std::unique_ptr<BatchReader>> batch_reader = table_read.value()->CreateReader(split);
         CHECK_HOOK_STATUS(batch_reader.status(), i);
-        auto result = ReadResultCollector::CollectResult(batch_reader.value().get());
+        std::unique_ptr<BatchReader> owned_reader = std::move(batch_reader).value();
+        auto result = ReadResultCollector::CollectResult(std::move(owned_reader));
         CHECK_HOOK_STATUS(result.status(), i);
         auto result_array = result.value();
         ASSERT_TRUE(result_array);

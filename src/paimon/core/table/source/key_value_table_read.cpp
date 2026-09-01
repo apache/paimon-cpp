@@ -119,9 +119,8 @@ KeyValueTableRead::KeyValueTableRead(
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<InternalReadContext>& context,
     const std::shared_ptr<arrow::Schema>& realtime_primary_key_transport_schema,
-    const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor)
-    : TableRead(memory_pool),
-      split_reads_(std::move(split_reads)),
+    const std::shared_ptr<Executor>& executor)
+    : split_reads_(std::move(split_reads)),
       path_factory_(path_factory),
       context_(context),
       realtime_primary_key_transport_schema_(realtime_primary_key_transport_schema),
@@ -149,7 +148,7 @@ Result<std::unique_ptr<TableRead>> KeyValueTableRead::Create(
 
     return std::unique_ptr<TableRead>(
         new KeyValueTableRead(std::move(split_reads), path_factory, context,
-                              realtime_primary_key_transport_schema, memory_pool, executor));
+                              realtime_primary_key_transport_schema, executor));
 }
 
 void KeyValueTableRead::ForceKeepDelete(bool force_keep_delete) {
@@ -259,7 +258,7 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
                 realtime_context_impl->ReleaseReadView(realtime_split->OpaqueTicket()));
         }
     }
-    return std::make_unique<ConcatBatchReader>(std::move(readers), GetMemoryPool());
+    return std::make_unique<ConcatBatchReader>(std::move(readers), context_->GetArrowMemoryPool());
 }
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateRealtimeReader(
@@ -294,7 +293,8 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateRealtimeReader(
                 std::vector<std::unique_ptr<KeyValueRecordReader>> memory_readers,
                 CreateMemoryReaders(realtime_split, memory, realtime_primary_key_transport_schema_,
                                     merge_read->GetKeySchema(), merge_read->GetValueSchema(),
-                                    merge_read->GetKeyComparator(), context_, GetMemoryPool()));
+                                    merge_read->GetKeyComparator(), context_,
+                                    context_->GetMemoryPool()));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                                    merge_read->CreateRealtimeReader(realtime_split->DiskSplits(),
                                                                     std::move(memory_readers)));
@@ -327,9 +327,9 @@ Result<std::unique_ptr<CountReader>> KeyValueTableRead::CreateCountReader(
         return Status::NotImplemented("CreateCountReader with force_keep_delete is not supported");
     }
 
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<PKCountReader> pk_count_reader,
-        PKCountReader::Create(splits, path_factory_, context_, GetMemoryPool(), executor_));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<PKCountReader> pk_count_reader,
+                           PKCountReader::Create(splits, path_factory_, context_,
+                                                 context_->GetMemoryPool(), executor_));
 
     return pk_count_reader;
 }
