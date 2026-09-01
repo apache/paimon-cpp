@@ -449,7 +449,8 @@ TEST_F(LiteralConverterTest, TestDictType) {
 }
 
 TEST_F(LiteralConverterTest, TestLiteralsToArray) {
-    // every case keeps a null literal, which is written as a null of the same arrow type
+    // Every writable field type converts to an array and back, the null literal included, so each
+    // case asserts `ConvertLiteralsToArray` and `ConvertLiteralsFromArray` agree on every type.
     CheckLiteralsToArray(
         FieldType::BOOLEAN, {Literal(true), Literal(FieldType::BOOLEAN), Literal(false)},
         arrow::ipc::internal::json::ArrayFromJSON(arrow::boolean(), R"([true, null, false])")
@@ -498,6 +499,46 @@ TEST_F(LiteralConverterTest, TestLiteralsToArray) {
          Literal(FieldType::BINARY, str.data(), str.size())},
         arrow::ipc::internal::json::ArrayFromJSON(arrow::binary(), R"(["apple", null, "苹果"])")
             .ValueOrDie());
+    // a decimal is written with the precision and the scale its literals carry
+    CheckLiteralsToArray(
+        FieldType::DECIMAL,
+        {Literal(Decimal(21, 3, DecimalUtils::StrToInt128("-123456789987654321234").value())),
+         Literal(FieldType::DECIMAL), Literal(Decimal(21, 3, 123456))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::decimal128(21, 3),
+                                                  R"(["-123456789987654321.234", null, "123.456"])")
+            .ValueOrDie());
+    // a timestamp is written with the finest time unit that keeps the values, one per case; the
+    // microsecond and the nanosecond one are built with a builder, because the JSON reader takes
+    // a raw integer for seconds
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp::FromEpochMillis(123000l)), Literal(FieldType::TIMESTAMP),
+         Literal(Timestamp::FromEpochMillis(-456000l))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MILLI),
+                                                  R"([123000, null, -456000])")
+            .ValueOrDie());
+    arrow::TimestampBuilder micro_builder(arrow::timestamp(arrow::TimeUnit::MICRO),
+                                          arrow::default_memory_pool());
+    ASSERT_TRUE(micro_builder.Append(123000001).ok());
+    ASSERT_TRUE(micro_builder.AppendNull().ok());
+    ASSERT_TRUE(micro_builder.Append(-455999998).ok());
+    std::shared_ptr<arrow::Array> micro_array;
+    ASSERT_TRUE(micro_builder.Finish(&micro_array).ok());
+    CheckLiteralsToArray(FieldType::TIMESTAMP,
+                         {Literal(Timestamp(123000l, 1000)), Literal(FieldType::TIMESTAMP),
+                          Literal(Timestamp(-456000l, 2000))},
+                         micro_array);
+    arrow::TimestampBuilder nano_builder(arrow::timestamp(arrow::TimeUnit::NANO),
+                                         arrow::default_memory_pool());
+    ASSERT_TRUE(nano_builder.Append(123000456789).ok());
+    ASSERT_TRUE(nano_builder.AppendNull().ok());
+    ASSERT_TRUE(nano_builder.Append(-455999999999).ok());
+    std::shared_ptr<arrow::Array> nano_array;
+    ASSERT_TRUE(nano_builder.Finish(&nano_array).ok());
+    CheckLiteralsToArray(FieldType::TIMESTAMP,
+                         {Literal(Timestamp(123000l, 456789)), Literal(FieldType::TIMESTAMP),
+                          Literal(Timestamp(-456000l, 1))},
+                         nano_array);
 }
 
 TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {
@@ -512,13 +553,31 @@ TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {
 }
 
 TEST_F(LiteralConverterTest, TestLiteralsToArrayUnsupportedType) {
-    // the field types whose arrow type the literals alone do not settle
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
-                            FieldType::TIMESTAMP, {Literal(Timestamp(59123l, 456789))}),
-                        "Not support converting literals of TIMESTAMP type to an arrow array");
+    // a timestamp takes its arrow type from a literal, so it needs one that is not null
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::TIMESTAMP, {}),
+                        "without a non null literal");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::TIMESTAMP,
+                                                                 {Literal(FieldType::TIMESTAMP)}),
+                        "without a non null literal");
+    // a decimal takes its arrow type from a literal, so it needs one that is not null
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {}),
+                        "without a non null literal");
     ASSERT_NOK_WITH_MSG(
-        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(Decimal(21, 3, 0))}),
-        "Not support converting literals of DECIMAL type to an arrow array");
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(FieldType::DECIMAL)}),
+        "without a non null literal");
+    // and every non null literal has to carry the same precision and scale
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(21, 5, 123456))}),
+        "do not share one precision and scale");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(20, 3, 123456))}),
+        "do not share one precision and scale");
+    // a precision arrow rejects is reported instead of checked fatally
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(Decimal(0, 0, 1))}),
+        "Decimal precision out of range");
     // the field types no caller asks for yet
     ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::BLOB, {}),
                         "Not support converting literals of BLOB type to an arrow array");

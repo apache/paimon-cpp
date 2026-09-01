@@ -33,6 +33,8 @@
 #include "paimon/common/predicate/in.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/predicate/not_in.h"
+#include "paimon/common/utils/decimal_utils.h"
+#include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
@@ -49,6 +51,18 @@ class MultiLiteralsLeafFunctionTest : public ::testing::Test {
 
     static Literal BinaryLiteral(const std::string& value) {
         return Literal(FieldType::BINARY, value.data(), value.size());
+    }
+
+    // A decimal literal of `unscaled` as written by the digits of `precision` and `scale`.
+    static Literal DecimalLiteral(int32_t precision, int32_t scale, const std::string& unscaled) {
+        Result<Decimal::int128_t> value = DecimalUtils::StrToInt128(unscaled);
+        EXPECT_OK(value.status());
+        return Literal(Decimal(precision, scale, value.ok() ? value.value() : 0));
+    }
+
+    // A timestamp literal of `millis` since the epoch and `nanos` within the millisecond.
+    static Literal TimestampLiteral(int64_t millis, int32_t nanos = 0) {
+        return Literal(Timestamp::FromEpochMillis(millis, nanos));
     }
 
     // Evaluates the whole batch and returns the per row result, asserting the call succeeded.
@@ -253,20 +267,145 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestEmptyLiterals) {
     ASSERT_EQ(EvalNotIn({}, array), std::vector<char>({1, 1, 0}));
 }
 
-TEST_F(MultiLiteralsLeafFunctionTest, TestTypesOffTheValueSetPath) {
-    // The arrow type of a TIMESTAMP carries a time unit that a `FieldType` alone does not pin down,
-    // so TIMESTAMP keeps the row by row comparison path. The result must stay the same either way.
-    arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MILLI),
+TEST_F(MultiLiteralsLeafFunctionTest, TestTimestamp) {
+    // A timestamp literal settles the time unit of its value set itself, the finest unit that
+    // keeps every literal, so a column of that very unit is probed by the value set.
+    auto milli_array = arrow::ipc::internal::json::ArrayFromJSON(
+                           arrow::timestamp(arrow::TimeUnit::MILLI), R"([1000, 2000, 3000, null])")
+                           .ValueOrDie();
+    const std::vector<Literal> milli_literals = {TimestampLiteral(1000), TimestampLiteral(3000)};
+    ASSERT_EQ(EvalIn(milli_literals, milli_array), std::vector<char>({1, 0, 1, 0}));
+    ASSERT_EQ(EvalNotIn(milli_literals, milli_array), std::vector<char>({0, 1, 0, 0}));
+
+    // A nanos-of-millisecond outside a microsecond forces the nanosecond unit, which the values
+    // keep through the value set.
+    auto nano_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::NANO),
+                                                  R"([1000000000000, 1000000456789, null])")
+            .ValueOrDie();
+    const std::vector<Literal> nano_literals = {TimestampLiteral(1000000, 456789)};
+    ASSERT_EQ(EvalIn(nano_literals, nano_array), std::vector<char>({0, 1, 0}));
+    ASSERT_EQ(EvalNotIn(nano_literals, nano_array), std::vector<char>({1, 0, 0}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestDecimal) {
+    // A decimal literal carries the precision and the scale of its own value, so a column of that
+    // scale is probed by the value set.
+    const std::vector<Literal> literals = {DecimalLiteral(10, 2, "100"),
+                                           DecimalLiteral(10, 2, "-250")};
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(
+                     arrow::decimal128(10, 2), R"(["1.00", "1.01", "-2.50", "0.00", null])")
+                     .ValueOrDie();
+    ASSERT_EQ(EvalIn(literals, array), std::vector<char>({1, 0, 1, 0, 0}));
+    ASSERT_EQ(EvalNotIn(literals, array), std::vector<char>({0, 1, 0, 1, 0}));
+
+    // A column of the same scale but another precision is probed too, the value set is widened to
+    // it without ever changing a value.
+    auto wider_array = arrow::ipc::internal::json::ArrayFromJSON(
+                           arrow::decimal128(38, 2), R"(["1.00", "1.01", "-2.50", null])")
+                           .ValueOrDie();
+    ASSERT_EQ(EvalIn(literals, wider_array), std::vector<char>({1, 0, 1, 0}));
+    ASSERT_EQ(EvalNotIn(literals, wider_array), std::vector<char>({0, 1, 0, 0}));
+
+    // A value beyond 64 bits keeps its high bits through the value set.
+    const std::vector<Literal> wide_literals = {DecimalLiteral(38, 2, "12345678998765432134567"),
+                                                DecimalLiteral(38, 2, "-12345678998765432134567")};
+    ASSERT_EQ(EvalIn(wide_literals,
+                     arrow::ipc::internal::json::ArrayFromJSON(
+                         arrow::decimal128(38, 2),
+                         R"(["123456789987654321345.67", "-123456789987654321345.67", "1.00"])")
+                         .ValueOrDie()),
+              std::vector<char>({1, 1, 0}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestDecimalNullLiterals) {
+    const std::vector<Literal> literals = {DecimalLiteral(10, 2, "100"),
+                                           Literal(FieldType::DECIMAL)};
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::decimal128(10, 2),
+                                                           R"(["1.00", "2.00", null])")
+                     .ValueOrDie();
+    ASSERT_EQ(EvalIn(literals, array), std::vector<char>({1, 0, 0}));
+    // A null literal makes `NOT IN` false for every row.
+    ASSERT_EQ(EvalNotIn(literals, array), std::vector<char>({0, 0, 0}));
+
+    // Nothing but null literals leaves no precision and scale to write the value set with, so the
+    // row by row path takes over and matches nothing either way.
+    ASSERT_EQ(EvalIn({Literal(FieldType::DECIMAL)}, array), std::vector<char>({0, 0, 0}));
+    ASSERT_EQ(EvalNotIn({Literal(FieldType::DECIMAL)}, array), std::vector<char>({0, 0, 0}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestTimestampNullLiterals) {
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MILLI),
+                                                           R"([1000, 2000, null])")
+                     .ValueOrDie();
+    const std::vector<Literal> literals = {TimestampLiteral(1000), Literal(FieldType::TIMESTAMP)};
+    ASSERT_EQ(EvalIn(literals, array), std::vector<char>({1, 0, 0}));
+    // A null literal makes `NOT IN` false for every row.
+    ASSERT_EQ(EvalNotIn(literals, array), std::vector<char>({0, 0, 0}));
+
+    // Nothing but null literals leaves no time unit to write the value set with, so the row by row
+    // path takes over and matches nothing either way.
+    ASSERT_EQ(EvalIn({Literal(FieldType::TIMESTAMP)}, array), std::vector<char>({0, 0, 0}));
+    ASSERT_EQ(EvalNotIn({Literal(FieldType::TIMESTAMP)}, array), std::vector<char>({0, 0, 0}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestDecimalOffTheValueSetPath) {
+    // `Literal::CompareTo` compares two decimals by value, so a literal of another scale still
+    // matches the same number. The value set would have `is_in` cast one side to the other, so a
+    // column of another scale keeps the row by row path and the result stays the same either way.
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::decimal128(10, 2),
+                                                           R"(["1.00", "2.00", null])")
+                     .ValueOrDie();
+    ASSERT_EQ(EvalIn({DecimalLiteral(20, 4, "10000")}, array), std::vector<char>({1, 0, 0}));
+    ASSERT_EQ(EvalNotIn({DecimalLiteral(20, 4, "10000")}, array), std::vector<char>({0, 1, 0}));
+
+    // Literals that do not share one precision and scale cannot be one arrow array, so they keep
+    // the row by row path as well.
+    ASSERT_EQ(EvalIn({DecimalLiteral(10, 2, "100"), DecimalLiteral(20, 4, "20000")}, array),
+              std::vector<char>({1, 1, 0}));
+
+    // Casting between those scales is what the row by row path spares: neither side of this pair
+    // fits the scale of the other, which would make `is_in` report an error where comparing by
+    // value merely finds no match.
+    auto lossy_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::decimal128(38, 2), R"(["1.01", "2.00"])")
+            .ValueOrDie();
+    const std::vector<Literal> huge_literals = {
+        DecimalLiteral(38, 0, "99999999999999999999999999999999999999")};
+    ASSERT_EQ(EvalIn(huge_literals, lossy_array), std::vector<char>({0, 0}));
+    ASSERT_EQ(EvalNotIn(huge_literals, lossy_array), std::vector<char>({1, 1}));
+}
+
+TEST_F(MultiLiteralsLeafFunctionTest, TestTimestampOffTheValueSetPath) {
+    // A column of a coarser unit than the literals need keeps the row by row path, because `is_in`
+    // would cast the value set to the column unit and fail on a value the unit does not keep. A
+    // value that needs the finer unit cannot exist in the coarser column, so comparing by value
+    // merely finds no match.
+    auto milli_array = arrow::ipc::internal::json::ArrayFromJSON(
+                           arrow::timestamp(arrow::TimeUnit::MILLI), R"([1000, 2000, null])")
+                           .ValueOrDie();
+    ASSERT_EQ(EvalIn({TimestampLiteral(1, 500000)}, milli_array), std::vector<char>({0, 0, 0}));
+    ASSERT_EQ(EvalNotIn({TimestampLiteral(1, 500000)}, milli_array), std::vector<char>({1, 1, 0}));
+
+    // A column of a finer unit than the literals need keeps the row by row path as well, casting
+    // to it can overflow int64 where comparing by value still matches the same instant.
+    auto nano_array = arrow::ipc::internal::json::ArrayFromJSON(
+                          arrow::timestamp(arrow::TimeUnit::NANO), R"([1000000000, null])")
+                          .ValueOrDie();
+    ASSERT_EQ(EvalIn({TimestampLiteral(1000)}, nano_array), std::vector<char>({1, 0}));
+    ASSERT_EQ(EvalNotIn({TimestampLiteral(1000)}, nano_array), std::vector<char>({0, 0}));
+
+    // A column with a time zone as well: `is_in` refuses to compare a zoned timestamp against an
+    // unzoned value set, so the row by row path compares by value instead.
+    arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MILLI, "UTC"),
                                     arrow::default_memory_pool());
     ASSERT_TRUE(builder.Append(1000).ok());
     ASSERT_TRUE(builder.Append(2000).ok());
     ASSERT_TRUE(builder.AppendNull().ok());
-    std::shared_ptr<arrow::Array> timestamp_array;
-    ASSERT_TRUE(builder.Finish(&timestamp_array).ok());
-
-    const std::vector<Literal> literals = {Literal(Timestamp::FromEpochMillis(1000))};
-    ASSERT_EQ(EvalIn(literals, timestamp_array), std::vector<char>({1, 0, 0}));
-    ASSERT_EQ(EvalNotIn(literals, timestamp_array), std::vector<char>({0, 1, 0}));
+    std::shared_ptr<arrow::Array> zoned_array;
+    ASSERT_TRUE(builder.Finish(&zoned_array).ok());
+    ASSERT_EQ(EvalIn({TimestampLiteral(1000)}, zoned_array), std::vector<char>({1, 0, 0}));
+    ASSERT_EQ(EvalNotIn({TimestampLiteral(1000)}, zoned_array), std::vector<char>({0, 1, 0}));
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestFloatAndDouble) {

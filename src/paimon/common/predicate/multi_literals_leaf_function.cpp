@@ -27,9 +27,13 @@
 #include "arrow/array/array_primitive.h"
 #include "arrow/compute/api_scalar.h"
 #include "arrow/datum.h"
+#include "arrow/type.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/date_time_utils.h"
+#include "paimon/data/decimal.h"
+#include "paimon/data/timestamp.h"
 
 namespace paimon {
 namespace {
@@ -37,12 +41,12 @@ namespace {
 /// the field types `LiteralConverter::ConvertLiteralsToArray` writes today, and the check keeps one
 /// it starts writing from reaching `is_in` on its own.
 ///
-/// `DECIMAL` and `TIMESTAMP` are left out because their arrow types are parameterized, by precision
-/// and scale and by time unit, which a `FieldType` alone does not pin down. `is_in` does compare a
-/// decimal value set against a column of another scale correctly, but it gets there by casting the
-/// whole column, which overflows into an error where `Literal::CompareTo` merely finds no match.
-/// `FLOAT` and `DOUBLE` agree on every value but NaN, which `MakeInValueSet` keeps off this path
-/// on its own.
+/// `TIMESTAMP` is parameterized by a time unit, but a timestamp literal settles one itself: the
+/// finest unit that keeps the values of the literals, which `MakeInValueSet` only probes against
+/// a column of that very unit. `DECIMAL` is parameterized too, by precision and scale, but a
+/// decimal literal carries both, and `MakeInValueSet` only probes a column that carries the same
+/// scale. `FLOAT` and `DOUBLE` agree on every value but NaN, which `MakeInValueSet` keeps off this
+/// path on its own.
 bool CanProbeWithIsIn(FieldType field_type) {
     switch (field_type) {
         case FieldType::BOOLEAN:
@@ -55,10 +59,41 @@ bool CanProbeWithIsIn(FieldType field_type) {
         case FieldType::DATE:
         case FieldType::STRING:
         case FieldType::BINARY:
+        case FieldType::DECIMAL:
+        case FieldType::TIMESTAMP:
             return true;
         default:
             return false;
     }
+}
+
+/// Whether `data_type` is the arrow type of a decimal column of `scale`.
+bool IsDecimalOfScale(const arrow::DataType& data_type, int32_t scale) {
+    return data_type.id() == arrow::Type::DECIMAL128 &&
+           checked_cast<const arrow::Decimal128Type&>(data_type).scale() == scale;
+}
+
+/// The finest time unit any of the non null literals needs to keep its value.
+arrow::TimeUnit::type MinRequiredTimeUnit(const std::vector<Literal>& literals) {
+    bool needs_micro = false;
+    for (const auto& literal : literals) {
+        if (literal.IsNull()) {
+            continue;
+        }
+        const int32_t nano = literal.GetValue<Timestamp>().GetNanoOfMillisecond();
+        if (nano % 1000 != 0) {
+            return arrow::TimeUnit::NANO;
+        }
+        needs_micro = needs_micro || nano != 0;
+    }
+    return needs_micro ? arrow::TimeUnit::MICRO : arrow::TimeUnit::MILLI;
+}
+
+/// Whether `data_type` is the arrow type of a timestamp column of `unit` without a time zone.
+bool IsTimestampOfUnit(const arrow::DataType& data_type, arrow::TimeUnit::type unit) {
+    return data_type.id() == arrow::Type::TIMESTAMP &&
+           checked_cast<const arrow::TimestampType&>(data_type).unit() == unit &&
+           checked_cast<const arrow::TimestampType&>(data_type).timezone().empty();
 }
 
 /// Whether `literal` holds a floating point NaN.
@@ -77,24 +112,50 @@ bool IsNanLiteral(const Literal& literal) {
 /// predicate. The arrow type comes from the literals themselves, which all share one `FieldType`.
 ///
 /// @param negate `false` for `IN`, `true` for `NOT IN`.
+/// @param data_type The arrow type of the column the predicate is evaluated against, which settles
+///                  whether a decimal or a timestamp value set can be probed against it.
 /// @return `nullptr` when the literals cannot be probed by `is_in`, which covers the field types
-///         `CanProbeWithIsIn` rejects, a NaN literal, and `NOT IN` holding a null literal, which
-///         `NotIn::InnerTest` makes false for every row. This never fails.
-std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literals, bool negate) {
+///         `CanProbeWithIsIn` rejects, a NaN literal, a decimal column of another scale, a
+///         timestamp column of another unit or with a time zone, and `NOT IN` holding a null
+///         literal, which `NotIn::InnerTest` makes false for every row. This never fails.
+std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literals, bool negate,
+                                             const arrow::DataType& data_type) {
     if (literals.empty()) {
         return nullptr;
     }
     // The literals of one predicate share a type, so take it from the first non-null one. When
     // every literal is null the value set is all nulls, which `is_in` ignores, but it still needs a
     // type to compare against the column, and a null `Literal` carries its type too.
-    FieldType field_type = literals.front().GetType();
+    const Literal* typed_literal = &literals.front();
     for (const auto& literal : literals) {
         if (!literal.IsNull()) {
-            field_type = literal.GetType();
+            typed_literal = &literal;
             break;
         }
     }
+    const FieldType field_type = typed_literal->GetType();
     if (!CanProbeWithIsIn(field_type)) {
+        return nullptr;
+    }
+    // A decimal value set carries the precision and the scale of its literals, and `is_in` compares
+    // it against a column of another scale by casting one side to the other. Such a cast fails on a
+    // value that does not fit the other scale, where `Literal::CompareTo` rescales one value at a
+    // time and merely finds no match, so only a column carrying the scale of the literals is
+    // probed. Nothing but null literals leaves no scale to compare and no arrow type to write.
+    if (field_type == FieldType::DECIMAL &&
+        (typed_literal->IsNull() ||
+         !IsDecimalOfScale(data_type, typed_literal->GetValue<Decimal>().Scale()))) {
+        return nullptr;
+    }
+    // A timestamp value set carries the time unit the values of the literals need, and `is_in`
+    // compares it against a column of another unit by casting one side to the other. Casting to a
+    // coarser unit fails on a value the unit does not keep, casting to a finer one can overflow
+    // int64, where `Literal::CompareTo` merely finds no match, so only a column of that very unit
+    // is probed. A column with a time zone is one as well: `is_in` refuses to compare a zoned
+    // timestamp against an unzoned one, and a literal has no zone to speak of. Nothing but null
+    // literals leaves no unit to compare and no arrow type to write.
+    if (field_type == FieldType::TIMESTAMP &&
+        (typed_literal->IsNull() || !IsTimestampOfUnit(data_type, MinRequiredTimeUnit(literals)))) {
         return nullptr;
     }
     for (const auto& literal : literals) {
@@ -118,8 +179,8 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
     }
     Result<std::shared_ptr<arrow::Array>> value_set =
         LiteralConverter::ConvertLiteralsToArray(field_type, literals);
-    // A failure only says the value set is not there, and the row by row path still is. The field
-    // type is one it writes, so this is an arrow failure.
+    // A failure only says the value set is not there, and the row by row path still is. Decimal
+    // literals of mixed precision and scale end up here, anything else is an arrow failure.
     if (!value_set.ok()) {
         return nullptr;
     }
@@ -171,7 +232,7 @@ Result<std::vector<char>> MultiLiteralsLeafFunction::Test(
     // semantics.
     if (type == Function::Type::IN || type == Function::Type::NOT_IN) {
         const bool negate = type == Function::Type::NOT_IN;
-        std::shared_ptr<arrow::Array> value_set = MakeInValueSet(literals, negate);
+        std::shared_ptr<arrow::Array> value_set = MakeInValueSet(literals, negate, *array.type());
         if (value_set != nullptr) {
             return ProbeInValueSet(array, *value_set, negate);
         }

@@ -56,9 +56,12 @@ class PAIMON_EXPORT LiteralConverter {
     /// @param literals The literals to convert, a null literal is written as a null, so the result
     ///                 has one entry per literal.
     /// @return `Status::Invalid` for a field type this does not write, which is every one outside
-    ///         `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `DATE`, `STRING` and `BINARY`.
-    ///         `TIMESTAMP` and `DECIMAL` are among them because their arrow type carries a unit or
-    ///         a precision and a scale that the literals alone do not settle.
+    ///         `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DATE`,
+    ///         `STRING`, `BINARY`, `DECIMAL` and `TIMESTAMP`. `DECIMAL` is written with the
+    ///         precision and the scale its literals carry, so at least one literal has to be non
+    ///         null and every non null one has to carry the same pair. `TIMESTAMP` is written with
+    ///         the finest time unit that keeps every value, so at least one literal has to be non
+    ///         null to settle the unit.
     static Result<std::shared_ptr<arrow::Array>> ConvertLiteralsToArray(
         const FieldType& field_type, const std::vector<Literal>& literals);
 

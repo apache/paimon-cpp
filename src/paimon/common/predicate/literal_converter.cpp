@@ -26,7 +26,9 @@
 #include "arrow/array/array_dict.h"
 #include "arrow/array/array_primitive.h"
 #include "arrow/array/builder_binary.h"
+#include "arrow/array/builder_decimal.h"
 #include "arrow/array/builder_primitive.h"
+#include "arrow/array/builder_time.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
@@ -306,6 +308,101 @@ Result<std::shared_ptr<arrow::Array>> BuildArray(const std::vector<Literal>& lit
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&array));
     return array;
 }
+
+// Writes the literals to a decimal array of the precision and the scale they carry themselves. One
+// array holds one arrow type, so a non null literal is needed to settle it, and every non null
+// literal has to carry the same pair: rescaling a value to another scale loses digits or overflows,
+// which is not something a conversion decides on its own.
+Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Literal>& literals) {
+    std::optional<Decimal> typed_value;
+    for (const auto& literal : literals) {
+        if (!literal.IsNull()) {
+            typed_value = literal.GetValue<Decimal>();
+            break;
+        }
+    }
+    if (typed_value == std::nullopt) {
+        return Status::Invalid(
+            "Not support converting literals of DECIMAL type to an arrow array without a non null "
+            "literal to take the precision and the scale from");
+    }
+    int32_t precision = typed_value->Precision();
+    int32_t scale = typed_value->Scale();
+    // `arrow::decimal128` checks the precision fatally, `Make` reports it instead.
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::DataType> type,
+                                      arrow::Decimal128Type::Make(precision, scale));
+    arrow::Decimal128Builder builder(type);
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
+    for (const auto& literal : literals) {
+        if (literal.IsNull()) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
+            continue;
+        }
+        Decimal value = literal.GetValue<Decimal>();
+        if (value.Precision() != precision || value.Scale() != scale) {
+            return Status::Invalid(fmt::format(
+                "Not support converting literals of DECIMAL type to an arrow array, {} and {} do "
+                "not share one precision and scale",
+                typed_value->ToString(), value.ToString()));
+        }
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(
+            builder.Append(arrow::Decimal128(value.HighBits(), value.LowBits())));
+    }
+    std::shared_ptr<arrow::Array> array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&array));
+    return array;
+}
+
+/// The finest time unit any of the non null literals needs to keep its value. A null literal does
+/// not constrain the unit, and when every one is null the caller has no value to probe anyway.
+arrow::TimeUnit::type MinRequiredTimeUnit(const std::vector<Literal>& literals) {
+    bool needs_micro = false;
+    for (const auto& literal : literals) {
+        if (literal.IsNull()) {
+            continue;
+        }
+        const int32_t nano = literal.GetValue<Timestamp>().GetNanoOfMillisecond();
+        if (nano % 1000 != 0) {
+            return arrow::TimeUnit::NANO;
+        }
+        needs_micro = needs_micro || nano != 0;
+    }
+    return needs_micro ? arrow::TimeUnit::MICRO : arrow::TimeUnit::MILLI;
+}
+
+// Writes the literals to a timestamp array of the finest time unit that keeps every value, one
+// `is_in` can only compare against a column of that very unit. One array holds one arrow type, so
+// a non null literal is needed to settle the unit.
+Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Literal>& literals) {
+    bool has_value = false;
+    for (const auto& literal : literals) {
+        if (!literal.IsNull()) {
+            has_value = true;
+            break;
+        }
+    }
+    if (!has_value) {
+        return Status::Invalid(
+            "Not support converting literals of TIMESTAMP type to an arrow array without a non "
+            "null literal to take the time unit from");
+    }
+    arrow::TimestampBuilder builder(arrow::timestamp(MinRequiredTimeUnit(literals)),
+                                    arrow::default_memory_pool());
+    const DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(
+        checked_pointer_cast<arrow::TimestampType>(builder.type()));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
+    for (const auto& literal : literals) {
+        if (literal.IsNull()) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
+            continue;
+        }
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(
+            DateTimeUtils::TimestampToInteger(literal.GetValue<Timestamp>(), time_type)));
+    }
+    std::shared_ptr<arrow::Array> array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&array));
+    return array;
+}
 }  // namespace
 
 Result<std::shared_ptr<arrow::Array>> LiteralConverter::ConvertLiteralsToArray(
@@ -341,6 +438,10 @@ Result<std::shared_ptr<arrow::Array>> LiteralConverter::ConvertLiteralsToArray(
         case FieldType::BINARY:
             return BuildArray<arrow::BinaryBuilder>(
                 literals, [](const Literal& literal) { return literal.GetValue<std::string>(); });
+        case FieldType::DECIMAL:
+            return BuildDecimalArray(literals);
+        case FieldType::TIMESTAMP:
+            return BuildTimestampArray(literals);
         default:
             return Status::Invalid(
                 fmt::format("Not support converting literals of {} type to an arrow array",
