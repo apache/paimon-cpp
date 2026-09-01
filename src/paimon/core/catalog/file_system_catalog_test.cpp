@@ -61,7 +61,8 @@ TEST(FileSystemCatalogTest, TestDatabaseExists) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> db_names, catalog.ListDatabases());
     ASSERT_EQ(1, db_names.size());
     ASSERT_EQ(db_names[0], "db1");
-    ASSERT_EQ(catalog.GetDatabaseLocation("db1"), PathUtil::JoinPath(dir->Str(), "db1.db"));
+    ASSERT_OK_AND_ASSIGN(std::string db_location, catalog.GetDatabaseLocation("db1"));
+    ASSERT_EQ(db_location, PathUtil::JoinPath(dir->Str(), "db1.db"));
 }
 
 TEST(FileSystemCatalogTest, TestInvalidCreateDatabase) {
@@ -1301,7 +1302,8 @@ TEST(FileSystemCatalogTest, TestRejectInvalidNames) {
 
     ASSERT_NOK_WITH_MSG(catalog.DatabaseExists("../outside"), "cannot contain path separators");
     ASSERT_NOK_WITH_MSG(catalog.ListTables("../outside"), "cannot contain path separators");
-    ASSERT_EQ(catalog.GetDatabaseLocation("../outside"), "");
+    ASSERT_NOK_WITH_MSG(catalog.GetDatabaseLocation("../outside"),
+                        "cannot contain path separators");
 
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
     arrow::Schema typed_schema(fields);

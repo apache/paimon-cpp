@@ -444,8 +444,10 @@ TEST_F(RestCatalogTest, DatabaseOperations) {
     ASSERT_OK_AND_ASSIGN(exists, catalog->DatabaseExists("db3"));
     ASSERT_FALSE(exists);
 
-    ASSERT_EQ("wh1/db1.db", catalog->GetDatabaseLocation("db1"));
-    ASSERT_EQ("", catalog->GetDatabaseLocation("db3"));
+    ASSERT_OK_AND_ASSIGN(std::string db1_location, catalog->GetDatabaseLocation("db1"));
+    ASSERT_EQ("wh1/db1.db", db1_location);
+    ASSERT_OK_AND_ASSIGN(std::string db3_location, catalog->GetDatabaseLocation("db3"));
+    ASSERT_EQ("", db3_location);
 
     ASSERT_OK(catalog->DropDatabase("db2", /*ignore_if_not_exists=*/false, /*cascade=*/false));
     ASSERT_OK(catalog->DropDatabase("db2", /*ignore_if_not_exists=*/true, /*cascade=*/false));

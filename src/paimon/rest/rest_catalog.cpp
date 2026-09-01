@@ -159,16 +159,16 @@ Status RestCatalog::DropDatabase(const std::string& name, bool ignore_if_not_exi
     return status;
 }
 
-std::string RestCatalog::GetDatabaseLocation(const std::string& db_name) const {
+Result<std::string> RestCatalog::GetDatabaseLocation(const std::string& db_name) const {
     // The virtual "sys" database has no location and is unknown to the server.
     if (CatalogUtils::IsSystemDatabase(db_name)) {
-        return "";
+        return std::string();
     }
     Result<GetDatabaseResponse> response = api_->GetDatabase(db_name);
     if (!response.ok()) {
         PAIMON_LOG_WARN(logger_, "failed to get location of database %s: %s", db_name.c_str(),
                         response.status().ToString().c_str());
-        return "";
+        return std::string();
     }
     return response.value().GetLocation();
 }

@@ -19,6 +19,7 @@
 #include "paimon/core/utils/branch_manager.h"
 
 #include "gtest/gtest.h"
+#include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 TEST(BranchManagerTest, TestIsMainBranch) {
@@ -40,5 +41,21 @@ TEST(BranchManagerTest, TestNormalizeBranch) {
 TEST(BranchManagerTest, TestBranchPath) {
     ASSERT_EQ(BranchManager::BranchPath("/root", BranchManager::DEFAULT_MAIN_BRANCH), "/root");
     ASSERT_EQ(BranchManager::BranchPath("/root", "data"), "/root/branch/branch-data");
+}
+
+TEST(BranchManagerTest, TestCheckValidBranch) {
+    ASSERT_OK(BranchManager::CheckValidBranch(BranchManager::DEFAULT_MAIN_BRANCH));
+    ASSERT_OK(BranchManager::CheckValidBranch("data"));
+    ASSERT_OK(BranchManager::CheckValidBranch("d a t a"));
+    // A branch `NormalizeBranch` maps to `main` names no directory of its own.
+    ASSERT_OK(BranchManager::CheckValidBranch(""));
+    ASSERT_OK(BranchManager::CheckValidBranch("   "));
+
+    // A branch that would leave the table root is rejected.
+    ASSERT_NOK_WITH_MSG(BranchManager::CheckValidBranch(".."), "branch name cannot be '.' or '..'");
+    ASSERT_NOK_WITH_MSG(BranchManager::CheckValidBranch("rt/../../../../../outside"),
+                        "branch name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(BranchManager::CheckValidBranch("line\nfeed"),
+                        "branch name cannot contain control characters");
 }
 }  // namespace paimon::test

@@ -126,9 +126,8 @@ Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const 
     return latest_schema != std::nullopt;
 }
 
-std::string FileSystemCatalog::GetDatabaseLocation(const std::string& db_name) const {
-    // An invalid name has no valid location, keep the same convention as RestCatalog.
-    return NewDatabasePath(warehouse_, db_name).value_or("");
+Result<std::string> FileSystemCatalog::GetDatabaseLocation(const std::string& db_name) const {
+    return NewDatabasePath(warehouse_, db_name);
 }
 
 Result<std::string> FileSystemCatalog::GetTableLocation(const Identifier& identifier) const {
@@ -522,7 +521,7 @@ Status FileSystemCatalog::RenameTable(const Identifier& from_table, const Identi
 
 Result<std::vector<SnapshotInfo>> FileSystemCatalog::ListSnapshots(
     const Identifier& identifier, const std::string& branch) const {
-    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidBranchName(branch));
+    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(branch));
     PAIMON_ASSIGN_OR_RAISE(bool exists, TableExists(identifier));
     if (!exists) {
         return Status::NotExist(fmt::format("table {} does not exist", identifier.ToString()));

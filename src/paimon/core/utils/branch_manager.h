@@ -24,6 +24,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 
 namespace paimon {
 class FileSystem;
@@ -42,6 +43,16 @@ class BranchManager {
     /// Normalizes an empty branch name to `main`.
     static std::string NormalizeBranch(const std::string& branch) {
         return StringUtils::IsNullOrWhitespaceOnly(branch) ? DEFAULT_MAIN_BRANCH : branch;
+    }
+
+    /// Fails when `branch` cannot be used as a single path component, which is required to keep
+    /// the branch path under the table root. A branch that `NormalizeBranch` maps to `main`
+    /// names no directory of its own and is therefore accepted.
+    static Status CheckValidBranch(const std::string& branch) {
+        if (StringUtils::IsNullOrWhitespaceOnly(branch)) {
+            return Status::OK();
+        }
+        return PathUtil::CheckSinglePathComponent("branch", branch);
     }
 
     /// Returns the table root path for the selected branch.

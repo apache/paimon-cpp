@@ -18,13 +18,12 @@
 
 #include "paimon/core/catalog/catalog_utils.h"
 
-#include <algorithm>
-#include <cctype>
 #include <optional>
 
 #include "fmt/format.h"
 #include "paimon/catalog/catalog.h"
-#include "paimon/common/utils/string_utils.h"
+#include "paimon/common/utils/path_util.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -34,27 +33,6 @@ namespace {
 Status SystemTableError(const Identifier& identifier, const std::string& action) {
     return Status::Invalid(fmt::format("Cannot '{}' for system table '{}', please use data table.",
                                        action, identifier.ToString()));
-}
-
-/// Rejects names that cannot be used as a single path component: such a name would make the
-/// path built from it escape the directory it is joined to.
-Status CheckValidIdentifierName(const std::string& kind, const std::string& name) {
-    const char* reason = nullptr;
-    if (StringUtils::IsNullOrWhitespaceOnly(name)) {
-        reason = "cannot be empty or whitespace";
-    } else if (name == "." || name == "..") {
-        reason = "cannot be '.' or '..'";
-    } else if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
-        reason = "cannot contain path separators";
-    } else if (std::any_of(name.begin(), name.end(), [](char c) {
-                   return std::iscntrl(static_cast<unsigned char>(c)) != 0;
-               })) {
-        reason = "cannot contain control characters";
-    }
-    if (reason != nullptr) {
-        return Status::Invalid(fmt::format("{} name {}: '{}'", kind, reason, name));
-    }
-    return Status::OK();
 }
 
 }  // namespace
@@ -95,30 +73,25 @@ Status CatalogUtils::CheckNotBranch(const Identifier& identifier, const std::str
 }
 
 Status CatalogUtils::CheckValidDatabaseName(const std::string& db_name) {
-    return CheckValidIdentifierName("database", db_name);
+    return PathUtil::CheckSinglePathComponent("database", db_name);
 }
 
 Status CatalogUtils::CheckValidTableName(const Identifier& identifier) {
     PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
-    PAIMON_RETURN_NOT_OK(CheckValidIdentifierName("table", data_table_name));
+    PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("table", data_table_name));
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
     if (branch) {
-        PAIMON_RETURN_NOT_OK(CheckValidIdentifierName("branch", branch.value()));
+        // The branch of an identifier selects the same directory as the `branch` option, so both
+        // go through the same check.
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(branch.value()));
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table,
                            identifier.GetSystemTableName());
     if (system_table) {
-        PAIMON_RETURN_NOT_OK(CheckValidIdentifierName("system table", system_table.value()));
+        PAIMON_RETURN_NOT_OK(
+            PathUtil::CheckSinglePathComponent("system table", system_table.value()));
     }
     return Status::OK();
-}
-
-Status CatalogUtils::CheckValidBranchName(const std::string& branch) {
-    // An empty branch selects the main branch, see BranchManager::NormalizeBranch.
-    if (StringUtils::IsNullOrWhitespaceOnly(branch)) {
-        return Status::OK();
-    }
-    return CheckValidIdentifierName("branch", branch);
 }
 
 }  // namespace paimon
