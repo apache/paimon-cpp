@@ -502,7 +502,7 @@ Status MergeFileSplitRead::GenerateKeyValueReadSchema(
                                                                      /*is_ascending_order=*/true));
     const auto& table_fields = table_schema.Fields();
     auto table_fields_schema = DataField::ConvertDataFieldsToArrowSchema(table_fields);
-    if (table_fields_schema->Equals(raw_read_schema)) {
+    if (table_fields_schema->Equals(*raw_read_schema, /*check_metadata=*/true)) {
         // Short-circuit: if raw_read_schema is the same as the table schema,
         // use the table schema field order directly (for compact process).
         *value_schema = table_fields_schema;

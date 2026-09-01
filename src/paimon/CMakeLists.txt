@@ -391,6 +391,7 @@ set(PAIMON_CORE_SRCS
     core/realtime/realtime_append_only_writer.cpp
     core/realtime/realtime_context.cpp
     core/realtime/realtime_context_impl.cpp
+    core/realtime/realtime_store_read_pipeline.cpp
     core/realtime/realtime_primary_key_writer.cpp
     core/postpone/postpone_bucket_writer.cpp
     core/schema/arrow_schema_validator.cpp
@@ -797,6 +798,7 @@ if(PAIMON_BUILD_TESTS)
                     core/realtime/arrow_realtime_store_test.cpp
                     core/realtime/primary_key_realtime_store_test.cpp
                     core/realtime/realtime_offset_batch_reader_test.cpp
+                    core/realtime/realtime_store_read_pipeline_test.cpp
                     core/realtime/realtime_primary_key_reader_test.cpp
                     core/realtime/realtime_context_test.cpp
                     core/realtime/realtime_reader_test.cpp

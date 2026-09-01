@@ -234,7 +234,7 @@ Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compac
         if (sealed_range->begin < 0 || sealed_range->end < sealed_range->begin) {
             return Status::Invalid("PK real-time store returned an invalid sealed offset range");
         }
-        PAIMON_RETURN_NOT_OK(FlushSegment(segment.value(), sealed_range.value()));
+        PAIMON_RETURN_NOT_OK(FlushSegment(segment.value()));
     }
     PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
                            merge_tree_writer_->PrepareCommit(wait_compaction));
@@ -244,14 +244,14 @@ Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compac
     return increment;
 }
 
-Status RealtimePrimaryKeyWriter::FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment,
-                                              const OffsetRange& sealed_offsets) {
+Status RealtimePrimaryKeyWriter::FlushSegment(
+    const std::shared_ptr<RealtimeSegmentHandle>& segment) {
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                            realtime_store_->CreateCommitReaders(segment));
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<KeyValueRecordReader>> realtime_primary_key_readers,
-        RealtimePrimaryKeyReaderFactory::Create(std::move(readers), sealed_offsets, key_schema_,
-                                                write_schema_, memory_pool_));
+        RealtimePrimaryKeyReaderFactory::CreateForCommit(std::move(readers), key_schema_,
+                                                         write_schema_, memory_pool_));
     std::vector<std::unique_ptr<KeyValueRecordReader>> sorted_readers;
     sorted_readers.reserve(realtime_primary_key_readers.size());
     for (std::unique_ptr<KeyValueRecordReader>& realtime_primary_key_reader :

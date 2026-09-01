@@ -29,6 +29,7 @@
 namespace paimon {
 class BatchReader;
 class MemoryPool;
+class RealtimeStoreReadPipeline;
 
 /// Creates the Arrow schema used for PK realtime transport batches.
 class RealtimePrimaryKeyLayout {
@@ -36,7 +37,12 @@ class RealtimePrimaryKeyLayout {
     RealtimePrimaryKeyLayout() = delete;
     ~RealtimePrimaryKeyLayout() = delete;
 
-    static std::shared_ptr<arrow::Schema> CreateSchema(
+    /// Creates `_VALUE_KIND`, `_SEQUENCE_NUMBER`, `_REALTIME_OFFSET`, then value fields.
+    static std::shared_ptr<arrow::Schema> CreateWriteSchema(
+        const std::vector<std::shared_ptr<arrow::Field>>& value_fields);
+
+    /// Creates `_VALUE_KIND`, `_SEQUENCE_NUMBER`, then value fields.
+    static std::shared_ptr<arrow::Schema> CreateLogicalSchema(
         const std::vector<std::shared_ptr<arrow::Field>>& value_fields);
 };
 
@@ -45,11 +51,17 @@ class RealtimePrimaryKeyReaderFactory {
     RealtimePrimaryKeyReaderFactory() = delete;
     ~RealtimePrimaryKeyReaderFactory() = delete;
 
-    static Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> Create(
-        std::vector<std::unique_ptr<BatchReader>>&& readers, const OffsetRange& visible_offsets,
+    static Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateForCommit(
+        std::vector<std::unique_ptr<BatchReader>>&& readers,
         const std::shared_ptr<arrow::Schema>& key_schema,
         const std::shared_ptr<arrow::Schema>& value_schema,
         const std::shared_ptr<MemoryPool>& memory_pool);
+
+    static Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateForQuery(
+        std::vector<std::unique_ptr<BatchReader>>&& readers, const OffsetRange& visible_offsets,
+        const std::shared_ptr<arrow::Schema>& key_schema,
+        const std::shared_ptr<arrow::Schema>& value_schema,
+        const std::shared_ptr<MemoryPool>& memory_pool, const RealtimeStoreReadPipeline& pipeline);
 };
 
 }  // namespace paimon

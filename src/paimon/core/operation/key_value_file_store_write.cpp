@@ -133,7 +133,7 @@ Result<std::shared_ptr<BatchWriter>> KeyValueFileStoreWrite::CreateWriter(
         partition_map =
             std::map<std::string, std::string>(partition_values.begin(), partition_values.end());
         PAIMON_ASSIGN_OR_RAISE(realtime_context_impl, RealtimeContextImpl::Cast(realtime_context_));
-        transport_schema = RealtimePrimaryKeyLayout::CreateSchema(schema_->fields());
+        transport_schema = RealtimePrimaryKeyLayout::CreateWriteSchema(schema_->fields());
         auto c_write_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
             arrow::ExportSchema(*transport_schema, c_write_schema.get()));

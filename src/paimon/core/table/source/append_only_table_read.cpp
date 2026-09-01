@@ -31,6 +31,7 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
@@ -38,8 +39,8 @@
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
-#include "paimon/core/realtime/realtime_offset_batch_reader.h"
 #include "paimon/core/realtime/realtime_reader.h"
+#include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/core/table/source/append_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/predicate/predicate_utils.h"
@@ -158,20 +159,25 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
         readers.push_back(std::move(disk_reader));
     }
 
-    arrow::FieldVector realtime_read_fields = {
+    arrow::FieldVector realtime_write_fields = {
         DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset())};
-    realtime_read_fields.insert(realtime_read_fields.end(),
-                                context_->GetReadSchema()->fields().begin(),
-                                context_->GetReadSchema()->fields().end());
-    std::shared_ptr<arrow::Schema> realtime_read_schema =
-        arrow::schema(std::move(realtime_read_fields), context_->GetReadSchema()->metadata());
+    std::shared_ptr<arrow::Schema> table_schema =
+        DataField::ConvertDataFieldsToArrowSchema(context_->GetTableSchema()->Fields());
+    realtime_write_fields.insert(realtime_write_fields.end(), table_schema->fields().begin(),
+                                 table_schema->fields().end());
+    std::shared_ptr<arrow::Schema> realtime_write_schema =
+        arrow::schema(std::move(realtime_write_fields), table_schema->metadata());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
+                           RealtimeStoreReadPipeline::Create(
+                               context_->GetReadSchema(), realtime_write_schema,
+                               context_->GetMemoryPool()));
+    const std::shared_ptr<arrow::Schema>& store_read_schema = pipeline->StoreReadSchema();
     auto c_read_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportSchema(*realtime_read_schema, c_read_schema.get()));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_read_schema, c_read_schema.get()));
     ScopeGuard schema_guard([schema = c_read_schema.get()]() { ArrowSchemaRelease(schema); });
     std::map<std::string, int32_t> realtime_field_name_to_index;
-    for (int32_t i = 0; i < realtime_read_schema->num_fields(); ++i) {
-        realtime_field_name_to_index.emplace(realtime_read_schema->field(i)->name(), i);
+    for (int32_t i = 0; i < store_read_schema->num_fields(); ++i) {
+        realtime_field_name_to_index.emplace(store_read_schema->field(i)->name(), i);
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> realtime_predicate,
                            PredicateUtils::CreatePickedFieldFilter(context_->GetPredicate(),
@@ -190,9 +196,10 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
         if (!memory_reader) {
             return Status::Invalid("append-only real-time store returned a null query reader");
         }
-        memory_reader = std::make_unique<RealtimeOffsetBatchReader>(
-            std::move(memory_reader),
-            OffsetRange(realtime_split->CommittedEndOffset(), realtime_split->MemoryEndOffset()));
+        PAIMON_ASSIGN_OR_RAISE(memory_reader,
+                               pipeline->Wrap(std::move(memory_reader),
+                                              OffsetRange(realtime_split->CommittedEndOffset(),
+                                                          realtime_split->MemoryEndOffset())));
         if (context_->EnablePredicateFilter() && context_->GetPredicate()) {
             PAIMON_ASSIGN_OR_RAISE(
                 memory_reader,

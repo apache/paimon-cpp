@@ -50,12 +50,12 @@ std::shared_ptr<arrow::Field> FieldWithId(const std::string& name,
 }
 
 std::shared_ptr<arrow::Schema> TransportSchema() {
-    return RealtimePrimaryKeyLayout::CreateSchema(
+    return RealtimePrimaryKeyLayout::CreateWriteSchema(
         {FieldWithId("id", arrow::int64(), 0), FieldWithId("value", arrow::utf8(), 1)});
 }
 
 std::shared_ptr<arrow::Schema> NestedTransportSchema() {
-    return RealtimePrimaryKeyLayout::CreateSchema(
+    return RealtimePrimaryKeyLayout::CreateWriteSchema(
         {FieldWithId("id", arrow::int64(), 0),
          FieldWithId("value",
                      arrow::struct_({arrow::field("name", arrow::utf8()),
@@ -336,7 +336,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
         FieldWithId("items", arrow::list(arrow::struct_({stored_a, stored_b})), 2),
         FieldWithId("attrs", arrow::map(arrow::utf8(), arrow::struct_({stored_x, stored_y})), 3)};
     std::shared_ptr<arrow::Schema> stored_schema =
-        RealtimePrimaryKeyLayout::CreateSchema(stored_value_fields);
+        RealtimePrimaryKeyLayout::CreateWriteSchema(stored_value_fields);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<PrimaryKeyRealtimeStore> store,
                          PrimaryKeyRealtimeStore::Create(stored_schema, GetDefaultPool()));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
@@ -354,7 +354,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
     requested_value_fields.push_back(
         FieldWithId("attrs", arrow::map(arrow::utf8(), arrow::struct_({stored_y, stored_x})), 3));
     std::shared_ptr<arrow::Schema> requested_schema =
-        RealtimePrimaryKeyLayout::CreateSchema(requested_value_fields);
+        RealtimePrimaryKeyLayout::CreateWriteSchema(requested_value_fields);
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*requested_schema, c_schema.get()).ok());
     RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};

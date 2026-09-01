@@ -104,8 +104,9 @@ class PAIMON_EXPORT RealtimeReadView {
 
 /// Parameters used by a `RealtimeStore` to create readers for a query.
 struct PAIMON_EXPORT RealtimeQueryContext {
-    /// Requested output schema. Query readers must include the mandatory `_VALUE_KIND` field in
-    /// returned batches.
+    /// Physical source schema the store must materialize. Query readers must include the mandatory
+    /// `_VALUE_KIND` field in returned batches. Paimon may subsequently convert physical fields
+    /// into the query's logical output schema, for example for selected-key MAP or VARIANT access.
     /// This schema is borrowed and remains valid only during `CreateQueryReaders`; plugins must
     /// import or copy it synchronously.
     ::ArrowSchema* read_schema;
@@ -141,9 +142,8 @@ class PAIMON_EXPORT RealtimeStore {
     ///
     /// The returned readers collectively expose every sealed row exactly once. Append-mode readers
     /// preserve write order and contain `_VALUE_KIND`, `_REALTIME_OFFSET`, and table write fields.
-    /// Primary-key readers contain the realtime primary-key transport fields, whose order is not
-    /// significant; each reader's complete stream is sorted by full primary key then sequence
-    /// number.
+    /// Primary-key readers contain the realtime primary-key transport fields; each reader's
+    /// complete stream is sorted by full primary key then sequence number.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) = 0;
 

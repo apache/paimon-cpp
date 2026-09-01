@@ -27,24 +27,27 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/io/key_value_data_file_record_reader.h"
 #include "paimon/core/key_value.h"
-#include "paimon/core/realtime/realtime_offset_batch_reader.h"
+#include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/status.h"
 
 namespace paimon {
+namespace {
 
-std::shared_ptr<arrow::Schema> RealtimePrimaryKeyLayout::CreateSchema(
-    const std::vector<std::shared_ptr<arrow::Field>>& value_fields) {
+std::shared_ptr<arrow::Schema> CreatePrimaryKeySchema(
+    const std::vector<std::shared_ptr<arrow::Field>>& value_fields, bool include_offset) {
     arrow::FieldVector fields = {
         DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind())->WithNullable(false),
         DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber())
-            ->WithNullable(false),
-        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset())};
+            ->WithNullable(false)};
+    if (include_offset) {
+        fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()));
+    }
     fields.insert(fields.end(), value_fields.begin(), value_fields.end());
     return arrow::schema(std::move(fields));
 }
 
-Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> RealtimePrimaryKeyReaderFactory::Create(
-    std::vector<std::unique_ptr<BatchReader>>&& readers, const OffsetRange& visible_offsets,
+Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateKeyValueReaders(
+    std::vector<std::unique_ptr<BatchReader>>&& readers,
     const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema,
     const std::shared_ptr<MemoryPool>& memory_pool) {
@@ -54,13 +57,48 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> RealtimePrimaryKeyRea
         if (!reader) {
             return Status::Invalid("real-time store returned a null reader");
         }
-        std::unique_ptr<BatchReader> offset_reader =
-            std::make_unique<RealtimeOffsetBatchReader>(std::move(reader), visible_offsets);
         result.push_back(std::make_unique<KeyValueDataFileRecordReader>(
-            std::move(offset_reader), key_schema, value_schema,
+            std::move(reader), key_schema, value_schema,
             /*level=*/KeyValue::UNKNOWN_LEVEL, memory_pool));
     }
     return result;
+}
+
+}  // namespace
+
+std::shared_ptr<arrow::Schema> RealtimePrimaryKeyLayout::CreateWriteSchema(
+    const std::vector<std::shared_ptr<arrow::Field>>& value_fields) {
+    return CreatePrimaryKeySchema(value_fields, /*include_offset=*/true);
+}
+
+std::shared_ptr<arrow::Schema> RealtimePrimaryKeyLayout::CreateLogicalSchema(
+    const std::vector<std::shared_ptr<arrow::Field>>& value_fields) {
+    return CreatePrimaryKeySchema(value_fields, /*include_offset=*/false);
+}
+
+Result<std::vector<std::unique_ptr<KeyValueRecordReader>>>
+RealtimePrimaryKeyReaderFactory::CreateForCommit(
+    std::vector<std::unique_ptr<BatchReader>>&& readers,
+    const std::shared_ptr<arrow::Schema>& key_schema,
+    const std::shared_ptr<arrow::Schema>& value_schema,
+    const std::shared_ptr<MemoryPool>& memory_pool) {
+    return CreateKeyValueReaders(std::move(readers), key_schema, value_schema, memory_pool);
+}
+
+Result<std::vector<std::unique_ptr<KeyValueRecordReader>>>
+RealtimePrimaryKeyReaderFactory::CreateForQuery(std::vector<std::unique_ptr<BatchReader>>&& readers,
+                                                const OffsetRange& visible_offsets,
+                                                const std::shared_ptr<arrow::Schema>& key_schema,
+                                                const std::shared_ptr<arrow::Schema>& value_schema,
+                                                const std::shared_ptr<MemoryPool>& memory_pool,
+                                                const RealtimeStoreReadPipeline& pipeline) {
+    for (std::unique_ptr<BatchReader>& reader : readers) {
+        if (!reader) {
+            return Status::Invalid("real-time store returned a null reader");
+        }
+        PAIMON_ASSIGN_OR_RAISE(reader, pipeline.Wrap(std::move(reader), visible_offsets));
+    }
+    return CreateKeyValueReaders(std::move(readers), key_schema, value_schema, memory_pool);
 }
 
 }  // namespace paimon

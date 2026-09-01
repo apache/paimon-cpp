@@ -26,7 +26,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "paimon/common/reader/concat_batch_reader.h"
-#include "paimon/common/table/special_fields.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
@@ -39,6 +39,7 @@
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_primary_key_reader.h"
 #include "paimon/core/realtime/realtime_reader.h"
+#include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/pk_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
@@ -56,7 +57,7 @@ struct ColumnarBatchContext;
 
 namespace {
 
-Result<std::shared_ptr<arrow::Schema>> CreateRealtimePrimaryKeyQueryTransportSchema(
+Result<std::shared_ptr<arrow::Schema>> CreateRealtimePrimaryKeyLogicalSchema(
     const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema) {
     arrow::FieldVector transport_value_fields;
@@ -74,29 +75,37 @@ Result<std::shared_ptr<arrow::Schema>> CreateRealtimePrimaryKeyQueryTransportSch
             transport_value_fields.push_back(field);
         }
     }
-    return RealtimePrimaryKeyLayout::CreateSchema(transport_value_fields);
+    return RealtimePrimaryKeyLayout::CreateLogicalSchema(transport_value_fields);
 }
 
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
     const std::shared_ptr<RealtimeSplit>& split, const RealtimePartitionBucketView& memory,
-    const std::shared_ptr<arrow::Schema>& transport_schema,
+    const std::shared_ptr<arrow::Schema>& logical_schema,
     const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema,
     const std::shared_ptr<FieldsComparator>& key_comparator,
     const std::shared_ptr<InternalReadContext>& context,
     const std::shared_ptr<MemoryPool>& memory_pool) {
+    std::shared_ptr<arrow::Schema> table_write_schema =
+        DataField::ConvertDataFieldsToArrowSchema(context->GetTableSchema()->Fields());
+    std::shared_ptr<arrow::Schema> realtime_write_schema =
+        RealtimePrimaryKeyLayout::CreateWriteSchema(table_write_schema->fields());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
+        RealtimeStoreReadPipeline::Create(logical_schema, realtime_write_schema, memory_pool));
+    const std::shared_ptr<arrow::Schema>& store_read_schema = pipeline->StoreReadSchema();
     auto c_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*transport_schema, c_schema.get()));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_read_schema, c_schema.get()));
     ScopeGuard schema_guard([schema = c_schema.get()]() { ArrowSchemaRelease(schema); });
     RealtimeQueryContext query_context{c_schema.get(), /*predicate=*/nullptr};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> batch_readers,
                            memory.store->CreateQueryReaders(memory.read_view, query_context));
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<KeyValueRecordReader>> realtime_primary_key_readers,
-        RealtimePrimaryKeyReaderFactory::Create(
+        RealtimePrimaryKeyReaderFactory::CreateForQuery(
             std::move(batch_readers),
             OffsetRange(split->CommittedEndOffset(), split->MemoryEndOffset()), key_schema,
-            value_schema, memory_pool));
+            value_schema, memory_pool, *pipeline));
     std::vector<std::unique_ptr<KeyValueRecordReader>> result;
     result.reserve(realtime_primary_key_readers.size());
     for (std::unique_ptr<KeyValueRecordReader>& realtime_primary_key_reader :
@@ -118,12 +127,12 @@ KeyValueTableRead::KeyValueTableRead(
     std::vector<std::unique_ptr<SplitRead>>&& split_reads,
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<InternalReadContext>& context,
-    const std::shared_ptr<arrow::Schema>& realtime_primary_key_transport_schema,
+    const std::shared_ptr<arrow::Schema>& realtime_primary_key_logical_schema,
     const std::shared_ptr<Executor>& executor)
     : split_reads_(std::move(split_reads)),
       path_factory_(path_factory),
       context_(context),
-      realtime_primary_key_transport_schema_(realtime_primary_key_transport_schema),
+      realtime_primary_key_logical_schema_(realtime_primary_key_logical_schema),
       executor_(executor) {}
 
 Result<std::unique_ptr<TableRead>> KeyValueTableRead::Create(
@@ -137,18 +146,18 @@ Result<std::unique_ptr<TableRead>> KeyValueTableRead::Create(
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<MergeFileSplitRead> merge_file_split_read,
         MergeFileSplitRead::Create(path_factory, context, memory_pool, executor));
-    std::shared_ptr<arrow::Schema> realtime_primary_key_transport_schema;
+    std::shared_ptr<arrow::Schema> realtime_primary_key_logical_schema;
     if (context->GetRealtimeContext()) {
         PAIMON_ASSIGN_OR_RAISE(
-            realtime_primary_key_transport_schema,
-            CreateRealtimePrimaryKeyQueryTransportSchema(merge_file_split_read->GetKeySchema(),
-                                                         merge_file_split_read->GetValueSchema()));
+            realtime_primary_key_logical_schema,
+            CreateRealtimePrimaryKeyLogicalSchema(merge_file_split_read->GetKeySchema(),
+                                                  merge_file_split_read->GetValueSchema()));
     }
     split_reads.emplace_back(std::move(merge_file_split_read));
 
     return std::unique_ptr<TableRead>(
         new KeyValueTableRead(std::move(split_reads), path_factory, context,
-                              realtime_primary_key_transport_schema, executor));
+                              realtime_primary_key_logical_schema, executor));
 }
 
 void KeyValueTableRead::ForceKeepDelete(bool force_keep_delete) {
@@ -291,7 +300,7 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateRealtimeReader(
         if (merge_read) {
             PAIMON_ASSIGN_OR_RAISE(
                 std::vector<std::unique_ptr<KeyValueRecordReader>> memory_readers,
-                CreateMemoryReaders(realtime_split, memory, realtime_primary_key_transport_schema_,
+                CreateMemoryReaders(realtime_split, memory, realtime_primary_key_logical_schema_,
                                     merge_read->GetKeySchema(), merge_read->GetValueSchema(),
                                     merge_read->GetKeyComparator(), context_,
                                     context_->GetMemoryPool()));

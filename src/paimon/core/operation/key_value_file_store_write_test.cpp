@@ -263,7 +263,7 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
                                            DataField::ConvertDataFieldToArrowField(
                                                DataField(1, arrow::field("value", arrow::utf8())))};
         std::shared_ptr<arrow::Schema> transport_schema =
-            RealtimePrimaryKeyLayout::CreateSchema(value_fields);
+            RealtimePrimaryKeyLayout::CreateWriteSchema(value_fields);
         auto c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*transport_schema, c_schema.get()));
         RealtimeQueryContext query_context{c_schema.get(), /*predicate=*/nullptr};
