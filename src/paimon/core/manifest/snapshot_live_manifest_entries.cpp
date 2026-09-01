@@ -34,7 +34,7 @@
 namespace paimon {
 namespace {
 
-constexpr int32_t kMagic = 0x534d4532;  // SME2
+constexpr int32_t kMagic = 0x534d4543;  // SMEC
 
 size_t NormalizeMaxSnapshots(int32_t max_snapshots) {
     return static_cast<size_t>(std::max(0, max_snapshots));
@@ -68,17 +68,15 @@ std::optional<SnapshotLiveManifestEntries::Entry> SnapshotLiveManifestEntries::L
         return std::optional<Entry>();
     }
     --iter;
-    return Entry{iter->first, iter->second.snapshot_generation, iter->second.entries};
+    return Entry{iter->first, iter->second};
 }
 
-void SnapshotLiveManifestEntries::Put(int64_t snapshot_id, const std::string& snapshot_generation,
-                                      std::vector<ManifestEntry>&& entries) {
+void SnapshotLiveManifestEntries::Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries) {
     if (NormalizeMaxSnapshots(max_snapshots_) == 0) {
         return;
     }
     entries_by_snapshot_[snapshot_id] =
-        StoredEntry{snapshot_generation,
-                    std::make_shared<const std::vector<ManifestEntry>>(std::move(entries))};
+        std::make_shared<const std::vector<ManifestEntry>>(std::move(entries));
     EvictIfNeeded();
 }
 
@@ -93,10 +91,9 @@ Result<std::shared_ptr<Bytes>> SnapshotLiveManifestEntries::Serialize(
     out.WriteValue<int32_t>(static_cast<int32_t>(entries_by_snapshot_.size()));
 
     ManifestEntrySerializer serializer(pool);
-    for (const auto& [snapshot_id, entry] : entries_by_snapshot_) {
+    for (const auto& [snapshot_id, entries] : entries_by_snapshot_) {
         out.WriteValue<int64_t>(snapshot_id);
-        out.WriteString(entry.snapshot_generation);
-        PAIMON_RETURN_NOT_OK(serializer.SerializeList(*entry.entries, &out));
+        PAIMON_RETURN_NOT_OK(serializer.SerializeList(*entries, &out));
     }
     return ToBytes(out, pool);
 }
@@ -124,11 +121,9 @@ Result<SnapshotLiveManifestEntries> SnapshotLiveManifestEntries::Deserialize(
     ManifestEntrySerializer serializer(pool);
     for (int32_t i = 0; i < snapshot_count; i++) {
         PAIMON_ASSIGN_OR_RAISE(int64_t snapshot_id, in.ReadValue<int64_t>());
-        PAIMON_ASSIGN_OR_RAISE(std::string snapshot_generation, in.ReadString());
         PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries, serializer.DeserializeList(&in));
         snapshot_live_manifest_entries.entries_by_snapshot_[snapshot_id] =
-            StoredEntry{std::move(snapshot_generation),
-                        std::make_shared<const std::vector<ManifestEntry>>(std::move(entries))};
+            std::make_shared<const std::vector<ManifestEntry>>(std::move(entries));
     }
     snapshot_live_manifest_entries.EvictIfNeeded();
     return snapshot_live_manifest_entries;

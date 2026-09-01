@@ -400,15 +400,6 @@ TEST_F(LruCacheTest, TestForSnapshotLiveManifestEntries) {
     ASSERT_FALSE(CacheKeyEqual()(hash_in_path_key, hash_in_branch_key));
 }
 
-TEST_F(LruCacheTest, TestPositionKeyIncludesBackendNamespace) {
-    auto first = CacheKey::ForPosition("backend-a", "same-path", 0, 64, /*is_index=*/false);
-    auto same = CacheKey::ForPosition("backend-a", "same-path", 0, 64, /*is_index=*/false);
-    auto other = CacheKey::ForPosition("backend-b", "same-path", 0, 64, /*is_index=*/false);
-
-    ASSERT_TRUE(CacheKeyEqual()(first, same));
-    ASSERT_FALSE(CacheKeyEqual()(first, other));
-}
-
 /// Verifies that multiple evictions happen when a single large entry is inserted.
 TEST_F(LruCacheTest, TestMultipleEvictions) {
     LruCache cache(300);

@@ -260,7 +260,7 @@ class FileStoreScan {
                                std::vector<ManifestEntry>* manifest_entries) const;
 
     Status ReadManifestEntriesWithCache(const Snapshot& snapshot,
-                                        const std::vector<ManifestFileMeta>& all_manifest_metas,
+                                        const std::vector<ManifestFileMeta>& bucket_manifest_metas,
                                         int32_t bucket,
                                         std::vector<ManifestEntry>* manifest_entries,
                                         bool* cache_hit) const;

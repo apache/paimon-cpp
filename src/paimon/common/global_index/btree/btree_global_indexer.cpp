@@ -19,12 +19,8 @@
 #include "paimon/common/global_index/btree/btree_global_indexer.h"
 
 #include <climits>
-#include <list>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <utility>
 
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
@@ -49,41 +45,6 @@
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
-namespace {
-
-std::shared_ptr<CacheManager> GetSharedCacheManager(int64_t cache_size,
-                                                    double high_priority_pool_ratio) {
-    using CacheConfig = std::pair<int64_t, double>;
-    struct Entry {
-        std::shared_ptr<CacheManager> manager;
-        std::list<CacheConfig>::iterator lru_position;
-    };
-    static constexpr size_t kMaxConfigurations = 4;
-    static std::mutex mutex;
-    static std::list<CacheConfig> lru_configs;
-    static std::map<CacheConfig, Entry> cache_managers;
-
-    std::lock_guard<std::mutex> lock(mutex);
-    CacheConfig config(cache_size, high_priority_pool_ratio);
-    auto iter = cache_managers.find(config);
-    if (iter != cache_managers.end()) {
-        lru_configs.splice(lru_configs.begin(), lru_configs, iter->second.lru_position);
-        return iter->second.manager;
-    }
-
-    lru_configs.push_front(config);
-    auto manager = std::make_shared<CacheManager>(cache_size, high_priority_pool_ratio);
-    cache_managers.emplace(config, Entry{manager, lru_configs.begin()});
-    if (cache_managers.size() > kMaxConfigurations) {
-        CacheConfig evicted = lru_configs.back();
-        lru_configs.pop_back();
-        cache_managers.erase(evicted);
-    }
-    return manager;
-}
-
-}  // namespace
-
 Result<std::unique_ptr<BTreeGlobalIndexer>> BTreeGlobalIndexer::Create(
     const std::map<std::string, std::string>& options) {
     // parse cache options
@@ -96,8 +57,7 @@ Result<std::unique_ptr<BTreeGlobalIndexer>> BTreeGlobalIndexer::Create(
         double high_priority_pool_ratio,
         OptionsUtils::GetValueFromMap<double>(options, BtreeDefs::kBtreeIndexHighPriorityPoolRatio,
                                               BtreeDefs::kDefaultBtreeIndexHighPriorityPoolRatio));
-    std::shared_ptr<CacheManager> cache_manager =
-        GetSharedCacheManager(cache_size, high_priority_pool_ratio);
+    auto cache_manager = std::make_shared<CacheManager>(cache_size, high_priority_pool_ratio);
     return std::unique_ptr<BTreeGlobalIndexer>(new BTreeGlobalIndexer(cache_manager, options));
 }
 

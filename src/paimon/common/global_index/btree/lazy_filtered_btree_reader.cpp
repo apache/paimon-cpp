@@ -27,7 +27,6 @@
 #include "paimon/common/global_index/btree/btree_global_index_reader.h"
 #include "paimon/common/global_index/btree/btree_index_meta.h"
 #include "paimon/common/global_index/btree/key_serializer.h"
-#include "paimon/common/global_index/cache_namespace_provider.h"
 #include "paimon/common/global_index/union_global_index_reader.h"
 #include "paimon/common/memory/memory_slice.h"
 #include "paimon/common/memory/memory_slice_input.h"
@@ -239,21 +238,16 @@ Result<std::shared_ptr<GlobalIndexReader>> LazyFilteredBTreeReader::CreateSingle
         max_key_slice = MemorySlice::Wrap(index_meta->LastKey());
     }
 
-    BlockCache::InputStreamSupplier input_stream_supplier =
-        [file_reader = file_reader_, file_path = meta.file_path,
-         read_buffer_size = read_buffer_size_,
-         pool = pool_]() -> Result<std::shared_ptr<InputStream>> {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
-                               file_reader->GetInputStream(file_path));
-        if (read_buffer_size) {
-            input_stream = std::make_shared<BufferedInputStream>(
-                input_stream, read_buffer_size.value(), pool.get());
-        }
-        return input_stream;
-    };
-    auto block_cache = std::make_shared<BlockCache>(
-        GetGlobalIndexCacheNamespace(file_reader_), file_reader_, meta.file_path,
-        std::move(input_stream_supplier), cache_manager_, pool_);
+    // Open input stream and create block cache
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
+                           file_reader_->GetInputStream(meta.file_path));
+    if (read_buffer_size_) {
+        input_stream = std::make_shared<BufferedInputStream>(
+            input_stream, read_buffer_size_.value(), pool_.get());
+    }
+
+    auto block_cache =
+        std::make_shared<BlockCache>(meta.file_path, input_stream, cache_manager_, pool_);
 
     // Read footer
     PAIMON_ASSIGN_OR_RAISE(MemorySegment footer_segment,

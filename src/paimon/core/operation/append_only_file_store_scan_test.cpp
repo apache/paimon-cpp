@@ -279,8 +279,7 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     ASSERT_OK_AND_ASSIGN(Snapshot snapshot_5,
                          scan_first->GetSnapshotManager()->LoadSnapshot(/*snapshot_id=*/5));
     scan_first->WithSnapshot(snapshot_5);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreScan::RawPlan> plan_first,
-                         scan_first->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(auto plan_first, scan_first->CreatePlan());
     std::vector<std::string> first_file_names = SortedFileNames(plan_first->Files());
     std::shared_ptr<Metrics> first_metrics = scan_first->GetScanMetrics();
     ASSERT_OK_AND_ASSIGN(uint64_t first_cache_enabled,
@@ -300,8 +299,7 @@ TEST(AppendOnlyFileStoreScanTest, TestSnapshotLiveManifestCachePath) {
     // Second scan on the same snapshot should read the same bucket live entries from cache.
     auto scan_second = BuildScan(table_path, cache, /*bucket=*/0);
     scan_second->WithSnapshot(snapshot_5);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreScan::RawPlan> plan_second,
-                         scan_second->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(auto plan_second, scan_second->CreatePlan());
     ASSERT_EQ(first_file_names, SortedFileNames(plan_second->Files()));
     std::shared_ptr<Metrics> second_metrics = scan_second->GetScanMetrics();
     ASSERT_OK_AND_ASSIGN(uint64_t second_cache_hit,

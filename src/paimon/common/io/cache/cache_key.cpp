@@ -65,22 +65,14 @@ class SnapshotLiveManifestEntriesCacheKey : public CacheKey {
 
 std::shared_ptr<CacheKey> CacheKey::ForPosition(const std::string& file_path, int64_t position,
                                                 int32_t length, bool is_index) {
-    return std::make_shared<PositionCacheKey>(/*cache_namespace=*/"", file_path, position, length,
-                                              is_index, CacheKind::DEFAULT);
-}
-
-std::shared_ptr<CacheKey> CacheKey::ForPosition(const std::string& cache_namespace,
-                                                const std::string& file_path, int64_t position,
-                                                int32_t length, bool is_index) {
-    return std::make_shared<PositionCacheKey>(cache_namespace, file_path, position, length,
-                                              is_index, CacheKind::DEFAULT);
+    return std::make_shared<PositionCacheKey>(file_path, position, length, is_index,
+                                              CacheKind::DEFAULT);
 }
 
 std::shared_ptr<CacheKey> CacheKey::ForKind(const std::string& file_path, int64_t position,
                                             int32_t length, CacheKind kind) {
-    auto key =
-        std::make_shared<PositionCacheKey>(/*cache_namespace=*/"", file_path, position, length,
-                                           /*is_index=*/false, kind);
+    auto key = std::make_shared<PositionCacheKey>(file_path, position, length,
+                                                  /*is_index=*/false, kind);
     return key;
 }
 
@@ -107,14 +99,12 @@ bool PositionCacheKey::Equals(const CacheKey& other) const {
     if (!rhs) {
         return false;
     }
-    return cache_namespace_ == rhs->cache_namespace_ && file_path_ == rhs->file_path_ &&
-           position_ == rhs->position_ && length_ == rhs->length_ && is_index_ == rhs->is_index_ &&
-           GetKind() == rhs->GetKind();
+    return file_path_ == rhs->file_path_ && position_ == rhs->position_ &&
+           length_ == rhs->length_ && is_index_ == rhs->is_index_ && GetKind() == rhs->GetKind();
 }
 
 size_t PositionCacheKey::HashCode() const {
     size_t seed = 0;
-    seed ^= std::hash<std::string>{}(cache_namespace_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
     seed ^= std::hash<std::string>{}(file_path_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
     seed ^= std::hash<int64_t>{}(position_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
     seed ^= std::hash<int32_t>{}(length_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);

@@ -19,7 +19,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <unordered_map>
 
@@ -32,28 +31,10 @@ namespace paimon {
 
 class PAIMON_EXPORT BlockCache {
  public:
-    using InputStreamSupplier = std::function<Result<std::shared_ptr<InputStream>>()>;
-
     BlockCache(const std::string& file_path, const std::shared_ptr<InputStream>& in,
                const std::shared_ptr<CacheManager>& cache_manager,
                const std::shared_ptr<MemoryPool>& pool)
         : pool_(pool), file_path_(file_path), in_(in), cache_manager_(cache_manager) {}
-
-    /// Creates a block cache whose pages survive this reader. The input stream is opened only on a
-    /// cache miss, so a later reader can reuse cached pages without reopening the immutable file.
-    BlockCache(const std::string& cache_namespace,
-               const std::shared_ptr<void>& cache_namespace_owner, const std::string& file_path,
-               InputStreamSupplier input_stream_supplier,
-               const std::shared_ptr<CacheManager>& cache_manager,
-               const std::shared_ptr<MemoryPool>& pool)
-        : pool_(pool),
-          cache_pool_(GetDefaultPool()),
-          cache_namespace_(cache_namespace),
-          cache_namespace_owner_(cache_namespace_owner),
-          file_path_(file_path),
-          input_stream_supplier_(std::move(input_stream_supplier)),
-          cache_manager_(cache_manager),
-          retain_cached_pages_(true) {}
 
     ~BlockCache() {
         Close();
@@ -62,40 +43,24 @@ class PAIMON_EXPORT BlockCache {
     Result<MemorySegment> GetBlock(
         int64_t position, int32_t length, bool is_index,
         std::function<Result<MemorySegment>(const MemorySegment&)> decompress_func) {
-        auto key =
-            retain_cached_pages_
-                ? CacheKey::ForPosition(cache_namespace_, file_path_, position, length, is_index)
-                : CacheKey::ForPosition(file_path_, position, length, is_index);
-        auto reader = [&](const std::shared_ptr<paimon::CacheKey>&) -> Result<MemorySegment> {
-            PAIMON_ASSIGN_OR_RAISE(MemorySegment compress_data, ReadFrom(position, length));
-            if (!decompress_func) {
-                return compress_data;
-            }
-            PAIMON_ASSIGN_OR_RAISE(MemorySegment decompressed_data, decompress_func(compress_data));
-            if (!retain_cached_pages_ || (decompressed_data.Data() == compress_data.Data() &&
-                                          decompressed_data.Size() == compress_data.Size())) {
-                return decompressed_data;
-            }
-            auto cached_data =
-                MemorySegment::AllocateHeapMemory(decompressed_data.Size(), cache_pool_.get());
-            decompressed_data.CopyTo(/*offset=*/0, &cached_data, /*target_offset=*/0,
-                                     decompressed_data.Size());
-            return cached_data;
-        };
-        if (retain_cached_pages_) {
-            return cache_manager_->GetPage(
-                key, reader, [owner = cache_namespace_owner_](const std::shared_ptr<CacheKey>&) {
-                    (void)owner;
-                });
-        }
+        auto key = CacheKey::ForPosition(file_path_, position, length, is_index);
         auto it = blocks_.find(key);
         if (it == blocks_.end() || it->second.GetAccessCount() == CacheManager::REFRESH_COUNT) {
             PAIMON_ASSIGN_OR_RAISE(
                 MemorySegment segment,
-                cache_manager_->GetPage(key, reader,
-                                        [this](const std::shared_ptr<CacheKey>& evicted_key) {
-                                            blocks_.erase(evicted_key);
-                                        }));
+                cache_manager_->GetPage(
+                    key,
+                    [&](const std::shared_ptr<paimon::CacheKey>&) -> Result<MemorySegment> {
+                        PAIMON_ASSIGN_OR_RAISE(MemorySegment compress_data,
+                                               ReadFrom(position, length));
+                        if (!decompress_func) {
+                            return compress_data;
+                        }
+                        return decompress_func(compress_data);
+                    },
+                    [this](const std::shared_ptr<CacheKey>& evicted_key) {
+                        blocks_.erase(evicted_key);
+                    }));
             auto container = CacheManager::SegmentContainer(segment);
             const auto& result_segment = container.Access();
             blocks_.insert_or_assign(key, container);
@@ -116,9 +81,6 @@ class PAIMON_EXPORT BlockCache {
     }
 
     void Close() {
-        if (retain_cached_pages_) {
-            return;
-        }
         // Snapshot blocks_ to avoid iterator invalidation from `InvalidPage` callback.
         auto copied_blocks = blocks_;
         for (const auto& [key, _] : copied_blocks) {
@@ -131,33 +93,18 @@ class PAIMON_EXPORT BlockCache {
 
  private:
     Result<MemorySegment> ReadFrom(int64_t offset, int32_t length) {
-        if (!in_) {
-            if (!input_stream_supplier_) {
-                return Status::Invalid("input stream is not available");
-            }
-            PAIMON_ASSIGN_OR_RAISE(in_, input_stream_supplier_());
-            if (!in_) {
-                return Status::Invalid("input stream supplier returned null");
-            }
-        }
         PAIMON_RETURN_NOT_OK(in_->Seek(offset, SeekOrigin::FS_SEEK_SET));
-        MemoryPool* allocation_pool = retain_cached_pages_ ? cache_pool_.get() : pool_.get();
-        auto segment = MemorySegment::AllocateHeapMemory(length, allocation_pool);
+        auto segment = MemorySegment::AllocateHeapMemory(length, pool_.get());
         PAIMON_RETURN_NOT_OK(in_->Read(segment.MutableData(), length));
         return segment;
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<MemoryPool> cache_pool_;
-    std::string cache_namespace_;
-    std::shared_ptr<void> cache_namespace_owner_;
     std::string file_path_;
     std::shared_ptr<InputStream> in_;
-    InputStreamSupplier input_stream_supplier_;
 
     std::shared_ptr<CacheManager> cache_manager_;
-    bool retain_cached_pages_ = false;
     std::unordered_map<std::shared_ptr<CacheKey>, CacheManager::SegmentContainer, CacheKeyHash,
                        CacheKeyEqual>
         blocks_;
