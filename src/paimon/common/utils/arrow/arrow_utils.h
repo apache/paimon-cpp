@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "arrow/api.h"
@@ -47,6 +48,8 @@ class PAIMON_EXPORT ArrowUtils {
     // for dictionary(). Therefore, access array in advance before merge sort and projection to
     // avoid subsequent multi-threading problems.
     static void TraverseArray(const std::shared_ptr<arrow::Array>& array);
+
+    static uint64_t GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data);
 
     static Result<std::shared_ptr<arrow::StructArray>> RemoveFieldFromStructArray(
         const std::shared_ptr<arrow::StructArray>& struct_array, const std::string& field_name);

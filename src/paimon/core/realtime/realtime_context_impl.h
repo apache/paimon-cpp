@@ -32,11 +32,15 @@
 #include <vector>
 
 #include "paimon/realtime/realtime_context.h"
+#include "paimon/realtime/realtime_store.h"
 #include "paimon/result.h"
-#include "paimon/statistics_mode.h"
 #include "paimon/visibility.h"
 
 struct ArrowSchema;
+
+namespace arrow {
+class Schema;
+}  // namespace arrow
 
 namespace paimon {
 
@@ -66,10 +70,10 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
         const std::shared_ptr<RealtimeContext>& context);
 
     Result<RealtimeStoreState> GetOrCreateRealtimeStore(
-        const std::map<std::string, std::string>& partition, int32_t bucket,
-        std::unique_ptr<::ArrowSchema> write_schema, StatisticsMode statistics_mode,
-        const std::map<std::string, std::string>& options,
-        const std::shared_ptr<MemoryPool>& memory_pool);
+        RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket);
+
+    Result<int64_t> AdvanceMaterializedMaxSequenceNumber(
+        const RealtimePartitionBucket& partition_bucket, int64_t max_sequence_number);
 
     Result<std::vector<RealtimePartitionBucketView>> AcquireReadViews();
 
@@ -93,6 +97,13 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
         std::chrono::steady_clock::time_point expire_at;
     };
 
+    struct StoreEntry {
+        std::shared_ptr<RealtimeStore> store;
+        std::shared_ptr<arrow::Schema> write_schema;
+        RealtimeStoreMode mode;
+        int64_t materialized_max_sequence_number = -1;
+    };
+
     explicit RealtimeContextImpl(const std::shared_ptr<RealtimeStoreFactory>& factory);
 
     Status Start();
@@ -102,7 +113,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     std::shared_ptr<RealtimeStoreFactory> factory_;
     std::mutex mutex_;
     std::mutex progress_mutex_;
-    std::map<RealtimePartitionBucket, std::shared_ptr<RealtimeStore>> stores_;
+    std::map<RealtimePartitionBucket, StoreEntry> stores_;
     // Full-table progress used as the initial offset when a store is created lazily.
     RealtimeOffsetMap committed_offsets_;
     // Progress already reflected in stores owned by this context.

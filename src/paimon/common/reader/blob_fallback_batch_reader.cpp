@@ -41,7 +41,7 @@ namespace paimon {
 Result<std::unique_ptr<BlobFallbackBatchReader>> BlobFallbackBatchReader::Create(
     std::vector<std::vector<Segment>>&& sequence_groups,
     const std::shared_ptr<arrow::Schema>& read_schema, int32_t read_batch_size,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (sequence_groups.size() < 2) {
         return Status::Invalid(
             "Blob fallback needs at least two sequence groups; a single group should be read "
@@ -85,23 +85,23 @@ Result<std::unique_ptr<BlobFallbackBatchReader>> BlobFallbackBatchReader::Create
         cursor.segments = std::move(segments);
         groups.push_back(std::move(cursor));
     }
-    return std::unique_ptr<BlobFallbackBatchReader>(
-        new BlobFallbackBatchReader(std::move(groups), read_schema, blob_field_idx,
-                                    row_id_field_idx, seq_num_field_idx, read_batch_size, pool));
+    return std::unique_ptr<BlobFallbackBatchReader>(new BlobFallbackBatchReader(
+        std::move(groups), read_schema, blob_field_idx, row_id_field_idx, seq_num_field_idx,
+        read_batch_size, arrow_pool));
 }
 
-BlobFallbackBatchReader::BlobFallbackBatchReader(std::vector<GroupCursor>&& groups,
-                                                 const std::shared_ptr<arrow::Schema>& read_schema,
-                                                 int32_t blob_field_idx, int32_t row_id_field_idx,
-                                                 int32_t seq_num_field_idx, int32_t read_batch_size,
-                                                 const std::shared_ptr<MemoryPool>& pool)
+BlobFallbackBatchReader::BlobFallbackBatchReader(
+    std::vector<GroupCursor>&& groups, const std::shared_ptr<arrow::Schema>& read_schema,
+    int32_t blob_field_idx, int32_t row_id_field_idx, int32_t seq_num_field_idx,
+    int32_t read_batch_size, const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : groups_(std::move(groups)),
       read_schema_(read_schema),
       blob_field_idx_(blob_field_idx),
       row_id_field_idx_(row_id_field_idx),
       seq_num_field_idx_(seq_num_field_idx),
       read_batch_size_(read_batch_size),
-      arrow_pool_(GetArrowPool(pool)) {}
+      arrow_pool_(arrow_pool),
+      finished_reader_metrics_(std::make_shared<MetricsImpl>()) {}
 
 Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t want,
                                                     std::vector<Chunk>* chunks) {
@@ -157,6 +157,9 @@ Result<int64_t> BlobFallbackBatchReader::FillWindow(size_t group_idx, int64_t wa
         PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch_with_bitmap,
                                segment.reader->NextBatchWithBitmap());
         if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+            segment.reader->Close();
+            finished_reader_metrics_->Merge(segment.reader->GetReaderMetrics());
+            segment.reader.reset();
             cursor.segment_idx++;
             continue;
         }
@@ -365,6 +368,7 @@ Result<BatchReader::ReadBatch> BlobFallbackBatchReader::NextBatch() {
     std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*normalized_array, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return std::make_pair(std::move(c_array), std::move(c_schema));
 }
 
@@ -382,6 +386,8 @@ void BlobFallbackBatchReader::Close() {
         for (auto& segment : group.segments) {
             if (segment.reader) {
                 segment.reader->Close();
+                finished_reader_metrics_->Merge(segment.reader->GetReaderMetrics());
+                segment.reader.reset();
             }
         }
     }
@@ -390,6 +396,7 @@ void BlobFallbackBatchReader::Close() {
 
 std::shared_ptr<Metrics> BlobFallbackBatchReader::GetReaderMetrics() const {
     auto metrics = std::make_shared<MetricsImpl>();
+    metrics->Merge(finished_reader_metrics_);
     for (const auto& group : groups_) {
         for (const auto& segment : group.segments) {
             if (segment.reader) {

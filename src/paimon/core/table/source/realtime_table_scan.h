@@ -35,10 +35,10 @@ class FileSystem;
 class ScanFilter;
 class SnapshotManager;
 
-/// Adds process-local memory splits to a normal append-table batch scan.
+/// Adds process-local memory splits to a normal data-table batch scan.
 class RealtimeTableScan : public TableScan {
  public:
-    RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan,
+    RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan, bool pk_table,
                       const std::shared_ptr<RealtimeContextImpl>& realtime_context,
                       const std::shared_ptr<FileStorePathFactory>& path_factory,
                       const std::shared_ptr<SnapshotManager>& snapshot_manager,
@@ -71,6 +71,7 @@ class RealtimeTableScan : public TableScan {
         const std::optional<int64_t>& snapshot_id) const;
 
     std::unique_ptr<TableScan> disk_scan_;
+    bool pk_table_;
     std::shared_ptr<RealtimeContextImpl> realtime_context_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<SnapshotManager> snapshot_manager_;

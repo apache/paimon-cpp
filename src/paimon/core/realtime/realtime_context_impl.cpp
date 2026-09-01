@@ -34,14 +34,33 @@
 #include <utility>
 #include <vector>
 
+#include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "fmt/format.h"
 #include "paimon/arrow/abi.h"
+#include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/macros.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/status.h"
 
 namespace paimon {
+namespace {
+
+std::string PartitionToString(const std::map<std::string, std::string>& partition) {
+    std::string result = "{";
+    for (auto iter = partition.begin(); iter != partition.end(); ++iter) {
+        if (iter != partition.begin()) {
+            result += ", ";
+        }
+        result += iter->first + "=" + iter->second;
+    }
+    return result + "}";
+}
+
+}  // namespace
 
 RealtimeContextImpl::RealtimeContextImpl(const std::shared_ptr<RealtimeStoreFactory>& factory)
     : factory_(factory) {}
@@ -78,31 +97,36 @@ Status RealtimeContextImpl::Start() {
 }
 
 Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
-    const std::map<std::string, std::string>& partition, int32_t bucket,
-    std::unique_ptr<ArrowSchema> write_schema, StatisticsMode statistics_mode,
-    const std::map<std::string, std::string>& options,
-    const std::shared_ptr<MemoryPool>& memory_pool) {
+    RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket) {
+    if (!request.write_schema || !request.write_schema->release) {
+        return Status::Invalid("real-time store write schema is null");
+    }
+    ScopeGuard schema_guard(
+        [schema = request.write_schema.get()]() { ArrowSchemaRelease(schema); });
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> requested_schema,
+                                      arrow::ImportSchema(request.write_schema.get()));
+    schema_guard.Release();
     std::lock_guard<std::mutex> progress_lock(progress_mutex_);
     std::lock_guard<std::mutex> registry_lock(mutex_);
-    const RealtimePartitionBucket key(partition, bucket);
+    auto iter = stores_.find(partition_bucket);
     int64_t initial_offset = 0;
-    auto offset_iter = committed_offsets_.find(key);
+    auto offset_iter = committed_offsets_.find(partition_bucket);
     if (offset_iter != committed_offsets_.end()) {
         if (offset_iter->second == std::numeric_limits<int64_t>::max()) {
-            if (write_schema) {
-                ArrowSchemaRelease(write_schema.get());
-            }
             return Status::Invalid("real-time offset has reached INT64_MAX");
         }
         initial_offset = offset_iter->second;
     }
-    auto iter = stores_.find(key);
     if (iter != stores_.end()) {
-        if (write_schema) {
-            ArrowSchemaRelease(write_schema.get());
+        if (iter->second.mode != request.mode ||
+            !iter->second.write_schema->Equals(*requested_schema, /*check_metadata=*/true)) {
+            return Status::Invalid(fmt::format(
+                "real-time store schema or mode mismatch for partition {}, bucket {}; recreate "
+                "the RealtimeContext",
+                PartitionToString(partition_bucket.partition), partition_bucket.bucket));
         }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
-                               iter->second->AcquireReadView());
+                               iter->second.store->AcquireReadView());
         if (!read_view) {
             return Status::Invalid("real-time store returned a null read view");
         }
@@ -117,16 +141,40 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
                 initial_offset = memory_range->end;
             }
         }
-        return RealtimeStoreState{iter->second, initial_offset};
+        return RealtimeStoreState{iter->second.store, initial_offset};
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<RealtimeStore> store,
-        factory_->Create(std::move(write_schema), statistics_mode, options, memory_pool));
-    stores_.emplace(key, store);
+    if (!request.memory_pool) {
+        return Status::Invalid("real-time store memory pool is null");
+    }
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::ExportSchema(*requested_schema, request.write_schema.get()));
+    RealtimeStoreMode mode = request.mode;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeStore> store,
+                           factory_->Create(std::move(request)));
+    if (!store) {
+        return Status::Invalid("real-time store factory returned a null store");
+    }
+    stores_.emplace(partition_bucket, StoreEntry{store, requested_schema, mode});
     if (offset_iter != committed_offsets_.end()) {
-        reclaimed_offsets_.emplace(key, offset_iter->second);
+        reclaimed_offsets_.emplace(partition_bucket, offset_iter->second);
     }
     return RealtimeStoreState{std::move(store), initial_offset};
+}
+
+Result<int64_t> RealtimeContextImpl::AdvanceMaterializedMaxSequenceNumber(
+    const RealtimePartitionBucket& partition_bucket, int64_t max_sequence_number) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto iter = stores_.find(partition_bucket);
+    if (iter == stores_.end()) {
+        return Status::KeyError(fmt::format("real-time store not found for partition {}, bucket {}",
+                                            PartitionToString(partition_bucket.partition),
+                                            partition_bucket.bucket));
+    }
+    StoreEntry& entry = iter->second;
+    if (max_sequence_number > entry.materialized_max_sequence_number) {
+        entry.materialized_max_sequence_number = max_sequence_number;
+    }
+    return entry.materialized_max_sequence_number;
 }
 
 Result<std::vector<RealtimePartitionBucketView>> RealtimeContextImpl::AcquireReadViews() {
@@ -135,9 +183,12 @@ Result<std::vector<RealtimePartitionBucketView>> RealtimeContextImpl::AcquireRea
     result.reserve(stores_.size());
     for (const auto& [partition_bucket, store] : stores_) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
-                               store->AcquireReadView());
+                               store.store->AcquireReadView());
+        if (!read_view) {
+            return Status::Invalid("real-time store returned a null read view");
+        }
         result.push_back(
-            RealtimePartitionBucketView{partition_bucket, store, std::move(read_view)});
+            RealtimePartitionBucketView{partition_bucket, store.store, std::move(read_view)});
     }
     return result;
 }
@@ -270,7 +321,7 @@ Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
             }
             auto store_iter = stores_.find(partition_bucket);
             if (store_iter != stores_.end()) {
-                notifications.emplace_back(partition_bucket, store_iter->second,
+                notifications.emplace_back(partition_bucket, store_iter->second.store,
                                            committed_end_offset);
             }
         }
