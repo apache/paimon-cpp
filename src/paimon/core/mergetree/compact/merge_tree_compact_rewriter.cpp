@@ -276,8 +276,8 @@ Result<CompactResult> MergeTreeCompactRewriter::RewriteCompaction(
     });
 
     for (const auto& section : sections) {
-        PAIMON_RETURN_NOT_OK(MergeReadAndWrite(output_level, drop_delete, section, create_consumer,
-                                               rolling_writer.get()));
+        PAIMON_RETURN_NOT_OK(
+            MergeReadAndWrite(drop_delete, section, create_consumer, rolling_writer.get()));
     }
 
     PAIMON_RETURN_NOT_OK(rolling_writer->Close());
