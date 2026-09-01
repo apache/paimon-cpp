@@ -56,8 +56,9 @@ class DataFilePathFactory : public PathFactory {
         return NewPath(data_file_prefix_);
     }
 
-    std::string NewChangelogPath() const {
-        return NewPath(std::string(CHANGELOG_FILE_PREFIX));
+    std::string NewChangelogPath(const std::string& changelog_file_prefix,
+                                 const std::string& format_identifier) const {
+        return NewPathFromName(NewFileName(changelog_file_prefix, "." + format_identifier));
     }
 
     std::string NewBlobPath() const {

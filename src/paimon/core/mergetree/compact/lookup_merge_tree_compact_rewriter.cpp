@@ -23,8 +23,10 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/core/mergetree/compact/first_row_merge_function_wrapper.h"
 #include "paimon/core/mergetree/compact/lookup_changelog_merge_function_wrapper.h"
+#include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
 #include "paimon/core/mergetree/lookup/file_position.h"
 #include "paimon/core/mergetree/lookup/positioned_key_value.h"
+#include "paimon/core/utils/primary_key_table_utils.h"
 
 namespace paimon {
 template <typename T>
@@ -38,7 +40,8 @@ LookupMergeTreeCompactRewriter<T>::LookupMergeTreeCompactRewriter(
     const std::shared_ptr<FileStorePathFactoryCache>& path_factory_cache,
     std::unique_ptr<MergeFileSplitRead>&& merge_file_split_read,
     MergeFunctionWrapperFactory merge_function_wrapper_factory,
-    const std::shared_ptr<CancellationController>& cancellation_controller,
+    ChangelogMergeFunctionWrapperFactory changelog_merge_function_wrapper_factory,
+    bool produce_changelog, const std::shared_ptr<CancellationController>& cancellation_controller,
     const std::shared_ptr<RemoteLookupFileManager>& remote_lookup_file_manager,
     const std::shared_ptr<MemoryPool>& pool)
     : ChangelogMergeTreeRewriter(
@@ -46,6 +49,7 @@ LookupMergeTreeCompactRewriter<T>::LookupMergeTreeCompactRewriter(
           trimmed_primary_keys, options, data_schema, write_schema,
           DeletionVector::CreateFactory(dv_maintainer), path_factory_cache,
           std::move(merge_file_split_read), std::move(merge_function_wrapper_factory),
+          std::move(changelog_merge_function_wrapper_factory), produce_changelog,
           cancellation_controller, pool),
       lookup_levels_(std::move(lookup_levels)),
       dv_maintainer_(dv_maintainer),
@@ -56,10 +60,10 @@ Result<std::unique_ptr<LookupMergeTreeCompactRewriter<T>>>
 LookupMergeTreeCompactRewriter<T>::Create(
     int32_t max_level, std::unique_ptr<LookupLevels<T>>&& lookup_levels,
     const std::shared_ptr<BucketedDvMaintainer>& dv_maintainer,
-    MergeFunctionWrapperFactory merge_function_wrapper_factory, int32_t bucket,
+    ChangelogMergeFunctionWrapperFactory changelog_merge_function_wrapper_factory, int32_t bucket,
     const BinaryRow& partition, const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<FileStorePathFactoryCache>& path_factory_cache,
-    const CoreOptions& options,
+    const CoreOptions& options, bool produce_changelog,
     const std::shared_ptr<CancellationController>& cancellation_controller,
     const std::shared_ptr<RemoteLookupFileManager>& remote_lookup_file_manager,
     const std::shared_ptr<MemoryPool>& pool) {
@@ -88,44 +92,60 @@ LookupMergeTreeCompactRewriter<T>::Create(
         std::unique_ptr<MergeFileSplitRead> merge_file_split_read,
         MergeFileSplitRead::Create(path_factory, internal_context, pool, CreateDefaultExecutor()));
 
+    MergeFunctionWrapperFactory merge_function_wrapper_factory =
+        [data_schema, options, trimmed_primary_keys, pool](
+            int32_t /*output_level*/) -> Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>> {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MergeFunction> merge_function,
+                               PrimaryKeyTableUtils::CreateMergeFunction(
+                                   data_schema, trimmed_primary_keys, options, pool));
+        if (options.NeedLookup() && options.GetMergeEngine() != MergeEngine::FIRST_ROW) {
+            merge_function = std::make_unique<LookupMergeFunction>(std::move(merge_function));
+        }
+        return std::make_shared<ReducerMergeFunctionWrapper>(std::move(merge_function));
+    };
+
     return std::unique_ptr<LookupMergeTreeCompactRewriter>(new LookupMergeTreeCompactRewriter(
         std::move(lookup_levels), dv_maintainer, max_level, partition, bucket, table_schema->Id(),
         trimmed_primary_keys, options, data_schema, write_schema, path_factory_cache,
         std::move(merge_file_split_read), std::move(merge_function_wrapper_factory),
+        std::move(changelog_merge_function_wrapper_factory), produce_changelog,
         cancellation_controller, remote_lookup_file_manager, pool));
 }
 
 template <typename T>
-std::shared_ptr<MergeFunctionWrapper<KeyValue>>
+std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>
 LookupMergeTreeCompactRewriter<T>::CreateFirstRowMergeFunctionWrapper(
     std::unique_ptr<FirstRowMergeFunction>&& merge_func, int32_t output_level,
-    LookupLevels<bool>* lookup_levels) {
+    std::unique_ptr<RowCompactedSerializer>&& value_serializer, LookupLevels<bool>* lookup_levels) {
     auto contains = [output_level,
                      lookup_levels](const std::shared_ptr<InternalRow>& key) -> Result<bool> {
         PAIMON_ASSIGN_OR_RAISE(std::optional<bool> contain,
                                lookup_levels->Lookup(key, output_level + 1));
         return contain != std::nullopt;
     };
-    return std::make_shared<FirstRowMergeFunctionWrapper>(std::move(merge_func),
-                                                          std::move(contains));
+    return std::make_shared<FirstRowMergeFunctionWrapper>(
+        std::move(merge_func), std::move(contains), std::move(value_serializer));
 }
 
 template <typename T>
-Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>>
+Result<std::shared_ptr<MergeFunctionWrapper<ChangelogResult>>>
 LookupMergeTreeCompactRewriter<T>::CreateLookupMergeFunctionWrapper(
     std::unique_ptr<LookupMergeFunction>&& merge_func, int32_t output_level,
     const std::shared_ptr<BucketedDvMaintainer>& deletion_vectors_maintainer,
-    const LookupStrategy& lookup_strategy,
+    const LookupStrategy& lookup_strategy, bool should_produce_changelog,
     const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
-    LookupLevels<T>* lookup_levels) {
+    std::unique_ptr<RowCompactedSerializer>&& value_serializer,
+    FieldsComparator::FieldComparatorFunc value_equalizer, LookupLevels<T>* lookup_levels) {
     auto lookup = [output_level, lookup_levels](
                       const std::shared_ptr<InternalRow>& key) -> Result<std::optional<T>> {
         return lookup_levels->Lookup(key, output_level + 1);
     };
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<MergeFunctionWrapper<KeyValue>> wrapper,
-                           LookupChangelogMergeFunctionWrapper<T>::Create(
-                               std::move(merge_func), std::move(lookup), lookup_strategy,
-                               deletion_vectors_maintainer, user_defined_seq_comparator));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<MergeFunctionWrapper<ChangelogResult>> wrapper,
+        LookupChangelogMergeFunctionWrapper<T>::Create(
+            std::move(merge_func), std::move(lookup), lookup_strategy, should_produce_changelog,
+            deletion_vectors_maintainer, user_defined_seq_comparator, std::move(value_serializer),
+            std::move(value_equalizer)));
     return wrapper;
 }
 

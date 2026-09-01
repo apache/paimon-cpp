@@ -29,6 +29,15 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+std::unique_ptr<RowCompactedSerializer> CreateValueSerializer(
+    const std::shared_ptr<MemoryPool>& pool) {
+    return RowCompactedSerializer::Create(arrow::schema({arrow::field("value", arrow::int32())}),
+                                          pool)
+        .value();
+}
+}  // namespace
+
 TEST(FirstRowMergeFunctionWrapperTest, TestSimple) {
     auto pool = GetDefaultPool();
     KeyValue kv1(RowKind::Insert(), /*sequence_number=*/0, /*level=*/0, /*key=*/
@@ -45,14 +54,17 @@ TEST(FirstRowMergeFunctionWrapperTest, TestSimple) {
 
     auto contains = [](const std::shared_ptr<InternalRow>& row) { return true; };
 
-    FirstRowMergeFunctionWrapper wrapper(std::move(mfunc), std::move(contains));
+    FirstRowMergeFunctionWrapper wrapper(std::move(mfunc), std::move(contains),
+                                         CreateValueSerializer(pool));
     wrapper.Reset();
     ASSERT_OK(wrapper.Add(std::move(kv1)));
     ASSERT_OK(wrapper.Add(std::move(kv2)));
     ASSERT_OK(wrapper.Add(std::move(kv3)));
     ASSERT_OK_AND_ASSIGN(auto result, wrapper.GetResult());
     ASSERT_TRUE(result);
-    ASSERT_EQ(result.value().sequence_number, 0);
+    ASSERT_TRUE(result->result);
+    ASSERT_EQ(result->result->sequence_number, 0);
+    ASSERT_TRUE(result->changelogs.empty());
 }
 
 TEST(FirstRowMergeFunctionWrapperTest, TestAllLevel0WithContain) {
@@ -71,13 +83,16 @@ TEST(FirstRowMergeFunctionWrapperTest, TestAllLevel0WithContain) {
 
     auto contains = [](const std::shared_ptr<InternalRow>& row) { return true; };
 
-    FirstRowMergeFunctionWrapper wrapper(std::move(mfunc), std::move(contains));
+    FirstRowMergeFunctionWrapper wrapper(std::move(mfunc), std::move(contains),
+                                         CreateValueSerializer(pool));
     wrapper.Reset();
     ASSERT_OK(wrapper.Add(std::move(kv1)));
     ASSERT_OK(wrapper.Add(std::move(kv2)));
     ASSERT_OK(wrapper.Add(std::move(kv3)));
     ASSERT_OK_AND_ASSIGN(auto result, wrapper.GetResult());
-    ASSERT_FALSE(result);
+    ASSERT_TRUE(result);
+    ASSERT_FALSE(result->result);
+    ASSERT_TRUE(result->changelogs.empty());
 }
 
 TEST(FirstRowMergeFunctionWrapperTest, TestAllLevel0WithoutContain) {
@@ -96,14 +111,18 @@ TEST(FirstRowMergeFunctionWrapperTest, TestAllLevel0WithoutContain) {
 
     auto contains = [](const std::shared_ptr<InternalRow>& row) { return false; };
 
-    FirstRowMergeFunctionWrapper wrapper(std::move(mfunc), std::move(contains));
+    FirstRowMergeFunctionWrapper wrapper(std::move(mfunc), std::move(contains),
+                                         CreateValueSerializer(pool));
     wrapper.Reset();
     ASSERT_OK(wrapper.Add(std::move(kv1)));
     ASSERT_OK(wrapper.Add(std::move(kv2)));
     ASSERT_OK(wrapper.Add(std::move(kv3)));
     ASSERT_OK_AND_ASSIGN(auto result, wrapper.GetResult());
     ASSERT_TRUE(result);
-    ASSERT_EQ(result.value().sequence_number, 0);
+    ASSERT_TRUE(result->result);
+    ASSERT_EQ(result->result->sequence_number, 0);
+    ASSERT_EQ(result->changelogs.size(), 1);
+    ASSERT_EQ(result->changelogs[0].sequence_number, 0);
 }
 
 }  // namespace paimon::test

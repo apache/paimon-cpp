@@ -30,6 +30,8 @@
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/snapshot.h"
+#include "paimon/core/table/source/snapshot/changelog_follow_up_scanner.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -110,6 +112,25 @@ TEST_F(SnapshotReaderTest, GetDeletionFilesOverwritesDuplicateDataFileName) {
     EXPECT_EQ(deletion_files[0]->offset, 2);
     EXPECT_EQ(deletion_files[0]->length, 22);
     EXPECT_EQ(deletion_files[0]->cardinality, std::optional<int64_t>(4));
+}
+
+TEST_F(SnapshotReaderTest, ChangelogFollowUpScannerSkipsSnapshotsWithoutChangelog) {
+    auto create_snapshot = [](const std::optional<std::string>& changelog_manifest_list) {
+        return Snapshot(
+            /*id=*/1, /*schema_id=*/0, /*base_manifest_list=*/"",
+            /*base_manifest_list_size=*/std::nullopt, /*delta_manifest_list=*/"",
+            /*delta_manifest_list_size=*/std::nullopt, changelog_manifest_list,
+            /*changelog_manifest_list_size=*/std::nullopt,
+            /*index_manifest=*/std::nullopt, /*commit_user=*/"user", /*commit_identifier=*/1,
+            Snapshot::CommitKind::Append(), /*time_millis=*/0, /*total_record_count=*/0,
+            /*delta_record_count=*/0, /*changelog_record_count=*/std::nullopt,
+            /*watermark=*/std::nullopt, /*statistics=*/std::nullopt,
+            /*properties=*/std::nullopt, /*next_row_id=*/std::nullopt);
+    };
+
+    ChangelogFollowUpScanner scanner;
+    ASSERT_FALSE(scanner.NeedScanSnapshot(create_snapshot(std::nullopt)));
+    ASSERT_TRUE(scanner.NeedScanSnapshot(create_snapshot("changelog-manifest-list")));
 }
 
 }  // namespace paimon::test

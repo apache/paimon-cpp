@@ -302,13 +302,13 @@ TEST(S3ObjectStoreClientTest, TestInvalidModificationTime) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ObjectStoreClient> client,
                          MakeS3ObjectStoreClient(StaticOptions(), http));
     ASSERT_OK_AND_ASSIGN(auto metadata, client->HeadObject({"bucket", "file"}));
-    ASSERT_EQ(metadata.modification_time, 0);
+    ASSERT_EQ(metadata.modification_time, FileStatus::kUnknownModificationTime);
 
     http->body_ =
         "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>file</Key>"
         "<LastModified>invalid</LastModified><Size>12</Size></Contents></ListBucketResult>";
     ASSERT_OK_AND_ASSIGN(auto result, client->ListObjects({"bucket", ""}, "", 0));
-    ASSERT_EQ(result.objects[0].modification_time, 0);
+    ASSERT_EQ(result.objects[0].modification_time, FileStatus::kUnknownModificationTime);
 }
 
 TEST(S3ObjectStoreClientTest, TestRegionFromEnvironment) {
@@ -438,7 +438,9 @@ TEST(S3ObjectStoreClientTest, TestRangeAndListObjects) {
     ASSERT_TRUE(result.is_truncated);
     ASSERT_EQ(result.continuation_token, "next token");
     ASSERT_EQ(result.objects[0].key, "dir/a&b");
+    ASSERT_EQ(result.objects[0].modification_time, 1767225600000);
     ASSERT_EQ(result.objects[1].key, "dir/a&lt;b");
+    ASSERT_EQ(result.objects[1].modification_time, FileStatus::kUnknownModificationTime);
     ASSERT_EQ(result.common_prefixes[0], "dir/sub/");
     ASSERT_NE(http->request_.url.find("amazonaws.com/?list-type=2"), std::string::npos);
     ASSERT_NE(http->request_.url.find("encoding-type=url"), std::string::npos);

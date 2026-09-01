@@ -364,6 +364,22 @@ void ArrowUtils::TraverseArray(const std::shared_ptr<arrow::Array>& array) {
     }
 }
 
+uint64_t ArrowUtils::GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data) {
+    uint64_t result = 0;
+    for (const std::shared_ptr<arrow::Buffer>& buffer : data->buffers) {
+        if (buffer) {
+            result += static_cast<uint64_t>(buffer->size());
+        }
+    }
+    for (const std::shared_ptr<arrow::ArrayData>& child : data->child_data) {
+        result += GetArrayMemoryUsage(child);
+    }
+    if (data->dictionary) {
+        result += GetArrayMemoryUsage(data->dictionary);
+    }
+    return result;
+}
+
 bool ArrowUtils::EqualsIgnoreNullable(const std::shared_ptr<arrow::DataType>& type,
                                       const std::shared_ptr<arrow::DataType>& other_type) {
     if (type->id() != other_type->id() || type->num_fields() != other_type->num_fields()) {

@@ -59,6 +59,13 @@ TEST_F(DataFilePathFactoryTest, TestNewPath) {
     ASSERT_EQ(factory_.NewPathFromName("index-file"), "/tmp/index-file");
 }
 
+TEST_F(DataFilePathFactoryTest, TestNewChangelogPath) {
+    std::string path = factory_.NewChangelogPath("changes-", "parquet");
+
+    ASSERT_TRUE(path.find("/tmp/changes-") != std::string::npos);
+    ASSERT_TRUE(StringUtils::EndsWith(path, ".parquet"));
+}
+
 TEST_F(DataFilePathFactoryTest, TestNewPathWithDataFilePrefixAndExternalPath) {
     DataFilePathFactory factory;
     ASSERT_OK_AND_ASSIGN(

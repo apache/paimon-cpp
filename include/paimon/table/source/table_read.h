@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "paimon/executor.h"
-#include "paimon/memory/memory_pool.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/reader/count_reader.h"
@@ -32,7 +31,6 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
-class MemoryPool;
 class ReadContext;
 
 /// Given a `Split` or a list of `Split`, generate a reader for batch reading.
@@ -61,7 +59,7 @@ class PAIMON_EXPORT TableRead {
     /// @note `BatchReader`s created by the same `TableRead` are not thread-safe for
     /// concurrent reading.
     virtual Result<std::unique_ptr<BatchReader>> CreateReader(
-        const std::vector<std::shared_ptr<Split>>& splits);
+        const std::vector<std::shared_ptr<Split>>& splits) = 0;
 
     /// Creates a `BatchReader` instance for a single split.
     ///
@@ -76,15 +74,5 @@ class PAIMON_EXPORT TableRead {
     /// Implementations may override this to provide a more efficient count path.
     virtual Result<std::unique_ptr<CountReader>> CreateCountReader(
         const std::vector<std::shared_ptr<Split>>& splits);
-
- protected:
-    explicit TableRead(const std::shared_ptr<MemoryPool>& memory_pool);
-
-    std::shared_ptr<MemoryPool> GetMemoryPool() const {
-        return pool_;
-    }
-
- private:
-    std::shared_ptr<MemoryPool> pool_;
 };
 }  // namespace paimon

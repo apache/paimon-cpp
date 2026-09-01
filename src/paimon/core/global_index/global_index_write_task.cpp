@@ -357,7 +357,7 @@ Result<std::shared_ptr<CommitMessage>> GlobalIndexWriteTask::WriteIndex(
     }
     const auto& range = ranges[0];
     std::shared_ptr<MemoryPool> pool = memory_pool ? memory_pool : GetDefaultPool();
-    std::unique_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
 
     // load schema
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options, CoreOptions::FromMap(options, file_system));

@@ -96,6 +96,12 @@ const char Options::DELETION_VECTOR_INDEX_FILE_TARGET_SIZE[] =
     "deletion-vector.index-file.target-size";
 const char Options::DELETION_VECTOR_BITMAP64[] = "deletion-vectors.bitmap64";
 const char Options::CHANGELOG_PRODUCER[] = "changelog-producer";
+const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE[] = "changelog-producer.row-deduplicate";
+const char Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[] =
+    "changelog-producer.row-deduplicate-ignore-fields";
+const char Options::CHANGELOG_FILE_PREFIX[] = "changelog-file.prefix";
+const char Options::CHANGELOG_FILE_FORMAT[] = "changelog-file.format";
+const char Options::CHANGELOG_FILE_COMPRESSION[] = "changelog-file.compression";
 const char Options::FORCE_LOOKUP[] = "force-lookup";
 const char Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE[] =
     "partial-update.remove-record-on-delete";

@@ -39,7 +39,7 @@ class CompleteRowTrackingFieldsBatchReader : public FileBatchReader {
     CompleteRowTrackingFieldsBatchReader(
         std::unique_ptr<FileBatchReader>&& reader, const std::optional<int64_t>& first_row_id,
         int64_t snapshot_id, const std::optional<std::vector<std::string>>& file_field_names,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<std::unique_ptr<::ArrowSchema>> GetFileSchema() const override {
         return Status::Invalid(

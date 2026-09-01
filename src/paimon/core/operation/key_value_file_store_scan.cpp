@@ -177,8 +177,13 @@ Result<bool> KeyValueFileStoreScan::IsValueFilterEnabled() const {
             return value_filter_force_enabled_;
         case ScanMode::DELTA:
             return false;
+        case ScanMode::CHANGELOG: {
+            ChangelogProducer producer = core_options_.GetChangelogProducer();
+            return producer == ChangelogProducer::LOOKUP ||
+                   producer == ChangelogProducer::FULL_COMPACTION;
+        }
         default:
-            return Status::NotImplemented("only support ALL and DELTA scan mode");
+            return Status::NotImplemented("unknown scan mode");
     }
 }
 

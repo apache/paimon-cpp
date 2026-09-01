@@ -30,23 +30,42 @@ namespace paimon {
 class MemoryPool;
 
 ConcatBatchReader::ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&& readers,
-                                     const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)), readers_(std::move(readers)), current_(0) {}
+                                     const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool),
+      finished_reader_metrics_(std::make_shared<MetricsImpl>()),
+      readers_(std::move(readers)),
+      current_(0) {}
 
 Result<BatchReader::ReadBatch> ConcatBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            NextBatchWithBitmap());
-    return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(
+        BatchReader::ReadBatch batch,
+        ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_));
+    return batch;
 }
 
 void ConcatBatchReader::Close() {
     for (; current_ < readers_.size(); current_++) {
-        readers_[current_]->Close();
+        CloseAndReleaseReader(current_);
     }
 }
 
 std::shared_ptr<Metrics> ConcatBatchReader::GetReaderMetrics() const {
-    return MetricsImpl::CollectReadMetrics(readers_);
+    auto metrics = std::make_shared<MetricsImpl>();
+    metrics->Merge(finished_reader_metrics_);
+    metrics->Merge(MetricsImpl::CollectReadMetrics(readers_));
+    return metrics;
+}
+
+void ConcatBatchReader::CloseAndReleaseReader(size_t reader_index) {
+    std::unique_ptr<BatchReader>& reader = readers_[reader_index];
+    if (!reader) {
+        return;
+    }
+    reader->Close();
+    finished_reader_metrics_->Merge(reader->GetReaderMetrics());
+    reader.reset();
 }
 
 Result<BatchReader::ReadBatchWithBitmap> ConcatBatchReader::NextBatchWithBitmap() {
@@ -59,7 +78,7 @@ Result<BatchReader::ReadBatchWithBitmap> ConcatBatchReader::NextBatchWithBitmap(
             return result;
         }
         // current meets eof, move to next reader
-        current_reader->Close();
+        CloseAndReleaseReader(current_);
         current_++;
     }
     // read finish

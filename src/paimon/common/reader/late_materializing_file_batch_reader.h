@@ -42,7 +42,8 @@ class PredicateFilter;
 class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
  public:
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
-        std::unique_ptr<FileBatchReader> inner, std::shared_ptr<MemoryPool> pool);
+        std::unique_ptr<FileBatchReader> inner,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
 

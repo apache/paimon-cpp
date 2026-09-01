@@ -82,6 +82,10 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> WriteBuffer::CreateRe
     return merged_readers;
 }
 
+Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> WriteBuffer::CreateRawReaders() {
+    return sort_buffer_->CreateReaders();
+}
+
 Result<bool> WriteBuffer::FlushMemory() {
     return sort_buffer_->FlushMemory();
 }

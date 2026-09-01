@@ -33,6 +33,8 @@
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/projected_array.h"
@@ -42,22 +44,6 @@
 
 namespace paimon {
 namespace {
-
-uint64_t GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data) {
-    uint64_t result = 0;
-    for (const std::shared_ptr<arrow::Buffer>& buffer : data->buffers) {
-        if (buffer) {
-            result += static_cast<uint64_t>(buffer->size());
-        }
-    }
-    for (const std::shared_ptr<arrow::ArrayData>& child : data->child_data) {
-        result += GetArrayMemoryUsage(child);
-    }
-    if (data->dictionary) {
-        result += GetArrayMemoryUsage(data->dictionary);
-    }
-    return result;
-}
 
 bool SupportsMinMax(const std::shared_ptr<arrow::DataType>& type) {
     switch (type->id()) {
@@ -169,6 +155,7 @@ class ArrowRealtimeStore::CommitBatchReader : public BatchReader {
         auto c_array = std::make_unique<ArrowArray>();
         auto c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*result, c_array.get(), c_schema.get()));
+        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
         return ReadBatch(std::move(c_array), std::move(c_schema));
     }
 
@@ -234,6 +221,7 @@ class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
             auto c_schema = std::make_unique<ArrowSchema>();
             PAIMON_RETURN_NOT_OK_FROM_ARROW(
                 arrow::ExportArray(*output, c_array.get(), c_schema.get()));
+            PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
             return ReadBatchWithBitmap(ReadBatch(std::move(c_array), std::move(c_schema)),
                                        std::move(candidate_rows));
         }
@@ -393,11 +381,11 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
     if (building_range_ && write_batch.offset_range.begin != building_range_->end) {
         return Status::Invalid("real-time offset ranges must be contiguous");
     }
-    uint64_t memory_usage = GetArrayMemoryUsage(struct_array->data());
+    uint64_t memory_usage = ArrowUtils::GetArrayMemoryUsage(struct_array->data());
     if (statistics) {
-        memory_usage += GetArrayMemoryUsage(statistics->min_values->data()) +
-                        GetArrayMemoryUsage(statistics->max_values->data()) +
-                        GetArrayMemoryUsage(statistics->null_counts->data());
+        memory_usage += ArrowUtils::GetArrayMemoryUsage(statistics->min_values->data()) +
+                        ArrowUtils::GetArrayMemoryUsage(statistics->max_values->data()) +
+                        ArrowUtils::GetArrayMemoryUsage(statistics->null_counts->data());
     }
     building_memory_usage_ += memory_usage;
     building_batches_.push_back(
@@ -472,7 +460,7 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
         std::unique_ptr<BatchReader> reader = std::make_unique<QueryBatchReader>(
             arrow_view.get(), offset_begin, read_schema, predicate_filter,
             std::move(statistics_mapping), arrow_pool_, memory_pool_);
-        reader = std::make_unique<CompleteRowKindBatchReader>(std::move(reader), memory_pool_);
+        reader = std::make_unique<CompleteRowKindBatchReader>(std::move(reader), arrow_pool_);
         readers.push_back(std::move(reader));
     }
     return readers;

@@ -25,9 +25,11 @@
 #include <string>
 #include <utility>
 
+#include "paimon/common/data/serializer/row_compacted_serializer.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/key_value.h"
+#include "paimon/core/mergetree/compact/changelog_result.h"
 #include "paimon/core/mergetree/compact/lookup_merge_function.h"
 #include "paimon/core/mergetree/compact/merge_function_wrapper.h"
 #include "paimon/core/mergetree/lookup/file_position.h"
@@ -47,23 +49,28 @@ namespace paimon {
 ///       should be AFTER.
 ///  With level-0 record, without level-x record, need to lookup the history value of the upper
 ///       level as BEFORE.
-/// TODO(xinyu.lxy) : add changelog
 template <typename T>
-class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<KeyValue> {
+class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<ChangelogResult> {
  public:
     static Result<std::unique_ptr<LookupChangelogMergeFunctionWrapper>> Create(
         std::unique_ptr<LookupMergeFunction>&& merge_function,
         std::function<Result<std::optional<T>>(const std::shared_ptr<InternalRow>&)> lookup,
-        const LookupStrategy& lookup_strategy,
+        const LookupStrategy& lookup_strategy, bool should_produce_changelog,
         const std::shared_ptr<BucketedDvMaintainer>& deletion_vectors_maintainer,
-        const std::shared_ptr<FieldsComparator>& comparator) {
+        const std::shared_ptr<FieldsComparator>& comparator,
+        std::unique_ptr<RowCompactedSerializer>&& value_serializer,
+        FieldsComparator::FieldComparatorFunc value_equalizer) {
         if (lookup_strategy.deletion_vector && !deletion_vectors_maintainer) {
             return Status::Invalid("deletionVectorsMaintainer should not be null, there is a bug.");
         }
+        if (should_produce_changelog && !value_serializer) {
+            return Status::Invalid("valueSerializer is required when producing changelog.");
+        }
         return std::unique_ptr<LookupChangelogMergeFunctionWrapper>(
-            new LookupChangelogMergeFunctionWrapper(std::move(merge_function), std::move(lookup),
-                                                    lookup_strategy, deletion_vectors_maintainer,
-                                                    comparator));
+            new LookupChangelogMergeFunctionWrapper(
+                std::move(merge_function), std::move(lookup), lookup_strategy,
+                should_produce_changelog, deletion_vectors_maintainer, comparator,
+                std::move(value_serializer), std::move(value_equalizer)));
     }
     void Reset() override {
         merge_function_->Reset();
@@ -73,12 +80,17 @@ class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<KeyValue
         return merge_function_->Add(std::move(kv));
     }
 
-    Result<std::optional<KeyValue>> GetResult() override {
+    Result<std::optional<ChangelogResult>> GetResult() override {
         // 1. Find the latest high level record and compute containLevel0
-        std::optional<int32_t> high_level_idx = merge_function_->PickHighLevelIdx();
+        const KeyValue* high_level = merge_function_->PickHighLevel();
+        bool contain_level0 = merge_function_->ContainLevel0();
+        std::optional<KeyValue> before;
+        if (contain_level0 && should_produce_changelog_ && high_level != nullptr) {
+            PAIMON_ASSIGN_OR_RAISE(before, CloneKeyValue(*high_level, high_level->value_kind));
+        }
 
         // 2. Lookup if latest high level record is absent
-        if (high_level_idx == std::nullopt) {
+        if (high_level == nullptr) {
             std::optional<KeyValue> lookup_high_level;
             PAIMON_ASSIGN_OR_RAISE(std::optional<T> lookup_result,
                                    lookup_(merge_function_->GetKey()));
@@ -105,30 +117,83 @@ class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<KeyValue
                 }
             }
             if (lookup_high_level) {
+                if (contain_level0 && should_produce_changelog_) {
+                    PAIMON_ASSIGN_OR_RAISE(before,
+                                           CloneKeyValue(lookup_high_level.value(),
+                                                         lookup_high_level.value().value_kind));
+                }
                 merge_function_->InsertInto(std::move(lookup_high_level), comparator_);
             }
         }
 
         // 3. Calculate result
         PAIMON_ASSIGN_OR_RAISE(std::optional<KeyValue> result, merge_function_->GetResult());
-        Reset();
+
         // 4. Set changelog when there's level-0 records
-        // TODO(liancheng.lsz): setChangelog
-        return result;
+        ChangelogResult changelog_result;
+        if (contain_level0 && should_produce_changelog_) {
+            PAIMON_RETURN_NOT_OK(
+                SetChangelog(std::move(before), result, &changelog_result.changelogs));
+        }
+        changelog_result.result = std::move(result);
+        Reset();
+        return std::optional<ChangelogResult>(std::move(changelog_result));
     }
 
  private:
     LookupChangelogMergeFunctionWrapper(
         std::unique_ptr<LookupMergeFunction>&& merge_function,
         std::function<Result<std::optional<T>>(const std::shared_ptr<InternalRow>&)> lookup,
-        const LookupStrategy& lookup_strategy,
+        const LookupStrategy& lookup_strategy, bool should_produce_changelog,
         const std::shared_ptr<BucketedDvMaintainer>& deletion_vectors_maintainer,
-        const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator)
+        const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
+        std::unique_ptr<RowCompactedSerializer>&& value_serializer,
+        FieldsComparator::FieldComparatorFunc value_equalizer)
         : merge_function_(std::move(merge_function)),
           lookup_(std::move(lookup)),
           lookup_strategy_(lookup_strategy),
+          should_produce_changelog_(should_produce_changelog),
           deletion_vectors_maintainer_(deletion_vectors_maintainer),
-          comparator_(CreateSequenceComparator(user_defined_seq_comparator)) {}
+          comparator_(CreateSequenceComparator(user_defined_seq_comparator)),
+          value_serializer_(std::move(value_serializer)),
+          value_equalizer_(std::move(value_equalizer)) {}
+
+    Result<KeyValue> CloneKeyValue(const KeyValue& from, const RowKind* value_kind) {
+        // TODO(lisizhuo.lsz): avoid serialize & deserialize here.
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes,
+                               value_serializer_->SerializeToBytes(*from.value));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InternalRow> value,
+                               value_serializer_->Deserialize(bytes));
+        return KeyValue(value_kind, from.sequence_number, KeyValue::UNKNOWN_LEVEL, from.key,
+                        std::move(value));
+    }
+
+    Status SetChangelog(std::optional<KeyValue>&& before, const std::optional<KeyValue>& after,
+                        std::vector<KeyValue>* changelogs) {
+        if (!before || !before->value_kind->IsAdd()) {
+            if (after && after->value_kind->IsAdd()) {
+                PAIMON_ASSIGN_OR_RAISE(KeyValue insert,
+                                       CloneKeyValue(after.value(), RowKind::Insert()));
+                changelogs->emplace_back(std::move(insert));
+            }
+            return Status::OK();
+        }
+
+        if (!after || !after->value_kind->IsAdd()) {
+            before->value_kind = RowKind::Delete();
+            changelogs->emplace_back(std::move(before.value()));
+            return Status::OK();
+        }
+
+        if (!value_equalizer_ || value_equalizer_(*before->value, *after->value) != 0) {
+            before->value_kind = RowKind::UpdateBefore();
+            PAIMON_ASSIGN_OR_RAISE(KeyValue update_after,
+                                   CloneKeyValue(after.value(), RowKind::UpdateAfter()));
+            changelogs->emplace_back(std::move(before.value()));
+            changelogs->emplace_back(std::move(update_after));
+        }
+        return Status::OK();
+    }
 
     static std::function<bool(const KeyValue& o1, const KeyValue& o2)> CreateSequenceComparator(
         const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator) {
@@ -150,8 +215,11 @@ class LookupChangelogMergeFunctionWrapper : public MergeFunctionWrapper<KeyValue
     std::unique_ptr<LookupMergeFunction> merge_function_;
     std::function<Result<std::optional<T>>(const std::shared_ptr<InternalRow>&)> lookup_;
     LookupStrategy lookup_strategy_;
+    bool should_produce_changelog_;
     std::shared_ptr<BucketedDvMaintainer> deletion_vectors_maintainer_;
     std::function<bool(const KeyValue& o1, const KeyValue& o2)> comparator_;
+    std::unique_ptr<RowCompactedSerializer> value_serializer_;
+    FieldsComparator::FieldComparatorFunc value_equalizer_;
 };
 
 }  // namespace paimon

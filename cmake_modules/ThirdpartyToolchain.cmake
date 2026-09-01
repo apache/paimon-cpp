@@ -320,6 +320,16 @@ else()
     endif()
 endif()
 
+if(DEFINED ENV{PAIMON_OSS_SDK_V2_URL})
+    set(OSS_SDK_V2_SOURCE_URL "$ENV{PAIMON_OSS_SDK_V2_URL}")
+elseif(EXISTS "${THIRDPARTY_DIR}/${PAIMON_OSS_SDK_V2_PKG_NAME}")
+    set_urls(OSS_SDK_V2_SOURCE_URL "${THIRDPARTY_DIR}/${PAIMON_OSS_SDK_V2_PKG_NAME}")
+else()
+    set_urls(OSS_SDK_V2_SOURCE_URL
+             "${THIRDPARTY_MIRROR_URL}https://github.com/aliyun/alibabacloud-oss-cpp-sdk-v2/archive/refs/tags/${PAIMON_OSS_SDK_V2_BUILD_VERSION}.tar.gz"
+    )
+endif()
+
 if(DEFINED ENV{PAIMON_LUMINA_URL})
     set(LUMINA_SOURCE_URL "$ENV{PAIMON_LUMINA_URL}")
 elseif(EXISTS "${THIRDPARTY_DIR}/${PAIMON_LUMINA_PKG_NAME}")
@@ -504,6 +514,25 @@ function(paimon_enforce_patched_dependency_policy)
                 PARENT_SCOPE)
         endif()
     endif()
+
+    if(PAIMON_ENABLE_OSS)
+        paimon_set_dependency_source_default(
+            OSS_SDK_V2 BUNDLED "OSS SDK v2 is only supported as a bundled dependency")
+        paimon_get_dependency_source(OSS_SDK_V2 _oss_sdk_v2_source)
+        if(_oss_sdk_v2_source STREQUAL "SYSTEM")
+            message(FATAL_ERROR "OSS_SDK_V2_SOURCE=SYSTEM is not supported. "
+                                "Use OSS_SDK_V2_SOURCE=BUNDLED.")
+        elseif(_oss_sdk_v2_source STREQUAL "AUTO")
+            message(STATUS "Forcing OSS_SDK_V2_SOURCE to BUNDLED because paimon-cpp "
+                           "only supports the bundled OSS SDK v2")
+            set(OSS_SDK_V2_SOURCE
+                "BUNDLED"
+                CACHE STRING "Dependency source for OSS SDK v2" FORCE)
+            set(OSS_SDK_V2_SOURCE
+                "BUNDLED"
+                PARENT_SCOPE)
+        endif()
+    endif()
 endfunction()
 
 function(paimon_apply_dependency_source_defaults)
@@ -609,6 +638,8 @@ function(paimon_get_dependency_compat_target DEPENDENCY_NAME OUT_VAR)
         set(_target tbb)
     elseif("${DEPENDENCY_NAME}" STREQUAL "Avro")
         set(_target avro)
+    elseif("${DEPENDENCY_NAME}" STREQUAL "OSS_SDK_V2")
+        set(_target alibabacloud_oss_v2::oss)
     else()
         set(_target "${DEPENDENCY_NAME}")
     endif()
@@ -683,6 +714,8 @@ macro(paimon_build_dependency DEPENDENCY_NAME)
         build_glog()
     elseif("${DEPENDENCY_NAME}" STREQUAL "Avro")
         build_avro()
+    elseif("${DEPENDENCY_NAME}" STREQUAL "OSS_SDK_V2")
+        build_oss_sdk_v2()
     elseif("${DEPENDENCY_NAME}" STREQUAL "GTest")
         build_gtest()
     elseif("${DEPENDENCY_NAME}" STREQUAL "benchmark")
@@ -1415,6 +1448,89 @@ macro(build_jindosdk_nextarch)
     add_dependencies(jindosdk::nextarch jindosdk-nextarch_ep)
 endmacro()
 
+macro(build_oss_sdk_v2)
+    message(STATUS "Building Alibaba Cloud OSS C++ SDK v2 from source")
+    find_package(CURL REQUIRED)
+    find_package(Threads REQUIRED)
+
+    set(OSS_SDK_V2_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/oss_sdk_v2_ep-install")
+    set(OSS_SDK_V2_INCLUDE_DIR "${OSS_SDK_V2_PREFIX}/include")
+    set(OSS_SDK_V2_INSTALL_LIBDIR "${CMAKE_INSTALL_LIBDIR}")
+    set(OSS_SDK_V2_LIB_DIR "${OSS_SDK_V2_PREFIX}/${OSS_SDK_V2_INSTALL_LIBDIR}")
+    set(OSS_SDK_V2_STATIC_LIB
+        "${OSS_SDK_V2_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}alibabacloud-oss-cpp-sdk-v2${CMAKE_STATIC_LIBRARY_SUFFIX}"
+    )
+
+    set(OSS_SDK_V2_CMAKE_ARGS
+        ${EP_COMMON_CMAKE_ARGS}
+        "-DCMAKE_INSTALL_PREFIX=${OSS_SDK_V2_PREFIX}"
+        "-DCMAKE_INSTALL_LIBDIR=${OSS_SDK_V2_INSTALL_LIBDIR}"
+        -DCMAKE_PARENT_CXX_STANDARD=17
+        -DBUILD_SHARED_LIBS=OFF
+        -DBUILD_TESTS=OFF
+        -DBUILD_SAMPLES=OFF
+        -DENABLE_RTTI=OFF
+        -DUSE_CURL_TRANSPORT=ON
+        -DUSE_SYSTEM_CURL=ON
+        -DUSE_SYSTEM_OPENSSL=OFF
+        -DUSE_SYSTEM_MBEDTLS=OFF
+        -DUSE_SYSTEM_TINYXML2=OFF
+        -DUSE_STD_EXPECTED=OFF
+        -DENABLE_ENCRYPTION=OFF)
+    set(OSS_SDK_V2_CURL_INCLUDE_DIR "${CURL_INCLUDE_DIR}")
+    if(NOT OSS_SDK_V2_CURL_INCLUDE_DIR AND CURL_INCLUDE_DIRS)
+        list(GET CURL_INCLUDE_DIRS 0 OSS_SDK_V2_CURL_INCLUDE_DIR)
+    endif()
+    set(OSS_SDK_V2_CURL_LIBRARY "${CURL_LIBRARY_RELEASE}")
+    if(NOT OSS_SDK_V2_CURL_LIBRARY)
+        set(OSS_SDK_V2_CURL_LIBRARY "${CURL_LIBRARY}")
+    endif()
+    if(TARGET CURL::libcurl)
+        if(NOT OSS_SDK_V2_CURL_INCLUDE_DIR)
+            get_target_property(OSS_SDK_V2_CURL_INCLUDE_DIR CURL::libcurl
+                                INTERFACE_INCLUDE_DIRECTORIES)
+        endif()
+        if(NOT OSS_SDK_V2_CURL_LIBRARY)
+            foreach(CURL_CONFIG RELEASE RELWITHDEBINFO DEBUG NOCONFIG)
+                get_target_property(OSS_SDK_V2_CURL_LIBRARY CURL::libcurl
+                                    "IMPORTED_LOCATION_${CURL_CONFIG}")
+                if(OSS_SDK_V2_CURL_LIBRARY)
+                    break()
+                endif()
+            endforeach()
+        endif()
+        if(NOT OSS_SDK_V2_CURL_LIBRARY)
+            get_target_property(OSS_SDK_V2_CURL_LIBRARY CURL::libcurl IMPORTED_LOCATION)
+        endif()
+    endif()
+    if(OSS_SDK_V2_CURL_INCLUDE_DIR AND OSS_SDK_V2_CURL_LIBRARY)
+        list(APPEND
+             OSS_SDK_V2_CMAKE_ARGS
+             "-DCURL_INCLUDE_DIR=${OSS_SDK_V2_CURL_INCLUDE_DIR}"
+             "-DCURL_LIBRARY=${OSS_SDK_V2_CURL_LIBRARY}"
+             "-DCURL_LIBRARY_RELEASE=${OSS_SDK_V2_CURL_LIBRARY}")
+    endif()
+
+    externalproject_add(oss_sdk_v2_ep
+                        ${EP_COMMON_OPTIONS}
+                        URL ${OSS_SDK_V2_SOURCE_URL}
+                        URL_HASH "SHA256=${PAIMON_OSS_SDK_V2_BUILD_SHA256_CHECKSUM}"
+                        CMAKE_ARGS ${OSS_SDK_V2_CMAKE_ARGS} ${THIRDPARTY_LOG_OPTIONS}
+                        BUILD_BYPRODUCTS "${OSS_SDK_V2_STATIC_LIB}")
+
+    file(MAKE_DIRECTORY "${OSS_SDK_V2_INCLUDE_DIR}")
+    file(MAKE_DIRECTORY "${OSS_SDK_V2_LIB_DIR}")
+
+    add_library(alibabacloud_oss_v2::oss STATIC IMPORTED)
+    set_target_properties(alibabacloud_oss_v2::oss
+                          PROPERTIES IMPORTED_LOCATION "${OSS_SDK_V2_STATIC_LIB}"
+                                     INTERFACE_INCLUDE_DIRECTORIES
+                                     "${OSS_SDK_V2_INCLUDE_DIR}")
+    target_link_libraries(alibabacloud_oss_v2::oss INTERFACE CURL::libcurl
+                                                             Threads::Threads)
+    add_dependencies(alibabacloud_oss_v2::oss oss_sdk_v2_ep)
+endmacro()
+
 macro(build_protobuf)
     message(STATUS "Building protobuf from source")
     set(PROTOBUF_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/protobuf_ep-install")
@@ -2025,6 +2141,9 @@ endif()
 if(PAIMON_ENABLE_JINDO)
     build_jindosdk_c()
     build_jindosdk_nextarch()
+endif()
+if(PAIMON_ENABLE_OSS)
+    resolve_dependency(OSS_SDK_V2)
 endif()
 if(PAIMON_ENABLE_S3)
     include(BuildAwsAuth)

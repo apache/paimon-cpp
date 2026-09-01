@@ -51,6 +51,7 @@ class IOManager;
 class FieldsComparator;
 class MemoryPool;
 class Metrics;
+class KeyValueRecordReader;
 template <typename T>
 class MergeFunctionWrapper;
 
@@ -68,6 +69,10 @@ class MergeTreeWriter : public BatchWriter {
         const std::shared_ptr<MemoryPool>& pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
+
+    /// Consumes readers whose complete streams are individually sorted by primary key and sequence
+    /// number. Readers are closed on success or failure.
+    Status WriteSortedReadersToFiles(std::vector<std::unique_ptr<KeyValueRecordReader>>&& readers);
 
     Status Compact(bool full_compaction) override;
 
@@ -99,6 +104,9 @@ class MergeTreeWriter : public BatchWriter {
 
     Result<std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
     CreateRollingRowWriter() const;
+
+    Result<std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>>
+    CreateRollingChangelogWriter() const;
 
     Status TrySyncLatestCompaction(bool blocking);
     Status UpdateCompactResult(const std::shared_ptr<CompactResult>& compact_result);
@@ -134,9 +142,11 @@ class MergeTreeWriter : public BatchWriter {
     std::shared_ptr<Metrics> metrics_;
 
     std::vector<std::shared_ptr<DataFileMeta>> new_files_;
+    std::vector<std::shared_ptr<DataFileMeta>> new_changelog_files_;
     std::vector<std::shared_ptr<DataFileMeta>> deleted_files_;
     std::vector<std::shared_ptr<DataFileMeta>> compact_before_;
     std::vector<std::shared_ptr<DataFileMeta>> compact_after_;
+    std::vector<std::shared_ptr<DataFileMeta>> compact_changelog_files_;
 
     std::shared_ptr<CompactDeletionFile> compact_deletion_file_;
 };

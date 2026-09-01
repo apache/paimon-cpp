@@ -286,16 +286,17 @@ class TestHelper {
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> collected,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         if (collected->num_chunks() == 0) {
             return collected;
         }
-        // The collected batches borrow reader-owned buffers; copy them into the process pool
-        // while the reader is still alive so the returned result may outlive it.
+        // Preserve this helper's single-chunk result contract. CollectResult destroys the reader
+        // before importing the batches, so concatenating here also exercises the returned data
+        // after the reader has been released.
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::Array> copied,
+            std::shared_ptr<arrow::Array> concatenated,
             arrow::Concatenate(collected->chunks(), arrow::default_memory_pool()));
-        return std::make_shared<arrow::ChunkedArray>(copied);
+        return std::make_shared<arrow::ChunkedArray>(std::move(concatenated));
     }
 
     Result<bool> ReadAndCheckResult(const std::shared_ptr<arrow::DataType>& data_type,
@@ -308,7 +309,7 @@ class TestHelper {
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             auto expected_array,
             arrow::ipc::internal::json::ArrayFromJSON(data_type, expected_result));

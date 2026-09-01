@@ -112,7 +112,8 @@ class NestedColumnPruningInteTest : public ::testing::Test,
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto actual,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         arrow::FieldVector expected_fields = expected_schema->fields();
         expected_fields.insert(expected_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
@@ -780,7 +781,8 @@ TEST_P(NestedColumnPruningInteTest, PruneNestedStructWithSpecialFields) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     ASSERT_EQ(read_result->num_chunks(), 1);
     auto result_array = std::dynamic_pointer_cast<arrow::StructArray>(read_result->chunk(0));
@@ -1312,7 +1314,8 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysWithOrcDictionaryEncodedMap) 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     ASSERT_OK_AND_ASSIGN(
         auto decoded_result,
