@@ -89,14 +89,11 @@ Result<std::shared_ptr<Chunk>> ChunkedDictionary::GetChunk(int32_t index) {
     if (index < 0 || index >= size_) {
         return Status::Invalid(fmt::format("Invalid chunk index: {}", index));
     }
-    if (offsets_bytes_ == nullptr || chunks_bytes_ == nullptr) {
+    if (offsets_bytes_ == nullptr) {
         PAIMON_RETURN_NOT_OK(input_stream_->Seek(body_offset_, FS_SEEK_SET));
         auto offsets = Bytes::AllocateBytes(offsets_length_, pool_.get());
         PAIMON_RETURN_NOT_OK(input_stream_->Read(offsets->data(), offsets_length_));
         offsets_bytes_ = std::move(offsets);
-        auto chunks = Bytes::AllocateBytes(chunks_length_, pool_.get());
-        PAIMON_RETURN_NOT_OK(input_stream_->Read(chunks->data(), chunks_length_));
-        chunks_bytes_ = std::move(chunks);
     }
     if (chunks_cache_[index]) {
         return chunks_cache_[index];
@@ -244,6 +241,5 @@ ChunkedDictionary::ChunkedDictionary(const std::shared_ptr<InputStream>& input_s
       chunks_length_(chunks_length),
       body_offset_(body_offset),
       offsets_bytes_(nullptr),
-      chunks_bytes_(nullptr),
       chunks_cache_(std::vector<std::shared_ptr<Chunk>>(size)) {}
 }  // namespace paimon

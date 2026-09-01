@@ -456,9 +456,25 @@ TEST_F(ChunkedDictionaryTest, TestKeyFactoryUnsupportedType) {
                         "Unsupported field type for KeyFactory: BINARY");
 }
 
-TEST_F(ChunkedDictionaryTest, TestStringKeyFactoryNotImplemented) {
-    ASSERT_NOK_WITH_MSG(KeyFactory::Create(FieldType::STRING),
-                        "Unsupported field type for KeyFactory: STRING");
+TEST_F(ChunkedDictionaryTest, TestStringKeyFactory) {
+    ASSERT_OK_AND_ASSIGN(auto key_factory, KeyFactory::Create(FieldType::STRING));
+    ASSERT_OK_AND_ASSIGN(auto appender,
+                         ChunkedDictionary::Appender::Create(key_factory, 12, pool_));
+    ASSERT_OK(appender->AppendSorted(Literal(FieldType::STRING, "apple", 5), 0));
+    ASSERT_OK(appender->AppendSorted(Literal(FieldType::STRING, "banana", 6), 1));
+    ASSERT_OK(appender->AppendSorted(Literal(FieldType::STRING, "pear", 4), 2));
+    ASSERT_OK_AND_ASSIGN(auto bytes, appender->Serialize());
+    auto input_stream = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+    ASSERT_OK_AND_ASSIGN(auto dict,
+                         ChunkedDictionary::Create(FieldType::STRING, input_stream, 0, pool_));
+
+    ASSERT_OK_AND_ASSIGN(int32_t banana_code, dict->Find(Literal(FieldType::STRING, "banana", 6)));
+    ASSERT_EQ(banana_code, 1);
+    ASSERT_OK_AND_ASSIGN(Literal pear, dict->Find(2));
+    ASSERT_EQ(pear.GetValue<std::string>(), "pear");
+    ASSERT_OK_AND_ASSIGN(int32_t between_code,
+                         dict->Find(Literal(FieldType::STRING, "blueberry", 9)));
+    ASSERT_EQ(between_code, -3);
 }
 
 TEST_F(ChunkedDictionaryTest, TestFindByCodeInvalidNegative) {
