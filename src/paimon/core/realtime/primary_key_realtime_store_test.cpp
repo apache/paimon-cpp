@@ -119,19 +119,26 @@ TEST(PrimaryKeyRealtimeStoreTest, TestWriteAndSealValidation) {
                         "write batch is null");
     ASSERT_NOK_WITH_MSG(
         store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 1, 0, 1, "one"]])"), OffsetRange(0, 0)}),
-        "offset range does not match batch row count");
+        "offset range is invalid");
 
     ASSERT_OK(store->Write(RealtimeWriteBatch{
         MakeBatch(R"([[0, 1, 0, 1, "one"], [0, 2, 1, 2, "two"]])"), OffsetRange(0, 2)}));
     ASSERT_OK(store->Write(
-        RealtimeWriteBatch{MakeBatch(R"([[0, 3, 2, 3, "three"]])"), OffsetRange(2, 3)}));
+        RealtimeWriteBatch{MakeBatch(R"([[0, 3, 4, 3, "three"]])"), OffsetRange(4, 5)}));
+    ASSERT_NOK_WITH_MSG(
+        store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 4, 3, 4, "four"]])"), OffsetRange(3, 4)}),
+        "offset ranges must be ordered and non-overlapping");
 
     ASSERT_OK_AND_ASSIGN(segment, store->SealForCommit());
     ASSERT_TRUE(segment.has_value());
-    ASSERT_EQ(OffsetRange(0, 3), segment.value()->GetOffsetRange());
+    ASSERT_EQ(OffsetRange(0, 5), segment.value()->GetOffsetRange());
+    ASSERT_EQ(3, segment.value()->GetRowCount());
     ASSERT_GT(store->GetMemoryUsage(), 0);
     ASSERT_OK(store->Write(
-        RealtimeWriteBatch{MakeBatch(R"([[0, 4, 3, 4, "four"]])"), OffsetRange(3, 4)}));
+        RealtimeWriteBatch{MakeBatch(R"([[0, 4, 5, 4, "four"]])"), OffsetRange(5, 6)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> read_view, store->AcquireReadView());
+    ASSERT_OK_AND_ASSIGN(int64_t row_count, read_view->GetRowCount(OffsetRange(1, 5)));
+    ASSERT_EQ(2, row_count);
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestCommitReaderPerStoredBatch) {

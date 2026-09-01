@@ -71,10 +71,18 @@ bool SupportsMinMax(const std::shared_ptr<arrow::DataType>& type) {
 class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
  public:
     Segment(const OffsetRange& offset_range, std::vector<StoredBatch>&& batches)
-        : offset_range_(offset_range), batches_(std::move(batches)) {}
+        : offset_range_(offset_range), batches_(std::move(batches)) {
+        for (const StoredBatch& batch : batches_) {
+            row_count_ += batch.data->length();
+        }
+    }
 
     OffsetRange GetOffsetRange() const override {
         return offset_range_;
+    }
+
+    int64_t GetRowCount() const override {
+        return row_count_;
     }
 
     const std::vector<StoredBatch>& GetBatches() const {
@@ -92,6 +100,7 @@ class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
  private:
     OffsetRange offset_range_;
     std::vector<StoredBatch> batches_;
+    int64_t row_count_ = 0;
 };
 
 class ArrowRealtimeStore::ReadView : public RealtimeReadView {
@@ -105,6 +114,29 @@ class ArrowRealtimeStore::ReadView : public RealtimeReadView {
 
     std::optional<OffsetRange> GetOffsetRange() const override {
         return offset_range_;
+    }
+
+    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
+        int64_t result = 0;
+        for (const StoredBatch& batch : batches_) {
+            std::shared_ptr<arrow::Array> offset_field =
+                batch.data->GetFieldByName(SpecialFields::RealtimeOffset().Name());
+            if (!offset_field || offset_field->type_id() != arrow::Type::INT64) {
+                return Status::Invalid("real-time stored batch must contain int64 offset");
+            }
+            std::shared_ptr<arrow::Int64Array> offsets =
+                checked_pointer_cast<arrow::Int64Array>(offset_field);
+            if (offsets->null_count() != 0) {
+                return Status::Invalid("real-time stored offset column contains null");
+            }
+            for (int64_t row = 0; row < offsets->length(); ++row) {
+                const int64_t offset = offsets->Value(row);
+                if (offset >= visible_offsets.begin && offset < visible_offsets.end) {
+                    ++result;
+                }
+            }
+        }
+        return result;
     }
 
     const std::vector<StoredBatch>& GetBatches() const {
@@ -343,11 +375,9 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
         return Status::Invalid("real-time write batch is null");
     }
     int64_t row_count = write_batch.batch->GetData()->length;
-    if (write_batch.offset_range.begin < 0 || write_batch.offset_range.Empty()) {
+    if (write_batch.offset_range.begin < 0 ||
+        write_batch.offset_range.begin >= write_batch.offset_range.end) {
         return Status::Invalid("real-time offset range is invalid");
-    }
-    if (write_batch.offset_range.Count() != row_count) {
-        return Status::Invalid("real-time offset range does not match batch row count");
     }
     if (!write_batch.batch->GetRowKind().empty() &&
         static_cast<int64_t>(write_batch.batch->GetRowKind().size()) != row_count) {
@@ -366,8 +396,8 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
                            CollectStatistics(struct_array));
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (building_range_ && write_batch.offset_range.begin != building_range_->end) {
-        return Status::Invalid("real-time offset ranges must be contiguous");
+    if (building_range_ && write_batch.offset_range.begin < building_range_->end) {
+        return Status::Invalid("real-time offset ranges must be ordered and non-overlapping");
     }
     uint64_t memory_usage = ArrowUtils::GetArrayMemoryUsage(struct_array->data());
     if (statistics) {

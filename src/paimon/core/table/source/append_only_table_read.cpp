@@ -246,6 +246,7 @@ Result<std::unique_ptr<CountReader>> AppendOnlyTableRead::CreateCountReader(
             realtime_splits.push_back(std::move(realtime_split));
         }
     }
+    std::map<std::string, int64_t> realtime_row_counts;
     if (!realtime_splits.empty()) {
         const std::shared_ptr<RealtimeContext> realtime_context = context_->GetRealtimeContext();
         if (!realtime_context) {
@@ -274,6 +275,11 @@ Result<std::unique_ptr<CountReader>> AppendOnlyTableRead::CreateCountReader(
                 return Status::Invalid(
                     "real-time read-view ticket does not match the split offset range");
             }
+            PAIMON_ASSIGN_OR_RAISE(
+                int64_t memory_row_count,
+                memory.read_view->GetRowCount(OffsetRange(realtime_split->CommittedEndOffset(),
+                                                          realtime_split->MemoryEndOffset())));
+            realtime_row_counts.emplace(realtime_split->OpaqueTicket(), memory_row_count);
         }
         for (const std::shared_ptr<RealtimeSplit>& realtime_split : realtime_splits) {
             PAIMON_RETURN_NOT_OK(
@@ -282,6 +288,7 @@ Result<std::unique_ptr<CountReader>> AppendOnlyTableRead::CreateCountReader(
     }
 
     return std::make_unique<AppendCountReader>(splits, context_->GetCoreOptions().GetFileSystem(),
+                                               std::move(realtime_row_counts),
                                                context_->GetMemoryPool());
 }
 

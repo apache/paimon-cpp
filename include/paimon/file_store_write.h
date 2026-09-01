@@ -52,6 +52,10 @@ class PAIMON_EXPORT FileStoreWrite {
     virtual ~FileStoreWrite() = default;
 
     /// Support write an input `RecordBatch` to internal buffer or file.
+    /// @note Real-time writers require a non-nullable int64 `_REALTIME_OFFSET` field before the
+    ///       table write fields. Its values must be strictly increasing within each batch and
+    ///       monotonically increasing for each partition-bucket across batches; gaps are allowed.
+    ///       The field is used for snapshot progress and is not written to data files.
     /// @note If a field in table schema is marked as non-nullable (`nullable = false`),
     ///       the corresponding array in `batch` must have zero null entries.
     virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;

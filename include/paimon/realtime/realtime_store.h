@@ -64,16 +64,18 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     StatisticsMode statistics_mode = StatisticsMode::NONE;
 };
 
-/// A record batch and its framework-assigned contiguous offset range.
+/// A record batch and its application-assigned offset bounds.
 ///
 /// Append-mode batches use the append transport schema [_REALTIME_OFFSET, table write fields], and
-/// row `i` has offset `offset_range.begin + i`. Primary-key batches use the realtime primary-key
-/// transport schema, are sorted by full primary key then sequence number, and retain the original
-/// offset in `_REALTIME_OFFSET`.
+/// offsets are strictly increasing before the batch enters the store. Primary-key batches use the
+/// realtime primary-key transport schema, are sorted by full primary key then sequence number, and
+/// retain the original offset in `_REALTIME_OFFSET`. `offset_range` is the left-closed, right-open
+/// envelope from the first application offset through one past the last; offsets may have gaps, so
+/// its count is not the batch row count.
 struct PAIMON_EXPORT RealtimeWriteBatch {
     /// Input batch whose ownership is transferred to `RealtimeStore::Write`.
     std::unique_ptr<RecordBatch> batch;
-    /// Left-closed, right-open offset range covered by `batch`.
+    /// Left-closed, right-open offset envelope covered by `batch`.
     OffsetRange offset_range;
 };
 
@@ -87,6 +89,9 @@ class PAIMON_EXPORT RealtimeSegmentHandle {
 
     /// Returns the left-closed, right-open offset range covered by this segment.
     virtual OffsetRange GetOffsetRange() const = 0;
+
+    /// Returns the number of rows represented by this segment.
+    virtual int64_t GetRowCount() const = 0;
 };
 
 /// Opaque immutable view of the rows visible from one `RealtimeStore`.
@@ -100,6 +105,11 @@ class PAIMON_EXPORT RealtimeReadView {
     /// Returns the left-closed, right-open offset range visible in this view, or no range when it
     /// is empty.
     virtual std::optional<OffsetRange> GetOffsetRange() const = 0;
+
+    /// Returns the exact number of rows whose offsets fall in `visible_offsets`.
+    ///
+    /// Offset ranges may contain gaps, so callers cannot derive this count from the range width.
+    virtual Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const = 0;
 };
 
 /// Parameters used by a `RealtimeStore` to create readers for a query.
@@ -130,7 +140,7 @@ class PAIMON_EXPORT RealtimeStore {
 
     /// Adds a batch to the current building segment.
     ///
-    /// The row count matches the framework-assigned `offset_range`.
+    /// The offset envelope may contain gaps and does not imply the batch row count.
     virtual Status Write(RealtimeWriteBatch&& batch) = 0;
 
     /// Seals the current building data and opens a new building segment.

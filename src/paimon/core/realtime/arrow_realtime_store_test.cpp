@@ -47,12 +47,20 @@ class ForeignSegment : public RealtimeSegmentHandle {
     OffsetRange GetOffsetRange() const override {
         return OffsetRange(0, 1);
     }
+
+    int64_t GetRowCount() const override {
+        return 1;
+    }
 };
 
 class ForeignReadView : public RealtimeReadView {
  public:
     std::optional<OffsetRange> GetOffsetRange() const override {
         return OffsetRange(0, 1);
+    }
+
+    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
+        return visible_offsets.begin <= 0 && visible_offsets.end > 0 ? 1 : 0;
     }
 };
 
@@ -130,21 +138,22 @@ TEST_F(ArrowRealtimeStoreTest, TestWriteValidationAndSeal) {
     ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{nullptr, OffsetRange(0, 1)}),
                         "write batch is null");
     ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"),
-                                                         OffsetRange(0, 1)}),
-                        "offset range does not match batch row count");
+                                                         OffsetRange(0, 0)}),
+                        "offset range is invalid");
 
     ASSERT_OK(store_->Write(
         RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"), OffsetRange(0, 2)}));
-    ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[3, 3, "d"], [4, 4, "e"]])"),
-                                                         OffsetRange(3, 5)}),
-                        "offset ranges must be contiguous");
     ASSERT_OK(store_->Write(
-        RealtimeWriteBatch{MakeBatch(R"([[2, 2, "c"], [3, 3, "d"]])"), OffsetRange(2, 4)}));
+        RealtimeWriteBatch{MakeBatch(R"([[3, 3, "d"], [4, 4, "e"]])"), OffsetRange(3, 5)}));
+    ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[4, 4, "e"], [5, 5, "f"]])"),
+                                                         OffsetRange(4, 6)}),
+                        "offset ranges must be ordered and non-overlapping");
 
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                          store_->SealForCommit());
     ASSERT_TRUE(segment.has_value());
-    ASSERT_EQ(OffsetRange(0, 4), segment.value()->GetOffsetRange());
+    ASSERT_EQ(OffsetRange(0, 5), segment.value()->GetOffsetRange());
+    ASSERT_EQ(4, segment.value()->GetRowCount());
     ASSERT_OK_AND_ASSIGN(empty_segment, store_->SealForCommit());
     ASSERT_FALSE(empty_segment.has_value());
 

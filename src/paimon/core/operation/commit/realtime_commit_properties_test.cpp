@@ -304,8 +304,9 @@ TEST_F(RealtimeCommitPropertiesTest, CheckRangesCommitted) {
         "partially overlaps");
 
     std::map<RealtimePartitionBucket, OffsetRange> gap = {{bucket0, OffsetRange(5, 7)}};
-    ASSERT_NOK_WITH_MSG(RealtimeCommitProperties::AreRangesCommitted(committed_offsets, gap),
-                        "are not contiguous");
+    ASSERT_OK_AND_ASSIGN(bool gap_committed,
+                         RealtimeCommitProperties::AreRangesCommitted(committed_offsets, gap));
+    ASSERT_FALSE(gap_committed);
 
     std::map<RealtimePartitionBucket, OffsetRange> mixed = {{bucket0, OffsetRange(0, 4)},
                                                             {bucket1, OffsetRange(9, 11)}};
@@ -329,12 +330,16 @@ TEST_F(RealtimeCommitPropertiesTest, BuildRejectsInvalidProgress) {
 
     std::map<RealtimePartitionBucket, OffsetRange> gap = {
         {RealtimePartitionBucket({{"dt", "2"}}, /*bucket=*/0), OffsetRange(3, 5)}};
-    ASSERT_NOK_WITH_MSG(
-        RealtimeCommitProperties::Build(/*properties=*/{}, latest_snapshot, gap,
-                                        /*reset_all_realtime_progress=*/false,
-                                        /*removed_realtime_partitions=*/{}, *partition_computer_,
-                                        file_system_, directory_->Str(), "main"),
-        "are not contiguous");
+    ASSERT_OK_AND_ASSIGN(
+        Properties gap_properties,
+        RealtimeCommitProperties::Build(
+            /*properties=*/{}, latest_snapshot, gap,
+            /*reset_all_realtime_progress=*/false, /*removed_realtime_partitions=*/{},
+            *partition_computer_, file_system_, directory_->Str(), "main"));
+    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap gap_offsets,
+                         RealtimeCommitProperties::ReadOffsets(
+                             std::optional<Snapshot>(MakeSnapshot(gap_properties)), file_system_));
+    ASSERT_EQ(5, gap_offsets.at(bucket0));
 
     std::map<RealtimePartitionBucket, OffsetRange> overlap = {
         {RealtimePartitionBucket({{"dt", "2"}}, /*bucket=*/0), OffsetRange(0, 2)}};
@@ -343,7 +348,7 @@ TEST_F(RealtimeCommitPropertiesTest, BuildRejectsInvalidProgress) {
                                         /*reset_all_realtime_progress=*/false,
                                         /*removed_realtime_partitions=*/{}, *partition_computer_,
                                         file_system_, directory_->Str(), "main"),
-        "are not contiguous");
+        "overlap committed progress");
 
     RealtimeOffsetMap exhausted_offsets = {{bucket0, std::numeric_limits<int64_t>::max()}};
     ASSERT_OK_AND_ASSIGN(Snapshot exhausted_snapshot, MakeSnapshotWithOffsets(exhausted_offsets));

@@ -90,6 +90,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
     std::shared_ptr<RealtimeContextImpl> realtime_context_;
     RealtimePartitionBucket partition_bucket_;
     std::shared_ptr<arrow::Schema> write_schema_;
+    std::shared_ptr<arrow::Schema> realtime_input_schema_;
     std::shared_ptr<arrow::Schema> transport_schema_;
     std::shared_ptr<arrow::Schema> key_schema_;
     std::vector<std::string> trimmed_primary_keys_;

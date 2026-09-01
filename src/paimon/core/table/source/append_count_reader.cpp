@@ -38,7 +38,11 @@ Result<int64_t> AppendCountReader::CountRows() {
 Result<int64_t> AppendCountReader::CountSingleSplit(const std::shared_ptr<Split>& split) const {
     std::shared_ptr<RealtimeSplit> realtime_split = std::dynamic_pointer_cast<RealtimeSplit>(split);
     if (realtime_split) {
-        int64_t total = realtime_split->MemoryEndOffset() - realtime_split->CommittedEndOffset();
+        auto count_iter = realtime_row_counts_.find(realtime_split->OpaqueTicket());
+        if (count_iter == realtime_row_counts_.end()) {
+            return Status::Invalid("real-time split does not have an exact memory row count");
+        }
+        int64_t total = count_iter->second;
         for (const std::shared_ptr<Split>& disk_split : realtime_split->DiskSplits()) {
             PAIMON_ASSIGN_OR_RAISE(int64_t disk_count, CountSingleSplit(disk_split));
             total += disk_count;

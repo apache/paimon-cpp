@@ -51,6 +51,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_primary_key_reader.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
@@ -93,6 +94,10 @@ class TrackingRealtimeReadView final : public RealtimeReadView {
 
     std::optional<OffsetRange> GetOffsetRange() const override {
         return delegate_->GetOffsetRange();
+    }
+
+    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
+        return delegate_->GetRowCount(visible_offsets);
     }
 
     const std::shared_ptr<RealtimeReadView>& Delegate() const {
@@ -378,6 +383,12 @@ class RealtimeWriteInteTest : public ::testing::Test {
         return CreateRealtimeWriter(realtime_context);
     }
 
+    void ResetExternalOffset(const std::map<std::string, std::string>& partition, int32_t bucket,
+                             int64_t next_offset) const {
+        std::lock_guard<std::mutex> lock(external_offsets_mutex_);
+        next_external_offsets_[RealtimePartitionBucket(partition, bucket)] = next_offset;
+    }
+
     Result<std::unique_ptr<RecordBatch>> MakeBatch(const std::vector<Row>& rows,
                                                    bool partitioned) const {
         return MakeBatch(rows, partitioned, /*bucket=*/0);
@@ -395,6 +406,18 @@ class RealtimeWriteInteTest : public ::testing::Test {
             return Status::Invalid("cannot create an empty test batch");
         }
         const std::string& partition = std::get<2>(rows.front());
+        std::map<std::string, std::string> batch_partition;
+        if (partitioned) {
+            batch_partition = {{"pt", partition}};
+        }
+        int64_t first_offset = 0;
+        {
+            std::lock_guard<std::mutex> lock(external_offsets_mutex_);
+            int64_t& next_offset =
+                next_external_offsets_[RealtimePartitionBucket(batch_partition, bucket)];
+            first_offset = next_offset;
+            next_offset += static_cast<int64_t>(rows.size());
+        }
         std::string json = "[";
         for (size_t i = 0; i < rows.size(); ++i) {
             const auto& [id, payload, pt] = rows[i];
@@ -404,21 +427,45 @@ class RealtimeWriteInteTest : public ::testing::Test {
             if (i > 0) {
                 json += ",";
             }
-            json += "[" + std::to_string(id) + ",\"" + payload + "\",\"" + pt + "\"]";
+            json += "[" + std::to_string(first_offset + static_cast<int64_t>(i)) + "," +
+                    std::to_string(id) + ",\"" + payload + "\",\"" + pt + "\"]";
         }
         json += "]";
 
+        const std::shared_ptr<arrow::Schema> realtime_schema =
+            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                          arrow::ipc::internal::json::ArrayFromJSON(
+                                              arrow::struct_(realtime_schema->fields()), json));
+        ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        return RecordBatchBuilder(&c_array)
+            .SetRowKinds(row_kinds)
+            .SetPartition(batch_partition)
+            .SetBucket(bucket)
+            .Finish();
+    }
+
+    Result<std::unique_ptr<RecordBatch>> MakeLogicalBatch(const std::vector<Row>& rows,
+                                                          int32_t bucket) const {
+        if (rows.empty()) {
+            return Status::Invalid("cannot create an empty test batch");
+        }
+        std::string json = "[";
+        for (size_t i = 0; i < rows.size(); ++i) {
+            const auto& [id, payload, partition] = rows[i];
+            if (i > 0) {
+                json += ",";
+            }
+            json += "[" + std::to_string(id) + ",\"" + payload + "\",\"" + partition + "\"]";
+        }
+        json += "]";
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::Array> array,
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), json));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
-        RecordBatchBuilder builder(&c_array);
-        builder.SetRowKinds(row_kinds);
-        if (partitioned) {
-            builder.SetPartition({{"pt", partition}});
-        }
-        return builder.SetBucket(bucket).Finish();
+        return RecordBatchBuilder(&c_array).SetBucket(bucket).Finish();
     }
 
     Result<std::unique_ptr<RecordBatch>> MakeDatePartitionBatch(
@@ -426,36 +473,45 @@ class RealtimeWriteInteTest : public ::testing::Test {
         if (count <= 0) {
             return Status::Invalid("cannot create an empty test batch");
         }
+        int64_t first_offset = 0;
+        {
+            std::lock_guard<std::mutex> lock(external_offsets_mutex_);
+            int64_t& next_offset =
+                next_external_offsets_[RealtimePartitionBucket({{"pt", partition}}, /*bucket=*/0)];
+            first_offset = next_offset;
+            next_offset += count;
+        }
         std::string json = "[";
         for (int64_t i = 0; i < count; ++i) {
             if (i > 0) {
                 json += ",";
             }
             int64_t id = first_id + i;
-            json += "[" + std::to_string(id) + ",\"value-" + std::to_string(id) + "\"," +
-                    std::to_string(date) + "]";
+            json += "[" + std::to_string(first_offset + i) + "," + std::to_string(id) +
+                    ",\"value-" + std::to_string(id) + "\"," + std::to_string(date) + "]";
         }
         json += "]";
 
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::Array> array,
-            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), json));
+        const std::shared_ptr<arrow::Schema> realtime_schema =
+            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                          arrow::ipc::internal::json::ArrayFromJSON(
+                                              arrow::struct_(realtime_schema->fields()), json));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
-        return RecordBatchBuilder(&c_array)
-            .SetPartition({{"pt", partition}})
-            .SetBucket(/*bucket=*/0)
-            .Finish();
+        return RecordBatchBuilder(&c_array).SetPartition({{"pt", partition}}).SetBucket(0).Finish();
     }
 
     Result<std::unique_ptr<RecordBatch>> MakeUnpartitionedBatchFromJson(
         const std::string& json) const {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::Array> array,
-            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), json));
+        const std::shared_ptr<arrow::Schema> realtime_schema =
+            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                          arrow::ipc::internal::json::ArrayFromJSON(
+                                              arrow::struct_(realtime_schema->fields()), json));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
-        return RecordBatchBuilder(&c_array).SetBucket(/*bucket=*/0).Finish();
+        return RecordBatchBuilder(&c_array).SetBucket(0).Finish();
     }
 
     static std::vector<Row> MakeRows(int64_t first_id, int64_t count,
@@ -947,6 +1003,8 @@ class RealtimeWriteInteTest : public ::testing::Test {
     std::shared_ptr<arrow::Schema> schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<MemoryPool> pool_;
+    mutable std::mutex external_offsets_mutex_;
+    mutable std::map<RealtimePartitionBucket, int64_t> next_external_offsets_;
 };
 
 TEST_F(RealtimeWriteInteTest, TestRealtimeOperationsRequireEnabledOption) {
@@ -995,6 +1053,42 @@ TEST_F(RealtimeWriteInteTest, TestAppendCommitAndRead) {
                          MakeBatch(rows, /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(batch)));
     FinalizeCommitAndCheck(writer.get(), /*realtime_commits=*/{}, /*prepare_identifier=*/0, rows);
+}
+
+TEST_F(RealtimeWriteInteTest, TestSparseExternalOffsetsCommitCountAndRecover) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    const std::vector<int64_t> offsets = {10, 20, 30};
+    std::vector<Row> rows;
+    for (int64_t offset : offsets) {
+        ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, offset);
+        std::vector<Row> one_row = MakeRows(static_cast<int64_t>(rows.size()), /*count=*/1, "p0");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             MakeBatch(one_row, /*partitioned=*/false));
+        ASSERT_OK(writer->Write(std::move(batch)));
+        rows.push_back(one_row.front());
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> realtime_rows, ReadRows(realtime_context));
+    ASSERT_EQ(rows, realtime_rows);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> memory_plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(int64_t memory_count, CountRows(memory_plan, realtime_context));
+    ASSERT_EQ(3, memory_count);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, commits.size());
+    ASSERT_EQ(OffsetRange(10, 31), commits[0].offset_range);
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(commits, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap committed_offsets, ReadCommittedOffsets());
+    ASSERT_EQ(31, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
+    ASSERT_EQ(rows, actual_rows);
+    ASSERT_OK(writer->Close());
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkRead) {
@@ -1286,18 +1380,20 @@ TEST_F(RealtimeWriteInteTest, TestPkNestedProjectionAcrossDiskAndMemory) {
                          RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
                          CreateRealtimeWriter(realtime_context));
+    const std::shared_ptr<arrow::Schema> realtime_schema =
+        RealtimeOffsetUtils::CreateInputSchema(schema_);
     auto make_batch = [&](const std::string& json) -> Result<std::unique_ptr<RecordBatch>> {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::Array> array,
-            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), json));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                          arrow::ipc::internal::json::ArrayFromJSON(
+                                              arrow::struct_(realtime_schema->fields()), json));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
-        RecordBatchBuilder builder(&c_array);
-        return builder.SetBucket(0).Finish();
+        return RecordBatchBuilder(&c_array).SetBucket(0).Finish();
     };
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
-                         make_batch(R"([[1, [101, 1001], "p0"], [2, [102, 1002], "p0"]])"));
+                         make_batch(R"([[0, 1, [101, 1001], "p0"],
+                                        [1, 2, [102, 1002], "p0"]])"));
     ASSERT_OK(writer->Write(std::move(disk_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_progress,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
@@ -1305,14 +1401,16 @@ TEST_F(RealtimeWriteInteTest, TestPkNestedProjectionAcrossDiskAndMemory) {
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> sealed_batch,
-                         make_batch(R"([[1, [201, 2001], "p0"], [3, [203, 2003], "p0"]])"));
+                         make_batch(R"([[2, 1, [201, 2001], "p0"],
+                                        [3, 3, [203, 2003], "p0"]])"));
     ASSERT_OK(writer->Write(std::move(sealed_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> sealed_progress,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, sealed_progress.size());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> active_batch,
-                         make_batch(R"([[1, [301, 3001], "p0"], [4, [304, null], "p0"]])"));
+                         make_batch(R"([[4, 1, [301, 3001], "p0"],
+                                        [5, 4, [304, null], "p0"]])"));
     ASSERT_OK(writer->Write(std::move(active_batch)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
@@ -1624,7 +1722,7 @@ TEST_F(RealtimeWriteInteTest, TestPkRecovery) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> seed_writer,
                          FileStoreWrite::Create(std::move(seed_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> seed_batch,
-                         MakeBatch({Row{99, "seed", "p0"}}, /*partitioned=*/false));
+                         MakeLogicalBatch({Row{99, "seed", "p0"}}, /*bucket=*/0));
     ASSERT_OK(seed_writer->Write(std::move(seed_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> seed_messages,
                          seed_writer->PrepareCommit(/*wait_compaction=*/false,
@@ -2750,8 +2848,8 @@ TEST_F(RealtimeWriteInteTest, TestNullPredicateForMemoryAndDisk) {
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
                          MakeUnpartitionedBatchFromJson(R"([
-                             [0, null, "p0"],
-                             [1, "disk-value", "p0"]
+                             [0, 0, null, "p0"],
+                             [1, 1, "disk-value", "p0"]
                          ])"));
     ASSERT_OK(writer->Write(std::move(disk_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
@@ -2760,14 +2858,14 @@ TEST_F(RealtimeWriteInteTest, TestNullPredicateForMemoryAndDisk) {
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> non_null_memory_batch,
                          MakeUnpartitionedBatchFromJson(R"([
-                             [2, "memory-value-2", "p0"],
-                             [3, "memory-value-3", "p0"]
+                             [2, 2, "memory-value-2", "p0"],
+                             [3, 3, "memory-value-3", "p0"]
                          ])"));
     ASSERT_OK(writer->Write(std::move(non_null_memory_batch)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> nullable_memory_batch,
                          MakeUnpartitionedBatchFromJson(R"([
-                             [4, null, "p0"],
-                             [5, "memory-value-5", "p0"]
+                             [4, 4, null, "p0"],
+                             [5, 5, "memory-value-5", "p0"]
                          ])"));
     ASSERT_OK(writer->Write(std::move(nullable_memory_batch)));
 
@@ -2864,8 +2962,8 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadWithNestedStructProjection) {
                          CreateRealtimeWriter(realtime_context));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
                          MakeUnpartitionedBatchFromJson(R"([
-                             [0, ["disk-0", ["hangzhou", 310000]], "p0"],
-                             [1, ["disk-1", ["shanghai", 200000]], "p0"]
+                             [0, 0, ["disk-0", ["hangzhou", 310000]], "p0"],
+                             [1, 1, ["disk-1", ["shanghai", 200000]], "p0"]
                          ])"));
     ASSERT_OK(writer->Write(std::move(disk_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
@@ -2875,8 +2973,8 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadWithNestedStructProjection) {
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
                          MakeUnpartitionedBatchFromJson(R"([
-                             [2, ["memory-2", ["beijing", 100000]], "p0"],
-                             [3, ["memory-3", ["shenzhen", 518000]], "p0"]
+                             [2, 2, ["memory-2", ["beijing", 100000]], "p0"],
+                             [3, 3, ["memory-3", ["shenzhen", 518000]], "p0"]
                          ])"));
     ASSERT_OK(writer->Write(std::move(memory_batch)));
 
@@ -2917,8 +3015,8 @@ void RealtimeWriteInteTest::RunUnionReadWithSelectedMapKeys(bool primary_key) {
                          CreateRealtimeWriter(realtime_context));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
                          MakeUnpartitionedBatchFromJson(R"([
-                             [0, [["a", 10], ["b", 20]], "p0"],
-                             [1, [["c", 30]], "p0"]
+                             [0, 0, [["a", 10], ["b", 20]], "p0"],
+                             [1, 1, [["c", 30]], "p0"]
                          ])"));
     ASSERT_OK(writer->Write(std::move(disk_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
@@ -2928,8 +3026,8 @@ void RealtimeWriteInteTest::RunUnionReadWithSelectedMapKeys(bool primary_key) {
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
                          MakeUnpartitionedBatchFromJson(R"([
-                             [2, [["a", 40], ["c", 50]], "p0"],
-                             [3, null, "p0"]
+                             [2, 2, [["a", 40], ["c", 50]], "p0"],
+                             [3, 3, null, "p0"]
                          ])"));
     ASSERT_OK(writer->Write(std::move(memory_batch)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
@@ -3010,10 +3108,19 @@ void RealtimeWriteInteTest::RunUnionReadWithVariantAccess(bool primary_key) {
                              {R"({"age":10,"city":"disk-a","note":"disk-fallback-a"})",
                               R"({"age":20,"city":"disk-b","note":"disk-fallback-b"})"},
                              pool_));
-    ArrowArray c_disk_data;
-    ASSERT_TRUE(arrow::ExportArray(*disk_data, &c_disk_data).ok());
+    std::shared_ptr<arrow::Array> disk_offsets =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[0, 1]").ValueOrDie();
+    arrow::ArrayVector disk_columns = {std::move(disk_offsets)};
+    disk_columns.insert(disk_columns.end(), disk_data->fields().begin(), disk_data->fields().end());
+    const std::shared_ptr<arrow::Schema> realtime_schema =
+        RealtimeOffsetUtils::CreateInputSchema(schema_);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::StructArray> disk_realtime_data,
+        arrow::StructArray::Make(std::move(disk_columns), realtime_schema->fields()));
+    ArrowArray disk_c_array;
+    ASSERT_TRUE(arrow::ExportArray(*disk_realtime_data, &disk_c_array).ok());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
-                         RecordBatchBuilder(&c_disk_data).SetBucket(/*bucket=*/0).Finish());
+                         RecordBatchBuilder(&disk_c_array).SetBucket(0).Finish());
     ASSERT_OK(writer->Write(std::move(disk_batch)));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
@@ -3026,10 +3133,18 @@ void RealtimeWriteInteTest::RunUnionReadWithVariantAccess(bool primary_key) {
                              {R"({"age":30,"city":"memory-a"})",
                               R"({"age":40,"city":"memory-b","note":"memory-fallback-b"})"},
                              pool_, /*id_offset=*/2));
-    ArrowArray c_memory_data;
-    ASSERT_TRUE(arrow::ExportArray(*memory_data, &c_memory_data).ok());
+    std::shared_ptr<arrow::Array> memory_offsets =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[2, 3]").ValueOrDie();
+    arrow::ArrayVector memory_columns = {std::move(memory_offsets)};
+    memory_columns.insert(memory_columns.end(), memory_data->fields().begin(),
+                          memory_data->fields().end());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::StructArray> memory_realtime_data,
+        arrow::StructArray::Make(std::move(memory_columns), realtime_schema->fields()));
+    ArrowArray memory_c_array;
+    ASSERT_TRUE(arrow::ExportArray(*memory_realtime_data, &memory_c_array).ok());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
-                         RecordBatchBuilder(&c_memory_data).SetBucket(/*bucket=*/0).Finish());
+                         RecordBatchBuilder(&memory_c_array).SetBucket(0).Finish());
     ASSERT_OK(writer->Write(std::move(memory_batch)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
@@ -3331,6 +3446,7 @@ TEST_F(RealtimeWriteInteTest, TestOverwriteRequiresReopenRealtimeContext) {
 
     ASSERT_OK_AND_ASSIGN(realtime_context, RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(realtime_context));
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/0);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> replay_batch,
                          MakeBatch(building_rows, /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(replay_batch)));
@@ -3386,6 +3502,7 @@ TEST_F(RealtimeWriteInteTest, TestReopenRealtimeContextAfterRollback) {
     // input after that restored boundary.
     ASSERT_OK_AND_ASSIGN(realtime_context, RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(realtime_context));
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/3);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> replay_batch,
                          MakeBatch(second_rows, /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(replay_batch)));
@@ -3808,6 +3925,7 @@ TEST_F(RealtimeWriteInteTest, TestDropPartitionRequiresReopenRealtimeContext) {
     // Reopen with p1's retained progress and replay p0 input that existed only in the old context.
     ASSERT_OK_AND_ASSIGN(realtime_context, RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(writer, CreateRealtimeWriter(realtime_context));
+    ResetExternalOffset({{"pt", "p0"}}, /*bucket=*/0, /*next_offset=*/0);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> replay_batch,
                          MakeBatch(memory_rows, /*partitioned=*/true));
     ASSERT_OK(writer->Write(std::move(replay_batch)));
@@ -3881,6 +3999,7 @@ TEST_F(RealtimeWriteInteTest, TestDropInactivePartitionDoesNotRequireReopenRealt
     ASSERT_EQ(offsets_after_drop.end(), offsets_after_drop.find(p1_partition_bucket));
 
     // Since p1 was never active in this context, writing it after the drop starts from zero.
+    ResetExternalOffset({{"pt", "p1"}}, /*bucket=*/0, /*next_offset=*/0);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p1_batch,
                          MakeBatch(MakeRows(/*first_id=*/30, /*count=*/2, /*partition=*/"p1"),
                                    /*partitioned=*/true));

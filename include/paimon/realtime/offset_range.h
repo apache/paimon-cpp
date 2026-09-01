@@ -29,7 +29,8 @@ namespace paimon {
 struct PAIMON_EXPORT OffsetRange {
     OffsetRange(int64_t begin, int64_t end) : begin(begin), end(end) {}
 
-    /// Returns the number of offsets covered by this range.
+    /// Returns the width of this range. Real-time offsets may have gaps, so this is not a row
+    /// count.
     int64_t Count() const {
         return end - begin;
     }

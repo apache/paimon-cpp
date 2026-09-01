@@ -20,8 +20,10 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "paimon/fs/file_system.h"
@@ -37,8 +39,12 @@ class AppendCountReader : public CountReader {
  public:
     explicit AppendCountReader(std::vector<std::shared_ptr<Split>> splits,
                                const std::shared_ptr<FileSystem>& file_system,
+                               std::map<std::string, int64_t> realtime_row_counts,
                                const std::shared_ptr<MemoryPool>& pool)
-        : splits_(std::move(splits)), file_system_(file_system), pool_(pool) {}
+        : splits_(std::move(splits)),
+          file_system_(file_system),
+          pool_(pool),
+          realtime_row_counts_(std::move(realtime_row_counts)) {}
 
     Result<int64_t> CountRows() override;
 
@@ -50,6 +56,7 @@ class AppendCountReader : public CountReader {
     std::vector<std::shared_ptr<Split>> splits_;
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<MemoryPool> pool_;
+    std::map<std::string, int64_t> realtime_row_counts_;
 };
 
 }  // namespace paimon

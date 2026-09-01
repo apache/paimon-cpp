@@ -18,6 +18,7 @@
 
 #include "paimon/core/realtime/realtime_primary_key_writer.h"
 
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -37,6 +38,7 @@
 #include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
 #include "paimon/core/mergetree/merge_tree_writer.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_primary_key_reader.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
@@ -46,42 +48,36 @@ namespace paimon {
 
 namespace {
 
-Result<std::shared_ptr<arrow::StructArray>> CreateRealtimePrimaryKeyTransportBatch(
-    std::unique_ptr<RecordBatch>&& batch, const std::shared_ptr<arrow::Schema>& write_schema,
+struct PrimaryKeyTransportBatch {
+    std::shared_ptr<arrow::StructArray> data;
+    OffsetRange offset_range;
+};
+
+Result<PrimaryKeyTransportBatch> CreateRealtimePrimaryKeyTransportBatch(
+    RealtimeOffsetUtils::ValidatedBatch&& validated,
+    const std::vector<RecordBatch::RowKind>& row_kinds,
     const std::shared_ptr<arrow::Schema>& transport_schema,
     const std::vector<std::string>& trimmed_primary_keys, int64_t first_sequence_number,
-    int64_t first_offset, arrow::MemoryPool* arrow_pool) {
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-        std::shared_ptr<arrow::Array> input,
-        arrow::ImportArray(batch->GetData(), arrow::struct_(write_schema->fields())));
-    if (!input || input->type_id() != arrow::Type::STRUCT) {
-        return Status::Invalid("PK real-time write data is not a StructArray");
-    }
-    std::shared_ptr<arrow::StructArray> values = checked_pointer_cast<arrow::StructArray>(input);
+    arrow::MemoryPool* arrow_pool) {
+    std::shared_ptr<arrow::StructArray> values = validated.data;
     const int64_t count = values->length();
     arrow::Int8Builder kinds(arrow_pool);
     arrow::Int64Builder sequences(arrow_pool);
-    arrow::Int64Builder offsets(arrow_pool);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(kinds.Reserve(count));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(sequences.Reserve(count));
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(offsets.Reserve(count));
-    const std::vector<RecordBatch::RowKind>& row_kinds = batch->GetRowKind();
     for (int64_t row = 0; row < count; ++row) {
         const RecordBatch::RowKind kind =
             row_kinds.empty() ? RecordBatch::RowKind::INSERT : row_kinds[row];
         kinds.UnsafeAppend(static_cast<int8_t>(kind));
         sequences.UnsafeAppend(first_sequence_number + row);
-        offsets.UnsafeAppend(first_offset + row);
     }
     std::shared_ptr<arrow::Array> kind_array;
     std::shared_ptr<arrow::Array> sequence_array;
-    std::shared_ptr<arrow::Array> offset_array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(kinds.Finish(&kind_array));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(sequences.Finish(&sequence_array));
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(offsets.Finish(&offset_array));
     arrow::ArrayVector columns = {std::move(kind_array), std::move(sequence_array),
-                                  std::move(offset_array)};
-    columns.insert(columns.end(), values->fields().begin(), values->fields().end());
+                                  std::move(validated.offsets)};
+    columns.insert(columns.end(), std::next(values->fields().begin()), values->fields().end());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::StructArray> transport,
         arrow::StructArray::Make(std::move(columns), transport_schema->fields()));
@@ -102,7 +98,8 @@ Result<std::shared_ptr<arrow::StructArray>> CreateRealtimePrimaryKeyTransportBat
         arrow::Datum sorted,
         arrow::compute::Take(arrow::Datum(transport), indices,
                              arrow::compute::TakeOptions::NoBoundsCheck(), &context));
-    return checked_pointer_cast<arrow::StructArray>(sorted.make_array());
+    return PrimaryKeyTransportBatch{checked_pointer_cast<arrow::StructArray>(sorted.make_array()),
+                                    validated.offset_range};
 }
 
 }  // namespace
@@ -163,6 +160,7 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
       realtime_context_(realtime_context),
       partition_bucket_(partition_bucket),
       write_schema_(write_schema),
+      realtime_input_schema_(RealtimeOffsetUtils::CreateInputSchema(write_schema)),
       transport_schema_(transport_schema),
       key_schema_(key_schema),
       trimmed_primary_keys_(trimmed_primary_keys),
@@ -189,27 +187,26 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         static_cast<void>(validated);
     }
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    if (count > std::numeric_limits<int64_t>::max() - next_offset_) {
-        return Status::Invalid("real-time offset range exceeds INT64_MAX");
-    }
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeOffsetUtils::ValidatedBatch validated,
+        RealtimeOffsetUtils::ValidateBatch(batch.get(), realtime_input_schema_, next_offset_));
     // Reserve INT64_MAX as the exhausted sequence-number sentinel.
     if (last_sequence_number_ >= std::numeric_limits<int64_t>::max() - count) {
         return Status::Invalid("PK sequence range exceeds INT64_MAX");
     }
     const int64_t first_sequence = last_sequence_number_ + 1;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<arrow::StructArray> transport,
-        CreateRealtimePrimaryKeyTransportBatch(std::move(batch), write_schema_, transport_schema_,
-                                               trimmed_primary_keys_, first_sequence, next_offset_,
-                                               arrow_pool_.get()));
+    PAIMON_ASSIGN_OR_RAISE(PrimaryKeyTransportBatch transport,
+                           CreateRealtimePrimaryKeyTransportBatch(
+                               std::move(validated), row_kinds, transport_schema_,
+                               trimmed_primary_keys_, first_sequence, arrow_pool_.get()));
     auto output = std::make_unique<ArrowArray>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*transport, output.get()));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*transport.data, output.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(output.get(), /*schema=*/nullptr, arrow_pool_));
     RecordBatchBuilder builder(output.get());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> transport_batch, builder.Finish());
-    PAIMON_RETURN_NOT_OK(realtime_store_->Write(RealtimeWriteBatch{
-        std::move(transport_batch), OffsetRange(next_offset_, next_offset_ + count)}));
-    next_offset_ += count;
+    PAIMON_RETURN_NOT_OK(realtime_store_->Write(
+        RealtimeWriteBatch{std::move(transport_batch), transport.offset_range}));
+    next_offset_ = transport.offset_range.end;
     last_sequence_number_ += count;
     PAIMON_RETURN_NOT_OK(realtime_context_->AdvanceMaterializedMaxSequenceNumber(
         partition_bucket_, last_sequence_number_));

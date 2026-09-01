@@ -55,8 +55,8 @@ class RealtimeCommitProperties {
 
     /// Returns whether all ranges are already covered by committed offsets.
     ///
-    /// Ranges must either all immediately follow committed offsets or all be fully covered.
-    /// Mixed states, gaps, and partial overlaps are rejected.
+    /// Ranges must either follow committed offsets without overlap or all be fully covered.
+    /// Mixed states and partial overlaps are rejected; gaps are allowed.
     static Result<bool> AreRangesCommitted(
         const RealtimeOffsetMap& committed_offsets,
         const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges);

@@ -28,6 +28,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -50,10 +51,17 @@ struct StoredBatch {
 class Segment final : public RealtimeSegmentHandle {
  public:
     Segment(const OffsetRange& range, std::vector<StoredBatch>&& batches)
-        : range_(range), batches_(std::move(batches)) {}
+        : range_(range), batches_(std::move(batches)) {
+        for (const StoredBatch& batch : batches_) {
+            row_count_ += batch.data->length();
+        }
+    }
 
     OffsetRange GetOffsetRange() const override {
         return range_;
+    }
+    int64_t GetRowCount() const override {
+        return row_count_;
     }
     const std::vector<StoredBatch>& Batches() const {
         return batches_;
@@ -62,6 +70,7 @@ class Segment final : public RealtimeSegmentHandle {
  private:
     OffsetRange range_;
     std::vector<StoredBatch> batches_;
+    int64_t row_count_ = 0;
 };
 
 class ReadView final : public RealtimeReadView {
@@ -77,6 +86,32 @@ class ReadView final : public RealtimeReadView {
     std::optional<OffsetRange> GetOffsetRange() const override {
         return range_;
     }
+
+    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
+        int64_t result = 0;
+        for (const std::shared_ptr<Segment>& segment : segments_) {
+            for (const StoredBatch& batch : segment->Batches()) {
+                std::shared_ptr<arrow::Array> offset_field =
+                    batch.data->GetFieldByName(SpecialFields::RealtimeOffset().Name());
+                if (!offset_field || offset_field->type_id() != arrow::Type::INT64) {
+                    return Status::Invalid("PK real-time stored batch must contain int64 offset");
+                }
+                std::shared_ptr<arrow::Int64Array> offsets =
+                    checked_pointer_cast<arrow::Int64Array>(offset_field);
+                if (offsets->null_count() != 0) {
+                    return Status::Invalid("PK real-time stored offset column contains null");
+                }
+                for (int64_t row = 0; row < offsets->length(); ++row) {
+                    const int64_t offset = offsets->Value(row);
+                    if (offset >= visible_offsets.begin && offset < visible_offsets.end) {
+                        ++result;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
     const std::vector<std::shared_ptr<Segment>>& Segments() const {
         return segments_;
     }
@@ -146,9 +181,9 @@ class PrimaryKeyRealtimeStore::Impl {
             return Status::Invalid("PK real-time write batch is null");
         }
         const int64_t row_count = write_batch.batch->GetData()->length;
-        if (write_batch.offset_range.begin < 0 || write_batch.offset_range.Count() != row_count ||
-            row_count <= 0) {
-            return Status::Invalid("PK real-time offset range does not match batch row count");
+        if (write_batch.offset_range.begin < 0 ||
+            write_batch.offset_range.begin >= write_batch.offset_range.end || row_count <= 0) {
+            return Status::Invalid("PK real-time offset range is invalid");
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::Array> array,
@@ -160,6 +195,11 @@ class PrimaryKeyRealtimeStore::Impl {
         std::shared_ptr<arrow::StructArray> transport =
             checked_pointer_cast<arrow::StructArray>(array);
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!building_.empty() &&
+            write_batch.offset_range.begin < building_.back().offset_range.end) {
+            return Status::Invalid(
+                "PK real-time offset ranges must be ordered and non-overlapping");
+        }
         building_.push_back(StoredBatch{transport, write_batch.offset_range,
                                         ArrowUtils::GetArrayMemoryUsage(transport->data())});
         building_memory_usage_ += building_.back().memory_usage;
