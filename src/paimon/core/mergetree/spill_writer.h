@@ -73,7 +73,7 @@ class SpillWriter {
     bool use_threads_;
     std::shared_ptr<OutputStream> out_stream_;
     std::shared_ptr<ArrowOutputStreamAdapter> arrow_output_stream_adapter_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<arrow::ipc::RecordBatchWriter> arrow_writer_;
     FileIOChannel::ID channel_id_;
     bool closed_ = false;

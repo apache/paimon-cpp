@@ -233,7 +233,7 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                                table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         if (result == nullptr) {
             return std::vector<Row>();
         }

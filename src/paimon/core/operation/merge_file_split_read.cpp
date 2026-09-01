@@ -237,7 +237,7 @@ class MergeFileSplitRead::RealtimeReaderBuilder {
         if (record_readers.empty()) {
             record_readers_guard.Release();
             return std::make_unique<ConcatBatchReader>(std::vector<std::unique_ptr<BatchReader>>{},
-                                                       owner_->pool_);
+                                                       owner_->arrow_pool_);
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<SortMergeReader> sort_merge_reader,
                                owner_->CreateSortMergeReader(std::move(record_readers)));
@@ -335,7 +335,7 @@ Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateReader(
     } else {
         PAIMON_ASSIGN_OR_RAISE(batch_reader, CreateMergeReader(data_split, data_file_path_factory));
     }
-    return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), pool_);
+    return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), arrow_pool_);
 }
 
 Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateRealtimeReader(
@@ -435,7 +435,8 @@ Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateMergeReader(
                                                       data_file_path_factory));
         batch_readers.push_back(std::move(projection_reader));
     }
-    auto concat_batch_reader = std::make_unique<ConcatBatchReader>(std::move(batch_readers), pool_);
+    auto concat_batch_reader =
+        std::make_unique<ConcatBatchReader>(std::move(batch_readers), arrow_pool_);
     return AbstractSplitRead::ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader),
                                                            context_->GetPredicate());
 }
@@ -463,7 +464,8 @@ Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateNoMergeReader(
 
     auto raw_readers =
         ObjectUtils::MoveVector<std::unique_ptr<BatchReader>>(std::move(raw_file_readers));
-    auto concat_batch_reader = std::make_unique<ConcatBatchReader>(std::move(raw_readers), pool_);
+    auto concat_batch_reader =
+        std::make_unique<ConcatBatchReader>(std::move(raw_readers), arrow_pool_);
     return AbstractSplitRead::ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader),
                                                            context_->GetPredicate());
 }
@@ -681,16 +683,16 @@ Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateProjectedReader(
     // KeyValueProjectionReader converts KeyValue objects to arrow array according to projection
     std::unique_ptr<BatchReader> projection_reader;
     if (!context_->EnableMultiThreadRowToBatch()) {
-        PAIMON_ASSIGN_OR_RAISE(
-            projection_reader,
-            KeyValueProjectionReader::Create(std::move(sort_merge_reader), raw_read_schema_,
-                                             projection_, options_.GetReadBatchSize(), pool_));
+        PAIMON_ASSIGN_OR_RAISE(projection_reader,
+                               KeyValueProjectionReader::Create(
+                                   std::move(sort_merge_reader), raw_read_schema_, projection_,
+                                   options_.GetReadBatchSize(), arrow_pool_));
     } else {
         const int32_t thread_number = context_->GetRowToBatchThreadNumber();
         assert(thread_number > 0);
         projection_reader = std::make_unique<AsyncKeyValueProjectionReader>(
             std::move(sort_merge_reader), raw_read_schema_, projection_,
-            options_.GetReadBatchSize(), thread_number, pool_);
+            options_.GetReadBatchSize(), thread_number, arrow_pool_);
     }
     ScopeGuard projection_reader_guard([&projection_reader]() {
         if (projection_reader) {
@@ -702,7 +704,8 @@ Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateProjectedReader(
     projection_reader_guard.Release();
     projection_reader = std::move(filtered_reader);
     if (complete_row_kind) {
-        return std::make_unique<CompleteRowKindBatchReader>(std::move(projection_reader), pool_);
+        return std::make_unique<CompleteRowKindBatchReader>(std::move(projection_reader),
+                                                            arrow_pool_);
     }
     return projection_reader;
 }

@@ -45,7 +45,8 @@ class ReaderUtils {
     /// @return returned array contains all the valid rows in the input array
     /// This function may trigger data copy.
     static Result<BatchReader::ReadBatch> ApplyBitmapToReadBatch(
-        BatchReader::ReadBatchWithBitmap&& batch_with_bitmap, arrow::MemoryPool* arrow_pool);
+        BatchReader::ReadBatchWithBitmap&& batch_with_bitmap,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
     /// @param batch a read batch
     /// @return return the input batch and a all valid bitmap
     static BatchReader::ReadBatchWithBitmap AddAllValidBitmap(BatchReader::ReadBatch&& batch);

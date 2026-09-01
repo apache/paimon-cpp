@@ -81,7 +81,7 @@ class BlobFallbackBatchReader : public BatchReader {
     static Result<std::unique_ptr<BlobFallbackBatchReader>> Create(
         std::vector<std::vector<Segment>>&& sequence_groups,
         const std::shared_ptr<arrow::Schema>& read_schema, int32_t read_batch_size,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<ReadBatch> NextBatch() override;
 
@@ -127,7 +127,7 @@ class BlobFallbackBatchReader : public BatchReader {
                             const std::shared_ptr<arrow::Schema>& read_schema,
                             int32_t blob_field_idx, int32_t row_id_field_idx,
                             int32_t seq_num_field_idx, int32_t read_batch_size,
-                            const std::shared_ptr<MemoryPool>& pool);
+                            const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     /// Collects up to `want` rows from the group into chunks. Only the first group may come up
     /// short (which defines the window size); any later group ending early is a misalignment.
@@ -158,6 +158,7 @@ class BlobFallbackBatchReader : public BatchReader {
     const int32_t seq_num_field_idx_;
     const int32_t read_batch_size_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<Metrics> finished_reader_metrics_;
     bool closed_ = false;
 };
 
