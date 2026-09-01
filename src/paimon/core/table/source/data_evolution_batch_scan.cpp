@@ -24,6 +24,7 @@
 
 #include "paimon/core/global_index/global_index_scan_impl.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_index_scan.h"
@@ -42,35 +43,36 @@ DataEvolutionBatchScan::DataEvolutionBatchScan(
       executor_(executor) {}
 
 Result<std::shared_ptr<Plan>> DataEvolutionBatchScan::CreatePlan() {
-    std::optional<std::vector<Range>> row_ranges;
     std::optional<int64_t> global_index_snapshot_id;
     std::shared_ptr<GlobalIndexResult> final_global_index_result = global_index_result_;
     if (!final_global_index_result) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<EvaluatedGlobalIndex> evaluated_index,
                                EvalGlobalIndex());
-        if (evaluated_index && evaluated_index->result) {
+        if (evaluated_index) {
             final_global_index_result = evaluated_index->result;
             global_index_snapshot_id = evaluated_index->snapshot_id;
-            PAIMON_ASSIGN_OR_RAISE(row_ranges, evaluated_index->result->ToRanges());
         }
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(row_ranges, final_global_index_result->ToRanges());
     }
-    if (!row_ranges) {
+    if (!final_global_index_result) {
         return batch_scan_->CreatePlan();
     }
-    if (row_ranges.value().empty()) {
+    if (core_options_.GetScanTagName() || core_options_.GetScanTimestampMillis()) {
+        return Status::NotImplemented("Global index scan does not support time travel");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<Range> row_ranges, final_global_index_result->ToRanges());
+    if (row_ranges.empty()) {
         if (!global_index_snapshot_id) {
             PAIMON_ASSIGN_OR_RAISE(global_index_snapshot_id, ResolveGlobalIndexSnapshotId());
-        }
-        if (!global_index_snapshot_id) {
-            return PlanImpl::EmptyPlan();
+            if (!global_index_snapshot_id) {
+                return PlanImpl::EmptyPlan();
+            }
+            PAIMON_RETURN_NOT_OK(snapshot_reader_->GetSnapshotManager()->LoadSnapshot(
+                global_index_snapshot_id.value()));
         }
         return std::make_shared<PlanImpl>(global_index_snapshot_id,
                                           std::vector<std::shared_ptr<Split>>());
     }
-    PAIMON_ASSIGN_OR_RAISE(RowRangeIndex row_range_index,
-                           RowRangeIndex::Create(row_ranges.value()));
+    PAIMON_ASSIGN_OR_RAISE(RowRangeIndex row_range_index, RowRangeIndex::Create(row_ranges));
     batch_scan_->WithRowRangeIndex(row_range_index);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> data_plan, batch_scan_->CreatePlan());
     std::map<int64_t, float> id_to_score;
@@ -154,7 +156,6 @@ DataEvolutionBatchScan::EvalGlobalIndex() const {
         return std::optional<EvaluatedGlobalIndex>();
     }
     auto partition_filter = batch_scan_->GetPartitionPredicate();
-    // TODO(lisizhuo.lsz): support time travel
     PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> snapshot_id, ResolveGlobalIndexSnapshotId());
     if (!snapshot_id) {
         return Status::Invalid("not found latest snapshot");

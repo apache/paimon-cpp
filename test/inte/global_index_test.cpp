@@ -15,6 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#include <limits>
+
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
@@ -1489,7 +1492,7 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
     }
 }
 
-TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexMissPreservesResolvedSnapshot) {
+TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
     CreateTable();
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -1504,8 +1507,6 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexMissPreservesResolvedSnapsho
     ASSERT_OK(Commit(table_path, commit_msgs));
     ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", "bitmap", /*options=*/{},
                          Range(0, 1)));
-    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "bitmap", /*options=*/{},
-                         Range(0, 1)));
 
     auto predicate =
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
@@ -1513,27 +1514,36 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexMissPreservesResolvedSnapsho
 
     ASSERT_OK_AND_ASSIGN(auto latest_plan, ScanGlobalIndexAndData(table_path, predicate));
     ASSERT_TRUE(latest_plan->Splits().empty());
-    ASSERT_EQ(latest_plan->SnapshotId(), std::optional<int64_t>(3));
-
-    ASSERT_OK_AND_ASSIGN(
-        auto explicit_plan,
-        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_SNAPSHOT_ID, "2"}}));
-    ASSERT_TRUE(explicit_plan->Splits().empty());
-    ASSERT_EQ(explicit_plan->SnapshotId(), std::optional<int64_t>(2));
+    ASSERT_EQ(latest_plan->SnapshotId(), std::optional<int64_t>(2));
 
     auto empty_index_result = BitmapGlobalIndexResult::FromRanges({});
-    ASSERT_OK_AND_ASSIGN(auto supplied_latest_plan,
-                         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, /*options=*/{},
-                                                empty_index_result));
-    ASSERT_TRUE(supplied_latest_plan->Splits().empty());
-    ASSERT_EQ(supplied_latest_plan->SnapshotId(), std::optional<int64_t>(3));
-
     ASSERT_OK_AND_ASSIGN(
         auto supplied_explicit_plan,
         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
-                               {{Options::SCAN_SNAPSHOT_ID, "2"}}, empty_index_result));
+                               {{Options::SCAN_SNAPSHOT_ID, "1"}}, empty_index_result));
     ASSERT_TRUE(supplied_explicit_plan->Splits().empty());
-    ASSERT_EQ(supplied_explicit_plan->SnapshotId(), std::optional<int64_t>(2));
+    ASSERT_EQ(supplied_explicit_plan->SnapshotId(), std::optional<int64_t>(1));
+
+    std::vector<std::map<std::string, std::string>> time_travel_options = {
+        {{Options::SCAN_TAG_NAME, "tag"}},
+        {{Options::SCAN_TIMESTAMP_MILLIS, std::to_string(std::numeric_limits<int64_t>::max())}}};
+    for (const auto& options : time_travel_options) {
+        Result<std::shared_ptr<Plan>> result =
+            ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, options, empty_index_result);
+        ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+    }
+
+    auto unindexed_predicate = PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",
+                                                       FieldType::DOUBLE, Literal(99.9));
+    ASSERT_OK_AND_ASSIGN(auto fallback_plan, ScanGlobalIndexAndData(table_path, unindexed_predicate,
+                                                                    time_travel_options.back()));
+    ASSERT_EQ(fallback_plan->SnapshotId(), std::optional<int64_t>(2));
+
+    Result<std::shared_ptr<Plan>> nonexistent_snapshot_result =
+        ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
+                               {{Options::SCAN_SNAPSHOT_ID, "999"}}, empty_index_result);
+    ASSERT_TRUE(nonexistent_snapshot_result.status().IsNotExist())
+        << nonexistent_snapshot_result.status().ToString();
 }
 
 TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithOnlyOnePartitionHasIndex) {
