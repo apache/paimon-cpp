@@ -32,10 +32,10 @@
 namespace paimon {
 
 Result<std::unique_ptr<GenericRowToArrowArrayConverter>> GenericRowToArrowArrayConverter::Create(
-    const std::shared_ptr<arrow::Schema>& schema, arrow::MemoryPool* pool) {
+    const std::shared_ptr<arrow::Schema>& schema, const std::shared_ptr<arrow::MemoryPool>& pool) {
     std::unique_ptr<arrow::ArrayBuilder> array_builder;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::MakeBuilder(
-        pool, std::make_shared<arrow::StructType>(schema->fields()), &array_builder));
+        pool.get(), std::make_shared<arrow::StructType>(schema->fields()), &array_builder));
 
     auto struct_builder = checked_pointer_cast<arrow::StructBuilder>(std::move(array_builder));
     std::vector<RowToArrowArrayConverter::AppendValueFunc> appenders;
@@ -48,7 +48,7 @@ Result<std::unique_ptr<GenericRowToArrowArrayConverter>> GenericRowToArrowArrayC
         appenders.emplace_back(std::move(func));
     }
     return std::unique_ptr<GenericRowToArrowArrayConverter>(new GenericRowToArrowArrayConverter(
-        reserve_count, std::move(appenders), std::move(struct_builder), nullptr));
+        reserve_count, std::move(appenders), std::move(struct_builder), pool));
 }
 
 Result<BatchReader::ReadBatch> GenericRowToArrowArrayConverter::NextBatch(

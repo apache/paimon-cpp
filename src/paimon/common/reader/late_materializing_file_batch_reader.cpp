@@ -45,20 +45,16 @@
 namespace paimon {
 
 Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
-    std::unique_ptr<FileBatchReader> inner, std::shared_ptr<MemoryPool> pool) {
-    // The reader's own compaction allocations go through an arrow pool; bridge the paimon pool
-    // once here so the accounting matches the rest of the read path.
-    if (pool == nullptr) {
-        return Status::Invalid("pool could not be nullptr.");
+    std::unique_ptr<FileBatchReader> inner, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    if (arrow_pool == nullptr) {
+        return Status::Invalid("arrow pool could not be nullptr.");
     }
     if (inner == nullptr) {
         return Status::Invalid("inner could not be nullptr.");
     }
     auto* prefetch_inner = dynamic_cast<PrefetchFileBatchReader*>(inner.get());
-    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
-    auto reader =
-        std::unique_ptr<LateMaterializingFileBatchReader>(new LateMaterializingFileBatchReader(
-            std::move(inner), prefetch_inner, std::move(arrow_pool)));
+    auto reader = std::unique_ptr<LateMaterializingFileBatchReader>(
+        new LateMaterializingFileBatchReader(std::move(inner), prefetch_inner, arrow_pool));
     return reader;
 }
 
@@ -241,6 +237,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::AssembleFul
     std::unique_ptr<::ArrowSchema> c_schema = std::make_unique<::ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*full_struct, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return std::make_pair(std::move(c_array), std::move(c_schema));
 }
 

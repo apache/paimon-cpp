@@ -64,7 +64,12 @@ TEST_F(OrcReaderWrapperTest, NextRowToRead) {
         writer->close();
     }
 
+    std::shared_ptr<OrcReadMemory> read_memory = std::make_shared<OrcReadMemory>(GetDefaultPool());
+    std::weak_ptr<OrcReadMemory> weak_read_memory = read_memory;
+    std::weak_ptr<arrow::MemoryPool> weak_arrow_pool = read_memory->arrow_pool;
+    std::weak_ptr<::orc::MemoryPool> weak_orc_pool = read_memory->orc_pool;
     ::orc::ReaderOptions reader_opts;
+    reader_opts.setMemoryPool(*read_memory->orc_pool);
     std::unique_ptr<::orc::Reader> reader =
         ::orc::createReader(::orc::readLocalFile(file_path), reader_opts);
     std::map<std::string, std::string> options;
@@ -74,8 +79,8 @@ TEST_F(OrcReaderWrapperTest, NextRowToRead) {
                                            /*batch_size=*/2,
                                            /*natural_read_size=*/0,
                                            /*options=*/options,
-                                           /*arrow_pool=*/GetArrowPool(GetDefaultPool()),
-                                           /*orc_pool=*/nullptr));
+                                           /*read_memory=*/read_memory));
+    read_memory.reset();
     auto data_types =
         arrow::struct_({arrow::field("col1", arrow::int64()), arrow::field("col2", arrow::utf8())});
     ::orc::RowReaderOptions row_opts;
@@ -87,11 +92,19 @@ TEST_F(OrcReaderWrapperTest, NextRowToRead) {
 
     ASSERT_OK_AND_ASSIGN(auto batch2, wrapper->Next());
     EXPECT_EQ(wrapper->GetNextRowToRead(), 3u);  // only 1 row left
-    ReaderUtils::ReleaseReadBatch(std::move(batch2));
 
     ASSERT_OK_AND_ASSIGN(auto batch3, wrapper->Next());
     EXPECT_EQ(wrapper->GetNextRowToRead(), 3u);
     ReaderUtils::ReleaseReadBatch(std::move(batch3));
+
+    wrapper.reset();
+    EXPECT_FALSE(weak_read_memory.expired());
+    EXPECT_FALSE(weak_arrow_pool.expired());
+    EXPECT_FALSE(weak_orc_pool.expired());
+    ReaderUtils::ReleaseReadBatch(std::move(batch2));
+    EXPECT_TRUE(weak_read_memory.expired());
+    EXPECT_TRUE(weak_arrow_pool.expired());
+    EXPECT_TRUE(weak_orc_pool.expired());
 }
 
 }  // namespace paimon::orc::test

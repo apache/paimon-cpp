@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/array_nested.h"

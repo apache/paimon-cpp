@@ -42,8 +42,8 @@ class Metrics;
 class CompleteRowKindBatchReader : public BatchReader {
  public:
     CompleteRowKindBatchReader(std::unique_ptr<BatchReader>&& reader,
-                               const std::shared_ptr<MemoryPool>& pool)
-        : arrow_pool_(GetArrowPool(pool)), reader_(std::move(reader)) {}
+                               const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+        : arrow_pool_(arrow_pool), reader_(std::move(reader)) {}
 
     Result<ReadBatch> NextBatch() override;
 
@@ -65,7 +65,7 @@ class CompleteRowKindBatchReader : public BatchReader {
     void UpdateFieldNamesWithRowKind(const std::shared_ptr<arrow::StructArray>& struct_array);
 
  private:
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<arrow::Array> row_kind_array_;
     std::vector<std::string> field_names_with_row_kind_;

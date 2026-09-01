@@ -51,6 +51,7 @@ class IOManager;
 class FieldsComparator;
 class MemoryPool;
 class Metrics;
+class KeyValueRecordReader;
 template <typename T>
 class MergeFunctionWrapper;
 
@@ -68,6 +69,10 @@ class MergeTreeWriter : public BatchWriter {
         const std::shared_ptr<MemoryPool>& pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
+
+    /// Consumes readers whose complete streams are individually sorted by primary key and sequence
+    /// number. Readers are closed on success or failure.
+    Status WriteSortedReadersToFiles(std::vector<std::unique_ptr<KeyValueRecordReader>>&& readers);
 
     Status Compact(bool full_compaction) override;
 

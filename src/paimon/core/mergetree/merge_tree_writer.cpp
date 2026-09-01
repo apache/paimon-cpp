@@ -161,6 +161,65 @@ Status MergeTreeWriter::Write(std::unique_ptr<RecordBatch>&& moved_batch) {
     return Status::OK();
 }
 
+Status MergeTreeWriter::WriteSortedReadersToFiles(
+    std::vector<std::unique_ptr<KeyValueRecordReader>>&& readers) {
+    auto raw_readers_guard = ScopeGuard([&]() -> void {
+        for (std::unique_ptr<KeyValueRecordReader>& reader : readers) {
+            if (reader != nullptr) {
+                reader->Close();
+            }
+        }
+    });
+    if (readers.empty()) {
+        return Status::Invalid("sorted readers must not be empty");
+    }
+    for (const std::unique_ptr<KeyValueRecordReader>& reader : readers) {
+        if (reader == nullptr) {
+            return Status::Invalid("sorted readers must not contain null reader");
+        }
+    }
+
+    // prepare loser tree sort merge reader
+    auto sort_merge_reader = std::make_unique<SortMergeReaderWithLoserTree>(
+        std::move(readers), key_comparator_, user_defined_seq_comparator_, merge_function_wrapper_);
+    raw_readers_guard.Release();
+    // project key value to arrow array
+    auto create_consumer = [target_schema = write_schema_, pool = pool_]()
+        -> Result<std::unique_ptr<RowToArrowArrayConverter<KeyValue, KeyValueBatch>>> {
+        return KeyValueMetaProjectionConsumer::Create(target_schema, pool);
+    };
+    // consumer batch size is WriteBatchSize
+    std::unique_ptr<AsyncKeyValueBatchProducer> producer =
+        std::make_unique<SortMergeReaderBatchProducer>(std::move(sort_merge_reader),
+                                                       options_.GetWriteBatchSize());
+    auto async_key_value_producer_consumer =
+        std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
+            std::move(producer), create_consumer, /*projection_thread_num=*/1);
+    ScopeGuard async_readers_guard([&]() -> void { async_key_value_producer_consumer->Close(); });
+    std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>> rolling_writer;
+    PAIMON_ASSIGN_OR_RAISE(rolling_writer, CreateRollingRowWriter());
+    ScopeGuard abort_writer_guard([&]() -> void { rolling_writer->Abort(); });
+    while (true) {
+        PAIMON_ASSIGN_OR_RAISE(KeyValueBatch key_value_batch,
+                               async_key_value_producer_consumer->NextBatch());
+        if (key_value_batch.batch == nullptr) {
+            break;
+        }
+        PAIMON_RETURN_NOT_OK(rolling_writer->Write(std::move(key_value_batch)));
+    }
+    PAIMON_RETURN_NOT_OK(rolling_writer->Close());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<DataFileMeta>> flushed_files,
+                           rolling_writer->GetResult());
+    abort_writer_guard.Release();
+
+    for (const std::shared_ptr<DataFileMeta>& flushed_file : flushed_files) {
+        new_files_.emplace_back(flushed_file);
+        PAIMON_RETURN_NOT_OK(compact_manager_->AddNewFile(flushed_file));
+    }
+    metrics_->Merge(rolling_writer->GetMetrics());
+    return Status::OK();
+}
+
 Status MergeTreeWriter::Compact(bool full_compaction) {
     return FlushWriteBuffer(/*wait_for_latest_compaction=*/true, full_compaction);
 }
@@ -309,52 +368,20 @@ Status MergeTreeWriter::FlushWriteBuffer(bool wait_for_latest_compaction,
             PAIMON_ASSIGN_OR_RAISE(flushed_changelog_files, changelog_writer->GetResult());
         }
 
+        // 1. flush write buffer to get sorted readers
         // Flush write buffer to get sorted and merged data readers.
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
                                write_buffer_->CreateReaders());
-        auto sort_merge_reader = std::make_unique<SortMergeReaderWithLoserTree>(
-            std::move(readers), key_comparator_, user_defined_seq_comparator_,
-            merge_function_wrapper_);
-        std::unique_ptr<AsyncKeyValueBatchProducer> producer =
-            std::make_unique<SortMergeReaderBatchProducer>(std::move(sort_merge_reader),
-                                                           options_.GetWriteBatchSize());
-        auto async_key_value_producer_consumer =
-            std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
-                std::move(producer), create_consumer, /*projection_thread_num=*/1);
-        std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>
-            rolling_writer;
-        PAIMON_ASSIGN_OR_RAISE(rolling_writer, CreateRollingRowWriter());
-        ScopeGuard write_guard([&]() -> void {
-            rolling_writer->Abort();
-            async_key_value_producer_consumer->Close();
-        });
-        while (true) {
-            PAIMON_ASSIGN_OR_RAISE(KeyValueBatch key_value_batch,
-                                   async_key_value_producer_consumer->NextBatch());
-            if (key_value_batch.batch == nullptr) {
-                break;
-            }
-            PAIMON_RETURN_NOT_OK(rolling_writer->Write(std::move(key_value_batch)));
-        }
-        PAIMON_RETURN_NOT_OK(rolling_writer->Close());
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<DataFileMeta>> flushed_files,
-                               rolling_writer->GetResult());
-        async_key_value_producer_consumer->Close();
+        PAIMON_RETURN_NOT_OK(WriteSortedReadersToFiles(std::move(readers)));
         if (async_changelog_producer_consumer) {
             async_changelog_producer_consumer->Close();
         }
 
         new_changelog_files_.insert(new_changelog_files_.end(), flushed_changelog_files.begin(),
                                     flushed_changelog_files.end());
-        new_files_.insert(new_files_.end(), flushed_files.begin(), flushed_files.end());
 
-        write_guard.Release();
         changelog_write_guard.Release();
 
-        for (const auto& flushed_file : flushed_files) {
-            PAIMON_RETURN_NOT_OK(compact_manager_->AddNewFile(flushed_file));
-        }
-        metrics_->Merge(rolling_writer->GetMetrics());
         if (changelog_writer) {
             metrics_->Merge(changelog_writer->GetMetrics());
         }

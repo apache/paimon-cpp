@@ -219,7 +219,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateReader(
                                InnerCreateReader(data_split, indexed_split->RowRanges()));
         if (HasIndexScoreField(raw_read_schema_)) {
             batch_reader = std::make_unique<CompleteIndexScoreBatchReader>(
-                std::move(batch_reader), indexed_split->Scores(), pool_);
+                std::move(batch_reader), indexed_split->Scores(), arrow_pool_);
         }
         return WrapWithBlobViewResolverIfNeeded(data_split, std::move(batch_reader),
                                                 indexed_split->RowRanges());
@@ -266,8 +266,9 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::WrapWithBlobViewRes
     PAIMON_ASSIGN_OR_RAISE(
         BlobViewResolver resolver,
         BlobViewLookup::CreateResolver(blob_view_structs, catalog_context, pool_, executor));
-    return std::make_unique<BlobViewResolvingBatchReader>(
-        std::move(inner_reader), std::move(read_blob_view_fields), std::move(resolver), pool_);
+    return std::make_unique<BlobViewResolvingBatchReader>(std::move(inner_reader),
+                                                          std::move(read_blob_view_fields),
+                                                          std::move(resolver), arrow_pool_);
 }
 
 Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobViewReader(
@@ -330,7 +331,7 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobViewReade
             batch_readers.push_back(std::move(raw_file_reader));
         }
     }
-    return std::make_unique<ConcatBatchReader>(std::move(batch_readers), pool_);
+    return std::make_unique<ConcatBatchReader>(std::move(batch_readers), arrow_pool_);
 }
 
 Result<std::unordered_set<BlobViewStruct>> DataEvolutionSplitRead::ExtractBlobViewStructs(
@@ -438,11 +439,12 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::InnerCreateReader(
             sub_readers.push_back(std::move(evolution_reader));
         }
     }
-    auto concat_batch_reader = std::make_unique<ConcatBatchReader>(std::move(sub_readers), pool_);
+    auto concat_batch_reader =
+        std::make_unique<ConcatBatchReader>(std::move(sub_readers), arrow_pool_);
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BatchReader> batch_reader,
         ApplyPredicateFilterIfNeeded(std::move(concat_batch_reader), context_->GetPredicate()));
-    return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), pool_);
+    return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), arrow_pool_);
 }
 
 Result<std::shared_ptr<Predicate>> DataEvolutionSplitRead::CreatePushDownPredicate(
@@ -739,7 +741,7 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateU
                         std::move(file_readers));
                     // Concat multiple blob files that map to the same data file.
                     file_batch_readers[file_idx] =
-                        std::make_unique<ConcatBatchReader>(std::move(raw_readers), pool_);
+                        std::make_unique<ConcatBatchReader>(std::move(raw_readers), arrow_pool_);
                 }
             }
         }
@@ -747,7 +749,7 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionSplitRead::CreateU
     // TODO(xinyu.lxy): check nullable when reader_offsets[read_field_idx] = -1
     return DataEvolutionFileReader::Create(std::move(file_batch_readers), raw_read_schema_,
                                            options_.GetReadBatchSize(), reader_offsets,
-                                           field_offsets, pool_);
+                                           field_offsets, arrow_pool_);
 }
 
 namespace {
@@ -849,9 +851,10 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateBlobFallbackR
         }
         groups.push_back(std::move(segments));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BlobFallbackBatchReader> fallback_reader,
-                           BlobFallbackBatchReader::Create(std::move(groups), file_read_schema,
-                                                           options_.GetReadBatchSize(), pool_));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BlobFallbackBatchReader> fallback_reader,
+        BlobFallbackBatchReader::Create(std::move(groups), file_read_schema,
+                                        options_.GetReadBatchSize(), arrow_pool_));
     return std::move(fallback_reader);
 }
 
