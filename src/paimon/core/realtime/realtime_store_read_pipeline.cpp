@@ -42,11 +42,11 @@ class PhysicalToLogicalBatchReader : public BatchReader {
     PhysicalToLogicalBatchReader(
         std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<arrow::Schema>& logical_schema,
         const std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>>& plans,
-        const std::shared_ptr<MemoryPool>& pool)
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
         : reader_(std::move(reader)),
           logical_schema_(logical_schema),
           plans_(plans),
-          arrow_pool_(GetArrowPool(pool)) {}
+          arrow_pool_(arrow_pool) {}
 
     Result<ReadBatch> NextBatch() override {
         return Status::Invalid(
@@ -141,9 +141,10 @@ class PhysicalToLogicalBatchReader : public BatchReader {
 Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Create(
     const std::shared_ptr<arrow::Schema>& logical_schema,
     const std::shared_ptr<arrow::Schema>& realtime_write_schema,
-    const std::shared_ptr<MemoryPool>& pool) {
-    if (!logical_schema || !realtime_write_schema || !pool) {
-        return Status::Invalid("real-time store read pipeline requires schemas and a memory pool");
+    const std::shared_ptr<MemoryPool>& memory_pool,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    if (!logical_schema || !realtime_write_schema || !memory_pool || !arrow_pool) {
+        return Status::Invalid("real-time store read pipeline requires schemas and memory pools");
     }
 
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> plans;
@@ -166,7 +167,7 @@ Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Cr
 
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> variant_plans;
     PAIMON_ASSIGN_OR_RAISE(variant_plans, VariantShreddingReadPlanFactory::CreateReadPlans(
-                                              logical_schema, realtime_write_schema, pool));
+                                              logical_schema, realtime_write_schema, memory_pool));
     for (auto& [field_name, plan] : variant_plans) {
         if (!plans.emplace(field_name, std::move(plan)).second) {
             return Status::Invalid(
@@ -197,19 +198,20 @@ Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Cr
     }
     auto store_read_schema =
         arrow::schema(std::move(store_read_fields), logical_schema->metadata());
-    return std::unique_ptr<RealtimeStoreReadPipeline>(new RealtimeStoreReadPipeline(
-        logical_schema, std::move(store_read_schema), std::move(plans), needs_conversion, pool));
+    return std::unique_ptr<RealtimeStoreReadPipeline>(
+        new RealtimeStoreReadPipeline(logical_schema, std::move(store_read_schema),
+                                      std::move(plans), needs_conversion, arrow_pool));
 }
 
 RealtimeStoreReadPipeline::RealtimeStoreReadPipeline(
     std::shared_ptr<arrow::Schema> logical_schema, std::shared_ptr<arrow::Schema> store_read_schema,
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> plans, bool needs_conversion,
-    std::shared_ptr<MemoryPool> pool)
+    std::shared_ptr<arrow::MemoryPool> arrow_pool)
     : logical_schema_(std::move(logical_schema)),
       store_read_schema_(std::move(store_read_schema)),
       plans_(std::move(plans)),
       needs_conversion_(needs_conversion),
-      pool_(std::move(pool)) {}
+      arrow_pool_(std::move(arrow_pool)) {}
 
 Result<std::unique_ptr<BatchReader>> RealtimeStoreReadPipeline::Wrap(
     std::unique_ptr<BatchReader>&& store_reader, const OffsetRange& visible_offsets) const {
@@ -222,7 +224,7 @@ Result<std::unique_ptr<BatchReader>> RealtimeStoreReadPipeline::Wrap(
         return std::move(reader);
     }
     return std::unique_ptr<BatchReader>(
-        new PhysicalToLogicalBatchReader(std::move(reader), logical_schema_, plans_, pool_));
+        new PhysicalToLogicalBatchReader(std::move(reader), logical_schema_, plans_, arrow_pool_));
 }
 
 }  // namespace paimon

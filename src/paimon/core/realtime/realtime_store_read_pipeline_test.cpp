@@ -29,6 +29,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/data/variant.h"
@@ -86,12 +87,9 @@ std::shared_ptr<arrow::StructArray> AddRowKindAndOffset(
     return result.ValueOrDie();
 }
 
-struct ReadResult {
-    std::shared_ptr<arrow::StructArray> array;
-};
-
-Result<ReadResult> ReadOne(const RealtimeStoreReadPipeline& pipeline,
-                           const std::shared_ptr<arrow::StructArray>& source_array) {
+Result<std::shared_ptr<arrow::StructArray>> ReadOne(
+    const RealtimeStoreReadPipeline& pipeline,
+    const std::shared_ptr<arrow::StructArray>& source_array) {
     auto source_reader = std::make_unique<MockFileBatchReader>(
         source_array, source_array->type(), static_cast<int32_t>(source_array->length()));
     source_reader->EnableRandomizeBatchSize(false);
@@ -105,7 +103,7 @@ Result<ReadResult> ReadOne(const RealtimeStoreReadPipeline& pipeline,
     wrapped.reset();
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> imported,
                                       arrow::ImportArray(batch.first.get(), batch.second.get()));
-    return ReadResult{checked_pointer_cast<arrow::StructArray>(imported)};
+    return checked_pointer_cast<arrow::StructArray>(imported);
 }
 
 }  // namespace
@@ -133,9 +131,10 @@ TEST(RealtimeStoreReadPipelineTest, SelectedMapKeysAsMapAndStruct) {
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<RealtimeStoreReadPipeline> map_pipeline,
         RealtimeStoreReadPipeline::Create(arrow::schema({value_kind_field, id_field, selected_map}),
-                                          write_schema, pool));
+                                          write_schema, pool, GetArrowPool(pool)));
     ASSERT_TRUE(map_pipeline->StoreReadSchema()->field(2)->type()->Equals(map_type));
-    ASSERT_OK_AND_ASSIGN(ReadResult map_result, ReadOne(*map_pipeline, source));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> map_result,
+                         ReadOne(*map_pipeline, source));
     std::shared_ptr<arrow::Array> expected_map =
         arrow::ipc::internal::json::ArrayFromJSON(
             arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), id_field, selected_map}),
@@ -145,17 +144,17 @@ TEST(RealtimeStoreReadPipelineTest, SelectedMapKeysAsMapAndStruct) {
             [0, 3, null]
         ])")
             .ValueOrDie();
-    ASSERT_TRUE(map_result.array->Equals(expected_map))
-        << "actual: " << map_result.array->ToString();
+    ASSERT_TRUE(map_result->Equals(expected_map)) << "actual: " << map_result->ToString();
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> selected_struct,
                          MapAccessField(tags_field, {"a", "missing"}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<RealtimeStoreReadPipeline> struct_pipeline,
-        RealtimeStoreReadPipeline::Create(
-            arrow::schema({value_kind_field, id_field, selected_struct}), write_schema, pool));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeStoreReadPipeline> struct_pipeline,
+                         RealtimeStoreReadPipeline::Create(
+                             arrow::schema({value_kind_field, id_field, selected_struct}),
+                             write_schema, pool, GetArrowPool(pool)));
     ASSERT_EQ(struct_pipeline->StoreReadSchema()->field(2)->type()->id(), arrow::Type::MAP);
-    ASSERT_OK_AND_ASSIGN(ReadResult struct_result, ReadOne(*struct_pipeline, source));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> struct_result,
+                         ReadOne(*struct_pipeline, source));
     std::shared_ptr<arrow::Array> expected_struct =
         arrow::ipc::internal::json::ArrayFromJSON(
             arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), id_field, selected_struct}),
@@ -165,8 +164,7 @@ TEST(RealtimeStoreReadPipelineTest, SelectedMapKeysAsMapAndStruct) {
             [0, 3, null]
         ])")
             .ValueOrDie();
-    ASSERT_TRUE(struct_result.array->Equals(expected_struct))
-        << "actual: " << struct_result.array->ToString();
+    ASSERT_TRUE(struct_result->Equals(expected_struct)) << "actual: " << struct_result->ToString();
 }
 
 TEST(RealtimeStoreReadPipelineTest, VariantAccessOnLogicalVariant) {
@@ -196,16 +194,18 @@ TEST(RealtimeStoreReadPipelineTest, VariantAccessOnLogicalVariant) {
     std::shared_ptr<arrow::Field> access_field = access_field_result.ValueOrDie();
     auto read_schema = arrow::schema({value_kind_field, id_field, access_field});
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
-                         RealtimeStoreReadPipeline::Create(read_schema, write_schema, pool));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
+        RealtimeStoreReadPipeline::Create(read_schema, write_schema, pool, GetArrowPool(pool)));
     ASSERT_TRUE(pipeline->StoreReadSchema()->field(2)->type()->Equals(variant_field->type()));
-    ASSERT_OK_AND_ASSIGN(ReadResult result, ReadOne(*pipeline, AddRowKindAndOffset(data)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result,
+                         ReadOne(*pipeline, AddRowKindAndOffset(data)));
     std::shared_ptr<arrow::Array> expected =
         arrow::ipc::internal::json::ArrayFromJSON(
             arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), id_field, access_field}),
             R"([[0, 1, [5, "hangzhou"]]])")
             .ValueOrDie();
-    ASSERT_TRUE(result.array->Equals(expected)) << "actual: " << result.array->ToString();
+    ASSERT_TRUE(result->Equals(expected)) << "actual: " << result->ToString();
 }
 
 }  // namespace paimon::test

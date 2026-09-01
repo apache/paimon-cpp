@@ -92,7 +92,8 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
         RealtimePrimaryKeyLayout::CreateWriteSchema(table_write_schema->fields());
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
-        RealtimeStoreReadPipeline::Create(logical_schema, realtime_write_schema, memory_pool));
+        RealtimeStoreReadPipeline::Create(logical_schema, realtime_write_schema, memory_pool,
+                                          context->GetArrowMemoryPool()));
     const std::shared_ptr<arrow::Schema>& store_read_schema = pipeline->StoreReadSchema();
     auto c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_read_schema, c_schema.get()));

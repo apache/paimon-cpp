@@ -30,6 +30,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/realtime/offset_range.h"
@@ -64,7 +65,8 @@ CreateRealtimePrimaryKeyQueryReadersForTest(std::vector<std::unique_ptr<BatchRea
         RealtimePrimaryKeyLayout::CreateLogicalSchema(value_schema->fields());
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
-        RealtimeStoreReadPipeline::Create(logical_schema, write_schema, memory_pool));
+        RealtimeStoreReadPipeline::Create(logical_schema, write_schema, memory_pool,
+                                          GetArrowPool(memory_pool)));
     return RealtimePrimaryKeyReaderFactory::CreateForQuery(
         std::move(readers), visible_offsets, key_schema, value_schema, memory_pool, *pipeline);
 }

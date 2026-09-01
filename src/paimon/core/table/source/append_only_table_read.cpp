@@ -170,7 +170,7 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
                            RealtimeStoreReadPipeline::Create(
                                context_->GetReadSchema(), realtime_write_schema,
-                               context_->GetMemoryPool()));
+                               context_->GetMemoryPool(), context_->GetArrowMemoryPool()));
     const std::shared_ptr<arrow::Schema>& store_read_schema = pipeline->StoreReadSchema();
     auto c_read_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_read_schema, c_read_schema.get()));

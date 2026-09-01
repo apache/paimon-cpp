@@ -30,6 +30,7 @@
 #include "paimon/result.h"
 
 namespace arrow {
+class MemoryPool;
 class Schema;
 }  // namespace arrow
 
@@ -44,7 +45,8 @@ class RealtimeStoreReadPipeline {
     static Result<std::unique_ptr<RealtimeStoreReadPipeline>> Create(
         const std::shared_ptr<arrow::Schema>& logical_schema,
         const std::shared_ptr<arrow::Schema>& realtime_write_schema,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<MemoryPool>& memory_pool,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     const std::shared_ptr<arrow::Schema>& StoreReadSchema() const {
         return store_read_schema_;
@@ -58,13 +60,13 @@ class RealtimeStoreReadPipeline {
     RealtimeStoreReadPipeline(std::shared_ptr<arrow::Schema> logical_schema,
                               std::shared_ptr<arrow::Schema> store_read_schema,
                               std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> plans,
-                              bool needs_conversion, std::shared_ptr<MemoryPool> pool);
+                              bool needs_conversion, std::shared_ptr<arrow::MemoryPool> arrow_pool);
 
     std::shared_ptr<arrow::Schema> logical_schema_;
     std::shared_ptr<arrow::Schema> store_read_schema_;
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> plans_;
     bool needs_conversion_;
-    std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace paimon
