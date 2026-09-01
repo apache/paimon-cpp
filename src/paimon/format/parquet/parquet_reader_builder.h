@@ -49,10 +49,18 @@ namespace paimon::parquet {
 class ParquetReaderBuilder : public ReaderBuilder {
  public:
     ParquetReaderBuilder(const std::map<std::string, std::string>& options, int32_t batch_size)
-        : batch_size_(batch_size), pool_(GetDefaultPool()), options_(options) {}
+        : batch_size_(batch_size),
+          pool_(GetDefaultPool()),
+          arrow_pool_(GetArrowPool(pool_)),
+          options_(options) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
         pool_ = pool;
+        if (pool == nullptr) {
+            arrow_pool_.reset();
+        } else {
+            arrow_pool_ = GetArrowPool(pool);
+        }
         return this;
     }
 
@@ -68,6 +76,9 @@ class ParquetReaderBuilder : public ReaderBuilder {
 
     Result<std::unique_ptr<FileBatchReader>> Build(
         const std::shared_ptr<InputStream>& path) const override {
+        if (pool_ == nullptr) {
+            return Status::Invalid("Parquet reader memory pool is nullptr");
+        }
         try {
             PAIMON_ASSIGN_OR_RAISE(int64_t file_length, path->Length());
             std::string file_uri;
@@ -77,17 +88,16 @@ class ParquetReaderBuilder : public ReaderBuilder {
                     file_uri = std::move(file_uri_result).value();
                 }
             }
-            std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
             auto unique_input_stream =
-                std::make_unique<ArrowInputStreamAdapter>(path, file_length, arrow_pool);
+                std::make_unique<ArrowInputStreamAdapter>(path, file_length, arrow_pool_);
             auto storage_read_bytes = unique_input_stream->StorageReadBytes();
             std::shared_ptr<arrow::io::RandomAccessFile> input_stream(
                 std::move(unique_input_stream));
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<::parquet::FileMetaData> file_metadata,
-                                   GetCachedParquetMetadata(input_stream, file_uri, arrow_pool));
+                                   GetCachedParquetMetadata(input_stream, file_uri, arrow_pool_));
             return ParquetFileBatchReader::Create(
                 std::move(input_stream), options_, batch_size_, std::move(file_metadata),
-                std::move(storage_read_bytes), arrow_pool, hints_);
+                std::move(storage_read_bytes), arrow_pool_, hints_);
         }
         PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetReaderBuilder::Build")
     }
@@ -167,6 +177,7 @@ class ParquetReaderBuilder : public ReaderBuilder {
 
     int32_t batch_size_ = -1;
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
     std::optional<ReadHints> hints_;

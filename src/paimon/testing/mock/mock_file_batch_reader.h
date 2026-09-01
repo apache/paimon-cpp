@@ -116,8 +116,9 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
 
     Result<ReadBatch> NextBatch() override {
         PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch_with_bitmap, NextBatchWithBitmap());
-        return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap),
-                                                   arrow::default_memory_pool());
+        std::shared_ptr<arrow::MemoryPool> arrow_pool(arrow::default_memory_pool(),
+                                                      [](arrow::MemoryPool*) {});
+        return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool);
     }
 
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {

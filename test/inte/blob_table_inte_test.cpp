@@ -92,11 +92,6 @@ class RecordBatch;
 
 namespace paimon::test {
 
-struct ReadResult {
-    std::unique_ptr<BatchReader> batch_reader;
-    std::shared_ptr<arrow::ChunkedArray> chunked_array;
-};
-
 class BlobTableInteTest : public testing::Test, public ::testing::WithParamInterface<std::string> {
  public:
     void SetUp() override {
@@ -290,13 +285,11 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         return result_plan;
     }
 
-    /// Read from table using a pre-scanned plan, returning the ChunkedArray and batch_reader.
-    /// The batch_reader must outlive the returned ChunkedArray (array memory depends on reader).
-    Result<ReadResult> ReadTable(const std::string& table_path,
-                                 const std::vector<std::string>& read_schema,
-                                 const std::shared_ptr<Plan>& plan,
-                                 const std::shared_ptr<Predicate>& predicate = nullptr,
-                                 const std::map<std::string, std::string>& options = {}) const {
+    /// Read from table using a pre-scanned plan and return data after the reader is destroyed.
+    Result<std::shared_ptr<arrow::ChunkedArray>> ReadTable(
+        const std::string& table_path, const std::vector<std::string>& read_schema,
+        const std::shared_ptr<Plan>& plan, const std::shared_ptr<Predicate>& predicate = nullptr,
+        const std::map<std::string, std::string>& options = {}) const {
         auto splits = plan->Splits();
         ReadContextBuilder read_context_builder(table_path);
         read_context_builder.SetReadFieldNames(read_schema).SetPredicate(predicate);
@@ -309,15 +302,15 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
-        return ReadResult{std::move(batch_reader), std::move(read_result)};
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
+        return read_result;
     }
 
     /// Convenience: scan + read in one call.
-    Result<ReadResult> ScanAndReadResult(const std::string& table_path,
-                                         const std::vector<std::string>& read_schema,
-                                         const std::shared_ptr<Predicate>& predicate = nullptr,
-                                         const std::vector<Range>& row_ranges = {}) const {
+    Result<std::shared_ptr<arrow::ChunkedArray>> ScanAndReadResult(
+        const std::string& table_path, const std::vector<std::string>& read_schema,
+        const std::shared_ptr<Predicate>& predicate = nullptr,
+        const std::vector<Range>& row_ranges = {}) const {
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, ScanTable(table_path, predicate, row_ranges));
         return ReadTable(table_path, read_schema, result_plan, predicate);
     }
@@ -347,13 +340,13 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
                                ScanAndReadResult(table_path, read_schema, predicate, row_ranges));
 
         if (!expected_array) {
-            EXPECT_FALSE(scan_read.chunked_array);
+            EXPECT_FALSE(scan_read);
             return Status::OK();
         }
         PAIMON_ASSIGN_OR_RAISE(auto expected_with_row_kind, PrependRowKindColumn(expected_array));
         auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_with_row_kind);
-        EXPECT_TRUE(expected_chunk_array->Equals(scan_read.chunked_array))
-            << "result:" << scan_read.chunked_array->ToString() << std::endl
+        EXPECT_TRUE(expected_chunk_array->Equals(scan_read))
+            << "result:" << scan_read->ToString() << std::endl
             << "expected:" << expected_chunk_array->ToString();
         return Status::OK();
     }
@@ -638,8 +631,8 @@ TEST_P(BlobTableInteTest, TestAppendTableWriteWithBlobAsDescriptorTrue) {
     // read result contains descriptors pointing to paimon internal blob files
     // resolve descriptors back to raw bytes, then prepend _VALUE_KIND and compare
     ASSERT_OK_AND_ASSIGN(auto result, ScanAndReadResult(table_path, schema->field_names()));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_OK_AND_ASSIGN(auto resolved, ConvertDescriptorToRawBlob(read_struct, {"blob"}));
     ASSERT_OK_AND_ASSIGN(auto expected_with_rk, PrependRowKindColumn(raw_array));
@@ -721,8 +714,8 @@ TEST_P(BlobTableInteTest, TestWriteNullOnMissingFile) {
                         {std::vector<std::string>{"f0", "f1"}, std::vector<std::string>{"blob"}});
 
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), plan));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_OK_AND_ASSIGN(auto resolved, ConvertDescriptorToRawBlob(read_struct, {"blob"}));
 
@@ -818,8 +811,8 @@ TEST_P(BlobTableInteTest, TestWriteNullOnFetchFailure) {
                         {std::vector<std::string>{"f0", "f1"}, std::vector<std::string>{"blob"}});
 
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), plan));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_OK_AND_ASSIGN(auto resolved, ConvertDescriptorToRawBlob(read_struct, {"blob"}));
 
@@ -880,8 +873,8 @@ TEST_P(BlobTableInteTest, TestWriteNullOnFetchFailureCoversMissingFile) {
                         {std::vector<std::string>{"f0", "f1"}, std::vector<std::string>{"blob"}});
 
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), plan));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_OK_AND_ASSIGN(auto resolved, ConvertDescriptorToRawBlob(read_struct, {"blob"}));
 
@@ -1276,8 +1269,8 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateFallback) {
     std::map<std::string, std::string> read_options = {{Options::BLOB_AS_DESCRIPTOR, "true"}};
     ASSERT_OK_AND_ASSIGN(auto desc_result, ReadTable(table_path, schema->field_names(), plan,
                                                      /*predicate=*/nullptr, read_options));
-    ASSERT_TRUE(desc_result.chunked_array);
-    auto desc_concat = arrow::Concatenate(desc_result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(desc_result);
+    auto desc_concat = arrow::Concatenate(desc_result->chunks()).ValueOrDie();
     auto desc_struct = std::dynamic_pointer_cast<arrow::StructArray>(desc_concat);
     ASSERT_TRUE(desc_struct);
     ASSERT_OK_AND_ASSIGN(auto resolved, ConvertDescriptorToRawBlob(desc_struct, {"b0"}));
@@ -1597,8 +1590,8 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateRowTrackingWithSubra
 
     ASSERT_OK_AND_ASSIGN(auto scan_read,
                          ScanAndReadResult(table_path, {"b0", "_ROW_ID", "_SEQUENCE_NUMBER"}));
-    ASSERT_TRUE(scan_read.chunked_array);
-    auto concat_array = arrow::Concatenate(scan_read.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(scan_read);
+    auto concat_array = arrow::Concatenate(scan_read->chunks()).ValueOrDie();
     auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(concat_array);
     ASSERT_TRUE(struct_array);
     ASSERT_EQ(struct_array->length(), 10);
@@ -1629,8 +1622,8 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateRowTrackingWithSubra
                          ScanAndReadResult(table_path, {"b0", "_ROW_ID", "_SEQUENCE_NUMBER"},
                                            /*predicate=*/nullptr,
                                            /*row_ranges=*/{Range(1, 2), Range(8, 8)}));
-    ASSERT_TRUE(range_read.chunked_array);
-    auto range_concat = arrow::Concatenate(range_read.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(range_read);
+    auto range_concat = arrow::Concatenate(range_read->chunks()).ValueOrDie();
     auto range_struct = std::dynamic_pointer_cast<arrow::StructArray>(range_concat);
     ASSERT_TRUE(range_struct);
     ASSERT_EQ(range_struct->length(), 3);
@@ -1679,8 +1672,8 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateAllPlaceholderRowTra
 
     ASSERT_OK_AND_ASSIGN(auto scan_read,
                          ScanAndReadResult(table_path, {"b0", "_ROW_ID", "_SEQUENCE_NUMBER"}));
-    ASSERT_TRUE(scan_read.chunked_array);
-    auto concat_array = arrow::Concatenate(scan_read.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(scan_read);
+    auto concat_array = arrow::Concatenate(scan_read->chunks()).ValueOrDie();
     auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(concat_array);
     ASSERT_TRUE(struct_array);
     ASSERT_EQ(struct_array->length(), 3);
@@ -1759,8 +1752,8 @@ TEST_P(BlobTableInteTest, TestBlobValueEqualToPlaceholderSentinelBytes) {
     ASSERT_OK(Commit(table_path, commit_msgs1));
 
     ASSERT_OK_AND_ASSIGN(auto scan_read, ScanAndReadResult(table_path, schema->field_names()));
-    ASSERT_TRUE(scan_read.chunked_array);
-    auto concat_array = arrow::Concatenate(scan_read.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(scan_read);
+    auto concat_array = arrow::Concatenate(scan_read->chunks()).ValueOrDie();
     auto struct_result = std::dynamic_pointer_cast<arrow::StructArray>(concat_array);
     ASSERT_TRUE(struct_result);
     ASSERT_EQ(struct_result->length(), 2);
@@ -2853,8 +2846,8 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorField) {
     std::map<std::string, std::string> read_options = {};
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), plan,
                                                 /*predicate=*/nullptr, read_options));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_OK_AND_ASSIGN(auto resolved, ConvertDescriptorToRawBlob(read_struct, {"b0", "b1"}));
     ASSERT_OK_AND_ASSIGN(auto expected_with_rk, PrependRowKindColumn(raw_array));
@@ -2914,8 +2907,8 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorFieldPartialInline) {
     std::map<std::string, std::string> read_options = {{Options::BLOB_AS_DESCRIPTOR, "true"}};
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), plan,
                                                 /*predicate=*/nullptr, read_options));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
 
     // b0,b1 inline descriptor (not repacked), should match input
@@ -2993,8 +2986,8 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorMultiCommitAndShuffledReadSchema) {
         std::map<std::string, std::string> read_options = {{Options::BLOB_AS_DESCRIPTOR, "false"}};
         ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, shuffled_read_schema, plan,
                                                     /*predicate=*/nullptr, read_options));
-        ASSERT_TRUE(result.chunked_array);
-        auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+        ASSERT_TRUE(result);
+        auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
         auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
 
         // Build expected array in shuffled order from all 3 batches
@@ -3028,8 +3021,8 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorMultiCommitAndShuffledReadSchema) {
         std::map<std::string, std::string> read_options = {{Options::BLOB_AS_DESCRIPTOR, "false"}};
         ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, shuffled_read_schema, plan,
                                                     /*predicate=*/nullptr, read_options));
-        ASSERT_TRUE(result.chunked_array);
-        auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+        ASSERT_TRUE(result);
+        auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
         auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
 
         // Build expected array in shuffled order from all 3 batches
@@ -3401,8 +3394,8 @@ TEST_P(BlobTableInteTest, TestDataEvolutionWithBlobDescriptorField) {
     std::map<std::string, std::string> read_options = {{Options::BLOB_AS_DESCRIPTOR, "false"}};
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, read_schema, plan,
                                                 /*predicate=*/nullptr, read_options));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_EQ(read_struct->length(), 6);
 
@@ -3527,8 +3520,8 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_OK_AND_ASSIGN(auto result,
                          ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_EQ(read_struct->length(), 8);
     ASSERT_OK_AND_ASSIGN(auto result_array, ConvertDescriptorToRawBlob(read_struct, {"view"}));
@@ -3560,8 +3553,8 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
                                                         /*row_ranges=*/{Range(1, 3), Range(5, 5)}));
         ASSERT_OK_AND_ASSIGN(auto range_result, ReadTable(table_path, schema->field_names(),
                                                           range_plan, /*predicate=*/nullptr));
-        ASSERT_TRUE(range_result.chunked_array);
-        auto range_concat = arrow::Concatenate(range_result.chunked_array->chunks()).ValueOrDie();
+        ASSERT_TRUE(range_result);
+        auto range_concat = arrow::Concatenate(range_result->chunks()).ValueOrDie();
         auto range_struct = std::dynamic_pointer_cast<arrow::StructArray>(range_concat);
         ASSERT_EQ(range_struct->length(), 4);
         ASSERT_OK_AND_ASSIGN(auto range_resolved,
@@ -3593,8 +3586,8 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
         ASSERT_OK_AND_ASSIGN(auto pred_plan, ScanTable(table_path, predicate, /*row_ranges=*/{}));
         ASSERT_OK_AND_ASSIGN(auto pred_result,
                              ReadTable(table_path, schema->field_names(), pred_plan, predicate));
-        ASSERT_TRUE(pred_result.chunked_array);
-        auto pred_concat = arrow::Concatenate(pred_result.chunked_array->chunks()).ValueOrDie();
+        ASSERT_TRUE(pred_result);
+        auto pred_concat = arrow::Concatenate(pred_result->chunks()).ValueOrDie();
         auto pred_struct = std::dynamic_pointer_cast<arrow::StructArray>(pred_concat);
         ASSERT_EQ(pred_struct->length(), 8);
         ASSERT_OK_AND_ASSIGN(auto pred_resolved, ConvertDescriptorToRawBlob(pred_struct, {"view"}));
@@ -3708,8 +3701,8 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
         auto source_result,
         ReadTable(source_table_path, schema->field_names(), source_plan, /*predicate=*/nullptr,
                   {{Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}}));
-    ASSERT_TRUE(source_result.chunked_array);
-    auto source_concat = arrow::Concatenate(source_result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(source_result);
+    auto source_concat = arrow::Concatenate(source_result->chunks()).ValueOrDie();
     auto source_struct = std::dynamic_pointer_cast<arrow::StructArray>(source_concat);
     ASSERT_EQ(source_struct->length(), 8);
     auto forward_f0_array = source_struct->GetFieldByName("f0");
@@ -3736,9 +3729,8 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
         auto raw_target_result,
         ReadTable(target_table_path, schema->field_names(), target_plan, /*predicate=*/nullptr,
                   {{Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}}));
-    ASSERT_TRUE(raw_target_result.chunked_array);
-    auto raw_target_concat =
-        arrow::Concatenate(raw_target_result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(raw_target_result);
+    auto raw_target_concat = arrow::Concatenate(raw_target_result->chunks()).ValueOrDie();
     auto raw_target_struct = std::dynamic_pointer_cast<arrow::StructArray>(raw_target_concat);
     ASSERT_EQ(raw_target_struct->length(), 8);
     auto raw_target_view_array = raw_target_struct->GetFieldByName("view");
@@ -3751,8 +3743,8 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
     ASSERT_OK_AND_ASSIGN(auto resolved_result,
                          ReadTable(target_table_path, schema->field_names(), target_plan,
                                    /*predicate=*/nullptr));
-    ASSERT_TRUE(resolved_result.chunked_array);
-    auto resolved_concat = arrow::Concatenate(resolved_result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(resolved_result);
+    auto resolved_concat = arrow::Concatenate(resolved_result->chunks()).ValueOrDie();
     auto resolved_struct = std::dynamic_pointer_cast<arrow::StructArray>(resolved_concat);
     ASSERT_EQ(resolved_struct->length(), 8);
     ASSERT_OK_AND_ASSIGN(auto resolved, ConvertDescriptorToRawBlob(resolved_struct, {"view"}));
@@ -3888,8 +3880,8 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_OK_AND_ASSIGN(auto result,
                          ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_EQ(read_struct->length(), 4);
     ASSERT_OK_AND_ASSIGN(auto result_array, ConvertDescriptorToRawBlob(read_struct, {"view"}));
@@ -4038,8 +4030,8 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_OK_AND_ASSIGN(auto result,
                          ReadTable(table_path, read_fields, plan, /*predicate=*/nullptr));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_EQ(read_struct->length(), 8);
     ASSERT_OK_AND_ASSIGN(auto result_array,
@@ -4118,8 +4110,8 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
     ASSERT_OK_AND_ASSIGN(auto dv_plan, ScanTable(table_path));
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), dv_plan,
                                                 /*predicate=*/nullptr));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_EQ(read_struct->length(), 1);
 
@@ -4309,8 +4301,8 @@ TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
     ASSERT_OK_AND_ASSIGN(auto result,
                          ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
     ASSERT_EQ(read_struct->length(), 2);
     ASSERT_OK_AND_ASSIGN(auto result_array, ConvertDescriptorToRawBlob(read_struct, {"view"}));
@@ -4350,8 +4342,8 @@ TEST_P(BlobTableInteTest, TestReadBlobDescriptorFieldFromJava) {
     std::map<std::string, std::string> read_options = {{Options::BLOB_AS_DESCRIPTOR, "false"}};
     ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, schema->field_names(), plan,
                                                 /*predicate=*/nullptr, read_options));
-    ASSERT_TRUE(result.chunked_array);
-    auto read_concat = arrow::Concatenate(result.chunked_array->chunks()).ValueOrDie();
+    ASSERT_TRUE(result);
+    auto read_concat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto read_struct = std::dynamic_pointer_cast<arrow::StructArray>(read_concat);
 
     // After read, b0 and b1 are both descriptor-stored; resolve all back to raw bytes.

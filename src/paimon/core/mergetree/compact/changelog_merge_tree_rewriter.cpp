@@ -227,7 +227,6 @@ Result<CompactResult> ChangelogMergeTreeRewriter::RewriteOrProduceChangelog(
         PAIMON_ASSIGN_OR_RAISE(changelog_file_writer, CreateRollingChangelogWriter(output_level));
     }
 
-    std::vector<std::shared_ptr<MergeTreeCompactRewriter::KeyValueMergeReader>> reader_holders;
     ScopeGuard write_guard([&]() -> void {
         if (compact_file_writer) {
             compact_file_writer->Abort();
@@ -236,9 +235,6 @@ Result<CompactResult> ChangelogMergeTreeRewriter::RewriteOrProduceChangelog(
         if (changelog_file_writer) {
             changelog_file_writer->Abort();
             changelog_file_writer.reset();
-        }
-        for (const auto& reader : reader_holders) {
-            reader->Close();
         }
         merge_file_split_read_.reset();
     });
@@ -263,9 +259,8 @@ Result<CompactResult> ChangelogMergeTreeRewriter::RewriteOrProduceChangelog(
                 std::move(merge_function_wrapper), key_comparator, cancellation_checker,
                 drop_delete, produce_data, produce_changelog);
         auto producer_and_consumer =
-            std::make_shared<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
+            std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
                 std::move(producer), create_consumer, /*consumer_thread_num=*/1);
-        reader_holders.emplace_back(producer_and_consumer);
 
         while (true) {
             if (IsCancelled()) {

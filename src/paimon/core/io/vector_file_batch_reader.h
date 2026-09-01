@@ -39,7 +39,7 @@ class MemoryPool;
 class VectorFileBatchReader : public FileBatchReader {
  public:
     VectorFileBatchReader(std::unique_ptr<FileBatchReader>&& reader,
-                          const std::shared_ptr<MemoryPool>& pool);
+                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     static bool ContainsVector(const std::shared_ptr<arrow::Schema>& schema);
 

@@ -31,6 +31,7 @@
 struct ArrowSchema;
 
 namespace arrow {
+class MemoryPool;
 class Schema;
 }  // namespace arrow
 
@@ -77,7 +78,7 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
 
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
 
-    std::shared_ptr<MemoryPool> memory_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<RealtimeStore> realtime_store_;
     std::shared_ptr<AppendOnlyWriter> file_writer_;
     std::shared_ptr<arrow::Schema> input_schema_;

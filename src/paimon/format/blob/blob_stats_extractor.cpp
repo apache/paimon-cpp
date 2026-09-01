@@ -24,6 +24,7 @@
 #include "arrow/api.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/blob/blob_file_batch_reader.h"
 #include "paimon/format/column_stats.h"
 #include "paimon/fs/file_system.h"
@@ -56,7 +57,7 @@ BlobStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& file_
         std::unique_ptr<BlobFileBatchReader> blob_reader,
         BlobFileBatchReader::Create(input_stream,
                                     /*batch_size=*/1024, /*blob_as_descriptor=*/true,
-                                    /*emit_placeholder_sentinel=*/false, pool));
+                                    /*emit_placeholder_sentinel=*/false, pool, GetArrowPool(pool)));
     ColumnStatsVector result_stats;
     result_stats.push_back(
         ColumnStats::CreateStringColumnStats(std::nullopt, std::nullopt, std::nullopt));

@@ -38,7 +38,7 @@ class BlobViewResolvingBatchReader : public BatchReader {
     BlobViewResolvingBatchReader(std::unique_ptr<BatchReader>&& reader,
                                  std::vector<std::string> read_blob_view_fields,
                                  BlobViewResolver resolver,
-                                 const std::shared_ptr<MemoryPool>& pool);
+                                 const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<ReadBatch> NextBatch() override;
 
@@ -55,8 +55,7 @@ class BlobViewResolvingBatchReader : public BatchReader {
         const std::shared_ptr<arrow::LargeBinaryArray>& blob_view_struct_array);
 
  private:
-    std::shared_ptr<MemoryPool> pool_;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<BatchReader> reader_;
     std::set<std::string> read_blob_view_fields_;
     BlobViewResolver resolver_;

@@ -149,7 +149,8 @@ class SortMergeReaderWithMinHeap : public SortMergeReader {
 
  private:
     const bool need_merge_;
-    // must hold all readers, as data array is allocated by the pool of data file reader
+    // KeyValue rows may be consumed asynchronously and still reference buffers allocated by the
+    // input readers.
     std::vector<std::unique_ptr<KeyValueRecordReader>> readers_holder_;
     std::vector<KeyValueRecordReader*> next_batch_readers_;
     std::shared_ptr<FieldsComparator> user_key_comparator_;

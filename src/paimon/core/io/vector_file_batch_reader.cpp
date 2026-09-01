@@ -220,8 +220,8 @@ Result<std::shared_ptr<arrow::Array>> ConvertToReadType(
 }  // namespace
 
 VectorFileBatchReader::VectorFileBatchReader(std::unique_ptr<FileBatchReader>&& reader,
-                                             const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)), reader_(std::move(reader)) {}
+                                             const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool), reader_(std::move(reader)) {}
 
 bool VectorFileBatchReader::ContainsVector(const std::shared_ptr<arrow::Schema>& schema) {
     return VectorUtils::ContainsVector(schema);
@@ -264,6 +264,7 @@ Result<BatchReader::ReadBatch> VectorFileBatchReader::ConvertBatch(ReadBatch&& b
     PAIMON_ASSIGN_OR_RAISE(array, ConvertToReadType(array, read_type_, arrow_pool_.get()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return std::move(batch);
 }
 

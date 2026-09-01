@@ -66,6 +66,7 @@ class ConcatKeyValueRecordReader : public KeyValueRecordReader {
     }
 
  private:
+    // KeyValue rows may outlive the active child and still reference buffers allocated by it.
     std::vector<std::unique_ptr<KeyValueRecordReader>> readers_;
     size_t current_{0};
 };

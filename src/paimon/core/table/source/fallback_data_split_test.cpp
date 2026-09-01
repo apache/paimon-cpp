@@ -27,6 +27,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
@@ -46,12 +47,18 @@ namespace paimon::test {
 namespace {
 class TrackingTableRead : public TableRead {
  public:
-    explicit TrackingTableRead(const std::shared_ptr<MemoryPool>& pool) : TableRead(pool) {}
-
     Result<std::unique_ptr<BatchReader>> CreateReader(
         const std::shared_ptr<Split>& split) override {
         last_split_ = split;
         return std::unique_ptr<BatchReader>();
+    }
+
+    Result<std::unique_ptr<BatchReader>> CreateReader(
+        const std::vector<std::shared_ptr<Split>>& splits) override {
+        if (splits.size() != 1) {
+            return Status::Invalid("tracking table read expects one split");
+        }
+        return CreateReader(splits[0]);
     }
 
     std::shared_ptr<Split> last_split_;
@@ -60,11 +67,12 @@ class TrackingTableRead : public TableRead {
 
 TEST(FallbackTableReadTest, RoutesIndexedSplitToMainTable) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
-    auto main_table = std::make_unique<TrackingTableRead>(pool);
-    auto fallback_table = std::make_unique<TrackingTableRead>(pool);
+    auto main_table = std::make_unique<TrackingTableRead>();
+    auto fallback_table = std::make_unique<TrackingTableRead>();
     TrackingTableRead* main_table_ptr = main_table.get();
     TrackingTableRead* fallback_table_ptr = fallback_table.get();
-    FallbackTableRead table_read(std::move(main_table), std::move(fallback_table), pool);
+    FallbackTableRead table_read(std::move(main_table), std::move(fallback_table),
+                                 GetArrowPool(pool));
 
     DataSplitImpl::Builder builder(BinaryRow::EmptyRow(), /*bucket=*/0, /*bucket_path=*/"",
                                    /*data_files=*/{});

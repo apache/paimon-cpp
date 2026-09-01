@@ -94,15 +94,16 @@ class KeyValueProjectionReaderTest : public testing::Test,
             std::move(concat_readers), user_key_comparator,
             /*user_defined_seq_comparator=*/nullptr, merge_function_wrapper);
         if (!multi_thread_row_to_batch) {
-            EXPECT_OK_AND_ASSIGN(auto projection_reader, KeyValueProjectionReader::Create(
-                                                             std::move(sort_merge_reader),
-                                                             target_schema, target_to_src_mapping,
-                                                             /*batch_size=*/batch_size, pool_));
+            EXPECT_OK_AND_ASSIGN(
+                auto projection_reader,
+                KeyValueProjectionReader::Create(std::move(sort_merge_reader), target_schema,
+                                                 target_to_src_mapping,
+                                                 /*batch_size=*/batch_size, GetArrowPool(pool_)));
             return std::move(projection_reader);
         } else {
             return std::make_unique<AsyncKeyValueProjectionReader>(
                 std::move(sort_merge_reader), target_schema, target_to_src_mapping, batch_size,
-                /*projection_thread_num=*/3, pool_);
+                /*projection_thread_num=*/3, GetArrowPool(pool_));
         }
     }
 
@@ -545,8 +546,9 @@ TEST_P(KeyValueProjectionReaderTest, TestInvalidProducer) {
     auto projection_reader =
         GenerateProjectionReader(src_array, target_schema, target_to_src_mapping, key_schema,
                                  value_schema, /*batch_size=*/1, multi_thread_row_to_batch);
-    ASSERT_NOK_WITH_MSG(paimon::test::ReadResultCollector::CollectResult(projection_reader.get()),
-                        "cannot cast VALUE_KIND column to int8 arrow array");
+    ASSERT_NOK_WITH_MSG(
+        paimon::test::ReadResultCollector::CollectResult(std::move(projection_reader)),
+        "cannot cast VALUE_KIND column to int8 arrow array");
 }
 
 INSTANTIATE_TEST_SUITE_P(EnableMultiThreadRowToBatch, KeyValueProjectionReaderTest,

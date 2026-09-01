@@ -53,7 +53,7 @@ class FieldMappingReader : public FileBatchReader {
         int32_t field_count, std::unique_ptr<FileBatchReader>&& reader, const BinaryRow& partition,
         std::unique_ptr<FieldMapping>&& mapping,
         std::set<int32_t>&& skip_map_selected_keys_filter_field_ids,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<ReadBatch> NextBatch() override {
         return Status::Invalid(
@@ -94,7 +94,7 @@ class FieldMappingReader : public FileBatchReader {
  private:
     FieldMappingReader(int32_t field_count, std::unique_ptr<FileBatchReader>&& reader,
                        const BinaryRow& partition, std::unique_ptr<FieldMapping>&& mapping,
-                       const std::shared_ptr<MemoryPool>& pool);
+                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<std::shared_ptr<arrow::Array>> GenerateSinglePartitionArray(int32_t idx,
                                                                        int32_t batch_size) const;

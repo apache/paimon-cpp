@@ -40,7 +40,7 @@ class PredicateBatchReader : public BatchReader {
  public:
     static Result<std::unique_ptr<PredicateBatchReader>> Create(
         std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<Predicate>& predicate,
-        const std::shared_ptr<MemoryPool>& pool);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~PredicateBatchReader() override = default;
 
@@ -59,12 +59,12 @@ class PredicateBatchReader : public BatchReader {
  private:
     PredicateBatchReader(std::unique_ptr<BatchReader>&& reader,
                          const std::shared_ptr<Predicate>& predicate,
-                         const std::shared_ptr<MemoryPool>& pool);
+                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
     Status BindPredicateToArray(const arrow::Array& array);
     Result<RoaringBitmap32> Filter(const std::shared_ptr<arrow::Array>& array);
 
  private:
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<Predicate> predicate_;
     std::shared_ptr<PredicateFilter> predicate_filter_;

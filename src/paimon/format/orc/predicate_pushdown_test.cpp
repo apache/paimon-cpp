@@ -113,15 +113,16 @@ class PredicatePushdownTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name_));
         ASSERT_OK_AND_ASSIGN(auto in_stream,
                              OrcInputStreamImpl::Create(in, DEFAULT_NATURAL_READ_SIZE));
+        std::shared_ptr<OrcReadMemory> read_memory = std::make_shared<OrcReadMemory>(pool_);
         ASSERT_OK_AND_ASSIGN(auto orc_batch_reader,
-                             OrcFileBatchReader::Create(std::move(in_stream), pool_,
+                             OrcFileBatchReader::Create(std::move(in_stream), read_memory,
                                                         /*options=*/{}, batch_size_));
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());
         ASSERT_TRUE(arrow_status.ok());
         ASSERT_OK(orc_batch_reader->SetReadSchema(c_schema.get(), predicate,
                                                   /*selection_bitmap=*/std::nullopt));
-        auto result = paimon::test::ReadResultCollector::CollectResult(orc_batch_reader.get());
+        auto result = paimon::test::ReadResultCollector::CollectResult(std::move(orc_batch_reader));
         if (result_ok) {
             ASSERT_TRUE(result.ok());
             // check result
@@ -419,8 +420,9 @@ TEST_F(PredicatePushdownTest, TestPredicatePushdownWithNullLiteral) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name_));
         ASSERT_OK_AND_ASSIGN(auto in_stream,
                              OrcInputStreamImpl::Create(in, DEFAULT_NATURAL_READ_SIZE));
+        std::shared_ptr<OrcReadMemory> read_memory = std::make_shared<OrcReadMemory>(pool_);
         ASSERT_OK_AND_ASSIGN(auto orc_batch_reader,
-                             OrcFileBatchReader::Create(std::move(in_stream), pool_,
+                             OrcFileBatchReader::Create(std::move(in_stream), read_memory,
                                                         /*options=*/{}, batch_size_));
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());

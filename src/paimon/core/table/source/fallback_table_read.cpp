@@ -19,6 +19,7 @@
 
 #include "paimon/core/table/source/fallback_table_read.h"
 
+#include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/fallback_data_split.h"
 #include "paimon/global_index/indexed_split.h"
@@ -26,6 +27,17 @@
 #include "paimon/table/source/data_split.h"
 
 namespace paimon {
+Result<std::unique_ptr<BatchReader>> FallbackTableRead::CreateReader(
+    const std::vector<std::shared_ptr<Split>>& splits) {
+    std::vector<std::unique_ptr<BatchReader>> readers;
+    readers.reserve(splits.size());
+    for (const std::shared_ptr<Split>& split : splits) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, CreateReader(split));
+        readers.push_back(std::move(reader));
+    }
+    return std::make_unique<ConcatBatchReader>(std::move(readers), arrow_pool_);
+}
+
 Result<std::unique_ptr<BatchReader>> FallbackTableRead::CreateReader(
     const std::shared_ptr<Split>& split) {
     auto fallback_data_split = std::dynamic_pointer_cast<FallbackDataSplit>(split);

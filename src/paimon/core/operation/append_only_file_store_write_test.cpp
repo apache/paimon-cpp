@@ -188,7 +188,7 @@ class AppendOnlyFileStoreWriteTest : public testing::Test {
         EXPECT_OK(reader->SetReadSchema(c_file_schema.get(), /*predicate=*/nullptr,
                                         /*selection_bitmap=*/std::nullopt));
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                             ReadResultCollector::CollectResult(reader.get()));
+                             ReadResultCollector::CollectResult(std::move(reader)));
         EXPECT_NE(nullptr, result);
         if (!result) {
             return nullptr;

@@ -86,7 +86,6 @@ class MergeTreeCompactRewriter : public CompactRewriter {
 
     using KeyValueRollingFileWriter =
         RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>;
-    using KeyValueMergeReader = AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>;
     using KeyValueConsumerCreator =
         AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>::ConsumerCreator;
 
@@ -99,8 +98,7 @@ class MergeTreeCompactRewriter : public CompactRewriter {
     Status MergeReadAndWrite(int32_t output_level, bool drop_delete,
                              const std::vector<SortedRun>& section,
                              const KeyValueConsumerCreator& create_consumer,
-                             KeyValueRollingFileWriter* rolling_writer,
-                             std::vector<std::shared_ptr<KeyValueMergeReader>>* reader_holders_ptr);
+                             KeyValueRollingFileWriter* rolling_writer);
 
     Result<std::unique_ptr<SortMergeReader>> CreateRawSortMergeReaderForSection(
         const std::vector<SortedRun>& section);

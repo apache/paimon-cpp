@@ -48,12 +48,12 @@ class MemoryPool;
 
 PredicateBatchReader::PredicateBatchReader(std::unique_ptr<BatchReader>&& reader,
                                            const std::shared_ptr<Predicate>& predicate,
-                                           const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)), reader_(std::move(reader)), predicate_(predicate) {}
+                                           const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool), reader_(std::move(reader)), predicate_(predicate) {}
 
 Result<std::unique_ptr<PredicateBatchReader>> PredicateBatchReader::Create(
     std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<Predicate>& predicate,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (!predicate) {
         return Status::Invalid("create predicate batch reader failed. predicate is nullptr");
     }
@@ -62,13 +62,16 @@ Result<std::unique_ptr<PredicateBatchReader>> PredicateBatchReader::Create(
             fmt::format("predicate {} does not support Test", predicate->ToString()));
     }
     return std::unique_ptr<PredicateBatchReader>(
-        new PredicateBatchReader(std::move(reader), predicate, pool));
+        new PredicateBatchReader(std::move(reader), predicate, arrow_pool));
 }
 
 Result<BatchReader::ReadBatch> PredicateBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            NextBatchWithBitmap());
-    return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(
+        BatchReader::ReadBatch batch,
+        ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_));
+    return batch;
 }
 
 Result<BatchReader::ReadBatchWithBitmap> PredicateBatchReader::NextBatchWithBitmap() {

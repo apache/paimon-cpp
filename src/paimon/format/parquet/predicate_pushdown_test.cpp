@@ -137,8 +137,8 @@ class PredicatePushdownTest : public ::testing::Test {
         ASSERT_TRUE(arrow_status.ok());
         ASSERT_OK(batch_reader->SetReadSchema(c_schema.get(), predicate,
                                               /*selection_bitmap=*/std::nullopt));
-        ASSERT_OK_AND_ASSIGN(auto arrow_array,
-                             paimon::test::ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto arrow_array, paimon::test::ReadResultCollector::CollectResult(
+                                                   std::move(batch_reader)));
         if (expected_array) {
             ASSERT_TRUE(arrow_array);
             auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_array);

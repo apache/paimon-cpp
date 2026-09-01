@@ -92,7 +92,7 @@ class ScanAndReadInteTest : public testing::Test,
             auto splits = result_plan->Splits();
             ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
             ASSERT_OK_AND_ASSIGN(auto read_result,
-                                 ReadResultCollector::CollectResult(batch_reader.get()));
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
             if (expected_array[scan_id]) {
                 ASSERT_TRUE(read_result);
                 ASSERT_TRUE(expected_array[scan_id]->type()->Equals(read_result->type()));
@@ -255,7 +255,8 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotIOException) {
         Result<std::unique_ptr<BatchReader>> batch_reader =
             table_read.value()->CreateReader(splits);
         CHECK_HOOK_STATUS(batch_reader.status(), i);
-        auto read_result = ReadResultCollector::CollectResult(batch_reader.value().get());
+        std::unique_ptr<BatchReader> owned_reader = std::move(batch_reader).value();
+        auto read_result = ReadResultCollector::CollectResult(std::move(owned_reader));
         CHECK_HOOK_STATUS(read_result.status(), i);
 
         // check result
@@ -310,7 +311,8 @@ TEST_P(ScanAndReadInteTest, TestWithPkSnapshotIOException) {
         Result<std::unique_ptr<BatchReader>> batch_reader =
             table_read.value()->CreateReader(splits);
         CHECK_HOOK_STATUS(batch_reader.status(), i);
-        auto read_result = ReadResultCollector::CollectResult(batch_reader.value().get());
+        std::unique_ptr<BatchReader> owned_reader = std::move(batch_reader).value();
+        auto read_result = ReadResultCollector::CollectResult(std::move(owned_reader));
         CHECK_HOOK_STATUS(read_result.status(), i);
 
         // check result
@@ -355,7 +357,8 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot1) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -396,7 +399,8 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot3) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -438,7 +442,8 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -534,7 +539,8 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshot1) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -589,7 +595,8 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshotOfNestedType) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     std::shared_ptr<arrow::ChunkedArray> expected_array;
@@ -622,7 +629,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -687,7 +695,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPartitionAndBu
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -731,7 +740,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -771,7 +781,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLateMaterializ
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result: "Lucy" (f3 = 14.1) does not match f3 > 18 and is filtered out.
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -823,7 +834,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLimit) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1100,7 +1112,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithNestedType) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 2);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto struct_inner_type =
         arrow::struct_({arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
@@ -1150,7 +1163,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanLatestSnapshot) {
     ASSERT_EQ(result_plan->SnapshotId().value(), 5);
     auto splits = result_plan->Splits();
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1197,7 +1211,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot2) {
     ASSERT_EQ(result_plan->SnapshotId().value(), 2);
     auto splits = result_plan->Splits();
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1240,7 +1255,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPartitionAndB
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 5);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1297,7 +1313,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 5);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1353,7 +1370,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithLateMateriali
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 5);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result: only the rows before "Lucy" with f3 <= 30.0 remain.
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1411,7 +1429,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvWithInvalidAggregateBatchScanSnapsho
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 3);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1481,7 +1500,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithAggregateBatchScanSnapshot3WithPredica
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 3);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1524,7 +1544,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithPartialUpdateBatchScanSnapshot3WithPre
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 3);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_TRUE(read_result);
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1560,7 +1581,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithLimit) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 5);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1825,7 +1847,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowBatchScanSnapshot5) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 5);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1956,7 +1979,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKWith09VersionDvBatchScanLatestSnapshot) {
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 8);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -1998,7 +2022,7 @@ TEST_P(ScanAndReadInteTest, TestWithEmptyPartitionValue) {
             ASSERT_OK_AND_ASSIGN(auto batch_reader,
                                  table_read->CreateReader(result_plan->Splits()));
             ASSERT_OK_AND_ASSIGN(auto read_result,
-                                 ReadResultCollector::CollectResult(batch_reader.get()));
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
             // check result
             ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
         };
@@ -2067,7 +2091,7 @@ TEST_P(ScanAndReadInteTest, TestWithMultipleEmptyPartitionValue) {
             ASSERT_OK_AND_ASSIGN(auto batch_reader,
                                  table_read->CreateReader(result_plan->Splits()));
             ASSERT_OK_AND_ASSIGN(auto read_result,
-                                 ReadResultCollector::CollectResult(batch_reader.get()));
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
             // check result
             ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
         };
@@ -2121,7 +2145,7 @@ TEST_P(ScanAndReadInteTest, TestMemoryUse) {
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
         ASSERT_OK_AND_ASSIGN(auto read_result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         // check result
         auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2332,7 +2356,8 @@ TEST_P(ScanAndReadInteTest, TestScanWithPredicateAndReadWithUnorderedFieldForPar
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2388,7 +2413,8 @@ TEST_P(ScanAndReadInteTest, TestPkSchemaEvolutionScanWithRenamedPkPredicate) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto expected = std::make_shared<arrow::ChunkedArray>(
         arrow::ipc::internal::json::ArrayFromJSON(
@@ -2432,7 +2458,8 @@ TEST_P(ScanAndReadInteTest, TestAppendTableWithMultipleFileFormat) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2469,7 +2496,8 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndNoExternalPath) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2508,7 +2536,8 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexNotInDataAndNoExternalPath) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2551,7 +2580,8 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexNotInDataAndWithExternalPath) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2596,7 +2626,8 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result, when file-index.read.enabled = false, index will be ignored
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2639,7 +2670,8 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndWithExternalPath) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -2678,7 +2710,8 @@ TEST_P(ScanAndReadInteTest, TestTimestampType) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     // check result
     auto timezone = DateTimeUtils::GetLocalTimezoneName();
     arrow::FieldVector fields = {
@@ -2725,7 +2758,8 @@ TEST_P(ScanAndReadInteTest, TestCastTimestampType) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // check result
     arrow::FieldVector fields = {
@@ -2822,7 +2856,7 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                              table_read->CreateReader(plan->Splits()));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         ASSERT_TRUE(expected_result->Equals(actual))
             << "actual: " << (actual == nullptr ? "null" : actual->ToString())
             << "\nexpected: " << expected_result->ToString();
@@ -2865,7 +2899,7 @@ TEST_F(ScanAndReadInteTest, TestAvroWithAppendTable) {
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
         ASSERT_OK_AND_ASSIGN(auto read_result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         // check result
         auto timezone = DateTimeUtils::GetLocalTimezoneName();
@@ -2939,7 +2973,7 @@ TEST_F(ScanAndReadInteTest, TestAvroWithPkTable) {
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
         ASSERT_OK_AND_ASSIGN(auto read_result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         // check result
         arrow::FieldVector fields = {
@@ -3018,7 +3052,8 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
     }
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // Only rows with f2=0 in partition f1=10 should be returned
     auto expected = std::make_shared<arrow::ChunkedArray>(
@@ -3061,11 +3096,19 @@ TEST_P(ScanAndReadInteTest, TestReadNullableMapKey) {
 
     const std::vector<std::string> expected_rows = {R"([[0, 1, [["one", 10]]]])",
                                                     R"([[0, 2, [["two", 20]]]])"};
+    std::vector<BatchReader::ReadBatch> batches;
     for (int32_t i = 0; i < 2; ++i) {
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, batch_reader->NextBatch());
         ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        batches.push_back(std::move(batch));
+    }
+    ASSERT_NOK_WITH_MSG(batch_reader->NextBatch(), "Map array keys array should have no nulls");
+    batch_reader->Close();
+    batch_reader.reset();
+
+    for (int32_t i = 0; i < 2; ++i) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
-                             ReadResultCollector::GetArray(std::move(batch)));
+                             ReadResultCollector::GetArray(std::move(batches[i])));
         ASSERT_EQ(array->length(), 1);
 
         std::shared_ptr<arrow::Array> expected_array =
@@ -3073,8 +3116,6 @@ TEST_P(ScanAndReadInteTest, TestReadNullableMapKey) {
         ASSERT_TRUE(array->Equals(expected_array))
             << "actual: " << array->ToString() << ", expected: " << expected_array->ToString();
     }
-    ASSERT_NOK_WITH_MSG(batch_reader->NextBatch(), "Map array keys array should have no nulls");
-    batch_reader->Close();
 }
 
 TEST_P(ScanAndReadInteTest, TestCountRowsEmptySplits) {
@@ -3120,7 +3161,8 @@ TEST_P(ScanAndReadInteTest, TestCountRowsConsistencyWithCreateReader) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     int64_t iterate_count = read_result ? read_result->length() : 0;
 
     // Both methods should return the same count

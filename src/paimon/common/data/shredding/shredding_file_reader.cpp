@@ -33,8 +33,8 @@ namespace paimon {
 ShreddingFileReader::ShreddingFileReader(
     std::unique_ptr<FileBatchReader>&& reader,
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>>&& plans,
-    const std::shared_ptr<MemoryPool>& pool)
-    : arrow_pool_(GetArrowPool(pool)), reader_(std::move(reader)), plans_(std::move(plans)) {}
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    : arrow_pool_(arrow_pool), reader_(std::move(reader)), plans_(std::move(plans)) {}
 
 Result<std::unique_ptr<::ArrowSchema>> ShreddingFileReader::GetFileSchema() const {
     return reader_->GetFileSchema();
@@ -109,6 +109,7 @@ Result<BatchReader::ReadBatchWithBitmap> ShreddingFileReader::NextBatchWithBitma
     auto new_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*new_struct_array, new_c_array.get(), new_c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(new_c_array.get(), new_c_schema.get(), arrow_pool_));
     batch = std::make_pair(std::move(new_c_array), std::move(new_c_schema));
     return batch_with_bitmap;
 }

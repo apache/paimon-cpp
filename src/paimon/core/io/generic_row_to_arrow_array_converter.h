@@ -40,16 +40,17 @@ class GenericRowToArrowArrayConverter
     : public RowToArrowArrayConverter<GenericRow, BatchReader::ReadBatch> {
  public:
     static Result<std::unique_ptr<GenericRowToArrowArrayConverter>> Create(
-        const std::shared_ptr<arrow::Schema>& schema, arrow::MemoryPool* pool);
+        const std::shared_ptr<arrow::Schema>& schema,
+        const std::shared_ptr<arrow::MemoryPool>& pool);
 
     Result<BatchReader::ReadBatch> NextBatch(const std::vector<GenericRow>& rows) override;
 
  private:
     GenericRowToArrowArrayConverter(int32_t reserve_count, std::vector<AppendValueFunc>&& appenders,
                                     std::unique_ptr<arrow::StructBuilder>&& array_builder,
-                                    std::unique_ptr<arrow::MemoryPool>&& arrow_pool)
+                                    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
         : RowToArrowArrayConverter(reserve_count, std::move(appenders), std::move(array_builder),
-                                   std::move(arrow_pool)) {}
+                                   arrow_pool) {}
 };
 
 }  // namespace paimon

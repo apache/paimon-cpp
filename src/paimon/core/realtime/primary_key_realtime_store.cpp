@@ -112,7 +112,7 @@ class StoredBatchReader final : public BatchReader {
             ArrowUtils::NormalizeRecordBatchOffsets(record_batch, arrow_pool_.get()));
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
             arrow::ExportRecordBatch(*normalized_batch, array.get(), schema.get()));
-        PAIMON_RETURN_NOT_OK(RetainArrowArrayMemoryPool(array.get(), arrow_pool_));
+        PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(array.get(), schema.get(), arrow_pool_));
         data_.reset();
         arrow_pool_.reset();
         export_guard.Release();

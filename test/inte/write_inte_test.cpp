@@ -295,7 +295,7 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(data_splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         if (read_result == nullptr) {
             return Status::Invalid(fmt::format("No rows read for blob field {}", blob_field));
         }
@@ -2384,7 +2384,7 @@ TEST_F(WriteInteTest, TestPKTableWriteWithAlterTable) {
     ASSERT_OK(orc_batch_reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
                                               /*selection_bitmap=*/std::nullopt));
     ASSERT_OK_AND_ASSIGN(auto result_array,
-                         ReadResultCollector::CollectResult(orc_batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(orc_batch_reader)));
     std::shared_ptr<arrow::ChunkedArray> expected_array;
     auto array_status =
         arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(read_fields), {R"([
@@ -2645,7 +2645,8 @@ TEST_P(WriteInteTest, TestAppendTableWriteAndReadWithExternalPath) {
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -2967,7 +2968,7 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto read_result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         // NOTE:
         // Users should not use the system-reserved keyword "__DEFAULT_PARTITION__" as a partition
         // value. If used, it may lead to behavioral inconsistencies between C++ Paimon and Java
@@ -3017,7 +3018,7 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto read_result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         std::shared_ptr<arrow::Array> array =
             arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
 [0, "Alice", 10, 0, 11.1, " ", "a=b?"]
@@ -3044,7 +3045,7 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto read_result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         std::shared_ptr<arrow::Array> array =
             arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
 [0, "Bob", 10, 0, 12.1, "", "a=b?"]
@@ -3071,7 +3072,7 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto read_result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         std::shared_ptr<arrow::Array> array =
             arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
 [0, "Cathy", 10, 0, 13.1, null, "a=b?"],
@@ -3148,7 +3149,8 @@ TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),

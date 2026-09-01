@@ -32,6 +32,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/status.h"
@@ -41,7 +42,10 @@ namespace paimon {
 Result<BatchReader::ReadBatch> CompleteRowKindBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            NextBatchWithBitmap());
-    return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_.get());
+    PAIMON_ASSIGN_OR_RAISE(
+        BatchReader::ReadBatch batch,
+        ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_));
+    return batch;
 }
 
 Result<BatchReader::ReadBatchWithBitmap> CompleteRowKindBatchReader::NextBatchWithBitmap() {
@@ -77,6 +81,7 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteRowKindBatchReader::NextBatchWi
         arrow::StructArray::Make(fields_with_row_kind, field_names_with_row_kind_));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*array_with_row_kind, c_array.get(), c_schema.get()));
+    PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     return batch_with_bitmap;
 }
 

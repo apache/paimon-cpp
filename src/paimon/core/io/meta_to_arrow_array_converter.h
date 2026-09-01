@@ -50,8 +50,8 @@ class MetaToArrowArrayConverter
  private:
     MetaToArrowArrayConverter(int32_t reserve_count, std::vector<AppendValueFunc>&& appenders,
                               std::unique_ptr<arrow::StructBuilder>&& array_builder,
-                              std::unique_ptr<arrow::MemoryPool>&& arrow_pool)
+                              const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
         : RowToArrowArrayConverter(reserve_count, std::move(appenders), std::move(array_builder),
-                                   std::move(arrow_pool)) {}
+                                   arrow_pool) {}
 };
 }  // namespace paimon

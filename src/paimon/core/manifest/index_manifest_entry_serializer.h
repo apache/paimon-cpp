@@ -50,6 +50,6 @@ class IndexManifestEntrySerializer : public VersionedObjectSerializer<IndexManif
 
  private:
     static constexpr int32_t VERSION = 1;
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 }  // namespace paimon

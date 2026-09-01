@@ -36,7 +36,7 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionFileReader::Create
     std::vector<std::unique_ptr<BatchReader>>&& readers,
     const std::shared_ptr<arrow::Schema>& read_schema, int32_t read_batch_size,
     const std::vector<int32_t>& reader_offsets, const std::vector<int32_t>& field_offsets,
-    const std::shared_ptr<MemoryPool>& pool) {
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (read_schema->num_fields() == 0) {
         return Status::Invalid("read schema must not be empty");
     }
@@ -55,7 +55,7 @@ Result<std::unique_ptr<DataEvolutionFileReader>> DataEvolutionFileReader::Create
     }
     return std::unique_ptr<DataEvolutionFileReader>(
         new DataEvolutionFileReader(std::move(readers), read_schema, read_batch_size,
-                                    reader_offsets, field_offsets, GetArrowPool(pool)));
+                                    reader_offsets, field_offsets, arrow_pool));
 }
 
 Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithBitmap() {
@@ -103,6 +103,8 @@ Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithB
     std::unique_ptr<ArrowSchema> target_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, target_c_arrow_array.get(), target_c_schema.get()));
+    PAIMON_RETURN_NOT_OK(
+        AddArrowArrayLifetime(target_c_arrow_array.get(), target_c_schema.get(), arrow_pool_));
     auto target_batch = std::make_pair(std::move(target_c_arrow_array), std::move(target_c_schema));
     return ReaderUtils::AddAllValidBitmap(std::move(target_batch));
 }

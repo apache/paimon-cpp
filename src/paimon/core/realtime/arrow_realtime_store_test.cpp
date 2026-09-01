@@ -213,6 +213,7 @@ TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());
     ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    readers.clear();
     arrow::Result<std::shared_ptr<arrow::Array>> import_result =
         arrow::ImportArray(batch.first.get(), batch.second.get());
     ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();

@@ -31,6 +31,7 @@
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/date_time_utils.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/key_value_data_file_record_reader.h"
 #include "paimon/core/key_value.h"
 #include "paimon/reader/batch_reader.h"
@@ -86,26 +87,46 @@ class ReadResultCollector {
                 usleep(std::rand() % max_data_processing_time_in_us);
             }
         }
-        if (result_array_vector.empty()) {
-            return std::shared_ptr<arrow::ChunkedArray>();
-        }
-        // accumulate all the batch array and convert dictionary to string array together to avoid
-        // the problem (multiple batches in multiple stripes overlap dictionary data) being
-        // difficult to expose
-        arrow::ArrayVector converted_array_vector;
-        for (const auto& array : result_array_vector) {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<arrow::Array> converted_array,
-                DictArrayConverter::ConvertDictArray(array, arrow::default_memory_pool()));
-            converted_array_vector.push_back(converted_array);
-        }
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(auto chunk_array,
-                                          arrow::ChunkedArray::Make(converted_array_vector));
-        return chunk_array;
+        return BuildChunkedArray(result_array_vector);
     }
 
     static Result<std::shared_ptr<arrow::ChunkedArray>> CollectResult(BatchReader* batch_reader) {
         return CollectResult(batch_reader, /*max_data_processing_time_in_us=*/0);
+    }
+
+    // Collect the C Arrow batches first, destroy the reader, and only then import and process
+    // them. Tests use this overload to verify that returned batches own every
+    // allocator resource needed by their release callbacks.
+    static Result<std::shared_ptr<arrow::ChunkedArray>> CollectResult(
+        std::unique_ptr<BatchReader> batch_reader) {
+        std::vector<BatchReader::ReadBatch> batches;
+        // ReadBatch owns the C structs, but deleting those structs does not invoke their release
+        // callbacks. Explicitly release any buffered batches when a later read or import fails.
+        ScopeGuard release_batches([&batches]() {
+            for (BatchReader::ReadBatch& batch : batches) {
+                ReaderUtils::ReleaseReadBatch(std::move(batch));
+            }
+        });
+        while (true) {
+            PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch,
+                                   ReadOneRawBatch(batch_reader.get()));
+            if (BatchReader::IsEofBatch(batch)) {
+                break;
+            }
+            batches.push_back(std::move(batch));
+        }
+
+        batch_reader->Close();
+        batch_reader.reset();
+
+        arrow::ArrayVector arrays;
+        arrays.reserve(batches.size());
+        for (BatchReader::ReadBatch& batch : batches) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> array,
+                                   ImportReadBatch(std::move(batch)));
+            arrays.push_back(std::move(array));
+        }
+        return BuildChunkedArray(arrays);
     }
 
     static Result<std::shared_ptr<arrow::ChunkedArray>> CollectResultOneBatch(
@@ -175,6 +196,14 @@ class ReadResultCollector {
 
  private:
     static Result<std::shared_ptr<arrow::Array>> ReadOneBatch(BatchReader* batch_reader) {
+        PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, ReadOneRawBatch(batch_reader));
+        if (BatchReader::IsEofBatch(batch)) {
+            return std::shared_ptr<arrow::Array>();
+        }
+        return ImportReadBatch(std::move(batch));
+    }
+
+    static Result<BatchReader::ReadBatch> ReadOneRawBatch(BatchReader* batch_reader) {
         // Prioritize calling NextBatch. If it fails (paimon inner reader e.g.,
         // PrefetchBatchReader, ApplyBitmapIndexBatchReader...), call NextBatchWithBitmap.
         auto batch_result = batch_reader->NextBatch();
@@ -185,25 +214,47 @@ class ReadResultCollector {
                 PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                                        batch_reader->NextBatchWithBitmap());
                 if (BatchReader::IsEofBatch(batch_with_bitmap)) {
-                    return std::shared_ptr<arrow::Array>();
+                    return std::move(batch_with_bitmap.first);
                 }
                 PAIMON_RETURN_NOT_OK(CheckBatchOffset(batch_with_bitmap.first));
                 assert(!batch_with_bitmap.second.IsEmpty());
                 PAIMON_ASSIGN_OR_RAISE(
-                    batch, ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap),
-                                                               arrow::default_memory_pool()));
+                    batch, ReaderUtils::ApplyBitmapToReadBatch(
+                               std::move(batch_with_bitmap),
+                               std::shared_ptr<arrow::MemoryPool>(arrow::default_memory_pool(),
+                                                                  [](arrow::MemoryPool*) {})));
             } else {
                 return batch_result.status();
             }
         } else {
             batch = std::move(batch_result).value();
             if (BatchReader::IsEofBatch(batch)) {
-                return std::shared_ptr<arrow::Array>();
+                return batch;
             }
             PAIMON_RETURN_NOT_OK(CheckBatchOffset(batch));
         }
         assert(batch.first->length > 0);
-        return ImportReadBatch(std::move(batch));
+        return batch;
+    }
+
+    static Result<std::shared_ptr<arrow::ChunkedArray>> BuildChunkedArray(
+        const arrow::ArrayVector& arrays) {
+        if (arrays.empty()) {
+            return std::shared_ptr<arrow::ChunkedArray>();
+        }
+        // Accumulate all batches and convert dictionary arrays together to expose overlapping
+        // dictionaries from multiple stripes.
+        arrow::ArrayVector converted_arrays;
+        converted_arrays.reserve(arrays.size());
+        for (const std::shared_ptr<arrow::Array>& array : arrays) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<arrow::Array> converted_array,
+                DictArrayConverter::ConvertDictArray(array, arrow::default_memory_pool()));
+            converted_arrays.push_back(std::move(converted_array));
+        }
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::ChunkedArray> chunked_array,
+                                          arrow::ChunkedArray::Make(converted_arrays));
+        return chunked_array;
     }
 
     static Result<std::shared_ptr<arrow::Array>> ImportReadBatch(BatchReader::ReadBatch&& batch) {

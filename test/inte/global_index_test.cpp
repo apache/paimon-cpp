@@ -216,7 +216,7 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         if (!expected_array) {
             if (read_result) {

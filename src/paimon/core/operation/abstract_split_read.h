@@ -42,6 +42,7 @@
 #include "paimon/status.h"
 
 namespace arrow {
+class MemoryPool;
 class Schema;
 }  // namespace arrow
 
@@ -129,6 +130,7 @@ class AbstractSplitRead : public SplitRead {
 
  protected:
     std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     CoreOptions options_;

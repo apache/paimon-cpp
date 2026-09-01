@@ -60,7 +60,6 @@ class KeyValueTableRead : public TableRead {
                       const std::shared_ptr<FileStorePathFactory>& path_factory,
                       const std::shared_ptr<InternalReadContext>& context,
                       const std::shared_ptr<arrow::Schema>& realtime_primary_key_transport_schema,
-                      const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
 
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(

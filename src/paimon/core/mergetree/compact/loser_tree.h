@@ -156,8 +156,8 @@ class LoserTree {
  private:
     int32_t size_;
     bool initialized_;
-    // must hold all readers, as data array is allocated by the pool of data file
-    // reader
+    // KeyValue rows may be consumed asynchronously and still reference buffers allocated by the
+    // input readers.
     std::vector<std::unique_ptr<KeyValueRecordReader>> readers_holder_;
 
     std::vector<int32_t> tree_;

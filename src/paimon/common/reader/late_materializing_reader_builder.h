@@ -33,11 +33,10 @@ namespace paimon {
 class LateMaterializingReaderBuilder : public ReaderBuilder {
  public:
     LateMaterializingReaderBuilder(std::unique_ptr<ReaderBuilder> inner,
-                                   std::shared_ptr<MemoryPool> pool)
-        : inner_(std::move(inner)), pool_(std::move(pool)) {}
+                                   std::shared_ptr<arrow::MemoryPool> arrow_pool)
+        : inner_(std::move(inner)), arrow_pool_(std::move(arrow_pool)) {}
 
     ReaderBuilder* WithMemoryPool(const std::shared_ptr<MemoryPool>& pool) override {
-        pool_ = pool;
         inner_->WithMemoryPool(pool);
         return this;
     }
@@ -58,13 +57,13 @@ class LateMaterializingReaderBuilder : public ReaderBuilder {
                                inner_->Build(stream));
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<LateMaterializingFileBatchReader> reader,
-            LateMaterializingFileBatchReader::Create(std::move(format_reader), pool_));
+            LateMaterializingFileBatchReader::Create(std::move(format_reader), arrow_pool_));
         return std::unique_ptr<FileBatchReader>(std::move(reader));
     }
 
  private:
     std::unique_ptr<ReaderBuilder> inner_;
-    std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace paimon

@@ -56,7 +56,7 @@ class ManifestFileMetaSerializer : public VersionedObjectSerializer<ManifestFile
     static constexpr int32_t VERSION_2 = 2;
     static constexpr int32_t VERSION_1 = 1;
 
-    std::unique_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 }  // namespace paimon
