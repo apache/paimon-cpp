@@ -48,6 +48,16 @@ class PAIMON_EXPORT ReadAheadCacheMetrics {
     static inline const char READ_HIT_BYTES[] = "read-ahead-cache.read.hit-bytes";
     static inline const char READ_MISSES[] = "read-ahead-cache.read.misses";
     static inline const char READ_MISS_BYTES[] = "read-ahead-cache.read.miss-bytes";
+    /// Number of Read() requests served by the block cache, and the bytes they
+    /// copied out of it. A read is counted either as a hit, a block hit or a
+    /// miss, so `read.count = read.hits + block.hits + read.misses`.
+    static inline const char BLOCK_HITS[] = "read-ahead-cache.block.hits";
+    static inline const char BLOCK_HIT_BYTES[] = "read-ahead-cache.block.hit-bytes";
+    /// Block fetches issued to the underlying stream, and their bytes. Both are
+    /// a subset of the io counters below, so comparing them tells how many bytes
+    /// the block granularity added on top of the requested ones.
+    static inline const char BLOCK_FETCHES[] = "read-ahead-cache.block.fetches";
+    static inline const char BLOCK_FETCH_BYTES[] = "read-ahead-cache.block.fetch-bytes";
     /// Number of prefetch IO requests actually issued to the underlying stream.
     static inline const char IO_COUNT[] = "read-ahead-cache.io.count";
     /// Total bytes requested by the prefetch IOs issued to the underlying stream.
@@ -85,11 +95,24 @@ struct PAIMON_EXPORT ByteRange {
 /// The cache never evicts: every published range stays cached until
 /// ReleaseBuffers() or Reset(). It is meant to hold the prefetched ranges of
 /// a single data file, whose size is bounded by the reader's scan scope.
+///
+/// Reads that the prefetched ranges do not cover (the footer and the page index
+/// of a parquet file are read before any range is registered) are served by a
+/// FileBlockCache instead of being left to the caller. That block cache is owned
+/// by this one and shares its lifetime: it is configured from `block_size` and
+/// `block_cache_limit`, it survives Reset() - the blocks belong to the file
+/// rather than to a registration round - and it is released by ReleaseBuffers().
 class PAIMON_EXPORT ReadAheadCache {
  public:
     /// Construct a read cache with given options
+    /// @param stream The stream the cache fetches from.
+    /// @param config The cache configuration.
+    /// @param file_size Size of the file behind `stream`, used to align the
+    /// block cache to the end of the file. Zero means unknown and disables the
+    /// block cache.
+    /// @param memory_pool The pool the cached buffers are allocated from.
     ReadAheadCache(const std::shared_ptr<InputStream>& stream, const CacheConfig& config,
-                   const std::shared_ptr<MemoryPool>& memory_pool);
+                   uint64_t file_size, const std::shared_ptr<MemoryPool>& memory_pool);
     ~ReadAheadCache();
 
     /// Initialize the cache with given byte ranges to be cached.
@@ -104,9 +127,12 @@ class PAIMON_EXPORT ReadAheadCache {
     ///
     /// Multi-segment hits are copied into `dest` segment by segment, without
     /// an intermediate assembled buffer.
+    ///
+    /// A range that no registered range covers may still be served by the block
+    /// cache, see the class documentation.
     /// @param range The byte range to read.
     /// @param dest Destination buffer with at least `range.length` bytes.
-    /// @return true if the range was served from the cache and `dest` was
+    /// @return true if the range was served by the cache and `dest` was
     /// filled; false on cache miss (`dest` is left untouched).
     Result<bool> Read(const ByteRange& range, char* dest);
 
@@ -129,6 +155,9 @@ class PAIMON_EXPORT ReadAheadCache {
     /// This method waits for all ongoing asynchronous read operations to complete,
     /// clears all cached entries, and resets the internal state so that Init() can be called again.
     /// After calling Reset, the cache can be safely re-initialized with new ranges.
+    ///
+    /// The block cache is kept: it caches the file rather than the registered
+    /// ranges, and a reader reusing the cache reads the same file again.
     void Reset();
 
     /// Release all cached buffers and pending ranges while keeping the hit/miss
@@ -136,7 +165,8 @@ class PAIMON_EXPORT ReadAheadCache {
     ///
     /// Unlike Reset(), the counters recorded by Read() remain readable through
     /// CollectMetrics() afterwards, so this is safe to call when the owning reader
-    /// is closed while its metrics are still being aggregated.
+    /// is closed while its metrics are still being aggregated. The block cache is
+    /// released too, as the file is not read again.
     void ReleaseBuffers();
 
  private:

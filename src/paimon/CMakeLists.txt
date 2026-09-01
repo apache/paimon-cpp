@@ -179,6 +179,7 @@ set(PAIMON_COMMON_SRCS
     common/data/shredding/shredding_file_reader.cpp
     common/utils/delta_varint_compressor.cpp
     common/utils/fields_comparator.cpp
+    common/utils/file_block_cache.cpp
     common/utils/path_util.cpp
     common/utils/range.cpp
     common/utils/read_ahead_cache.cpp
@@ -667,6 +668,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/roaring_bitmap64_test.cpp
                     common/utils/range_helper_test.cpp
                     common/utils/read_ahead_cache_test.cpp
+                    common/utils/file_block_cache_test.cpp
                     common/io/cache/lru_cache_test.cpp
                     common/io/cache/cache_manager_test.cpp
                     common/utils/byte_range_combiner_test.cpp

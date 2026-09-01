@@ -67,10 +67,41 @@ class PAIMON_EXPORT CacheConfig {
         pre_buffer_limit_ = pre_buffer_limit;
     }
 
+    /// Returns the granularity (in bytes) of the block cache entries serving the
+    /// small reads that the prefetched ranges do not cover.
+    uint64_t GetBlockSize() const {
+        return block_size_;
+    }
+
+    /// Sets the granularity (in bytes) of the block cache entries.
+    void SetBlockSize(uint64_t block_size) {
+        block_size_ = block_size;
+    }
+
+    /// Returns the maximum total size (in bytes) of the block cache entries of
+    /// one file. Zero disables the block cache.
+    uint64_t GetBlockCacheLimit() const {
+        return block_cache_limit_;
+    }
+
+    /// Sets the maximum total size (in bytes) of the block cache entries of one
+    /// file. Zero disables the block cache.
+    void SetBlockCacheLimit(uint64_t block_cache_limit) {
+        block_cache_limit_ = block_cache_limit;
+    }
+
  private:
     uint64_t range_size_limit_;
     uint64_t hole_size_limit_;
     uint64_t pre_buffer_limit_;
+    // Blocks are aligned to the END of the file, so a block never reaches past
+    // EOF. 64 KiB matches the footer read of the parquet reader (arrow's
+    // kDefaultFooterReadSize), which then covers exactly one block instead of
+    // straddling two.
+    uint64_t block_size_ = 64 * 1024;
+    // One block is enough for the metadata tail of a file; the limit only
+    // bounds the pathological case, as blocks are never evicted.
+    uint64_t block_cache_limit_ = 1024 * 1024;
 };
 
 }  // namespace paimon

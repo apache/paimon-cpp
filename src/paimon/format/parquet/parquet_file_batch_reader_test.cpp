@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -1679,7 +1680,10 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
                /*enable_dictionary=*/true, /*max_row_group_length=*/10);
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> cache_stream, fs_->Open(file_path_));
-    auto cache = std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), GetDefaultPool());
+    // The file size is left unknown so the block cache stays off: this test is
+    // about the pre-buffered ranges feeding the cache.
+    auto cache = std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), /*file_size=*/0,
+                                                  GetDefaultPool());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> reader_stream, fs_->Open(file_path_));
     auto cache_input_stream = std::make_shared<CacheInputStream>(std::move(reader_stream), cache);
 
@@ -2036,6 +2040,130 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughRequiresEveryRowGrou
     // One row group disqualifies the whole column, including the row group that did qualify.
     ASSERT_EQ(arrow::Type::STRING, read_array->field(0)->type()->id());
     reader->Close();
+}
+
+// Counts the positional reads landing in the tail region of the file, i.e. the
+// footer and the page index of a parquet file. The counter is shared by all the
+// streams of one test, so it totals the reads reaching the storage.
+class TailReadCountingInputStream : public InputStream {
+ public:
+    TailReadCountingInputStream(std::unique_ptr<InputStream> input, int64_t tail_begin,
+                                std::shared_ptr<std::atomic<int32_t>> tail_read_count)
+        : input_(std::move(input)),
+          tail_begin_(tail_begin),
+          tail_read_count_(std::move(tail_read_count)) {}
+
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return input_->Seek(offset, origin);
+    }
+    Result<int64_t> GetPos() const override {
+        return input_->GetPos();
+    }
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        return input_->Read(buffer, size);
+    }
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        CountIfInTail(offset);
+        return input_->Read(buffer, size, offset);
+    }
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        CountIfInTail(offset);
+        return input_->ReadAsync(buffer, size, offset, std::move(callback));
+    }
+    Status Close() override {
+        return input_->Close();
+    }
+    Result<std::string> GetUri() const override {
+        return input_->GetUri();
+    }
+    Result<int64_t> Length() const override {
+        return input_->Length();
+    }
+
+ private:
+    void CountIfInTail(int64_t offset) {
+        if (offset >= tail_begin_) {
+            tail_read_count_->fetch_add(1);
+        }
+    }
+
+    std::unique_ptr<InputStream> input_;
+    int64_t tail_begin_;
+    std::shared_ptr<std::atomic<int32_t>> tail_read_count_;
+};
+
+// The sub-readers of a prefetch reader share one ReadAheadCache and read the
+// footer and the page index before any pre-buffer range is registered. The block
+// cache turns all those tail reads into a single read of the last block.
+TEST_F(ParquetFileBatchReaderTest, TestBlockCacheSharesTailReadsAcrossReaders) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
+    auto src_array = MakeSequentialIntData(60000);
+    auto arrow_schema = arrow::schema(fields);
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/1024,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/30000);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> length_stream, fs_->Open(file_path_));
+    ASSERT_OK_AND_ASSIGN(int64_t file_length, length_stream->Length());
+    ASSERT_OK(length_stream->Close());
+    // The tail region is the last block of the cache, which is also the footer
+    // read size of the parquet reader.
+    const int64_t tail_begin = file_length - static_cast<int64_t>(CacheConfig().GetBlockSize());
+    ASSERT_GT(tail_begin, 0);
+
+    auto tail_read_count = std::make_shared<std::atomic<int32_t>>(0);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> cache_stream, fs_->Open(file_path_));
+    auto counting_cache_stream = std::make_shared<TailReadCountingInputStream>(
+        std::move(cache_stream), tail_begin, tail_read_count);
+    auto cache = std::make_shared<ReadAheadCache>(
+        counting_cache_stream, CacheConfig(), static_cast<uint64_t>(file_length), GetDefaultPool());
+
+    std::map<std::string, std::string> options;
+    options[PARQUET_READ_ENABLE_PAGE_INDEX_FILTER] = "true";
+    ParquetReaderBuilder builder(options, batch_size_);
+    builder.WithMemoryPool(GetDefaultPool());
+
+    constexpr int32_t kReaderCount = 3;
+    std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
+    for (int32_t i = 0; i < kReaderCount; ++i) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> reader_stream, fs_->Open(file_path_));
+        auto counting = std::make_unique<TailReadCountingInputStream>(std::move(reader_stream),
+                                                                      tail_begin, tail_read_count);
+        std::shared_ptr<InputStream> cache_input_stream =
+            std::make_shared<CacheInputStream>(std::move(counting), cache);
+        futures.push_back(std::async(std::launch::async, [&builder, cache_input_stream]() {
+            return builder.Build(cache_input_stream);
+        }));
+    }
+    std::vector<std::unique_ptr<FileBatchReader>> readers;
+    for (auto& future : futures) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, future.get());
+        readers.push_back(std::move(reader));
+    }
+
+    // Only the last 1000 rows match, so the page index of the last row group is
+    // read to filter its pages.
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::INT, Literal(59000));
+    for (auto& reader : readers) {
+        auto parquet_batch_reader = dynamic_cast<ParquetFileBatchReader*>(reader.get());
+        ASSERT_TRUE(parquet_batch_reader);
+        std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
+        ASSERT_TRUE(arrow::ExportSchema(*arrow_schema, c_schema.get()).ok());
+        ASSERT_OK(parquet_batch_reader->SetReadSchema(c_schema.get(), predicate, std::nullopt));
+    }
+
+    // One block fetch served the footer read and the page index reads of all the
+    // readers.
+    ASSERT_EQ(tail_read_count->load(), 1);
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t block_fetches,
+                         metrics->GetCounter(ReadAheadCacheMetrics::BLOCK_FETCHES));
+    ASSERT_EQ(block_fetches, 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t block_hits,
+                         metrics->GetCounter(ReadAheadCacheMetrics::BLOCK_HITS));
+    ASSERT_GT(block_hits, 1u);
 }
 
 }  // namespace paimon::parquet::test

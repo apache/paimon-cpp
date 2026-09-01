@@ -62,7 +62,10 @@ class CacheInputStreamTest : public ::testing::Test {
         auto stream = OpenFile();
         CacheConfig config(/*range_size_limit=*/1024,
                            /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
-        auto cache = std::make_shared<ReadAheadCache>(std::move(stream), config, pool_);
+        // The file size is left unknown so the block cache stays off: these
+        // tests exercise the fallback of CacheInputStream on a cache miss.
+        auto cache =
+            std::make_shared<ReadAheadCache>(std::move(stream), config, /*file_size=*/0, pool_);
         EXPECT_OK(cache->Init(std::move(ranges)));
         return cache;
     }
@@ -206,7 +209,8 @@ TEST_F(CacheInputStreamTest, TestReadAsyncCacheReadError) {
         ASSERT_OK_AND_ASSIGN(auto underlying, fs->Open(file_path_));
         CacheConfig config(/*range_size_limit=*/1024,
                            /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
-        auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config, pool_);
+        auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config,
+                                                      /*file_size=*/0, pool_);
         ASSERT_OK(cache->Init(std::vector<ByteRange>{{0, 10}}));
 
         // Now activate IOHook so that the prefetch IO (triggered by cache_->Read -> PreBuffer)
