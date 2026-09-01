@@ -64,6 +64,7 @@
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/index_file_path_factories.h"
+#include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/format/file_format.h"
 #include "paimon/realtime/realtime_context.h"
@@ -226,21 +227,26 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
 namespace {
 
 Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& core_options,
-                            const ScanContext& context) {
+                            const ScanContext& context, bool read_optimized) {
     if (!context.GetRealtimeContext()) {
         return Status::OK();
     }
     if (!core_options.RealtimeEnabled()) {
         return Status::Invalid("real-time scan requires realtime.enabled=true");
     }
-    if (!table_schema.PrimaryKeys().empty()) {
-        return Status::Invalid("real-time union read currently supports append tables only");
-    }
     if (core_options.GetBucket() <= 0) {
         return Status::Invalid("real-time union read requires fixed bucket mode");
     }
     if (core_options.DataEvolutionEnabled()) {
         return Status::Invalid("real-time union read does not support data evolution");
+    }
+    if (!table_schema.PrimaryKeys().empty()) {
+        if (read_optimized) {
+            return Status::NotImplemented(
+                "PK real-time union read does not support read-optimized scans");
+        }
+        PAIMON_RETURN_NOT_OK(
+            PrimaryKeyTableUtils::ValidateRealtimeOptions(core_options, table_schema));
     }
     if (context.IsStreamingMode()) {
         return Status::Invalid("real-time union read currently supports batch scans only");
@@ -289,7 +295,8 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(), {}));
     core_options.WithCache(context->GetCache());
 
-    PAIMON_RETURN_NOT_OK(ValidateRealtimeScan(*table_schema, core_options, *context));
+    PAIMON_RETURN_NOT_OK(
+        ValidateRealtimeScan(*table_schema, core_options, *context, read_optimized));
     // validate options
     if (core_options.GetBucket() == -1) {
         if (!table_schema->PrimaryKeys().empty()) {
@@ -351,7 +358,7 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context,
                                RealtimeContextImpl::Cast(context->GetRealtimeContext()));
         return std::make_unique<RealtimeTableScan>(
-            std::move(batch_scan), realtime_context, path_factory,
+            std::move(batch_scan), pk_table, realtime_context, path_factory,
             snapshot_reader->GetSnapshotManager(), core_options.GetFileSystem(),
             context->GetScanFilters(), core_options.GetRealtimeReadViewTtlMillis());
     }

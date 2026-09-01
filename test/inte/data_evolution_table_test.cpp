@@ -268,11 +268,6 @@ class DataEvolutionTableTest : public ::testing::Test,
     }
 
     struct LimitScanResult {
-        /// The read that produced `rows`. Its memory pool owns the buffers behind them, so it
-        /// has to outlive them: these two members are declared first on purpose, since members
-        /// are destroyed in reverse order.
-        std::unique_ptr<TableRead> table_read;
-        std::unique_ptr<BatchReader> batch_reader;
         /// The splits the limit push down kept in the plan.
         std::vector<std::shared_ptr<Split>> splits;
         /// The rows reading those splits produced, null when the read returned nothing. The
@@ -312,17 +307,19 @@ class DataEvolutionTableTest : public ::testing::Test,
             .EnablePredicateFilter(enable_predicate_filter);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(result.table_read, TableRead::Create(std::move(read_context)));
-        PAIMON_ASSIGN_OR_RAISE(result.batch_reader, result.table_read->CreateReader(result.splits));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
+                               TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
+                               table_read->CreateReader(result.splits));
         PAIMON_ASSIGN_OR_RAISE(result.rows,
-                               ReadResultCollector::CollectResult(result.batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         return result;
     }
 
     /// Plans the table without any push down and returns the planned splits, so a test can
     /// assert what the scan handed the read: which data file each deletion file landed on, and
     /// the row count derived from them. Reading the splits back is ScanAndReadWithLimit's job,
-    /// which keeps the reader that owns the returned rows alive.
+    /// which verifies the returned rows after their reader has been destroyed.
     Result<std::vector<std::shared_ptr<Split>>> PlanSplits(const std::string& table_path) const {
         ScanContextBuilder scan_context_builder(table_path);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
@@ -437,7 +434,7 @@ class DataEvolutionTableTest : public ::testing::Test,
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         if (!expected_array) {
             if (read_result) {
@@ -953,7 +950,8 @@ TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) 
                              read_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_OK_AND_ASSIGN(auto actual,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         auto expected_type = arrow::struct_({
             SpecialFields::ValueKind().field_,

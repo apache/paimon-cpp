@@ -47,6 +47,14 @@ TEST(SchemaValidationTest, TestSimple) {
     ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 }
 
+TEST(SchemaValidationTest, TestRealtimeOffsetIsGloballyReserved) {
+    auto schema = arrow::schema({arrow::field("_REALTIME_OFFSET", arrow::int64())});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, {}));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "field name '_REALTIME_OFFSET' in schema cannot be special field");
+}
+
 TEST(SchemaValidationTest, TestVectorType) {
     auto vector_field = arrow::field("embedding", arrow::fixed_size_list(arrow::float32(), 3));
     auto schema = arrow::schema({arrow::field("id", arrow::int64()), vector_field});

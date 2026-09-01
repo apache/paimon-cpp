@@ -24,6 +24,7 @@
 #include <map>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
@@ -43,6 +44,7 @@
 #include "paimon/core/io/compact_increment.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/data_increment.h"
+#include "paimon/core/io/key_value_record_reader.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/mergetree/compact/deduplicate_merge_function.h"
 #include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
@@ -53,6 +55,8 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/testing/mock/mock_file_batch_reader.h"
+#include "paimon/testing/mock/mock_key_value_data_file_record_reader.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
@@ -65,6 +69,36 @@ class MergeFunctionWrapper;
 }  // namespace paimon
 
 namespace paimon::test {
+namespace {
+
+class TrackingKeyValueRecordReader : public KeyValueRecordReader {
+ public:
+    TrackingKeyValueRecordReader(std::unique_ptr<KeyValueRecordReader>&& inner_reader,
+                                 bool* closed_flag)
+        : inner_reader_(std::move(inner_reader)), closed_flag_(closed_flag) {}
+
+    Result<std::unique_ptr<KeyValueRecordReader::Iterator>> NextBatch() override {
+        return inner_reader_->NextBatch();
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return inner_reader_->GetReaderMetrics();
+    }
+
+    void Close() override {
+        if (closed_flag_ != nullptr) {
+            *closed_flag_ = true;
+        }
+        inner_reader_->Close();
+    }
+
+ private:
+    std::unique_ptr<KeyValueRecordReader> inner_reader_;
+    bool* closed_flag_;
+};
+
+}  // namespace
+
 class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
  public:
     class FakeCompactManager : public paimon::CompactManager {
@@ -156,7 +190,7 @@ class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
                              file_format->CreateReaderBuilder(/*batch_size=*/10));
         ASSERT_OK_AND_ASSIGN(auto orc_batch_reader, reader_builder->Build(input_stream));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
-                             ReadResultCollector::CollectResult(orc_batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(orc_batch_reader)));
         ASSERT_TRUE(expected_array->Equals(result_array)) << result_array->ToString();
     }
 
@@ -215,6 +249,23 @@ class MergeTreeWriterTest : public ::testing::TestWithParam<bool> {
             last_sequence_number, primary_keys_, path_factory, key_comparator_,
             user_defined_seq_comparator, merge_function_wrapper_, schema_id, value_schema_, options,
             writer_compact_manager, io_manager, /*enable_multi_thread_spill=*/false, pool_);
+    }
+
+    std::unique_ptr<KeyValueRecordReader> CreateSingleReader(
+        const std::shared_ptr<arrow::Array>& array, int32_t batch_size = 16,
+        const Status& next_batch_status = Status::OK()) const {
+        std::vector<DataField> write_fields = {SpecialFields::SequenceNumber(),
+                                               SpecialFields::ValueKind()};
+        write_fields.insert(write_fields.end(), value_fields_.begin(), value_fields_.end());
+        std::shared_ptr<arrow::Schema> write_schema =
+            DataField::ConvertDataFieldsToArrowSchema(write_fields);
+        std::shared_ptr<arrow::Schema> key_schema =
+            arrow::schema(arrow::FieldVector({write_schema->field(2)}));
+        auto file_batch_reader =
+            std::make_unique<MockFileBatchReader>(array, array->type(), batch_size);
+        file_batch_reader->SetNextBatchStatus(next_batch_status);
+        return std::make_unique<MockKeyValueDataFileRecordReader>(
+            std::move(file_batch_reader), key_schema, value_schema_, 0, pool_);
     }
 
  private:
@@ -556,6 +607,171 @@ TEST_P(MergeTreeWriterTest, TestWriteMultiBatch) {
     DataIncrement expected_data_increment({expected_data_file_meta}, /*deleted_files=*/{},
                                           /*changelog_files=*/{});
     ASSERT_EQ(expected_data_increment, commit_increment.GetNewFilesIncrement());
+}
+
+TEST_P(MergeTreeWriterTest, TestSortedReaders) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    std::string uuid = path_factory->uuid_;
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(4, dir->Str(), path_factory, 7, options));
+
+    auto sorted_reader_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(write_type_, R"([
+      [7, 0, "Alice", 20, 1, 17.1],
+      [9, 0, "Lucy", 30, 2, 19.1],
+      [8, 3, "Paul", 10, 3, null]
+    ])")
+            .ValueOrDie());
+
+    std::vector<std::unique_ptr<KeyValueRecordReader>> sorted_readers;
+    sorted_readers.push_back(CreateSingleReader(sorted_reader_array));
+
+    ASSERT_OK(merge_writer->WriteSortedReadersToFiles(std::move(sorted_readers)));
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment, merge_writer->PrepareCommit(false));
+    ASSERT_OK(merge_writer->Close());
+
+    std::string expected_data_file_name = "data-" + uuid + "-0.orc";
+    std::string expected_data_file_path = dir->Str() + "/" + expected_data_file_name;
+    ASSERT_OK_AND_ASSIGN(FileStatus data_file_status,
+                         options.GetFileSystem()->GetFileStatus(expected_data_file_path));
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [7, 0, "Alice", 20, 1, 17.1],
+      [9, 0, "Lucy", 30, 2, 19.1],
+      [8, 3, "Paul", 10, 3, null]
+    ])"},
+                                                                 &expected_array)
+                    .ok());
+    CheckFileContent(expected_data_file_path, expected_array);
+
+    ASSERT_TRUE(commit_increment.GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    const std::shared_ptr<DataFileMeta>& new_file =
+        commit_increment.GetNewFilesIncrement().NewFiles()[0];
+    ASSERT_EQ(expected_data_file_name, new_file->file_name);
+    ASSERT_EQ(data_file_status.GetLen(), new_file->file_size);
+    ASSERT_EQ(3, new_file->row_count);
+    ASSERT_EQ(7, new_file->min_sequence_number);
+    ASSERT_EQ(9, new_file->max_sequence_number);
+    ASSERT_EQ(7, new_file->schema_id);
+    ASSERT_EQ(1, new_file->delete_row_count);
+}
+
+TEST_P(MergeTreeWriterTest, TestMergeSortedReaders) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(/*last_sequence_number=*/4, dir->Str(), path_factory,
+                                           /*schema_id=*/7, options));
+
+    auto first_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(write_type_, R"([
+      [5, 0, "Alice", 10, 0, 15.1],
+      [7, 0, "Carol", 20, 1, 17.1],
+      [10, 0, "Eve", 30, 2, 20.1]
+    ])")
+            .ValueOrDie());
+    auto second_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(write_type_, R"([
+      [6, 0, "Bob", 11, 0, 16.1],
+      [8, 3, "Carol", 21, 1, null],
+      [9, 0, "David", 22, 2, 19.1]
+    ])")
+            .ValueOrDie());
+    bool first_closed = false;
+    bool second_closed = false;
+    std::vector<std::unique_ptr<KeyValueRecordReader>> sorted_readers;
+    sorted_readers.push_back(std::make_unique<TrackingKeyValueRecordReader>(
+        CreateSingleReader(first_array), &first_closed));
+    sorted_readers.push_back(std::make_unique<TrackingKeyValueRecordReader>(
+        CreateSingleReader(second_array), &second_closed));
+
+    ASSERT_OK(merge_writer->WriteSortedReadersToFiles(std::move(sorted_readers)));
+    ASSERT_TRUE(first_closed);
+    ASSERT_TRUE(second_closed);
+    ASSERT_OK_AND_ASSIGN(CommitIncrement commit_increment, merge_writer->PrepareCommit(false));
+    ASSERT_OK(merge_writer->Close());
+
+    ASSERT_EQ(1, commit_increment.GetNewFilesIncrement().NewFiles().size());
+    const std::shared_ptr<DataFileMeta>& new_file =
+        commit_increment.GetNewFilesIncrement().NewFiles()[0];
+    ASSERT_EQ(5, new_file->row_count);
+    ASSERT_EQ(1, new_file->delete_row_count);
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(write_type_, {R"([
+      [5, 0, "Alice", 10, 0, 15.1],
+      [6, 0, "Bob", 11, 0, 16.1],
+      [8, 3, "Carol", 21, 1, null],
+      [9, 0, "David", 22, 2, 19.1],
+      [10, 0, "Eve", 30, 2, 20.1]
+    ])"},
+                                                                 &expected_array)
+                    .ok());
+    CheckFileContent(path_factory->ToPath(new_file), expected_array);
+}
+
+TEST_P(MergeTreeWriterTest, TestSortedReaderFailure) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(path_factory->Init(dir->Str(), "orc", options.DataFilePrefix(), nullptr));
+
+    ASSERT_OK_AND_ASSIGN(auto merge_writer,
+                         CreateMergeWriter(-1, dir->Str(), path_factory, 0, options));
+
+    std::vector<std::unique_ptr<KeyValueRecordReader>> empty_readers;
+    Status empty_status = merge_writer->WriteSortedReadersToFiles(std::move(empty_readers));
+    ASSERT_TRUE(empty_status.IsInvalid());
+
+    std::vector<std::unique_ptr<KeyValueRecordReader>> null_readers;
+    null_readers.push_back(nullptr);
+    Status null_status = merge_writer->WriteSortedReadersToFiles(std::move(null_readers));
+    ASSERT_TRUE(null_status.IsInvalid());
+
+    auto sorted_reader_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(write_type_, R"([
+      [0, 0, "Alice", 10, 0, 13.1]
+    ])")
+            .ValueOrDie());
+    bool first_mixed_reader_closed = false;
+    bool second_mixed_reader_closed = false;
+    std::vector<std::unique_ptr<KeyValueRecordReader>> mixed_readers;
+    mixed_readers.push_back(std::make_unique<TrackingKeyValueRecordReader>(
+        CreateSingleReader(sorted_reader_array), &first_mixed_reader_closed));
+    mixed_readers.push_back(nullptr);
+    mixed_readers.push_back(std::make_unique<TrackingKeyValueRecordReader>(
+        CreateSingleReader(sorted_reader_array), &second_mixed_reader_closed));
+    Status mixed_status = merge_writer->WriteSortedReadersToFiles(std::move(mixed_readers));
+    ASSERT_TRUE(mixed_status.IsInvalid());
+    ASSERT_TRUE(first_mixed_reader_closed);
+    ASSERT_TRUE(second_mixed_reader_closed);
+
+    Status expected_status = Status::IOError("sorted reader failure");
+    bool failing_reader_closed = false;
+    std::vector<std::unique_ptr<KeyValueRecordReader>> failing_readers;
+    failing_readers.push_back(std::make_unique<TrackingKeyValueRecordReader>(
+        CreateSingleReader(sorted_reader_array, /*batch_size=*/16, expected_status),
+        &failing_reader_closed));
+    Status failing_status = merge_writer->WriteSortedReadersToFiles(std::move(failing_readers));
+    ASSERT_EQ(expected_status, failing_status);
+    ASSERT_TRUE(failing_reader_closed);
+    ASSERT_OK(merge_writer->Close());
 }
 
 TEST_P(MergeTreeWriterTest, TestSharedShreddingMapDataFileMetaInfo) {

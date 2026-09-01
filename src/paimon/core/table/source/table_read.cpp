@@ -26,7 +26,6 @@
 #include <utility>
 
 #include "fmt/format.h"
-#include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
@@ -137,13 +136,12 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(const std::shared_ptr<ReadCo
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<TableRead> fallback_table_read,
         CreateTableRead(fallback_context, context->GetMemoryPool(), context->GetExecutor()));
-    return std::make_unique<FallbackTableRead>(
-        std::move(table_read), std::move(fallback_table_read), context->GetMemoryPool());
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool = internal_context->GetArrowMemoryPool();
+    return std::make_unique<FallbackTableRead>(std::move(table_read),
+                                               std::move(fallback_table_read), arrow_pool);
 }
 
 }  // namespace
-
-TableRead::TableRead(const std::shared_ptr<MemoryPool>& memory_pool) : pool_(memory_pool) {}
 
 Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext> ctx) {
     std::shared_ptr<ReadContext> context = std::move(ctx);
@@ -171,17 +169,6 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     }
 
     return NewDataTableRead(context);
-}
-
-Result<std::unique_ptr<BatchReader>> TableRead::CreateReader(
-    const std::vector<std::shared_ptr<Split>>& splits) {
-    std::vector<std::unique_ptr<BatchReader>> batch_readers;
-    batch_readers.reserve(splits.size());
-    for (const auto& split : splits) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, CreateReader(split));
-        batch_readers.emplace_back(std::move(reader));
-    }
-    return std::make_unique<ConcatBatchReader>(std::move(batch_readers), pool_);
 }
 
 Result<std::unique_ptr<CountReader>> TableRead::CreateCountReader(

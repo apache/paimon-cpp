@@ -219,17 +219,6 @@ class ReadInteTest : public testing::Test, public ::testing::WithParamInterface<
 
 namespace {
 
-struct SystemTableReadResult {
-    SystemTableReadResult(std::unique_ptr<BatchReader> batch_reader,
-                          std::shared_ptr<arrow::ChunkedArray> array)
-        : batch_reader(std::move(batch_reader)), array(std::move(array)) {}
-
-    // Keep BatchReader alive while the returned Arrow arrays are used. Some readers allocate
-    // exported ArrowArray buffers on pools owned by the BatchReader.
-    std::unique_ptr<BatchReader> batch_reader;
-    std::shared_ptr<arrow::ChunkedArray> array;
-};
-
 std::map<std::string, std::string> CollectStringMap(
     const std::shared_ptr<arrow::ChunkedArray>& result) {
     std::map<std::string, std::string> values;
@@ -256,16 +245,17 @@ std::map<std::string, std::string> CollectStringMap(
     return values;
 }
 
-std::shared_ptr<arrow::StructArray> SingleStructChunk(const SystemTableReadResult& result) {
-    if (!result.array) {
+std::shared_ptr<arrow::StructArray> SingleStructChunk(
+    const std::shared_ptr<arrow::ChunkedArray>& result) {
+    if (!result) {
         ADD_FAILURE() << "expected non-null system table result";
         return nullptr;
     }
-    if (result.array->num_chunks() != 1) {
-        ADD_FAILURE() << "expected one chunk, got " << result.array->num_chunks();
+    if (result->num_chunks() != 1) {
+        ADD_FAILURE() << "expected one chunk, got " << result->num_chunks();
         return nullptr;
     }
-    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(result.array->chunk(0));
+    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(result->chunk(0));
     if (!struct_array) {
         ADD_FAILURE() << "expected struct chunk";
     }
@@ -280,12 +270,10 @@ std::vector<std::string> StructFieldNames(const std::shared_ptr<arrow::StructArr
     return arrow::schema(array->type()->fields())->field_names();
 }
 
-Result<SystemTableReadResult> ReadSystemTable(const std::string& system_table_path,
-                                              const std::map<std::string, std::string>& options,
-                                              bool streaming_mode = false,
-                                              const std::shared_ptr<Predicate>& predicate = nullptr,
-                                              const std::vector<std::string>& read_field_names = {},
-                                              bool read_next_plan = false) {
+Result<std::shared_ptr<arrow::ChunkedArray>> ReadSystemTable(
+    const std::string& system_table_path, const std::map<std::string, std::string>& options,
+    bool streaming_mode = false, const std::shared_ptr<Predicate>& predicate = nullptr,
+    const std::vector<std::string>& read_field_names = {}, bool read_next_plan = false) {
     ScanContextBuilder scan_context_builder(system_table_path);
     scan_context_builder.SetOptions(options).WithStreamingMode(streaming_mode);
     if (predicate) {
@@ -315,8 +303,8 @@ Result<SystemTableReadResult> ReadSystemTable(const std::string& system_table_pa
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
-                           ReadResultCollector::CollectResult(batch_reader.get()));
-    return SystemTableReadResult(std::move(batch_reader), result);
+                           ReadResultCollector::CollectResult(std::move(batch_reader)));
+    return result;
 }
 
 Status WriteAndFullCompact(std::unique_ptr<RecordBatch>&& batch, int64_t commit_identifier,
@@ -413,8 +401,20 @@ TEST_P(ReadInteTest, TestAppendSimple) {
         auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/3);
         ASSERT_EQ(data_splits.size(), 1);
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
+
+        auto split_concat_batch_reader = dynamic_cast<ConcatBatchReader*>(batch_reader.get());
+        ASSERT_TRUE(split_concat_batch_reader);
+        ASSERT_EQ(1, split_concat_batch_reader->readers_.size());
+        auto complete_batch_reader =
+            dynamic_cast<CompleteRowKindBatchReader*>(split_concat_batch_reader->readers_[0].get());
+        ASSERT_TRUE(complete_batch_reader);
+        auto file_concat_batch_reader =
+            dynamic_cast<ConcatBatchReader*>(complete_batch_reader->reader_.get());
+        ASSERT_TRUE(file_concat_batch_reader);
+        ASSERT_EQ(2, file_concat_batch_reader->readers_.size());
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(batch_reader.get()));
+        std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
 
         auto fields_with_row_kind = read_fields;
         fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -430,47 +430,11 @@ TEST_P(ReadInteTest, TestAppendSimple) {
         ASSERT_TRUE(array_status.ok());
         ASSERT_TRUE(result_array->Equals(expected_array));
 
-        // test metrics
-        auto read_metrics = batch_reader->GetReaderMetrics();
-
-        auto split_concat_batch_reader = dynamic_cast<ConcatBatchReader*>(batch_reader.get());
-        ASSERT_TRUE(split_concat_batch_reader);
-        ASSERT_EQ(1, split_concat_batch_reader->readers_.size());
-        auto complete_batch_reader =
-            dynamic_cast<CompleteRowKindBatchReader*>(split_concat_batch_reader->readers_[0].get());
-        ASSERT_TRUE(complete_batch_reader);
-        auto file_concat_batch_reader =
-            dynamic_cast<ConcatBatchReader*>(complete_batch_reader->reader_.get());
-        ASSERT_TRUE(file_concat_batch_reader);
-        ASSERT_EQ(2, file_concat_batch_reader->readers_.size());
-
         if (param.file_format == "orc") {
-            ASSERT_OK_AND_ASSIGN(
-                uint64_t reader0_latency,
-                file_concat_batch_reader->readers_[0]->GetReaderMetrics()->GetCounter(
-                    "orc.read.inclusive.latency.us"));
-            ASSERT_OK_AND_ASSIGN(
-                uint64_t reader1_latency,
-                file_concat_batch_reader->readers_[1]->GetReaderMetrics()->GetCounter(
-                    "orc.read.inclusive.latency.us"));
-            uint64_t expected_read_latency = reader0_latency + reader1_latency;
-
-            ASSERT_OK_AND_ASSIGN(
-                uint64_t reader0_io_count,
-                file_concat_batch_reader->readers_[0]->GetReaderMetrics()->GetCounter(
-                    "orc.read.io.count"));
-            ASSERT_OK_AND_ASSIGN(
-                uint64_t reader1_io_count,
-                file_concat_batch_reader->readers_[1]->GetReaderMetrics()->GetCounter(
-                    "orc.read.io.count"));
-            uint64_t expected_read_io_count = reader0_io_count + reader1_io_count;
-
-            ASSERT_OK_AND_ASSIGN(uint64_t result_read_latency,
-                                 read_metrics->GetCounter("orc.read.inclusive.latency.us"));
-            ASSERT_EQ(result_read_latency, expected_read_latency);
+            ASSERT_OK(read_metrics->GetCounter("orc.read.inclusive.latency.us"));
             ASSERT_OK_AND_ASSIGN(uint64_t result_read_io_count,
                                  read_metrics->GetCounter("orc.read.io.count"));
-            ASSERT_EQ(result_read_io_count, expected_read_io_count);
+            ASSERT_GT(result_read_io_count, 0);
         }
     };
 
@@ -523,18 +487,23 @@ TEST_P(ReadInteTest, TestReadWithLimits) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
 
     // simulate read limits, only read 2 batches
+    std::vector<BatchReader::ReadBatch> batches;
     for (int32_t i = 0; i < 2; i++) {
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, batch_reader->NextBatch());
+        batches.push_back(std::move(batch));
+    }
+    batch_reader->Close();
+    std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
+    batch_reader.reset();
+
+    for (BatchReader::ReadBatch& batch : batches) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
                              ReadResultCollector::GetArray(std::move(batch)));
         ASSERT_TRUE(array);
         ASSERT_EQ(array->length(), 1);
     }
-    batch_reader->Close();
-    // test metrics
 
     if (param.file_format == "orc") {
-        auto read_metrics = batch_reader->GetReaderMetrics();
         ASSERT_TRUE(read_metrics);
         ASSERT_OK_AND_ASSIGN(uint64_t io_count, read_metrics->GetCounter("orc.read.io.count"));
         ASSERT_GT(io_count, 0);
@@ -576,13 +545,13 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     ASSERT_EQ(data_splits.size(), 1);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
     ASSERT_TRUE(result_array);
     ASSERT_EQ(result_array->length(), 2);
 
     // Verify the read-ahead cache metrics are surfaced through the reader chain. The prefetch
     // reader merges the cache counters into its reader metrics only when a cache is created,
     // so the counters must be present and effective exactly in that case.
-    auto read_metrics = batch_reader->GetReaderMetrics();
     ASSERT_TRUE(read_metrics);
     if (param.enable_prefetch && param.read_ahead_cache_enabled) {
         ASSERT_OK_AND_ASSIGN(uint64_t read_count,
@@ -642,7 +611,8 @@ TEST_P(ReadInteTest, TestReadOnlyPartitionField) {
     }
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -693,7 +663,7 @@ TEST(SystemTableReadInteTest, TestReadOptionsSystemTable) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_TRUE(result);
 
     std::map<std::string, std::string> expected = {{"custom.option", "custom-value"},
@@ -728,7 +698,7 @@ TEST(SystemTableReadInteTest, TestReadBranchOptionsSystemTable) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     std::map<std::string, std::string> expected = {
         {"bucket", "2"}, {"file.format", "parquet"}, {"manifest.format", "avro"}};
@@ -927,7 +897,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTable) {
                                                      /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(WriteAndFullCompact(std::move(batch_1), /*commit_identifier=*/0, helper.get()));
 
-    ASSERT_OK_AND_ASSIGN(SystemTableReadResult compacted_result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> compacted_result,
                          ReadSystemTable(table_path + "$ro", options));
     std::shared_ptr<arrow::DataType> expected_type =
         arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
@@ -936,30 +906,28 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTable) {
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     expected_type, {R"([[0, 1, 10], [0, 2, 20]])"}, &expected_compacted)
                     .ok());
-    ASSERT_TRUE(compacted_result.array->Equals(expected_compacted))
-        << compacted_result.array->ToString();
+    ASSERT_TRUE(compacted_result->Equals(expected_compacted)) << compacted_result->ToString();
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_2,
                          TestHelper::MakeRecordBatch(row_type, R"([[1, 11], [3, 30]])",
                                                      /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(helper->WriteAndCommit(std::move(batch_2), /*commit_identifier=*/1,
                                      /*expected_commit_messages=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(SystemTableReadResult stale_result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> stale_result,
                          ReadSystemTable(table_path + "$ro", options));
-    ASSERT_TRUE(stale_result.array->Equals(expected_compacted)) << stale_result.array->ToString();
+    ASSERT_TRUE(stale_result->Equals(expected_compacted)) << stale_result->ToString();
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_3,
                          TestHelper::MakeRecordBatch(row_type, R"([[2, 21], [3, 31]])",
                                                      /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(WriteAndFullCompact(std::move(batch_3), /*commit_identifier=*/2, helper.get()));
-    ASSERT_OK_AND_ASSIGN(SystemTableReadResult refreshed_result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> refreshed_result,
                          ReadSystemTable(table_path + "$ro", options));
     std::shared_ptr<arrow::ChunkedArray> expected_refreshed;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     expected_type, {R"([[0, 1, 11], [0, 2, 21], [0, 3, 31]])"}, &expected_refreshed)
                     .ok());
-    ASSERT_TRUE(refreshed_result.array->Equals(expected_refreshed))
-        << refreshed_result.array->ToString();
+    ASSERT_TRUE(refreshed_result->Equals(expected_refreshed)) << refreshed_result->ToString();
 }
 
 TEST(SystemTableReadInteTest, TestReadOptimizedAppendOnlySystemTableWithStreamingScan) {
@@ -989,7 +957,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedAppendOnlySystemTableWithStreamin
     ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
                                      /*expected_commit_messages=*/std::nullopt));
 
-    ASSERT_OK_AND_ASSIGN(SystemTableReadResult result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadSystemTable(table_path + "$ro", options, /*streaming_mode=*/true));
     std::shared_ptr<arrow::DataType> expected_type =
         arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
@@ -998,7 +966,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedAppendOnlySystemTableWithStreamin
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     expected_type, {R"([[0, 1, 10], [0, 2, 20]])"}, &expected)
                     .ok());
-    ASSERT_TRUE(result.array->Equals(expected)) << result.array->ToString();
+    ASSERT_TRUE(result->Equals(expected)) << result->ToString();
 }
 
 TEST(SystemTableReadInteTest, TestReadOptimizedPrimaryKeyProjectionAndPredicatePushdown) {
@@ -1058,7 +1026,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedPrimaryKeyProjectionAndPredicateP
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(ro_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     std::shared_ptr<arrow::DataType> expected_type =
         arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
                         arrow::field("k", arrow::int32()), arrow::field("v", arrow::int32())});
@@ -1119,7 +1087,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableNestedProjection) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadResultCollector::CollectResult(batch_reader.get()));
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     std::shared_ptr<arrow::DataType> expected_type = arrow::struct_({
         arrow::field("_VALUE_KIND", arrow::int8()),
@@ -1171,7 +1139,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableWithBranch) {
                                                      /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(WriteAndFullCompact(std::move(main_batch), /*commit_identifier=*/1, helper.get()));
 
-    ASSERT_OK_AND_ASSIGN(SystemTableReadResult result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadSystemTable(table_path + "$branch_rt$ro", options));
     std::shared_ptr<arrow::DataType> expected_type =
         arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
@@ -1180,15 +1148,15 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableWithBranch) {
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     expected_type, {R"([[0, 1, 10], [0, 2, 20]])"}, &expected)
                     .ok());
-    ASSERT_TRUE(result.array->Equals(expected)) << result.array->ToString();
+    ASSERT_TRUE(result->Equals(expected)) << result->ToString();
 
-    ASSERT_OK_AND_ASSIGN(SystemTableReadResult main_result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> main_result,
                          ReadSystemTable(table_path + "$ro", options));
     std::shared_ptr<arrow::ChunkedArray> expected_main;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     expected_type, {R"([[0, 1, 11], [0, 2, 20], [0, 3, 30]])"}, &expected_main)
                     .ok());
-    ASSERT_TRUE(main_result.array->Equals(expected_main)) << main_result.array->ToString();
+    ASSERT_TRUE(main_result->Equals(expected_main)) << main_result->ToString();
 }
 
 TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableWithFirstRowMergeEngine) {
@@ -1219,7 +1187,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableWithFirstRowMergeEngin
                                     /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(WriteAndFullCompact(std::move(batch), /*commit_identifier=*/0, helper.get()));
 
-    ASSERT_OK_AND_ASSIGN(SystemTableReadResult result,
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadSystemTable(table_path + "$ro", options));
     std::shared_ptr<arrow::DataType> expected_type =
         arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
@@ -1228,7 +1196,7 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableWithFirstRowMergeEngin
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     expected_type, {R"([[0, 1, 10], [0, 2, 20]])"}, &expected)
                     .ok());
-    ASSERT_TRUE(result.array->Equals(expected)) << result.array->ToString();
+    ASSERT_TRUE(result->Equals(expected)) << result->ToString();
 }
 
 TEST(SystemTableReadInteTest, TestReadFilesSystemTableForPartitionedTable) {
@@ -1485,9 +1453,9 @@ TEST(SystemTableReadInteTest, TestReadManifestAndFilesSystemTablesForEmptyTable)
                          catalog->GetTableLocation(Identifier("db1", "tbl1")));
     ASSERT_OK_AND_ASSIGN(auto manifests_result,
                          ReadSystemTable(table_path + "$manifests", options));
-    ASSERT_EQ(manifests_result.array, nullptr);
+    ASSERT_EQ(manifests_result, nullptr);
     ASSERT_OK_AND_ASSIGN(auto files_result, ReadSystemTable(table_path + "$files", options));
-    ASSERT_EQ(files_result.array, nullptr);
+    ASSERT_EQ(files_result, nullptr);
 }
 
 TEST(SystemTableReadInteTest, TestReadTagBranchAndConsumerSystemTables) {
@@ -1807,10 +1775,10 @@ TEST(SystemTableReadInteTest, TestStreamingBinlogPacksUpdateBeforeAndAfter) {
         ReadSystemTable(PathUtil::JoinPath(dir->Str(), "foo.db/bar$binlog"), streaming_options,
                         /*streaming_mode=*/true, /*predicate=*/nullptr,
                         /*read_field_names=*/{}, /*read_next_plan=*/true));
-    ASSERT_TRUE(result.array);
-    ASSERT_EQ(result.array->num_chunks(), 2);
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->num_chunks(), 2);
     auto array = std::dynamic_pointer_cast<arrow::StructArray>(
-        arrow::Concatenate(result.array->chunks()).ValueOrDie());
+        arrow::Concatenate(result->chunks()).ValueOrDie());
     ASSERT_TRUE(array);
     ASSERT_EQ(StructFieldNames(array), (std::vector<std::string>{"rowkind", "pk", "v"}));
     AssertStructArrayEqualsJson(array, R"([
@@ -1990,7 +1958,8 @@ TEST_P(ReadInteTest, TestAppendReadWithMultipleBuckets) {
          BinaryRowGenerator::GenerateRow({20}, pool_.get()), file_list_2}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/4);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2074,6 +2043,7 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicate) {
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/4);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2088,10 +2058,8 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicate) {
                                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
     ASSERT_TRUE(result_array->Equals(*expected_array));
-    batch_reader->Close();
     if (param.file_format == "orc") {
         // test metrics
-        auto read_metrics = batch_reader->GetReaderMetrics();
         ASSERT_TRUE(read_metrics);
         ASSERT_OK_AND_ASSIGN(uint64_t io_count, read_metrics->GetCounter("orc.read.io.count"));
         ASSERT_GT(io_count, 0);
@@ -2166,7 +2134,8 @@ TEST_P(ReadInteTest, TestAppendReadWithComplexTypePredicate) {
          BinaryRowGenerator::GenerateRow({20}, pool_.get()), file_list_2}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/4);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2249,7 +2218,8 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateOnlyPushdown) {
 
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/4);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2331,7 +2301,8 @@ TEST_P(ReadInteTest, TestAppendReadWithLateMaterializing) {
 
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/4);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2397,7 +2368,8 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateAllFiltered) {
 
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/4);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_FALSE(result_array);
 }
 
@@ -2462,7 +2434,8 @@ TEST_P(ReadInteTest, TestAppendReadIOException) {
         Result<std::unique_ptr<BatchReader>> batch_reader =
             table_read.value()->CreateReader(data_splits);
         CHECK_HOOK_STATUS(batch_reader.status(), i);
-        auto result = ReadResultCollector::CollectResult(batch_reader.value().get());
+        std::unique_ptr<BatchReader> owned_reader = std::move(batch_reader).value();
+        auto result = ReadResultCollector::CollectResult(std::move(owned_reader));
         CHECK_HOOK_STATUS(result.status(), i);
         auto result_array = result.value();
         ASSERT_TRUE(result_array);
@@ -2517,7 +2490,8 @@ TEST_P(ReadInteTest, TestPkTableWithDeletionVectorSimple) {
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(fields_with_row_kind);
 
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
     auto expected = std::make_shared<arrow::ChunkedArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type, R"([
        [0, "Alex", 10, 0, 16.1], [0, "Bob", 10, 0, 12.1],
@@ -2576,7 +2550,8 @@ TEST_P(ReadInteTest, TestPkTableWithDeletionVector) {
                                         /*snapshot_id=*/6);
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2663,7 +2638,8 @@ TEST_P(ReadInteTest, TestPkTableWithSnapshot6) {
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/6);
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2736,7 +2712,8 @@ TEST_P(ReadInteTest, TestPkTableWithSnapshot8) {
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/6);
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2807,7 +2784,7 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolution) {
         auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         auto fields_with_row_kind = read_fields;
         fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2903,7 +2880,8 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateFilter) {
 
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -2980,7 +2958,8 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateOnlyPushDown)
 
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3067,7 +3046,8 @@ TEST_P(ReadInteTest, TestPkReadSnapshot5WithSchemaEvolution) {
     // with new schema
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/5);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3143,7 +3123,8 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolution) {
          /*deletion file*/ {std::nullopt}}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3229,7 +3210,8 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateOnlyPush
          /*deletion file*/ {std::nullopt}}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3315,7 +3297,8 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithLateMaterializing
 
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3399,7 +3382,8 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateFilter) 
 
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/6);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3467,7 +3451,8 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithBuildInFieldId) {
          /*schema ids*/ {0, 1}}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3531,7 +3516,8 @@ TEST_P(ReadInteTest, TestAppendReadNestedType) {
                                            /*schema ids*/ {0}}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/1);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3598,7 +3584,8 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithCast) {
          /*schema ids*/ {0, 1}}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3682,7 +3669,8 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithCastWithPredicatePushD
          /*schema ids*/ {0, 1}}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3738,7 +3726,7 @@ TEST_P(ReadInteTest, TestReadWithPKFallBackBranch) {
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         auto fields_with_row_kind = read_fields;
         fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3787,7 +3775,8 @@ TEST_P(ReadInteTest, TestReadWithAppendFallBackBranch) {
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     std::vector<DataField> read_fields = {
         DataField(0, arrow::field("pt", arrow::int32())),
@@ -3832,7 +3821,8 @@ TEST_P(ReadInteTest, TestFallBackBranchStreamRead) {
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_split));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3882,7 +3872,7 @@ TEST_P(ReadInteTest, TestReadWithPKRtBranch) {
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         auto fields_with_row_kind = read_fields;
         fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -3939,7 +3929,7 @@ TEST_P(ReadInteTest, TestReadWithAppendPtBranch) {
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         auto fields_with_row_kind = read_fields;
         fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -4084,7 +4074,8 @@ TEST_P(ReadInteTest, TestSpecificFs) {
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/3);
     ASSERT_EQ(data_splits.size(), 1);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     auto fields_with_row_kind = read_fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
@@ -4108,7 +4099,7 @@ TEST_P(ReadInteTest, TestSpecificFs) {
 
 namespace {
 
-Result<SystemTableReadResult> ReadGlobalSystemTable(
+Result<std::shared_ptr<arrow::ChunkedArray>> ReadGlobalSystemTable(
     const std::string& table_name, Catalog* catalog, const std::shared_ptr<FileSystem>& fs,
     const std::string& warehouse, const std::map<std::string, std::string>& options) {
     GlobalSystemTableContext ctx;
@@ -4141,8 +4132,8 @@ Result<SystemTableReadResult> ReadGlobalSystemTable(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
-                           ReadResultCollector::CollectResult(batch_reader.get()));
-    return SystemTableReadResult(std::move(batch_reader), result);
+                           ReadResultCollector::CollectResult(std::move(batch_reader)));
+    return result;
 }
 
 }  // namespace

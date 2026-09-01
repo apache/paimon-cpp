@@ -282,7 +282,7 @@ class PkCompactionInteTest : public ::testing::Test,
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                                  table_read->CreateReader(splits));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> read_result,
-                                 ReadResultCollector::CollectResult(batch_reader.get()));
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
             auto expected_array =
                 arrow::ipc::internal::json::ArrayFromJSON(data_type, iter->second).ValueOrDie();
             auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_array);
@@ -299,9 +299,8 @@ class PkCompactionInteTest : public ::testing::Test,
         }
     }
 
-    // Read every row of the table, for fields whose expected value cannot be spelled out as JSON.
-    // `consume` runs while the reader is still alive, because the arrow arrays are allocated from
-    // a pool the reader owns and must not outlive it.
+    // Read every row of the table for fields whose expected value cannot be spelled out as JSON.
+    // The collector destroys the reader before `consume` accesses the returned arrays.
     template <typename Fn>
     void ScanAllRows(const std::string& table_path, Fn consume) {
         std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"}};
@@ -322,7 +321,7 @@ class PkCompactionInteTest : public ::testing::Test,
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                              table_read->CreateReader(result_plan->Splits()));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
         consume(result);
     }
 
@@ -1445,7 +1444,7 @@ TEST_F(PkCompactionInteTest, CompactWithSchemaEvolution) {
         {
             ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split_p0));
             ASSERT_OK_AND_ASSIGN(auto result_array,
-                                 ReadResultCollector::CollectResult(batch_reader.get()));
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
 
             arrow::FieldVector fields_with_row_kind = fields;
             fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1468,7 +1467,7 @@ TEST_F(PkCompactionInteTest, CompactWithSchemaEvolution) {
         {
             ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split_p1));
             ASSERT_OK_AND_ASSIGN(auto result_array,
-                                 ReadResultCollector::CollectResult(batch_reader.get()));
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
 
             arrow::FieldVector fields_with_row_kind = fields;
             fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1967,7 +1966,7 @@ TEST_F(PkCompactionInteTest, WriteAndCompactWithBranch) {
         ASSERT_OK_AND_ASSIGN(auto batch_reader,
                              table_read->CreateReader(std::shared_ptr<Split>(fake_split)));
         ASSERT_OK_AND_ASSIGN(auto result_array,
-                             ReadResultCollector::CollectResult(batch_reader.get()));
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
         arrow::FieldVector fields_with_row_kind = fields;
         fields_with_row_kind.insert(fields_with_row_kind.begin(),

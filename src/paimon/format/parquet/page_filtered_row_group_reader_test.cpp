@@ -213,8 +213,8 @@ class PageFilteredRowGroupReaderTest : public ::testing::Test {
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
         ASSERT_OK(batch_reader->SetReadSchema(c_schema.get(), predicate,
                                               /*selection_bitmap=*/std::nullopt));
-        ASSERT_OK_AND_ASSIGN(*out,
-                             paimon::test::ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_OK_AND_ASSIGN(
+            *out, paimon::test::ReadResultCollector::CollectResult(std::move(batch_reader)));
     }
 
     /// Read back a Parquet file with a predicate, a bitmap, and page index filter enabled.
@@ -246,8 +246,8 @@ class PageFilteredRowGroupReaderTest : public ::testing::Test {
             // consuming data pages.
             tracking_in->ClearReadAtRanges();
         }
-        ASSERT_OK_AND_ASSIGN(*out,
-                             paimon::test::ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_OK_AND_ASSIGN(
+            *out, paimon::test::ReadResultCollector::CollectResult(std::move(batch_reader)));
         if (tracking_in) {
             *read_at_ranges = tracking_in->GetReadAtRanges();
         }

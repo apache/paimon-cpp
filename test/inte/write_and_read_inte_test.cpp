@@ -187,7 +187,8 @@ class WriteAndReadInteTest
         PAIMON_ASSIGN_OR_RAISE(auto read_context, read_context_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(plan->Splits()));
-        PAIMON_ASSIGN_OR_RAISE(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+        PAIMON_ASSIGN_OR_RAISE(auto actual,
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             auto expected, arrow::ipc::internal::json::ArrayFromJSON(expected_type, expected_data));
         return std::make_shared<arrow::ChunkedArray>(expected)->Equals(actual);
@@ -209,7 +210,8 @@ class WriteAndReadInteTest
         PAIMON_ASSIGN_OR_RAISE(auto read_context, read_context_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(plan->Splits()));
-        PAIMON_ASSIGN_OR_RAISE(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+        PAIMON_ASSIGN_OR_RAISE(auto actual,
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             auto expected, arrow::ipc::internal::json::ArrayFromJSON(expected_type, expected_data));
         return std::make_shared<arrow::ChunkedArray>(expected)->Equals(actual);
@@ -518,7 +520,7 @@ TEST_P(WriteAndReadInteTest, TestAppendVectorWithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -603,7 +605,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithExternalBitmapAndRangeBitmapIndexes) 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -2319,7 +2321,8 @@ TEST_P(WriteAndReadInteTest, TestPKWithParquetPageIndexFilter) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // Expected: p2 file is pruned by file-level min/max key stats (f0 range
     // [Grace, Lucy] doesn't overlap "Alice"). Inside p1's file, write.batch-size=1
@@ -2428,7 +2431,8 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilter) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     // Partition p2's row groups don't overlap "Alice" (min/max f0 in [Grace, Lucy]),
     // so the whole file is skipped. Within p1, page-index pruning narrows down to the
@@ -2521,7 +2525,8 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -2602,7 +2607,7 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetMetadataCache) {
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
-                               ReadResultCollector::CollectResult(batch_reader.get()));
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         if (!read_result) {
             return Status::Invalid("read result is null");
         }
@@ -2952,7 +2957,7 @@ TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(batch_reader)));
 
     arrow::FieldVector fields_with_row_kind = fields;
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -4021,7 +4026,8 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingStructValueSchemaEvolutionRea
         PAIMON_ASSIGN_OR_RAISE(auto read_context, read_context_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(plan->Splits()));
-        PAIMON_ASSIGN_OR_RAISE(auto actual, ReadResultCollector::CollectResult(batch_reader.get()));
+        PAIMON_ASSIGN_OR_RAISE(auto actual,
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
         (void)actual;
         return Status::OK();
     };
