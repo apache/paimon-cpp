@@ -55,9 +55,8 @@ class MultiLiteralsLeafFunctionTest : public ::testing::Test {
 
     // A decimal literal of `unscaled` as written by the digits of `precision` and `scale`.
     static Literal DecimalLiteral(int32_t precision, int32_t scale, const std::string& unscaled) {
-        Result<Decimal::int128_t> value = DecimalUtils::StrToInt128(unscaled);
-        EXPECT_OK(value.status());
-        return Literal(Decimal(precision, scale, value.ok() ? value.value() : 0));
+        EXPECT_OK_AND_ASSIGN(Decimal::int128_t value, DecimalUtils::StrToInt128(unscaled));
+        return Literal(Decimal(precision, scale, value));
     }
 
     // A timestamp literal of `millis` since the epoch and `nanos` within the millisecond.
@@ -69,12 +68,9 @@ class MultiLiteralsLeafFunctionTest : public ::testing::Test {
     static std::vector<char> Eval(const LeafFunction& function,
                                   const std::vector<Literal>& literals,
                                   const std::shared_ptr<arrow::Array>& array) {
-        Result<std::vector<char>> result =
-            function.Test(*array, literals, arrow::default_memory_pool());
-        EXPECT_OK(result.status());
-        // Reading the value of a failed `Result` is undefined and `EXPECT_OK` does not stop the
-        // caller, so a failure leaves the row results empty for the assertion to report.
-        return std::move(result).value_or({});
+        EXPECT_OK_AND_ASSIGN(std::vector<char> is_valid,
+                             function.Test(*array, literals, arrow::default_memory_pool()));
+        return is_valid;
     }
 
     static std::vector<char> EvalIn(const std::vector<Literal>& literals,
