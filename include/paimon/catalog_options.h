@@ -65,6 +65,15 @@ struct PAIMON_EXPORT CatalogOptions {
     /// "dlf.signing-algorithm" - DLF signer ("default" or "openapi").
     static const char DLF_SIGNING_ALGORITHM[];
 
+    /// "dlf.oss-endpoint" - OSS endpoint that overrides the "fs.oss.endpoint" of a data
+    /// token issued by the REST catalog.
+    static const char DLF_OSS_ENDPOINT[];
+
+    /// "data-token.enabled" - Whether table data is accessed with the temporary
+    /// credentials issued by the REST catalog instead of the credentials configured in
+    /// the catalog options. Defaults to false.
+    static const char DATA_TOKEN_ENABLED[];
+
     /// "table-default." - Prefix of the catalog options that provide table option
     /// defaults: "table-default.<key>=<value>" applies "<key>=<value>" to a created
     /// table when the caller left "<key>" unset.

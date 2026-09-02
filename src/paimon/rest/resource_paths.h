@@ -43,6 +43,9 @@ class ResourcePaths {
     std::string TableSnapshot(const std::string& database_name,
                               const std::string& table_name) const;
 
+    /// Path of the temporary file system credentials of one table.
+    std::string TableToken(const std::string& database_name, const std::string& table_name) const;
+
  private:
     /// "/v1" or "/v1/{encoded prefix}".
     std::string base_;
