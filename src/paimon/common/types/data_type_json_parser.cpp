@@ -250,6 +250,7 @@ class TokenParser {
     Result<std::shared_ptr<arrow::DataType>> ParseStringType();
     Result<std::shared_ptr<arrow::DataType>> ParseDecimalType();
     Result<std::shared_ptr<arrow::DataType>> ParseDoubleType();
+    Result<std::shared_ptr<arrow::DataType>> ParseTimeType();
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampType();
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampLtzType();
     Result<std::shared_ptr<arrow::DataType>> ParseVectorType();
@@ -523,6 +524,8 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTypeByKeyword(
             return ParseDoubleType();
         case Keyword::DATE:
             return arrow::date32();
+        case Keyword::TIME:
+            return ParseTimeType();
         case Keyword::TIMESTAMP:
             return ParseTimestampType();
         case Keyword::TIMESTAMP_LTZ:
@@ -580,6 +583,21 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseDoubleType() {
         PAIMON_RETURN_NOT_OK(NextToken(Keyword::PRECISION));
     }
     return arrow::float64();
+}
+
+Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimeType() {
+    PAIMON_ASSIGN_OR_RAISE(int32_t precision, ParseOptionalPrecision(/*default_precision=*/0));
+    if (precision < 0 || precision > 9) {
+        return Status::Invalid("TIME precision must be between 0 and 9");
+    }
+    if (HasNextToken({Keyword::WITHOUT})) {
+        PAIMON_RETURN_NOT_OK(NextToken(Keyword::WITHOUT));
+        PAIMON_RETURN_NOT_OK(NextToken(Keyword::TIME));
+        PAIMON_RETURN_NOT_OK(NextToken(Keyword::ZONE));
+    }
+    // Paimon stores TIME as the number of milliseconds since midnight for every supported
+    // precision. Arrow's corresponding physical type is therefore time32[ms].
+    return arrow::time32(arrow::TimeUnit::MILLI);
 }
 
 Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimestampType() {

@@ -158,6 +158,11 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
         {"NUMERIC", arrow::decimal128(10, 0)},
         {"NUMERIC(10)", arrow::decimal128(10, 0)},
         {"NUMERIC(10, 3)", arrow::decimal128(10, 3)},
+        {"TIME", arrow::time32(arrow::TimeUnit::MILLI)},
+        {"TIME(0)", arrow::time32(arrow::TimeUnit::MILLI)},
+        {"TIME(3)", arrow::time32(arrow::TimeUnit::MILLI)},
+        {"TIME(9)", arrow::time32(arrow::TimeUnit::MILLI)},
+        {"TIME(3) WITHOUT TIME ZONE", arrow::time32(arrow::TimeUnit::MILLI)},
         {"TIMESTAMP(0)", arrow::timestamp(arrow::TimeUnit::SECOND)},
         {"TIMESTAMP(3)", arrow::timestamp(arrow::TimeUnit::MILLI)},
         {"TIMESTAMP(6)", arrow::timestamp(arrow::TimeUnit::MICRO)},
@@ -214,6 +219,12 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
         rapidjson::Value value(invalid_type, invalid_doc.GetAllocator());
         ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
                             "length must be between 1 and 2147483647");
+    }
+    {
+        rapidjson::Document invalid_doc;
+        rapidjson::Value value("TIME(10)", invalid_doc.GetAllocator());
+        ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
+                            "TIME precision must be between 0 and 9");
     }
     {
         rapidjson::Document invalid_doc;

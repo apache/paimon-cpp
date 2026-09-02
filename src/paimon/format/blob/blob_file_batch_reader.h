@@ -99,9 +99,8 @@ class BlobFileBatchReader : public FileBatchReader {
     /// `emit_placeholder_sentinel` controls how placeholder entries (bin_length ==
     /// BlobDefs::kPlaceholderBinLength) are read: when false they fail the read, as resolving
     /// them requires the data-evolution blob fallback path; when true they are returned as the
-    /// non-null BlobDefs::kPlaceholderSentinel bytes for that path to merge away. Stored values
-    /// are returned verbatim; see BlobDefs::kPlaceholderSentinel for the accepted collision
-    /// with a user value exactly equal to the sentinel.
+    /// non-null BlobDefs::kPlaceholderSentinel bytes for scalar BLOB, or a two-entry map with
+    /// duplicate keys for MAP<..., BLOB>. The fallback path removes these internal values.
     static Result<std::unique_ptr<BlobFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input_stream, int32_t batch_size,
         bool blob_as_descriptor, bool emit_placeholder_sentinel,

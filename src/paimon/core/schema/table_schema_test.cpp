@@ -23,6 +23,7 @@
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
@@ -1329,6 +1330,35 @@ TEST_F(TableSchemaTest, NullableMapKeySchemaIsSupported) {
     auto direct_map_type =
         checked_pointer_cast<arrow::MapType>(direct_table_schema->Fields()[0].Type());
     ASSERT_TRUE(direct_map_type->key_field()->nullable());
+}
+
+TEST_F(TableSchemaTest, MapBlobSchemaLoadsFromJson) {
+    std::string table_schema_str = R"json({
+        "version" : 3,
+        "id" : 0,
+        "fields" : [ {
+            "id" : 0,
+            "name" : "string_blob_map",
+            "type" : {"type":"MAP", "key":"STRING", "value":"BLOB"}
+        }, {
+            "id" : 1,
+            "name" : "time_blob_map",
+            "type" : {"type":"MAP", "key":"TIME(0)", "value":"BLOB"}
+        } ],
+        "highestFieldId" : 1,
+        "partitionKeys" : [],
+        "primaryKeys" : [],
+        "options" : {},
+        "timeMillis" : 1721614341162
+    })json";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> table_schema,
+                         TableSchema::CreateFromJson(table_schema_str));
+    ASSERT_TRUE(BlobUtils::IsMapBlobField(
+        DataField::ConvertDataFieldToArrowField(table_schema->Fields()[0])));
+    ASSERT_TRUE(BlobUtils::IsMapBlobField(
+        DataField::ConvertDataFieldToArrowField(table_schema->Fields()[1])));
+    auto time_map = checked_pointer_cast<arrow::MapType>(table_schema->Fields()[1].Type());
+    ASSERT_EQ(time_map->key_type()->id(), arrow::Type::TIME32);
 }
 
 TEST_F(TableSchemaTest, MapKeysSortedIsNormalized) {

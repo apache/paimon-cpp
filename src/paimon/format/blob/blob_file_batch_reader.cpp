@@ -58,16 +58,6 @@ T ReadLittleEndian(const uint8_t* data) {
     return arrow::bit_util::FromLittleEndian(arrow::util::SafeLoadAs<T>(data));
 }
 
-bool IsMapBlobField(const std::shared_ptr<arrow::Field>& field) {
-    if (field->type()->id() != arrow::Type::MAP) {
-        return false;
-    }
-    const auto& map_type = static_cast<const arrow::MapType&>(*field->type());
-    // Nested field metadata is not retained by Arrow's C schema bridge for MapType. Paimon's
-    // regular binary types use BINARY, so LARGE_BINARY here uniquely identifies a BLOB value.
-    return map_type.item_type()->id() == arrow::Type::LARGE_BINARY;
-}
-
 Result<int32_t> GetMapBlobFixedKeyLength(const std::shared_ptr<arrow::DataType>& key_type) {
     switch (key_type->id()) {
         case arrow::Type::BOOL:
@@ -134,6 +124,13 @@ Status AppendMapBlobKey(const std::shared_ptr<arrow::DataType>& key_type, const 
             if (decimal_type.precision() <= 18) {
                 value = arrow::Decimal128(ReadLittleEndian<int64_t>(data));
             } else {
+                // Java BigInteger.toByteArray() uses the shortest big-endian two's-complement
+                // representation. This makes byte-wise duplicate detection equivalent to
+                // decoded decimal equality.
+                if (length <= 0 || (length > 1 && ((data[0] == 0x00 && (data[1] & 0x80) == 0) ||
+                                                   (data[0] == 0xFF && (data[1] & 0x80) != 0)))) {
+                    return Status::Invalid("invalid MAP<..., BLOB> non-canonical decimal key");
+                }
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(value,
                                                   arrow::Decimal128::FromBigEndian(data, length));
             }
@@ -244,10 +241,10 @@ Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
             fmt::format("read schema field number {} is not 1", arrow_schema->num_fields()));
     }
     std::shared_ptr<arrow::Field> read_field = arrow_schema->field(0);
-    if (!BlobUtils::IsBlobField(read_field) && !IsMapBlobField(read_field)) {
+    if (!BlobUtils::IsBlobField(read_field) && !BlobUtils::IsMapBlobField(read_field)) {
         return Status::Invalid(fmt::format("field {} is not BLOB", read_field->ToString()));
     }
-    if (IsMapBlobField(read_field)) {
+    if (BlobUtils::IsMapBlobField(read_field)) {
         const auto& map_type = static_cast<const arrow::MapType&>(*read_field->type());
         PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] int32_t fixed_key_length,
                                GetMapBlobFixedKeyLength(map_type.key_type()));
@@ -392,6 +389,14 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
         const size_t row_index = current_pos_ + k;
         if (IsTargetNull(row_index)) {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.AppendNull());
+            continue;
+        }
+        if (IsTargetPlaceholder(row_index)) {
+            // Duplicate map keys cannot occur in a valid Paimon map, so two empty/default keys
+            // with null values form an unambiguous, Arrow-valid internal sentinel.
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Append());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->AppendEmptyValues(2));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->AppendNulls(2));
             continue;
         }
         if (target_blob_lengths_[row_index] < 0) {

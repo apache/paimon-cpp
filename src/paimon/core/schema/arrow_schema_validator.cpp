@@ -121,6 +121,7 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY:
         case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32:
         case arrow::Type::type::DECIMAL128:
         case arrow::Type::type::TIMESTAMP:
             return Status::OK();
@@ -164,8 +165,10 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
             const auto& item_field = checked_cast<arrow::MapType*>(type.get())->item_field();
             PAIMON_RETURN_NOT_OK(ValidateDataTypeWithFieldId(
                 key_field->type(), key_field->metadata(), /*allow_blob=*/false, field_id_set));
+            bool allow_direct_blob_item =
+                allow_blob && item_field->type()->id() == arrow::Type::LARGE_BINARY;
             PAIMON_RETURN_NOT_OK(ValidateDataTypeWithFieldId(
-                item_field->type(), item_field->metadata(), /*allow_blob=*/false, field_id_set));
+                item_field->type(), item_field->metadata(), allow_direct_blob_item, field_id_set));
             break;
         }
         case arrow::Type::type::LARGE_BINARY: {
@@ -202,6 +205,7 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY:
         case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32:
         case arrow::Type::type::TIMESTAMP:
             break;
         case arrow::Type::type::DECIMAL128:
@@ -248,7 +252,9 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
             const auto& item_field =
                 checked_cast<const arrow::MapType&>(*field->type()).item_field();
             PAIMON_RETURN_NOT_OK(ValidateField(key_field, /*allow_blob=*/false));
-            PAIMON_RETURN_NOT_OK(ValidateField(item_field, /*allow_blob=*/false));
+            bool allow_direct_blob_item =
+                allow_blob && item_field->type()->id() == arrow::Type::LARGE_BINARY;
+            PAIMON_RETURN_NOT_OK(ValidateField(item_field, allow_direct_blob_item));
             break;
         }
         case arrow::Type::type::LARGE_BINARY: {

@@ -112,6 +112,10 @@ std::string DataType::DataTypeToString(const std::shared_ptr<arrow::DataType>& t
             return "BYTES";
         case arrow::Type::type::DATE32:
             return "DATE";
+        case arrow::Type::type::TIME32: {
+            const auto& time_type = checked_cast<const arrow::Time32Type&>(*type);
+            return time_type.unit() == arrow::TimeUnit::SECOND ? "TIME(0)" : "TIME(3)";
+        }
         case arrow::Type::type::DECIMAL128: {
             auto status = DecimalUtils::CheckDecimalType(*type);
             if (!status.ok()) {
