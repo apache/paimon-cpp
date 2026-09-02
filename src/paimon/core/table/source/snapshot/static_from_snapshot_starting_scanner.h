@@ -20,6 +20,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 
 #include "paimon/core/table/source/snapshot/starting_scanner.h"
 #include "paimon/logging.h"
@@ -36,29 +37,36 @@ class StaticFromSnapshotStartingScanner : public StartingScanner {
         starting_snapshot_id_ = snapshot_id;
     }
 
+    static Result<std::optional<Snapshot>> ResolveSnapshot(
+        const std::shared_ptr<SnapshotManager>& snapshot_manager, int64_t snapshot_id) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest,
+                               snapshot_manager->EarliestSnapshotId());
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest, snapshot_manager->LatestSnapshotId());
+        if (!earliest || !latest) {
+            return std::optional<Snapshot>();
+        }
+        if (snapshot_id < earliest.value() || snapshot_id > latest.value()) {
+            return Status::Invalid(
+                fmt::format("The specified scan snapshotId {} is out of "
+                            "available snapshotId range [{}, {}].",
+                            snapshot_id, earliest.value(), latest.value()));
+        }
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager->LoadSnapshot(snapshot_id));
+        return std::optional<Snapshot>(std::move(snapshot));
+    }
+
     Result<std::shared_ptr<ScanResult>> Scan(
         const std::shared_ptr<SnapshotReader>& snapshot_reader) override {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest,
-                               snapshot_manager_->EarliestSnapshotId());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest,
-                               snapshot_manager_->LatestSnapshotId());
-        if (earliest == std::nullopt || latest == std::nullopt) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
+                               ResolveSnapshot(snapshot_manager_, starting_snapshot_id_.value()));
+        if (!snapshot) {
             PAIMON_LOG_INFO(
                 logger_, "There is currently no snapshot. Waiting for snapshot generation.%s", "");
             return std::make_shared<StartingScanner::NoSnapshot>();
         }
-        if (starting_snapshot_id_.value() < earliest.value() ||
-            starting_snapshot_id_.value() > latest.value()) {
-            return Status::Invalid(
-                fmt::format("The specified scan snapshotId {} is out of "
-                            "available snapshotId range [{}, {}].",
-                            starting_snapshot_id_.value(), earliest.value(), latest.value()));
-        }
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
-                               snapshot_manager_->LoadSnapshot(starting_snapshot_id_.value()));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<Plan> plan,
-            snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot)->Read());
+            snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot.value())->Read());
         return std::make_shared<StartingScanner::CurrentSnapshot>(plan);
     }
 
