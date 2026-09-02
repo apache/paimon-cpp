@@ -57,9 +57,9 @@ std::shared_ptr<InputStream> OpenTestFile(std::unique_ptr<UniqueTestDirectory>* 
     file.close();
 
     Result<std::unique_ptr<FileSystem>> fs = FileSystemFactory::Get("local", path, {});
-    EXPECT_TRUE(fs.ok());
+    EXPECT_OK(fs.status());
     Result<std::unique_ptr<InputStream>> in = fs.value()->Open(path);
-    EXPECT_TRUE(in.ok());
+    EXPECT_OK(in.status());
     return std::move(in).value();
 }
 
@@ -67,7 +67,7 @@ std::shared_ptr<InputStream> OpenTestFile(std::unique_ptr<UniqueTestDirectory>* 
 void AssertServed(const ByteRange& range, const std::string& expected, FileBlockCache* cache) {
     std::string dest(range.length, 'X');
     ASSERT_TRUE(cache->Read(range, dest.data())) << expected;
-    EXPECT_EQ(expected, std::string_view(dest.data(), range.length));
+    ASSERT_EQ(expected, std::string_view(dest.data(), range.length));
 }
 
 // Assert that the cache declines the range and leaves the destination untouched,
@@ -75,7 +75,7 @@ void AssertServed(const ByteRange& range, const std::string& expected, FileBlock
 void AssertDeclined(const ByteRange& range, FileBlockCache* cache) {
     std::string dest(range.length, 'X');
     ASSERT_FALSE(cache->Read(range, dest.data()));
-    EXPECT_EQ(std::string(dest.size(), 'X'), dest);
+    ASSERT_EQ(std::string(dest.size(), 'X'), dest);
 }
 
 }  // namespace

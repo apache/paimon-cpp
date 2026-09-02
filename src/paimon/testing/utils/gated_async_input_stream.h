@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -64,7 +65,7 @@ class GatedAsyncInputStream : public InputStream {
         return inner_->Length();
     }
 
-    int AsyncReadCount() {
+    int32_t AsyncReadCount() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return async_read_count_;
     }
@@ -106,9 +107,9 @@ class GatedAsyncInputStream : public InputStream {
     };
 
     std::shared_ptr<InputStream> inner_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::vector<PendingRead> pending_;
-    int async_read_count_ = 0;
+    int32_t async_read_count_ = 0;
 };
 
 }  // namespace paimon::test

@@ -80,26 +80,6 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
 
 }  // namespace
 
-CacheConfig::CacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit,
-                         uint64_t pre_buffer_limit)
-    : range_size_limit_(range_size_limit),
-      hole_size_limit_(hole_size_limit),
-      pre_buffer_limit_(pre_buffer_limit) {}
-
-CacheConfig::CacheConfig()
-    // Aligned with the reader's request granularity and with realistic data
-    // file sizes:
-    // - range_size_limit matches the parquet reader's 32 MiB request blocks
-    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
-    //   below the request size, so a request can never be served from one piece.
-    // - pre_buffer_limit must exceed the LARGEST single read a reader issues
-    //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
-    //   only dispatched up to this window, so a request reaching past it can
-    //   never be served and falls back to a second fetch of the same bytes.
-    : CacheConfig(/*range_size_limit=*/32 * 1024 * 1024,
-                  /*hole_size_limit=*/8 * 1024,
-                  /*pre_buffer_limit=*/256 * 1024 * 1024) {}
-
 class ReadAheadCache::Impl {
  public:
     Impl(const std::shared_ptr<InputStream>& stream, const CacheConfig& config, uint64_t file_size,

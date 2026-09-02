@@ -34,10 +34,8 @@ namespace paimon {
 /// ReadAheadCache to balance memory usage, I/O efficiency, and latency hiding.
 class PAIMON_EXPORT CacheConfig {
  public:
-    CacheConfig();
-    CacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit, uint64_t pre_buffer_limit);
-
     /// Returns the maximum allowed size (in bytes) for a single cached range.
+    /// Defaults to 32 MiB.
     uint64_t GetRangeSizeLimit() const {
         return range_size_limit_;
     }
@@ -47,7 +45,8 @@ class PAIMON_EXPORT CacheConfig {
         range_size_limit_ = range_size_limit;
     }
 
-    /// Returns the maximum gap size (in bytes) considered mergeable between adjacent ranges.
+    /// Returns the maximum gap size (in bytes) considered mergeable between
+    /// adjacent ranges. Defaults to 8 KiB.
     uint64_t GetHoleSizeLimit() const {
         return hole_size_limit_;
     }
@@ -57,7 +56,8 @@ class PAIMON_EXPORT CacheConfig {
         hole_size_limit_ = hole_size_limit;
     }
 
-    /// Returns the maximum size to pre-buffer ahead of the current read position.
+    /// Returns the maximum size to pre-buffer ahead of the current read
+    /// position. Defaults to 256 MiB.
     uint64_t GetPreBufferLimit() const {
         return pre_buffer_limit_;
     }
@@ -68,7 +68,7 @@ class PAIMON_EXPORT CacheConfig {
     }
 
     /// Returns the granularity (in bytes) of the block cache entries serving the
-    /// small reads that the prefetched ranges do not cover.
+    /// small reads that the prefetched ranges do not cover. Defaults to 64 KiB.
     uint64_t GetBlockSize() const {
         return block_size_;
     }
@@ -79,7 +79,7 @@ class PAIMON_EXPORT CacheConfig {
     }
 
     /// Returns the maximum total size (in bytes) of the block cache entries of
-    /// one file. Zero disables the block cache.
+    /// one file. Zero disables the block cache. Defaults to 1 MiB.
     uint64_t GetBlockCacheLimit() const {
         return block_cache_limit_;
     }
@@ -91,9 +91,18 @@ class PAIMON_EXPORT CacheConfig {
     }
 
  private:
-    uint64_t range_size_limit_;
-    uint64_t hole_size_limit_;
-    uint64_t pre_buffer_limit_;
+    // The defaults are aligned with the reader's request granularity and with
+    // realistic data file sizes:
+    // - range_size_limit matches the parquet reader's 32 MiB request blocks
+    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
+    //   below the request size, so a request can never be served from one piece.
+    // - pre_buffer_limit must exceed the LARGEST single read a reader issues
+    //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
+    //   only dispatched up to this window, so a request reaching past it can
+    //   never be served and falls back to a second fetch of the same bytes.
+    uint64_t range_size_limit_ = 32 * 1024 * 1024;
+    uint64_t hole_size_limit_ = 8 * 1024;
+    uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
     // Blocks are aligned to the END of the file, so a block never reaches past
     // EOF. 64 KiB matches the footer read of the parquet reader (arrow's
     // kDefaultFooterReadSize), which then covers exactly one block instead of

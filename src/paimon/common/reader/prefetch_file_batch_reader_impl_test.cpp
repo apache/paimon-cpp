@@ -664,10 +664,10 @@ TEST_F(PrefetchFileBatchReaderImplTest, WorkloopSetReadStatusWhenCacheInitFailed
     int32_t batch_size = 5;
     int32_t prefetch_max_parallel_num = 1;
     MockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size);
-    CacheConfig invalid_cache_config(
-        /*range_size_limit=*/4 * 1024,
-        /*hole_size_limit=*/8 * 1024,
-        /*pre_buffer_limit=*/128 * 1024);
+    CacheConfig invalid_cache_config;
+    invalid_cache_config.SetRangeSizeLimit(4 * 1024);
+    invalid_cache_config.SetHoleSizeLimit(8 * 1024);
+    invalid_cache_config.SetPreBufferLimit(128 * 1024);
 
     ASSERT_OK_AND_ASSIGN(
         auto reader,
@@ -929,6 +929,16 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
             /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+    }
+    {
+        ASSERT_NOK_WITH_MSG(
+            PrefetchFileBatchReaderImpl::Create(
+                data_file_path, /*data_file_size=*/-1, &reader_builder, mock_fs_,
+                prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
+                /*enable_adaptive_prefetch_strategy=*/false, executor_,
+                /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
+                /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)),
+            "data file size should not be negative");
     }
     {
         ASSERT_NOK(PrefetchFileBatchReaderImpl::Create(
