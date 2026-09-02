@@ -80,8 +80,9 @@ class LiteralConverterTest : public ::testing::Test {
 
     void CheckLiteralsToArray(const FieldType& type, const std::vector<Literal>& literals,
                               const std::shared_ptr<arrow::Array>& expected) const {
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
-                             LiteralConverter::ConvertLiteralsToArray(type, literals));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::Array> array,
+            LiteralConverter::ConvertLiteralsToArray(type, literals, arrow::default_memory_pool()));
         ASSERT_TRUE(array->Equals(*expected))
             << "actual: " << array->ToString() << ", expected: " << expected->ToString();
         // the array reads back as the literals it was built from, the null ones included
@@ -545,40 +546,52 @@ TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {
 
 TEST_F(LiteralConverterTest, TestLiteralsToArrayUnsupportedType) {
     // a timestamp takes its arrow type from a literal, so it needs one that is not null
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::TIMESTAMP, {}),
-                        "without a non null literal");
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::TIMESTAMP,
-                                                                 {Literal(FieldType::TIMESTAMP)}),
-                        "without a non null literal");
-    // a decimal takes its arrow type from a literal, so it needs one that is not null
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {}),
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::TIMESTAMP, {},
+                                                                 arrow::default_memory_pool()),
                         "without a non null literal");
     ASSERT_NOK_WITH_MSG(
-        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(FieldType::DECIMAL)}),
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::TIMESTAMP, {Literal(FieldType::TIMESTAMP)}, arrow::default_memory_pool()),
+        "without a non null literal");
+    // a decimal takes its arrow type from a literal, so it needs one that is not null
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {},
+                                                                 arrow::default_memory_pool()),
+                        "without a non null literal");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(FieldType::DECIMAL)},
+                                                 arrow::default_memory_pool()),
         "without a non null literal");
     // and every non null literal has to carry the same precision and scale
     ASSERT_NOK_WITH_MSG(
         LiteralConverter::ConvertLiteralsToArray(
-            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(21, 5, 123456))}),
+            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(21, 5, 123456))},
+            arrow::default_memory_pool()),
         "do not share one precision and scale");
     ASSERT_NOK_WITH_MSG(
         LiteralConverter::ConvertLiteralsToArray(
-            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(20, 3, 123456))}),
+            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(20, 3, 123456))},
+            arrow::default_memory_pool()),
         "do not share one precision and scale");
     // a precision arrow rejects is reported instead of checked fatally
     ASSERT_NOK_WITH_MSG(
-        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(Decimal(0, 0, 1))}),
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(Decimal(0, 0, 1))},
+                                                 arrow::default_memory_pool()),
         "Decimal precision out of range");
     // the field types no caller asks for yet
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::BLOB, {}),
-                        "Not support converting literals of BLOB type to an arrow array");
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::ARRAY, {}),
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::BLOB, {}, arrow::default_memory_pool()),
+        "Not support converting literals of BLOB type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::ARRAY, {},
+                                                                 arrow::default_memory_pool()),
                         "Not support converting literals of ARRAY type to an arrow array");
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::MAP, {}),
-                        "Not support converting literals of MAP type to an arrow array");
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::STRUCT, {}),
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::MAP, {}, arrow::default_memory_pool()),
+        "Not support converting literals of MAP type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::STRUCT, {},
+                                                                 arrow::default_memory_pool()),
                         "Not support converting literals of STRUCT type to an arrow array");
-    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::UNKNOWN, {}),
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::UNKNOWN, {},
+                                                                 arrow::default_memory_pool()),
                         "Not support converting literals of UNKNOWN");
 }
 

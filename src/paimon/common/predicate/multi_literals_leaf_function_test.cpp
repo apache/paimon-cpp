@@ -69,7 +69,8 @@ class MultiLiteralsLeafFunctionTest : public ::testing::Test {
     static std::vector<char> Eval(const LeafFunction& function,
                                   const std::vector<Literal>& literals,
                                   const std::shared_ptr<arrow::Array>& array) {
-        Result<std::vector<char>> result = function.Test(*array, literals);
+        Result<std::vector<char>> result =
+            function.Test(*array, literals, arrow::default_memory_pool());
         EXPECT_OK(result.status());
         if (!result.ok()) {
             return {};
@@ -466,9 +467,12 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestMixedLiteralTypesReportTheError) {
     // through the row by row path instead of being built into one typed value set. The column value
     // matches none of them, otherwise the comparison would stop before reaching the odd literal.
     auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0])").ValueOrDie();
-    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), Literal(int64_t{2})}));
-    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), StringLiteral("a")}));
-    ASSERT_NOK(NotIn::Instance().Test(*array, {Literal(1), Literal(int64_t{2})}));
+    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), Literal(int64_t{2})},
+                                   arrow::default_memory_pool()));
+    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), StringLiteral("a")},
+                                   arrow::default_memory_pool()));
+    ASSERT_NOK(NotIn::Instance().Test(*array, {Literal(1), Literal(int64_t{2})},
+                                      arrow::default_memory_pool()));
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestDictionaryLayoutsLiteralConversionRejects) {
@@ -505,7 +509,7 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestProbeFailsOnUnrelatedArrowType) {
     // the schema, this only pins what the evaluation does if one reaches it anyway.
     auto string_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["1"])").ValueOrDie();
-    ASSERT_NOK(In::Instance().Test(*string_array, {Literal(1)}));
+    ASSERT_NOK(In::Instance().Test(*string_array, {Literal(1)}, arrow::default_memory_pool()));
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestSlicedArray) {

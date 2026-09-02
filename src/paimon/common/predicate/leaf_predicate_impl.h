@@ -41,7 +41,8 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
         return leaf_function_;
     }
 
-    Result<std::vector<char>> Test(const arrow::Array& array) const override {
+    Result<std::vector<char>> Test(const arrow::Array& array,
+                                   arrow::MemoryPool* pool) const override {
         const auto& struct_array = checked_cast<const arrow::StructArray&>(array);
         if (field_index_ >= static_cast<int32_t>(struct_array.fields().size())) {
             return Status::Invalid(
@@ -49,7 +50,7 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
                             struct_array.fields().size()));
         }
         const auto& field_array = struct_array.field(field_index_);
-        return leaf_function_.Test(*field_array, literals_);
+        return leaf_function_.Test(*field_array, literals_, pool);
     }
 
     Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema,

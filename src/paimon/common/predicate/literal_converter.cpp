@@ -29,6 +29,7 @@
 #include "arrow/array/builder_decimal.h"
 #include "arrow/array/builder_primitive.h"
 #include "arrow/array/builder_time.h"
+#include "arrow/memory_pool.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
@@ -309,8 +310,8 @@ namespace {
 // Appends every literal, read by `extract`, to a `BuilderType`, keeping a null literal a null.
 template <typename BuilderType, typename Extract>
 Result<std::shared_ptr<arrow::Array>> BuildArray(const std::vector<Literal>& literals,
-                                                 Extract extract) {
-    BuilderType builder;
+                                                 Extract extract, arrow::MemoryPool* pool) {
+    BuilderType builder(pool);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
     for (const auto& literal : literals) {
         if (literal.IsNull()) {
@@ -328,7 +329,8 @@ Result<std::shared_ptr<arrow::Array>> BuildArray(const std::vector<Literal>& lit
 // array holds one arrow type, so a non null literal is needed to settle it, and every non null
 // literal has to carry the same pair: rescaling a value to another scale loses digits or overflows,
 // which is not something a conversion decides on its own.
-Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Literal>& literals) {
+Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Literal>& literals,
+                                                        arrow::MemoryPool* pool) {
     std::optional<Decimal> typed_value;
     for (const auto& literal : literals) {
         if (!literal.IsNull()) {
@@ -346,7 +348,7 @@ Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Litera
     // `arrow::decimal128` checks the precision fatally, `Make` reports it instead.
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::DataType> type,
                                       arrow::Decimal128Type::Make(precision, scale));
-    arrow::Decimal128Builder builder(type);
+    arrow::Decimal128Builder builder(type, pool);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
     for (const auto& literal : literals) {
         if (literal.IsNull()) {
@@ -371,7 +373,8 @@ Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Litera
 // Writes the literals to a timestamp array of the finest time unit that keeps every value, one
 // `is_in` can only compare against a column of that very unit. One array holds one arrow type, so
 // a non null literal is needed to settle the unit.
-Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Literal>& literals) {
+Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Literal>& literals,
+                                                          arrow::MemoryPool* pool) {
     bool has_value = false;
     for (const auto& literal : literals) {
         if (!literal.IsNull()) {
@@ -384,11 +387,8 @@ Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Lite
             "Not support converting literals of TIMESTAMP type to an arrow array without a non "
             "null literal to take the time unit from");
     }
-    // The pool is the default one every other builder here takes implicitly, a builder of a
-    // parameterized type just has no default to fall back on.
     arrow::TimestampBuilder builder(
-        arrow::timestamp(LiteralConverter::MinRequiredTimeUnit(literals)),
-        arrow::default_memory_pool());
+        arrow::timestamp(LiteralConverter::MinRequiredTimeUnit(literals)), pool);
     const DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(
         checked_pointer_cast<arrow::TimestampType>(builder.type()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
@@ -407,42 +407,44 @@ Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Lite
 }  // namespace
 
 Result<std::shared_ptr<arrow::Array>> LiteralConverter::ConvertLiteralsToArray(
-    const FieldType& field_type, const std::vector<Literal>& literals) {
+    const FieldType& field_type, const std::vector<Literal>& literals, arrow::MemoryPool* pool) {
     switch (field_type) {
         case FieldType::BOOLEAN:
             return BuildArray<arrow::BooleanBuilder>(
-                literals, [](const Literal& literal) { return literal.GetValue<bool>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<bool>(); }, pool);
         case FieldType::TINYINT:
             return BuildArray<arrow::Int8Builder>(
-                literals, [](const Literal& literal) { return literal.GetValue<int8_t>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<int8_t>(); }, pool);
         case FieldType::SMALLINT:
             return BuildArray<arrow::Int16Builder>(
-                literals, [](const Literal& literal) { return literal.GetValue<int16_t>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<int16_t>(); }, pool);
         case FieldType::INT:
             return BuildArray<arrow::Int32Builder>(
-                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); }, pool);
         case FieldType::BIGINT:
             return BuildArray<arrow::Int64Builder>(
-                literals, [](const Literal& literal) { return literal.GetValue<int64_t>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<int64_t>(); }, pool);
         case FieldType::FLOAT:
             return BuildArray<arrow::FloatBuilder>(
-                literals, [](const Literal& literal) { return literal.GetValue<float>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<float>(); }, pool);
         case FieldType::DOUBLE:
             return BuildArray<arrow::DoubleBuilder>(
-                literals, [](const Literal& literal) { return literal.GetValue<double>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<double>(); }, pool);
         case FieldType::DATE:
             return BuildArray<arrow::Date32Builder>(
-                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); }, pool);
         case FieldType::STRING:
             return BuildArray<arrow::StringBuilder>(
-                literals, [](const Literal& literal) { return literal.GetValue<std::string>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<std::string>(); },
+                pool);
         case FieldType::BINARY:
             return BuildArray<arrow::BinaryBuilder>(
-                literals, [](const Literal& literal) { return literal.GetValue<std::string>(); });
+                literals, [](const Literal& literal) { return literal.GetValue<std::string>(); },
+                pool);
         case FieldType::DECIMAL:
-            return BuildDecimalArray(literals);
+            return BuildDecimalArray(literals, pool);
         case FieldType::TIMESTAMP:
-            return BuildTimestampArray(literals);
+            return BuildTimestampArray(literals, pool);
         default:
             return Status::Invalid(
                 fmt::format("Not support converting literals of {} type to an arrow array",

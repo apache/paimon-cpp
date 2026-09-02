@@ -188,7 +188,7 @@ TEST_F(PredicateTest, TestInvalidFieldIndex) {
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
     // with array
-    ASSERT_NOK_WITH_MSG(predicate->Test(*struct_array),
+    ASSERT_NOK_WITH_MSG(predicate->Test(*struct_array, arrow::default_memory_pool()),
                         "field index 2 exceed field count 2 in struct array");
 
     // with internal row
@@ -211,7 +211,8 @@ TEST_F(PredicateTest, TestEqual) {
 
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 1, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -251,7 +252,8 @@ TEST_F(PredicateTest, TestEqualNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -279,7 +281,8 @@ TEST_F(PredicateTest, TestNotEqual) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0, 0}));
 
     auto predicate_negate = std::dynamic_pointer_cast<PredicateFilter>(predicate->Negate());
@@ -315,7 +318,8 @@ TEST_F(PredicateTest, TestNotEqualNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
     // with internal row
     auto arrow_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", bigint_type)}));
@@ -343,7 +347,8 @@ TEST_F(PredicateTest, TestGreater) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0, 1, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -378,7 +383,8 @@ TEST_F(PredicateTest, TestGreaterNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -407,7 +413,8 @@ TEST_F(PredicateTest, TestGreaterOrEqual) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 1, 1, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -442,7 +449,8 @@ TEST_F(PredicateTest, TestGreaterOrEqualNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -470,7 +478,8 @@ TEST_F(PredicateTest, TestLess) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0, 0, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -504,7 +513,8 @@ TEST_F(PredicateTest, TestLessNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -532,7 +542,8 @@ TEST_F(PredicateTest, TestLessOrEqual) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 1, 0, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -566,7 +577,8 @@ TEST_F(PredicateTest, TestLessOrEqualNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -592,7 +604,8 @@ TEST_F(PredicateTest, TestIsNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 1}));
 
     ASSERT_EQ(*predicate->Negate(), *PredicateBuilder::IsNotNull(
@@ -621,7 +634,8 @@ TEST_F(PredicateTest, TestIsNotNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -653,7 +667,8 @@ TEST_F(PredicateTest, TestIn) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0, 1, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -689,7 +704,8 @@ TEST_F(PredicateTest, TestInNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0, 1, 0}));
 
     // with internal row
@@ -720,7 +736,8 @@ TEST_F(PredicateTest, TestNotIn) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 1, 0, 0}));
 
     ASSERT_EQ(*predicate->Negate(),
@@ -759,7 +776,8 @@ TEST_F(PredicateTest, TestNotInNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0, 0, 0}));
 
     // with internal row
@@ -800,7 +818,8 @@ TEST_F(PredicateTest, TestLargeIn) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0, 1, 0}));
 
     // with internal row
@@ -840,7 +859,8 @@ TEST_F(PredicateTest, TestLargeInNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0, 1, 0}));
 
     // with internal row
@@ -879,7 +899,8 @@ TEST_F(PredicateTest, TestLargeNotIn) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 1, 0, 0}));
 
     // with internal row
@@ -922,7 +943,8 @@ TEST_F(PredicateTest, TestLargeNotInNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0, 0, 0}));
 
     // with internal row
@@ -965,9 +987,11 @@ TEST_F(PredicateTest, TestLargeStringIn) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto in_valid, in_predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto in_valid,
+                         in_predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(in_valid, std::vector<char>({1, 1, 0, 0, 0, 0}));
-    ASSERT_OK_AND_ASSIGN(auto not_in_valid, not_in_predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto not_in_valid,
+                         not_in_predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(not_in_valid, std::vector<char>({0, 0, 1, 1, 1, 0}));
 }
 
@@ -993,7 +1017,7 @@ TEST_F(PredicateTest, TestInAfterRebind) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, rebound->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid, rebound->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 0, 1, 0}));
 
     auto arrow_schema = arrow::schema(
@@ -1023,9 +1047,11 @@ TEST_F(PredicateTest, TestInt64BoundaryIn) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto in_valid, in_predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto in_valid,
+                         in_predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(in_valid, std::vector<char>({1, 0, 1, 0}));
-    ASSERT_OK_AND_ASSIGN(auto not_in_valid, not_in_predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto not_in_valid,
+                         not_in_predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(not_in_valid, std::vector<char>({0, 1, 0, 0}));
 }
 
@@ -1048,7 +1074,8 @@ TEST_F(PredicateTest, TestAnd) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0, 1, 0}));
 
     ASSERT_OK_AND_ASSIGN(
@@ -1094,7 +1121,8 @@ TEST_F(PredicateTest, TestOr) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 1, 1, 1}));
 
     ASSERT_OK_AND_ASSIGN(
@@ -1136,7 +1164,8 @@ TEST_F(PredicateTest, TestBetween) {
 
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({1, 1, 1, 0, 0, 0}));
 
     auto less_than = PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"f0",
@@ -1178,7 +1207,8 @@ TEST_F(PredicateTest, TestBetweenNull) {
 
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -1211,7 +1241,8 @@ TEST_F(PredicateTest, TestStartsWith) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0, 1, 0}));
 
     ASSERT_EQ(predicate->Negate(), nullptr);
@@ -1256,7 +1287,8 @@ TEST_F(PredicateTest, TestStartsWithNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -1290,7 +1322,8 @@ TEST_F(PredicateTest, TestEndsWith) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0, 1, 0}));
 
     ASSERT_EQ(predicate->Negate(), nullptr);
@@ -1327,7 +1360,8 @@ TEST_F(PredicateTest, TestEndsWithNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row
@@ -1361,7 +1395,8 @@ TEST_F(PredicateTest, TestContains) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0, 1, 0}));
 
     ASSERT_EQ(predicate->Negate(), nullptr);
@@ -1398,7 +1433,8 @@ TEST_F(PredicateTest, TestContainsNull) {
     std::shared_ptr<arrow::Array> struct_array =
         arrow::StructArray::Make({f0, f1}, src_type->fields()).ValueOrDie();
 
-    ASSERT_OK_AND_ASSIGN(auto is_valid, predicate->Test(*struct_array));
+    ASSERT_OK_AND_ASSIGN(auto is_valid,
+                         predicate->Test(*struct_array, arrow::default_memory_pool()));
     ASSERT_EQ(is_valid, std::vector<char>({0, 0}));
 
     // with internal row

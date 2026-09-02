@@ -61,6 +61,9 @@ Result<std::unique_ptr<PredicateBatchReader>> PredicateBatchReader::Create(
         return Status::Invalid(
             fmt::format("predicate {} does not support Test", predicate->ToString()));
     }
+    if (arrow_pool == nullptr) {
+        return Status::Invalid("create predicate batch reader failed. arrow pool is nullptr");
+    }
     return std::unique_ptr<PredicateBatchReader>(
         new PredicateBatchReader(std::move(reader), predicate, arrow_pool));
 }
@@ -124,7 +127,8 @@ Result<RoaringBitmap32> PredicateBatchReader::Filter(const std::shared_ptr<arrow
     if (!predicate_filter_) {
         PAIMON_RETURN_NOT_OK(BindPredicateToArray(*array));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<char> result, predicate_filter_->Test(*array));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<char> result,
+                           predicate_filter_->Test(*array, arrow_pool_.get()));
     assert(result.size() == static_cast<size_t>(array->length()));
     RoaringBitmap32 is_valid;
     for (int32_t i = 0; i < static_cast<int32_t>(result.size()); i++) {

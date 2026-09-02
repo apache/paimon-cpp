@@ -26,7 +26,9 @@
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_primitive.h"
 #include "arrow/compute/api_scalar.h"
+#include "arrow/compute/exec.h"
 #include "arrow/datum.h"
+#include "arrow/memory_pool.h"
 #include "arrow/type.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -96,12 +98,14 @@ bool IsNanLiteral(const Literal& literal) {
 /// @param negate `false` for `IN`, `true` for `NOT IN`.
 /// @param data_type The arrow type of the column the predicate is evaluated against, which settles
 ///                  whether a decimal or a timestamp value set can be probed against it.
+/// @param pool The pool the value set is allocated from.
 /// @return `nullptr` when the literals cannot be probed by `is_in`, which covers the field types
 ///         `CanProbeWithIsIn` rejects, a NaN literal, a decimal column of another scale, a
 ///         timestamp column of another unit or with a time zone, and `NOT IN` holding a null
 ///         literal, which `NotIn::InnerTest` makes false for every row. This never fails.
 std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literals, bool negate,
-                                             const arrow::DataType& data_type) {
+                                             const arrow::DataType& data_type,
+                                             arrow::MemoryPool* pool) {
     if (literals.empty()) {
         return nullptr;
     }
@@ -161,7 +165,7 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
         }
     }
     Result<std::shared_ptr<arrow::Array>> value_set =
-        LiteralConverter::ConvertLiteralsToArray(field_type, literals);
+        LiteralConverter::ConvertLiteralsToArray(field_type, literals, pool);
     // A failure only says the value set is not there, and the row by row path still is. Decimal
     // literals of mixed precision and scale end up here, anything else is an arrow failure.
     if (!value_set.ok()) {
@@ -173,6 +177,7 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
 /// Probes every non-null row of `array` against `value_set`.
 ///
 /// @param negate `false` for `IN` semantics, `true` for `NOT IN` semantics.
+/// @param pool The pool the match bitmap `is_in` writes is allocated from.
 /// @return One entry per row, with the null rows left at 0 because `IN` and `NOT IN` are both false
 ///         on null.
 ///
@@ -181,15 +186,16 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
 /// `value_set` was built with. It fails when the two types have no common type at all, which only
 /// happens when the field type disagrees with the column the predicate is evaluated against.
 Result<std::vector<char>> ProbeInValueSet(const arrow::Array& array, const arrow::Array& value_set,
-                                          bool negate) {
+                                          bool negate, arrow::MemoryPool* pool) {
     // `EMIT_NULL` ignores the nulls of the value set and turns a null input into a null output, so
     // the validity of `matches` marks exactly the rows that `In` / `NotIn` consider null. That also
     // covers a dictionary column, whose null rows come either from the indices or from a null
     // dictionary value once `is_in` decodes it.
     arrow::compute::SetLookupOptions options(value_set.data(),
                                              arrow::compute::SetLookupOptions::EMIT_NULL);
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(arrow::Datum matches,
-                                      arrow::compute::IsIn(arrow::Datum(array), options));
+    arrow::compute::ExecContext exec_context(pool);
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        arrow::Datum matches, arrow::compute::IsIn(arrow::Datum(array), options, &exec_context));
     // `make_array` hands out a new `shared_ptr` that owns the array, so it has to be held for as
     // long as the array is read. Binding a reference straight to what it points at would drop the
     // last owner at the end of the statement and leave that reference dangling.
@@ -207,17 +213,19 @@ Result<std::vector<char>> ProbeInValueSet(const arrow::Array& array, const arrow
 }
 }  // namespace
 
-Result<std::vector<char>> MultiLiteralsLeafFunction::Test(
-    const arrow::Array& array, const std::vector<Literal>& literals) const {
+Result<std::vector<char>> MultiLiteralsLeafFunction::Test(const arrow::Array& array,
+                                                          const std::vector<Literal>& literals,
+                                                          arrow::MemoryPool* pool) const {
     const Function::Type type = GetType();
     // `In` and `NotIn` are the only subclasses today. The check keeps a future one off this path,
     // because `MakeInValueSet` only looks at the literals and would silently give it `IN`
     // semantics.
     if (type == Function::Type::IN || type == Function::Type::NOT_IN) {
         const bool negate = type == Function::Type::NOT_IN;
-        std::shared_ptr<arrow::Array> value_set = MakeInValueSet(literals, negate, *array.type());
+        std::shared_ptr<arrow::Array> value_set =
+            MakeInValueSet(literals, negate, *array.type(), pool);
         if (value_set != nullptr) {
-            return ProbeInValueSet(array, *value_set, negate);
+            return ProbeInValueSet(array, *value_set, negate, pool);
         }
     }
 

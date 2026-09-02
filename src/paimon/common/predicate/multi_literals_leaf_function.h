@@ -33,8 +33,8 @@ class MultiLiteralsLeafFunction : public LeafFunction {
     /// back to comparing every row against every literal otherwise. Every `LeafFunction` is a
     /// shared stateless singleton, so the value set is built per batch; that costs `O(literals)`
     /// and buys an `O(rows)` probe.
-    Result<std::vector<char>> Test(const arrow::Array& array,
-                                   const std::vector<Literal>& literals) const override;
+    Result<std::vector<char>> Test(const arrow::Array& array, const std::vector<Literal>& literals,
+                                   arrow::MemoryPool* pool) const override;
 
     Result<bool> Test(int64_t row_count, const Literal& min_value, const Literal& max_value,
                       const std::optional<int64_t>& null_count,
