@@ -141,6 +141,10 @@ bool StringUtils::IsNullOrWhitespaceOnly(const std::string& str) {
     return IsBlank(str);
 }
 
+bool StringUtils::IsEmptyAfterTrim(std::string_view str) {
+    return std::all_of(str.begin(), str.end(), [](unsigned char c) { return IsTrimCharacter(c); });
+}
+
 void StringUtils::Trim(std::string* str) {
     auto first = std::find_if_not(str->begin(), str->end(),
                                   [](unsigned char c) { return IsTrimCharacter(c); });

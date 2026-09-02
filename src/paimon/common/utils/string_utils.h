@@ -103,6 +103,9 @@ class PAIMON_EXPORT StringUtils {
 
     static bool IsNullOrWhitespaceOnly(const std::string& str);
 
+    /// Returns true if Java String::trim would produce an empty string.
+    static bool IsEmptyAfterTrim(std::string_view str);
+
     static void Trim(std::string* str);
 
     static std::string ToLowerCase(const std::string& str);

@@ -179,7 +179,6 @@ class VariantTableInteTest : public ::testing::Test {
                                                                 double admission_ratio,
                                                                 double retention_ratio) const {
         return {
-
             {Options::FILE_FORMAT, "parquet"},
             {Options::BUCKET, "-1"},
             {Options::WRITE_ONLY, "true"},
