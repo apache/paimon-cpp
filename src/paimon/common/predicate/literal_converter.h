@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "arrow/array/array_dict.h"
+#include "arrow/type_fwd.h"
 #include "arrow/type_traits.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/predicate/literal.h"
@@ -49,6 +50,29 @@ class PAIMON_EXPORT LiteralConverter {
 
     static Result<std::vector<Literal>> ConvertLiteralsFromArray(const arrow::Array& array,
                                                                  bool own_data);
+
+    /// Collects the literals into an arrow array, the reverse of `ConvertLiteralsFromArray`.
+    ///
+    /// @param field_type The field type shared by every literal, it picks the arrow type.
+    /// @param literals The literals to convert, a null literal is written as a null, so the result
+    ///                 has one entry per literal.
+    /// @param pool The pool every buffer of the result is allocated from, it must not be null.
+    /// @return `Status::Invalid` for a field type this does not write, which is every one outside
+    ///         `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `DATE`,
+    ///         `STRING`, `BINARY`, `DECIMAL` and `TIMESTAMP`. `DECIMAL` is written with the
+    ///         precision and the scale its literals carry, so at least one literal has to be non
+    ///         null and every non null one has to carry the same pair. `TIMESTAMP` is written with
+    ///         the finest time unit that keeps every value, so at least one literal has to be non
+    ///         null to settle the unit.
+    static Result<std::shared_ptr<arrow::Array>> ConvertLiteralsToArray(
+        const FieldType& field_type, const std::vector<Literal>& literals, arrow::MemoryPool* pool);
+
+    /// The finest time unit any of the non null timestamp literals needs to keep its value, which
+    /// is the unit `ConvertLiteralsToArray` writes them with. A null literal does not constrain the
+    /// unit, and literals that are all null leave it at the coarsest one.
+    ///
+    /// Every literal has to be of `TIMESTAMP` type.
+    static arrow::TimeUnit::type MinRequiredTimeUnit(const std::vector<Literal>& literals);
 
     static Result<Literal> ConvertLiteralsFromString(const FieldType& type,
                                                      const std::string& value_str);

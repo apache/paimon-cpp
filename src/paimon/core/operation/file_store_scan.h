@@ -213,6 +213,13 @@ class FileStoreScan {
 
     Result<std::vector<PartitionEntry>> ReadPartitionEntries() const;
 
+    /// Merge raw manifest entries into the set of currently-live files.
+    ///
+    /// Entries are deduplicated by identifier. A Delete cancels the corresponding Add, and
+    /// lingering Delete entries are omitted from the result.
+    static Status MergeLiveEntries(const std::vector<ManifestEntry>& unmerged_entries,
+                                   std::vector<ManifestEntry>* live_entries);
+
  protected:
     /// @note Keep this thread-safe.
     virtual Result<bool> FilterByStats(const ManifestEntry& entry) const = 0;
@@ -272,13 +279,6 @@ class FileStoreScan {
     Status ReadAndMergeBucketFileEntries(const std::vector<ManifestFileMeta>& manifest_metas,
                                          int32_t bucket,
                                          std::vector<ManifestEntry>* merged_entries) const;
-
-    /// Merge raw manifest entries into the set of currently-live files. Entries are deduplicated
-    /// by identifier (matching Add cancels a prior or following Delete), and lingering Delete
-    /// entries are dropped so the caller receives Add-only output, matching the semantics of
-    /// `ReadAndMergeFileEntries`.
-    static Status MergeLiveEntries(const std::vector<ManifestEntry>& unmerged_entries,
-                                   std::vector<ManifestEntry>* live_entries);
 
     Status ReadAndMergeFileEntries(const std::vector<ManifestFileMeta>& manifest_metas,
                                    std::vector<ManifestEntry>* merged_entries) const;
