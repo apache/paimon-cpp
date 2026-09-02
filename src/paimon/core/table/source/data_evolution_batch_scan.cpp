@@ -26,7 +26,6 @@
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
-#include "paimon/core/table/source/snapshot/static_from_snapshot_starting_scanner.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 
@@ -41,36 +40,6 @@ bool UsesUnsupportedTimeTravel(const CoreOptions& core_options) {
     return startup_mode == StartupMode::FromSnapshot() &&
            !core_options.GetScanSnapshotId().has_value() &&
            core_options.GetScanTagName().has_value();
-}
-
-Result<std::optional<Snapshot>> ResolveGlobalIndexScanSnapshot(
-    const CoreOptions& core_options, const std::shared_ptr<SnapshotManager>& snapshot_manager) {
-    const StartupMode startup_mode = core_options.GetStartupMode();
-    if (startup_mode == StartupMode::FromSnapshot() ||
-        startup_mode == StartupMode::FromSnapshotFull()) {
-        if (const std::optional<int64_t>& snapshot_id = core_options.GetScanSnapshotId()) {
-            return StaticFromSnapshotStartingScanner::ResolveSnapshot(snapshot_manager,
-                                                                      snapshot_id.value());
-        }
-        if (startup_mode == StartupMode::FromSnapshotFull()) {
-            return Status::Invalid(
-                "scan.snapshot-id must be set when startup mode is FROM_SNAPSHOT_FULL");
-        }
-        if (!core_options.GetScanTagName()) {
-            return Status::Invalid(
-                "scan.snapshot-id or scan.tag-name must be set when startup mode is "
-                "FROM_SNAPSHOT");
-        }
-    } else if (startup_mode == StartupMode::FromTimestamp() &&
-               !core_options.GetScanTimestampMillis()) {
-        return Status::Invalid(
-            "scan.timestamp-millis or scan.timestamp must be set when startup mode is "
-            "FROM_TIMESTAMP");
-    }
-
-    // Tag and timestamp scans are rejected only when the predicate uses a Global Index. Use the
-    // latest snapshot here to check whether an applicable index exists.
-    return snapshot_manager->LatestSnapshot();
 }
 
 }  // namespace
@@ -90,6 +59,13 @@ DataEvolutionBatchScan::DataEvolutionBatchScan(
       executor_(executor) {}
 
 Result<std::shared_ptr<Plan>> DataEvolutionBatchScan::CreatePlan() {
+    const bool may_use_global_index =
+        global_index_result_ ||
+        (core_options_.GlobalIndexEnabled() && batch_scan_->GetNonPartitionPredicate());
+    if (may_use_global_index && UsesUnsupportedTimeTravel(core_options_)) {
+        return Status::NotImplemented("Global index scan does not support time travel");
+    }
+
     std::optional<int64_t> global_index_snapshot_id;
     std::shared_ptr<GlobalIndexResult> final_global_index_result = global_index_result_;
     if (!final_global_index_result) {
@@ -103,22 +79,15 @@ Result<std::shared_ptr<Plan>> DataEvolutionBatchScan::CreatePlan() {
     if (!final_global_index_result) {
         return batch_scan_->CreatePlan();
     }
-    if (UsesUnsupportedTimeTravel(core_options_)) {
-        return Status::NotImplemented("Global index scan does not support time travel");
-    }
     PAIMON_ASSIGN_OR_RAISE(std::vector<Range> row_ranges, final_global_index_result->ToRanges());
     if (row_ranges.empty()) {
-        if (!global_index_snapshot_id) {
-            const std::shared_ptr<SnapshotManager>& snapshot_manager =
-                snapshot_reader_->GetSnapshotManager();
-            PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
-                                   ResolveGlobalIndexScanSnapshot(core_options_, snapshot_manager));
-            if (!snapshot) {
-                return PlanImpl::EmptyPlan();
-            }
-            global_index_snapshot_id = snapshot->Id();
+        if (global_index_snapshot_id) {
+            return std::make_shared<PlanImpl>(global_index_snapshot_id,
+                                              std::vector<std::shared_ptr<Split>>());
         }
-        return std::make_shared<PlanImpl>(global_index_snapshot_id,
+
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> data_plan, batch_scan_->CreatePlan());
+        return std::make_shared<PlanImpl>(data_plan->SnapshotId(),
                                           std::vector<std::shared_ptr<Split>>());
     }
     PAIMON_ASSIGN_OR_RAISE(RowRangeIndex row_range_index, RowRangeIndex::Create(row_ranges));
@@ -210,8 +179,30 @@ DataEvolutionBatchScan::EvalGlobalIndex() const {
     auto partition_filter = batch_scan_->GetPartitionPredicate();
     const std::shared_ptr<SnapshotManager>& snapshot_manager =
         snapshot_reader_->GetSnapshotManager();
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
-                           ResolveGlobalIndexScanSnapshot(core_options_, snapshot_manager));
+    const StartupMode startup_mode = core_options_.GetStartupMode();
+    std::optional<Snapshot> snapshot;
+    if (startup_mode == StartupMode::FromSnapshot() ||
+        startup_mode == StartupMode::FromSnapshotFull()) {
+        const std::optional<int64_t>& snapshot_id = core_options_.GetScanSnapshotId();
+        if (!snapshot_id) {
+            if (startup_mode == StartupMode::FromSnapshotFull()) {
+                return Status::Invalid(
+                    "scan.snapshot-id must be set when startup mode is FROM_SNAPSHOT_FULL");
+            }
+            return Status::Invalid(
+                "scan.snapshot-id or scan.tag-name must be set when startup mode is "
+                "FROM_SNAPSHOT");
+        }
+        PAIMON_ASSIGN_OR_RAISE(Snapshot loaded_snapshot,
+                               snapshot_manager->LoadSnapshot(snapshot_id.value()));
+        snapshot = std::move(loaded_snapshot);
+    } else if (startup_mode == StartupMode::FromTimestamp()) {
+        return Status::Invalid(
+            "scan.timestamp-millis or scan.timestamp must be set when startup mode is "
+            "FROM_TIMESTAMP");
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(snapshot, snapshot_manager->LatestSnapshot());
+    }
     if (!snapshot) {
         return std::optional<EvaluatedGlobalIndex>();
     }

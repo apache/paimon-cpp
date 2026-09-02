@@ -1578,9 +1578,15 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
 
     auto unindexed_predicate = PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",
                                                        FieldType::DOUBLE, Literal(99.9));
-    ASSERT_OK_AND_ASSIGN(auto fallback_plan, ScanGlobalIndexAndData(table_path, unindexed_predicate,
-                                                                    time_travel_options.back()));
-    ASSERT_EQ(fallback_plan->SnapshotId(), std::optional<int64_t>(2));
+    Result<std::shared_ptr<Plan>> unindexed_time_travel_result =
+        ScanGlobalIndexAndData(table_path, unindexed_predicate, time_travel_options.back());
+    ASSERT_TRUE(unindexed_time_travel_result.status().IsNotImplemented())
+        << unindexed_time_travel_result.status().ToString();
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Plan> no_index_plan,
+        ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, time_travel_options.back()));
+    ASSERT_EQ(no_index_plan->SnapshotId(), std::optional<int64_t>(2));
 
     Result<std::shared_ptr<Plan>> nonexistent_snapshot_result =
         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
