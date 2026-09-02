@@ -355,7 +355,7 @@ Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Litera
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
             continue;
         }
-        Decimal value = literal.GetValue<Decimal>();
+        auto value = literal.GetValue<Decimal>();
         if (value.Precision() != precision || value.Scale() != scale) {
             return Status::Invalid(fmt::format(
                 "Not support converting literals of DECIMAL type to an arrow array, {} and {} do "

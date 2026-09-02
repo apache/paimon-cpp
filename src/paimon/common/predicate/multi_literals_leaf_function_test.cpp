@@ -72,10 +72,9 @@ class MultiLiteralsLeafFunctionTest : public ::testing::Test {
         Result<std::vector<char>> result =
             function.Test(*array, literals, arrow::default_memory_pool());
         EXPECT_OK(result.status());
-        if (!result.ok()) {
-            return {};
-        }
-        return std::move(result).value();
+        // Reading the value of a failed `Result` is undefined and `EXPECT_OK` does not stop the
+        // caller, so a failure leaves the row results empty for the assertion to report.
+        return std::move(result).value_or({});
     }
 
     static std::vector<char> EvalIn(const std::vector<Literal>& literals,
