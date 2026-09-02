@@ -24,6 +24,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 
 namespace paimon {
 class FileSystem;
@@ -44,12 +45,25 @@ class BranchManager {
         return StringUtils::IsNullOrWhitespaceOnly(branch) ? DEFAULT_MAIN_BRANCH : branch;
     }
 
-    /// Returns the table root path for the selected branch.
+    /// Fails when `branch` cannot be used as a single path component, which is required to keep
+    /// the branch path under the table root. A branch that `NormalizeBranch` maps to `main`
+    /// names no directory of its own and is therefore accepted.
+    static Status CheckValidBranch(const std::string& branch) {
+        if (StringUtils::IsNullOrWhitespaceOnly(branch)) {
+            return Status::OK();
+        }
+        return PathUtil::CheckSinglePathComponent("branch", branch);
+    }
+
+    /// Returns the table root path for the selected branch. A branch that `NormalizeBranch` maps
+    /// to `main` resolves to the table root, so that a caller passing a raw option value cannot
+    /// end up with a directory of its own.
     static std::string BranchPath(const std::string& table_root, const std::string& branch) {
-        return IsMainBranch(branch)
-                   ? table_root
-                   : PathUtil::JoinPath(table_root,
-                                        "/branch/" + std::string(BRANCH_PREFIX) + branch);
+        const std::string normalized = NormalizeBranch(branch);
+        if (IsMainBranch(normalized)) {
+            return table_root;
+        }
+        return PathUtil::JoinPath(table_root, "/branch/" + std::string(BRANCH_PREFIX) + normalized);
     }
 
     /// Returns whether the branch is the default main branch.

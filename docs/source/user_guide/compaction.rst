@@ -88,6 +88,79 @@ After compaction, if the last output file is still smaller than
 ``compaction.file-size``, it is placed back into the compaction queue for future
 merging.
 
+Dictionary Passthrough
+~~~~~~~~~~~~~~~~~~~~~~
+An append-only compaction rewrite copies rows into the new file without
+inspecting any value, so a Parquet column that an input file already stores
+dictionary-encoded is forwarded to the writer still encoded instead of being
+expanded to one copy of the value per row and re-encoded. This saves the reader
+materializing the values and the writer hashing them again; how much that is
+worth depends on the column, and low-cardinality ``STRING`` columns benefit most.
+Primary-key compaction merges rows and is not covered.
+
+This is **off by default** and is enabled per table by setting
+``parquet.read.enable-dictionary-passthrough`` to ``true``. It is opt-in rather
+than automatic because of the output file size trade-off described below, which
+depends on the data and is not a win on every table. Measure before turning it
+on, and compare output file size as well as compaction time.
+
+Note that this is a *read* option, so it applies to every read of the table and
+not only to the compaction rewrite. The values are unchanged, but an eligible
+column reaches the consumer as an Arrow ``DictionaryArray`` rather than one value
+per row, and a consumer that reads columns through its own accessors has to
+unwrap it. Only a consumer that forwards batches without inspecting values -
+which is what the rewrite does - gains anything from the encoding.
+
+Once enabled, eligibility is decided per input file: a non-nested ``STRING``
+column is forwarded when its data pages are dictionary-encoded throughout every
+row group of *that* file, so one input file can be read encoded while the next
+one is read as ordinary values, and the writer takes both. A high-cardinality
+column that started dictionary-encoded and fell back to plain encoding therefore
+does not qualify, even though it still carries a dictionary page. ``BINARY`` is
+not forwarded although Parquet stores it in the same physical type and
+dictionary-encodes it the same way, because the value accessors cannot read a
+``BINARY`` dictionary. The rewrite also overrides the option back to ``false``
+when the table writes a format other than Parquet, when
+``parquet.enable-dictionary`` is ``false`` because the writer would only expand
+the values again, or when variant/map shredding is configured because those
+writers reshape each batch against a fixed physical schema. Setting the option
+therefore never makes a rewrite fail; at worst it has no effect.
+
+When the option is vetoed, the rewrite also enforces the veto on every input
+batch. A format reader can independently hand over dictionary-encoded columns
+because of its own lazy-decoding setting, so the rewrite decodes those columns
+before handing them to a writer that cannot accept dictionary arrays.
+
+If a file index is configured on a forwarded column, that column alone is
+materialized so the index still sees its values; the other columns stay encoded.
+
+Trade-off
+^^^^^^^^^
+Passthrough changes what the rewrite costs, not what it produces. The rewritten
+data is identical either way, but the output file can be **larger**.
+
+A Parquet column chunk can carry only one dictionary. The writer keeps the first
+dictionary a column presents in a row group and falls back to plain encoding for
+the rest of that row group as soon as a different one arrives. Compaction merges
+several input files, each with its own dictionary, and output row groups are cut
+by ``parquet.block.size`` and by the writer's memory limit, which are not aligned
+to input file boundaries - a boundary may coincide, but nothing arranges for it.
+So a rewrite can keep the first input file's dictionary and write the rest of the
+row group plain, where materializing and rebuilding would have hashed the values
+into a single dictionary for that row group (up to
+``parquet.dictionary.page.size``, past which the writer falls back to plain in
+either case). Where that happens the output column also becomes ineligible for
+passthrough on the next compaction round, since its data pages are then only
+partly dictionary-encoded.
+
+How often it happens, and what it costs on a given table, is what the
+measurement above is for.
+
+Passthrough is therefore worth enabling when the reduction in compaction CPU
+matters more than output size - for example when the same dictionary recurs
+across input files, when the columns are wide enough that materializing them
+dominates, or when the output is short-lived. Leave it off otherwise.
+
 Append-Only Table Compaction Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

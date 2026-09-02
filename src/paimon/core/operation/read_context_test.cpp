@@ -126,6 +126,20 @@ TEST(ReadContextTest, TestSetOptionsOverridesAddedOptions) {
     ASSERT_EQ(expected_options, ctx->GetOptions());
 }
 
+TEST(ReadContextTest, TestRejectBranchLeavingTablePath) {
+    // The branch names a directory under the table path, so a value that is not a single path
+    // component is rejected when the context is built.
+    ReadContextBuilder builder("table_root_path");
+    builder.WithBranch("rt/../../../../../outside");
+    ASSERT_NOK_WITH_MSG(builder.Finish(), "branch name cannot contain path separators");
+
+    // An empty branch selects the main branch and stays accepted.
+    ReadContextBuilder main_builder("table_root_path");
+    main_builder.WithBranch("");
+    ASSERT_OK_AND_ASSIGN(auto ctx, main_builder.Finish());
+    ASSERT_EQ("", ctx->GetBranch());
+}
+
 TEST(ReadContextTest, TestFileSystemAndSchemeMapConflict) {
     ReadContextBuilder builder("table_root_path");
     auto fs = std::make_shared<MockFileSystem>();

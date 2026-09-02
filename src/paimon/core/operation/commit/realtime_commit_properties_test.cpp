@@ -185,6 +185,10 @@ TEST_F(RealtimeCommitPropertiesTest, PartitionBucketAndOffsetsDirectory) {
     ASSERT_EQ("/table/metadata", RealtimeCommitProperties::OffsetsDirectory("/table", "main"));
     ASSERT_EQ("/table/branch/branch-dev/metadata",
               RealtimeCommitProperties::OffsetsDirectory("/table", "dev"));
+    // A branch that selects the main branch resolves to the main offsets directory, even when the
+    // caller passes the raw option value instead of the normalized one a commit writes with.
+    ASSERT_EQ("/table/metadata", RealtimeCommitProperties::OffsetsDirectory("/table", ""));
+    ASSERT_EQ("/table/metadata", RealtimeCommitProperties::OffsetsDirectory("/table", "   "));
 }
 
 TEST_F(RealtimeCommitPropertiesTest, ReadOffsetsWithoutProgress) {

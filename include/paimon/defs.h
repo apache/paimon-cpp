@@ -391,7 +391,6 @@ struct PAIMON_EXPORT Options {
     /// keeps the details of data changes, it can be read directly during stream reads. This can be
     /// applied to tables with primary keys. Values can be "none", "input", "lookup",
     /// "full-compaction". Default value is "none".
-    /// @note C++ Paimon currently supports "none", "input", and "lookup".
     static const char CHANGELOG_PRODUCER[];
 
     /// "changelog-producer.row-deduplicate" - Whether to generate update-before and update-after

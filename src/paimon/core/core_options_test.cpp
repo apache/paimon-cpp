@@ -565,6 +565,23 @@ TEST(CoreOptionsTest, TestInvalidCase) {
                         "must not be negative");
 }
 
+TEST(CoreOptionsTest, TestRejectBranchLeavingTableRoot) {
+    // Both branch options name a directory under the table root, so a value that is not a single
+    // path component is rejected before it can be joined into a path.
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BRANCH, "rt/../../../../../outside"}}),
+                        "branch name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BRANCH, ".."}}),
+                        "branch name cannot be '.' or '..'");
+    ASSERT_NOK_WITH_MSG(
+        CoreOptions::FromMap({{Options::SCAN_FALLBACK_BRANCH, "rt/../../../../../outside"}}),
+        "branch name cannot contain path separators");
+
+    // An empty branch selects the main branch and stays accepted.
+    ASSERT_OK(CoreOptions::FromMap({{Options::BRANCH, ""}}));
+    ASSERT_OK(CoreOptions::FromMap({{Options::BRANCH, "rt"}}));
+    ASSERT_OK(CoreOptions::FromMap({{Options::SCAN_FALLBACK_BRANCH, "rt"}}));
+}
+
 TEST(CoreOptionsTest, TestNestedKeyNullStrategyIsCaseInsensitive) {
     const std::vector<std::pair<std::string, CoreOptions::NestedKeyNullStrategy>> cases = {
         {"MERGE", CoreOptions::NestedKeyNullStrategy::MERGE},

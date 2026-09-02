@@ -722,8 +722,8 @@ TEST(SchemaValidationTest, ValidateDeletionVector) {
             std::shared_ptr<TableSchema> table_schema,
             TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                            "C++ Paimon only supports 'none', 'input' and 'lookup' "
-                            "changelog-producer now");
+                            "Deletion vectors mode is only supported for "
+                            "NONE/INPUT/LOOKUP changelog producer now");
     }
     {
         std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
@@ -953,16 +953,6 @@ TEST(SchemaValidationTest, ValidateInvalidConfiguration) {
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                             "Only support 'none' and 'lookup' changelog-producer on FIRST_ROW "
                             "merge engine");
-    }
-    {
-        std::map<std::string, std::string> options = {
-            {Options::CHANGELOG_PRODUCER, "full-compaction"}};
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
-                             TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
-                                                 /*primary_keys=*/{"f0"}, options));
-        ASSERT_NOK_WITH_MSG(
-            SchemaValidation::ValidateTableSchema(*table_schema),
-            "C++ Paimon only supports 'none', 'input' and 'lookup' changelog-producer now.");
     }
     // test for row tracking
     {

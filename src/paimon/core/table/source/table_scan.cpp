@@ -364,7 +364,7 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
     }
     if (core_options.DataEvolutionEnabled()) {
         return std::make_unique<DataEvolutionBatchScan>(
-            context->GetPath(), snapshot_reader, std::move(batch_scan),
+            context->GetPath(), snapshot_reader, std::move(batch_scan), table_schema,
             context->GetGlobalIndexResult(), core_options, context->GetMemoryPool(),
             context->GetExecutor());
     }

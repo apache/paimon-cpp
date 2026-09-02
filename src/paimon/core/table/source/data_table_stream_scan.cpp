@@ -57,7 +57,11 @@ Result<std::shared_ptr<Plan>> DataTableStreamScan::CreatePlan() {
 Result<std::shared_ptr<Plan>> DataTableStreamScan::TryFirstPlan() {
     std::shared_ptr<StartingScanner::ScanResult> scan_result;
     if (core_options_.GetChangelogProducer() == ChangelogProducer::FULL_COMPACTION) {
-        return Status::NotImplemented("do not support full compaction changelog producer");
+        int32_t max_level = core_options_.GetNumLevels() - 1;
+        snapshot_reader_->WithLevelFilter(
+            [max_level](int32_t level) -> bool { return level == max_level; });
+        PAIMON_ASSIGN_OR_RAISE(scan_result, starting_scanner_->Scan(snapshot_reader_));
+        snapshot_reader_->WithLevelFilter([](int32_t) -> bool { return true; });
     } else if (core_options_.GetChangelogProducer() == ChangelogProducer::LOOKUP) {
         // Level-0 files will be compacted later to produce changelog records. Exclude them from
         // the initial full scan so that the same changes are not emitted both in the full phase
@@ -136,11 +140,10 @@ Status DataTableStreamScan::InitScanner() {
             follow_up_scanner_ = std::make_shared<DeltaFollowUpScanner>();
             return Status::OK();
         case ChangelogProducer::INPUT:
+        case ChangelogProducer::FULL_COMPACTION:
         case ChangelogProducer::LOOKUP:
             follow_up_scanner_ = std::make_shared<ChangelogFollowUpScanner>();
             return Status::OK();
-        case ChangelogProducer::FULL_COMPACTION:
-            return Status::NotImplemented("do not support full compaction changelog producer");
         default:
             return Status::NotImplemented("unknown changelog producer");
     }
