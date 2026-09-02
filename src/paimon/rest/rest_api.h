@@ -70,6 +70,9 @@ class RestApi {
     static constexpr const char* kOptionUrlPrefix = "prefix";
     /// Options with this prefix are sent as http headers (with the prefix stripped).
     static constexpr const char* kHeaderOptionPrefix = "header.";
+    /// Credentials are refreshed once they expire in less than this, so that a request
+    /// signed with them cannot expire while it is in flight.
+    static constexpr int64_t kTokenExpirationSafeTimeMillis = 3600000;
 
     /// Creates the api client.
     ///
@@ -104,6 +107,11 @@ class RestApi {
     Status RenameTable(const Identifier& from_table, const Identifier& to_table) const;
 
     Result<std::vector<Snapshot>> ListSnapshots(const Identifier& identifier) const;
+
+    /// Loads the temporary file system credentials of one table. A 403 means the caller
+    /// has no permission for the table and is reported as an error status carrying a
+    /// `RestErrorDetail`.
+    Result<GetTableTokenResponse> LoadTableToken(const Identifier& identifier) const;
 
     /// Maps a non-successful http response to a status: 404 becomes `NotExist`, 409
     /// becomes `Exist`, 400 becomes `Invalid`, 501 becomes `NotImplemented` and the

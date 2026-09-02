@@ -27,6 +27,7 @@
 #include "paimon/catalog_options.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -37,6 +38,7 @@
 #include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/rest/rest_token_file_system.h"
 #include "paimon/rest/rest_util.h"
 #include "rapidjson/document.h"
 
@@ -83,14 +85,23 @@ Result<Identifier> ToLoadIdentifier(const Identifier& identifier) {
 
 }  // namespace
 
-RestCatalog::RestCatalog(std::unique_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
-                         const std::string& warehouse)
+RestCatalog::RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
+                         const std::string& warehouse, bool data_token_enabled)
     : api_(std::move(api)),
       fs_(fs),
       warehouse_(warehouse),
+      data_token_enabled_(data_token_enabled),
       table_default_options_(RestUtil::ExtractPrefixMap(
           api_->GetMergedOptions(), CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX)),
-      logger_(Logger::GetLogger("RestCatalog")) {}
+      logger_(Logger::GetLogger("RestCatalog")) {
+    if (data_token_enabled_) {
+        GenericLruCache<std::string, std::shared_ptr<FileSystem>>::Options cache_options;
+        cache_options.max_weight = kMaxTableFileSystems;
+        table_fs_cache_ =
+            std::make_unique<GenericLruCache<std::string, std::shared_ptr<FileSystem>>>(
+                std::move(cache_options));
+    }
+}
 
 Result<std::unique_ptr<RestCatalog>> RestCatalog::Create(
     const std::string& warehouse, const std::map<std::string, std::string>& options,
@@ -100,8 +111,11 @@ Result<std::unique_ptr<RestCatalog>> RestCatalog::Create(
         RestApi::Create(options, warehouse, /*config_required=*/true, http_config));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(api->GetMergedOptions(), file_system));
-    return std::unique_ptr<RestCatalog>(
-        new RestCatalog(std::move(api), core_options.GetFileSystem(), warehouse));
+    PAIMON_ASSIGN_OR_RAISE(bool data_token_enabled,
+                           OptionsUtils::GetValueFromMap<bool>(
+                               api->GetMergedOptions(), CatalogOptions::DATA_TOKEN_ENABLED, false));
+    return std::unique_ptr<RestCatalog>(new RestCatalog(
+        std::move(api), core_options.GetFileSystem(), warehouse, data_token_enabled));
 }
 
 const std::map<std::string, std::string>& RestCatalog::GetOptions() const {
@@ -389,6 +403,10 @@ Result<std::shared_ptr<Schema>> RestCatalog::LoadTableSchema(const Identifier& i
         if (branch) {
             dynamic_options[Options::BRANCH] = branch.value();
         }
+        // The file system is only used to build the system table, whose schema does not
+        // read any file, so the catalog wide one is enough here. The credentials of the
+        // table are applied when its rows are read, through the file system of the read or
+        // scan context.
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
                                SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
                                                        latest_schema, dynamic_options));
@@ -412,6 +430,23 @@ std::string RestCatalog::GetRootPath() const {
 
 std::shared_ptr<FileSystem> RestCatalog::GetFileSystem() const {
     return fs_;
+}
+
+Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
+    const Identifier& identifier) const {
+    if (!data_token_enabled_) {
+        return fs_;
+    }
+    // The credentials are issued for the data table, so a system table shares those of
+    // the table it belongs to.
+    PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
+    return table_fs_cache_->Get(
+        load_identifier.GetFullName(),
+        [this, &load_identifier](const std::string&) -> Result<std::shared_ptr<FileSystem>> {
+            std::shared_ptr<FileSystem> fs = std::make_shared<RestTokenFileSystem>(
+                api_, api_->GetMergedOptions(), load_identifier);
+            return fs;
+        });
 }
 
 Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& identifier,

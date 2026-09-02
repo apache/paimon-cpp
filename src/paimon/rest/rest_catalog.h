@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/catalog/catalog.h"
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/logging.h"
 #include "paimon/rest/rest_api.h"
 #include "paimon/result.h"
@@ -71,6 +72,12 @@ class RestCatalog : public Catalog {
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier) const override;
     std::string GetRootPath() const override;
     std::shared_ptr<FileSystem> GetFileSystem() const override;
+    /// Returns a file system that refreshes the temporary credentials the server issues
+    /// for the table when `CatalogOptions::DATA_TOKEN_ENABLED` is set, and the
+    /// catalog-level file system otherwise. The instance of one table is reused, so that
+    /// its credentials are loaded once instead of per call.
+    Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
+        const Identifier& identifier) const override;
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override;
     Result<std::vector<SnapshotInfo>> ListSnapshots(const Identifier& identifier,
                                                     const std::string& branch) const override;
@@ -79,8 +86,13 @@ class RestCatalog : public Catalog {
     const std::map<std::string, std::string>& GetOptions() const override;
 
  private:
-    RestCatalog(std::unique_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
-                const std::string& warehouse);
+    /// Upper bound of the retained data token file systems, matching the Java client. A
+    /// table evicted from the cache is served by a new instance, which loads credentials
+    /// of its own, so the bound trades a token request for a bounded footprint.
+    static constexpr int64_t kMaxTableFileSystems = 1000;
+
+    RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
+                const std::string& warehouse, bool data_token_enabled);
 
     /// Loads the table from the server and converts the response to a `TableSchema`
     /// (options are enriched with the table path, audit info and branch).
@@ -91,12 +103,18 @@ class RestCatalog : public Catalog {
     static Result<std::unique_ptr<TableSchema>> ToTableSchema(
         const GetTableResponse& response, const std::optional<std::string>& branch);
 
-    std::unique_ptr<RestApi> api_;
+    std::shared_ptr<RestApi> api_;
     std::shared_ptr<FileSystem> fs_;
     std::string warehouse_;
+    /// Whether table data is accessed with the credentials the server issues per table.
+    bool data_token_enabled_ = false;
     /// The "table-default." options of the merged config, applied to `CreateTable`
     /// options when absent.
     std::map<std::string, std::string> table_default_options_;
+    /// Data token file systems, keyed by the full name of the identifier sent to the
+    /// server. Only created when `data_token_enabled_` is set. Evicting an entry does not
+    /// invalidate a file system a caller still holds, since the entries are shared.
+    std::unique_ptr<GenericLruCache<std::string, std::shared_ptr<FileSystem>>> table_fs_cache_;
     std::shared_ptr<Logger> logger_;
 };
 

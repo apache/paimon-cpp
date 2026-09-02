@@ -389,6 +389,86 @@ TEST_F(RestCatalogTest, CreateMergesServerConfig) {
     ASSERT_NE(nullptr, catalog->GetFileSystem());
 }
 
+TEST_F(RestCatalogTest, TableFileSystemWithoutDataToken) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    // without the data token the catalog wide credentials are used for the data as well
+    ASSERT_EQ(catalog->GetFileSystem(), fs);
+}
+
+TEST_F(RestCatalogTest, TableFileSystemWithDataToken) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    ASSERT_NE(nullptr, fs);
+    ASSERT_NE(catalog->GetFileSystem(), fs);
+
+    // one instance per table, so its credentials are loaded once and then shared
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> again,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    ASSERT_EQ(fs, again);
+    // a system table reads the files of the table it belongs to
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> system_table_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$snapshots")));
+    ASSERT_EQ(fs, system_table_fs);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> other_table_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t2")));
+    ASSERT_NE(fs, other_table_fs);
+}
+
+TEST_F(RestCatalogTest, TableFileSystemNormalizesTheBranch) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+
+    // the main branch is the table itself, so it shares the credentials
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> main_branch_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_main")));
+    ASSERT_EQ(fs, main_branch_fs);
+
+    // another branch is addressed as its own object on the server, so it gets its own
+    // credentials
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> branch_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1")));
+    ASSERT_NE(fs, branch_fs);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> branch_fs_again,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1")));
+    ASSERT_EQ(branch_fs, branch_fs_again);
+}
+
+TEST_F(RestCatalogTest, TableFileSystemCacheIsBounded) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+
+    // Building a file system asks the server for nothing, the credentials are loaded when
+    // it is first used, so a catalog scanning many tables would grow without a bound.
+    constexpr int32_t kTables = 1001;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> first,
+                         catalog->GetTableFileSystem(Identifier("db1", "t0")));
+    for (int32_t i = 1; i < kTables; ++i) {
+        ASSERT_OK(catalog->GetTableFileSystem(Identifier("db1", fmt::format("t{}", i))).status());
+    }
+
+    // The table used least recently was evicted, so it is served by a new instance that
+    // loads credentials of its own.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> first_again,
+                         catalog->GetTableFileSystem(Identifier("db1", "t0")));
+    ASSERT_NE(first, first_again);
+
+    // The table used most recently is still there.
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileSystem> last,
+        catalog->GetTableFileSystem(Identifier("db1", fmt::format("t{}", kTables - 1))));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileSystem> last_again,
+        catalog->GetTableFileSystem(Identifier("db1", fmt::format("t{}", kTables - 1))));
+    ASSERT_EQ(last, last_again);
+}
+
 TEST_F(RestCatalogTest, CatalogFactoryMetastoreDispatch) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(kWarehouse, options_));
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> databases, catalog->ListDatabases());

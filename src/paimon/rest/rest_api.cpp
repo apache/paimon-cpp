@@ -295,4 +295,9 @@ Result<std::vector<Snapshot>> RestApi::ListSnapshots(const Identifier& identifie
         resource_paths_.Snapshots(identifier.GetDatabaseName(), identifier.GetTableName()));
 }
 
+Result<GetTableTokenResponse> RestApi::LoadTableToken(const Identifier& identifier) const {
+    return GetEntity<GetTableTokenResponse>(
+        resource_paths_.TableToken(identifier.GetDatabaseName(), identifier.GetTableName()), {});
+}
+
 }  // namespace paimon

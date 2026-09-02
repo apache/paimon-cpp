@@ -463,6 +463,7 @@ if(PAIMON_ENABLE_REST)
          rest/dlf_auth.cpp
          rest/rest_catalog.cpp
          rest/rest_messages.cpp
+         rest/rest_token_file_system.cpp
          rest/rest_util.cpp)
 endif()
 
@@ -987,6 +988,7 @@ if(PAIMON_BUILD_TESTS)
                         rest/dlf_auth_test.cpp
                         rest/rest_catalog_test.cpp
                         rest/rest_messages_test.cpp
+                        rest/rest_token_file_system_test.cpp
                         rest/rest_util_test.cpp
                         STATIC_LINK_LIBS
                         paimon_shared
