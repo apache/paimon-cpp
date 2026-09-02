@@ -66,6 +66,7 @@ class Executor;
 class Logger;
 class MemoryPool;
 class SchemaManager;
+class ShreddingWritePlanFactory;
 class TableSchema;
 class IOManager;
 
@@ -118,15 +119,41 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
         return realtime_context_ != nullptr;
     }
 
+    /// @param plan_factory The active shredding write plan, or nullptr when the rewrite stays a
+    ///                     plain passthrough. Resolved by the caller because
+    ///                     `GetDictionaryPassthroughVetoReason` needs the same answer.
     Result<WriterFactory> GetDataFileWriterFactory(
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
         const std::shared_ptr<arrow::Schema>& schema,
         const std::optional<std::vector<std::string>>& write_cols,
-        const std::vector<std::shared_ptr<DataFileMeta>>& to_compact) const;
+        const std::vector<std::shared_ptr<DataFileMeta>>& to_compact,
+        const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory) const;
 
+    /// @param veto_reason What GetDictionaryPassthroughVetoReason() returned.
     Result<std::unique_ptr<BatchReader>> CreateFilesReader(
         const BinaryRow& partition, int32_t bucket, DeletionVector::Factory dv_factory,
-        const std::vector<std::shared_ptr<DataFileMeta>>& files) const;
+        const std::vector<std::shared_ptr<DataFileMeta>>& files,
+        const std::optional<std::string>& veto_reason) const;
+
+    /// Why `CompactRewrite` must not forward the dictionary encoding of its input files, or
+    /// `std::nullopt` when the table's `parquet.read.enable-dictionary-passthrough` may stand.
+    ///
+    /// A veto, not a decision: `std::nullopt` enables nothing. The option is off by default and
+    /// nothing here turns it on, because forwarding trades compaction CPU for output size and
+    /// which way that goes depends on the data. The "Dictionary Passthrough" section of
+    /// `docs/source/user_guide/compaction.rst` is where that trade is spelled out for users.
+    ///
+    /// The veto stands unless all three of:
+    ///
+    /// - a Parquet output file, since no other writer takes a dictionary-encoded batch;
+    /// - `parquet.enable-dictionary`, or the writer densifies what the reader just handed it and
+    ///   the encoding is carried across the rewrite for nothing;
+    /// - a rewrite that stays a passthrough, since a shredding writer reshapes each batch against
+    ///   a fixed physical schema and cannot take a dictionary-encoded one.
+    ///
+    /// @return The reason, meant for a log line rather than for branching on.
+    Result<std::optional<std::string>> GetDictionaryPassthroughVetoReason(
+        const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory) const;
 
     std::optional<std::vector<std::string>> write_cols_;
     std::shared_ptr<RealtimeContext> realtime_context_;

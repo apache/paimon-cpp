@@ -30,7 +30,10 @@ namespace paimon {
 class PredicateFilter : virtual public Predicate {
  public:
     /// @param array is the struct array of all fields
-    virtual Result<std::vector<char>> Test(const arrow::Array& array) const = 0;
+    /// @param pool is where any arrow buffer the evaluation allocates comes from, it must not be
+    ///        null
+    virtual Result<std::vector<char>> Test(const arrow::Array& array,
+                                           arrow::MemoryPool* pool) const = 0;
     virtual Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema,
                               const InternalRow& row) const = 0;
     virtual Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema, int64_t row_count,

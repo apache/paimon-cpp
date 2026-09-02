@@ -19,12 +19,14 @@
 #include "paimon/format/parquet/parquet_format_writer.h"
 
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/array_binary.h"
+#include "arrow/array/array_dict.h"
 #include "arrow/array/array_primitive.h"
 #include "arrow/array/builder_binary.h"
 #include "arrow/array/builder_nested.h"
@@ -32,9 +34,11 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "arrow/compute/api.h"
 #include "arrow/io/file.h"
 #include "arrow/ipc/api.h"
 #include "arrow/memory_pool.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -49,12 +53,14 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
 #include "paimon/record_batch.h"
+#include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 #include "parquet/arrow/reader.h"
 #include "parquet/file_reader.h"
 #include "parquet/metadata.h"
 #include "parquet/properties.h"
 #include "parquet/schema.h"
+#include "parquet/statistics.h"
 
 namespace arrow {
 class Array;
@@ -182,6 +188,131 @@ class ParquetFormatWriterTest : public ::testing::Test {
                 ASSERT_EQ(true, bool_array->Value(i));
             }
         }
+    }
+
+    /// Builds the {col1, col2, col3} batch of this fixture with a low-cardinality col1 that is
+    /// either dictionary-encoded or flat, so the same rows reach the writer in both encodings.
+    /// Row i holds col1 = "<dictionary_prefix><i % 3>", col2 = i and col3 = i % 2.
+    std::shared_ptr<arrow::Array> PrepareEncodedArray(
+        int32_t record_batch_size, int32_t offset, bool dictionary_encoded,
+        bool null_in_dictionary = false, const std::string& dictionary_prefix = "dict_") const {
+        arrow::StringBuilder dictionary_builder;
+        for (int32_t i = 0; i < 3; ++i) {
+            if (null_in_dictionary && i == 1) {
+                EXPECT_TRUE(dictionary_builder.AppendNull().ok());
+            } else {
+                EXPECT_TRUE(
+                    dictionary_builder.Append(fmt::format("{}{}", dictionary_prefix, i)).ok());
+            }
+        }
+        std::shared_ptr<arrow::Array> dictionary;
+        EXPECT_TRUE(dictionary_builder.Finish(&dictionary).ok());
+
+        arrow::Int32Builder index_builder;
+        arrow::Int32Builder int_builder;
+        arrow::BooleanBuilder bool_builder;
+        for (int32_t i = offset; i < offset + record_batch_size; ++i) {
+            EXPECT_TRUE(index_builder.Append(i % 3).ok());
+            EXPECT_TRUE(int_builder.Append(i).ok());
+            EXPECT_TRUE(bool_builder.Append(static_cast<bool>(i % 2)).ok());
+        }
+        std::shared_ptr<arrow::Array> indices, int_array, bool_array;
+        EXPECT_TRUE(index_builder.Finish(&indices).ok());
+        EXPECT_TRUE(int_builder.Finish(&int_array).ok());
+        EXPECT_TRUE(bool_builder.Finish(&bool_array).ok());
+
+        auto dictionary_array =
+            arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int32(), arrow::utf8()),
+                                               indices, dictionary)
+                .ValueOrDie();
+        std::shared_ptr<arrow::Array> string_array = dictionary_array;
+        if (!dictionary_encoded) {
+            string_array =
+                arrow::compute::Cast(dictionary_array, arrow::utf8()).ValueOrDie().make_array();
+        }
+        return arrow::StructArray::Make({string_array, int_array, bool_array},
+                                        std::vector<std::string>{"col1", "col2", "col3"})
+            .ValueOrDie();
+    }
+
+    void AddStructArrayOnce(const std::shared_ptr<FormatWriter>& format_writer,
+                            const std::shared_ptr<arrow::Array>& array) const {
+        auto arrow_array = std::make_unique<ArrowArray>();
+        ASSERT_TRUE(arrow::ExportArray(*array, arrow_array.get()).ok());
+        ASSERT_OK(format_writer->AddBatch(arrow_array.get()));
+    }
+
+    /// Fraction of `chunk`'s data pages written with a dictionary index encoding. A dictionary
+    /// page on its own says nothing - the writer emits one and then falls back to plain when the
+    /// dictionary it kept no longer matches - so the encoding of the data pages is what tells
+    /// whether the column really came out dictionary-encoded.
+    static std::pair<int32_t, int32_t> CountDictionaryDataPages(
+        const ::parquet::ColumnChunkMetaData& chunk) {
+        int32_t dictionary_pages = 0;
+        int32_t data_pages = 0;
+        for (const ::parquet::PageEncodingStats& stats : chunk.encoding_stats()) {
+            if (stats.page_type != ::parquet::PageType::DATA_PAGE &&
+                stats.page_type != ::parquet::PageType::DATA_PAGE_V2) {
+                continue;
+            }
+            data_pages += stats.count;
+            if (stats.encoding == ::parquet::Encoding::RLE_DICTIONARY ||
+                stats.encoding == ::parquet::Encoding::PLAIN_DICTIONARY) {
+                dictionary_pages += stats.count;
+            }
+        }
+        return {dictionary_pages, data_pages};
+    }
+
+    void CheckEncodedResult(const std::string& file_path, int32_t row_count,
+                            bool null_in_dictionary) const {
+        auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
+        ASSERT_TRUE(file.ok());
+        std::unique_ptr<::parquet::arrow::FileReader> reader;
+        auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+        ASSERT_TRUE(status.ok()) << status.ToString();
+        const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
+        ASSERT_EQ(metadata->num_rows(), row_count);
+        // Whether the values arrived encoded or flat, every data page comes out dictionary-encoded.
+        auto [dictionary_pages, data_pages] =
+            CountDictionaryDataPages(*metadata->RowGroup(0)->ColumnChunk(0));
+        ASSERT_GT(data_pages, 0);
+        ASSERT_EQ(data_pages, dictionary_pages);
+
+        std::shared_ptr<::arrow::ChunkedArray> col0_array;
+        ASSERT_TRUE(reader->ReadColumn(0, &col0_array).ok());
+        int32_t row = 0;
+        for (const auto& chunk : col0_array->chunks()) {
+            const auto& string_array = checked_pointer_cast<arrow::StringArray>(chunk);
+            ASSERT_TRUE(string_array);
+            for (int64_t i = 0; i < string_array->length(); ++i, ++row) {
+                if (null_in_dictionary && row % 3 == 1) {
+                    ASSERT_TRUE(string_array->IsNull(i));
+                } else {
+                    ASSERT_EQ(fmt::format("dict_{}", row % 3), string_array->GetString(i));
+                }
+            }
+        }
+        ASSERT_EQ(row_count, row);
+    }
+
+    /// @param max_memory_use Lower it to make every AddBatch start a fresh buffered row group,
+    ///                       which flushes the previous one to the output stream.
+    std::shared_ptr<ParquetFormatWriter> CreateEncodedWriter(
+        const std::string& file_path, std::shared_ptr<OutputStream>* out,
+        uint64_t max_memory_use = DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE) const {
+        EXPECT_OK_AND_ASSIGN(*out, fs_->Create(file_path, /*overwrite=*/false));
+        ::parquet::WriterProperties::Builder builder;
+        builder.enable_dictionary();
+        // What ParquetWriterBuilder does in production. Without it the encoders allocate from
+        // Arrow's default pool, so `max_memory_use` would be compared against a pool the writer
+        // never touches and the row-group rotation it drives would never fire.
+        builder.memory_pool(arrow_pool_.get());
+        EXPECT_OK_AND_ASSIGN(
+            std::shared_ptr<ParquetFormatWriter> format_writer,
+            ParquetFormatWriter::Create(*out, PrepareArrowSchema().first, builder.build(),
+                                        max_memory_use, arrow_pool_));
+        return format_writer;
     }
 
  private:
@@ -462,6 +593,362 @@ TEST_F(ParquetFormatWriterTest, TestTimestampType) {
     ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
     ASSERT_OK(format_writer->AddBatch(&c_array));
     ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryEncodedColumn) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_passthrough");
+    std::shared_ptr<OutputStream> out;
+    std::shared_ptr<ParquetFormatWriter> format_writer = CreateEncodedWriter(file_path, &out);
+
+    // The writer is created from the logical schema, which a dictionary-encoded batch no longer
+    // matches, and the encoding may alternate from one batch to the next.
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(6, 0, /*dictionary_encoded=*/true));
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(4, 6, /*dictionary_encoded=*/false));
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(5, 10, /*dictionary_encoded=*/true));
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+    CheckEncodedResult(file_path, /*row_count=*/15, /*null_in_dictionary=*/false);
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryChangingAcrossBatches) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_changing");
+    std::shared_ptr<OutputStream> out;
+    std::shared_ptr<ParquetFormatWriter> format_writer = CreateEncodedWriter(file_path, &out);
+
+    // Compacting several input files puts their different dictionaries in one output row group.
+    // Arrow keeps only the first one and falls back to plain encoding for the rest, so the values
+    // have to survive that transition - and the output stops being dictionary-encoded there, which
+    // is the cost of forwarding an encoding rather than rebuilding one. Pinned here because it is
+    // what makes a compacted file bigger than one written from materialized values.
+    constexpr int32_t kBatchRows = 4;
+    for (int32_t batch = 0; batch < 3; ++batch) {
+        AddStructArrayOnce(format_writer, PrepareEncodedArray(kBatchRows, batch * kBatchRows,
+                                                              /*dictionary_encoded=*/true,
+                                                              /*null_in_dictionary=*/false,
+                                                              fmt::format("batch{}_", batch)));
+    }
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
+    ASSERT_TRUE(file.ok());
+    std::unique_ptr<::parquet::arrow::FileReader> reader;
+    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    ASSERT_TRUE(status.ok()) << status.ToString();
+    const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
+    ASSERT_EQ(3 * kBatchRows, metadata->num_rows());
+    auto [dictionary_pages, data_pages] =
+        CountDictionaryDataPages(*metadata->RowGroup(0)->ColumnChunk(0));
+    ASSERT_GT(data_pages, 0);
+    ASSERT_LT(dictionary_pages, data_pages) << "expected a plain fallback after the second batch";
+
+    std::shared_ptr<::arrow::ChunkedArray> col0_array;
+    ASSERT_TRUE(reader->ReadColumn(0, &col0_array).ok());
+    int32_t row = 0;
+    for (const auto& chunk : col0_array->chunks()) {
+        const auto& string_array = checked_pointer_cast<arrow::StringArray>(chunk);
+        ASSERT_TRUE(string_array);
+        for (int64_t i = 0; i < string_array->length(); ++i, ++row) {
+            ASSERT_EQ(fmt::format("batch{}_{}", row / kBatchRows, row % 3),
+                      string_array->GetString(i));
+        }
+    }
+    ASSERT_EQ(3 * kBatchRows, row);
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryWithNullsInDictionary) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_with_nulls");
+    std::shared_ptr<OutputStream> out;
+    std::shared_ptr<ParquetFormatWriter> format_writer = CreateEncodedWriter(file_path, &out);
+
+    // parquet::arrow refuses a DictionaryArray whose dictionary holds nulls, so the column is
+    // densified rather than failing the batch.
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(9, 0, /*dictionary_encoded=*/true,
+                                                          /*null_in_dictionary=*/true));
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+    CheckEncodedResult(file_path, /*row_count=*/9, /*null_in_dictionary=*/true);
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryWithNullRows) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_null_rows");
+    std::shared_ptr<OutputStream> out;
+    std::shared_ptr<ParquetFormatWriter> format_writer = CreateEncodedWriter(file_path, &out);
+
+    // Nulls in the indices, not in the dictionary values: the common shape for a nullable column,
+    // and the one that makes the writer derive definition levels from the indices' validity
+    // bitmap rather than from the values it would otherwise have materialized.
+    std::shared_ptr<arrow::Array> indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, null, 1, 2, null, 0]")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b", "c"])").ValueOrDie();
+    auto dictionary_type = arrow::dictionary(arrow::int32(), arrow::utf8());
+    std::shared_ptr<arrow::Array> encoded =
+        arrow::DictionaryArray::FromArrays(dictionary_type, indices, dictionary).ValueOrDie();
+    std::shared_ptr<arrow::Array> flat = PrepareEncodedArray(6, 0, /*dictionary_encoded=*/false);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(flat);
+    arrow::ArrayVector columns = {encoded, struct_array->field(1), struct_array->field(2)};
+    auto batch_array =
+        arrow::StructArray::Make(columns, std::vector<std::string>{"col1", "col2", "col3"})
+            .ValueOrDie();
+    AddStructArrayOnce(format_writer, batch_array);
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
+    ASSERT_TRUE(file.ok());
+    std::unique_ptr<::parquet::arrow::FileReader> reader;
+    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    ASSERT_TRUE(status.ok()) << status.ToString();
+    const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
+    ASSERT_EQ(6, metadata->num_rows());
+    std::unique_ptr<::parquet::ColumnChunkMetaData> column_chunk =
+        metadata->RowGroup(0)->ColumnChunk(0);
+    ASSERT_TRUE(column_chunk->is_stats_set());
+    ASSERT_EQ(2, column_chunk->statistics()->null_count());
+    auto [dictionary_pages, data_pages] = CountDictionaryDataPages(*column_chunk);
+    ASSERT_GT(data_pages, 0);
+    ASSERT_EQ(data_pages, dictionary_pages);
+
+    std::shared_ptr<::arrow::ChunkedArray> col0_array;
+    ASSERT_TRUE(reader->ReadColumn(0, &col0_array).ok());
+    ASSERT_EQ(6, col0_array->length());
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(),
+                                                  R"(["a", null, "b", "c", null, "a"])")
+            .ValueOrDie();
+    ASSERT_TRUE(col0_array->Equals(arrow::ChunkedArray(expected)))
+        << "actual=" << col0_array->ToString();
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryWithDuplicateValues) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_duplicates");
+    std::shared_ptr<OutputStream> out;
+    std::shared_ptr<ParquetFormatWriter> format_writer = CreateEncodedWriter(file_path, &out);
+
+    // A dictionary whose values repeat. Nothing forbids one - a DictionaryArray only bounds-checks
+    // its indices - but the Parquet dict encoder de-duplicates as it inserts, so its memo table
+    // ends up shorter than the alphabet the indices were built against. Arrow 17 notices
+    // (column_writer.cc, `num_entries() != dictionary->length()`) and falls back to plain rather
+    // than emitting a dictionary page sized from the inflated count; older forks did not, which is
+    // what made this a corruption rather than a size regression. Pinned because the passthrough
+    // relies on that fallback existing.
+    std::shared_ptr<arrow::Array> indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2, 0]").ValueOrDie();
+    std::shared_ptr<arrow::Array> dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b", "a"])").ValueOrDie();
+    auto dictionary_type = arrow::dictionary(arrow::int32(), arrow::utf8());
+    std::shared_ptr<arrow::Array> encoded =
+        arrow::DictionaryArray::FromArrays(dictionary_type, indices, dictionary).ValueOrDie();
+    std::shared_ptr<arrow::Array> flat = PrepareEncodedArray(4, 0, /*dictionary_encoded=*/false);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(flat);
+    arrow::ArrayVector columns = {encoded, struct_array->field(1), struct_array->field(2)};
+    auto batch_array =
+        arrow::StructArray::Make(columns, std::vector<std::string>{"col1", "col2", "col3"})
+            .ValueOrDie();
+    AddStructArrayOnce(format_writer, batch_array);
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
+    ASSERT_TRUE(file.ok());
+    std::unique_ptr<::parquet::arrow::FileReader> reader;
+    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    ASSERT_TRUE(status.ok()) << status.ToString();
+    const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
+    ASSERT_EQ(4, metadata->num_rows());
+    auto [dictionary_pages, data_pages] =
+        CountDictionaryDataPages(*metadata->RowGroup(0)->ColumnChunk(0));
+    ASSERT_GT(data_pages, 0);
+    ASSERT_EQ(0, dictionary_pages) << "expected the duplicate dictionary to force plain encoding";
+
+    // The point of the fallback: the values still come back exactly as the indices addressed them.
+    std::shared_ptr<::arrow::ChunkedArray> col0_array;
+    ASSERT_TRUE(reader->ReadColumn(0, &col0_array).ok());
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b", "a", "a"])")
+            .ValueOrDie();
+    ASSERT_TRUE(col0_array->Equals(arrow::ChunkedArray(expected)))
+        << "actual=" << col0_array->ToString();
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryEmptyBatch) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_empty");
+    std::shared_ptr<OutputStream> out;
+    std::shared_ptr<ParquetFormatWriter> format_writer = CreateEncodedWriter(file_path, &out);
+
+    // A rewrite can hand over an empty batch, and its layout still has to be resolved: the columns
+    // carry a dictionary the schema does not declare even with no rows behind it.
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(0, 0, /*dictionary_encoded=*/true));
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(3, 0, /*dictionary_encoded=*/true));
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+    CheckEncodedResult(file_path, /*row_count=*/3, /*null_in_dictionary=*/false);
+}
+
+TEST_F(ParquetFormatWriterTest, TestGetEstimateLengthWithDictionaryBatches) {
+    // RollingFileWriter decides when to start a new data file from ReachTargetSize(), which is
+    // GetEstimateLength() against the target. A dictionary-encoded batch buffers indices rather
+    // than values, so the estimate is built from different bytes than it used to be; if it stopped
+    // tracking the file, a compaction rewrite would produce one file of unbounded size instead of
+    // rolling at `target-file-size`.
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_estimate_length");
+    std::shared_ptr<OutputStream> out;
+    // Small enough that every batch after the first opens a new buffered row group and flushes the
+    // previous one, so the estimate has to move for reasons the test controls.
+    std::shared_ptr<ParquetFormatWriter> format_writer =
+        CreateEncodedWriter(file_path, &out, /*max_memory_use=*/1);
+
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(64, 0, /*dictionary_encoded=*/true));
+    ASSERT_OK_AND_ASSIGN(uint64_t estimate_after_first, format_writer->GetEstimateLength());
+    ASSERT_GT(estimate_after_first, 0);
+
+    ASSERT_OK_AND_ASSIGN(bool reached_tiny_target,
+                         format_writer->ReachTargetSize(/*suggested_check=*/true,
+                                                        /*target_size=*/1));
+    ASSERT_TRUE(reached_tiny_target);
+    // Not a suggested check: the writer must not go looking at its own size at all.
+    ASSERT_OK_AND_ASSIGN(bool reached_unsuggested,
+                         format_writer->ReachTargetSize(/*suggested_check=*/false,
+                                                        /*target_size=*/1));
+    ASSERT_FALSE(reached_unsuggested);
+    ASSERT_OK_AND_ASSIGN(bool reached_huge_target,
+                         format_writer->ReachTargetSize(/*suggested_check=*/true,
+                                                        /*target_size=*/1LL << 40));
+    ASSERT_FALSE(reached_huge_target);
+
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(64, 64, /*dictionary_encoded=*/true));
+    ASSERT_OK_AND_ASSIGN(uint64_t estimate_after_second, format_writer->GetEstimateLength());
+    ASSERT_GT(estimate_after_second, estimate_after_first);
+
+    // A flat batch after an encoded one keeps the estimate moving in the same direction, so the
+    // rolling decision does not depend on which encoding the rewrite happens to be forwarding.
+    AddStructArrayOnce(format_writer, PrepareEncodedArray(64, 128, /*dictionary_encoded=*/false));
+    ASSERT_OK_AND_ASSIGN(uint64_t estimate_after_third, format_writer->GetEstimateLength());
+    ASSERT_GT(estimate_after_third, estimate_after_second);
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+    ASSERT_GT(fs_->GetFileStatus(file_path).value().GetLen(), 0);
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryOfBinaryColumn) {
+    // BINARY is the other value type an `ArrowArray` layout can describe, so the writer takes a
+    // `dictionary(int32, binary)` batch against a plain BINARY schema exactly as it takes a STRING
+    // one. ParquetFileBatchReader does not currently hand one over - it forwards STRING alone,
+    // because the value accessors cannot read a BINARY dictionary - so this pins the writer half
+    // of the contract on its own, and would fail if the layout predicate were narrowed to STRING
+    // to enforce the reader's restriction in the wrong place.
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_binary");
+    arrow::FieldVector fields = {arrow::field("b", arrow::binary())};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                         fs_->Create(file_path, /*overwrite=*/true));
+    ::parquet::WriterProperties::Builder builder;
+    builder.enable_dictionary();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ParquetFormatWriter> format_writer,
+        ParquetFormatWriter::Create(out, std::make_shared<arrow::Schema>(fields), builder.build(),
+                                    DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, arrow_pool_));
+
+    std::shared_ptr<arrow::Array> indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 0, 2]").ValueOrDie();
+    std::shared_ptr<arrow::Array> dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::binary(), R"(["a", "bb", "ccc"])")
+            .ValueOrDie();
+    std::shared_ptr<arrow::Array> encoded =
+        arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int32(), arrow::binary()),
+                                           indices, dictionary)
+            .ValueOrDie();
+    auto batch_array =
+        arrow::StructArray::Make({encoded}, std::vector<std::string>{"b"}).ValueOrDie();
+    AddStructArrayOnce(format_writer, batch_array);
+
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    auto file = arrow::io::ReadableFile::Open(file_path, arrow_pool_.get());
+    ASSERT_TRUE(file.ok());
+    std::unique_ptr<::parquet::arrow::FileReader> reader;
+    auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow_pool_.get(), &reader);
+    ASSERT_TRUE(status.ok()) << status.ToString();
+    const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
+    ASSERT_EQ(4, metadata->num_rows());
+    // The indices went to Parquet as indices: one dictionary, no plain fallback.
+    auto [dictionary_pages, data_pages] =
+        CountDictionaryDataPages(*metadata->RowGroup(0)->ColumnChunk(0));
+    ASSERT_GT(data_pages, 0);
+    ASSERT_EQ(data_pages, dictionary_pages);
+
+    std::shared_ptr<::arrow::ChunkedArray> column;
+    ASSERT_TRUE(reader->ReadColumn(0, &column).ok());
+    std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::binary(), R"(["a", "bb", "a", "ccc"])")
+            .ValueOrDie();
+    ASSERT_TRUE(column->Equals(arrow::ChunkedArray(expected))) << "actual=" << column->ToString();
+}
+
+TEST_F(ParquetFormatWriterTest, TestWriteDictionaryOfUnsupportedTypeIsRejected) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_unsupported");
+    std::shared_ptr<OutputStream> out;
+    std::shared_ptr<ParquetFormatWriter> format_writer = CreateEncodedWriter(file_path, &out);
+
+    // The backstop, not the behaviour a rewrite relies on: a batch layout cannot describe a
+    // dictionary over a non-binary-like column, and this writer only ever sees a layout, so it
+    // rejects rather than reinterpreting with a guessed index width. Callers that can produce such
+    // a column decode it while its type is still known - see
+    // ArrowUtils::FlattenUnresolvableDictionaries, which leaves the other columns encoded.
+    std::shared_ptr<arrow::Array> encoded = PrepareEncodedArray(3, 0, /*dictionary_encoded=*/false);
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(encoded);
+    arrow::Int32Builder index_builder;
+    arrow::Int32Builder value_builder;
+    for (int32_t i = 0; i < 3; ++i) {
+        ASSERT_TRUE(index_builder.Append(i).ok());
+        ASSERT_TRUE(value_builder.Append(7 + i).ok());
+    }
+    std::shared_ptr<arrow::Array> indices, dictionary;
+    ASSERT_TRUE(index_builder.Finish(&indices).ok());
+    ASSERT_TRUE(value_builder.Finish(&dictionary).ok());
+    auto dictionary_int =
+        arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int32(), arrow::int32()),
+                                           indices, dictionary)
+            .ValueOrDie();
+    auto batch_array =
+        arrow::StructArray::Make({struct_array->field(0), dictionary_int, struct_array->field(2)},
+                                 std::vector<std::string>{"col1", "col2", "col3"})
+            .ValueOrDie();
+
+    auto arrow_array = std::make_unique<ArrowArray>();
+    ASSERT_TRUE(arrow::ExportArray(*batch_array, arrow_array.get()).ok());
+    Status status = format_writer->AddBatch(arrow_array.get());
+    ASSERT_TRUE(status.IsNotImplemented()) << status.ToString();
+    ArrowArrayRelease(arrow_array.get());
+
     ASSERT_OK(format_writer->Finish());
     ASSERT_OK(out->Flush());
     ASSERT_OK(out->Close());

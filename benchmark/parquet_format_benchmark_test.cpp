@@ -99,6 +99,17 @@ class ParquetFormatBenchmarkTest : public ::testing::Test {
                  const std::shared_ptr<arrow::Array>& batch, const std::string& compression,
                  const std::map<std::string, std::string>& extra_options = {},
                  int32_t batch_count = 1) {
+        return WriteBatches(path, schema,
+                            std::vector<std::shared_ptr<arrow::Array>>(batch_count, batch),
+                            compression, extra_options);
+    }
+
+    // The same, for a benchmark case whose batches are not identical - the changing-dictionary
+    // write hands the writer a different dictionary every time.
+    Status WriteBatches(const std::string& path, const std::shared_ptr<arrow::Schema>& schema,
+                        const std::vector<std::shared_ptr<arrow::Array>>& batches,
+                        const std::string& compression,
+                        const std::map<std::string, std::string>& extra_options = {}) {
         std::map<std::string, std::string> options = extra_options;
         // emplace, not assignment: a caller that set its own row-group limit is testing that.
         options.emplace(PARQUET_WRITE_MAX_ROW_GROUP_LENGTH, std::to_string(kRowGroupLength));
@@ -107,7 +118,7 @@ class ParquetFormatBenchmarkTest : public ::testing::Test {
                                fs_->Create(path, /*overwrite=*/true));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatWriter> writer,
                                writer_builder.Build(out, compression));
-        for (int32_t i = 0; i < batch_count; ++i) {
+        for (const std::shared_ptr<arrow::Array>& batch : batches) {
             ArrowArray c_array;
             PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*batch, &c_array));
             PAIMON_RETURN_NOT_OK(writer->AddBatch(&c_array));
@@ -116,14 +127,18 @@ class ParquetFormatBenchmarkTest : public ::testing::Test {
         return out->Close();
     }
 
-    // Concatenating `array` with itself `times` times, so a multi-batch write has an expected
-    // value to be compared against.
+    // The expected value of a multi-batch write: one chunk per batch, in write order.
+    static Result<std::shared_ptr<arrow::Array>> Concat(
+        const std::vector<std::shared_ptr<arrow::Array>>& chunks) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concatenated,
+                                          arrow::Concatenate(chunks));
+        return concatenated;
+    }
+
+    // The same, when every batch carried the same array.
     static Result<std::shared_ptr<arrow::Array>> Repeat(const std::shared_ptr<arrow::Array>& array,
                                                         int32_t times) {
-        std::vector<std::shared_ptr<arrow::Array>> chunks(times, array);
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> repeated,
-                                          arrow::Concatenate(chunks));
-        return repeated;
+        return Concat(std::vector<std::shared_ptr<arrow::Array>>(times, array));
     }
 
     static Result<std::shared_ptr<arrow::Array>> MakeDictionary(
@@ -131,6 +146,54 @@ class ParquetFormatBenchmarkTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::DictionaryArray::FromArrays(indices, values));
         return array;
+    }
+
+    // `value_<index>`, the value MakeStringColumn emits at `index` in the benchmark.
+    static std::string AlphabetValue(int64_t index) {
+        return "value_" + std::to_string(index);
+    }
+
+    // Indices `(shift + i) % cardinality` over kRows, the index column every dictionary case here
+    // is built from - the shape MakeDictionaryColumn gives a benchmark batch. `shift` cancels the
+    // rotation MakeChangingDictionaryStringColumn applies to its alphabet.
+    static Result<std::shared_ptr<arrow::Array>> MakeIndices(int64_t cardinality,
+                                                             int64_t shift = 0) {
+        arrow::Int32Builder builder;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(kRows));
+        for (int64_t i = 0; i < kRows; ++i) {
+            builder.UnsafeAppend(static_cast<int32_t>((shift + i) % cardinality));
+        }
+        std::shared_ptr<arrow::Array> indices;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&indices));
+        return indices;
+    }
+
+    // The alphabet whose entry `j` is `value_<(j + rotation) % cardinality>`: the same
+    // `cardinality` strings whatever the rotation, in a different order. Rotating it is how
+    // MakeChangingDictionaryStringColumn gives every batch its own dictionary without changing the
+    // data the batch decodes to.
+    static Result<std::shared_ptr<arrow::Array>> MakeAlphabet(int64_t cardinality,
+                                                              int64_t rotation = 0) {
+        arrow::StringBuilder builder;
+        for (int64_t i = 0; i < cardinality; ++i) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                builder.Append(AlphabetValue((rotation + i) % cardinality)));
+        }
+        std::shared_ptr<arrow::Array> alphabet;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&alphabet));
+        return alphabet;
+    }
+
+    // The flat column any of those batches has to decode back to, whatever the rotation.
+    static Result<std::shared_ptr<arrow::Array>> MakeFlatAlphabetColumn(int64_t cardinality) {
+        arrow::StringBuilder builder;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(kRows));
+        for (int64_t i = 0; i < kRows; ++i) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(AlphabetValue(i % cardinality)));
+        }
+        std::shared_ptr<arrow::Array> column;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&column));
+        return column;
     }
 
     struct ReadResult {
@@ -147,14 +210,15 @@ class ParquetFormatBenchmarkTest : public ::testing::Test {
     Result<ReadResult> Read(const std::string& path,
                             const std::shared_ptr<arrow::Schema>& read_schema,
                             const std::shared_ptr<Predicate>& predicate = nullptr,
-                            const std::optional<RoaringBitmap32>& selection = std::nullopt) {
+                            const std::optional<RoaringBitmap32>& selection = std::nullopt,
+                            const std::map<std::string, std::string>& read_options = {}) {
         PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(path));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input, fs_->Open(path));
         auto in_stream =
             std::make_shared<ArrowInputStreamAdapter>(input, file_status.GetLen(), pool_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ParquetFileBatchReader> reader,
                                ParquetFileBatchReader::Create(
-                                   std::move(in_stream), /*options=*/{}, kBatchSize,
+                                   std::move(in_stream), read_options, kBatchSize,
                                    /*file_metadata=*/nullptr, /*storage_read_bytes=*/nullptr, pool_,
                                    /*hints=*/std::nullopt));
         ArrowSchema c_schema;
@@ -237,35 +301,25 @@ TEST_F(ParquetFormatBenchmarkTest, RegisteredCodecsWrite) {
 // values match the flat equivalent.
 TEST_F(ParquetFormatBenchmarkTest, DictionaryInputRoundTrip) {
     constexpr int64_t kCardinality = 8;
-    arrow::Int32Builder index_builder;
-    ASSERT_TRUE(index_builder.Reserve(kRows).ok());
-    for (int64_t i = 0; i < kRows; ++i) {
-        index_builder.UnsafeAppend(static_cast<int32_t>(i % kCardinality));
-    }
-    std::shared_ptr<arrow::Array> indices;
-    ASSERT_TRUE(index_builder.Finish(&indices).ok());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> indices, MakeIndices(kCardinality));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> string_dict, MakeAlphabet(kCardinality));
+    // The flat array the dictionary-encoded input has to decode back to.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> flat_string_column,
+                         MakeFlatAlphabetColumn(kCardinality));
 
-    arrow::StringBuilder string_values;
+    // The INT32 dictionary holds the same `i * 7` values MakeInt32Column emits inline, which is
+    // what makes the two benchmark cases comparable.
     arrow::Int32Builder int_values;
+    arrow::Int32Builder flat_ints;
     for (int64_t i = 0; i < kCardinality; ++i) {
-        ASSERT_TRUE(string_values.Append("value_" + std::to_string(i)).ok());
         ASSERT_TRUE(int_values.Append(static_cast<int32_t>(i * 7)).ok());
     }
-    std::shared_ptr<arrow::Array> string_dict;
-    std::shared_ptr<arrow::Array> int_dict;
-    ASSERT_TRUE(string_values.Finish(&string_dict).ok());
-    ASSERT_TRUE(int_values.Finish(&int_dict).ok());
-
-    // The flat arrays the dictionary-encoded input has to decode back to.
-    arrow::StringBuilder flat_strings;
-    arrow::Int32Builder flat_ints;
     for (int64_t i = 0; i < kRows; ++i) {
-        ASSERT_TRUE(flat_strings.Append("value_" + std::to_string(i % kCardinality)).ok());
         ASSERT_TRUE(flat_ints.Append(static_cast<int32_t>((i % kCardinality) * 7)).ok());
     }
-    std::shared_ptr<arrow::Array> flat_string_column;
+    std::shared_ptr<arrow::Array> int_dict;
     std::shared_ptr<arrow::Array> flat_int_column;
-    ASSERT_TRUE(flat_strings.Finish(&flat_string_column).ok());
+    ASSERT_TRUE(int_values.Finish(&int_dict).ok());
     ASSERT_TRUE(flat_ints.Finish(&flat_int_column).ok());
 
     struct Case {
@@ -300,6 +354,94 @@ TEST_F(ParquetFormatBenchmarkTest, DictionaryInputRoundTrip) {
         std::shared_ptr<arrow::Array> actual =
             checked_pointer_cast<arrow::StructArray>(result.data)->field(0);
         EXPECT_TRUE(actual->Equals(*expected)) << c.name;
+    }
+}
+
+// BM_ParquetWrite_DictionaryStringIntoStringSchema and its Changing... counterpart are only worth
+// running as a pair if the pair measures two different things: one dictionary for the whole file
+// against one per batch, where a Parquet column chunk's single dictionary forces the writer to
+// plain encoding partway through. If that stopped happening the two would quietly measure the same
+// work, so both halves are pinned here. The column shapes are rebuilt rather than taken from the
+// benchmark, which this target does not compile in: the premise is what is pinned, not the
+// factories.
+//
+// The two cases write *identical data* - same values, same order, same widths - and differ only in
+// whether each batch's dictionary is a rotation of the last. That is what makes the benchmark delta
+// attributable to the fallback, so this test asserts both halves against one expected column.
+//
+// The fallback is asserted through the reader's passthrough gate, which is the definition of
+// "every data page dictionary-encoded" and decides whether a compacted file can be forwarded again
+// on the next round. Its writer side, counted in pages, is
+// ParquetFormatWriterTest.TestWriteDictionaryChangingAcrossBatches.
+TEST_F(ParquetFormatBenchmarkTest, ChangingDictionaryInputFallsBackToPlain) {
+    constexpr int64_t kCardinality = 8;
+    constexpr int32_t kBatches = 3;
+    // Deliberately not a divisor of kRows, so a row group straddles two batches. A limit that
+    // divided the batch size would give every row group exactly one dictionary, the changing case
+    // could never fall back, and this test would pass while asserting nothing.
+    constexpr int64_t kStraddlingRowGroupLength = 700;
+
+    // Plain STRING, as a compaction rewrite builds it from the table's logical schema. The batches
+    // carry the encoding the schema does not declare, which the writer recovers from their layout.
+    std::shared_ptr<arrow::Schema> write_schema = arrow::schema({MakeField("v", arrow::utf8(), 0)});
+    // One expected column for both cases, which is the point: rotating a dictionary is not
+    // supposed to change what the file holds.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> expected_chunk,
+                         MakeFlatAlphabetColumn(kCardinality));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> expected, Repeat(expected_chunk, kBatches));
+
+    struct Case {
+        const char* name;
+        // Whether each batch rotates the dictionary, which is the only difference between the two
+        // column factories the benchmark pair uses.
+        bool changing;
+        // Whether the reader's gate still accepts the file, which is exactly whether the writer
+        // kept the column dictionary-encoded end to end.
+        bool expect_dictionary;
+    };
+    for (const Case& c : {Case{"shared", false, true}, Case{"changing", true, false}}) {
+        std::vector<std::shared_ptr<arrow::Array>> batches;
+        for (int32_t batch = 0; batch < kBatches; ++batch) {
+            // Rotating the alphabet and shifting the indices back by the same amount cancels, so
+            // every batch decodes to `expected_chunk` while presenting a dictionary the writer has
+            // not seen before.
+            const int64_t rotation = c.changing ? batch % kCardinality : 0;
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> indices,
+                                 MakeIndices(kCardinality, kCardinality - rotation));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> alphabet,
+                                 MakeAlphabet(kCardinality, rotation));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> column,
+                                 MakeDictionary(indices, alphabet));
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<arrow::Array> encoded,
+                Wrap(arrow::schema({write_schema->field(0)->WithType(column->type())}), {column}));
+            batches.push_back(std::move(encoded));
+        }
+
+        const std::string path = PathOf(std::string("changing_dict_") + c.name + ".parquet");
+        ASSERT_OK(WriteBatches(
+            path, write_schema, batches, "zstd",
+            {{PARQUET_WRITE_MAX_ROW_GROUP_LENGTH, std::to_string(kStraddlingRowGroupLength)}}))
+            << c.name;
+
+        // Values first: the fallback trades encoding and size, never correctness.
+        ASSERT_OK_AND_ASSIGN(ReadResult result, Read(path, write_schema));
+        EXPECT_EQ(kRows * kBatches, result.rows) << c.name;
+        ASSERT_TRUE(result.data) << c.name;
+        EXPECT_TRUE(
+            checked_pointer_cast<arrow::StructArray>(result.data)->field(0)->Equals(*expected))
+            << c.name;
+
+        // Then the encoding, read back through the gate that decides it.
+        ASSERT_OK_AND_ASSIGN(
+            ReadResult encoded_result,
+            Read(path, write_schema, /*predicate=*/nullptr, /*selection=*/std::nullopt,
+                 {{PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH, "true"}}));
+        ASSERT_TRUE(encoded_result.data) << c.name;
+        std::shared_ptr<arrow::Array> column =
+            checked_pointer_cast<arrow::StructArray>(encoded_result.data)->field(0);
+        EXPECT_EQ(c.expect_dictionary, column->type_id() == arrow::Type::DICTIONARY)
+            << c.name << ": " << column->type()->ToString();
     }
 }
 
