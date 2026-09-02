@@ -196,6 +196,42 @@ TEST(RestMessagesTest, GetTableResponseParse) {
     ASSERT_STREQ("f0", schema["fields"][0]["name"].GetString());
 }
 
+TEST(RestMessagesTest, GetTableTokenResponseParse) {
+    std::string json = R"({
+        "token": {"fs.oss.accessKeyId": "ak", "fs.oss.securityToken": "st"},
+        "expiresAtMillis": 1700000000000,
+        "futureField": [1, 2]
+    })";
+    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse response,
+                         GetTableTokenResponse::FromJsonString(json));
+    ASSERT_EQ(2u, response.GetToken().size());
+    ASSERT_EQ("ak", response.GetToken().at("fs.oss.accessKeyId"));
+    ASSERT_EQ("st", response.GetToken().at("fs.oss.securityToken"));
+    ASSERT_EQ(1700000000000, response.GetExpiresAtMillis());
+}
+
+TEST(RestMessagesTest, GetTableTokenResponseLenientParse) {
+    // an absent expiration makes the credentials expire immediately rather than fail
+    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse no_expiration,
+                         GetTableTokenResponse::FromJsonString(R"({"token": {"k": "v"}})"));
+    ASSERT_EQ("v", no_expiration.GetToken().at("k"));
+    ASSERT_EQ(0, no_expiration.GetExpiresAtMillis());
+
+    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse no_token,
+                         GetTableTokenResponse::FromJsonString(R"({"expiresAtMillis": 5})"));
+    ASSERT_TRUE(no_token.GetToken().empty());
+    ASSERT_EQ(5, no_token.GetExpiresAtMillis());
+}
+
+TEST(RestMessagesTest, GetTableTokenResponseRoundTrip) {
+    GetTableTokenResponse response({{"fs.oss.accessKeyId", "ak"}, {"fs.oss.endpoint", "ep"}},
+                                   1700000000000);
+    ASSERT_OK_AND_ASSIGN(std::string json, response.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse parsed, GetTableTokenResponse::FromJsonString(json));
+    ASSERT_EQ(response.GetToken(), parsed.GetToken());
+    ASSERT_EQ(1700000000000, parsed.GetExpiresAtMillis());
+}
+
 TEST(RestMessagesTest, UnknownFieldsAreIgnored) {
     // forward compatibility: fields a newer server adds must be ignored
     std::string json = R"({
