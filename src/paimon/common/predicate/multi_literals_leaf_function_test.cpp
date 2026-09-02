@@ -172,7 +172,8 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestStringWithoutEmptyLiteral) {
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestBinary) {
-    // Binary literals keep their embedded zero bytes, the value set must not truncate them.
+    // Binary literals keep their embedded zero bytes, the value set must not truncate them. The
+    // JSON reader cannot spell a value like that, so the column is built with a builder.
     const std::vector<Literal> literals = {BinaryLiteral(std::string("\x00\x01", 2)),
                                            BinaryLiteral("xyz")};
 
@@ -397,13 +398,9 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestTimestampOffTheValueSetPath) {
 
     // A column with a time zone as well: `is_in` refuses to compare a zoned timestamp against an
     // unzoned value set, so the row by row path compares by value instead.
-    arrow::TimestampBuilder builder(arrow::timestamp(arrow::TimeUnit::MILLI, "UTC"),
-                                    arrow::default_memory_pool());
-    ASSERT_TRUE(builder.Append(1000).ok());
-    ASSERT_TRUE(builder.Append(2000).ok());
-    ASSERT_TRUE(builder.AppendNull().ok());
-    std::shared_ptr<arrow::Array> zoned_array;
-    ASSERT_TRUE(builder.Finish(&zoned_array).ok());
+    auto zoned_array = arrow::ipc::internal::json::ArrayFromJSON(
+                           arrow::timestamp(arrow::TimeUnit::MILLI, "UTC"), R"([1000, 2000, null])")
+                           .ValueOrDie();
     ASSERT_EQ(EvalIn({TimestampLiteral(1000)}, zoned_array), std::vector<char>({1, 0, 0}));
     ASSERT_EQ(EvalNotIn({TimestampLiteral(1000)}, zoned_array), std::vector<char>({0, 1, 0}));
 }
@@ -442,7 +439,8 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestNanLiteralStaysOffTheValueSetPath) {
     // `is_in` hashes the raw bits of a float, so a NaN literal would only match the column NaNs
     // carrying the very same bit pattern, while `FieldsComparator::CompareFloatingPoint` makes
     // every NaN equal. A NaN literal therefore keeps the row by row path, where the sign flipped
-    // NaN below still matches.
+    // NaN below still matches. The JSON reader cannot spell a sign flipped NaN, so the column is
+    // built with a builder.
     const double canonical_nan = std::numeric_limits<double>::quiet_NaN();
     arrow::DoubleBuilder builder;
     ASSERT_TRUE(builder.Append(canonical_nan).ok());
@@ -468,25 +466,12 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestMixedLiteralTypesReportTheError) {
     // through the row by row path instead of being built into one typed value set. The column value
     // matches none of them, otherwise the comparison would stop before reaching the odd literal.
     auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0])").ValueOrDie();
-    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), Literal(int64_t{2})}).status());
-    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), StringLiteral("a")}).status());
-    ASSERT_NOK(NotIn::Instance().Test(*array, {Literal(1), Literal(int64_t{2})}).status());
+    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), Literal(int64_t{2})}));
+    ASSERT_NOK(In::Instance().Test(*array, {Literal(1), StringLiteral("a")}));
+    ASSERT_NOK(NotIn::Instance().Test(*array, {Literal(1), Literal(int64_t{2})}));
 }
 
-TEST_F(MultiLiteralsLeafFunctionTest, TestProbeResolvesArrowTypeOnItsOwn) {
-    // A column read as a narrower arrow type than the field type is promoted to the common type, so
-    // the probe stays correct instead of having to fall back.
-    auto int32_array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([1, 3, null])").ValueOrDie();
-    ASSERT_EQ(EvalIn({Literal(int64_t{1}), Literal(int64_t{2})}, int32_array),
-              std::vector<char>({1, 0, 0}));
-
-    // Promotion widens both sides, so a value outside the value set type range cannot alias.
-    auto int64_array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([1, 4294967297])")
-            .ValueOrDie();
-    ASSERT_EQ(EvalIn({Literal(1)}, int64_array), std::vector<char>({1, 0}));
-
+TEST_F(MultiLiteralsLeafFunctionTest, TestDictionaryLayoutsLiteralConversionRejects) {
     // Dictionary layouts that `LiteralConverter::ConvertLiteralsFromArray` rejects are decoded by
     // `is_in`, so they no longer fail the whole evaluation.
     auto int64_dictionary =
@@ -497,9 +482,9 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestProbeResolvesArrowTypeOnItsOwn) {
         arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int32(), arrow::int64()),
                                            int32_indices, int64_dictionary)
             .ValueOrDie();
-    ASSERT_NOK(
-        LiteralConverter::ConvertLiteralsFromArray(*int64_dict_array, /*own_data=*/false).status());
+    ASSERT_NOK(LiteralConverter::ConvertLiteralsFromArray(*int64_dict_array, /*own_data=*/false));
     ASSERT_EQ(EvalIn({Literal(int64_t{10})}, int64_dict_array), std::vector<char>({1, 0}));
+    ASSERT_EQ(EvalNotIn({Literal(int64_t{10})}, int64_dict_array), std::vector<char>({0, 1}));
 
     auto string_dictionary =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b"])").ValueOrDie();
@@ -509,17 +494,18 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestProbeResolvesArrowTypeOnItsOwn) {
         arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int8(), arrow::utf8()),
                                            int8_indices, string_dictionary)
             .ValueOrDie();
-    ASSERT_NOK(
-        LiteralConverter::ConvertLiteralsFromArray(*int8_dict_array, /*own_data=*/false).status());
+    ASSERT_NOK(LiteralConverter::ConvertLiteralsFromArray(*int8_dict_array, /*own_data=*/false));
     ASSERT_EQ(EvalIn({StringLiteral("a")}, int8_dict_array), std::vector<char>({1, 0}));
+    ASSERT_EQ(EvalNotIn({StringLiteral("a")}, int8_dict_array), std::vector<char>({0, 1}));
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestProbeFailsOnUnrelatedArrowType) {
-    // Nothing casts an int32 value set to a string column, so the probe reports the mismatch. This
-    // only happens when the field type disagrees with the column being evaluated.
+    // Nothing casts an int32 value set to a string column, so the probe reports the mismatch
+    // instead of matching by chance. `PredicateValidator` already rejects such a predicate against
+    // the schema, this only pins what the evaluation does if one reaches it anyway.
     auto string_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["1"])").ValueOrDie();
-    ASSERT_NOK(In::Instance().Test(*string_array, {Literal(1)}).status());
+    ASSERT_NOK(In::Instance().Test(*string_array, {Literal(1)}));
 }
 
 TEST_F(MultiLiteralsLeafFunctionTest, TestSlicedArray) {

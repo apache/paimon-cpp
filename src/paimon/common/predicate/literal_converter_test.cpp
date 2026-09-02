@@ -507,9 +507,8 @@ TEST_F(LiteralConverterTest, TestLiteralsToArray) {
         arrow::ipc::internal::json::ArrayFromJSON(arrow::decimal128(21, 3),
                                                   R"(["-123456789987654321.234", null, "123.456"])")
             .ValueOrDie());
-    // a timestamp is written with the finest time unit that keeps the values, one per case; the
-    // microsecond and the nanosecond one are built with a builder, because the JSON reader takes
-    // a raw integer for seconds
+    // a timestamp is written with the finest time unit that keeps the values, one per case, and
+    // the JSON reader takes a raw integer in the unit of the type it is given
     CheckLiteralsToArray(
         FieldType::TIMESTAMP,
         {Literal(Timestamp::FromEpochMillis(123000l)), Literal(FieldType::TIMESTAMP),
@@ -517,28 +516,20 @@ TEST_F(LiteralConverterTest, TestLiteralsToArray) {
         arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MILLI),
                                                   R"([123000, null, -456000])")
             .ValueOrDie());
-    arrow::TimestampBuilder micro_builder(arrow::timestamp(arrow::TimeUnit::MICRO),
-                                          arrow::default_memory_pool());
-    ASSERT_TRUE(micro_builder.Append(123000001).ok());
-    ASSERT_TRUE(micro_builder.AppendNull().ok());
-    ASSERT_TRUE(micro_builder.Append(-455999998).ok());
-    std::shared_ptr<arrow::Array> micro_array;
-    ASSERT_TRUE(micro_builder.Finish(&micro_array).ok());
-    CheckLiteralsToArray(FieldType::TIMESTAMP,
-                         {Literal(Timestamp(123000l, 1000)), Literal(FieldType::TIMESTAMP),
-                          Literal(Timestamp(-456000l, 2000))},
-                         micro_array);
-    arrow::TimestampBuilder nano_builder(arrow::timestamp(arrow::TimeUnit::NANO),
-                                         arrow::default_memory_pool());
-    ASSERT_TRUE(nano_builder.Append(123000456789).ok());
-    ASSERT_TRUE(nano_builder.AppendNull().ok());
-    ASSERT_TRUE(nano_builder.Append(-455999999999).ok());
-    std::shared_ptr<arrow::Array> nano_array;
-    ASSERT_TRUE(nano_builder.Finish(&nano_array).ok());
-    CheckLiteralsToArray(FieldType::TIMESTAMP,
-                         {Literal(Timestamp(123000l, 456789)), Literal(FieldType::TIMESTAMP),
-                          Literal(Timestamp(-456000l, 1))},
-                         nano_array);
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp(123000l, 1000)), Literal(FieldType::TIMESTAMP),
+         Literal(Timestamp(-456000l, 2000))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MICRO),
+                                                  R"([123000001, null, -455999998])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp(123000l, 456789)), Literal(FieldType::TIMESTAMP),
+         Literal(Timestamp(-456000l, 1))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::NANO),
+                                                  R"([123000456789, null, -455999999999])")
+            .ValueOrDie());
 }
 
 TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {

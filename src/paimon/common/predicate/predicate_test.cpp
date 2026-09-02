@@ -978,7 +978,7 @@ TEST_F(PredicateTest, TestInAfterRebind) {
     auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicateImpl>(predicate_base);
     ASSERT_TRUE(leaf_predicate);
 
-    // Rebinding shares the prebuilt lookup structure, results must stay identical.
+    // Rebinding builds a new predicate around the same literals, results must stay identical.
     auto renamed = leaf_predicate->NewLeafPredicate(/*new_field_name=*/"f1");
     ASSERT_EQ(renamed->FieldName(), "f1");
     auto rebound = renamed->NewLeafPredicate(/*new_field_index=*/1);
@@ -1003,8 +1003,7 @@ TEST_F(PredicateTest, TestInAfterRebind) {
 }
 
 TEST_F(PredicateTest, TestInt64BoundaryIn) {
-    // Building the lookup for the full int64 range used to crash with an out of bounds dense
-    // bitmap index; construction itself is part of what this test guards.
+    // The value set carries the whole int64 range, the boundary values included.
     std::vector<Literal> literals = {Literal(std::numeric_limits<int64_t>::min()),
                                      Literal(std::numeric_limits<int64_t>::max())};
     auto in_base =

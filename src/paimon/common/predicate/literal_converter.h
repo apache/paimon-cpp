@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "arrow/array/array_dict.h"
+#include "arrow/type_fwd.h"
 #include "arrow/type_traits.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/predicate/literal.h"
@@ -64,6 +65,13 @@ class PAIMON_EXPORT LiteralConverter {
     ///         null to settle the unit.
     static Result<std::shared_ptr<arrow::Array>> ConvertLiteralsToArray(
         const FieldType& field_type, const std::vector<Literal>& literals);
+
+    /// The finest time unit any of the non null timestamp literals needs to keep its value, which
+    /// is the unit `ConvertLiteralsToArray` writes them with. A null literal does not constrain the
+    /// unit, and literals that are all null leave it at the coarsest one.
+    ///
+    /// Every literal has to be of `TIMESTAMP` type.
+    static arrow::TimeUnit::type MinRequiredTimeUnit(const std::vector<Literal>& literals);
 
     static Result<Literal> ConvertLiteralsFromString(const FieldType& type,
                                                      const std::string& value_str);

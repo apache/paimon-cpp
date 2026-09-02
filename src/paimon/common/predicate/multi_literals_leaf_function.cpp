@@ -31,9 +31,7 @@
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/common/utils/date_time_utils.h"
 #include "paimon/data/decimal.h"
-#include "paimon/data/timestamp.h"
 
 namespace paimon {
 namespace {
@@ -71,22 +69,6 @@ bool CanProbeWithIsIn(FieldType field_type) {
 bool IsDecimalOfScale(const arrow::DataType& data_type, int32_t scale) {
     return data_type.id() == arrow::Type::DECIMAL128 &&
            checked_cast<const arrow::Decimal128Type&>(data_type).scale() == scale;
-}
-
-/// The finest time unit any of the non null literals needs to keep its value.
-arrow::TimeUnit::type MinRequiredTimeUnit(const std::vector<Literal>& literals) {
-    bool needs_micro = false;
-    for (const auto& literal : literals) {
-        if (literal.IsNull()) {
-            continue;
-        }
-        const int32_t nano = literal.GetValue<Timestamp>().GetNanoOfMillisecond();
-        if (nano % 1000 != 0) {
-            return arrow::TimeUnit::NANO;
-        }
-        needs_micro = needs_micro || nano != 0;
-    }
-    return needs_micro ? arrow::TimeUnit::MICRO : arrow::TimeUnit::MILLI;
 }
 
 /// Whether `data_type` is the arrow type of a timestamp column of `unit` without a time zone.
@@ -155,7 +137,8 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
     // timestamp against an unzoned one, and a literal has no zone to speak of. Nothing but null
     // literals leaves no unit to compare and no arrow type to write.
     if (field_type == FieldType::TIMESTAMP &&
-        (typed_literal->IsNull() || !IsTimestampOfUnit(data_type, MinRequiredTimeUnit(literals)))) {
+        (typed_literal->IsNull() ||
+         !IsTimestampOfUnit(data_type, LiteralConverter::MinRequiredTimeUnit(literals)))) {
         return nullptr;
     }
     for (const auto& literal : literals) {

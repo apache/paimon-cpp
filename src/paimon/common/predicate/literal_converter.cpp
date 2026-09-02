@@ -290,6 +290,21 @@ std::vector<Literal> LiteralConverter::GetLiteralFromTimestampArray(const arrow:
     return literals;
 }
 
+arrow::TimeUnit::type LiteralConverter::MinRequiredTimeUnit(const std::vector<Literal>& literals) {
+    bool needs_micro = false;
+    for (const auto& literal : literals) {
+        if (literal.IsNull()) {
+            continue;
+        }
+        const int32_t nano = literal.GetValue<Timestamp>().GetNanoOfMillisecond();
+        if (nano % 1000 != 0) {
+            return arrow::TimeUnit::NANO;
+        }
+        needs_micro = needs_micro || nano != 0;
+    }
+    return needs_micro ? arrow::TimeUnit::MICRO : arrow::TimeUnit::MILLI;
+}
+
 namespace {
 // Appends every literal, read by `extract`, to a `BuilderType`, keeping a null literal a null.
 template <typename BuilderType, typename Extract>
@@ -353,23 +368,6 @@ Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Litera
     return array;
 }
 
-/// The finest time unit any of the non null literals needs to keep its value. A null literal does
-/// not constrain the unit, and when every one is null the caller has no value to probe anyway.
-arrow::TimeUnit::type MinRequiredTimeUnit(const std::vector<Literal>& literals) {
-    bool needs_micro = false;
-    for (const auto& literal : literals) {
-        if (literal.IsNull()) {
-            continue;
-        }
-        const int32_t nano = literal.GetValue<Timestamp>().GetNanoOfMillisecond();
-        if (nano % 1000 != 0) {
-            return arrow::TimeUnit::NANO;
-        }
-        needs_micro = needs_micro || nano != 0;
-    }
-    return needs_micro ? arrow::TimeUnit::MICRO : arrow::TimeUnit::MILLI;
-}
-
 // Writes the literals to a timestamp array of the finest time unit that keeps every value, one
 // `is_in` can only compare against a column of that very unit. One array holds one arrow type, so
 // a non null literal is needed to settle the unit.
@@ -386,8 +384,11 @@ Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Lite
             "Not support converting literals of TIMESTAMP type to an arrow array without a non "
             "null literal to take the time unit from");
     }
-    arrow::TimestampBuilder builder(arrow::timestamp(MinRequiredTimeUnit(literals)),
-                                    arrow::default_memory_pool());
+    // The pool is the default one every other builder here takes implicitly, a builder of a
+    // parameterized type just has no default to fall back on.
+    arrow::TimestampBuilder builder(
+        arrow::timestamp(LiteralConverter::MinRequiredTimeUnit(literals)),
+        arrow::default_memory_pool());
     const DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(
         checked_pointer_cast<arrow::TimestampType>(builder.type()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
