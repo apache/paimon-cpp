@@ -31,7 +31,9 @@
 #include "parquet/arrow/writer.h"
 
 namespace arrow {
+class DataType;
 class MemoryPool;
+class RecordBatch;
 class Schema;
 }  // namespace arrow
 namespace paimon {
@@ -76,10 +78,30 @@ class ParquetFormatWriter : public FormatWriter {
 
     Result<uint64_t> GetEstimateLength() const;
 
+    /// Returns the schema describing `batch` as it is laid out, which is `schema_` unless some of
+    /// its columns arrived dictionary-encoded. The Parquet write schema stays `schema_` either
+    /// way, since a dictionary is just an encoding of the same logical column.
+    ///
+    /// `parquet::arrow::FileWriter` writes the first dictionary a column presents in a row group
+    /// through `WriteArrowDictionary()`, without materializing its values. It keeps only that one:
+    /// a later batch carrying a different dictionary makes the column fall back to plain encoding
+    /// for the rest of the row group, so the values still round-trip but the output stops being
+    /// dictionary-encoded there. Passing an encoding on therefore saves work on the way in, not
+    /// necessarily on the way out.
+    Result<std::shared_ptr<arrow::Schema>> ResolveBatchSchema(const ::ArrowArray* batch) const;
+
+    /// Flattens, per column, the dictionaries that Arrow's Parquet writer rejects outright, so
+    /// one such column does not fail the whole batch. Currently only dictionaries holding nulls
+    /// in their values, the one case `parquet::arrow` does not fall back on by itself.
+    Result<std::shared_ptr<arrow::RecordBatch>> FlattenUnwritableDictionaries(
+        const std::shared_ptr<arrow::RecordBatch>& record_batch) const;
+
     std::shared_ptr<arrow::MemoryPool> pool_;
     std::shared_ptr<ArrowOutputStreamAdapter> out_;
     std::unique_ptr<::parquet::arrow::FileWriter> writer_;
     std::shared_ptr<arrow::Schema> schema_;
+    // Struct view of schema_, matched against the layout of each incoming batch.
+    std::shared_ptr<arrow::DataType> logical_struct_type_;
     std::shared_ptr<Metrics> metrics_;
     int64_t total_records_written_ = 0;
     uint64_t max_memory_use_;

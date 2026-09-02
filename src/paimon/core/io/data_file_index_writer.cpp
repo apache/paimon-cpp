@@ -20,18 +20,22 @@
 #include "paimon/core/io/data_file_index_writer.h"
 
 #include <cassert>
+#include <unordered_map>
 #include <utility>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "arrow/compute/cast.h"
 #include "fmt/format.h"
 #include "paimon/common/io/byte_array_output_stream.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_index_writer.h"
@@ -100,10 +104,35 @@ Status DataFileIndexWriter::AddBatch(const std::shared_ptr<arrow::StructArray>& 
     if (finished_) {
         return Status::Invalid("Data file index writer has already finished");
     }
+    // One entry per indexed column, not per index: a column carrying both a bitmap and a bloom
+    // filter appears twice in `writers_` and would otherwise be materialized twice per batch.
+    // Keyed by field index, which fixes the target type too - every entry for a column takes its
+    // `field` from the same position of the logical schema.
+    std::unordered_map<int32_t, std::shared_ptr<arrow::Array>> decoded_columns;
     for (const IndexWriterEntry& entry : writers_) {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::StructArray> projected,
-            arrow::StructArray::Make({logical_batch->field(entry.field_index)}, {entry.field}));
+        std::shared_ptr<arrow::Array> column = logical_batch->field(entry.field_index);
+        if (column->type_id() == arrow::Type::DICTIONARY &&
+            entry.field->type()->id() != arrow::Type::DICTIONARY) {
+            // Index writers read values position by position, so a column forwarded encoded by
+            // the parquet dictionary passthrough is materialized first. Only indexed columns pay
+            // for this; the rest reach the data file writer still encoded. Materializing a large
+            // string column is worth accounting for, hence the project pool rather than Arrow's.
+            auto cached = decoded_columns.find(entry.field_index);
+            if (cached != decoded_columns.end()) {
+                column = cached->second;
+            } else {
+                if (arrow_pool_ == nullptr) {
+                    arrow_pool_ = GetArrowPool(pool_);
+                }
+                PAIMON_ASSIGN_OR_RAISE(
+                    column,
+                    CastingUtils::Cast(column, entry.field->type(),
+                                       arrow::compute::CastOptions::Safe(), arrow_pool_.get()));
+                decoded_columns.emplace(entry.field_index, column);
+            }
+        }
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> projected,
+                                          arrow::StructArray::Make({column}, {entry.field}));
         ::ArrowArray c_array;
         ArrowArrayMarkReleased(&c_array);
         ScopeGuard array_guard([&c_array]() { ArrowArrayRelease(&c_array); });

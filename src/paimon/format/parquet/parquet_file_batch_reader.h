@@ -160,12 +160,30 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
                            std::unique_ptr<FileReaderWrapper>&& reader,
                            const std::map<std::string, std::string>& options,
                            const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-                           std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes);
+                           std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes,
+                           std::set<std::string> dictionary_fields);
 
     static Result<::parquet::ArrowReaderProperties> CreateArrowReaderProperties(
         const std::shared_ptr<arrow::MemoryPool>& pool,
         const std::map<std::string, std::string>& options, int32_t batch_size,
         const std::optional<ReadHints>& hints);
+
+    /// Leaf column indices that are candidates for `set_read_dictionary`: non-nested STRING
+    /// columns whose every data page, in every row group, is dictionary-encoded. The definition
+    /// says why STRING and not every BYTE_ARRAY leaf.
+    static std::set<int32_t> ResolveFullyDictionaryEncodedColumns(
+        const ::parquet::FileMetaData& metadata);
+
+    /// The file schema with the dictionary encoding of the passthrough columns removed. That
+    /// encoding describes the batches this reader emits, not the types stored in the file, so
+    /// everything reasoning about the file's types (projection, predicate binding) sees the
+    /// logical schema and only `read_data_type_` carries the dictionaries.
+    Result<std::shared_ptr<arrow::Schema>> GetLogicalFileSchema() const;
+
+    /// Builds the read type from `read_schema`, re-applying the dictionary encoding of every
+    /// passthrough column so the read type keeps describing what `NextBatch()` produces.
+    std::shared_ptr<arrow::DataType> ApplyDictionaryReadTypes(
+        const std::shared_ptr<arrow::Schema>& read_schema) const;
 
     static void FlattenSchema(const std::shared_ptr<arrow::DataType>& type, int32_t* index,
                               std::vector<int32_t>* index_vector) {
@@ -259,6 +277,10 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
     std::unique_ptr<FileReaderWrapper> reader_;
 
     std::shared_ptr<arrow::DataType> read_data_type_;
+
+    // Top-level file fields emitted as Arrow DictionaryArray. Empty unless
+    // PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH is on.
+    std::set<std::string> dictionary_fields_;
 
     std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
 

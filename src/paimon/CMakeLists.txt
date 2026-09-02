@@ -125,6 +125,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/like.cpp
     common/predicate/literal_converter.cpp
     common/predicate/literal.cpp
+    common/predicate/multi_literals_leaf_function.cpp
     common/predicate/not_equal.cpp
     common/predicate/not_in.cpp
     common/predicate/or.cpp
@@ -400,6 +401,7 @@ set(PAIMON_CORE_SRCS
     core/schema/schema_validation.cpp
     core/schema/table_schema.cpp
     core/snapshot.cpp
+    core/snapshot_file_scan.cpp
     core/snapshot_info.cpp
     core/stats/simple_stats_collector.cpp
     core/stats/simple_stats_converter.cpp
@@ -611,6 +613,7 @@ if(PAIMON_BUILD_TESTS)
                     common/options/time_duration_test.cpp
                     common/predicate/literal_converter_test.cpp
                     common/predicate/literal_test.cpp
+                    common/predicate/multi_literals_leaf_function_test.cpp
                     common/predicate/predicate_test.cpp
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp
@@ -898,6 +901,7 @@ if(PAIMON_BUILD_TESTS)
                     core/schema/schema_validation_test.cpp
                     core/schema/arrow_schema_validator_test.cpp
                     core/schema/table_schema_test.cpp
+                    core/snapshot_file_scan_test.cpp
                     core/snapshot_test.cpp
                     core/stats/simple_stats_evolution_test.cpp
                     core/stats/simple_stats_collector_test.cpp

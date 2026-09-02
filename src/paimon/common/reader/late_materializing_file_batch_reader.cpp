@@ -90,7 +90,8 @@ Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
     const std::shared_ptr<arrow::Array>& array,
     const std::shared_ptr<PredicateFilter>& bound_filter) {
     // TODO(zhouhonfeng.zhf): use arrow::compute::Filter instead of PredicateFilter
-    PAIMON_ASSIGN_OR_RAISE(std::vector<char> results, bound_filter->Test(*array));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<char> results,
+                           bound_filter->Test(*array, arrow_pool_.get()));
     if (results.size() != static_cast<size_t>(array->length())) {
         return Status::Invalid(
             fmt::format("predicate result size {} does not match probe batch length {}",

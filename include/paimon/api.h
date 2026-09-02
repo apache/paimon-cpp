@@ -20,24 +20,25 @@
 
 #pragma once
 
-#include "paimon/commit_context.h"           // IWYU pragma: export
-#include "paimon/defs.h"                     // IWYU pragma: export
-#include "paimon/factories/factory.h"        // IWYU pragma: export
-#include "paimon/file_store_commit.h"        // IWYU pragma: export
-#include "paimon/file_store_write.h"         // IWYU pragma: export
-#include "paimon/fs/file_system_factory.h"   // IWYU pragma: export
-#include "paimon/memory/memory_pool.h"       // IWYU pragma: export
-#include "paimon/predicate/predicate.h"      // IWYU pragma: export
-#include "paimon/read_context.h"             // IWYU pragma: export
-#include "paimon/reader/batch_reader.h"      // IWYU pragma: export
-#include "paimon/record_batch.h"             // IWYU pragma: export
-#include "paimon/result.h"                   // IWYU pragma: export
-#include "paimon/scan_context.h"             // IWYU pragma: export
-#include "paimon/statistics_mode.h"          // IWYU pragma: export
-#include "paimon/status.h"                   // IWYU pragma: export
-#include "paimon/table/source/table_read.h"  // IWYU pragma: export
-#include "paimon/table/source/table_scan.h"  // IWYU pragma: export
-#include "paimon/write_context.h"            // IWYU pragma: export
+#include "paimon/commit_context.h"               // IWYU pragma: export
+#include "paimon/defs.h"                         // IWYU pragma: export
+#include "paimon/factories/factory.h"            // IWYU pragma: export
+#include "paimon/file_store_commit.h"            // IWYU pragma: export
+#include "paimon/file_store_write.h"             // IWYU pragma: export
+#include "paimon/fs/file_system_factory.h"       // IWYU pragma: export
+#include "paimon/memory/memory_pool.h"           // IWYU pragma: export
+#include "paimon/predicate/predicate.h"          // IWYU pragma: export
+#include "paimon/read_context.h"                 // IWYU pragma: export
+#include "paimon/reader/batch_reader.h"          // IWYU pragma: export
+#include "paimon/record_batch.h"                 // IWYU pragma: export
+#include "paimon/result.h"                       // IWYU pragma: export
+#include "paimon/scan_context.h"                 // IWYU pragma: export
+#include "paimon/snapshot/snapshot_file_scan.h"  // IWYU pragma: export
+#include "paimon/statistics_mode.h"              // IWYU pragma: export
+#include "paimon/status.h"                       // IWYU pragma: export
+#include "paimon/table/source/table_read.h"      // IWYU pragma: export
+#include "paimon/table/source/table_scan.h"      // IWYU pragma: export
+#include "paimon/write_context.h"                // IWYU pragma: export
 
 // IWYU pragma: begin_exports
 #include "paimon/realtime/realtime_context.h"
