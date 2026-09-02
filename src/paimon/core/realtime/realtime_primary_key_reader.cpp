@@ -25,6 +25,7 @@
 #include "arrow/type.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/key_value_data_file_record_reader.h"
 #include "paimon/core/key_value.h"
 #include "paimon/core/realtime/realtime_store_read_pipeline.h"
@@ -33,6 +34,15 @@
 namespace paimon {
 namespace {
 
+template <typename Reader>
+void CloseReaders(const std::vector<std::unique_ptr<Reader>>& readers) {
+    for (const std::unique_ptr<Reader>& reader : readers) {
+        if (reader) {
+            reader->Close();
+        }
+    }
+}
+
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateKeyValueReaders(
     std::vector<std::unique_ptr<BatchReader>>&& readers,
     const std::shared_ptr<arrow::Schema>& key_schema,
@@ -40,6 +50,10 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateKeyValueReaders
     const std::shared_ptr<MemoryPool>& memory_pool) {
     std::vector<std::unique_ptr<KeyValueRecordReader>> result;
     result.reserve(readers.size());
+    ScopeGuard readers_guard([&readers, &result]() {
+        CloseReaders(readers);
+        CloseReaders(result);
+    });
     for (std::unique_ptr<BatchReader>& reader : readers) {
         if (!reader) {
             return Status::Invalid("real-time store returned a null reader");
@@ -48,6 +62,7 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateKeyValueReaders
             std::move(reader), key_schema, value_schema,
             /*level=*/KeyValue::UNKNOWN_LEVEL, memory_pool));
     }
+    readers_guard.Release();
     return result;
 }
 
@@ -79,12 +94,14 @@ RealtimePrimaryKeyReaderFactory::CreateForQuery(std::vector<std::unique_ptr<Batc
                                                 const std::shared_ptr<arrow::Schema>& value_schema,
                                                 const std::shared_ptr<MemoryPool>& memory_pool,
                                                 const RealtimeStoreReadPipeline& pipeline) {
+    ScopeGuard readers_guard([&readers]() { CloseReaders(readers); });
     for (std::unique_ptr<BatchReader>& reader : readers) {
         if (!reader) {
             return Status::Invalid("real-time store returned a null reader");
         }
         PAIMON_ASSIGN_OR_RAISE(reader, pipeline.Wrap(std::move(reader), visible_offsets));
     }
+    readers_guard.Release();
     return CreateKeyValueReaders(std::move(readers), key_schema, value_schema, memory_pool);
 }
 

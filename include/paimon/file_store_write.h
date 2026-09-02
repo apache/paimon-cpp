@@ -99,7 +99,9 @@ class PAIMON_EXPORT FileStoreWrite {
     /// Generates commit messages together with partition-bucket real-time offset ranges.
     ///
     /// Each range is returned atomically with the commit message generated from the same sealed
-    /// segment.
+    /// segment. Repeated calls return incremental progress. The upstream coordinator must retain
+    /// every result until it is committed and include all earlier prepared-but-uncommitted
+    /// progress when a later checkpoint subsumes it.
     ///
     /// @param commit_identifier Identifier of this prepare-commit operation in streaming mode.
     /// @return Real-time commit messages with their partition-bucket offset ranges.

@@ -79,6 +79,12 @@ class PAIMON_EXPORT FileStoreCommit {
     /// orders them by partition, bucket, and offset before validation. Offset gaps are allowed.
     /// The resulting snapshot atomically publishes the data files and the updated offset map.
     ///
+    /// For each partition-bucket, the upstream coordinator must include the complete prefix of
+    /// prepared-but-uncommitted entries through the requested progress. Because offsets may be
+    /// sparse, this method cannot distinguish a valid offset gap from an omitted prepared entry.
+    /// Omitting an earlier entry may advance committed progress past unpublished files and allow
+    /// their real-time data to be reclaimed.
+    ///
     /// If this method returns an error, the caller may retry with the same arguments. Each call
     /// reloads the latest committed state. As in `FilterAndCommit`, a retry's identifier is
     /// considered committed when it is not newer than the latest identifier for `commit_user`.

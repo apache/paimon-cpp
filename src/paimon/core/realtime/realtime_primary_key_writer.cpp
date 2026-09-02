@@ -237,6 +237,7 @@ Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compac
 
 Status RealtimePrimaryKeyWriter::FlushSegment(
     const std::shared_ptr<RealtimeSegmentHandle>& segment) {
+    // TODO(xinyu.lxy): Validate row count from commit readers.
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                            realtime_store_->CreateCommitReaders(segment));
     PAIMON_ASSIGN_OR_RAISE(
