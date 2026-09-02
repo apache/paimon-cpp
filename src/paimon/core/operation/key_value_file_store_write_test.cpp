@@ -37,6 +37,7 @@
 #include "arrow/c/helpers.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
@@ -602,8 +603,8 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
                          FileStoreWrite::Create(std::move(write_context)));
-    ASSERT_OK(writer->Write(
-        MakeBatch(realtime_schema, "[[" + std::to_string(max - 1) + ", 1, \"legal\"]]")));
+    ASSERT_OK(
+        writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 1, "legal"]])", max - 1))));
     using RealtimePrimaryKeyTransportRow =
         std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>;
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyTransportRow> transport_rows,
@@ -611,9 +612,9 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
     ASSERT_EQ((std::vector<RealtimePrimaryKeyTransportRow>{{0, 1, "legal", max - 1, max - 1}}),
               transport_rows);
 
-    ASSERT_NOK_WITH_MSG(writer->Write(MakeBatch(
-                            realtime_schema, "[[" + std::to_string(max) + ", 2, \"overflow\"]]")),
-                        "real-time offset range exceeds INT64_MAX");
+    ASSERT_NOK_WITH_MSG(
+        writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 2, "overflow"]])", max))),
+        "real-time offset range exceeds INT64_MAX");
     ASSERT_OK_AND_ASSIGN(transport_rows, ReadRealtimePrimaryKeyTransportRows(realtime_context));
     ASSERT_EQ((std::vector<RealtimePrimaryKeyTransportRow>{{0, 1, "legal", max - 1, max - 1}}),
               transport_rows);

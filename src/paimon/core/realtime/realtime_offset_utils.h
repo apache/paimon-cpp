@@ -38,6 +38,9 @@ namespace paimon {
 
 class RealtimeOffsetUtils {
  public:
+    RealtimeOffsetUtils() = delete;
+    ~RealtimeOffsetUtils() = delete;
+
     struct ValidatedBatch {
         std::shared_ptr<arrow::StructArray> data;
         OffsetRange offset_range;

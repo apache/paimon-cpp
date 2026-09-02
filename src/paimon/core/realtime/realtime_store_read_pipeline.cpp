@@ -223,8 +223,8 @@ Result<std::unique_ptr<BatchReader>> RealtimeStoreReadPipeline::Wrap(
     if (!needs_conversion_) {
         return std::move(reader);
     }
-    return std::unique_ptr<BatchReader>(
-        new PhysicalToLogicalBatchReader(std::move(reader), logical_schema_, plans_, arrow_pool_));
+    return std::make_unique<PhysicalToLogicalBatchReader>(std::move(reader), logical_schema_,
+                                                          plans_, arrow_pool_);
 }
 
 }  // namespace paimon

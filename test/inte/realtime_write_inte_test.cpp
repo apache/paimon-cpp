@@ -39,6 +39,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
@@ -423,8 +424,8 @@ class RealtimeWriteInteTest : public ::testing::Test {
             if (i > 0) {
                 json += ",";
             }
-            json += "[" + std::to_string(first_offset + static_cast<int64_t>(i)) + "," +
-                    std::to_string(id) + ",\"" + payload + "\",\"" + pt + "\"]";
+            json += fmt::format(R"([{}, {}, "{}", "{}"])", first_offset + static_cast<int64_t>(i),
+                                id, payload, pt);
         }
         json += "]";
 
@@ -453,7 +454,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
             if (i > 0) {
                 json += ",";
             }
-            json += "[" + std::to_string(id) + ",\"" + payload + "\",\"" + partition + "\"]";
+            json += fmt::format(R"([{}, "{}", "{}"])", id, payload, partition);
         }
         json += "]";
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
@@ -483,8 +484,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
                 json += ",";
             }
             int64_t id = first_id + i;
-            json += "[" + std::to_string(first_offset + i) + "," + std::to_string(id) +
-                    ",\"value-" + std::to_string(id) + "\"," + std::to_string(date) + "]";
+            json += fmt::format(R"([{}, {}, "value-{}", {}])", first_offset + i, id, id, date);
         }
         json += "]";
 
