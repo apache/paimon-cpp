@@ -58,20 +58,12 @@ ManifestFile::ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                            const CoreOptions& options,
                            const std::shared_ptr<arrow::Schema>& partition_type)
     : ObjectsFile<ManifestEntry>(file_system, reader_builder, writer_builder,
+                                 file_format_identifier,
                                  std::make_unique<ManifestEntrySerializer>(pool), compression,
                                  path_factory, options.GetCache(), pool),
-      file_format_identifier_(file_format_identifier),
       target_file_size_(target_file_size),
       options_(options),
       partition_type_(partition_type) {}
-
-Status ManifestFile::ValidateWrite() const {
-    if (file_format_identifier_ != "avro") {
-        return Status::Invalid("manifest.format '", file_format_identifier_,
-                               "' is read-only; only 'avro' can be used for writing manifests");
-    }
-    return Status::OK();
-}
 
 Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
     const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<FileFormat>& file_format,

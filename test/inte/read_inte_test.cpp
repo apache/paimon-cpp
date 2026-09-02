@@ -634,7 +634,6 @@ TEST_P(ReadInteTest, TestReadOnlyPartitionField) {
 TEST(SystemTableReadInteTest, TestReadOptionsSystemTable) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"},
-                                                  {"manifest.format", "orc"},
                                                   {"custom.option", "custom-value"}};
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -666,10 +665,8 @@ TEST(SystemTableReadInteTest, TestReadOptionsSystemTable) {
     ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_TRUE(result);
 
-    std::map<std::string, std::string> expected = {{"custom.option", "custom-value"},
-                                                   {"file-system", "local"},
-                                                   {"file.format", "orc"},
-                                                   {"manifest.format", "orc"}};
+    std::map<std::string, std::string> expected = {
+        {"custom.option", "custom-value"}, {"file-system", "local"}, {"file.format", "orc"}};
     ASSERT_EQ(CollectStringMap(result), expected) << result->ToString();
 }
 
@@ -1432,8 +1429,8 @@ TEST(SystemTableReadInteTest, TestReadFilesSystemTableWithSchemaEvolutionStats) 
 }
 
 TEST(SystemTableReadInteTest, TestReadManifestAndFilesSystemTablesForEmptyTable) {
-    std::map<std::string, std::string> options = {
-        {Options::FILE_SYSTEM, "local"}, {Options::FILE_FORMAT, "orc"}, {"manifest.format", "orc"}};
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     std::string warehouse = PathUtil::JoinPath(dir->Str(), "warehouse");
@@ -4197,7 +4194,6 @@ TEST(SystemTableReadInteTest, TestReadGlobalCatalogOptions) {
 TEST(SystemTableReadInteTest, TestReadGlobalAllTableOptions) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"},
-                                                  {"manifest.format", "orc"},
                                                   {"table.option.custom", "my-value"}};
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -4447,7 +4443,6 @@ TEST(SystemTableReadInteTest, TestReadGlobalPartitions) {
 TEST(SystemTableReadInteTest, TestGlobalSystemTablesPropagateCorruptSchema) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"},
-                                                  {"manifest.format", "orc"},
                                                   {Options::BUCKET, "1"},
                                                   {Options::BUCKET_KEY, "v"}};
     auto dir = UniqueTestDirectory::Create();

@@ -711,7 +711,6 @@ TEST_F(VariantParquetTest, AdaptiveInferenceUntypedPhysicalWriteAndReadRoundTrip
     auto logical = BuildArray(jsons);
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({
-                             {"manifest.format", "parquet"},
                              {Options::VARIANT_INFER_SHREDDING_SCHEMA, "true"},
                              {Options::VARIANT_SHREDDING_INFERENCE_MODE, "adaptive"},
                          }));

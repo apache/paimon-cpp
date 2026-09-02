@@ -47,17 +47,9 @@ ManifestList::ManifestList(const std::shared_ptr<FileSystem>& file_system,
                            const std::shared_ptr<Cache>& cache,
                            const std::shared_ptr<MemoryPool>& pool)
     : ObjectsFile<ManifestFileMeta>(file_system, reader_builder, writer_builder,
+                                    file_format_identifier,
                                     std::make_unique<ManifestFileMetaSerializer>(pool), compression,
-                                    std::move(path_factory), cache, pool),
-      file_format_identifier_(file_format_identifier) {}
-
-Status ManifestList::ValidateWrite() const {
-    if (file_format_identifier_ != "avro") {
-        return Status::Invalid("manifest.format '", file_format_identifier_,
-                               "' is read-only; only 'avro' can be used for writing manifests");
-    }
-    return Status::OK();
-}
+                                    std::move(path_factory), cache, pool) {}
 
 Result<std::unique_ptr<ManifestList>> ManifestList::Create(
     const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<FileFormat>& file_format,

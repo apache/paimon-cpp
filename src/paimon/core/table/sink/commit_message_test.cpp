@@ -1222,7 +1222,6 @@ TEST(CommitMessageTest, TestSerialize) {
     ASSERT_TRUE(dir);
 
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "mock_format"},
-                                                  {"manifest.format", "mock_format"},
                                                   {Options::TARGET_FILE_SIZE, "1024"}};
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(dir->Str(), options));
     ASSERT_OK(catalog->CreateDatabase("foo", options, /*ignore_if_exists=*/false));
@@ -1235,7 +1234,6 @@ TEST(CommitMessageTest, TestSerialize) {
                                         "commit_user1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
                          context_builder.AddOption(Options::FILE_FORMAT, "mock_format")
-                             .AddOption("manifest.format", "mock_format")
                              .AddOption(Options::TARGET_FILE_SIZE, "1024")
                              .Finish());
 

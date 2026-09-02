@@ -58,9 +58,8 @@ TEST(SingleFileWriterTest, TestSimple) {
         return Status::OK();
     };
     SimpleSingleFileWriter writer("zstd", converter);
-    ASSERT_OK_AND_ASSIGN(
-        CoreOptions options,
-        CoreOptions::FromMap({{"manifest.format", "orc"}, {Options::FILE_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     auto file_format = options.GetWriteFileFormat(/*level=*/0);
     auto file_system = options.GetFileSystem();
     ArrowSchema arrow_schema;
@@ -90,9 +89,8 @@ TEST(SingleFileWriterTest, TestInvalidConvert) {
         return Status::Invalid("");
     };
     SimpleSingleFileWriter writer("zstd", converter);
-    ASSERT_OK_AND_ASSIGN(
-        CoreOptions options,
-        CoreOptions::FromMap({{"manifest.format", "orc"}, {Options::FILE_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     auto file_format = options.GetWriteFileFormat(/*level=*/0);
     auto file_system = options.GetFileSystem();
     ArrowSchema arrow_schema;
@@ -119,9 +117,8 @@ TEST(SingleFileWriterTest, CompletionCallbackFailureIsTerminal) {
         return Status::OK();
     };
     SimpleSingleFileWriter writer("zstd", converter);
-    ASSERT_OK_AND_ASSIGN(
-        CoreOptions options,
-        CoreOptions::FromMap({{"manifest.format", "orc"}, {Options::FILE_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     auto file_format = options.GetWriteFileFormat(/*level=*/0);
     auto file_system = options.GetFileSystem();
     ArrowSchema arrow_schema;

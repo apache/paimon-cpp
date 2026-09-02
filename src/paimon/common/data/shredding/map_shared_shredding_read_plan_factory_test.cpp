@@ -232,7 +232,6 @@ class MapSharedShreddingReadPlanFactoryTest : public ::testing::Test {
     std::map<std::string, std::string> options_ = {
         {Options::FILE_SYSTEM, "local"},
         {Options::FILE_FORMAT, "mock_format"},
-        {"manifest.format", "mock_format"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "2"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},

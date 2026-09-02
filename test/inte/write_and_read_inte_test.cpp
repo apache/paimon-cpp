@@ -734,10 +734,11 @@ TEST_P(WriteAndReadInteTest, TestFullCompactionChangelogStreamRead) {
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "full-compaction"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {Options::CHANGELOG_PRODUCER, "full-compaction"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -796,10 +797,11 @@ TEST_P(WriteAndReadInteTest, TestFullCompactionChangelogInitialScanOnlyReadsMaxL
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "full-compaction"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {Options::CHANGELOG_PRODUCER, "full-compaction"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -849,7 +851,6 @@ TEST_P(WriteAndReadInteTest, TestFullCompactionChangelogRowDeduplicate) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -910,7 +911,6 @@ TEST_P(WriteAndReadInteTest, TestFullCompactionChangelogWithSharedShredding) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::int32()),
                                  arrow::field("tags", map_type)};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},

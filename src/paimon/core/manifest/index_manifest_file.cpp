@@ -75,18 +75,10 @@ IndexManifestFile::IndexManifestFile(const std::shared_ptr<FileSystem>& file_sys
                                      int32_t bucket_mode, const std::shared_ptr<Cache>& cache,
                                      const std::shared_ptr<MemoryPool>& pool)
     : ObjectsFile<IndexManifestEntry>(file_system, reader_builder, writer_builder,
+                                      file_format_identifier,
                                       std::make_unique<IndexManifestEntrySerializer>(pool),
                                       compression, path_factory, cache, pool),
-      file_format_identifier_(file_format_identifier),
       bucket_mode_(bucket_mode) {}
-
-Status IndexManifestFile::ValidateWrite() const {
-    if (file_format_identifier_ != "avro") {
-        return Status::Invalid("manifest.format '", file_format_identifier_,
-                               "' is read-only; only 'avro' can be used for writing manifests");
-    }
-    return Status::OK();
-}
 
 Result<std::optional<std::string>> IndexManifestFile::WriteIndexFiles(
     const std::optional<std::string>& previous_index_manifest,

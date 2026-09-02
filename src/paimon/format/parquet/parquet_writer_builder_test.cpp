@@ -41,7 +41,6 @@ TEST(ParquetWriterBuilderTest, DefaultPrepareWriterProperties) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::map<std::string, std::string> options;
     options[Options::FILE_FORMAT] = "parquet";
-    options["manifest.format"] = "parquet";
     ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
     ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("zstd"));
     ASSERT_EQ(::parquet::ParquetVersion::PARQUET_2_6, properties->version());
@@ -64,7 +63,6 @@ TEST(ParquetWriterBuilderTest, PrepareWriterProperties) {
     options[PARQUET_COMPRESSION_CODEC_ZSTD_LEVEL] = "3";
     options[PARQUET_BLOCK_SIZE] = "2048";
     options[Options::FILE_FORMAT] = "parquet";
-    options["manifest.format"] = "parquet";
     ParquetWriterBuilder builder(schema, /*batch_size=*/1024 * 1024, options);
     ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("zstd"));
     // Version numbering differs between C++ and Java Parquet implementations. Java's PARQUET_2_0
@@ -82,7 +80,6 @@ TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithDictionaryDisabled) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
         {Options::FILE_FORMAT, "parquet"},
-        {"manifest.format", "parquet"},
         {"parquet.enable.dictionary", "false"},
     };
     ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
@@ -96,7 +93,6 @@ TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithFileBlockSize) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
         {Options::FILE_FORMAT, "parquet"},
-        {"manifest.format", "parquet"},
         {PARQUET_BLOCK_SIZE, "2048"},
         {Options::FILE_BLOCK_SIZE, "8 KB"},
     };
@@ -115,7 +111,6 @@ TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithZstdLevelPriority) {
         options[PARQUET_COMPRESSION_CODEC_ZSTD_LEVEL] = "3";
         options[PARQUET_WRITER_VERSION] = "PARQUET_1_0";
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024 * 1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("zstd"));
         ASSERT_EQ(3, properties->default_column_properties().compression_level());
@@ -125,7 +120,6 @@ TEST(ParquetWriterBuilderTest, PrepareWriterPropertiesWithZstdLevelPriority) {
         std::map<std::string, std::string> options;
         options[Options::FILE_COMPRESSION_ZSTD_LEVEL] = "4";
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024 * 1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("zstd"));
         ASSERT_EQ(4, properties->default_column_properties().compression_level());
@@ -138,7 +132,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("lz4"));
         ASSERT_EQ(properties->default_column_properties().compression(),
@@ -147,7 +140,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("lz4_raW"));
         ASSERT_EQ(properties->default_column_properties().compression(), arrow::Compression::LZ4);
@@ -155,7 +147,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("zstd"));
         ASSERT_EQ(properties->default_column_properties().compression(), arrow::Compression::ZSTD);
@@ -163,7 +154,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("LZ4"));
         ASSERT_EQ(properties->default_column_properties().compression(),
@@ -172,7 +162,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("ZSTd"));
         ASSERT_EQ(properties->default_column_properties().compression(), arrow::Compression::ZSTD);
@@ -180,7 +169,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         options[PARQUET_COMPRESSION_CODEC_ZLIB_LEVEL] = "3";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("gzip"));
@@ -190,7 +178,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("snappy"));
         ASSERT_EQ(properties->default_column_properties().compression(),
@@ -199,7 +186,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("lzo"));
         ASSERT_EQ(properties->default_column_properties().compression(), arrow::Compression::LZO);
@@ -207,14 +193,12 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_NOK(builder.PrepareWriterProperties("unknown"));
     }
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("uncompressed"));
         ASSERT_EQ(properties->default_column_properties().compression(),
@@ -223,7 +207,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("lz4_hadoop"));
         ASSERT_EQ(properties->default_column_properties().compression(),
@@ -232,7 +215,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         options[PARQUET_COMPRESSION_CODEC_BROTLI_LEVEL] = "2";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("brotli"));
@@ -243,7 +225,6 @@ TEST(ParquetWriterBuilderTest, TestPrepareWriterPropertiesFileCompression) {
     {
         std::map<std::string, std::string> options;
         options[Options::FILE_FORMAT] = "parquet";
-        options["manifest.format"] = "parquet";
         ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
         ASSERT_OK_AND_ASSIGN(auto properties, builder.PrepareWriterProperties("None"));
         ASSERT_EQ(properties->default_column_properties().compression(),
@@ -256,7 +237,6 @@ TEST(ParquetWriterBuilderTest, TestInvalidWriterVersion) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::map<std::string, std::string> options;
     options[Options::FILE_FORMAT] = "parquet";
-    options["manifest.format"] = "parquet";
     options[PARQUET_WRITER_VERSION] = "PARQUET_3_0";
     ParquetWriterBuilder builder(schema, /*batch_size=*/1024, options);
     ASSERT_NOK_WITH_MSG(builder.PrepareWriterProperties("zstd"),

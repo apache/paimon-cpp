@@ -114,7 +114,6 @@ class ExpireSnapshotsTest : public testing::Test {
     std::shared_ptr<FileStorePathFactory> CreateFactory(const std::string& root) const {
         std::map<std::string, std::string> raw_options;
         raw_options[Options::FILE_FORMAT] = "orc";
-        raw_options["manifest.format"] = "orc";
         raw_options[Options::FILE_SYSTEM] = "local";
         EXPECT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
         EXPECT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
