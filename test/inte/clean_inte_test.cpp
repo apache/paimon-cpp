@@ -272,13 +272,9 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshot) {
     ASSERT_TRUE(dir);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
-        {Options::FILE_FORMAT, "orc"},
-        {Options::TARGET_FILE_SIZE, "1024"},
-        {Options::FILE_SYSTEM, "local"},
-        {Options::BUCKET, "2"},
-        {Options::BUCKET_KEY, "f2"},
-        {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
+        {Options::FILE_FORMAT, "orc"},   {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::FILE_SYSTEM, "local"}, {Options::BUCKET, "2"},
+        {Options::BUCKET_KEY, "f2"},     {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
     };
 
     ASSERT_OK_AND_ASSIGN(
@@ -416,13 +412,9 @@ TEST_F(CleanInteTest, TestDropPartitionAndExpireSnapshotWithIOException) {
     auto schema =
         arrow::schema(arrow::FieldVector({string_field, int_field, int_field1, double_field}));
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
-        {Options::FILE_FORMAT, "orc"},
-        {Options::TARGET_FILE_SIZE, "1024"},
-        {Options::FILE_SYSTEM, "local"},
-        {Options::BUCKET, "2"},
-        {Options::BUCKET_KEY, "f2"},
-        {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
+        {Options::FILE_FORMAT, "orc"},   {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::FILE_SYSTEM, "local"}, {Options::BUCKET, "2"},
+        {Options::BUCKET_KEY, "f2"},     {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
     };
 
     bool drop_partition_scanned_all_io_hook = false;
@@ -583,13 +575,9 @@ TEST_F(CleanInteTest, TestOrphanFilesClean) {
     ASSERT_TRUE(arrow::ExportSchema(*schema, &arrow_schema).ok());
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
-        {Options::FILE_FORMAT, "orc"},
-        {Options::TARGET_FILE_SIZE, "1024"},
-        {Options::FILE_SYSTEM, "local"},
-        {Options::BUCKET, "2"},
-        {Options::BUCKET_KEY, "f3"},
-        {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
+        {Options::FILE_FORMAT, "orc"},   {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::FILE_SYSTEM, "local"}, {Options::BUCKET, "2"},
+        {Options::BUCKET_KEY, "f3"},     {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
     };
 
     auto dir = UniqueTestDirectory::Create();
@@ -701,13 +689,9 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithFileRetainCondition) {
     ASSERT_TRUE(arrow::ExportSchema(*schema, &arrow_schema).ok());
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
-        {Options::FILE_FORMAT, "orc"},
-        {Options::TARGET_FILE_SIZE, "1024"},
-        {Options::FILE_SYSTEM, "local"},
-        {Options::BUCKET, "2"},
-        {Options::BUCKET_KEY, "f3"},
-        {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
+        {Options::FILE_FORMAT, "orc"},   {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::FILE_SYSTEM, "local"}, {Options::BUCKET, "2"},
+        {Options::BUCKET_KEY, "f3"},     {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"},
     };
 
     auto dir = UniqueTestDirectory::Create();
@@ -817,13 +801,9 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithIOException) {
     ASSERT_TRUE(dir);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
-        {Options::FILE_FORMAT, "orc"},
-        {Options::TARGET_FILE_SIZE, "1024"},
-        {Options::FILE_SYSTEM, "local"},
-        {Options::BUCKET, "2"},
-        {Options::BUCKET_KEY, "f2"},
-        {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"}};
+        {Options::FILE_FORMAT, "orc"},   {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::FILE_SYSTEM, "local"}, {Options::BUCKET, "2"},
+        {Options::BUCKET_KEY, "f2"},     {Options::SNAPSHOT_CLEAN_EMPTY_DIRECTORIES, "true"}};
 
     ASSERT_OK_AND_ASSIGN(std::string table_path,
                          CreateTestTable(dir->Str(), /*db_name=*/"foo",

@@ -211,13 +211,10 @@ Result<AggregatedFileStats> AggregateFileStats(const std::shared_ptr<FileSystem>
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
             external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
             pool));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
-                           core_options.GetManifestFormat(/*write=*/false));
-
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<ManifestList> manifest_list,
-        ManifestList::Create(fs, manifest_format, core_options.GetManifestCompression(),
-                             path_factory, core_options.GetCache(), pool));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ManifestList> manifest_list,
+                           ManifestList::Create(fs, core_options.GetManifestFormat(),
+                                                core_options.GetManifestCompression(), path_factory,
+                                                core_options.GetCache(), pool));
 
     std::vector<ManifestFileMeta> manifests;
     PAIMON_RETURN_NOT_OK(manifest_list->ReadDataManifests(*snapshot, &manifests));
@@ -225,11 +222,11 @@ Result<AggregatedFileStats> AggregateFileStats(const std::shared_ptr<FileSystem>
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<arrow::Schema> partition_schema,
         FieldMapping::GetPartitionSchema(arrow_schema, table_schema.PartitionKeys()));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(fs, manifest_format, core_options.GetManifestCompression(),
-                             path_factory, core_options.GetManifestTargetFileSize(), pool,
-                             core_options, partition_schema));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ManifestFile> manifest_file,
+                           ManifestFile::Create(fs, core_options.GetManifestFormat(),
+                                                core_options.GetManifestCompression(), path_factory,
+                                                core_options.GetManifestTargetFileSize(), pool,
+                                                core_options, partition_schema));
 
     std::vector<ManifestEntry> entries;
     for (const auto& manifest : manifests) {

@@ -471,12 +471,11 @@ TEST_F(ParquetFormatWriterTest, TestGetEstimateLength) {
 
 TEST_F(ParquetFormatWriterTest, TestMemoryControl) {
     auto run = [&](bool all_null_value, uint64_t max_memory_use) {
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<FileFormat> file_format,
-            FileFormatFactory::Get(
-                "parquet", {{Options::FILE_FORMAT, "parquet"},
-                            {Options::MANIFEST_FORMAT, "parquet"},
-                            {"parquet.writer.max.memory.use", std::to_string(max_memory_use)}}));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileFormat> file_format,
+                             FileFormatFactory::Get("parquet", {{Options::FILE_FORMAT, "parquet"},
+                                                                {"manifest.format", "parquet"},
+                                                                {"parquet.writer.max.memory.use",
+                                                                 std::to_string(max_memory_use)}}));
 
         std::shared_ptr<MemoryPool> pool = GetMemoryPool();
         auto schema_pair = PrepareArrowSchema();
@@ -527,7 +526,7 @@ TEST_F(ParquetFormatWriterTest, TestMemoryControlForCheckRowGroupCount) {
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<FileFormat> file_format,
             FileFormatFactory::Get("parquet", {{Options::FILE_FORMAT, "parquet"},
-                                               {Options::MANIFEST_FORMAT, "parquet"},
+                                               {"manifest.format", "parquet"},
                                                {"parquet.writer.max.memory.use", "1"}}));
 
         auto schema_pair = PrepareArrowSchema();

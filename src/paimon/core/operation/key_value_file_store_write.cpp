@@ -93,16 +93,14 @@ KeyValueFileStoreWrite::KeyValueFileStoreWrite(
 
 Result<std::unique_ptr<FileStoreScan>> KeyValueFileStoreWrite::CreateFileStoreScan(
     const std::shared_ptr<ScanFilter>& scan_filter) const {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
-                           options_.GetManifestFormat(/*write=*/false));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestList> manifest_list,
-        ManifestList::Create(options_.GetFileSystem(), manifest_format,
+        ManifestList::Create(options_.GetFileSystem(), options_.GetManifestFormat(),
                              options_.GetManifestCompression(), file_store_path_factory_,
                              options_.GetCache(), pool_));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(options_.GetFileSystem(), manifest_format,
+        ManifestFile::Create(options_.GetFileSystem(), options_.GetManifestFormat(),
                              options_.GetManifestCompression(), file_store_path_factory_,
                              options_.GetManifestTargetFileSize(), pool_, options_,
                              partition_schema_));

@@ -82,11 +82,9 @@ Result<std::unique_ptr<GlobalIndexScanImpl>> GlobalIndexScanImpl::Create(
     std::shared_ptr<IndexPathFactory> path_factory =
         file_store_path_factory->CreateGlobalIndexFileFactory();
 
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
-                           options.GetManifestFormat(/*write=*/false));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<IndexManifestFile> index_manifest_file,
-        IndexManifestFile::Create(options.GetFileSystem(), manifest_format,
+        IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                   options.GetManifestCompression(), file_store_path_factory,
                                   options.GetBucket(), pool, options));
     auto index_file_handler = std::make_unique<IndexFileHandler>(

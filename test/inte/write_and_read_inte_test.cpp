@@ -313,9 +313,8 @@ TEST_P(WriteAndReadInteTest, TestAppendSimple) {
                                  arrow::field("f1", arrow::int32())};
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
-    // manifest and file format are upper case
+    // file format is upper case
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -368,8 +367,9 @@ TEST_P(WriteAndReadInteTest, TestAppendVector) {
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
                                  arrow::field("embedding", vector_type)};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, file_system},
     };
     if (file_system == "jindo") {
@@ -427,8 +427,9 @@ TEST_P(WriteAndReadInteTest, TestAppendNestedVector) {
         arrow::field("by_name", arrow::map(arrow::utf8(), vector_type)),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, file_system},
     };
     if (file_system == "jindo") {
@@ -476,7 +477,6 @@ TEST_P(WriteAndReadInteTest, TestAppendVectorWithPredicate) {
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
                                  arrow::field("embedding", vector_type)};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "-1"},
@@ -540,7 +540,6 @@ TEST_P(WriteAndReadInteTest, TestAppendWithExternalBitmapAndRangeBitmapIndexes) 
                                  arrow::field("score", arrow::int32())};
     auto [file_format, file_system] = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1MB"},
         {Options::BUCKET, "-1"},
@@ -626,9 +625,11 @@ TEST_P(WriteAndReadInteTest, TestPKSimple) {
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},         {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"},        {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system},        {"orc.read.enable-lazy-decoding", "true"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {"orc.read.enable-lazy-decoding", "true"},
         {"orc.dictionary-key-size-threshold", "1"},
     };
     if (file_system == "jindo") {
@@ -685,9 +686,11 @@ TEST_P(WriteAndReadInteTest, TestInputChangelogStreamRead) {
     };
     auto [file_format, file_system] = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "input"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::CHANGELOG_PRODUCER, "input"},
     };
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
@@ -979,9 +982,11 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogStreamRead) {
         arrow::field("value", arrow::int32()),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::CHANGELOG_PRODUCER, "lookup"},
     };
     ASSERT_OK_AND_ASSIGN(auto helper, CreateLookupTestHelper(arrow::schema(fields), options));
 
@@ -1028,9 +1033,11 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInitialFullScanExcludesLevelZero
         arrow::field("value", arrow::int32()),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::CHANGELOG_PRODUCER, "lookup"},
     };
     ASSERT_OK_AND_ASSIGN(auto helper, CreateLookupTestHelper(arrow::schema(fields), options));
 
@@ -1086,10 +1093,11 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogInsertUpdateDelete) {
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {Options::CHANGELOG_PRODUCER, "lookup"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -1134,11 +1142,12 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithFirstRow) {
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"},
-        {Options::MERGE_ENGINE, "first-row"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {Options::CHANGELOG_PRODUCER, "lookup"},
+                                                  {Options::MERGE_ENGINE, "first-row"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -1177,11 +1186,12 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithDeletionVector) {
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},         {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"},        {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system},        {Options::CHANGELOG_PRODUCER, "lookup"},
-        {Options::DELETION_VECTORS_ENABLED, "true"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {Options::CHANGELOG_PRODUCER, "lookup"},
+                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -1228,7 +1238,6 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogRowDeduplicate) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -1286,7 +1295,6 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogRowDeduplicateIgnoreFields) {
                                  arrow::field("value", arrow::int32()),
                                  arrow::field("ignored", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -1346,10 +1354,11 @@ TEST_P(WriteAndReadInteTest, TestChangelogWithSchemaEvolution) {
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields_v0 = {arrow::field("pk", arrow::utf8()),
                                     arrow::field("value", arrow::int32())};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {Options::CHANGELOG_PRODUCER, "lookup"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {Options::CHANGELOG_PRODUCER, "lookup"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -1457,7 +1466,6 @@ TEST_P(WriteAndReadInteTest, TestLookupChangelogWithExternalPath) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::int32())};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -1526,8 +1534,9 @@ TEST_P(WriteAndReadInteTest, TestNestedType) {
         return;
     }
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, file_system},
     };
     if (file_system == "jindo") {
@@ -1586,7 +1595,6 @@ TEST_P(WriteAndReadInteTest, TestSchemaEvolutionAddFieldInsideListAndMap) {
         arrow::field("props", arrow::map(arrow::utf8(), map_value)),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -1863,10 +1871,11 @@ TEST_P(WriteAndReadInteTest, TestAppendTimestampType) {
     if (file_format == "mosaic") {
         return;
     }
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
-        {Options::FILE_SYSTEM, file_system}, {"orc.timestamp-ltz.legacy.type", "false"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {"orc.timestamp-ltz.legacy.type", "false"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -1919,10 +1928,11 @@ TEST_P(WriteAndReadInteTest, TestPkTimestampType) {
     if (file_format == "mosaic") {
         return;
     }
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system}, {"orc.timestamp-ltz.legacy.type", "false"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {"orc.timestamp-ltz.legacy.type", "false"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -1979,10 +1989,11 @@ TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampSecondPrecision) {
         arrow::field("events", arrow::list(arrow::field("element", event_type))),
         arrow::field("marks", arrow::map(arrow::utf8(), arrow::timestamp(arrow::TimeUnit::SECOND))),
     };
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
-        {Options::FILE_SYSTEM, file_system}, {"orc.timestamp-ltz.legacy.type", "false"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {"orc.timestamp-ltz.legacy.type", "false"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -2038,10 +2049,11 @@ TEST_P(WriteAndReadInteTest, TestAppendNestedTimestampLtzMicroTimezoneOnly) {
         arrow::field("marks",
                      arrow::map(arrow::utf8(), arrow::timestamp(arrow::TimeUnit::MICRO, timezone))),
     };
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
-        {Options::FILE_SYSTEM, file_system}, {"orc.timestamp-ltz.legacy.type", "false"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::TARGET_FILE_SIZE, "1024"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {"orc.timestamp-ltz.legacy.type", "false"}};
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
     }
@@ -2085,10 +2097,13 @@ TEST_P(WriteAndReadInteTest, TestPKWithSequenceFieldInPKField) {
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},        {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"},       {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system},       {Options::SEQUENCE_FIELD, "p2"},
-        {"orc.read.enable-lazy-decoding", "true"}, {"orc.dictionary-key-size-threshold", "1"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::SEQUENCE_FIELD, "p2"},
+        {"orc.read.enable-lazy-decoding", "true"},
+        {"orc.dictionary-key-size-threshold", "1"},
     };
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
@@ -2150,10 +2165,13 @@ TEST_P(WriteAndReadInteTest, TestPKWithSequenceFieldPartialInPKField) {
     auto schema = arrow::schema(fields);
     auto [file_format, file_system] = GetParam();
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},        {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"},       {Options::BUCKET, "1"},
-        {Options::FILE_SYSTEM, file_system},       {Options::SEQUENCE_FIELD, "p2,f1"},
-        {"orc.read.enable-lazy-decoding", "true"}, {"orc.dictionary-key-size-threshold", "1"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::SEQUENCE_FIELD, "p2,f1"},
+        {"orc.read.enable-lazy-decoding", "true"},
+        {"orc.dictionary-key-size-threshold", "1"},
     };
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
@@ -2404,8 +2422,9 @@ TEST_P(WriteAndReadInteTest, TestCharVarcharBinaryVarbinaryTypes) {
         arrow::field("vb", arrow::binary()),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, file_system},
     };
     if (file_system == "jindo") {
@@ -2484,7 +2503,6 @@ TEST_P(WriteAndReadInteTest, TestPKWithParquetPageIndexFilter) {
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "1"},
@@ -2600,7 +2618,6 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilter) {
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "-1"},
@@ -2708,7 +2725,6 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
                                  arrow::field("f1", arrow::utf8())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "-1"},
@@ -2796,8 +2812,9 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetMetadataCache) {
                                  arrow::field("f1", arrow::int32())};
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},     {Options::FILE_FORMAT, "parquet"},
-        {Options::TARGET_FILE_SIZE, "1048576"}, {Options::BUCKET, "-1"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::TARGET_FILE_SIZE, "1048576"},
+        {Options::BUCKET, "-1"},
         {Options::FILE_SYSTEM, "local"},
     };
     ASSERT_OK_AND_ASSIGN(
@@ -2886,7 +2903,6 @@ TEST_P(WriteAndReadInteTest, TestAppendSharedShreddingMap) {
     };
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -2945,7 +2961,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingColumnPlacementPolicies) {
         arrow::field("lru_metrics", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -3028,7 +3043,6 @@ TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPartitionAndBucket)
     };
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "2"},
@@ -3135,7 +3149,6 @@ TEST_P(WriteAndReadInteTest, TestAppendMapSharedShreddingWithPredicate) {
     };
     auto schema = arrow::schema(fields);
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "-1"},
@@ -3229,7 +3242,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingNewWriterStartsWithMaxColumnC
         arrow::field("metrics", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -3298,7 +3310,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingAdaptsAcrossRollingFiles) {
         arrow::field("metrics", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::TARGET_FILE_ROW_NUM, "2"},
@@ -3372,7 +3383,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingSwitchMapLayoutAndUseMaxColum
         arrow::field("labels", map_type),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -3454,7 +3464,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingReadAfterRenameColumn) {
         arrow::field("metrics", map_type),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -3539,7 +3548,6 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingWithSchemaEvolution) {
         arrow::field("k1", arrow::utf8()),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -3648,9 +3656,11 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShredding) {
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64())),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
-        {Options::FILE_SYSTEM, file_system}, {"fields.tags.map.storage-layout", "default"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system},
+        {"fields.tags.map.storage-layout", "default"},
     };
     if (file_system == "jindo") {
         options_v0 = AddOptionsForJindo(options_v0);
@@ -3726,7 +3736,6 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutSharedShreddingToDefault) {
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64())),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -3790,7 +3799,6 @@ TEST_P(WriteAndReadInteTest, TestAppendMapStorageLayoutSharedShreddingToDefaultC
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64())),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -3882,7 +3890,6 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingWithStructValue) {
         arrow::field("tags", arrow::map(arrow::utf8(), value_type)),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -3955,7 +3962,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithComplexValue) {
         arrow::field("tags", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -4094,7 +4100,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingWithAllSupportedComplexValueT
         arrow::field("metrics", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -4222,7 +4227,6 @@ TEST_P(WriteAndReadInteTest, TestMapSharedShreddingStructValueSchemaEvolutionRea
         arrow::field("profile", profile_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -4340,10 +4344,13 @@ TEST_P(WriteAndReadInteTest, TestOrcDictionaryLazyDecodingWithSharedShredding) {
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::utf8())),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},        {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"},       {Options::BUCKET, "-1"},
-        {Options::FILE_SYSTEM, file_system},       {"fields.tags.map.storage-layout", "default"},
-        {"orc.read.enable-lazy-decoding", "true"}, {"orc.dictionary-key-size-threshold", "1"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system},
+        {"fields.tags.map.storage-layout", "default"},
+        {"orc.read.enable-lazy-decoding", "true"},
+        {"orc.dictionary-key-size-threshold", "1"},
     };
     if (file_system == "jindo") {
         options = AddOptionsForJindo(options);
@@ -4426,7 +4433,6 @@ TEST_P(WriteAndReadInteTest, TestPkSharedShreddingMap) {
         arrow::field("tags", arrow::map(arrow::utf8(), arrow::int64())),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "1"},
@@ -4497,7 +4503,6 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithOverflow) {
         arrow::field("tags", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -4632,7 +4637,6 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallWithNullOrMissin
         arrow::field("tags", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -4744,7 +4748,6 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingPartialKeyRecallMultipleColumns)
         arrow::field("metrics", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -4855,9 +4858,11 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutDefaultToSharedShreddingPartial
         arrow::field("tags", map_type),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
-        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "-1"},
-        {Options::FILE_SYSTEM, file_system}, {"fields.tags.map.storage-layout", "default"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system},
+        {"fields.tags.map.storage-layout", "default"},
     };
     if (file_system == "jindo") {
         options_v0 = AddOptionsForJindo(options_v0);
@@ -4945,7 +4950,6 @@ TEST_P(WriteAndReadInteTest, TestMapStorageLayoutSharedShreddingToDefaultPartial
         arrow::field("tags", map_type),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -5040,7 +5044,6 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingDuplicateSelectedKeys) {
         arrow::field("tags", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -5088,7 +5091,6 @@ TEST_P(WriteAndReadInteTest, TestSharedShreddingAllNullMapColumn) {
         arrow::field("tags", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, file_format},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},

@@ -324,9 +324,11 @@ class RealtimeWriteInteTest : public ::testing::Test {
                    arrow::field("pt", arrow::utf8())};
         schema_ = arrow::schema(fields_);
         options_ = {
-            {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, "orc"},
-            {Options::FILE_SYSTEM, "local"},     {Options::BUCKET, "1"},
-            {Options::BUCKET_KEY, "id"},         {Options::TARGET_FILE_SIZE, "1048576"},
+            {Options::FILE_FORMAT, "orc"},
+            {Options::FILE_SYSTEM, "local"},
+            {Options::BUCKET, "1"},
+            {Options::BUCKET_KEY, "id"},
+            {Options::TARGET_FILE_SIZE, "1048576"},
             {Options::REALTIME_ENABLED, "true"},
         };
     }

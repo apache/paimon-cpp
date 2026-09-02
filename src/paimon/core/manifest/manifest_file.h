@@ -67,14 +67,17 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
                              std::vector<ManifestEntry>* entries) const;
 
  private:
+    Status ValidateWrite() const override;
+
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,
                  const std::shared_ptr<WriterBuilder>& writer_builder,
-                 const std::string& compression, const std::shared_ptr<PathFactory>& path_factory,
-                 int64_t target_file_size, const std::shared_ptr<MemoryPool>& pool,
-                 const CoreOptions& options, const std::shared_ptr<arrow::Schema>& partition_type);
+                 const std::string& file_format_identifier, const std::string& compression,
+                 const std::shared_ptr<PathFactory>& path_factory, int64_t target_file_size,
+                 const std::shared_ptr<MemoryPool>& pool, const CoreOptions& options,
+                 const std::shared_ptr<arrow::Schema>& partition_type);
 
- private:
+    const std::string file_format_identifier_;
     int64_t target_file_size_;
     CoreOptions options_;
     std::shared_ptr<arrow::Schema> partition_type_;

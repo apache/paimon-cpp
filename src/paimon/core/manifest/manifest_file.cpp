@@ -51,6 +51,7 @@ class MemoryPool;
 ManifestFile::ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                            const std::shared_ptr<ReaderBuilder>& reader_builder,
                            const std::shared_ptr<WriterBuilder>& writer_builder,
+                           const std::string& file_format_identifier,
                            const std::string& compression,
                            const std::shared_ptr<PathFactory>& path_factory,
                            int64_t target_file_size, const std::shared_ptr<MemoryPool>& pool,
@@ -59,9 +60,18 @@ ManifestFile::ManifestFile(const std::shared_ptr<FileSystem>& file_system,
     : ObjectsFile<ManifestEntry>(file_system, reader_builder, writer_builder,
                                  std::make_unique<ManifestEntrySerializer>(pool), compression,
                                  path_factory, options.GetCache(), pool),
+      file_format_identifier_(file_format_identifier),
       target_file_size_(target_file_size),
       options_(options),
       partition_type_(partition_type) {}
+
+Status ManifestFile::ValidateWrite() const {
+    if (file_format_identifier_ != "avro") {
+        return Status::Invalid("manifest.format '", file_format_identifier_,
+                               "' is read-only; only 'avro' can be used for writing manifests");
+    }
+    return Status::OK();
+}
 
 Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
     const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<FileFormat>& file_format,
@@ -82,9 +92,9 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
     writer_builder->WithMemoryPool(pool);
 
     std::shared_ptr<PathFactory> manifest_file_factory = path_factory->CreateManifestFileFactory();
-    return std::unique_ptr<ManifestFile>(
-        new ManifestFile(file_system, reader_builder, writer_builder, compression,
-                         manifest_file_factory, target_file_size, pool, options, partition_type));
+    return std::unique_ptr<ManifestFile>(new ManifestFile(
+        file_system, reader_builder, writer_builder, file_format->Identifier(), compression,
+        manifest_file_factory, target_file_size, pool, options, partition_type));
 }
 
 Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
@@ -112,6 +122,7 @@ Result<std::vector<ManifestFileMeta>> ManifestFile::Write(
     if (entries.empty()) {
         return std::vector<ManifestFileMeta>();
     }
+    PAIMON_RETURN_NOT_OK(ValidateWrite());
     auto converter = [this](ManifestEntry entry, ::ArrowArray* dest) -> Status {
         if (!to_array_converter_) {
             PAIMON_ASSIGN_OR_RAISE(to_array_converter_, MetaToArrowArrayConverter::Create(

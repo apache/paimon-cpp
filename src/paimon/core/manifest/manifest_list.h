@@ -120,11 +120,16 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     }
 
  private:
+    Status ValidateWrite() const override;
+
     ManifestList(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,
                  const std::shared_ptr<WriterBuilder>& writer_builder,
-                 const std::string& compression, const std::shared_ptr<PathFactory>& path_factory,
+                 const std::string& file_format_identifier, const std::string& compression,
+                 const std::shared_ptr<PathFactory>& path_factory,
                  const std::shared_ptr<Cache>& cache, const std::shared_ptr<MemoryPool>& pool);
+
+    const std::string file_format_identifier_;
 };
 
 }  // namespace paimon

@@ -179,7 +179,7 @@ class VariantTableInteTest : public ::testing::Test {
                                                                 double admission_ratio,
                                                                 double retention_ratio) const {
         return {
-            {Options::MANIFEST_FORMAT, "avro"},
+
             {Options::FILE_FORMAT, "parquet"},
             {Options::BUCKET, "-1"},
             {Options::WRITE_ONLY, "true"},
@@ -206,7 +206,6 @@ class VariantTableInteTest : public ::testing::Test {
 
 TEST_F(VariantTableInteTest, TestAppendTable) {
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::BUCKET, "-1"},
     };
@@ -597,7 +596,6 @@ TEST_F(VariantTableInteTest, TestAdaptiveInferenceWithNestedVariant) {
 
 TEST_F(VariantTableInteTest, TestPrimaryKeyTable) {
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::BUCKET, "1"},
     };
@@ -623,7 +621,6 @@ TEST_F(VariantTableInteTest, TestPrimaryKeyTable) {
 
 TEST_F(VariantTableInteTest, TestVariantAccessRead) {
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::BUCKET, "-1"},
     };
@@ -667,7 +664,6 @@ TEST_F(VariantTableInteTest, TestNestedRowVariantAccessRead) {
                                                           arrow::field("t", arrow::utf8())}));
     auto table_schema = arrow::schema({fields_[0], struct_field});
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::BUCKET, "-1"},
     };
@@ -730,7 +726,6 @@ TEST_F(VariantTableInteTest, TestArrayVariantAccessRead) {
     auto list_field = arrow::field("arr", arrow::list(VariantTypeUtils::ToArrowField("element")));
     auto table_schema = arrow::schema({fields_[0], list_field});
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::BUCKET, "-1"},
     };
@@ -788,7 +783,6 @@ TEST_F(VariantTableInteTest, TestReadWithIOException) {
     // Injects an IO error at every position of the scan+read path and verifies each failure
     // surfaces as a clean error status.
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::BUCKET, "-1"},
     };
@@ -826,7 +820,6 @@ TEST_F(VariantTableInteTest, TestWriteWithIOException) {
     // Injects an IO error at every position of the create+write+commit path (on a fresh table
     // directory per attempt) and verifies each failure surfaces as a clean error status.
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "parquet"},
         {Options::BUCKET, "-1"},
     };
@@ -862,7 +855,6 @@ TEST_F(VariantTableInteTest, TestWriteWithIOException) {
 
 TEST_F(VariantTableInteTest, TestOrcFormatRejected) {
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "avro"},
         {Options::FILE_FORMAT, "orc"},
         {Options::BUCKET, "-1"},
     };

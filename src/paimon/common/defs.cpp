@@ -48,7 +48,6 @@ const char Options::FILE_COMPRESSION[] = "file.compression";
 const char Options::FILE_COMPRESSION_ZSTD_LEVEL[] = "file.compression.zstd-level";
 const char Options::FILE_BLOCK_SIZE[] = "file.block-size";
 const char Options::MANIFEST_TARGET_FILE_SIZE[] = "manifest.target-file-size";
-const char Options::MANIFEST_FORMAT[] = "manifest.format";
 const char Options::MANIFEST_COMPRESSION[] = "manifest.compression";
 const char Options::MANIFEST_MERGE_MIN_COUNT[] = "manifest.merge-min-count";
 const char Options::MANIFEST_FULL_COMPACTION_FILE_SIZE[] =

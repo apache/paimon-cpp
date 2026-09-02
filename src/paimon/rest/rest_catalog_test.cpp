@@ -321,7 +321,7 @@ class RestCatalogTest : public ::testing::Test {
             // registered in the binary's own registry even when the real format plugin
             // dylibs register into a different one (macOS two-level namespace)
             {Options::FILE_FORMAT, "mock_format"},
-            {Options::MANIFEST_FORMAT, "mock_format"},
+            {"manifest.format", "mock_format"},
             {"header.x-client-header", "from-client"},
             {"header.x-shared-header", "from-client"},
         };

@@ -77,8 +77,7 @@ TEST(FileStoreCommitTest, TestCreate) {
 
     CommitContextBuilder context_builder(table_path, "commit_user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_FORMAT, "avro")
-                             .AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
+                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
                              .AddOption(Options::FILE_SYSTEM, "local")
                              .Finish());
     ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
@@ -115,8 +114,7 @@ TEST(FileStoreCommitTest, TestAppendDvIndexShouldUseOverwriteCommitKind) {
 
     CommitContextBuilder context_builder(table_path, "commit_user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_FORMAT, "avro")
-                             .AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
+                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
                              .AddOption(Options::FILE_SYSTEM, "local")
                              .Finish());
     ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));

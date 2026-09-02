@@ -186,11 +186,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
         if (need_dv_maintainer_factory) {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
-                                   options.GetManifestFormat(/*write=*/true));
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), manifest_format,
+                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
                                           options.GetBucket(), ctx->GetMemoryPool(), options));
             auto index_file_handler = std::make_shared<IndexFileHandler>(
@@ -258,11 +256,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
         if (options.DeletionVectorsEnabled()) {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
-                                   options.GetManifestFormat(/*write=*/true));
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), manifest_format,
+                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
                                           options.GetBucket(), ctx->GetMemoryPool(), options));
             auto index_file_handler = std::make_shared<IndexFileHandler>(

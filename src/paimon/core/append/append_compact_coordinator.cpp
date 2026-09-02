@@ -133,17 +133,17 @@ Result<std::unique_ptr<FileStoreScan>> CreateFileStoreScan(
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<ScanFilter>& scan_filter, const std::shared_ptr<Executor>& executor,
     const std::shared_ptr<MemoryPool>& pool) {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_format,
-                           core_options.GetManifestFormat(/*write=*/false));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
-                           ManifestList::Create(core_options.GetFileSystem(), manifest_format,
-                                                core_options.GetManifestCompression(), path_factory,
-                                                core_options.GetCache(), pool));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestFile> manifest_file,
-                           ManifestFile::Create(core_options.GetFileSystem(), manifest_format,
-                                                core_options.GetManifestCompression(), path_factory,
-                                                core_options.GetManifestTargetFileSize(), pool,
-                                                core_options, partition_schema));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<ManifestList> manifest_list,
+        ManifestList::Create(core_options.GetFileSystem(), core_options.GetManifestFormat(),
+                             core_options.GetManifestCompression(), path_factory,
+                             core_options.GetCache(), pool));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<ManifestFile> manifest_file,
+        ManifestFile::Create(core_options.GetFileSystem(), core_options.GetManifestFormat(),
+                             core_options.GetManifestCompression(), path_factory,
+                             core_options.GetManifestTargetFileSize(), pool, core_options,
+                             partition_schema));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<AppendOnlyFileStoreScan> scan,
         AppendOnlyFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,

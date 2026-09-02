@@ -78,6 +78,10 @@ class ObjectsFile {
     Result<std::pair<std::string, int64_t>> WriteWithoutRolling(const std::vector<T>& records);
 
  protected:
+    virtual Status ValidateWrite() const {
+        return Status::OK();
+    }
+
     Status ReadArrowBatches(
         const std::string& file_name,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer) const;
@@ -231,6 +235,7 @@ Result<MemorySegment> ObjectsFile<T>::ReadFileSegment(const std::string& file_pa
 template <typename T>
 Result<std::pair<std::string, int64_t>> ObjectsFile<T>::WriteWithoutRolling(
     const std::vector<T>& records) {
+    PAIMON_RETURN_NOT_OK(ValidateWrite());
     std::string file_path = path_factory_->NewPath();
     std::vector<BinaryRow> rows;
     rows.reserve(records.size());

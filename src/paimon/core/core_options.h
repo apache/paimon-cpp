@@ -93,9 +93,7 @@ class PAIMON_EXPORT CoreOptions {
     int64_t GetCompactionFileSize(bool has_primary_key) const;
     std::string GetPartitionDefaultName() const;
 
-    /// Return the configured manifest format for the requested access mode.
-    /// Non-Avro formats are supported only for reading legacy manifests.
-    Result<std::shared_ptr<FileFormat>> GetManifestFormat(bool write) const;
+    std::shared_ptr<FileFormat> GetManifestFormat() const;
     const std::string& GetManifestCompression() const;
     int32_t GetManifestMergeMinCount() const;
     int64_t GetManifestFullCompactionThresholdSize() const;

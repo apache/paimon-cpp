@@ -92,8 +92,7 @@ class KeyValueFileStoreScanTest : public testing::Test {
                 core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
                 external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
                 pool_));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> manifest_file_format,
-                               core_options.GetManifestFormat(/*write=*/false));
+        auto manifest_file_format = core_options.GetManifestFormat();
         auto snapshot_manager = std::make_shared<SnapshotManager>(fs, table_path);
 
         PAIMON_ASSIGN_OR_RAISE(

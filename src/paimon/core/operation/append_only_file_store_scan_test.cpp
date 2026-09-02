@@ -101,7 +101,7 @@ TEST(AppendOnlyFileStoreScanTest, TestReadPartitionEntries) {
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
     ScanContextBuilder context_builder(table_path);
     context_builder.AddOption(Options::FILE_FORMAT, "orc")
-        .AddOption(Options::MANIFEST_FORMAT, "orc")
+        .AddOption("manifest.format", "orc")
         .AddOption(Options::SCAN_SNAPSHOT_ID, "5");
     ASSERT_OK_AND_ASSIGN(auto scan_context, context_builder.Finish());
 
@@ -148,7 +148,7 @@ TEST(AppendOnlyFileStoreScanTest, TestScanDurationMetric) {
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
     ScanContextBuilder context_builder(table_path);
     context_builder.AddOption(Options::FILE_FORMAT, "orc")
-        .AddOption(Options::MANIFEST_FORMAT, "orc")
+        .AddOption("manifest.format", "orc")
         .AddOption(Options::SCAN_SNAPSHOT_ID, "5");
     ASSERT_OK_AND_ASSIGN(auto scan_context, context_builder.Finish());
 
@@ -204,7 +204,7 @@ std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
                                          bool manifest_entry_lazy_decode_enabled = true) {
     ScanContextBuilder context_builder(table_path);
     context_builder.AddOption(Options::FILE_FORMAT, "orc")
-        .AddOption(Options::MANIFEST_FORMAT, "orc")
+        .AddOption("manifest.format", "orc")
         .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "8")
         .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
                    manifest_entry_lazy_decode_enabled ? "true" : "false")
