@@ -18,6 +18,8 @@
 
 #include "paimon/format/blob/blob_file_batch_reader.h"
 
+#include <string_view>
+
 #include "arrow/api.h"
 #include "arrow/c/helpers.h"
 #include "gtest/gtest.h"
@@ -32,6 +34,21 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::blob::test {
+namespace {
+
+std::string HexToBytes(std::string_view hex) {
+    auto hex_value = [](char c) -> uint8_t {
+        return c <= '9' ? static_cast<uint8_t>(c - '0') : static_cast<uint8_t>(c - 'a' + 10);
+    };
+    std::string bytes;
+    bytes.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        bytes.push_back(static_cast<char>((hex_value(hex[i]) << 4) | hex_value(hex[i + 1])));
+    }
+    return bytes;
+}
+
+}  // namespace
 
 TEST(BlobReaderBuilderTest, RejectsNullMemoryPool) {
     BlobReaderBuilder builder(/*batch_size=*/10, /*options=*/{});
@@ -108,6 +125,28 @@ class BlobFileBatchReaderTest : public testing::Test, public ::testing::WithPara
         }
     }
 
+    Result<std::string> ReadMapBlobValue(const std::shared_ptr<arrow::LargeBinaryArray>& blob_array,
+                                         int64_t index, bool blob_as_descriptor,
+                                         const std::shared_ptr<FileSystem>& file_system) {
+        std::string stored_value = blob_array->GetString(index);
+        if (!blob_as_descriptor) {
+            return stored_value;
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                               Blob::FromDescriptor(stored_value.data(), stored_value.size()));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
+                               blob->NewInputStream(file_system));
+        PAIMON_ASSIGN_OR_RAISE(int64_t length, input_stream->Length());
+        std::string value(length, '\0');
+        if (length > 0) {
+            PAIMON_ASSIGN_OR_RAISE(int64_t actual_length, input_stream->Read(value.data(), length));
+            if (actual_length != length) {
+                return Status::IOError("failed to read MAP<..., BLOB> descriptor content");
+            }
+        }
+        return value;
+    }
+
  private:
     std::string blob_field_name_;
     std::shared_ptr<MemoryPool> pool_;
@@ -130,6 +169,82 @@ TEST_P(BlobFileBatchReaderTest, TestSimple) {
                 blob_as_descriptor);
     CheckResult(table_path, "data-d7816e8e-6c6d-4e28-9137-837cdf706350-4.blob",
                 {"blob_9_f54d253c.bin"}, blob_as_descriptor);
+}
+
+TEST_P(BlobFileBatchReaderTest, TestMapBlob) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::string file_path = dir->Str() + "/map-blob.blob";
+    std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
+
+    // Java-compatible MAP<STRING, BLOB> golden file. Rows are:
+    // {alpha: "hello", empty: "", missing: null}, null, {}, {omega: "world"}.
+    const std::string file_bytes = HexToBytes(
+        "cf114e584243424d0103000000616c706861656d7074796d697373696e676865"
+        "6c6c6f0a00040a090103000000030000003d000000000000002a64aaabcf114e"
+        "584243424d0100000000000000000000000021000000000000008360591ecf11"
+        "4e584243424d01010000006f6d656761776f726c640a0a01000000010000002d"
+        "00000000000000248fe4237a7b44180400000001");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output_stream,
+                         file_system->Create(file_path, /*overwrite=*/true));
+    ASSERT_OK_AND_ASSIGN(int64_t written,
+                         output_stream->Write(file_bytes.data(), file_bytes.size()));
+    ASSERT_EQ(file_bytes.size(), written);
+    ASSERT_OK(output_stream->Close());
+
+    std::shared_ptr<arrow::Field> blob_item = BlobUtils::ToArrowField("value", true);
+    auto key_field = arrow::field("key", arrow::utf8(), false);
+    auto map_type = std::make_shared<arrow::MapType>(key_field, blob_item);
+    ASSERT_TRUE(BlobUtils::IsBlobField(map_type->item_field()));
+    auto map_field = arrow::field("blob_map", map_type, true);
+    auto schema = arrow::schema({map_field});
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, file_system->Open(file_path));
+    const bool blob_as_descriptor = GetParam();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                         BlobFileBatchReader::Create(
+                             input_stream, /*batch_size=*/2, blob_as_descriptor,
+                             /*emit_placeholder_sentinel=*/false, pool_, GetArrowPool(pool_)));
+    ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> chunked_array,
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
+    std::shared_ptr<arrow::Array> combined_array =
+        arrow::Concatenate(chunked_array->chunks()).ValueOrDie();
+
+    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(combined_array);
+    ASSERT_TRUE(struct_array);
+    auto map_array = std::dynamic_pointer_cast<arrow::MapArray>(struct_array->field(0));
+    ASSERT_TRUE(map_array);
+    ASSERT_EQ(arrow::Type::LARGE_BINARY, map_array->map_type()->item_type()->id());
+    ASSERT_EQ(4, map_array->length());
+    ASSERT_EQ(3, map_array->value_length(0));
+    ASSERT_TRUE(map_array->IsNull(1));
+    ASSERT_EQ(0, map_array->value_length(2));
+    ASSERT_EQ(1, map_array->value_length(3));
+
+    auto keys = std::dynamic_pointer_cast<arrow::StringArray>(map_array->keys());
+    auto values = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(map_array->items());
+    ASSERT_TRUE(keys);
+    ASSERT_TRUE(values);
+    ASSERT_EQ("alpha", keys->GetString(0));
+    ASSERT_EQ("empty", keys->GetString(1));
+    ASSERT_EQ("missing", keys->GetString(2));
+    ASSERT_EQ("omega", keys->GetString(3));
+    ASSERT_FALSE(values->IsNull(0));
+    ASSERT_FALSE(values->IsNull(1));
+    ASSERT_TRUE(values->IsNull(2));
+    ASSERT_FALSE(values->IsNull(3));
+    ASSERT_OK_AND_ASSIGN(std::string first_value,
+                         ReadMapBlobValue(values, 0, blob_as_descriptor, file_system));
+    ASSERT_OK_AND_ASSIGN(std::string empty_value,
+                         ReadMapBlobValue(values, 1, blob_as_descriptor, file_system));
+    ASSERT_OK_AND_ASSIGN(std::string last_value,
+                         ReadMapBlobValue(values, 3, blob_as_descriptor, file_system));
+    ASSERT_EQ("hello", first_value);
+    ASSERT_EQ("", empty_value);
+    ASSERT_EQ("world", last_value);
 }
 
 TEST_P(BlobFileBatchReaderTest, TestPushdownBitmap) {

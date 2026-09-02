@@ -168,6 +168,7 @@ class BlobFileBatchReader : public FileBatchReader {
     /// Builds a null bitmap buffer for the given rows. Returns nullptr if no nulls.
     Result<std::shared_ptr<arrow::Buffer>> BuildNullBitmap(int32_t rows_to_read) const;
     Result<std::shared_ptr<arrow::Array>> BuildContentArray(int32_t rows_to_read) const;
+    Result<std::shared_ptr<arrow::Array>> BuildMapBlobArray(int32_t rows_to_read) const;
     Result<std::shared_ptr<arrow::Array>> BuildTargetArray(int32_t rows_to_read) const;
 
     /// Returns true if the blob at the given index is null (bin_length == kNullBinLength).
