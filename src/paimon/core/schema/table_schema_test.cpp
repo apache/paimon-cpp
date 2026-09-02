@@ -1344,8 +1344,12 @@ TEST_F(TableSchemaTest, MapBlobSchemaLoadsFromJson) {
             "id" : 1,
             "name" : "time_blob_map",
             "type" : {"type":"MAP", "key":"TIME(0)", "value":"BLOB"}
+        }, {
+            "id" : 2,
+            "name" : "time9",
+            "type" : "TIME(9)"
         } ],
-        "highestFieldId" : 1,
+        "highestFieldId" : 2,
         "partitionKeys" : [],
         "primaryKeys" : [],
         "options" : {},
@@ -1359,6 +1363,24 @@ TEST_F(TableSchemaTest, MapBlobSchemaLoadsFromJson) {
         DataField::ConvertDataFieldToArrowField(table_schema->Fields()[1])));
     auto time_map = checked_pointer_cast<arrow::MapType>(table_schema->Fields()[1].Type());
     ASSERT_EQ(time_map->key_type()->id(), arrow::Type::TIME32);
+    ASSERT_TRUE(time_map->key_field()->HasMetadata());
+    ASSERT_TRUE(time_map->key_field()->metadata()->Contains("paimon.time.precision"));
+    ASSERT_TRUE(BlobUtils::IsBlobField(time_map->item_field()));
+    ASSERT_OK_AND_ASSIGN(std::string serialized, table_schema->ToJsonString());
+    ASSERT_NE(serialized.find("\"TIME(0) NOT NULL\""), std::string::npos) << serialized;
+    ASSERT_NE(serialized.find("\"TIME(9)\""), std::string::npos) << serialized;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> restored,
+                         TableSchema::CreateFromJson(serialized));
+    ASSERT_OK_AND_ASSIGN(std::string restored_json, restored->ToJsonString());
+    ASSERT_EQ(restored_json, serialized);
+}
+
+TEST_F(TableSchemaTest, CreatingMapBlobSchemaIsRejected) {
+    auto map_type = arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
+    ASSERT_NOK_WITH_MSG(
+        TableSchema::Create(/*schema_id=*/0, arrow::schema({arrow::field("blob_map", map_type)}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}),
+        "not supported by the C++ writer");
 }
 
 TEST_F(TableSchemaTest, MapKeysSortedIsNormalized) {

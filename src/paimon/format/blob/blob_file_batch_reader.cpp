@@ -33,6 +33,7 @@
 #include "arrow/util/decimal.h"
 #include "arrow/util/endian.h"
 #include "arrow/util/ubsan.h"
+#include "arrow/util/utf8.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/io/offset_input_stream.h"
@@ -113,6 +114,9 @@ Status AppendMapBlobKey(const std::shared_ptr<arrow::DataType>& key_type, const 
             return ToPaimonStatus(checked_cast<arrow::Time32Builder*>(builder)->Append(
                 ReadLittleEndian<int32_t>(data)));
         case arrow::Type::STRING:
+            if (!arrow::util::ValidateUTF8(data, length)) {
+                return Status::Invalid("invalid UTF-8 in MAP<STRING, BLOB> key");
+            }
             return ToPaimonStatus(
                 checked_cast<arrow::StringBuilder*>(builder)->Append(data, length));
         case arrow::Type::BINARY:
@@ -370,6 +374,9 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
     const std::shared_ptr<arrow::Field>& map_field = struct_type.field(0);
     auto map_type = checked_pointer_cast<arrow::MapType>(map_field->type());
     const std::shared_ptr<arrow::DataType>& key_type = map_type->key_type();
+    if (key_type->id() == arrow::Type::STRING) {
+        arrow::util::InitializeUTF8();
+    }
     PAIMON_ASSIGN_OR_RAISE(int32_t fixed_key_length, GetMapBlobFixedKeyLength(key_type));
 
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> key_builder_unique,

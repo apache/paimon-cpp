@@ -53,6 +53,7 @@ static constexpr char CHAR_LIST_SEPARATOR = ',';
 static constexpr char CHAR_STRING = '\'';
 static constexpr char CHAR_IDENTIFIER = '`';
 static constexpr char CHAR_DOT = '.';
+static constexpr char TIME_PRECISION_METADATA[] = "paimon.time.precision";
 
 enum class TokenType : int32_t {
     // e.g. "ROW<"
@@ -90,6 +91,7 @@ struct Token {
 struct AtomicTypeAttributes {
     bool is_blob = false;
     bool is_variant = false;
+    std::optional<int32_t> time_precision;
 };
 
 // nullptr is returned in the case of parsing failed
@@ -250,7 +252,7 @@ class TokenParser {
     Result<std::shared_ptr<arrow::DataType>> ParseStringType();
     Result<std::shared_ptr<arrow::DataType>> ParseDecimalType();
     Result<std::shared_ptr<arrow::DataType>> ParseDoubleType();
-    Result<std::shared_ptr<arrow::DataType>> ParseTimeType();
+    Result<std::shared_ptr<arrow::DataType>> ParseTimeType(AtomicTypeAttributes* attributes);
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampType();
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampLtzType();
     Result<std::shared_ptr<arrow::DataType>> ParseVectorType();
@@ -525,7 +527,7 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTypeByKeyword(
         case Keyword::DATE:
             return arrow::date32();
         case Keyword::TIME:
-            return ParseTimeType();
+            return ParseTimeType(attributes);
         case Keyword::TIMESTAMP:
             return ParseTimestampType();
         case Keyword::TIMESTAMP_LTZ:
@@ -585,7 +587,8 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseDoubleType() {
     return arrow::float64();
 }
 
-Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimeType() {
+Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimeType(
+    AtomicTypeAttributes* attributes) {
     PAIMON_ASSIGN_OR_RAISE(int32_t precision, ParseOptionalPrecision(/*default_precision=*/0));
     if (precision < 0 || precision > 9) {
         return Status::Invalid("TIME precision must be between 0 and 9");
@@ -595,6 +598,7 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTimeType() {
         PAIMON_RETURN_NOT_OK(NextToken(Keyword::TIME));
         PAIMON_RETURN_NOT_OK(NextToken(Keyword::ZONE));
     }
+    attributes->time_precision = precision;
     // Paimon stores TIME as the number of milliseconds since midnight for every supported
     // precision. Arrow's corresponding physical type is therefore time32[ms].
     return arrow::time32(arrow::TimeUnit::MILLI);
@@ -686,6 +690,11 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseAtomicTypeField(
         return BlobUtils::ToArrowField(name, nullable);
     } else if (attributes.is_variant) {
         return VariantTypeUtils::ToArrowField(name, nullable);
+    } else if (attributes.time_precision) {
+        return arrow::field(
+            name, type, nullable,
+            arrow::KeyValueMetadata::Make({TIME_PRECISION_METADATA},
+                                          {std::to_string(attributes.time_precision.value())}));
     } else {
         return arrow::field(name, type, nullable);
     }

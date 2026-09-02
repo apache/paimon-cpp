@@ -383,6 +383,34 @@ TEST_F(BlobFileBatchReaderTest, RejectsNonCanonicalDecimalMapKey) {
     ASSERT_NOK_WITH_MSG(reader->NextBatch(), "non-canonical decimal key");
 }
 
+TEST_F(BlobFileBatchReaderTest, RejectsInvalidUtf8StringMapKey) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::string file_path = dir->Str() + "/bad-string-map.blob";
+    std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
+    std::string file_bytes = MapBlobGoldenBytes();
+    ASSERT_GT(file_bytes.size(), 13);
+    // The first key starts after the outer magic and the map header.
+    file_bytes[13] = static_cast<char>(0xFF);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                         file_system->Create(file_path, /*overwrite=*/true));
+    ASSERT_OK_AND_ASSIGN(int64_t written, output->Write(file_bytes.data(), file_bytes.size()));
+    ASSERT_EQ(file_bytes.size(), written);
+    ASSERT_OK(output->Close());
+
+    auto map_type = arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
+    auto schema = arrow::schema({arrow::field("blob_map", map_type)});
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system->Open(file_path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                         BlobFileBatchReader::Create(
+                             input, /*batch_size=*/1, /*blob_as_descriptor=*/false,
+                             /*emit_placeholder_sentinel=*/false, pool_, GetArrowPool(pool_)));
+    ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "invalid UTF-8");
+}
+
 TEST_P(BlobFileBatchReaderTest, TestPushdownBitmap) {
     std::string test_data_path = paimon::test::GetDataDir() + "/db_with_blob.db/table_with_blob/";
     auto dir = paimon::test::UniqueTestDirectory::Create();

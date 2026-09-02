@@ -40,6 +40,9 @@
 #include "rapidjson/rapidjson.h"
 
 namespace paimon {
+namespace {
+constexpr char kTimePrecisionMetadata[] = "paimon.time.precision";
+}  // namespace
 
 DataType::DataType(const std::shared_ptr<arrow::DataType>& type, bool nullable,
                    const std::shared_ptr<const arrow::KeyValueMetadata>& metadata)
@@ -113,6 +116,12 @@ std::string DataType::DataTypeToString(const std::shared_ptr<arrow::DataType>& t
         case arrow::Type::type::DATE32:
             return "DATE";
         case arrow::Type::type::TIME32: {
+            if (metadata_) {
+                auto precision = metadata_->Get(kTimePrecisionMetadata);
+                if (precision.ok()) {
+                    return fmt::format("TIME({})", precision.ValueUnsafe());
+                }
+            }
             const auto& time_type = checked_cast<const arrow::Time32Type&>(*type);
             return time_type.unit() == arrow::TimeUnit::SECOND ? "TIME(0)" : "TIME(3)";
         }
