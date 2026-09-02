@@ -87,7 +87,7 @@ Status FileSystemCatalog::CreateDatabaseImpl(const std::string& db_name,
             fmt::join(options, ", "));
         PAIMON_LOG_DEBUG(logger_, "%s", log_msg.c_str());
     }
-    std::string db_path = NewDatabasePath(warehouse_, db_name);
+    PAIMON_ASSIGN_OR_RAISE(std::string db_path, NewDatabasePath(warehouse_, db_name));
     PAIMON_RETURN_NOT_OK(fs_->Mkdirs(db_path));
     return Status::OK();
 }
@@ -96,7 +96,8 @@ Result<bool> FileSystemCatalog::DatabaseExists(const std::string& db_name) const
     if (CatalogUtils::IsSystemDatabase(db_name)) {
         return true;
     }
-    return fs_->Exists(NewDatabasePath(warehouse_, db_name));
+    PAIMON_ASSIGN_OR_RAISE(std::string db_path, NewDatabasePath(warehouse_, db_name));
+    return fs_->Exists(db_path);
 }
 
 Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const {
@@ -104,6 +105,9 @@ Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const 
     if (CatalogUtils::IsSystemDatabase(identifier.GetDatabaseName())) {
         return GlobalSystemTableLoader::IsSupported(identifier.GetTableName(), catalog_options_);
     }
+    // The branch component is dropped when the data table identifier is rebuilt below, so the
+    // identifier is validated as a whole here.
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
@@ -122,7 +126,7 @@ Result<bool> FileSystemCatalog::TableExists(const Identifier& identifier) const 
     return latest_schema != std::nullopt;
 }
 
-std::string FileSystemCatalog::GetDatabaseLocation(const std::string& db_name) const {
+Result<std::string> FileSystemCatalog::GetDatabaseLocation(const std::string& db_name) const {
     return NewDatabasePath(warehouse_, db_name);
 }
 
@@ -204,16 +208,19 @@ Result<bool> FileSystemCatalog::IsSystemTable(const Identifier& identifier) {
     return IsSpecifiedSystemTable(identifier);
 }
 
-std::string FileSystemCatalog::NewDatabasePath(const std::string& warehouse,
-                                               const std::string& db_name) {
+Result<std::string> FileSystemCatalog::NewDatabasePath(const std::string& warehouse,
+                                                       const std::string& db_name) {
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidDatabaseName(db_name));
     return PathUtil::JoinPath(warehouse, db_name + DB_SUFFIX);
 }
 
 Result<std::string> FileSystemCatalog::NewDataTablePath(const std::string& warehouse,
                                                         const Identifier& identifier) {
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(std::string data_table_name, identifier.GetDataTableName());
-    return PathUtil::JoinPath(NewDatabasePath(warehouse, identifier.GetDatabaseName()),
-                              data_table_name);
+    PAIMON_ASSIGN_OR_RAISE(std::string database_path,
+                           NewDatabasePath(warehouse, identifier.GetDatabaseName()));
+    return PathUtil::JoinPath(database_path, data_table_name);
 }
 
 Result<std::vector<std::string>> FileSystemCatalog::ListDatabases() const {
@@ -235,7 +242,7 @@ Result<std::vector<std::string>> FileSystemCatalog::ListTables(const std::string
     if (CatalogUtils::IsSystemDatabase(db_name)) {
         return GlobalSystemTableLoader::GetSupportedTableNames(catalog_options_);
     }
-    std::string database_path = NewDatabasePath(warehouse_, db_name);
+    PAIMON_ASSIGN_OR_RAISE(std::string database_path, NewDatabasePath(warehouse_, db_name));
     std::vector<BasicFileStatus> file_status_list;
     PAIMON_RETURN_NOT_OK(fs_->ListDir(database_path, &file_status_list));
     std::vector<std::string> table_names;
@@ -284,6 +291,9 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
                                system_table->ArrowSchema());
         return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
     }
+    // The branch component is dropped when the data table identifier is rebuilt below, so the
+    // identifier is validated as a whole here.
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckValidTableName(identifier));
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, identifier.IsSystemTable());
     if (is_system_table) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> system_table_name,
@@ -342,7 +352,7 @@ Status FileSystemCatalog::DropDatabase(const std::string& name, bool ignore_if_n
         }
     }
 
-    std::string db_path = NewDatabasePath(warehouse_, name);
+    PAIMON_ASSIGN_OR_RAISE(std::string db_path, NewDatabasePath(warehouse_, name));
 
     if (cascade) {
         // List all tables in the database and drop them
@@ -511,6 +521,7 @@ Status FileSystemCatalog::RenameTable(const Identifier& from_table, const Identi
 
 Result<std::vector<SnapshotInfo>> FileSystemCatalog::ListSnapshots(
     const Identifier& identifier, const std::string& branch) const {
+    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(branch));
     PAIMON_ASSIGN_OR_RAISE(bool exists, TableExists(identifier));
     if (!exists) {
         return Status::NotExist(fmt::format("table {} does not exist", identifier.ToString()));

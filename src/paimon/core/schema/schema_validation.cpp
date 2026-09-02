@@ -344,11 +344,6 @@ Status SchemaValidation::ValidateChangelogProducer(const TableSchema& schema,
             changelog_producer == ChangelogProducer::FULL_COMPACTION,
         "'{}' is only valid for 'lookup' or 'full-compaction' changelog producer.",
         Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE));
-    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
-        changelog_producer == ChangelogProducer::NONE ||
-            changelog_producer == ChangelogProducer::INPUT ||
-            changelog_producer == ChangelogProducer::LOOKUP,
-        "C++ Paimon only supports 'none', 'input' and 'lookup' changelog-producer now."));
     return Preconditions::CheckState(
         options.GetMergeEngine() != MergeEngine::FIRST_ROW ||
             changelog_producer == ChangelogProducer::NONE ||

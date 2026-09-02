@@ -66,7 +66,7 @@ class RestCatalog : public Catalog {
     Result<std::vector<std::string>> ListTables(const std::string& db_name) const override;
     Result<bool> DatabaseExists(const std::string& db_name) const override;
     Result<bool> TableExists(const Identifier& identifier) const override;
-    std::string GetDatabaseLocation(const std::string& db_name) const override;
+    Result<std::string> GetDatabaseLocation(const std::string& db_name) const override;
     Result<std::string> GetTableLocation(const Identifier& identifier) const override;
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier) const override;
     std::string GetRootPath() const override;

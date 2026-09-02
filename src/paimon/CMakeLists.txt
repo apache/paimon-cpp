@@ -329,6 +329,7 @@ set(PAIMON_CORE_SRCS
     core/mergetree/compact/merge_tree_compact_manager_factory.cpp
     core/mergetree/compact/merge_tree_compact_rewriter.cpp
     core/mergetree/compact/merge_tree_compact_task.cpp
+    core/mergetree/compact/full_changelog_merge_tree_compact_rewriter.cpp
     core/mergetree/compact/partial_update_merge_function.cpp
     core/mergetree/compact/sort_merge_reader_with_loser_tree.cpp
     core/mergetree/compact/sort_merge_reader_with_min_heap.cpp
@@ -821,6 +822,7 @@ if(PAIMON_BUILD_TESTS)
                     core/mergetree/compact/deduplicate_merge_function_test.cpp
                     core/mergetree/compact/first_row_merge_function_test.cpp
                     core/mergetree/compact/first_row_merge_function_wrapper_test.cpp
+                    core/mergetree/compact/full_changelog_merge_function_wrapper_test.cpp
                     core/mergetree/compact/internal_row_equalizer_test.cpp
                     core/mergetree/compact/interval_partition_test.cpp
                     core/mergetree/compact/lookup_changelog_merge_function_wrapper_test.cpp
