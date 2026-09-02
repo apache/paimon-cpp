@@ -31,6 +31,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/realtime/offset_range.h"
@@ -51,7 +52,9 @@ std::shared_ptr<arrow::Field> MakeField(const std::string& name,
 }
 
 std::shared_ptr<arrow::Schema> MakeTransportSchema(const arrow::FieldVector& value_fields) {
-    return RealtimePrimaryKeyLayout::CreateWriteSchema(value_fields);
+    std::shared_ptr<arrow::Schema> realtime_input_schema =
+        RealtimeOffsetUtils::CreateInputSchema(arrow::schema(value_fields));
+    return RealtimePrimaryKeyLayout::CreateSchema(realtime_input_schema->fields());
 }
 
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>>
@@ -62,7 +65,7 @@ CreateRealtimePrimaryKeyQueryReadersForTest(std::vector<std::unique_ptr<BatchRea
                                             const std::shared_ptr<MemoryPool>& memory_pool) {
     std::shared_ptr<arrow::Schema> write_schema = MakeTransportSchema(value_schema->fields());
     std::shared_ptr<arrow::Schema> logical_schema =
-        RealtimePrimaryKeyLayout::CreateLogicalSchema(value_schema->fields());
+        RealtimePrimaryKeyLayout::CreateSchema(value_schema->fields());
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
         RealtimeStoreReadPipeline::Create(logical_schema, write_schema, memory_pool,
@@ -151,7 +154,7 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestPrimaryKeySchemaLayouts) {
     ASSERT_TRUE(schema->field(4)->nullable());
 
     std::shared_ptr<arrow::Schema> logical_schema =
-        RealtimePrimaryKeyLayout::CreateLogicalSchema(value_fields);
+        RealtimePrimaryKeyLayout::CreateSchema(value_fields);
     ASSERT_EQ(logical_schema->field(0)->name(), "_VALUE_KIND");
     ASSERT_EQ(logical_schema->field(1)->name(), "_SEQUENCE_NUMBER");
     ASSERT_EQ(logical_schema->field(2)->name(), "key");
@@ -264,38 +267,6 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryBitmapBounds) {
     ASSERT_TRUE(result.status().IsInvalid());
     ASSERT_NOK_WITH_MSG(result,
                         "selected row id 1 is out of bounds for realtime query batch length 1");
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryProjectionWithReorderedTransportFields) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Field> extra = MakeField("extra", arrow::int32(), 1);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = arrow::schema({
-        key,
-        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
-        DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind())->WithNullable(false),
-        extra,
-        DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber())
-            ->WithNullable(false),
-    });
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    auto transport_array = std::dynamic_pointer_cast<arrow::StructArray>(
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type, R"([[1, 0, 0, 2, 10]])")
-            .ValueOrDie());
-
-    auto query_batch_reader =
-        std::make_unique<MockFileBatchReader>(transport_array, transport_type, 1);
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<KeyValueRecordReader> query_reader,
-        CreateRealtimePrimaryKeyQueryReaderForTest(std::move(query_batch_reader), OffsetRange(0, 1),
-                                                   value_schema, value_schema, pool_));
-    ASSERT_OK_AND_ASSIGN(
-        std::vector<KeyValue> query_results,
-        (ReadResultCollector::CollectKeyValueResult<
-            KeyValueRecordReader, KeyValueRecordReader::Iterator>(query_reader.get())));
-    ASSERT_EQ(query_results.size(), 1);
-    ASSERT_EQ(query_results[0].value->GetFieldCount(), 1);
-    ASSERT_EQ(query_results[0].value->GetInt(0), 1);
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestCommitCoverageAcrossReadersAndBatches) {

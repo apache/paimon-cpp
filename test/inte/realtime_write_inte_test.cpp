@@ -96,10 +96,6 @@ class TrackingRealtimeReadView final : public RealtimeReadView {
         return delegate_->GetOffsetRange();
     }
 
-    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
-        return delegate_->GetRowCount(visible_offsets);
-    }
-
     const std::shared_ptr<RealtimeReadView>& Delegate() const {
         return delegate_;
     }
@@ -820,8 +816,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         auto read_schema = std::make_unique<ArrowSchema>();
         std::shared_ptr<arrow::Schema> value_schema =
             DataField::ConvertDataFieldsToArrowSchema(table_schema.value()->Fields());
+        std::shared_ptr<arrow::Schema> realtime_input_schema =
+            RealtimeOffsetUtils::CreateInputSchema(value_schema);
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(
-            *RealtimePrimaryKeyLayout::CreateWriteSchema(value_schema->fields()),
+            *RealtimePrimaryKeyLayout::CreateSchema(realtime_input_schema->fields()),
             read_schema.get()));
         ScopeGuard schema_guard([schema = read_schema.get()]() { ArrowSchemaRelease(schema); });
         RealtimeQueryContext query_context{read_schema.get(), /*predicate=*/nullptr};
@@ -1055,7 +1053,7 @@ TEST_F(RealtimeWriteInteTest, TestAppendCommitAndRead) {
     FinalizeCommitAndCheck(writer.get(), /*realtime_commits=*/{}, /*prepare_identifier=*/0, rows);
 }
 
-TEST_F(RealtimeWriteInteTest, TestSparseExternalOffsetsCommitCountAndRecover) {
+TEST_F(RealtimeWriteInteTest, TestSparseExternalOffsetsCommitAndRecover) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
@@ -1074,10 +1072,6 @@ TEST_F(RealtimeWriteInteTest, TestSparseExternalOffsetsCommitCountAndRecover) {
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> realtime_rows, ReadRows(realtime_context));
     ASSERT_EQ(rows, realtime_rows);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> memory_plan,
-                         CreatePlan(realtime_context, /*predicate=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(int64_t memory_count, CountRows(memory_plan, realtime_context));
-    ASSERT_EQ(3, memory_count);
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> commits,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_EQ(1, commits.size());
@@ -2544,41 +2538,21 @@ TEST_F(RealtimeWriteInteTest, TestReadCommittedDiskAndBuildingMemory) {
     ASSERT_OK(writer->Close());
 }
 
-TEST_F(RealtimeWriteInteTest, TestCountMemoryAndDiskAcrossRefresh) {
+TEST_F(RealtimeWriteInteTest, TestCountReaderDoesNotSupportRealtimeSplit) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
                          CreateRealtimeWriter(realtime_context));
 
-    std::vector<Row> disk_rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
-                         MakeBatch(disk_rows, /*partitioned=*/false));
-    ASSERT_OK(writer->Write(std::move(disk_batch)));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> memory_plan,
+    std::vector<Row> rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(int64_t memory_count, CountRows(memory_plan, realtime_context));
-    ASSERT_EQ(3, memory_count);
-
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
-                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
-    ASSERT_OK_AND_ASSIGN(int64_t committed_snapshot_id,
-                         Commit(disk_commits, /*commit_identifier=*/0));
-    std::vector<Row> memory_rows = MakeRows(/*first_id=*/3, /*count=*/2, /*partition=*/"p0");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
-                         MakeBatch(memory_rows, /*partitioned=*/false));
-    ASSERT_OK(writer->Write(std::move(memory_batch)));
-
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> union_plan,
-                         CreatePlan(realtime_context, /*predicate=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(int64_t union_count, CountRows(union_plan, realtime_context));
-    ASSERT_EQ(5, union_count);
-
-    ASSERT_OK(writer->RefreshCommittedSnapshot(committed_snapshot_id));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> refreshed_plan,
-                         CreatePlan(realtime_context, /*predicate=*/nullptr));
-    ASSERT_OK_AND_ASSIGN(int64_t refreshed_count, CountRows(refreshed_plan, realtime_context));
-    ASSERT_EQ(union_count, refreshed_count);
+    ASSERT_NOK_WITH_MSG(CountRows(plan, realtime_context),
+                        "does not support process-local real-time splits");
     ASSERT_OK(writer->Close());
 }
 
@@ -3114,9 +3088,8 @@ void RealtimeWriteInteTest::RunUnionReadWithVariantAccess(bool primary_key) {
     disk_columns.insert(disk_columns.end(), disk_data->fields().begin(), disk_data->fields().end());
     const std::shared_ptr<arrow::Schema> realtime_schema =
         RealtimeOffsetUtils::CreateInputSchema(schema_);
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<arrow::StructArray> disk_realtime_data,
-        arrow::StructArray::Make(std::move(disk_columns), realtime_schema->fields()));
+    std::shared_ptr<arrow::StructArray> disk_realtime_data =
+        arrow::StructArray::Make(std::move(disk_columns), realtime_schema->fields()).ValueOrDie();
     ArrowArray disk_c_array;
     ASSERT_TRUE(arrow::ExportArray(*disk_realtime_data, &disk_c_array).ok());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
@@ -3138,9 +3111,8 @@ void RealtimeWriteInteTest::RunUnionReadWithVariantAccess(bool primary_key) {
     arrow::ArrayVector memory_columns = {std::move(memory_offsets)};
     memory_columns.insert(memory_columns.end(), memory_data->fields().begin(),
                           memory_data->fields().end());
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<arrow::StructArray> memory_realtime_data,
-        arrow::StructArray::Make(std::move(memory_columns), realtime_schema->fields()));
+    std::shared_ptr<arrow::StructArray> memory_realtime_data =
+        arrow::StructArray::Make(std::move(memory_columns), realtime_schema->fields()).ValueOrDie();
     ArrowArray memory_c_array;
     ASSERT_TRUE(arrow::ExportArray(*memory_realtime_data, &memory_c_array).ok());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,

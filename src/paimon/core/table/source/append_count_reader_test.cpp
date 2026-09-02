@@ -75,7 +75,7 @@ TEST_F(AppendCountReaderTest, TestCountRowsSnapshot1) {
     std::string table_path = GetDataDir() + "/orc/append_09.db/append_09";
 
     ASSERT_OK_AND_ASSIGN(auto splits, CreateSplits(table_path, /*snapshot_id=*/1));
-    AppendCountReader count_reader(splits, file_system_, {}, pool_);
+    AppendCountReader count_reader(splits, file_system_, pool_);
 
     ASSERT_OK_AND_ASSIGN(int64_t count, count_reader.CountRows());
     ASSERT_EQ(count, 5);
@@ -85,7 +85,7 @@ TEST_F(AppendCountReaderTest, TestCountRowsSnapshot5) {
     std::string table_path = GetDataDir() + "/orc/append_09.db/append_09";
 
     ASSERT_OK_AND_ASSIGN(auto splits, CreateSplits(table_path, /*snapshot_id=*/5));
-    AppendCountReader count_reader(splits, file_system_, {}, pool_);
+    AppendCountReader count_reader(splits, file_system_, pool_);
 
     ASSERT_OK_AND_ASSIGN(int64_t count, count_reader.CountRows());
     ASSERT_EQ(count, 11);
@@ -106,7 +106,7 @@ TEST_F(AppendCountReaderTest, TestCountRowsDataEvolutionTable) {
     }
     ASSERT_TRUE(has_non_raw_convertible_split);
 
-    AppendCountReader count_reader(splits, file_system_, {}, pool_);
+    AppendCountReader count_reader(splits, file_system_, pool_);
 
     ASSERT_OK_AND_ASSIGN(int64_t count, count_reader.CountRows());
     ASSERT_EQ(count, 2);
@@ -114,7 +114,7 @@ TEST_F(AppendCountReaderTest, TestCountRowsDataEvolutionTable) {
 
 TEST_F(AppendCountReaderTest, TestCountRowsWithEmptySplits) {
     std::vector<std::shared_ptr<Split>> empty_splits;
-    AppendCountReader count_reader(empty_splits, file_system_, {}, pool_);
+    AppendCountReader count_reader(empty_splits, file_system_, pool_);
 
     ASSERT_OK_AND_ASSIGN(int64_t count, count_reader.CountRows());
     ASSERT_EQ(count, 0);
@@ -122,7 +122,7 @@ TEST_F(AppendCountReaderTest, TestCountRowsWithEmptySplits) {
 
 TEST_F(AppendCountReaderTest, TestCountRowsWithInvalidSplit) {
     std::vector<std::shared_ptr<Split>> splits = {std::make_shared<DummySplit>()};
-    AppendCountReader count_reader(splits, file_system_, {}, pool_);
+    AppendCountReader count_reader(splits, file_system_, pool_);
 
     ASSERT_NOK_WITH_MSG(count_reader.CountRows(), "split cannot be cast to DataSplitImpl");
 }

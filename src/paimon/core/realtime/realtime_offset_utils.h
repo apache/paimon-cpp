@@ -40,7 +40,6 @@ class RealtimeOffsetUtils {
  public:
     struct ValidatedBatch {
         std::shared_ptr<arrow::StructArray> data;
-        std::shared_ptr<arrow::Int64Array> offsets;
         OffsetRange offset_range;
     };
 
@@ -93,8 +92,7 @@ class RealtimeOffsetUtils {
         if (previous_offset == std::numeric_limits<int64_t>::max()) {
             return Status::Invalid("real-time offset range exceeds INT64_MAX");
         }
-        return ValidatedBatch{std::move(data), std::move(offsets),
-                              OffsetRange(first_offset, previous_offset + 1)};
+        return ValidatedBatch{std::move(data), OffsetRange(first_offset, previous_offset + 1)};
     }
 };
 

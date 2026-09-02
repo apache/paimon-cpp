@@ -31,6 +31,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_primary_key_reader.h"
 #include "paimon/macros.h"
 #include "paimon/memory/memory_pool.h"
@@ -49,13 +50,19 @@ std::shared_ptr<arrow::Field> FieldWithId(const std::string& name,
         ->WithNullable(nullable);
 }
 
+std::shared_ptr<arrow::Schema> CreateTransportSchema(const arrow::FieldVector& value_fields) {
+    std::shared_ptr<arrow::Schema> realtime_input_schema =
+        RealtimeOffsetUtils::CreateInputSchema(arrow::schema(value_fields));
+    return RealtimePrimaryKeyLayout::CreateSchema(realtime_input_schema->fields());
+}
+
 std::shared_ptr<arrow::Schema> TransportSchema() {
-    return RealtimePrimaryKeyLayout::CreateWriteSchema(
+    return CreateTransportSchema(
         {FieldWithId("id", arrow::int64(), 0), FieldWithId("value", arrow::utf8(), 1)});
 }
 
 std::shared_ptr<arrow::Schema> NestedTransportSchema() {
-    return RealtimePrimaryKeyLayout::CreateWriteSchema(
+    return CreateTransportSchema(
         {FieldWithId("id", arrow::int64(), 0),
          FieldWithId("value",
                      arrow::struct_({arrow::field("name", arrow::utf8()),
@@ -136,9 +143,6 @@ TEST(PrimaryKeyRealtimeStoreTest, TestWriteAndSealValidation) {
     ASSERT_GT(store->GetMemoryUsage(), 0);
     ASSERT_OK(store->Write(
         RealtimeWriteBatch{MakeBatch(R"([[0, 4, 5, 4, "four"]])"), OffsetRange(5, 6)}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> read_view, store->AcquireReadView());
-    ASSERT_OK_AND_ASSIGN(int64_t row_count, read_view->GetRowCount(OffsetRange(1, 5)));
-    ASSERT_EQ(2, row_count);
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestCommitReaderPerStoredBatch) {
@@ -342,8 +346,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
         FieldWithId("profile", arrow::struct_({stored_profile_a}), 1),
         FieldWithId("items", arrow::list(arrow::struct_({stored_a, stored_b})), 2),
         FieldWithId("attrs", arrow::map(arrow::utf8(), arrow::struct_({stored_x, stored_y})), 3)};
-    std::shared_ptr<arrow::Schema> stored_schema =
-        RealtimePrimaryKeyLayout::CreateWriteSchema(stored_value_fields);
+    std::shared_ptr<arrow::Schema> stored_schema = CreateTransportSchema(stored_value_fields);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<PrimaryKeyRealtimeStore> store,
                          PrimaryKeyRealtimeStore::Create(stored_schema, GetDefaultPool()));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
@@ -360,8 +363,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
         FieldWithId("items", arrow::list(arrow::struct_({stored_b, stored_a})), 2));
     requested_value_fields.push_back(
         FieldWithId("attrs", arrow::map(arrow::utf8(), arrow::struct_({stored_y, stored_x})), 3));
-    std::shared_ptr<arrow::Schema> requested_schema =
-        RealtimePrimaryKeyLayout::CreateWriteSchema(requested_value_fields);
+    std::shared_ptr<arrow::Schema> requested_schema = CreateTransportSchema(requested_value_fields);
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*requested_schema, c_schema.get()).ok());
     RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};

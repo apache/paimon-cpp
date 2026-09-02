@@ -37,6 +37,7 @@
 #include "paimon/core/operation/merge_file_split_read.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_primary_key_reader.h"
 #include "paimon/core/realtime/realtime_reader.h"
 #include "paimon/core/realtime/realtime_store_read_pipeline.h"
@@ -75,7 +76,7 @@ Result<std::shared_ptr<arrow::Schema>> CreateRealtimePrimaryKeyLogicalSchema(
             transport_value_fields.push_back(field);
         }
     }
-    return RealtimePrimaryKeyLayout::CreateLogicalSchema(transport_value_fields);
+    return RealtimePrimaryKeyLayout::CreateSchema(transport_value_fields);
 }
 
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
@@ -88,8 +89,10 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
     const std::shared_ptr<MemoryPool>& memory_pool) {
     std::shared_ptr<arrow::Schema> table_write_schema =
         DataField::ConvertDataFieldsToArrowSchema(context->GetTableSchema()->Fields());
+    std::shared_ptr<arrow::Schema> realtime_input_schema =
+        RealtimeOffsetUtils::CreateInputSchema(table_write_schema);
     std::shared_ptr<arrow::Schema> realtime_write_schema =
-        RealtimePrimaryKeyLayout::CreateWriteSchema(table_write_schema->fields());
+        RealtimePrimaryKeyLayout::CreateSchema(realtime_input_schema->fields());
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
         RealtimeStoreReadPipeline::Create(logical_schema, realtime_write_schema, memory_pool,

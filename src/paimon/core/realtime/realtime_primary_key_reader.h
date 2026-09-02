@@ -37,12 +37,8 @@ class RealtimePrimaryKeyLayout {
     RealtimePrimaryKeyLayout() = delete;
     ~RealtimePrimaryKeyLayout() = delete;
 
-    /// Creates `_VALUE_KIND`, `_SEQUENCE_NUMBER`, `_REALTIME_OFFSET`, then value fields.
-    static std::shared_ptr<arrow::Schema> CreateWriteSchema(
-        const std::vector<std::shared_ptr<arrow::Field>>& value_fields);
-
     /// Creates `_VALUE_KIND`, `_SEQUENCE_NUMBER`, then value fields.
-    static std::shared_ptr<arrow::Schema> CreateLogicalSchema(
+    static std::shared_ptr<arrow::Schema> CreateSchema(
         const std::vector<std::shared_ptr<arrow::Field>>& value_fields);
 };
 

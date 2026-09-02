@@ -116,29 +116,6 @@ class ArrowRealtimeStore::ReadView : public RealtimeReadView {
         return offset_range_;
     }
 
-    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
-        int64_t result = 0;
-        for (const StoredBatch& batch : batches_) {
-            std::shared_ptr<arrow::Array> offset_field =
-                batch.data->GetFieldByName(SpecialFields::RealtimeOffset().Name());
-            if (!offset_field || offset_field->type_id() != arrow::Type::INT64) {
-                return Status::Invalid("real-time stored batch must contain int64 offset");
-            }
-            std::shared_ptr<arrow::Int64Array> offsets =
-                checked_pointer_cast<arrow::Int64Array>(offset_field);
-            if (offsets->null_count() != 0) {
-                return Status::Invalid("real-time stored offset column contains null");
-            }
-            for (int64_t row = 0; row < offsets->length(); ++row) {
-                const int64_t offset = offsets->Value(row);
-                if (offset >= visible_offsets.begin && offset < visible_offsets.end) {
-                    ++result;
-                }
-            }
-        }
-        return result;
-    }
-
     const std::vector<StoredBatch>& GetBatches() const {
         return batches_;
     }

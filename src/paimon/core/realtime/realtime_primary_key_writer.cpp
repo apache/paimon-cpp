@@ -48,18 +48,13 @@ namespace paimon {
 
 namespace {
 
-struct PrimaryKeyTransportBatch {
-    std::shared_ptr<arrow::StructArray> data;
-    OffsetRange offset_range;
-};
-
-Result<PrimaryKeyTransportBatch> CreateRealtimePrimaryKeyTransportBatch(
+Result<RealtimeOffsetUtils::ValidatedBatch> CreateRealtimePrimaryKeyTransportBatch(
     RealtimeOffsetUtils::ValidatedBatch&& validated,
     const std::vector<RecordBatch::RowKind>& row_kinds,
     const std::shared_ptr<arrow::Schema>& transport_schema,
     const std::vector<std::string>& trimmed_primary_keys, int64_t first_sequence_number,
     arrow::MemoryPool* arrow_pool) {
-    std::shared_ptr<arrow::StructArray> values = validated.data;
+    std::shared_ptr<arrow::StructArray> values = std::move(validated.data);
     const int64_t count = values->length();
     arrow::Int8Builder kinds(arrow_pool);
     arrow::Int64Builder sequences(arrow_pool);
@@ -75,9 +70,8 @@ Result<PrimaryKeyTransportBatch> CreateRealtimePrimaryKeyTransportBatch(
     std::shared_ptr<arrow::Array> sequence_array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(kinds.Finish(&kind_array));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(sequences.Finish(&sequence_array));
-    arrow::ArrayVector columns = {std::move(kind_array), std::move(sequence_array),
-                                  std::move(validated.offsets)};
-    columns.insert(columns.end(), std::next(values->fields().begin()), values->fields().end());
+    arrow::ArrayVector columns = {std::move(kind_array), std::move(sequence_array)};
+    columns.insert(columns.end(), values->fields().begin(), values->fields().end());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::StructArray> transport,
         arrow::StructArray::Make(std::move(columns), transport_schema->fields()));
@@ -98,8 +92,8 @@ Result<PrimaryKeyTransportBatch> CreateRealtimePrimaryKeyTransportBatch(
         arrow::Datum sorted,
         arrow::compute::Take(arrow::Datum(transport), indices,
                              arrow::compute::TakeOptions::NoBoundsCheck(), &context));
-    return PrimaryKeyTransportBatch{checked_pointer_cast<arrow::StructArray>(sorted.make_array()),
-                                    validated.offset_range};
+    validated.data = checked_pointer_cast<arrow::StructArray>(sorted.make_array());
+    return validated;
 }
 
 }  // namespace
@@ -195,7 +189,7 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         return Status::Invalid("PK sequence range exceeds INT64_MAX");
     }
     const int64_t first_sequence = last_sequence_number_ + 1;
-    PAIMON_ASSIGN_OR_RAISE(PrimaryKeyTransportBatch transport,
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetUtils::ValidatedBatch transport,
                            CreateRealtimePrimaryKeyTransportBatch(
                                std::move(validated), row_kinds, transport_schema_,
                                trimmed_primary_keys_, first_sequence, arrow_pool_.get()));

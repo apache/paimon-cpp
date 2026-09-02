@@ -46,22 +46,17 @@
 namespace paimon {
 namespace {
 
-Result<std::shared_ptr<arrow::Schema>> AddRealtimeOffsetToSchema(
-    std::unique_ptr<::ArrowSchema>& write_schema) {
+Result<std::shared_ptr<arrow::Schema>> AddRealtimeOffsetToSchema(::ArrowSchema* write_schema) {
     if (!write_schema || !write_schema->release) {
         return Status::Invalid("real-time store write schema is null");
     }
-    ScopeGuard schema_guard([schema = write_schema.get()]() { ArrowSchemaRelease(schema); });
+    ScopeGuard schema_guard([write_schema]() { ArrowSchemaRelease(write_schema); });
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> input_schema,
-                                      arrow::ImportSchema(write_schema.get()));
+                                      arrow::ImportSchema(write_schema));
     schema_guard.Release();
-    arrow::FieldVector fields = {
-        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset())};
-    fields.insert(fields.end(), input_schema->fields().begin(), input_schema->fields().end());
     std::shared_ptr<arrow::Schema> realtime_write_schema =
-        arrow::schema(std::move(fields), input_schema->metadata());
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportSchema(*realtime_write_schema, write_schema.get()));
+        RealtimeOffsetUtils::CreateInputSchema(input_schema);
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*realtime_write_schema, write_schema));
     return realtime_write_schema;
 }
 
@@ -81,7 +76,7 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                            RealtimeContextImpl::Cast(realtime_context));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> realtime_write_schema,
-                           AddRealtimeOffsetToSchema(write_schema));
+                           AddRealtimeOffsetToSchema(write_schema.get()));
     RealtimeStoreCreateRequest request{std::move(write_schema), options, memory_pool,
                                        RealtimeStoreMode::APPEND_ONLY, statistics_mode};
     PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,

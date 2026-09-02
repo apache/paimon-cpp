@@ -28,7 +28,6 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/metrics/metrics_impl.h"
-#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -85,31 +84,6 @@ class ReadView final : public RealtimeReadView {
 
     std::optional<OffsetRange> GetOffsetRange() const override {
         return range_;
-    }
-
-    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
-        int64_t result = 0;
-        for (const std::shared_ptr<Segment>& segment : segments_) {
-            for (const StoredBatch& batch : segment->Batches()) {
-                std::shared_ptr<arrow::Array> offset_field =
-                    batch.data->GetFieldByName(SpecialFields::RealtimeOffset().Name());
-                if (!offset_field || offset_field->type_id() != arrow::Type::INT64) {
-                    return Status::Invalid("PK real-time stored batch must contain int64 offset");
-                }
-                std::shared_ptr<arrow::Int64Array> offsets =
-                    checked_pointer_cast<arrow::Int64Array>(offset_field);
-                if (offsets->null_count() != 0) {
-                    return Status::Invalid("PK real-time stored offset column contains null");
-                }
-                for (int64_t row = 0; row < offsets->length(); ++row) {
-                    const int64_t offset = offsets->Value(row);
-                    if (offset >= visible_offsets.begin && offset < visible_offsets.end) {
-                        ++result;
-                    }
-                }
-            }
-        }
-        return result;
     }
 
     const std::vector<std::shared_ptr<Segment>>& Segments() const {

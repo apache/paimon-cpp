@@ -33,19 +33,6 @@
 namespace paimon {
 namespace {
 
-std::shared_ptr<arrow::Schema> CreatePrimaryKeySchema(
-    const std::vector<std::shared_ptr<arrow::Field>>& value_fields, bool include_offset) {
-    arrow::FieldVector fields = {
-        DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind())->WithNullable(false),
-        DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber())
-            ->WithNullable(false)};
-    if (include_offset) {
-        fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()));
-    }
-    fields.insert(fields.end(), value_fields.begin(), value_fields.end());
-    return arrow::schema(std::move(fields));
-}
-
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateKeyValueReaders(
     std::vector<std::unique_ptr<BatchReader>>&& readers,
     const std::shared_ptr<arrow::Schema>& key_schema,
@@ -66,14 +53,14 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateKeyValueReaders
 
 }  // namespace
 
-std::shared_ptr<arrow::Schema> RealtimePrimaryKeyLayout::CreateWriteSchema(
+std::shared_ptr<arrow::Schema> RealtimePrimaryKeyLayout::CreateSchema(
     const std::vector<std::shared_ptr<arrow::Field>>& value_fields) {
-    return CreatePrimaryKeySchema(value_fields, /*include_offset=*/true);
-}
-
-std::shared_ptr<arrow::Schema> RealtimePrimaryKeyLayout::CreateLogicalSchema(
-    const std::vector<std::shared_ptr<arrow::Field>>& value_fields) {
-    return CreatePrimaryKeySchema(value_fields, /*include_offset=*/false);
+    arrow::FieldVector fields = {
+        DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind())->WithNullable(false),
+        DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber())
+            ->WithNullable(false)};
+    fields.insert(fields.end(), value_fields.begin(), value_fields.end());
+    return arrow::schema(std::move(fields));
 }
 
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>>

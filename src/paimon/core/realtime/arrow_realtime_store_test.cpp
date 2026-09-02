@@ -58,10 +58,6 @@ class ForeignReadView : public RealtimeReadView {
     std::optional<OffsetRange> GetOffsetRange() const override {
         return OffsetRange(0, 1);
     }
-
-    Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const override {
-        return visible_offsets.begin <= 0 && visible_offsets.end > 0 ? 1 : 0;
-    }
 };
 
 class ArrowRealtimeStoreTest : public testing::Test {

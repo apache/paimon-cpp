@@ -82,7 +82,7 @@ struct PAIMON_EXPORT RealtimeWriteBatch {
 /// Opaque handle to an immutable segment returned by `RealtimeStore::SealForCommit`.
 ///
 /// A plugin may store the segment in memory or in spill files. Callers use this handle only to
-/// request commit readers and inspect its offset range.
+/// request commit readers and inspect its offset range and row count.
 class PAIMON_EXPORT RealtimeSegmentHandle {
  public:
     virtual ~RealtimeSegmentHandle() = default;
@@ -105,11 +105,6 @@ class PAIMON_EXPORT RealtimeReadView {
     /// Returns the left-closed, right-open offset range visible in this view, or no range when it
     /// is empty.
     virtual std::optional<OffsetRange> GetOffsetRange() const = 0;
-
-    /// Returns the exact number of rows whose offsets fall in `visible_offsets`.
-    ///
-    /// Offset ranges may contain gaps, so callers cannot derive this count from the range width.
-    virtual Result<int64_t> GetRowCount(const OffsetRange& visible_offsets) const = 0;
 };
 
 /// Parameters used by a `RealtimeStore` to create readers for a query.

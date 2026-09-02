@@ -34,10 +34,6 @@ class TestingReadView : public RealtimeReadView {
     std::optional<OffsetRange> GetOffsetRange() const override {
         return std::nullopt;
     }
-
-    Result<int64_t> GetRowCount(const OffsetRange&) const override {
-        return 0;
-    }
 };
 
 class TestingBatchReader : public BatchReader {
