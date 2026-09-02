@@ -3290,6 +3290,14 @@ TEST_P(GlobalIndexTest, TestBTreeScanWithPartitionWithMultiMeta) {
             auto gt_mid,
             reader->VisitGreaterThan(Literal(Decimal::FromUnscaledLong(10 * 123456L, 18, 6))));
         ASSERT_EQ(count_rows(gt_mid), 18);
+
+        // Global index readers do not rescale Decimal literals. A mathematically equivalent
+        // literal with a different scale produces an incorrect empty result, so callers must use
+        // the field's scale.
+        ASSERT_OK_AND_ASSIGN(auto eq_same_value_different_scale,
+                             reader->VisitEqual(Literal(Decimal::FromUnscaledLong(
+                                 5 * 1234560L, /*precision=*/18, /*scale=*/7))));
+        ASSERT_EQ(count_rows(eq_same_value_different_scale), 0);
     }
 
     // ---- col_string (values are "str_00000" .. "str_00019") ----

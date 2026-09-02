@@ -739,6 +739,11 @@ TEST_F(RangeBitmapFileIndexTest, TestWriteAndReadStringDecimalAndTimestamp) {
         CheckResult(reader->VisitEqual(Literal(Decimal(10, 2, 250))).value(), {1, 4});
         CheckResult(reader->VisitLessThan(Literal(Decimal(10, 2, 0))).value(), {3});
         CheckResult(reader->VisitIsNull().value(), {2});
+
+        // Range Bitmap does not rescale Decimal literals. A mathematically equivalent literal
+        // with a different scale produces an incorrect empty result, so callers must use the
+        // field's scale.
+        CheckResult(reader->VisitEqual(Literal(Decimal(10, 3, 2500))).value(), {});
     }
     {
         const auto type = arrow::timestamp(arrow::TimeUnit::MICRO);

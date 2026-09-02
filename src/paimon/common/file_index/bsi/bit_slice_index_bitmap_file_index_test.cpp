@@ -437,6 +437,10 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestDecimalType) {
     CheckResult(reader->VisitLessThan(Literal(Decimal(10, 2, 0))).value(), {3});
     CheckResult(reader->VisitIsNull().value(), {2});
 
+    // BSI does not rescale Decimal literals. A mathematically equivalent literal with a
+    // different scale produces an incorrect empty result, so callers must use the field's scale.
+    CheckResult(reader->VisitEqual(Literal(Decimal(10, 3, 2500))).value(), {});
+
     // test invalid case for decimal128(20, 0) which exceeds int64 range
     ASSERT_NOK_WITH_MSG(WriteIndex(arrow::decimal128(20, 0), R"([["9223372036854775808"]])"),
                         "does not fit in int64 for bsi index");
