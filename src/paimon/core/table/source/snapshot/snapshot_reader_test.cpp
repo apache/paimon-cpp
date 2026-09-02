@@ -92,7 +92,9 @@ TEST_F(SnapshotReaderTest, GetDeletionFilesOverwritesDuplicateDataFileName) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
                          CreateIndexFileHandler());
     SnapshotReader snapshot_reader(/*scan=*/nullptr, /*path_factory=*/nullptr,
-                                   /*split_generator=*/nullptr, std::move(index_file_handler));
+                                   /*split_generator=*/nullptr, std::move(index_file_handler),
+                                   /*table_schema=*/nullptr,
+                                   /*snapshot_read_view=*/nullptr);
 
     const std::string data_file_name = "data-0.orc";
     std::vector<std::shared_ptr<DataFileMeta>> data_files = {CreateDataFileMeta(data_file_name)};

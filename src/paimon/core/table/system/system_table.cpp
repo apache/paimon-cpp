@@ -223,6 +223,13 @@ Result<std::optional<SystemTablePath>> SystemTableLoader::TryParsePath(const std
 Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
     const std::shared_ptr<FileSystem>& fs, const std::string& path,
     const std::map<std::string, std::string>& dynamic_options) {
+    return LoadFromPath(fs, path, dynamic_options, nullptr);
+}
+
+Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
+    const std::shared_ptr<FileSystem>& fs, const std::string& path,
+    const std::map<std::string, std::string>& dynamic_options,
+    const std::shared_ptr<TableSchema>& table_schema) {
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path, TryParsePath(path));
     if (!system_table_path) {
         return Status::Invalid("path is not a system table path: ", path);
@@ -243,18 +250,22 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         return GlobalSystemTableLoader::Load(parsed.system_table_name, context);
     }
 
-    SchemaManager schema_manager(fs, parsed.table_path,
-                                 parsed.branch.value_or(BranchManager::DEFAULT_MAIN_BRANCH));
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
-                           schema_manager.Latest());
-    if (!latest_schema) {
-        return Status::NotExist("base table schema not found for system table path: ", path);
+    std::shared_ptr<TableSchema> resolved_schema = table_schema;
+    if (!resolved_schema) {
+        SchemaManager schema_manager(fs, parsed.table_path,
+                                     parsed.branch.value_or(BranchManager::DEFAULT_MAIN_BRANCH));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                               schema_manager.Latest());
+        if (!latest_schema) {
+            return Status::NotExist("base table schema not found for system table path: ", path);
+        }
+        resolved_schema = latest_schema.value();
     }
     auto options = dynamic_options;
     if (parsed.branch) {
         options[Options::BRANCH] = parsed.branch.value();
     }
-    return Load(parsed.system_table_name, fs, parsed.table_path, latest_schema.value(), options);
+    return Load(parsed.system_table_name, fs, parsed.table_path, resolved_schema, options);
 }
 
 }  // namespace paimon

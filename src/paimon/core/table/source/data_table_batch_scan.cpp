@@ -90,7 +90,7 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
         std::dynamic_pointer_cast<StartingScanner::CurrentSnapshot>(scan_result);
     if (!current_scan_result) {
         // NoSnapshot
-        return PlanImpl::EmptyPlan();
+        return snapshot_reader_->EmptyPlan();
     }
     if (!CanPushDownLimit()) {
         return current_scan_result->GetPlan();
@@ -126,7 +126,9 @@ Result<std::shared_ptr<Plan>> DataTableBatchScan::ApplyPushDownLimit(
                              "rows.",
                              limited_data_splits.size(), splits.size(), push_down_limit_.value(),
                              scanned_row_count);
-            return std::make_shared<PlanImpl>(snapshot_id, limited_data_splits);
+            return std::make_shared<PlanImpl>(
+                snapshot_id, limited_data_splits,
+                current_scan_result->GetPlan()->GetSnapshotReadView());
         }
     }
     return current_scan_result->GetPlan();

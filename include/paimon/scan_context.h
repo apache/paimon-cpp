@@ -37,6 +37,7 @@ class ScanFilter;
 class Executor;
 class MemoryPool;
 class Predicate;
+class SnapshotReadView;
 
 /// `ScanContext` is some configuration for table scan operations.
 ///
@@ -55,6 +56,18 @@ class PAIMON_EXPORT ScanContext {
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
                 const std::shared_ptr<Cache>& cache);
+
+    ScanContext(const std::string& path, bool is_streaming_mode, std::optional<int32_t> limit,
+                const std::shared_ptr<ScanFilter>& scan_filter,
+                const std::shared_ptr<GlobalIndexResult>& global_index_result,
+                const std::shared_ptr<RealtimeContext>& realtime_context,
+                const std::shared_ptr<MemoryPool>& memory_pool,
+                const std::shared_ptr<Executor>& executor,
+                const std::shared_ptr<FileSystem>& specific_file_system,
+                const std::optional<std::string>& table_schema,
+                const std::map<std::string, std::string>& options,
+                const std::shared_ptr<Cache>& cache,
+                const std::shared_ptr<const SnapshotReadView>& snapshot_read_view);
 
     ~ScanContext();
 
@@ -105,6 +118,10 @@ class PAIMON_EXPORT ScanContext {
         return cache_;
     }
 
+    std::shared_ptr<const SnapshotReadView> GetSnapshotReadView() const {
+        return snapshot_read_view_;
+    }
+
  private:
     std::string path_;
     bool is_streaming_mode_;
@@ -118,6 +135,7 @@ class PAIMON_EXPORT ScanContext {
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
+    std::shared_ptr<const SnapshotReadView> snapshot_read_view_;
 };
 
 /// Filter configuration for table scan operations
@@ -219,6 +237,15 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// Inject a cache for scan operations. Passing nullptr disables cache.
     /// @return Reference to this builder for method chaining.
     ScanContextBuilder& WithCache(const std::shared_ptr<Cache>& cache);
+
+    /// Reuse the immutable parsed snapshot metadata from an earlier batch scan plan.
+    ///
+    /// The view must belong to the same normalized table path and branch. Snapshot read views are
+    /// supported for non-streaming latest-snapshot scans.
+    /// @param snapshot_read_view A read view returned by `Plan::GetSnapshotReadView()`.
+    /// @return Reference to this builder for method chaining.
+    ScanContextBuilder& WithSnapshotReadView(
+        const std::shared_ptr<const SnapshotReadView>& snapshot_read_view);
 
     /// Build and return a `ScanContext` instance with input validation.
     /// @return Result containing the constructed `ScanContext` or an error status.

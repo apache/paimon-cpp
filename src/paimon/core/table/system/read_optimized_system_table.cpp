@@ -34,7 +34,6 @@
 #include "paimon/table/source/table_scan.h"
 
 namespace paimon {
-
 ReadOptimizedSystemTable::ReadOptimizedSystemTable(std::string table_path,
                                                    std::shared_ptr<TableSchema> table_schema,
                                                    std::map<std::string, std::string> options)
@@ -85,6 +84,9 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     }
     if (context->GetSpecificTableSchema().has_value()) {
         builder.SetTableSchema(context->GetSpecificTableSchema().value());
+    }
+    if (context->GetSnapshotReadView()) {
+        builder.WithSnapshotReadView(context->GetSnapshotReadView());
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> base_context, builder.Finish());
     return TableScan::Create(std::move(base_context));

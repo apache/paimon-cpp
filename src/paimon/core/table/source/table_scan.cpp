@@ -32,6 +32,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
@@ -58,7 +59,9 @@
 #include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/table/source/realtime_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
+#include "paimon/core/table/source/snapshot_read_view_impl.h"
 #include "paimon/core/table/source/split_generator.h"
+#include "paimon/core/table/system/read_optimized_system_table.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -212,10 +215,37 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
+        if (shared_context->GetSnapshotReadView() && shared_context->GetRealtimeContext()) {
+            return Status::Invalid("snapshot read view does not support real-time union scan");
+        }
+        std::shared_ptr<TableSchema> system_table_schema;
+        if (shared_context->GetSnapshotReadView()) {
+            if (system_table_path->is_global ||
+                StringUtils::ToLowerCase(system_table_path->system_table_name) !=
+                    ReadOptimizedSystemTable::kName) {
+                return Status::Invalid(
+                    "snapshot read view can only be used with the read-optimized system table");
+            }
+            std::string branch = BranchManager::NormalizeBranch(
+                system_table_path->branch.value_or(tmp_options.GetBranch()));
+            PAIMON_RETURN_NOT_OK(SnapshotReadViewImpl::ValidateBinding(
+                shared_context->GetSnapshotReadView(), system_table_path->table_path, branch));
+            PAIMON_ASSIGN_OR_RAISE(system_table_schema, SnapshotReadViewImpl::GetTableSchema(
+                                                            shared_context->GetSnapshotReadView()));
+        } else {
+            std::string branch = BranchManager::NormalizeBranch(
+                system_table_path->branch.value_or(tmp_options.GetBranch()));
+            if (branch == BranchManager::DEFAULT_MAIN_BRANCH &&
+                shared_context->GetSpecificTableSchema()) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    system_table_schema,
+                    TableSchema::CreateFromJson(shared_context->GetSpecificTableSchema().value()));
+            }
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), shared_context->GetPath(),
-                                            shared_context->GetOptions()));
+                                            shared_context->GetOptions(), system_table_schema));
         return system_table->NewScan(shared_context);
     }
     return NewDataTableScan(shared_context);
@@ -266,9 +296,23 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
         CoreOptions tmp_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(), {}));
     std::string branch = BranchManager::NormalizeBranch(tmp_options.GetBranch());
+    std::shared_ptr<const SnapshotReadView> snapshot_read_view = context->GetSnapshotReadView();
+    if (snapshot_read_view) {
+        PAIMON_RETURN_NOT_OK(
+            SnapshotReadViewImpl::ValidateBinding(snapshot_read_view, context->GetPath(), branch));
+        if (context->IsStreamingMode()) {
+            return Status::Invalid("snapshot read view does not support streaming scan");
+        }
+        if (context->GetRealtimeContext()) {
+            return Status::Invalid("snapshot read view does not support real-time union scan");
+        }
+    }
     std::shared_ptr<TableSchema> table_schema;
-    const auto& specific_table_schema = context->GetSpecificTableSchema();
-    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
+    if (snapshot_read_view) {
+        PAIMON_ASSIGN_OR_RAISE(table_schema,
+                               SnapshotReadViewImpl::GetTableSchema(snapshot_read_view));
+    } else if (const auto& specific_table_schema = context->GetSpecificTableSchema();
+               branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema) {
         PAIMON_ASSIGN_OR_RAISE(table_schema,
                                TableSchema::CreateFromJson(specific_table_schema.value()));
     } else {
@@ -291,6 +335,18 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, context->GetSpecificFileSystem(), {}));
     core_options.WithCache(context->GetCache());
+
+    if (snapshot_read_view) {
+        StartupMode startup_mode = core_options.GetStartupMode();
+        if (!(startup_mode == StartupMode::LatestFull() || startup_mode == StartupMode::Latest())) {
+            return Status::Invalid("snapshot read view requires a latest-snapshot startup mode");
+        }
+    }
+
+    StartupMode startup_mode = core_options.GetStartupMode();
+    bool publish_snapshot_read_view =
+        !context->IsStreamingMode() && !context->GetRealtimeContext() &&
+        (startup_mode == StartupMode::LatestFull() || startup_mode == StartupMode::Latest());
 
     PAIMON_RETURN_NOT_OK(
         ValidateRealtimeScan(*table_schema, core_options, *context, read_optimized));
@@ -340,7 +396,8 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
                            TableScanImpl::CreateIndexFileHandler(core_options, path_factory,
                                                                  context->GetMemoryPool()));
     auto snapshot_reader = std::make_shared<SnapshotReader>(
-        file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler));
+        file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler),
+        publish_snapshot_read_view ? table_schema : nullptr, snapshot_read_view);
     const bool pk_table = !table_schema->PrimaryKeys().empty();
     if (read_optimized && pk_table && context->IsStreamingMode()) {
         return Status::NotImplemented(

@@ -161,10 +161,18 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
+        std::shared_ptr<TableSchema> system_table_schema;
+        std::string branch = BranchManager::NormalizeBranch(
+            system_table_path->branch.value_or(tmp_core_options.GetBranch()));
+        if (branch == BranchManager::DEFAULT_MAIN_BRANCH && context->GetSpecificTableSchema()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                system_table_schema,
+                TableSchema::CreateFromJson(context->GetSpecificTableSchema().value()));
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                            context->GetOptions()));
+                                            context->GetOptions(), system_table_schema));
         return system_table->NewRead(context);
     }
 

@@ -31,6 +31,7 @@
 #include "paimon/core/table/source/primary_key_sorted_index_result.h"
 #include "paimon/core/table/source/primary_key_sorted_index_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
+#include "paimon/core/table/source/snapshot_read_view_impl.h"
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/logging.h"
@@ -86,13 +87,23 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
     int64_t snapshot_id = data_plan->SnapshotId().value();
     const std::shared_ptr<SnapshotManager>& snapshot_manager =
         snapshot_reader_->GetSnapshotManager();
-    Result<Snapshot> snapshot_result = snapshot_manager->LoadSnapshot(snapshot_id);
-    if (!snapshot_result.ok()) {
-        static auto logger = Logger::GetLogger("PrimaryKeyIndexBatchScan");
-        PAIMON_LOG_WARN(logger,
-                        "Failed to load snapshot %ld for primary-key sorted-index planning; "
-                        "falling back to the unindexed data plan: %s",
-                        snapshot_id, snapshot_result.status().ToString().c_str());
+    std::shared_ptr<const Snapshot> snapshot;
+    if (data_plan->GetSnapshotReadView()) {
+        PAIMON_ASSIGN_OR_RAISE(snapshot,
+                               SnapshotReadViewImpl::GetSnapshot(data_plan->GetSnapshotReadView()));
+    } else {
+        Result<Snapshot> snapshot_result = snapshot_manager->LoadSnapshot(snapshot_id);
+        if (!snapshot_result.ok()) {
+            static auto logger = Logger::GetLogger("PrimaryKeyIndexBatchScan");
+            PAIMON_LOG_WARN(logger,
+                            "Failed to load snapshot %ld for primary-key sorted-index planning; "
+                            "falling back to the unindexed data plan: %s",
+                            snapshot_id, snapshot_result.status().ToString().c_str());
+            return data_plan;
+        }
+        snapshot = std::make_shared<const Snapshot>(std::move(snapshot_result).value());
+    }
+    if (!snapshot) {
         return data_plan;
     }
 
@@ -111,7 +122,7 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
                indexed_field_ids.count(meta.value().index_field_id) > 0;
     };
     PAIMON_ASSIGN_OR_RAISE(std::vector<IndexManifestEntry> index_entries,
-                           index_file_handler->Scan(snapshot_result.value(), entry_filter));
+                           index_file_handler->Scan(*snapshot, entry_filter));
 
     PAIMON_ASSIGN_OR_RAISE(PrimaryKeySortedIndexScan::Plan index_plan,
                            PrimaryKeySortedIndexScan::CreatePlan(
@@ -132,7 +143,8 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
                                             scalar_definitions_, reader_factory));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Split>> splits,
                            PrimaryKeySortedIndexResult::ToSplits(evaluated_plan));
-    return std::make_shared<PlanImpl>(data_plan->SnapshotId(), splits);
+    return std::make_shared<PlanImpl>(data_plan->SnapshotId(), splits,
+                                      data_plan->GetSnapshotReadView());
 }
 
 }  // namespace paimon

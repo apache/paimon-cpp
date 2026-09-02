@@ -27,4 +27,13 @@ const std::shared_ptr<Plan> PlanImpl::EmptyPlan() {
     return empty_plan;
 }
 
+const std::shared_ptr<Plan> PlanImpl::EmptyPlan(
+    const std::shared_ptr<const SnapshotReadView>& snapshot_read_view) {
+    if (!snapshot_read_view) {
+        return EmptyPlan();
+    }
+    return std::make_shared<PlanImpl>(std::optional<int64_t>(),
+                                      std::vector<std::shared_ptr<Split>>(), snapshot_read_view);
+}
+
 }  // namespace paimon

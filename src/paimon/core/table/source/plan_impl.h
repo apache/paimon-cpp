@@ -33,7 +33,12 @@ class PlanImpl : public Plan {
  public:
     PlanImpl(const std::optional<int64_t>& snapshot_id,
              const std::vector<std::shared_ptr<Split>>& splits)
-        : snapshot_id_(snapshot_id), splits_(splits) {}
+        : PlanImpl(snapshot_id, splits, nullptr) {}
+
+    PlanImpl(const std::optional<int64_t>& snapshot_id,
+             const std::vector<std::shared_ptr<Split>>& splits,
+             const std::shared_ptr<const SnapshotReadView>& snapshot_read_view)
+        : snapshot_id_(snapshot_id), splits_(splits), snapshot_read_view_(snapshot_read_view) {}
 
     std::optional<int64_t> SnapshotId() const override {
         return snapshot_id_;
@@ -43,10 +48,18 @@ class PlanImpl : public Plan {
         return splits_;
     }
 
+    std::shared_ptr<const SnapshotReadView> GetSnapshotReadView() const override {
+        return snapshot_read_view_;
+    }
+
     static const std::shared_ptr<Plan> EmptyPlan();
+
+    static const std::shared_ptr<Plan> EmptyPlan(
+        const std::shared_ptr<const SnapshotReadView>& snapshot_read_view);
 
  private:
     std::optional<int64_t> snapshot_id_;
     std::vector<std::shared_ptr<Split>> splits_;
+    std::shared_ptr<const SnapshotReadView> snapshot_read_view_;
 };
 }  // namespace paimon

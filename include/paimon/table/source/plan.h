@@ -23,6 +23,7 @@
 #include <optional>
 #include <vector>
 
+#include "paimon/table/source/snapshot_read_view.h"
 #include "paimon/table/source/split.h"
 
 namespace paimon {
@@ -34,5 +35,13 @@ class PAIMON_EXPORT Plan {
     virtual const std::vector<std::shared_ptr<Split>>& Splits() const = 0;
     /// Snapshot id of this plan, return `std::nullopt` if the table is empty.
     virtual std::optional<int64_t> SnapshotId() const = 0;
+    /// Immutable snapshot metadata used to build this plan.
+    ///
+    /// The returned view can be injected into a later batch scan to reuse the already resolved and
+    /// parsed snapshot. Only non-streaming, non-real-time latest-snapshot plans publish a reusable
+    /// view; other plans return `nullptr`.
+    virtual std::shared_ptr<const SnapshotReadView> GetSnapshotReadView() const {
+        return nullptr;
+    }
 };
 }  // namespace paimon

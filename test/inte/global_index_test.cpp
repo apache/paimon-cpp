@@ -1442,6 +1442,28 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
         ASSERT_EQ(cache->SupplierCallCount(CacheKind::MANIFEST), first_supplier_calls);
     }
 
+    {
+        auto cache = std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 64 * 1024 * 1024);
+        auto predicate =
+            PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                    Literal(FieldType::STRING, "Alice", 5));
+        const std::map<std::string, std::string> options = {{Options::SCAN_SNAPSHOT_ID, "2"}};
+        ASSERT_OK_AND_ASSIGN(auto first_plan,
+                             ScanGlobalIndexAndData(table_path, predicate, options,
+                                                    /*index_result=*/nullptr, cache));
+        ASSERT_TRUE(first_plan->SnapshotId());
+        ASSERT_EQ(first_plan->SnapshotId().value(), 2);
+        ASSERT_GE(cache->GetCount(CacheKind::MANIFEST), 2);
+        int64_t first_supplier_calls = cache->SupplierCallCount(CacheKind::MANIFEST);
+
+        ASSERT_OK_AND_ASSIGN(auto second_plan,
+                             ScanGlobalIndexAndData(table_path, predicate, options,
+                                                    /*index_result=*/nullptr, cache));
+        ASSERT_TRUE(second_plan->SnapshotId());
+        ASSERT_EQ(second_plan->SnapshotId().value(), 2);
+        ASSERT_EQ(cache->SupplierCallCount(CacheKind::MANIFEST), first_supplier_calls);
+    }
+
     // scan and read with global index
     {
         auto predicate =

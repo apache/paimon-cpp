@@ -36,9 +36,54 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/plan_impl.h"
+#include "paimon/core/table/source/snapshot_read_view_impl.h"
 #include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/core/utils/snapshot_manager.h"
 
 namespace paimon {
+Result<std::shared_ptr<const SnapshotReadView>> SnapshotReader::CaptureLatestSnapshotReadView() {
+    if (snapshot_read_view_) {
+        return snapshot_read_view_;
+    }
+    if (!table_schema_) {
+        return Status::Invalid("snapshot reader is not configured to publish a read view");
+    }
+    const std::shared_ptr<SnapshotManager>& snapshot_manager = GetSnapshotManager();
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, snapshot_manager->LatestSnapshot());
+    snapshot_read_view_ =
+        SnapshotReadViewImpl::Create(snapshot_manager->RootPath(), snapshot_manager->Branch(),
+                                     std::move(snapshot), table_schema_);
+    return snapshot_read_view_;
+}
+
+Result<std::optional<std::shared_ptr<Plan>>> SnapshotReader::ReadFromSnapshotReadView() {
+    if (!snapshot_read_view_) {
+        return std::optional<std::shared_ptr<Plan>>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const Snapshot> snapshot,
+                           SnapshotReadViewImpl::GetSnapshot(snapshot_read_view_));
+    if (!snapshot) {
+        return std::optional<std::shared_ptr<Plan>>(EmptyPlan());
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan,
+                           WithMode(ScanMode::ALL)->WithSnapshot(*snapshot)->Read());
+    return std::optional<std::shared_ptr<Plan>>(std::move(plan));
+}
+
+std::shared_ptr<const SnapshotReadView> SnapshotReader::CreateSnapshotReadView(
+    std::optional<Snapshot> snapshot) const {
+    if (snapshot_read_view_ || !table_schema_) {
+        return snapshot_read_view_;
+    }
+    const std::shared_ptr<SnapshotManager>& snapshot_manager = GetSnapshotManager();
+    return SnapshotReadViewImpl::Create(snapshot_manager->RootPath(), snapshot_manager->Branch(),
+                                        std::move(snapshot), table_schema_);
+}
+
+std::shared_ptr<Plan> SnapshotReader::EmptyPlan() const {
+    return PlanImpl::EmptyPlan(CreateSnapshotReadView(std::nullopt));
+}
+
 Result<std::shared_ptr<Plan>> SnapshotReader::Read() const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan::RawPlan> raw_plan, scan_->CreatePlan());
     const std::optional<Snapshot>& snapshot = raw_plan->GetSnapshot();
@@ -47,7 +92,8 @@ Result<std::shared_ptr<Plan>> SnapshotReader::Read() const {
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::shared_ptr<Split>> data_splits,
         GenerateSplits(snapshot, scan_mode_ != ScanMode::ALL, split_generator_, std::move(files)));
-    return std::make_shared<PlanImpl>(raw_plan->SnapshotId(), data_splits);
+    return std::make_shared<PlanImpl>(raw_plan->SnapshotId(), data_splits,
+                                      CreateSnapshotReadView(snapshot));
 }
 
 Result<std::vector<std::shared_ptr<Split>>> SnapshotReader::GenerateSplits(

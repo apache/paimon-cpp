@@ -44,6 +44,8 @@ class FileStorePathFactory;
 class IndexFileMeta;
 class Snapshot;
 class SnapshotManager;
+class SnapshotReadView;
+class TableSchema;
 struct DataFileMeta;
 
 class SnapshotReader {
@@ -51,11 +53,15 @@ class SnapshotReader {
     SnapshotReader(const std::shared_ptr<FileStoreScan>& scan,
                    const std::shared_ptr<FileStorePathFactory>& path_factory,
                    std::unique_ptr<SplitGenerator>&& split_generator,
-                   std::unique_ptr<IndexFileHandler>&& index_file_handler)
+                   std::unique_ptr<IndexFileHandler>&& index_file_handler,
+                   const std::shared_ptr<TableSchema>& table_schema,
+                   const std::shared_ptr<const SnapshotReadView>& snapshot_read_view)
         : scan_(scan),
           path_factory_(path_factory),
           split_generator_(std::move(split_generator)),
-          index_file_handler_(std::move(index_file_handler)) {}
+          index_file_handler_(std::move(index_file_handler)),
+          table_schema_(table_schema),
+          snapshot_read_view_(snapshot_read_view) {}
 
     SnapshotReader* WithMode(const ScanMode& scan_mode) {
         scan_mode_ = scan_mode;
@@ -96,6 +102,14 @@ class SnapshotReader {
         return index_file_handler_;
     }
 
+    const std::shared_ptr<const SnapshotReadView>& GetSnapshotReadView() const {
+        return snapshot_read_view_;
+    }
+
+    /// Resolve and retain the latest snapshot exactly once for callers that need to perform
+    /// auxiliary planning before the data manifest scan (for example, a global-index lookup).
+    Result<std::shared_ptr<const SnapshotReadView>> CaptureLatestSnapshotReadView();
+
     std::shared_ptr<PredicateFilter> GetNonPartitionPredicate() const {
         return scan_->GetNonPartitionPredicate();
     }
@@ -115,7 +129,16 @@ class SnapshotReader {
     /// Get splits from `FileKind::ADD` files.
     Result<std::shared_ptr<Plan>> Read() const;
 
+    /// Read the injected snapshot view, if one was provided.
+    Result<std::optional<std::shared_ptr<Plan>>> ReadFromSnapshotReadView();
+
+    /// Create an empty plan carrying the injected or newly captured empty snapshot view.
+    std::shared_ptr<Plan> EmptyPlan() const;
+
  private:
+    std::shared_ptr<const SnapshotReadView> CreateSnapshotReadView(
+        std::optional<Snapshot> snapshot) const;
+
     Result<std::vector<std::shared_ptr<Split>>> GenerateSplits(
         const std::optional<Snapshot>& snapshot, bool is_streaming,
         const std::unique_ptr<SplitGenerator>& split_generator,
@@ -131,6 +154,8 @@ class SnapshotReader {
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::unique_ptr<SplitGenerator> split_generator_;
     std::unique_ptr<IndexFileHandler> index_file_handler_;
+    std::shared_ptr<TableSchema> table_schema_;
     ScanMode scan_mode_ = ScanMode::ALL;
+    std::shared_ptr<const SnapshotReadView> snapshot_read_view_;
 };
 }  // namespace paimon

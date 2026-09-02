@@ -32,6 +32,14 @@ class FullStartingScanner : public StartingScanner {
 
     Result<std::shared_ptr<ScanResult>> Scan(
         const std::shared_ptr<SnapshotReader>& snapshot_reader) override {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<Plan>> read_view_plan,
+                               snapshot_reader->ReadFromSnapshotReadView());
+        if (read_view_plan) {
+            if (!read_view_plan.value()->SnapshotId()) {
+                return std::make_shared<StartingScanner::NoSnapshot>();
+            }
+            return std::make_shared<StartingScanner::CurrentSnapshot>(read_view_plan.value());
+        }
         if (starting_snapshot_id_ == std::nullopt) {
             // try to get first snapshot
             PAIMON_ASSIGN_OR_RAISE(starting_snapshot_id_, snapshot_manager_->LatestSnapshotId());

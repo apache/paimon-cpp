@@ -39,6 +39,22 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
                          const std::optional<std::string>& table_schema,
                          const std::map<std::string, std::string>& options,
                          const std::shared_ptr<Cache>& cache)
+    : ScanContext(path, is_streaming_mode, limit, scan_filter, global_index_result,
+                  realtime_context, memory_pool, executor, specific_file_system, table_schema,
+                  options, cache, nullptr) {}
+
+ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
+                         std::optional<int32_t> limit,
+                         const std::shared_ptr<ScanFilter>& scan_filter,
+                         const std::shared_ptr<GlobalIndexResult>& global_index_result,
+                         const std::shared_ptr<RealtimeContext>& realtime_context,
+                         const std::shared_ptr<MemoryPool>& memory_pool,
+                         const std::shared_ptr<Executor>& executor,
+                         const std::shared_ptr<FileSystem>& specific_file_system,
+                         const std::optional<std::string>& table_schema,
+                         const std::map<std::string, std::string>& options,
+                         const std::shared_ptr<Cache>& cache,
+                         const std::shared_ptr<const SnapshotReadView>& snapshot_read_view)
     : path_(path),
       is_streaming_mode_(is_streaming_mode),
       limit_(limit),
@@ -50,7 +66,8 @@ ScanContext::ScanContext(const std::string& path, bool is_streaming_mode,
       specific_file_system_(specific_file_system),
       table_schema_(table_schema),
       options_(options),
-      cache_(cache) {}
+      cache_(cache),
+      snapshot_read_view_(snapshot_read_view) {}
 
 ScanContext::~ScanContext() = default;
 
@@ -72,6 +89,7 @@ class ScanContextBuilder::Impl {
         table_schema_ = std::nullopt;
         options_.clear();
         cache_.reset();
+        snapshot_read_view_.reset();
     }
 
  private:
@@ -89,6 +107,7 @@ class ScanContextBuilder::Impl {
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
+    std::shared_ptr<const SnapshotReadView> snapshot_read_view_;
 };
 
 ScanContextBuilder::ScanContextBuilder(const std::string& path)
@@ -173,6 +192,12 @@ ScanContextBuilder& ScanContextBuilder::WithCache(const std::shared_ptr<Cache>& 
     return *this;
 }
 
+ScanContextBuilder& ScanContextBuilder::WithSnapshotReadView(
+    const std::shared_ptr<const SnapshotReadView>& snapshot_read_view) {
+    impl_->snapshot_read_view_ = snapshot_read_view;
+    return *this;
+}
+
 Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     PAIMON_ASSIGN_OR_RAISE(impl_->path_, PathUtil::NormalizePath(impl_->path_));
     if (impl_->path_.empty()) {
@@ -184,7 +209,7 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_,
         impl_->executor_, impl_->specific_file_system_, impl_->table_schema_, impl_->options_,
-        impl_->cache_);
+        impl_->cache_, impl_->snapshot_read_view_);
     impl_->Reset();
     return ctx;
 }
