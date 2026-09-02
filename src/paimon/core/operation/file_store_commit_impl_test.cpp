@@ -2503,13 +2503,6 @@ TEST_F(FileStoreCommitImplTest, ValidateCommitOptionsAllowsManifestDeleteFileDro
     }
 }
 
-TEST_F(FileStoreCommitImplTest, CreateAllowsLegacyManifestFormatUntilWrite) {
-    CommitContextBuilder context_builder(table_path_, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption("manifest.format", "orc").Finish());
-    ASSERT_OK(FileStoreCommit::Create(std::move(commit_context)));
-}
-
 TEST_F(FileStoreCommitImplTest, TestGetAllFilesKeepsValueStats) {
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,

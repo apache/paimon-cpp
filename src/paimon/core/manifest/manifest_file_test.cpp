@@ -32,6 +32,7 @@
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/manifest/manifest_entry.h"
+#include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/data/decimal.h"

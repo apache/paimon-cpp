@@ -50,10 +50,16 @@ class IndexFileHandlerTest : public testing::Test {
     }
 
     Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
-        const std::string& table_path, const CoreOptions& core_options) const {
-        SchemaManager schema_manager(core_options.GetFileSystem(), table_path);
+        const std::string& table_path, const CoreOptions& override_options) const {
+        SchemaManager schema_manager(override_options.GetFileSystem(), table_path);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
                                schema_manager.ReadSchema(/*schema_id=*/0));
+        std::map<std::string, std::string> options = table_schema->Options();
+        for (const auto& [key, value] : override_options.ToMap()) {
+            options[key] = value;
+        }
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                               CoreOptions::FromMap(options, override_options.GetFileSystem()));
         auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                core_options.CreateExternalPaths());
@@ -151,8 +157,7 @@ TEST_F(IndexFileHandlerTest, TestScan) {
     std::string table_path = paimon::test::GetDataDir() +
                              "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/";
 
-    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
-                         CoreOptions::FromMap({{"manifest.format", "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
                          CreateIndexFileHandler(table_path, core_options));
 
@@ -203,8 +208,7 @@ TEST_F(IndexFileHandlerTest, TestScan) {
 
 TEST_F(IndexFileHandlerTest, Test09VersionScan) {
     std::string table_path = paimon::test::GetDataDir() + "/orc/pk_09.db/pk_09/";
-    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
-                         CoreOptions::FromMap({{"manifest.format", "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
                          CreateIndexFileHandler(table_path, core_options));
 
@@ -254,8 +258,7 @@ TEST_F(IndexFileHandlerTest, Test09VersionScan) {
 
 TEST_F(IndexFileHandlerTest, TestScanWithNoIndexManifest) {
     std::string table_path = paimon::test::GetDataDir() + "/orc/pk_09.db/pk_09/";
-    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
-                         CoreOptions::FromMap({{"manifest.format", "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
                          CreateIndexFileHandler(table_path, core_options));
 
@@ -292,8 +295,7 @@ TEST_F(IndexFileHandlerTest, TestScanByPartitionBucketAndReadAllDeletionVectors)
     std::string table_path = paimon::test::GetDataDir() +
                              "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/";
 
-    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
-                         CoreOptions::FromMap({{"manifest.format", "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexFileHandler> index_file_handler,
                          CreateIndexFileHandler(table_path, core_options));
 
