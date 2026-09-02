@@ -1452,7 +1452,7 @@ TEST_P(ScanInteTest, TestScanAppendComplexDataWithSnapshot4WithPredicateFilter) 
                                    Literal(paimon::Timestamp(1735344000, 0)));
     auto predicate2 = PredicateBuilder::GreaterThan(
         /*field_index=*/4, /*field_name=*/"f5", FieldType::DECIMAL,
-        Literal(paimon::Decimal(5, 2, 0)));
+        Literal(paimon::Decimal(23, 5, 0)));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({predicate1, predicate2}));
 
     ScanContextBuilder context_builder(table_path);
