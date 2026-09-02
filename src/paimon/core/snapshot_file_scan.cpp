@@ -322,6 +322,21 @@ Result<std::set<std::string>> SnapshotFileScan::ListFiles(
     PAIMON_ASSIGN_OR_RAISE(CoreOptions temporary_options,
                            CoreOptions::FromMap(options, file_system));
     std::string normalized_branch = BranchManager::NormalizeBranch(branch);
+    auto snapshot_manager = std::make_shared<SnapshotManager>(temporary_options.GetFileSystem(),
+                                                              table_path, normalized_branch);
+
+    std::optional<Snapshot> snapshot;
+    if (snapshot_id) {
+        PAIMON_ASSIGN_OR_RAISE(Snapshot loaded_snapshot,
+                               snapshot_manager->LoadSnapshot(snapshot_id.value()));
+        snapshot = std::move(loaded_snapshot);
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(snapshot, snapshot_manager->LatestSnapshot());
+    }
+    if (!snapshot) {
+        return std::set<std::string>();
+    }
+
     auto schema_manager = std::make_shared<SchemaManager>(temporary_options.GetFileSystem(),
                                                           table_path, normalized_branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
@@ -337,22 +352,6 @@ Result<std::set<std::string>> SnapshotFileScan::ListFiles(
     final_options[Options::BRANCH] = normalized_branch;
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(final_options, file_system));
-    schema_manager = std::make_shared<SchemaManager>(core_options.GetFileSystem(), table_path,
-                                                     normalized_branch);
-    auto snapshot_manager = std::make_shared<SnapshotManager>(core_options.GetFileSystem(),
-                                                              table_path, normalized_branch);
-
-    std::optional<Snapshot> snapshot;
-    if (snapshot_id) {
-        PAIMON_ASSIGN_OR_RAISE(Snapshot loaded_snapshot,
-                               snapshot_manager->LoadSnapshot(snapshot_id.value()));
-        snapshot = std::move(loaded_snapshot);
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(snapshot, snapshot_manager->LatestSnapshot());
-    }
-    if (!snapshot) {
-        return std::set<std::string>();
-    }
 
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(latest_schema.value()->Fields());
