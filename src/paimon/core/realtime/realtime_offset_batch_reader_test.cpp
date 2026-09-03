@@ -52,9 +52,7 @@ TEST(RealtimeOffsetBatchReaderTest, TestFilterBitmapAndRemoveOffset) {
     std::shared_ptr<arrow::Array> data =
         MakeArray(type, R"([[10, 0], [11, 1], [12, 2], [13, 3], [14, 4], [15, 5]])");
     RoaringBitmap32 input_bitmap;
-    input_bitmap.Add(1);
-    input_bitmap.Add(2);
-    input_bitmap.Add(4);
+    input_bitmap.AddRange(0, static_cast<int32_t>(data->length()));
     auto input =
         std::make_unique<MockFileBatchReader>(data, type, input_bitmap, /*read_batch_size=*/2);
     RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(2, 5));
@@ -64,10 +62,24 @@ TEST(RealtimeOffsetBatchReaderTest, TestFilterBitmapAndRemoveOffset) {
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("id", arrow::int32())}),
-                    {R"([[12]])", R"([[14]])"}, &expected)
+                    {R"([[12], [13]])", R"([[14]])"}, &expected)
                     .ok());
     ASSERT_TRUE(result->Equals(expected))
         << "expected: " << expected->ToString() << "\nactual: " << result->ToString();
+}
+
+TEST(RealtimeOffsetBatchReaderTest, TestRejectsPartialBitmap) {
+    std::shared_ptr<arrow::DataType> type = MakeDataType();
+    std::shared_ptr<arrow::Array> data = MakeArray(type, R"([[10, 0], [11, 1]])");
+    RoaringBitmap32 input_bitmap;
+    input_bitmap.Add(0);
+    auto input =
+        std::make_unique<MockFileBatchReader>(data, type, input_bitmap, /*read_batch_size=*/2);
+    input->EnableRandomizeBatchSize(false);
+    RealtimeOffsetBatchReader reader(std::move(input), OffsetRange(0, 2));
+
+    ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(&reader),
+                        "must cover every raw transport row");
 }
 
 TEST(RealtimeOffsetBatchReaderTest, TestFilterWithoutInputBitmap) {

@@ -39,6 +39,7 @@
 #include "paimon/testing/utils/key_value_checker.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon::test {
 
@@ -267,6 +268,28 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryBitmapBounds) {
     ASSERT_TRUE(result.status().IsInvalid());
     ASSERT_NOK_WITH_MSG(result,
                         "selected row id 1 is out of bounds for realtime query batch length 1");
+}
+
+TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsPartialBitmap) {
+    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
+    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
+    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
+    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
+    std::shared_ptr<arrow::Array> transport_array =
+        arrow::ipc::internal::json::ArrayFromJSON(transport_type,
+                                                  R"([[0, 10, 0, 1], [0, 11, 1, 2]])")
+            .ValueOrDie();
+    RoaringBitmap32 partial_bitmap;
+    partial_bitmap.Add(0);
+    auto batch_reader = std::make_unique<MockFileBatchReader>(
+        transport_array, transport_type, partial_bitmap, /*read_batch_size=*/2);
+    batch_reader->EnableRandomizeBatchSize(false);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<KeyValueRecordReader> reader,
+        CreateRealtimePrimaryKeyQueryReaderForTest(std::move(batch_reader), OffsetRange(0, 2),
+                                                   value_schema, value_schema, pool_));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "must cover every raw transport row");
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestCommitCoverageAcrossReadersAndBatches) {

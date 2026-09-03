@@ -84,6 +84,10 @@ Result<BatchReader::ReadBatchWithBitmap> RealtimeOffsetBatchReader::NextBatchWit
                 output_bitmap.Add(row);
             }
         }
+        if (static_cast<int64_t>(input_bitmap.Cardinality()) != offsets->length()) {
+            return Status::Invalid(
+                "real-time store reader bitmap must cover every raw transport row");
+        }
         if (output_bitmap.IsEmpty()) {
             continue;
         }
