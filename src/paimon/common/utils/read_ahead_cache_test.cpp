@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <fstream>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -46,6 +47,31 @@ CacheConfig TestCacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit,
     return config;
 }
 
+// A pool of its own for every cache, so that a buffer outliving the pool it was
+// allocated from shows up instead of being covered by the global pool, which
+// never goes away.
+std::shared_ptr<MemoryPool> TestPool() {
+    return std::shared_ptr<MemoryPool>(GetMemoryPool());
+}
+
+// Write the given content into a fresh directory and open it for reading. The
+// directory is returned so that it can outlive the stream.
+std::shared_ptr<InputStream> OpenTestFile(std::unique_ptr<UniqueTestDirectory>* dir,
+                                          const std::string& filename, const std::string& content) {
+    *dir = UniqueTestDirectory::Create();
+    EXPECT_TRUE(*dir);
+    std::string path = (*dir)->Str() + "/" + filename;
+    std::ofstream file(path, std::ios::binary);
+    EXPECT_TRUE(file.is_open());
+    file.write(content.data(), content.size());
+    EXPECT_FALSE(file.fail());
+    file.close();
+
+    EXPECT_OK_AND_ASSIGN(std::unique_ptr<FileSystem> fs, FileSystemFactory::Get("local", path, {}));
+    EXPECT_OK_AND_ASSIGN(std::unique_ptr<InputStream> in, fs->Open(path));
+    return std::move(in);
+}
+
 // Create a test file with the given content and return a ready ReadAheadCache
 // on it. `file_size` defaults to 0, i.e. unknown, which keeps the block cache
 // off: a read that no registered range covers stays a plain miss. The block
@@ -55,20 +81,10 @@ std::shared_ptr<ReadAheadCache> CreateTestFileAndCache(const std::string& filena
                                                        const CacheConfig& config,
                                                        std::vector<ByteRange> ranges,
                                                        uint64_t file_size = 0) {
-    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
-    EXPECT_TRUE(dir);
-    std::string path = dir->Str() + "/" + filename;
-    std::ofstream file(path, std::ios::binary);
-    EXPECT_TRUE(file.is_open());
-    file.write(content.data(), content.size());
-    EXPECT_FALSE(file.fail());
-    file.close();
-
-    EXPECT_OK_AND_ASSIGN(std::unique_ptr<FileSystem> fs, FileSystemFactory::Get("local", path, {}));
-    EXPECT_OK_AND_ASSIGN(std::unique_ptr<InputStream> in, fs->Open(path));
-
+    std::unique_ptr<UniqueTestDirectory> dir;
+    std::shared_ptr<InputStream> in = OpenTestFile(&dir, filename, content);
     std::shared_ptr<ReadAheadCache> cache =
-        std::make_shared<ReadAheadCache>(std::move(in), config, file_size, GetDefaultPool());
+        std::make_shared<ReadAheadCache>(in, config, file_size, TestPool());
     EXPECT_OK(cache->Init(std::move(ranges)));
     return cache;
 }
@@ -360,19 +376,10 @@ TEST(TestReadAheadCache, TestInFlightEntryServesRacingReader) {
     CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
                                          /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
-    auto dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(dir);
-    std::string path = dir->Str() + "/data_file";
-    std::ofstream file(path, std::ios::binary);
-    ASSERT_TRUE(file.is_open());
-    file.write(content.data(), content.size());
-    ASSERT_FALSE(file.fail());
-    file.close();
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileSystem> fs, FileSystemFactory::Get("local", path, {}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs->Open(path));
-    auto gated = std::make_shared<GatedAsyncInputStream>(std::move(in));
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir, "data_file", content));
 
-    ReadAheadCache cache(gated, config, /*file_size=*/0, GetDefaultPool());
+    ReadAheadCache cache(gated, config, /*file_size=*/0, TestPool());
     ASSERT_OK(cache.Init({{0, 5}}));
     cache.Warmup();
 
@@ -403,6 +410,39 @@ TEST(TestReadAheadCache, TestInFlightEntryServesRacingReader) {
     ASSERT_EQ(misses, 0u);
     ASSERT_OK_AND_ASSIGN(uint64_t io_count, metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
     ASSERT_EQ(io_count, 1u);
+}
+
+// An object store stream destroys the callback of a read after it has resolved
+// it, so the last reference to a prefetch buffer can be dropped by an IO thread
+// after the cache - and the memory pool it holds - is already gone. The buffer
+// must keep its pool alive until then, or it frees its allocation against a
+// destroyed pool.
+TEST(TestReadAheadCache, TestPrefetchBufferKeepsPoolAliveAfterCacheIsGone) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/2, /*pre_buffer_limit=*/1024);
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "data_file", "abcdefghijklmnopqrstuvwxyz"));
+    std::weak_ptr<MemoryPool> weak_pool;
+    {
+        std::shared_ptr<MemoryPool> pool = TestPool();
+        weak_pool = pool;
+        // Declared after the pool, so the cache is destroyed before the last
+        // reference of this test to the pool is dropped.
+        ReadAheadCache cache(gated, config, /*file_size=*/0, pool);
+        ASSERT_OK(cache.Init({{0, 5}}));
+        cache.Warmup();
+        ASSERT_EQ(gated->AsyncReadCount(), 1);
+        // The fetch is completed, but the stream keeps its callback - and with it
+        // a reference to the entry buffer - alive.
+        gated->ReleaseAllKeepingCallbacks();
+    }
+
+    // The cache and the pool reference of this test are gone, so the callback
+    // holds the last reference to the buffer, which must still hold the pool.
+    ASSERT_FALSE(weak_pool.expired());
+    gated->DropCompletedCallbacks();
+    ASSERT_TRUE(weak_pool.expired());
 }
 
 // Test that pre_buffer_limit truncates the prefetch window: only ranges within

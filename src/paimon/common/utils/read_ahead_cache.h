@@ -50,7 +50,13 @@ class PAIMON_EXPORT ReadAheadCacheMetrics {
     static inline const char READ_MISS_BYTES[] = "read-ahead-cache.read.miss-bytes";
     /// Number of Read() requests served by the block cache, and the bytes they
     /// copied out of it. A read is counted either as a hit, a block hit or a
-    /// miss, so `read.count = read.hits + block.hits + read.misses`.
+    /// miss, so `read.count = read.hits + block.hits + read.misses` for the reads
+    /// that complete; a read whose prefetch fetch failed is counted in read.count
+    /// only, as it is served by neither.
+    ///
+    /// A block hit is a read served out of a block, not a read that avoided IO:
+    /// the read that finds no block waits for the fetch it dispatches and is
+    /// counted here too. Comparing with block.fetches tells the two apart.
     static inline const char BLOCK_HITS[] = "read-ahead-cache.block.hits";
     static inline const char BLOCK_HIT_BYTES[] = "read-ahead-cache.block.hit-bytes";
     /// Block fetches issued to the underlying stream, and their bytes. Both are
@@ -59,6 +65,9 @@ class PAIMON_EXPORT ReadAheadCacheMetrics {
     static inline const char BLOCK_FETCHES[] = "read-ahead-cache.block.fetches";
     static inline const char BLOCK_FETCH_BYTES[] = "read-ahead-cache.block.fetch-bytes";
     /// Number of prefetch IO requests actually issued to the underlying stream.
+    /// These are the same requests that the `io.async.*` metrics of the prefetch
+    /// reader observe one layer below, counted here per cache rather than per
+    /// stream, so the two are expected to agree instead of adding up.
     static inline const char IO_COUNT[] = "read-ahead-cache.io.count";
     /// Total bytes requested by the prefetch IOs issued to the underlying stream.
     static inline const char IO_BYTES[] = "read-ahead-cache.io.bytes";

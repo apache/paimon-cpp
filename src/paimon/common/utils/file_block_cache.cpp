@@ -21,6 +21,8 @@
 
 #include <cstring>
 
+#include "paimon/common/memory/bytes_utils.h"
+
 namespace paimon {
 
 FileBlockCache::FileBlockCache(const std::shared_ptr<InputStream>& stream, uint64_t file_size,
@@ -34,7 +36,7 @@ FileBlockCache::FileBlockCache(const std::shared_ptr<InputStream>& stream, uint6
 
 FileBlockCache::~FileBlockCache() {
     // The fetches write into the block buffers, so they must not outlive the
-    // stream or the memory pool.
+    // stream they read from.
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& block : blocks_) {
         block.second->future.wait();
@@ -65,7 +67,9 @@ bool FileBlockCache::Read(const ByteRange& range, char* dest) {
             }
             block = std::make_shared<Block>();
             block->range = block_range;
-            block->buffer = std::make_shared<Bytes>(block_range.length, memory_pool_.get());
+            // The buffer keeps the pool alive, for the fetch callbacks that a
+            // stream destroys later than it resolves them.
+            block->buffer = AllocateBytesKeepingPoolAlive(block_range.length, memory_pool_);
             block->promise = std::make_shared<std::promise<Status>>();
             block->future = block->promise->get_future().share();
             blocks_.emplace(index, block);
@@ -91,8 +95,7 @@ bool FileBlockCache::Read(const ByteRange& range, char* dest) {
         return false;
     }
     std::memcpy(dest, block->buffer->data() + (range.offset - block->range.offset), range.length);
-    hits_.fetch_add(1, std::memory_order_relaxed);
-    hit_bytes_.fetch_add(range.length, std::memory_order_relaxed);
+    hits_.Add(range.length);
     return true;
 }
 
@@ -108,18 +111,16 @@ void FileBlockCache::Release() {
 }
 
 void FileBlockCache::ResetCounters() {
-    hits_.store(0, std::memory_order_relaxed);
-    hit_bytes_.store(0, std::memory_order_relaxed);
-    fetches_.store(0, std::memory_order_relaxed);
-    fetch_bytes_.store(0, std::memory_order_relaxed);
+    hits_.Reset();
+    fetches_.Reset();
 }
 
 FileBlockCache::Counters FileBlockCache::GetCounters() const {
     Counters counters;
-    counters.hits = hits_.load(std::memory_order_relaxed);
-    counters.hit_bytes = hit_bytes_.load(std::memory_order_relaxed);
-    counters.fetches = fetches_.load(std::memory_order_relaxed);
-    counters.fetch_bytes = fetch_bytes_.load(std::memory_order_relaxed);
+    counters.hits = hits_.Count();
+    counters.hit_bytes = hits_.Bytes();
+    counters.fetches = fetches_.Count();
+    counters.fetch_bytes = fetches_.Bytes();
     return counters;
 }
 
@@ -152,12 +153,13 @@ ByteRange FileBlockCache::RangeOf(uint64_t index) const {
 }
 
 void FileBlockCache::Fetch(const std::shared_ptr<Block>& block) {
-    fetches_.fetch_add(1, std::memory_order_relaxed);
-    fetch_bytes_.fetch_add(block->range.length, std::memory_order_relaxed);
+    fetches_.Add(block->range.length);
     auto promise = block->promise;
     auto buffer = block->buffer;
     // The buffer and the promise are captured, so the async read keeps its
-    // destination and the future it resolves alive.
+    // destination and the future it resolves alive. The buffer keeps the memory
+    // pool alive as well, so a callback outliving this cache still frees the
+    // buffer against a live pool.
     stream_->ReadAsync(buffer->data(), static_cast<int64_t>(buffer->size()),
                        static_cast<int64_t>(block->range.offset),
                        [promise, buffer](Status status) { promise->set_value(status); });

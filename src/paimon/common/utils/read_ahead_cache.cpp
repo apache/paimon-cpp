@@ -29,6 +29,8 @@
 #include <future>
 #include <shared_mutex>
 
+#include "paimon/common/memory/bytes_utils.h"
+#include "paimon/common/metrics/atomic_counter_pair.h"
 #include "paimon/common/utils/byte_range_combiner.h"
 #include "paimon/common/utils/file_block_cache.h"
 #include "paimon/common/utils/math.h"
@@ -102,14 +104,6 @@ class ReadAheadCache::Impl {
     /// so the caller may use them after releasing the lock.
     std::vector<RangeCacheEntry> FindCoveringEntries(const ByteRange& range);
     void PreBuffer(uint64_t offset);
-    void CountHit(uint64_t size) {
-        hits_.fetch_add(1, std::memory_order_relaxed);
-        hit_bytes_.fetch_add(size, std::memory_order_relaxed);
-    }
-    void CountMiss(uint64_t size) {
-        misses_.fetch_add(1, std::memory_order_relaxed);
-        miss_bytes_.fetch_add(size, std::memory_order_relaxed);
-    }
 
     /// Mark, publish and fetch the pending ranges at the given indices.
     ///
@@ -135,18 +129,15 @@ class ReadAheadCache::Impl {
     // Caches the reads that no registered range covers, or null when the block
     // cache is disabled. Owns its own locking and counters.
     std::unique_ptr<FileBlockCache> block_cache_;
-    // Statistics of the Read() requests issued to the cache, aggregated over
-    // all streams sharing this cache.
-    std::atomic<uint64_t> read_count_{0};
-    std::atomic<uint64_t> read_bytes_{0};
-    std::atomic<uint64_t> hits_{0};
-    std::atomic<uint64_t> hit_bytes_{0};
-    std::atomic<uint64_t> misses_{0};
-    std::atomic<uint64_t> miss_bytes_{0};
-    // Prefetch IO statistics: how many requests and bytes were actually issued
-    // to the underlying stream.
-    std::atomic<uint64_t> io_count_{0};
-    std::atomic<uint64_t> io_bytes_{0};
+    // The Read() requests issued to the cache and how they were served,
+    // aggregated over all the streams sharing this cache. A read is counted
+    // either as a hit, a block cache hit or a miss.
+    AtomicCounterPair reads_;
+    AtomicCounterPair hits_;
+    AtomicCounterPair misses_;
+    // The prefetch IO actually issued to the underlying stream. The block cache
+    // counts its own fetches, which CollectMetrics() adds to these.
+    AtomicCounterPair ios_;
 };
 
 void ReadAheadCache::Impl::Cache(std::vector<size_t> pending_indices) {
@@ -166,7 +157,7 @@ void ReadAheadCache::Impl::Cache(std::vector<size_t> pending_indices) {
             const ByteRange& range = pending_ranges_[idx];
             auto promise = std::make_shared<std::promise<Status>>();
             auto future = promise->get_future();
-            auto buffer = std::make_shared<Bytes>(range.length, memory_pool_.get());
+            auto buffer = AllocateBytesKeepingPoolAlive(range.length, memory_pool_);
             fetches.push_back({range, buffer, promise});
             new_entries.emplace_back(range, std::move(buffer), std::move(future));
         }
@@ -250,14 +241,10 @@ ReadAheadCache::Impl::~Impl() {
 
 void ReadAheadCache::Impl::Reset() {
     ReleasePrefetchBuffers();
-    read_count_.store(0, std::memory_order_relaxed);
-    read_bytes_.store(0, std::memory_order_relaxed);
-    hits_.store(0, std::memory_order_relaxed);
-    hit_bytes_.store(0, std::memory_order_relaxed);
-    misses_.store(0, std::memory_order_relaxed);
-    miss_bytes_.store(0, std::memory_order_relaxed);
-    io_count_.store(0, std::memory_order_relaxed);
-    io_bytes_.store(0, std::memory_order_relaxed);
+    reads_.Reset();
+    hits_.Reset();
+    misses_.Reset();
+    ios_.Reset();
     if (block_cache_ != nullptr) {
         // Only the counters: the blocks cache the file, not the registered
         // ranges, and a reader resetting the cache reads the same file again.
@@ -275,8 +262,9 @@ void ReadAheadCache::Impl::ReleaseBuffers() {
 void ReadAheadCache::Impl::ReleasePrefetchBuffers() {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
     // Entries are never evicted, so waiting on entries_ covers every
-    // dispatched fetch: no async callback can outlive the stream or the
-    // memory pool its buffer belongs to.
+    // dispatched fetch: no fetch is still writing into an entry buffer when the
+    // buffers go away. The buffers keep the memory pool alive themselves, for
+    // the callbacks that a stream destroys later than it resolves them.
     for (auto& entry : entries_) {
         entry.future.wait();
     }
@@ -293,14 +281,12 @@ void ReadAheadCache::Impl::CollectMetrics(std::shared_ptr<Metrics>* metrics) con
         return;
     }
     auto& m = *metrics;
-    m->SetCounter(ReadAheadCacheMetrics::READ_COUNT, read_count_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_BYTES, read_bytes_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES,
-                  hit_bytes_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_MISSES, misses_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES,
-                  miss_bytes_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::READ_COUNT, reads_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_BYTES, reads_.Bytes());
+    m->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES, hits_.Bytes());
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISSES, misses_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES, misses_.Bytes());
     // The block cache keeps its own counters. Its fetches also go to the
     // underlying stream, so they are part of the io counters too.
     const FileBlockCache::Counters blocks =
@@ -309,10 +295,8 @@ void ReadAheadCache::Impl::CollectMetrics(std::shared_ptr<Metrics>* metrics) con
     m->SetCounter(ReadAheadCacheMetrics::BLOCK_HIT_BYTES, blocks.hit_bytes);
     m->SetCounter(ReadAheadCacheMetrics::BLOCK_FETCHES, blocks.fetches);
     m->SetCounter(ReadAheadCacheMetrics::BLOCK_FETCH_BYTES, blocks.fetch_bytes);
-    m->SetCounter(ReadAheadCacheMetrics::IO_COUNT,
-                  io_count_.load(std::memory_order_relaxed) + blocks.fetches);
-    m->SetCounter(ReadAheadCacheMetrics::IO_BYTES,
-                  io_bytes_.load(std::memory_order_relaxed) + blocks.fetch_bytes);
+    m->SetCounter(ReadAheadCacheMetrics::IO_COUNT, ios_.Count() + blocks.fetches);
+    m->SetCounter(ReadAheadCacheMetrics::IO_BYTES, ios_.Bytes() + blocks.fetch_bytes);
 }
 
 void ReadAheadCache::Impl::Warmup() {
@@ -363,8 +347,7 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     if (range.length == 0) {
         return true;
     }
-    read_count_.fetch_add(1, std::memory_order_relaxed);
-    read_bytes_.fetch_add(range.length, std::memory_order_relaxed);
+    reads_.Add(range.length);
     PreBuffer(range.offset);
     std::vector<RangeCacheEntry> covering = FindCoveringEntries(range);
     if (covering.empty()) {
@@ -375,7 +358,7 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
             // The block cache counts its own hits, see CollectMetrics().
             return true;
         }
-        CountMiss(range.length);
+        misses_.Add(range.length);
         return false;
     }
     // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
@@ -385,7 +368,7 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     }
     // The data copy runs OUTSIDE the lock for the same reason.
     CopyRangeFromEntries(covering, range, dest);
-    CountHit(range.length);
+    hits_.Add(range.length);
     return true;
 }
 
@@ -398,8 +381,7 @@ void ReadAheadCache::Impl::DispatchFetches(const std::vector<PendingFetch>& fetc
         stream_->ReadAsync(
             buffer->data(), read_size, read_offset,
             [promise, buffer](Status status) mutable { promise->set_value(status); });
-        io_count_.fetch_add(1, std::memory_order_relaxed);
-        io_bytes_.fetch_add(fetch.range.length, std::memory_order_relaxed);
+        ios_.Add(fetch.range.length);
     }
 }
 

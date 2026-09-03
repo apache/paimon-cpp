@@ -72,28 +72,42 @@ class GatedAsyncInputStream : public InputStream {
 
     /// Complete all held fetches against the underlying stream.
     void ReleaseAll() {
-        std::vector<PendingRead> taken;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            taken = std::move(pending_);
-            pending_.clear();
+        for (auto& read : TakePending()) {
+            Result<int64_t> res = inner_->Read(read.buffer, read.size, read.offset);
+            read.callback(res.ok() ? Status::OK() : res.status());
         }
+    }
+
+    /// Complete all held fetches against the underlying stream but keep their
+    /// callbacks alive, the way an object store stream destroys the callback of a
+    /// read later than it resolves it: whatever the callback captured stays alive
+    /// until DropCompletedCallbacks() is called.
+    void ReleaseAllKeepingCallbacks() {
+        std::vector<PendingRead> taken = TakePending();
         for (auto& read : taken) {
             Result<int64_t> res = inner_->Read(read.buffer, read.size, read.offset);
             read.callback(res.ok() ? Status::OK() : res.status());
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& read : taken) {
+            completed_.push_back(std::move(read));
+        }
+    }
+
+    /// Destroy the callbacks kept alive by ReleaseAllKeepingCallbacks().
+    void DropCompletedCallbacks() {
+        std::vector<PendingRead> taken;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            taken = std::move(completed_);
+            completed_.clear();
         }
     }
 
     /// Fail all held fetches without touching the underlying stream, so that a
     /// test can observe how a cache reports a failed fetch.
     void FailAll(const Status& status) {
-        std::vector<PendingRead> taken;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            taken = std::move(pending_);
-            pending_.clear();
-        }
-        for (auto& read : taken) {
+        for (auto& read : TakePending()) {
             read.callback(status);
         }
     }
@@ -106,9 +120,19 @@ class GatedAsyncInputStream : public InputStream {
         std::function<void(Status)> callback;
     };
 
+    std::vector<PendingRead> TakePending() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PendingRead> taken = std::move(pending_);
+        pending_.clear();
+        return taken;
+    }
+
     std::shared_ptr<InputStream> inner_;
     mutable std::mutex mutex_;
     std::vector<PendingRead> pending_;
+    // The fetches completed by ReleaseAllKeepingCallbacks(), held to keep their
+    // callbacks alive.
+    std::vector<PendingRead> completed_;
     int32_t async_read_count_ = 0;
 };
 

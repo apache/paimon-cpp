@@ -19,13 +19,13 @@
 
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 
+#include "paimon/common/metrics/atomic_counter_pair.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/bytes.h"
@@ -58,7 +58,8 @@ namespace paimon {
 class PAIMON_EXPORT FileBlockCache {
  public:
     /// Requests served by a block and fetches issued for the blocks themselves,
-    /// reported by the owner of this cache through its own metrics.
+    /// reported by the owner of this cache through its own metrics. A snapshot:
+    /// the counters keep being recorded while it is read.
     struct Counters {
         uint64_t hits = 0;
         uint64_t hit_bytes = 0;
@@ -136,10 +137,10 @@ class PAIMON_EXPORT FileBlockCache {
     std::unordered_map<uint64_t, std::shared_ptr<Block>> blocks_;
     // Bytes held by blocks_, guarded by mutex_ and bounded by capacity_.
     uint64_t cached_bytes_ = 0;
-    std::atomic<uint64_t> hits_{0};
-    std::atomic<uint64_t> hit_bytes_{0};
-    std::atomic<uint64_t> fetches_{0};
-    std::atomic<uint64_t> fetch_bytes_{0};
+    // The requests served out of a block, and the block fetches issued to the
+    // underlying stream.
+    AtomicCounterPair hits_;
+    AtomicCounterPair fetches_;
 };
 
 }  // namespace paimon

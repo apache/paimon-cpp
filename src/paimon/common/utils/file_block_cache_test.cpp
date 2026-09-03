@@ -44,6 +44,13 @@ constexpr char kContent[] = "abcdefghijklmnopqrstuvwxyz";
 // block 2 = [2, 10) and block 3 = [0, 2), truncated at the start of the file.
 constexpr uint64_t kBlockSize = 8;
 
+// A pool of its own for every cache, so that a buffer outliving the pool it was
+// allocated from shows up instead of being covered by the global pool, which
+// never goes away.
+std::shared_ptr<MemoryPool> TestPool() {
+    return std::shared_ptr<MemoryPool>(GetMemoryPool());
+}
+
 // Write the test content into a fresh directory and open it for reading. The
 // directory is returned so that it outlives the stream.
 std::shared_ptr<InputStream> OpenTestFile(std::unique_ptr<UniqueTestDirectory>* dir) {
@@ -86,7 +93,7 @@ void AssertDeclined(const ByteRange& range, FileBlockCache* cache) {
 TEST(TestFileBlockCache, TestServesRepeatedTailReads) {
     std::unique_ptr<UniqueTestDirectory> dir;
     FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
-                         /*capacity=*/1024, GetDefaultPool());
+                         /*capacity=*/1024, TestPool());
 
     // The whole last block, as the footer read of a parquet file does.
     AssertServed({18, 8}, "stuvwxyz", &cache);
@@ -110,7 +117,7 @@ TEST(TestFileBlockCache, TestServesRepeatedTailReads) {
 TEST(TestFileBlockCache, TestClampsLowestBlockAtFileStart) {
     std::unique_ptr<UniqueTestDirectory> dir;
     FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
-                         /*capacity=*/1024, GetDefaultPool());
+                         /*capacity=*/1024, TestPool());
 
     AssertServed({0, 2}, "ab", &cache);
     AssertServed({1, 1}, "b", &cache);
@@ -126,8 +133,7 @@ TEST(TestFileBlockCache, TestClampsLowestBlockAtFileStart) {
 TEST(TestFileBlockCache, TestSingleFlightForConcurrentReads) {
     std::unique_ptr<UniqueTestDirectory> dir;
     auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir));
-    FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, /*capacity=*/1024,
-                         GetDefaultPool());
+    FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, /*capacity=*/1024, TestPool());
 
     // The first reader publishes block 0 = [18, 26) and blocks on its held fetch.
     std::thread first([&cache]() {
@@ -163,7 +169,7 @@ TEST(TestFileBlockCache, TestExhaustedCapacityDeclinesNewBlocks) {
     std::unique_ptr<UniqueTestDirectory> dir;
     // The capacity holds exactly one block.
     FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
-                         /*capacity=*/kBlockSize, GetDefaultPool());
+                         /*capacity=*/kBlockSize, TestPool());
 
     AssertServed({18, 4}, "stuv", &cache);
     // Block 1 = [10, 18) does not fit anymore.
@@ -182,7 +188,7 @@ TEST(TestFileBlockCache, TestExhaustedCapacityDeclinesNewBlocks) {
 TEST(TestFileBlockCache, TestDeclinesStraddlingAndOversizedReads) {
     std::unique_ptr<UniqueTestDirectory> dir;
     FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
-                         /*capacity=*/1024, GetDefaultPool());
+                         /*capacity=*/1024, TestPool());
 
     // [16, 20) straddles block 1 = [10, 18) and block 0 = [18, 26).
     AssertDeclined({16, 4}, &cache);
@@ -203,13 +209,12 @@ TEST(TestFileBlockCache, TestDisabledByZeroCapacityOrBlockSize) {
     std::unique_ptr<UniqueTestDirectory> dir;
     std::shared_ptr<InputStream> in = OpenTestFile(&dir);
 
-    FileBlockCache no_capacity(in, sizeof(kContent) - 1, kBlockSize, /*capacity=*/0,
-                               GetDefaultPool());
+    FileBlockCache no_capacity(in, sizeof(kContent) - 1, kBlockSize, /*capacity=*/0, TestPool());
     AssertDeclined({18, 4}, &no_capacity);
     ASSERT_EQ(no_capacity.GetCounters().fetches, 0u);
 
     FileBlockCache no_block_size(in, sizeof(kContent) - 1, /*block_size=*/0, /*capacity=*/1024,
-                                 GetDefaultPool());
+                                 TestPool());
     AssertDeclined({18, 4}, &no_block_size);
     ASSERT_EQ(no_block_size.GetCounters().fetches, 0u);
 }
@@ -219,7 +224,7 @@ TEST(TestFileBlockCache, TestDisabledByZeroCapacityOrBlockSize) {
 TEST(TestFileBlockCache, TestResetCountersKeepsBlocksAndReleaseDropsThem) {
     std::unique_ptr<UniqueTestDirectory> dir;
     FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
-                         /*capacity=*/1024, GetDefaultPool());
+                         /*capacity=*/1024, TestPool());
 
     AssertServed({18, 4}, "stuv", &cache);
     ASSERT_EQ(cache.GetCounters().fetches, 1u);
@@ -243,7 +248,7 @@ TEST(TestFileBlockCache, TestResetCountersKeepsBlocksAndReleaseDropsThem) {
 TEST(TestFileBlockCache, TestFetchErrorDeclinesTheReads) {
     std::unique_ptr<UniqueTestDirectory> dir;
     FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
-                         /*capacity=*/1024, GetDefaultPool());
+                         /*capacity=*/1024, TestPool());
     auto io_hook = paimon::IOHook::GetInstance();
     paimon::ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
     io_hook->Reset(0, paimon::IOHook::Mode::RETURN_ERROR);
@@ -270,7 +275,7 @@ TEST(TestFileBlockCache, TestFileSizeLargerThanTheFileOnlyLosesTheLastBlock) {
     std::unique_ptr<UniqueTestDirectory> dir;
     // 30 instead of 26, so block 0 = [22, 30) has 4 bytes the file does not have.
     FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1 + 4, kBlockSize,
-                         /*capacity=*/1024, GetDefaultPool());
+                         /*capacity=*/1024, TestPool());
 
     AssertDeclined({22, 4}, &cache);
     // No second fetch of the block that cannot be read.
@@ -281,6 +286,43 @@ TEST(TestFileBlockCache, TestFileSizeLargerThanTheFileOnlyLosesTheLastBlock) {
     const FileBlockCache::Counters counters = cache.GetCounters();
     ASSERT_EQ(counters.fetches, 2u);
     ASSERT_EQ(counters.hits, 1u);
+}
+
+// An object store stream destroys the callback of a read after it has resolved
+// it, so the last reference to a block buffer can be dropped by an IO thread
+// after the cache - and the memory pool it holds - is already gone. The buffer
+// must keep its pool alive until then, or it frees its allocation against a
+// destroyed pool.
+TEST(TestFileBlockCache, TestBlockBufferKeepsPoolAliveAfterCacheIsGone) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir));
+    std::weak_ptr<MemoryPool> weak_pool;
+    {
+        std::shared_ptr<MemoryPool> pool = TestPool();
+        weak_pool = pool;
+        // Declared after the pool, so the cache is destroyed before the last
+        // reference of this test to the pool is dropped.
+        FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, /*capacity=*/1024, pool);
+
+        std::thread reader([&cache]() {
+            std::string dest(4, 'X');
+            EXPECT_TRUE(cache.Read({18, 4}, dest.data()));
+            EXPECT_EQ("stuv", std::string_view(dest.data(), 4));
+        });
+        while (gated->AsyncReadCount() == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        // The fetch is completed, but the stream keeps its callback - and with it
+        // a reference to the block buffer - alive.
+        gated->ReleaseAllKeepingCallbacks();
+        reader.join();
+    }
+
+    // The cache and the pool reference of this test are gone, so the callback
+    // holds the last reference to the buffer, which must still hold the pool.
+    ASSERT_FALSE(weak_pool.expired());
+    gated->DropCompletedCallbacks();
+    ASSERT_TRUE(weak_pool.expired());
 }
 
 }  // namespace paimon::test
