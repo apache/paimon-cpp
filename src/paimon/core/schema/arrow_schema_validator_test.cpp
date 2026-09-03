@@ -69,12 +69,12 @@ TEST(ArrowSchemaValidatorTest, TestTime32) {
                             {arrow::field("time", arrow::time32(arrow::TimeUnit::SECOND))})),
                         "Paimon TIME fields must use Arrow time32[ms]");
 
-    for (const std::string& precision : {"0", "9"}) {
+    for (const char* precision : {"0", "9"}) {
         auto metadata = arrow::KeyValueMetadata::Make({"paimon.time.precision"}, {precision});
         ASSERT_OK(ArrowSchemaValidator::ValidateSchema(*arrow::schema({arrow::field(
             "time", arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true, metadata)})));
     }
-    for (const std::string& precision : {"-1", "10", "invalid"}) {
+    for (const char* precision : {"-1", "10", "invalid"}) {
         auto metadata = arrow::KeyValueMetadata::Make({"paimon.time.precision"}, {precision});
         ASSERT_NOK_WITH_MSG(
             ArrowSchemaValidator::ValidateSchema(*arrow::schema({arrow::field(
