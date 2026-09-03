@@ -511,6 +511,31 @@ TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnDvTable) {
                         "not support for dv in UNAWARE_BUCKET mode");
 }
 
+TEST_F(AppendCompactCoordinatorTest, TestValidateFailsOnLoadedMapBlobTable) {
+    auto fs = dir_->GetFileSystem();
+    SchemaManager schema_manager(fs, TablePath());
+    std::string schema_json = R"json({
+        "version" : 3,
+        "id" : 0,
+        "fields" : [ {
+            "id" : 0,
+            "name" : "blob_map",
+            "type" : {"type":"MAP", "key":"STRING", "value":"BLOB"}
+        } ],
+        "highestFieldId" : 0,
+        "partitionKeys" : [],
+        "primaryKeys" : [],
+        "options" : {"bucket":"-1"},
+        "timeMillis" : 1721614341162
+    })json";
+    ASSERT_OK(fs->AtomicStore(PathUtil::JoinPath(schema_manager.SchemaDirectory(), "schema-0"),
+                              schema_json));
+
+    ASSERT_NOK_WITH_MSG(
+        AppendCompactCoordinator::Run(TablePath(), /*options=*/{}, /*partitions=*/{}, fs, pool_),
+        "Writing a table with MAP<..., BLOB> is not supported by the C++ writer");
+}
+
 /// Test that compact output files are written to external path when configured.
 TEST_F(AppendCompactCoordinatorTest, TestCompactWithExternalPath) {
     auto external_dir = UniqueTestDirectory::Create("local");

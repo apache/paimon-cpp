@@ -118,6 +118,16 @@ bool BlobUtils::IsMapBlobField(const std::shared_ptr<arrow::Field>& field) {
     return map_type.item_type()->id() == arrow::Type::LARGE_BINARY;
 }
 
+Status BlobUtils::ValidateMapBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema) {
+    for (const auto& field : schema->fields()) {
+        if (IsMapBlobField(field)) {
+            return Status::NotImplemented(
+                "Writing a table with MAP<..., BLOB> is not supported by the C++ writer.");
+        }
+    }
+    return Status::OK();
+}
+
 bool BlobUtils::IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata) {
     if (!metadata) {
         return false;

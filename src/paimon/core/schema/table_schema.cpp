@@ -57,12 +57,8 @@ Result<std::unique_ptr<TableSchema>> TableSchema::Create(
     for (const auto& primary_key : primary_keys) {
         primary_key_set.insert(primary_key);
     }
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(schema));
     for (const auto& field : schema->fields()) {
-        if (BlobUtils::IsMapBlobField(field)) {
-            return Status::NotImplemented(
-                "Creating a table with MAP<..., BLOB> is not supported by the C++ writer; "
-                "loading an existing table is supported.");
-        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> field_with_id,
                                AssignFieldIdsRecursively(field, /*set_field_id=*/true, &field_id));
         if (primary_key_set.count(field_with_id->name())) {

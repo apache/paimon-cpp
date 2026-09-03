@@ -111,12 +111,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     }
     const auto& schema = table_schema.value();
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
-    for (const auto& field : arrow_schema->fields()) {
-        if (BlobUtils::IsMapBlobField(field)) {
-            return Status::NotImplemented(
-                "Writing a table with MAP<..., BLOB> is not supported by the C++ writer.");
-        }
-    }
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(arrow_schema));
     auto opts = schema->Options();
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
