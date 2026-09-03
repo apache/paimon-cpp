@@ -111,7 +111,12 @@ class PageFilteredRowGroupReader {
 
     /// Reset the given leaf and replay the skip/read pattern derived from `ranges`
     /// directly against the ColumnReader (ResetLeaf + SkipRecords/ReadRecords).
+    /// `total` is the leaf's compressed-space size, which bounds the levels
+    /// SkipRecords walks; `reserve_values` / `reserve_value_bytes` describe what the
+    /// pattern will actually append, so a variable-width leaf can size its Arrow
+    /// builder once instead of doubling it per decoded batch.
     static Status ExecuteSkipReadPattern(int col_idx, const RowRanges& ranges, int64_t total,
+                                         int64_t reserve_values, int64_t reserve_value_bytes,
                                          ::parquet::arrow::ColumnReader* column_reader);
 
     /// Read a field (flat or nested) using ColumnReader tree.
