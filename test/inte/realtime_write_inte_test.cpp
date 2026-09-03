@@ -897,10 +897,6 @@ class RealtimeWriteInteTest : public ::testing::Test {
         return Status::OK();
     }
 
-    void RunUnionReadWithSelectedMapKeys(bool primary_key);
-
-    void RunUnionReadWithVariantAccess(bool primary_key);
-
     void RunConcurrencyTest(bool primary_key);
 
     Result<RealtimeOffsetMap> ReadCommittedOffsets() const {
@@ -2970,89 +2966,95 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadWithNestedStructProjection) {
     ASSERT_OK(writer->Close());
 }
 
-void RealtimeWriteInteTest::RunUnionReadWithSelectedMapKeys(bool primary_key) {
-    std::shared_ptr<arrow::DataType> map_type = arrow::map(arrow::utf8(), arrow::int64());
-    fields_ = {arrow::field("id", arrow::int64()), arrow::field("tags", map_type),
-               arrow::field("pt", arrow::utf8())};
-    schema_ = arrow::schema(fields_);
-    options_["fields.tags.map.storage-layout"] = "shared-shredding";
-    options_["fields.tags.map.shared-shredding.max-columns"] = "2";
-    if (primary_key) {
-        CreatePkTable();
-    } else {
-        CreateTable(/*partition_keys=*/{});
-    }
+TEST_F(RealtimeWriteInteTest, TestUnionReadWithSelectedMapKeys) {
+    auto run_test = [this](bool primary_key) {
+        dir_ = UniqueTestDirectory::Create("local");
+        ASSERT_NE(nullptr, dir_);
+        table_path_ = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+        std::shared_ptr<arrow::DataType> map_type = arrow::map(arrow::utf8(), arrow::int64());
+        fields_ = {arrow::field("id", arrow::int64()), arrow::field("tags", map_type),
+                   arrow::field("pt", arrow::utf8())};
+        schema_ = arrow::schema(fields_);
+        options_["fields.tags.map.storage-layout"] = "shared-shredding";
+        options_["fields.tags.map.shared-shredding.max-columns"] = "2";
+        if (primary_key) {
+            CreatePkTable();
+        } else {
+            CreateTable(/*partition_keys=*/{});
+        }
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
-                         RealtimeContext::Create());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         CreateRealtimeWriter(realtime_context));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
-                         MakeUnpartitionedBatchFromJson(R"([
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                             RealtimeContext::Create());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                             CreateRealtimeWriter(realtime_context));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
+                             MakeUnpartitionedBatchFromJson(R"([
                              [0, 0, [["a", 10], ["b", 20]], "p0"],
                              [1, 1, [["c", 30]], "p0"]
                          ])"));
-    ASSERT_OK(writer->Write(std::move(disk_batch)));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
-                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
-    ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id, Commit(disk_commits, /*commit_identifier=*/0));
-    ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
+        ASSERT_OK(writer->Write(std::move(disk_batch)));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
+                             writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+        ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id,
+                             Commit(disk_commits, /*commit_identifier=*/0));
+        ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
-                         MakeUnpartitionedBatchFromJson(R"([
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                             MakeUnpartitionedBatchFromJson(R"([
                              [2, 2, [["a", 40], ["c", 50]], "p0"],
                              [3, 3, null, "p0"]
                          ])"));
-    ASSERT_OK(writer->Write(std::move(memory_batch)));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
-                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+        ASSERT_OK(writer->Write(std::move(memory_batch)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                             CreatePlan(realtime_context, /*predicate=*/nullptr));
 
-    std::shared_ptr<arrow::KeyValueMetadata> selected_keys =
-        arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"c,a,missing"});
-    std::shared_ptr<arrow::Field> selected_map_field = fields_[1]->WithMetadata(selected_keys);
-    auto selected_map_schema = arrow::schema({fields_[0], selected_map_field, fields_[2]});
-    ReadPlanWithSchemaAndCheck(plan, realtime_context, selected_map_schema, R"([
+        std::shared_ptr<arrow::KeyValueMetadata> selected_keys =
+            arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"c,a,missing"});
+        std::shared_ptr<arrow::Field> selected_map_field = fields_[1]->WithMetadata(selected_keys);
+        auto selected_map_schema = arrow::schema({fields_[0], selected_map_field, fields_[2]});
+        ReadPlanWithSchemaAndCheck(plan, realtime_context, selected_map_schema, R"([
         [0, 0, [["a", 10]], "p0"],
         [0, 1, [["c", 30]], "p0"],
         [0, 2, [["c", 50], ["a", 40]], "p0"],
         [0, 3, null, "p0"]
     ])");
 
-    ASSERT_OK_AND_ASSIGN(plan, CreatePlan(realtime_context, /*predicate=*/nullptr));
-    auto c_map_field = std::make_unique<ArrowSchema>();
-    ASSERT_TRUE(arrow::ExportField(*fields_[1], c_map_field.get()).ok());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> access_builder,
-                         MapSharedShreddingAccessBuilder::Create(c_map_field.get()));
-    ASSERT_OK(access_builder->AddKey("a"));
-    ASSERT_OK(access_builder->AddKey("missing"));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_access_field, access_builder->Build());
-    auto access_field_result = arrow::ImportField(c_access_field.get());
-    ASSERT_TRUE(access_field_result.ok()) << access_field_result.status().ToString();
-    auto selected_struct_schema =
-        arrow::schema({fields_[0], access_field_result.ValueOrDie(), fields_[2]});
-    ReadPlanWithSchemaAndCheck(plan, realtime_context, selected_struct_schema, R"([
+        ASSERT_OK_AND_ASSIGN(plan, CreatePlan(realtime_context, /*predicate=*/nullptr));
+        auto c_map_field = std::make_unique<ArrowSchema>();
+        ASSERT_TRUE(arrow::ExportField(*fields_[1], c_map_field.get()).ok());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<MapSharedShreddingAccessBuilder> access_builder,
+                             MapSharedShreddingAccessBuilder::Create(c_map_field.get()));
+        ASSERT_OK(access_builder->AddKey("a"));
+        ASSERT_OK(access_builder->AddKey("missing"));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_access_field, access_builder->Build());
+        auto access_field_result = arrow::ImportField(c_access_field.get());
+        ASSERT_TRUE(access_field_result.ok()) << access_field_result.status().ToString();
+        auto selected_struct_schema =
+            arrow::schema({fields_[0], access_field_result.ValueOrDie(), fields_[2]});
+        ReadPlanWithSchemaAndCheck(plan, realtime_context, selected_struct_schema, R"([
         [0, 0, [10, null], "p0"],
         [0, 1, [null, null], "p0"],
         [0, 2, [40, null], "p0"],
         [0, 3, null, "p0"]
     ])");
-    ASSERT_OK(writer->Close());
+        ASSERT_OK(writer->Close());
+    };
+    run_test(/*primary_key=*/false);
+    ASSERT_FALSE(HasFatalFailure());
+    run_test(/*primary_key=*/true);
+    ASSERT_FALSE(HasFatalFailure());
 }
 
-TEST_F(RealtimeWriteInteTest, TestUnionReadWithSelectedMapKeys) {
-    RunUnionReadWithSelectedMapKeys(/*primary_key=*/false);
-}
-
-TEST_F(RealtimeWriteInteTest, TestPkUnionReadWithSelectedMapKeys) {
-    RunUnionReadWithSelectedMapKeys(/*primary_key=*/true);
-}
-
-void RealtimeWriteInteTest::RunUnionReadWithVariantAccess(bool primary_key) {
-    fields_ = {arrow::field("id", arrow::int32()), VariantTypeUtils::ToArrowField("v")};
-    schema_ = arrow::schema(fields_);
-    options_[Options::MANIFEST_FORMAT] = "avro";
-    options_[Options::FILE_FORMAT] = "parquet";
-    options_[Options::VARIANT_SHREDDING_SCHEMA] = R"({
+TEST_F(RealtimeWriteInteTest, TestUnionReadWithVariantAccess) {
+    auto run_test = [this](bool primary_key) {
+        dir_ = UniqueTestDirectory::Create("local");
+        ASSERT_NE(nullptr, dir_);
+        table_path_ = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+        fields_ = {arrow::field("id", arrow::int32()), VariantTypeUtils::ToArrowField("v")};
+        schema_ = arrow::schema(fields_);
+        options_[Options::MANIFEST_FORMAT] = "avro";
+        options_[Options::FILE_FORMAT] = "parquet";
+        options_[Options::VARIANT_SHREDDING_SCHEMA] = R"({
         "type": "ROW",
         "fields": [{
             "id": 0,
@@ -3066,91 +3068,96 @@ void RealtimeWriteInteTest::RunUnionReadWithVariantAccess(bool primary_key) {
             }
         }]
     })";
-    if (primary_key) {
-        CreatePkTable();
-    } else {
-        CreateTable(/*partition_keys=*/{});
-    }
+        if (primary_key) {
+            CreatePkTable();
+        } else {
+            CreateTable(/*partition_keys=*/{});
+        }
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
-                         RealtimeContext::Create());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         CreateRealtimeWriter(realtime_context));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> disk_data,
-                         VariantTestData::BuildVariantBatch(
-                             fields_[0], fields_[1],
-                             {R"({"age":10,"city":"disk-a","note":"disk-fallback-a"})",
-                              R"({"age":20,"city":"disk-b","note":"disk-fallback-b"})"},
-                             pool_));
-    std::shared_ptr<arrow::Array> disk_offsets =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[0, 1]").ValueOrDie();
-    arrow::ArrayVector disk_columns = {std::move(disk_offsets)};
-    disk_columns.insert(disk_columns.end(), disk_data->fields().begin(), disk_data->fields().end());
-    const std::shared_ptr<arrow::Schema> realtime_schema =
-        RealtimeOffsetUtils::CreateInputSchema(schema_);
-    std::shared_ptr<arrow::StructArray> disk_realtime_data =
-        arrow::StructArray::Make(std::move(disk_columns), realtime_schema->fields()).ValueOrDie();
-    ArrowArray disk_c_array;
-    ASSERT_TRUE(arrow::ExportArray(*disk_realtime_data, &disk_c_array).ok());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
-                         RecordBatchBuilder(&disk_c_array).SetBucket(0).Finish());
-    ASSERT_OK(writer->Write(std::move(disk_batch)));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
-                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
-    ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id, Commit(disk_commits, /*commit_identifier=*/0));
-    ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                             RealtimeContext::Create());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                             CreateRealtimeWriter(realtime_context));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> disk_data,
+                             VariantTestData::BuildVariantBatch(
+                                 fields_[0], fields_[1],
+                                 {R"({"age":10,"city":"disk-a","note":"disk-fallback-a"})",
+                                  R"({"age":20,"city":"disk-b","note":"disk-fallback-b"})"},
+                                 pool_));
+        std::shared_ptr<arrow::Array> disk_offsets =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[0, 1]").ValueOrDie();
+        arrow::ArrayVector disk_columns = {std::move(disk_offsets)};
+        disk_columns.insert(disk_columns.end(), disk_data->fields().begin(),
+                            disk_data->fields().end());
+        const std::shared_ptr<arrow::Schema> realtime_schema =
+            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        std::shared_ptr<arrow::StructArray> disk_realtime_data =
+            arrow::StructArray::Make(std::move(disk_columns), realtime_schema->fields())
+                .ValueOrDie();
+        ArrowArray disk_c_array;
+        ASSERT_TRUE(arrow::ExportArray(*disk_realtime_data, &disk_c_array).ok());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
+                             RecordBatchBuilder(&disk_c_array).SetBucket(0).Finish());
+        ASSERT_OK(writer->Write(std::move(disk_batch)));
+        ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_commits,
+                             writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+        ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id,
+                             Commit(disk_commits, /*commit_identifier=*/0));
+        ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> memory_data,
-                         VariantTestData::BuildVariantBatch(
-                             fields_[0], fields_[1],
-                             {R"({"age":30,"city":"memory-a"})",
-                              R"({"age":40,"city":"memory-b","note":"memory-fallback-b"})"},
-                             pool_, /*id_offset=*/2));
-    std::shared_ptr<arrow::Array> memory_offsets =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[2, 3]").ValueOrDie();
-    arrow::ArrayVector memory_columns = {std::move(memory_offsets)};
-    memory_columns.insert(memory_columns.end(), memory_data->fields().begin(),
-                          memory_data->fields().end());
-    std::shared_ptr<arrow::StructArray> memory_realtime_data =
-        arrow::StructArray::Make(std::move(memory_columns), realtime_schema->fields()).ValueOrDie();
-    ArrowArray memory_c_array;
-    ASSERT_TRUE(arrow::ExportArray(*memory_realtime_data, &memory_c_array).ok());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
-                         RecordBatchBuilder(&memory_c_array).SetBucket(0).Finish());
-    ASSERT_OK(writer->Write(std::move(memory_batch)));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
-                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> memory_data,
+                             VariantTestData::BuildVariantBatch(
+                                 fields_[0], fields_[1],
+                                 {R"({"age":30,"city":"memory-a"})",
+                                  R"({"age":40,"city":"memory-b","note":"memory-fallback-b"})"},
+                                 pool_, /*id_offset=*/2));
+        std::shared_ptr<arrow::Array> memory_offsets =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[2, 3]").ValueOrDie();
+        arrow::ArrayVector memory_columns = {std::move(memory_offsets)};
+        memory_columns.insert(memory_columns.end(), memory_data->fields().begin(),
+                              memory_data->fields().end());
+        std::shared_ptr<arrow::StructArray> memory_realtime_data =
+            arrow::StructArray::Make(std::move(memory_columns), realtime_schema->fields())
+                .ValueOrDie();
+        ArrowArray memory_c_array;
+        ASSERT_TRUE(arrow::ExportArray(*memory_realtime_data, &memory_c_array).ok());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                             RecordBatchBuilder(&memory_c_array).SetBucket(0).Finish());
+        ASSERT_OK(writer->Write(std::move(memory_batch)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                             CreatePlan(realtime_context, /*predicate=*/nullptr));
 
-    VariantAccessBuilder access_builder;
-    auto age_target = std::make_unique<ArrowSchema>();
-    auto city_target = std::make_unique<ArrowSchema>();
-    auto note_target = std::make_unique<ArrowSchema>();
-    ASSERT_TRUE(arrow::ExportField(*arrow::field("age", arrow::int64()), age_target.get()).ok());
-    ASSERT_TRUE(arrow::ExportField(*arrow::field("city", arrow::utf8()), city_target.get()).ok());
-    ASSERT_TRUE(arrow::ExportField(*arrow::field("note", arrow::utf8()), note_target.get()).ok());
-    ASSERT_OK(access_builder.AddField(age_target.get(), "$.age", /*fail_on_error=*/false));
-    ASSERT_OK(access_builder.AddField(city_target.get(), "$.city", /*fail_on_error=*/false));
-    // `note` is intentionally absent from variant.shreddingSchema and must use binary fallback.
-    ASSERT_OK(access_builder.AddField(note_target.get(), "$.note", /*fail_on_error=*/false));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_access_field, access_builder.Build("v"));
-    auto access_field_result = arrow::ImportField(c_access_field.get());
-    ASSERT_TRUE(access_field_result.ok()) << access_field_result.status().ToString();
-    auto access_schema = arrow::schema({fields_[0], access_field_result.ValueOrDie()});
-    ReadPlanWithSchemaAndCheck(plan, realtime_context, access_schema, R"([
+        VariantAccessBuilder access_builder;
+        auto age_target = std::make_unique<ArrowSchema>();
+        auto city_target = std::make_unique<ArrowSchema>();
+        auto note_target = std::make_unique<ArrowSchema>();
+        ASSERT_TRUE(
+            arrow::ExportField(*arrow::field("age", arrow::int64()), age_target.get()).ok());
+        ASSERT_TRUE(
+            arrow::ExportField(*arrow::field("city", arrow::utf8()), city_target.get()).ok());
+        ASSERT_TRUE(
+            arrow::ExportField(*arrow::field("note", arrow::utf8()), note_target.get()).ok());
+        ASSERT_OK(access_builder.AddField(age_target.get(), "$.age", /*fail_on_error=*/false));
+        ASSERT_OK(access_builder.AddField(city_target.get(), "$.city", /*fail_on_error=*/false));
+        // `note` is intentionally absent from variant.shreddingSchema and must use binary fallback.
+        ASSERT_OK(access_builder.AddField(note_target.get(), "$.note", /*fail_on_error=*/false));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_access_field,
+                             access_builder.Build("v"));
+        auto access_field_result = arrow::ImportField(c_access_field.get());
+        ASSERT_TRUE(access_field_result.ok()) << access_field_result.status().ToString();
+        auto access_schema = arrow::schema({fields_[0], access_field_result.ValueOrDie()});
+        ReadPlanWithSchemaAndCheck(plan, realtime_context, access_schema, R"([
         [0, 0, [10, "disk-a", "disk-fallback-a"]],
         [0, 1, [20, "disk-b", "disk-fallback-b"]],
         [0, 2, [30, "memory-a", null]],
         [0, 3, [40, "memory-b", "memory-fallback-b"]]
     ])");
-    ASSERT_OK(writer->Close());
-}
-
-TEST_F(RealtimeWriteInteTest, TestUnionReadWithVariantAccess) {
-    RunUnionReadWithVariantAccess(/*primary_key=*/false);
-}
-
-TEST_F(RealtimeWriteInteTest, TestPkUnionReadWithVariantAccess) {
-    RunUnionReadWithVariantAccess(/*primary_key=*/true);
+        ASSERT_OK(writer->Close());
+    };
+    run_test(/*primary_key=*/false);
+    ASSERT_FALSE(HasFatalFailure());
+    run_test(/*primary_key=*/true);
+    ASSERT_FALSE(HasFatalFailure());
 }
 
 TEST_F(RealtimeWriteInteTest, TestRefreshCommittedSnapshotReclaimsMemory) {

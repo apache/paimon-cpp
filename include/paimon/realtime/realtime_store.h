@@ -135,7 +135,7 @@ class PAIMON_EXPORT RealtimeStore {
 
     /// Adds a batch to the current building segment.
     ///
-    /// The offset envelope may contain gaps and does not imply the batch row count.
+    /// The offset envelope may contain gaps.
     virtual Status Write(RealtimeWriteBatch&& batch) = 0;
 
     /// Seals the current building data and opens a new building segment.
