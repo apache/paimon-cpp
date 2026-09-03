@@ -1557,10 +1557,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
     ASSERT_TRUE(supplied_explicit_plan->Splits().empty());
     ASSERT_FALSE(supplied_explicit_plan->SnapshotId());
 
-    Result<std::shared_ptr<Plan>> missing_selector_result =
-        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_MODE, "from-snapshot"}});
-    ASSERT_TRUE(missing_selector_result.status().IsInvalid())
-        << missing_selector_result.status().ToString();
+    ASSERT_NOK_WITH_MSG(
+        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_MODE, "from-snapshot"}}),
+        "scan.snapshot-id or scan.tag-name must be set when startup mode is FROM_SNAPSHOT");
 
     std::vector<std::map<std::string, std::string>> time_travel_options = {
         {{Options::SCAN_TAG_NAME, "tag"}},
