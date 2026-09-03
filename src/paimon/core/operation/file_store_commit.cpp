@@ -127,7 +127,6 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     assert(options.GetFileSystem());
     assert(options.GetFileFormat());
     PAIMON_RETURN_NOT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));
-
     PAIMON_ASSIGN_OR_RAISE(bool is_object_store, FileSystem::IsObjectStore(root_path));
     if (is_object_store && !ctx->UseRESTCatalogCommit() &&
         opts.find("enable-object-store-commit-in-inte-test") == opts.end()) {

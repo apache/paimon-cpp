@@ -32,6 +32,7 @@
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/manifest/manifest_entry.h"
+#include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/data/decimal.h"
@@ -116,8 +117,7 @@ class ManifestFileTest : public testing::Test {
                                  /*global_index_external_path=*/std::nullopt,
                                  /*index_file_in_data_file_dir=*/false, pool));
         EXPECT_OK_AND_ASSIGN(CoreOptions options,
-                             CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
-                                                   {Options::MANIFEST_FORMAT, file_format_str}}));
+                             CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
         EXPECT_OK_AND_ASSIGN(
             std::unique_ptr<ManifestFile> manifest_file,
             ManifestFile::Create(file_system, file_format, "zstd", path_factory,
@@ -254,9 +254,8 @@ TEST_F(ManifestFileTest, TestManifestCacheIsDisabledWithoutInjectedCache) {
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
                                      /*global_index_external_path=*/std::nullopt,
                                      /*index_file_in_data_file_dir=*/false, pool));
-    ASSERT_OK_AND_ASSIGN(
-        CoreOptions options,
-        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<ManifestFile> manifest_file,
         ManifestFile::Create(counting_file_system, file_format, "zstd", path_factory,
@@ -296,9 +295,8 @@ TEST_F(ManifestFileTest, TestManifestCacheReusesCachedBytes) {
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
                                      /*global_index_external_path=*/std::nullopt,
                                      /*index_file_in_data_file_dir=*/false, pool));
-    ASSERT_OK_AND_ASSIGN(
-        CoreOptions options,
-        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     options.WithCache(manifest_cache);
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<ManifestFile> manifest_file,
@@ -337,9 +335,8 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
                                      /*global_index_external_path=*/std::nullopt,
                                      /*index_file_in_data_file_dir=*/false, pool));
-    ASSERT_OK_AND_ASSIGN(
-        CoreOptions options,
-        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     options.WithCache(manifest_cache);
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<ManifestFile> manifest_file,
@@ -381,7 +378,7 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
     std::shared_ptr<FileSystem> file_system = test_dir->GetFileSystem();
     ASSERT_OK(file_system->Mkdirs(FileStorePathFactory::ManifestPath(test_dir->Str())));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
-                         FileFormatFactory::Get("orc", {}));
+                         FileFormatFactory::Get("avro", {}));
     auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
@@ -391,9 +388,8 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
                                      /*global_index_external_path=*/std::nullopt,
                                      /*index_file_in_data_file_dir=*/false, pool));
-    ASSERT_OK_AND_ASSIGN(
-        CoreOptions options,
-        CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<ManifestFile> manifest_file,
         ManifestFile::Create(file_system, file_format, "zstd", path_factory,
@@ -416,6 +412,38 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
     std::vector<ManifestEntry> bucket_entries;
     ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0, &bucket_entries));
     ASSERT_EQ(std::vector<ManifestEntry>({valid_target_bucket}), bucket_entries);
+}
+
+TEST_F(ManifestFileTest, TestLegacyManifestFormatIsReadOnly) {
+    auto pool = GetDefaultPool();
+    std::vector<ManifestEntry> entries =
+        ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
+                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+    ASSERT_FALSE(entries.empty());
+
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
+                         FileFormatFactory::Get("orc", {}));
+    auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        FileStorePathFactory::Create(dir->Str(), unused_schema, /*partition_keys=*/{},
+                                     /*default_part_value=*/"", file_format->Identifier(),
+                                     /*data_file_prefix=*/"data-",
+                                     /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                     /*global_index_external_path=*/std::nullopt,
+                                     /*index_file_in_data_file_dir=*/false, pool));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ManifestFile> manifest_file,
+        ManifestFile::Create(dir->GetFileSystem(), file_format, "zstd", path_factory,
+                             /*target_file_size=*/1024, pool, options, unused_schema));
+
+    ASSERT_NOK_WITH_MSG(manifest_file->Write({entries.front()}),
+                        "manifest.format 'orc' is read-only");
+    ASSERT_NOK_WITH_MSG(manifest_file->WriteWithoutRolling({entries.front()}),
+                        "manifest.format 'orc' is read-only");
 }
 
 TEST_F(ManifestFileTest, TestWithNullCount) {

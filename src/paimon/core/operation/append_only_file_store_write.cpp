@@ -78,7 +78,7 @@ namespace {
 // the table does not set them - ParquetWriterBuilder for the first, ParquetFileBatchReader for the
 // second.
 constexpr char kParquetFormat[] = "parquet";
-constexpr char kParquetEnableDictionary[] = "parquet.enable-dictionary";
+constexpr char kParquetEnableDictionary[] = "parquet.enable.dictionary";
 constexpr char kParquetReadEnableDictionaryPassthrough[] =
     "parquet.read.enable-dictionary-passthrough";
 constexpr bool kDefaultParquetEnableDictionary = true;
@@ -328,7 +328,7 @@ Result<std::optional<std::string>> AppendOnlyFileStoreWrite::GetDictionaryPassth
                                                        options_.ToMap(), kParquetEnableDictionary,
                                                        kDefaultParquetEnableDictionary));
     if (!enable_dictionary) {
-        return std::optional<std::string>("parquet.enable-dictionary is false");
+        return std::optional<std::string>("parquet.enable.dictionary is false");
     }
     if (plan_factory != nullptr) {
         return std::optional<std::string>("the table is written through a shredding writer");

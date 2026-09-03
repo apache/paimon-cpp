@@ -69,6 +69,7 @@ if(PAIMON_BUILD_TESTS)
                     paimon_shared
                     test_utils_static
                     ${PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS}
+                    ${PAIMON_AVRO_FILE_FORMAT_STATIC_LINK_LIBS}
                     ${PAIMON_LOCAL_FILE_SYSTEM_STATIC_LINK_LIBS}
                     parquet
                     ${GTEST_LINK_TOOLCHAIN})

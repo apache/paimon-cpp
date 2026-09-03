@@ -20,10 +20,12 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
 #include "paimon/common/data/data_define.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/mergetree/compact/aggregate/field_aggregator.h"
 
@@ -60,15 +62,18 @@ class FieldListaggAgg : public FieldAggregator {
                             const VariantType& input_field) override {
         bool accumulator_null = DataDefine::IsVariantNull(accumulator);
         bool input_null = DataDefine::IsVariantNull(input_field);
-        if (accumulator_null || input_null) {
-            return accumulator_null ? input_field : accumulator;
-        }
-        std::string_view acc_str = DataDefine::GetStringView(accumulator);
-        std::string_view in_str = DataDefine::GetStringView(input_field);
-        if (in_str.empty()) {
+        if (input_null) {
             return accumulator;
         }
-        if (acc_str.empty()) {
+        std::string_view in_str = DataDefine::GetStringView(input_field);
+        if (StringUtils::IsBlank(in_str)) {
+            return accumulator;
+        }
+        if (accumulator_null) {
+            return input_field;
+        }
+        std::string_view acc_str = DataDefine::GetStringView(accumulator);
+        if (StringUtils::IsBlank(acc_str)) {
             return input_field;
         }
 
@@ -95,9 +100,7 @@ class FieldListaggAgg : public FieldAggregator {
             size_t pos = remaining.find(delimiter_);
             std::string_view token =
                 (pos == std::string_view::npos) ? remaining : remaining.substr(0, pos);
-            if (!token.empty()) {
-                seen.insert(token);
-            }
+            seen.insert(token);
             if (pos == std::string_view::npos) {
                 break;
             }
@@ -113,7 +116,7 @@ class FieldListaggAgg : public FieldAggregator {
             size_t pos = remaining.find(delimiter_);
             std::string_view token =
                 (pos == std::string_view::npos) ? remaining : remaining.substr(0, pos);
-            if (!token.empty() && seen.insert(token).second) {
+            if (!StringUtils::IsBlank(token) && seen.insert(token).second) {
                 result.append(delimiter_);
                 result.append(token);
             }
