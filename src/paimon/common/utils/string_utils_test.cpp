@@ -21,6 +21,7 @@
 
 #include <limits>
 #include <memory>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/status.h"
@@ -209,6 +210,34 @@ TEST_F(StringUtilsTest, TestIsNullOrWhitespaceOnly) {
         auto ret = StringUtils::IsNullOrWhitespaceOnly(str);
         ASSERT_TRUE(ret);
     }
+    ASSERT_TRUE(StringUtils::IsNullOrWhitespaceOnly(u8"\u3000\u2000"));
+}
+
+TEST_F(StringUtilsTest, TestIsBlank) {
+    const std::vector<std::string> blank_strings = {
+        "",     " ",        "   ",      "\t",       "\n",       "\r",
+        "\r\n", " \t\n\r ", u8"\u1680", u8"\u2000", u8"\u3000", u8" \t\u3000\u2000\n"};
+    for (const std::string& blank : blank_strings) {
+        ASSERT_TRUE(StringUtils::IsBlank(blank)) << blank;
+    }
+
+    ASSERT_FALSE(StringUtils::IsBlank("user1"));
+    ASSERT_FALSE(StringUtils::IsBlank(" user1 "));
+    ASSERT_FALSE(StringUtils::IsBlank(u8"\u00a0"));
+    ASSERT_FALSE(StringUtils::IsBlank(std::string("\xc0\x80", 2)));
+
+    // Non-breaking or otherwise excluded by Character.isWhitespace.
+    ASSERT_FALSE(StringUtils::IsBlank(u8"\u2007"));  // FIGURE SPACE
+    ASSERT_FALSE(StringUtils::IsBlank(u8"\u202f"));  // NARROW NO-BREAK SPACE
+    ASSERT_FALSE(StringUtils::IsBlank(u8"\u0085"));  // NEL
+    ASSERT_FALSE(StringUtils::IsBlank(u8"\u180e"));  // Not whitespace since Java 8
+}
+
+TEST_F(StringUtilsTest, TestIsEmptyAfterTrim) {
+    ASSERT_TRUE(StringUtils::IsEmptyAfterTrim(""));
+    ASSERT_TRUE(StringUtils::IsEmptyAfterTrim(" \t\x1c"));
+    ASSERT_FALSE(StringUtils::IsEmptyAfterTrim(" a "));
+    ASSERT_FALSE(StringUtils::IsEmptyAfterTrim(u8"\u3000"));
 }
 
 TEST_F(StringUtilsTest, TestToLowerCase) {

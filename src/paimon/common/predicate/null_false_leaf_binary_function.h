@@ -31,8 +31,8 @@
 namespace paimon {
 class NullFalseLeafBinaryFunction : public LeafFunction {
  public:
-    Result<std::vector<char>> Test(const arrow::Array& array,
-                                   const std::vector<Literal>& literals) const override {
+    Result<std::vector<char>> Test(const arrow::Array& array, const std::vector<Literal>& literals,
+                                   arrow::MemoryPool* pool) const override {
         if (literals.size() < LITERAL_LIMIT) {
             return Status::Invalid("NullFalseLeafBinaryFunction needs single literal for field");
         }

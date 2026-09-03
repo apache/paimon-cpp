@@ -49,9 +49,10 @@ class IndexManifestFileHandlerTest : public testing::Test {
         ASSERT_TRUE(dir_ != nullptr);
     }
 
-    Result<std::unique_ptr<IndexManifestFile>> CreateManifestFile(int32_t bucket_mode) const {
+    Result<std::unique_ptr<IndexManifestFile>> CreateManifestFile(
+        int32_t bucket_mode, const std::string& file_format_identifier = "avro") const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> file_format,
-                               FileFormatFactory::Get("orc", {}));
+                               FileFormatFactory::Get(file_format_identifier, {}));
         auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
@@ -61,8 +62,7 @@ class IndexManifestFileHandlerTest : public testing::Test {
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
                 /*global_index_external_path=*/std::nullopt,
                 /*index_file_in_data_file_dir=*/false, pool_));
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
-                               CoreOptions::FromMap({{Options::MANIFEST_FORMAT, "orc"}}));
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap({}));
         return IndexManifestFile::Create(dir_->GetFileSystem(), file_format, "zstd", path_factory,
                                          bucket_mode, pool_, options);
     }
@@ -217,6 +217,17 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerOverwritesDuplicateAddedEntri
     ASSERT_EQ(written_entries.size(), 1);
     ASSERT_EQ(written_entries[0].index_file->FileName(), "global-0");
     ASSERT_EQ(written_entries[0].index_file->RowCount(), 20);
+}
+
+TEST_F(IndexManifestFileHandlerTest, LegacyManifestFormatIsReadOnly) {
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file,
+                         CreateManifestFile(/*bucket_mode=*/4, /*file_format_identifier=*/"orc"));
+    auto partition = BinaryRow::EmptyRow();
+    std::vector<IndexManifestEntry> entries = {
+        MakeEntry(FileKind::Add(), partition, /*bucket=*/0, /*index_type=*/"BTREE", "global-0", 1)};
+
+    ASSERT_NOK_WITH_MSG(index_manifest_file->WriteIndexFiles(std::nullopt, entries),
+                        "manifest.format 'orc' is read-only");
 }
 
 TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUnawareMode) {

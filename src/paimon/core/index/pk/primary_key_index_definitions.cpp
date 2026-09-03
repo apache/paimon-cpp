@@ -102,7 +102,10 @@ Result<std::map<std::string, std::string>> SortedIndexOptions(
     std::string option_key =
         fmt::format("{}{}.{}.index.options", kFieldScopedPrefix, column, option_family);
     auto iter = table_options.find(option_key);
-    if (iter == table_options.end() || StringUtils::IsNullOrWhitespaceOnly(iter->second)) {
+    if (iter == table_options.end()) {
+        return resolved;
+    }
+    if (StringUtils::IsEmptyAfterTrim(iter->second)) {
         return resolved;
     }
 
@@ -113,11 +116,13 @@ Result<std::map<std::string, std::string>> SortedIndexOptions(
             fmt::format("{} must be a JSON object of option key-value pairs.", option_key));
     }
     for (auto member = document.MemberBegin(); member != document.MemberEnd(); ++member) {
-        if (!member->name.IsString() ||
-            StringUtils::IsNullOrWhitespaceOnly(member->name.GetString())) {
+        if (!member->name.IsString()) {
             return Status::Invalid(fmt::format("{} contains an empty option key.", option_key));
         }
         std::string key = member->name.GetString();
+        if (StringUtils::IsEmptyAfterTrim(key)) {
+            return Status::Invalid(fmt::format("{} contains an empty option key.", option_key));
+        }
         if (member->value.IsNull()) {
             return Status::Invalid(
                 fmt::format("{} value for key {} must not be null.", option_key, key));

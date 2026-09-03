@@ -128,9 +128,7 @@ class InferShreddingFileWriterTest : public ::testing::Test {
     MakeWriter(int32_t buffer_rows) {
         std::map<std::string, std::string> option_map = {
             {"variant.inferShreddingSchema", "true"},
-            {"variant.shredding.maxInferBufferRow", std::to_string(buffer_rows)},
-            // Keep the manifest format resolvable in test binaries without the avro plugin.
-            {"manifest.format", "parquet"}};
+            {"variant.shredding.maxInferBufferRow", std::to_string(buffer_rows)}};
         EXPECT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(option_map));
         auto plan_factory = VariantShreddingWritePlanFactory::Create(options, schema_, pool_);
         auto create_inner = [this](const std::shared_ptr<ShreddingBatchConverter>& converter)

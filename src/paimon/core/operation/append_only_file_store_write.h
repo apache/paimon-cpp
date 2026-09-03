@@ -146,7 +146,7 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
     /// The veto stands unless all three of:
     ///
     /// - a Parquet output file, since no other writer takes a dictionary-encoded batch;
-    /// - `parquet.enable-dictionary`, or the writer densifies what the reader just handed it and
+    /// - `parquet.enable.dictionary`, or the writer densifies what the reader just handed it and
     ///   the encoding is carried across the rewrite for nothing;
     /// - a rewrite that stays a passthrough, since a shredding writer reshapes each batch against
     ///   a fixed physical schema and cannot take a dictionary-encoded one.

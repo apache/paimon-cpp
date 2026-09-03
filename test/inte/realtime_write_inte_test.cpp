@@ -324,9 +324,11 @@ class RealtimeWriteInteTest : public ::testing::Test {
                    arrow::field("pt", arrow::utf8())};
         schema_ = arrow::schema(fields_);
         options_ = {
-            {Options::MANIFEST_FORMAT, "orc"},   {Options::FILE_FORMAT, "orc"},
-            {Options::FILE_SYSTEM, "local"},     {Options::BUCKET, "1"},
-            {Options::BUCKET_KEY, "id"},         {Options::TARGET_FILE_SIZE, "1048576"},
+            {Options::FILE_FORMAT, "orc"},
+            {Options::FILE_SYSTEM, "local"},
+            {Options::BUCKET, "1"},
+            {Options::BUCKET_KEY, "id"},
+            {Options::TARGET_FILE_SIZE, "1048576"},
             {Options::REALTIME_ENABLED, "true"},
         };
     }
@@ -2541,7 +2543,7 @@ TEST_F(RealtimeWriteInteTest, TestDiskPredicatePushdownWithoutMemoryFiltering) {
     options_[Options::FILE_FORMAT] = "parquet";
     options_[Options::WRITE_BATCH_SIZE] = "1";
     options_["parquet.page.size"] = "1";
-    options_["parquet.enable-dictionary"] = "false";
+    options_["parquet.enable.dictionary"] = "false";
     options_["parquet.write.enable-page-index"] = "true";
     options_["parquet.read.enable-page-index-filter"] = "true";
     CreateTable(/*partition_keys=*/{});
@@ -2676,7 +2678,7 @@ TEST_F(RealtimeWriteInteTest, TestMemoryBatchStatisticsPredicatePushdownWithDisk
     options_[Options::WRITE_BATCH_SIZE] = "1";
     options_[Options::REALTIME_STORE_STATS_MODE] = "full";
     options_["parquet.page.size"] = "1";
-    options_["parquet.enable-dictionary"] = "false";
+    options_["parquet.enable.dictionary"] = "false";
     options_["parquet.write.enable-page-index"] = "true";
     options_["parquet.read.enable-page-index-filter"] = "true";
     CreateTable(/*partition_keys=*/{});
@@ -2730,7 +2732,7 @@ TEST_F(RealtimeWriteInteTest, TestNullPredicateForMemoryAndDisk) {
     options_[Options::WRITE_BATCH_SIZE] = "1";
     options_[Options::REALTIME_STORE_STATS_MODE] = "full";
     options_["parquet.page.size"] = "1";
-    options_["parquet.enable-dictionary"] = "false";
+    options_["parquet.enable.dictionary"] = "false";
     options_["parquet.write.enable-page-index"] = "true";
     options_["parquet.write.max-row-group-length"] = "1";
     options_["parquet.read.enable-page-index-filter"] = "true";

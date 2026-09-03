@@ -75,14 +75,15 @@ class ExpireSnapshotsTest : public testing::Test {
         test_data_path_ = "tmp";
         path_factory_ = CreateFactory(test_data_path_);
 
+        std::shared_ptr<FileFormat> manifest_format = options.GetManifestFormat();
         ASSERT_OK_AND_ASSIGN(
             manifest_list_,
-            ManifestList::Create(fs_, options.GetManifestFormat(), options.GetManifestCompression(),
+            ManifestList::Create(fs_, manifest_format, options.GetManifestCompression(),
                                  path_factory_, options.GetCache(), mem_pool_));
 
         ASSERT_OK_AND_ASSIGN(
             manifest_file_,
-            ManifestFile::Create(fs_, options.GetManifestFormat(), options.GetManifestCompression(),
+            ManifestFile::Create(fs_, manifest_format, options.GetManifestCompression(),
                                  path_factory_, options.GetManifestTargetFileSize(), mem_pool_,
                                  options, partition_schema_));
     }
@@ -113,7 +114,6 @@ class ExpireSnapshotsTest : public testing::Test {
     std::shared_ptr<FileStorePathFactory> CreateFactory(const std::string& root) const {
         std::map<std::string, std::string> raw_options;
         raw_options[Options::FILE_FORMAT] = "orc";
-        raw_options[Options::MANIFEST_FORMAT] = "orc";
         raw_options[Options::FILE_SYSTEM] = "local";
         EXPECT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
         EXPECT_OK_AND_ASSIGN(std::vector<std::string> external_paths,

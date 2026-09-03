@@ -251,20 +251,27 @@ TEST(BinaryRowPartitionComputerTest, TestNullOrWhitespaceOnlyStr) {
         arrow::field("f0", arrow::utf8()),
         arrow::field("f1", arrow::utf8()),
         arrow::field("f2", arrow::utf8()),
+        arrow::field("f3", arrow::utf8()),
     };
 
     auto schema = arrow::schema(fields);
-    std::vector<std::string> partition_keys = {"f0", "f1", "f2"};
+    std::vector<std::string> partition_keys = {"f0", "f1", "f2", "f3"};
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<BinaryRowPartitionComputer> computer,
         BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
                                            /*legacy_partition_name_enabled=*/true, pool));
 
-    ASSERT_OK_AND_ASSIGN(auto partition_key_values,
-                         computer->GeneratePartitionVector(BinaryRowGenerator::GenerateRow(
-                             {std::string(" "), std::string(""), std::string("ab ")}, pool.get())));
+    ASSERT_OK_AND_ASSIGN(
+        auto partition_key_values,
+        computer->GeneratePartitionVector(BinaryRowGenerator::GenerateRow(
+            {std::string(" "), std::string(""), std::string("ab "), std::string(u8"\u3000\u2000")},
+            pool.get())));
     std::vector<std::pair<std::string, std::string>> expected = {
-        {"f0", "__DEFAULT_PARTITION__"}, {"f1", "__DEFAULT_PARTITION__"}, {"f2", "ab "}};
+        {"f0", "__DEFAULT_PARTITION__"},
+        {"f1", "__DEFAULT_PARTITION__"},
+        {"f2", "ab "},
+        {"f3", "__DEFAULT_PARTITION__"},
+    };
     ASSERT_EQ(partition_key_values, expected);
 }
 

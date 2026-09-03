@@ -37,7 +37,8 @@ namespace paimon::test {
 
 TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
-    ASSERT_EQ(core_options.GetManifestFormat()->Identifier(), "avro");
+    std::shared_ptr<FileFormat> manifest_format = core_options.GetManifestFormat();
+    ASSERT_EQ(manifest_format->Identifier(), "avro");
     ASSERT_EQ(core_options.GetFileFormat()->Identifier(), "parquet");
     ASSERT_EQ(nullptr, core_options.GetChangelogFileFormat());
     ASSERT_EQ(core_options.GetWriteFileFormat(0)->Identifier(), "parquet");
@@ -198,7 +199,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::FILE_SYSTEM, "Local"},
         {Options::FILE_FORMAT, "ORC"},
         {Options::CHANGELOG_FILE_FORMAT, "avro"},
-        {Options::MANIFEST_FORMAT, "avRo"},
+        {"manifest.format", "ORC"},
         {Options::BUCKET, "3"},
         {Options::PAGE_SIZE, "128 kb"},
         {Options::TARGET_FILE_SIZE, "512MB"},
@@ -339,8 +340,8 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(core_options.GetWriteFileFormat(1)->Identifier(), "orc");
     ASSERT_EQ(core_options.GetWriteFileFormat(3)->Identifier(), "parquet");
 
-    auto manifest_format = core_options.GetManifestFormat();
-    ASSERT_EQ(manifest_format->Identifier(), "avro");
+    std::shared_ptr<FileFormat> manifest_format = core_options.GetManifestFormat();
+    ASSERT_EQ(manifest_format->Identifier(), "orc");
 
     ASSERT_EQ(3, core_options.GetBucket());
     ASSERT_EQ(128 * 1024L, core_options.GetPageSize());

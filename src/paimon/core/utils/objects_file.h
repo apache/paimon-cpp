@@ -56,6 +56,7 @@ class ObjectsFile {
     ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
                 const std::shared_ptr<ReaderBuilder>& reader_builder,
                 const std::shared_ptr<WriterBuilder>& writer_builder,
+                const std::string& file_format_identifier,
                 std::unique_ptr<ObjectSerializer<T>>&& serializer, const std::string& compression,
                 const std::shared_ptr<PathFactory>& path_factory,
                 const std::shared_ptr<Cache>& cache, const std::shared_ptr<MemoryPool>& pool);
@@ -78,6 +79,14 @@ class ObjectsFile {
     Result<std::pair<std::string, int64_t>> WriteWithoutRolling(const std::vector<T>& records);
 
  protected:
+    Status ValidateWrite() const {
+        if (file_format_identifier_ != "avro") {
+            return Status::Invalid("manifest.format '", file_format_identifier_,
+                                   "' is read-only; only 'avro' can be used for writing manifests");
+        }
+        return Status::OK();
+    }
+
     Status ReadArrowBatches(
         const std::string& file_name,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer) const;
@@ -92,6 +101,7 @@ class ObjectsFile {
  private:
     std::shared_ptr<FileSystem> file_system_;
     std::shared_ptr<ReaderBuilder> reader_builder_;
+    const std::string file_format_identifier_;
     std::string compression_;
     std::shared_ptr<Cache> cache_;
 
@@ -102,6 +112,7 @@ template <typename T>
 ObjectsFile<T>::ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
                             const std::shared_ptr<ReaderBuilder>& reader_builder,
                             const std::shared_ptr<WriterBuilder>& writer_builder,
+                            const std::string& file_format_identifier,
                             std::unique_ptr<ObjectSerializer<T>>&& serializer,
                             const std::string& compression,
                             const std::shared_ptr<PathFactory>& path_factory,
@@ -114,6 +125,7 @@ ObjectsFile<T>::ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
       writer_builder_(std::move(writer_builder)),
       file_system_(file_system),
       reader_builder_(std::move(reader_builder)),
+      file_format_identifier_(file_format_identifier),
       compression_(compression),
       cache_(cache) {}
 
@@ -231,6 +243,7 @@ Result<MemorySegment> ObjectsFile<T>::ReadFileSegment(const std::string& file_pa
 template <typename T>
 Result<std::pair<std::string, int64_t>> ObjectsFile<T>::WriteWithoutRolling(
     const std::vector<T>& records) {
+    PAIMON_RETURN_NOT_OK(ValidateWrite());
     std::string file_path = path_factory_->NewPath();
     std::vector<BinaryRow> rows;
     rows.reserve(records.size());

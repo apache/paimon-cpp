@@ -49,9 +49,9 @@ class And : public CompoundFunction {
         return instance;
     }
 
-    Result<std::vector<char>> Test(
-        const arrow::Array& array,
-        const std::vector<std::shared_ptr<Predicate>>& children) const override {
+    Result<std::vector<char>> Test(const arrow::Array& array,
+                                   const std::vector<std::shared_ptr<Predicate>>& children,
+                                   arrow::MemoryPool* pool) const override {
         std::vector<char> is_valid(array.length(), true);
         for (const auto& child : children) {
             auto child_filter = std::dynamic_pointer_cast<PredicateFilter>(child);
@@ -59,7 +59,7 @@ class And : public CompoundFunction {
                 return Status::Invalid(
                     fmt::format("child filter {} does not support Test", child->ToString()));
             }
-            PAIMON_ASSIGN_OR_RAISE(std::vector<char> child_valid, child_filter->Test(array));
+            PAIMON_ASSIGN_OR_RAISE(std::vector<char> child_valid, child_filter->Test(array, pool));
             for (size_t i = 0; i < is_valid.size(); i++) {
                 is_valid[i] = (is_valid[i] & child_valid[i]);
             }
