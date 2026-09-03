@@ -59,13 +59,6 @@ DataEvolutionBatchScan::DataEvolutionBatchScan(
       executor_(executor) {}
 
 Result<std::shared_ptr<Plan>> DataEvolutionBatchScan::CreatePlan() {
-    const bool may_use_global_index =
-        global_index_result_ ||
-        (core_options_.GlobalIndexEnabled() && batch_scan_->GetNonPartitionPredicate());
-    if (may_use_global_index && UsesUnsupportedTimeTravel(core_options_)) {
-        return Status::NotImplemented("Global index scan does not support time travel");
-    }
-
     std::optional<int64_t> global_index_snapshot_id;
     std::shared_ptr<GlobalIndexResult> final_global_index_result = global_index_result_;
     if (!final_global_index_result) {
@@ -81,13 +74,10 @@ Result<std::shared_ptr<Plan>> DataEvolutionBatchScan::CreatePlan() {
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<Range> row_ranges, final_global_index_result->ToRanges());
     if (row_ranges.empty()) {
-        if (global_index_snapshot_id) {
-            return std::make_shared<PlanImpl>(global_index_snapshot_id,
-                                              std::vector<std::shared_ptr<Split>>());
+        if (!global_index_snapshot_id) {
+            return PlanImpl::EmptyPlan();
         }
-
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> data_plan, batch_scan_->CreatePlan());
-        return std::make_shared<PlanImpl>(data_plan->SnapshotId(),
+        return std::make_shared<PlanImpl>(global_index_snapshot_id,
                                           std::vector<std::shared_ptr<Split>>());
     }
     PAIMON_ASSIGN_OR_RAISE(RowRangeIndex row_range_index, RowRangeIndex::Create(row_ranges));
@@ -175,6 +165,9 @@ DataEvolutionBatchScan::EvalGlobalIndex() const {
     }
     if (!core_options_.GlobalIndexEnabled()) {
         return std::optional<EvaluatedGlobalIndex>();
+    }
+    if (UsesUnsupportedTimeTravel(core_options_)) {
+        return Status::NotImplemented("Global index scan does not support time travel");
     }
     auto partition_filter = batch_scan_->GetPartitionPredicate();
     const std::shared_ptr<SnapshotManager>& snapshot_manager =

@@ -1550,7 +1550,8 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
     ASSERT_OK_AND_ASSIGN(auto supplied_latest_plan,
                          ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
                                                 explicit_latest_options, empty_index_result));
-    ASSERT_EQ(supplied_latest_plan->SnapshotId(), std::optional<int64_t>(2));
+    ASSERT_TRUE(supplied_latest_plan->Splits().empty());
+    ASSERT_FALSE(supplied_latest_plan->SnapshotId());
 
     ASSERT_OK_AND_ASSIGN(auto supplied_explicit_plan,
                          ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
@@ -1559,11 +1560,10 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
                                                  {Options::SCAN_TIMESTAMP_MILLIS, "0"}},
                                                 empty_index_result));
     ASSERT_TRUE(supplied_explicit_plan->Splits().empty());
-    ASSERT_EQ(supplied_explicit_plan->SnapshotId(), std::optional<int64_t>(1));
+    ASSERT_FALSE(supplied_explicit_plan->SnapshotId());
 
     Result<std::shared_ptr<Plan>> missing_selector_result =
-        ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
-                               {{Options::SCAN_MODE, "from-snapshot"}}, empty_index_result);
+        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_MODE, "from-snapshot"}});
     ASSERT_TRUE(missing_selector_result.status().IsInvalid())
         << missing_selector_result.status().ToString();
 
@@ -1572,8 +1572,14 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
         {{Options::SCAN_TIMESTAMP_MILLIS, std::to_string(std::numeric_limits<int64_t>::max())}}};
     for (const auto& options : time_travel_options) {
         Result<std::shared_ptr<Plan>> result =
-            ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, options, empty_index_result);
+            ScanGlobalIndexAndData(table_path, predicate, options);
         ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Plan> supplied_plan,
+            ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, options, empty_index_result));
+        ASSERT_TRUE(supplied_plan->Splits().empty());
+        ASSERT_FALSE(supplied_plan->SnapshotId());
     }
 
     auto unindexed_predicate = PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",
@@ -1588,11 +1594,14 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, time_travel_options.back()));
     ASSERT_EQ(no_index_plan->SnapshotId(), std::optional<int64_t>(2));
 
-    Result<std::shared_ptr<Plan>> nonexistent_snapshot_result =
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Plan> supplied_nonexistent_snapshot_plan,
         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
-                               {{Options::SCAN_SNAPSHOT_ID, "999"}}, empty_index_result);
-    ASSERT_TRUE(nonexistent_snapshot_result.status().IsInvalid())
-        << nonexistent_snapshot_result.status().ToString();
+                               {{Options::SCAN_SNAPSHOT_ID, "999"}}, empty_index_result));
+    ASSERT_TRUE(supplied_nonexistent_snapshot_plan->Splits().empty());
+    ASSERT_FALSE(supplied_nonexistent_snapshot_plan->SnapshotId());
+
+    ASSERT_NOK(ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_SNAPSHOT_ID, "999"}}));
 }
 
 TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithOnlyOnePartitionHasIndex) {
