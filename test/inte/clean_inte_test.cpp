@@ -671,8 +671,8 @@ TEST_F(CleanInteTest, TestOrphanFilesClean) {
                                  .Finish());
         ASSERT_OK_AND_ASSIGN(auto cleaner, OrphanFilesCleaner::Create(std::move(clean_context)));
         ASSERT_OK_AND_ASSIGN(std::set<std::string> cleaned_paths, cleaner->Clean());
-        ASSERT_TRUE(CheckEqual(
-            cleaned_paths, {"data-orphan2.orc", "manifest-orphan", ".manifest-orphan.uuid.tmp"}));
+        ASSERT_TRUE(CheckEqual(cleaned_paths, {"data-orphan2.orc", "data-orphan2.orc.index",
+                                               "manifest-orphan", ".manifest-orphan.uuid.tmp"}));
     }
 }
 
@@ -782,7 +782,8 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithFileRetainCondition) {
                              .Finish());
     ASSERT_OK_AND_ASSIGN(auto cleaner, OrphanFilesCleaner::Create(std::move(clean_context)));
     ASSERT_OK_AND_ASSIGN(std::set<std::string> cleaned_paths, cleaner->Clean());
-    ASSERT_TRUE(CheckEqual(cleaned_paths, {"manifest-orphan", ".manifest-orphan.uuid.tmp"}));
+    ASSERT_TRUE(CheckEqual(
+        cleaned_paths, {"data-orphan2.orc.index", "manifest-orphan", ".manifest-orphan.uuid.tmp"}));
 }
 
 TEST_F(CleanInteTest, TestOrphanFilesCleanWithIOException) {
@@ -921,7 +922,8 @@ TEST_F(CleanInteTest, TestOrphanFilesCleanWithIOException) {
             }
             ASSERT_OK(clean_result);
 
-            std::set<std::string> expected_orphans = {"data-orphan2.orc", "manifest-orphan",
+            std::set<std::string> expected_orphans = {"data-orphan2.orc", "data-orphan2.orc.index",
+                                                      "manifest-orphan",
                                                       ".manifest-orphan.uuid.tmp"};
             // In the first clean, IO errors may already have been triggered in
             // TryBestListingDirs or MinimalTryBestListingDirs. Those errors are handled quietly,
