@@ -82,7 +82,8 @@ TEST(DataTypeTest, DataTypeToString) {
         ASSERT_EQ(std::string(json_value.GetString()), "VARIANT");
     }
     ASSERT_EQ(dummy_data_type.DataTypeToString(arrow::date32()), "DATE");
-    ASSERT_EQ(dummy_data_type.DataTypeToString(arrow::time32(arrow::TimeUnit::SECOND)), "TIME(0)");
+    ASSERT_THROW(dummy_data_type.DataTypeToString(arrow::time32(arrow::TimeUnit::SECOND)),
+                 std::invalid_argument);
     ASSERT_EQ(dummy_data_type.DataTypeToString(arrow::time32(arrow::TimeUnit::MILLI)), "TIME(3)");
 
     auto decimal_type1 = arrow::decimal128(10, 2);

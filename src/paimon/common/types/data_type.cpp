@@ -20,6 +20,7 @@
 #include "paimon/common/types/data_type.h"
 
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 
 #include "arrow/api.h"
@@ -34,6 +35,7 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/decimal_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/status.h"
 #include "rapidjson/allocators.h"
 #include "rapidjson/document.h"
@@ -116,14 +118,25 @@ std::string DataType::DataTypeToString(const std::shared_ptr<arrow::DataType>& t
         case arrow::Type::type::DATE32:
             return "DATE";
         case arrow::Type::type::TIME32: {
+            const auto& time_type = checked_cast<const arrow::Time32Type&>(*type);
+            if (time_type.unit() != arrow::TimeUnit::MILLI) {
+                throw std::invalid_argument(
+                    "Paimon TIME fields must use Arrow time32[ms], but got " + type->ToString());
+            }
             if (metadata_) {
                 auto precision = metadata_->Get(kTimePrecisionMetadata);
                 if (precision.ok()) {
-                    return fmt::format("TIME({})", precision.ValueUnsafe());
+                    std::optional<int32_t> parsed_precision =
+                        StringUtils::StringToValue<int32_t>(precision.ValueUnsafe());
+                    if (!parsed_precision || parsed_precision.value() < 0 ||
+                        parsed_precision.value() > 9) {
+                        throw std::invalid_argument(
+                            "paimon.time.precision must be an integer between 0 and 9");
+                    }
+                    return fmt::format("TIME({})", parsed_precision.value());
                 }
             }
-            const auto& time_type = checked_cast<const arrow::Time32Type&>(*type);
-            return time_type.unit() == arrow::TimeUnit::SECOND ? "TIME(0)" : "TIME(3)";
+            return "TIME(3)";
         }
         case arrow::Type::type::DECIMAL128: {
             auto status = DecimalUtils::CheckDecimalType(*type);

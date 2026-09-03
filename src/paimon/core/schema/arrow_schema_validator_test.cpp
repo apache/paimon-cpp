@@ -62,6 +62,27 @@ TEST(ArrowSchemaValidatorTest, TestSimple) {
     ASSERT_OK(ArrowSchemaValidator::ValidateSchema(*arrow_schema));
 }
 
+TEST(ArrowSchemaValidatorTest, TestTime32) {
+    ASSERT_OK(ArrowSchemaValidator::ValidateSchema(
+        *arrow::schema({arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI))})));
+    ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow::schema(
+                            {arrow::field("time", arrow::time32(arrow::TimeUnit::SECOND))})),
+                        "Paimon TIME fields must use Arrow time32[ms]");
+
+    for (const std::string& precision : {"0", "9"}) {
+        auto metadata = arrow::KeyValueMetadata::Make({"paimon.time.precision"}, {precision});
+        ASSERT_OK(ArrowSchemaValidator::ValidateSchema(*arrow::schema({arrow::field(
+            "time", arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true, metadata)})));
+    }
+    for (const std::string& precision : {"-1", "10", "invalid"}) {
+        auto metadata = arrow::KeyValueMetadata::Make({"paimon.time.precision"}, {precision});
+        ASSERT_NOK_WITH_MSG(
+            ArrowSchemaValidator::ValidateSchema(*arrow::schema({arrow::field(
+                "time", arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true, metadata)})),
+            "paimon.time.precision must be an integer between 0 and 9");
+    }
+}
+
 TEST(ArrowSchemaValidatorTest, TestVectorElementType) {
     for (const auto& element_type :
          {arrow::boolean(), arrow::int8(), arrow::int16(), arrow::int32(), arrow::int64(),
