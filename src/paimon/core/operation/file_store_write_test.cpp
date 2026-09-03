@@ -75,6 +75,34 @@ TEST(FileStoreWriteTest, TestCreateAppendTable) {
                          FileStoreWrite::Create(std::move(write_context)));
 }
 
+TEST(FileStoreWriteTest, TestCreateWriterForLoadedMapBlobTable) {
+    auto dir = UniqueTestDirectory::Create();
+    std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager schema_manager(fs, table_path);
+    std::string schema_json = R"json({
+        "version" : 3,
+        "id" : 0,
+        "fields" : [ {
+            "id" : 0,
+            "name" : "blob_map",
+            "type" : {"type":"MAP", "key":"STRING", "value":"BLOB"}
+        } ],
+        "highestFieldId" : 0,
+        "partitionKeys" : [],
+        "primaryKeys" : [],
+        "options" : {},
+        "timeMillis" : 1721614341162
+    })json";
+    ASSERT_OK(fs->AtomicStore(PathUtil::JoinPath(schema_manager.SchemaDirectory(), "schema-0"),
+                              schema_json));
+
+    WriteContextBuilder context_builder(table_path, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_context)),
+                        "Writing a table with MAP<..., BLOB> is not supported by the C++ writer");
+}
+
 TEST(FileStoreWriteTest, TestCreateAppendTableWithInvalidBucket) {
     auto dir = UniqueTestDirectory::Create();
     arrow::FieldVector fields = {
