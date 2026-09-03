@@ -1595,7 +1595,9 @@ TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
     ASSERT_TRUE(supplied_nonexistent_snapshot_plan->Splits().empty());
     ASSERT_FALSE(supplied_nonexistent_snapshot_plan->SnapshotId());
 
-    ASSERT_NOK(ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_SNAPSHOT_ID, "999"}}));
+    ASSERT_NOK_WITH_MSG(
+        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_SNAPSHOT_ID, "999"}}),
+        "snapshot-999' not exists");
 }
 
 TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithOnlyOnePartitionHasIndex) {
