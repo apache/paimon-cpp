@@ -1,0 +1,18 @@
+{
+  "version" : 3,
+  "uuid" : "7c4965a2-a674-4d64-a873-819f8365909e",
+  "id" : 3,
+  "schemaId" : 0,
+  "baseManifestList" : "manifest-list-da204778-ac4b-4d76-af5e-bd55d0287b14-0",
+  "baseManifestListSize" : 1140,
+  "deltaManifestList" : "manifest-list-da204778-ac4b-4d76-af5e-bd55d0287b14-1",
+  "deltaManifestListSize" : 1111,
+  "commitUser" : "24f1b152-e7a9-4cb2-b2e1-8bea095a2b62",
+  "writerVersion" : "java-2.1-SNAPSHOT-a176eba1c6f9b0402eceea641bf435b05976470b",
+  "commitIdentifier" : 9223372036854775807,
+  "commitKind" : "APPEND",
+  "timeMillis" : 1788529096385,
+  "totalRecordCount" : 52,
+  "deltaRecordCount" : 4,
+  "nextRowId" : 4
+}

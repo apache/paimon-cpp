@@ -27,6 +27,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -56,6 +57,7 @@ Result<std::unique_ptr<TableSchema>> TableSchema::Create(
     for (const auto& primary_key : primary_keys) {
         primary_key_set.insert(primary_key);
     }
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(schema));
     for (const auto& field : schema->fields()) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> field_with_id,
                                AssignFieldIdsRecursively(field, /*set_field_id=*/true, &field_id));

@@ -19,14 +19,20 @@
 #include "paimon/format/blob/blob_file_batch_reader.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <numeric>
+#include <set>
+#include <string>
 
 #include "arrow/api.h"
 #include "arrow/array/builder_dict.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/bridge.h"
 #include "arrow/util/bit_util.h"
+#include "arrow/util/decimal.h"
+#include "arrow/util/ubsan.h"
+#include "arrow/util/utf8.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/io/offset_input_stream.h"
@@ -35,10 +41,128 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/delta_varint_compressor.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/common/utils/stream_utils.h"
 #include "paimon/data/blob.h"
 
 namespace paimon::blob {
+namespace {
+
+constexpr int32_t kMapBlobMagicNumber = 0x4D424342;
+constexpr int8_t kMapBlobVersion = 1;
+constexpr int32_t kMapBlobHeaderLength = 9;
+constexpr int32_t kMapBlobIndexLengthsSize = 8;
+constexpr int32_t kMapBlobMinPayloadLength = kMapBlobHeaderLength + kMapBlobIndexLengthsSize;
+
+template <typename T>
+T ReadLittleEndian(const uint8_t* data) {
+    return FromLittleEndian(arrow::util::SafeLoadAs<T>(data));
+}
+
+Result<int32_t> GetMapBlobFixedKeyLength(const std::shared_ptr<arrow::DataType>& key_type) {
+    switch (key_type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+            return 1;
+        case arrow::Type::INT16:
+            return 2;
+        case arrow::Type::INT32:
+        case arrow::Type::DATE32:
+            return 4;
+        case arrow::Type::INT64:
+            return 8;
+        case arrow::Type::DECIMAL128: {
+            const auto& decimal_type = static_cast<const arrow::Decimal128Type&>(*key_type);
+            return decimal_type.precision() <= 18 ? 8 : -1;
+        }
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+            return -1;
+        default:
+            return Status::Invalid(
+                fmt::format("unsupported MAP<..., BLOB> key type: {}", key_type->ToString()));
+    }
+}
+
+Status AppendMapBlobKey(const std::shared_ptr<arrow::DataType>& key_type, const uint8_t* data,
+                        int32_t length, arrow::ArrayBuilder* builder) {
+    switch (key_type->id()) {
+        case arrow::Type::BOOL: {
+            if (data[0] != 0 && data[0] != 1) {
+                return Status::Invalid("invalid MAP<..., BLOB> boolean key");
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                checked_cast<arrow::BooleanBuilder*>(builder)->Append(data[0] == 1));
+            return Status::OK();
+        }
+        case arrow::Type::INT8: {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                checked_cast<arrow::Int8Builder*>(builder)->Append(static_cast<int8_t>(data[0])));
+            return Status::OK();
+        }
+        case arrow::Type::INT16: {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(checked_cast<arrow::Int16Builder*>(builder)->Append(
+                ReadLittleEndian<int16_t>(data)));
+            return Status::OK();
+        }
+        case arrow::Type::INT32: {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(checked_cast<arrow::Int32Builder*>(builder)->Append(
+                ReadLittleEndian<int32_t>(data)));
+            return Status::OK();
+        }
+        case arrow::Type::INT64: {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(checked_cast<arrow::Int64Builder*>(builder)->Append(
+                ReadLittleEndian<int64_t>(data)));
+            return Status::OK();
+        }
+        case arrow::Type::DATE32: {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(checked_cast<arrow::Date32Builder*>(builder)->Append(
+                ReadLittleEndian<int32_t>(data)));
+            return Status::OK();
+        }
+        case arrow::Type::STRING: {
+            if (!arrow::util::ValidateUTF8(data, length)) {
+                return Status::Invalid("invalid UTF-8 in MAP<STRING, BLOB> key");
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                checked_cast<arrow::StringBuilder*>(builder)->Append(data, length));
+            return Status::OK();
+        }
+        case arrow::Type::BINARY: {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                checked_cast<arrow::BinaryBuilder*>(builder)->Append(data, length));
+            return Status::OK();
+        }
+        case arrow::Type::DECIMAL128: {
+            const auto& decimal_type = static_cast<const arrow::Decimal128Type&>(*key_type);
+            arrow::Decimal128 value;
+            if (decimal_type.precision() <= 18) {
+                value = arrow::Decimal128(ReadLittleEndian<int64_t>(data));
+            } else {
+                // Java BigInteger.toByteArray() uses the shortest big-endian two's-complement
+                // representation. This makes byte-wise duplicate detection equivalent to
+                // decoded decimal equality.
+                if (length <= 0 || (length > 1 && ((data[0] == 0x00 && (data[1] & 0x80) == 0) ||
+                                                   (data[0] == 0xFF && (data[1] & 0x80) != 0)))) {
+                    return Status::Invalid("invalid MAP<..., BLOB> non-canonical decimal key");
+                }
+                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(value,
+                                                  arrow::Decimal128::FromBigEndian(data, length));
+            }
+            if (!value.FitsInPrecision(decimal_type.precision())) {
+                return Status::Invalid("MAP<..., BLOB> decimal key exceeds declared precision");
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                checked_cast<arrow::Decimal128Builder*>(builder)->Append(value));
+            return Status::OK();
+        }
+        default:
+            return Status::Invalid(
+                fmt::format("unsupported MAP<..., BLOB> key type: {}", key_type->ToString()));
+    }
+}
+
+}  // namespace
 
 Result<std::unique_ptr<BlobFileBatchReader>> BlobFileBatchReader::Create(
     const std::shared_ptr<InputStream>& input_stream, int32_t batch_size, bool blob_as_descriptor,
@@ -133,9 +257,14 @@ Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
         return Status::Invalid(
             fmt::format("read schema field number {} is not 1", arrow_schema->num_fields()));
     }
-    if (!BlobUtils::IsBlobField(arrow_schema->field(0))) {
-        return Status::Invalid(
-            fmt::format("field {} is not BLOB", arrow_schema->field(0)->ToString()));
+    std::shared_ptr<arrow::Field> read_field = arrow_schema->field(0);
+    if (!BlobUtils::IsBlobField(read_field) && !BlobUtils::IsMapBlobField(read_field)) {
+        return Status::Invalid(fmt::format("field {} is not BLOB", read_field->ToString()));
+    }
+    if (BlobUtils::IsMapBlobField(read_field)) {
+        const auto& map_type = static_cast<const arrow::MapType&>(*read_field->type());
+        PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] int32_t fixed_key_length,
+                               GetMapBlobFixedKeyLength(map_type.key_type()));
     }
     if (selection_bitmap != std::nullopt) {
         int32_t cardinality = selection_bitmap->Cardinality();
@@ -160,7 +289,7 @@ Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
         target_blob_offsets_ = new_offsets;
         target_blob_row_indexes_ = new_row_indexes;
     }
-    target_type_ = arrow::struct_(arrow_schema->fields());
+    target_type_ = arrow::struct_({read_field});
     current_pos_ = 0;
     previous_batch_start_pos_ = std::numeric_limits<size_t>::max();
     previous_batch_row_count_ = 0;
@@ -252,9 +381,247 @@ Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildContentArray(
     return std::make_shared<arrow::StructArray>(struct_array_data);
 }
 
+Result<BlobFileBatchReader::MapBlobPayload> BlobFileBatchReader::ReadMapBlobPayload(
+    size_t row_index, int32_t fixed_key_length) const {
+    if (target_blob_lengths_[row_index] < 0) {
+        return Status::Invalid(fmt::format("unsupported MAP<..., BLOB> record length: {}",
+                                           target_blob_lengths_[row_index]));
+    }
+
+    const int64_t payload_offset = GetTargetContentOffset(row_index);
+    const int64_t payload_length = GetTargetContentLength(row_index);
+    if (payload_length < kMapBlobMinPayloadLength) {
+        return Status::Invalid(
+            fmt::format("invalid MAP<..., BLOB> payload length: {}", payload_length));
+    }
+
+    std::array<uint8_t, kMapBlobHeaderLength> header;
+    PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload_offset, header.size(), header.data()));
+    const auto magic_number = ReadLittleEndian<int32_t>(header.data());
+    if (magic_number != kMapBlobMagicNumber) {
+        return Status::Invalid(
+            fmt::format("invalid MAP<..., BLOB> payload magic number: {}", magic_number));
+    }
+    const auto version = static_cast<int8_t>(header[4]);
+    if (version != kMapBlobVersion) {
+        return Status::NotImplemented(
+            fmt::format("unsupported MAP<..., BLOB> payload version: {}", version));
+    }
+    const auto entry_count = ReadLittleEndian<int32_t>(header.data() + 5);
+    if (entry_count < 0) {
+        return Status::Invalid(fmt::format("invalid MAP<..., BLOB> entry count: {}", entry_count));
+    }
+
+    const int64_t index_lengths_offset = payload_offset + payload_length - kMapBlobIndexLengthsSize;
+    std::array<uint8_t, kMapBlobIndexLengthsSize> index_lengths;
+    PAIMON_RETURN_NOT_OK(
+        ReadBlobContentAt(index_lengths_offset, index_lengths.size(), index_lengths.data()));
+    const auto key_index_length = ReadLittleEndian<int32_t>(index_lengths.data());
+    const auto value_index_length =
+        ReadLittleEndian<int32_t>(index_lengths.data() + sizeof(int32_t));
+    const int64_t maximum_indexes_length = payload_length - kMapBlobMinPayloadLength;
+    if (key_index_length < 0 || key_index_length > maximum_indexes_length) {
+        return Status::Invalid(
+            fmt::format("invalid MAP<..., BLOB> key index length: {}", key_index_length));
+    }
+    if (value_index_length < 0 || value_index_length > maximum_indexes_length) {
+        return Status::Invalid(
+            fmt::format("invalid MAP<..., BLOB> value index length: {}", value_index_length));
+    }
+    if (static_cast<int64_t>(key_index_length) + value_index_length > maximum_indexes_length) {
+        return Status::Invalid("MAP<..., BLOB> indexes exceed the payload length");
+    }
+    if (entry_count > key_index_length || entry_count > value_index_length) {
+        return Status::Invalid("MAP<..., BLOB> entry count exceeds index length");
+    }
+
+    const int64_t value_index_offset = index_lengths_offset - value_index_length;
+    const int64_t key_index_offset = value_index_offset - key_index_length;
+    std::vector<char> key_index_bytes(key_index_length);
+    std::vector<char> value_index_bytes(value_index_length);
+    PAIMON_RETURN_NOT_OK(ReadBlobContentAt(key_index_offset, key_index_length,
+                                           reinterpret_cast<uint8_t*>(key_index_bytes.data())));
+    PAIMON_RETURN_NOT_OK(ReadBlobContentAt(value_index_offset, value_index_length,
+                                           reinterpret_cast<uint8_t*>(value_index_bytes.data())));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> key_lengths,
+                           DeltaVarintCompressor::Decompress(key_index_bytes));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> value_lengths,
+                           DeltaVarintCompressor::Decompress(value_index_bytes));
+    if (key_lengths.size() != static_cast<size_t>(entry_count)) {
+        return Status::Invalid("MAP<..., BLOB> entry count does not match key index length");
+    }
+    if (value_lengths.size() != static_cast<size_t>(entry_count)) {
+        return Status::Invalid("MAP<..., BLOB> entry count does not match value index length");
+    }
+
+    const int64_t data_offset = payload_offset + kMapBlobHeaderLength;
+    const int64_t data_length = key_index_offset - data_offset;
+    int64_t key_data_length = 0;
+    for (int64_t key_length : key_lengths) {
+        if (key_length < 0) {
+            return Status::Invalid("MAP<..., BLOB> keys cannot be null");
+        }
+        if (key_length > std::numeric_limits<int32_t>::max()) {
+            return Status::Invalid(fmt::format("MAP<..., BLOB> key is too large: {}", key_length));
+        }
+        if (fixed_key_length >= 0 && key_length != fixed_key_length) {
+            return Status::Invalid(
+                fmt::format("invalid MAP<..., BLOB> fixed-width key length: {}", key_length));
+        }
+        if (key_length > data_length - key_data_length) {
+            return Status::Invalid("MAP<..., BLOB> key lengths exceed the payload data length");
+        }
+        key_data_length += key_length;
+    }
+
+    const int64_t maximum_value_data_length = data_length - key_data_length;
+    int64_t value_data_length = 0;
+    for (int64_t value_length : value_lengths) {
+        if (value_length == BlobDefs::kNullBinLength) {
+            continue;
+        }
+        if (value_length < 0) {
+            return Status::Invalid(
+                fmt::format("invalid MAP<..., BLOB> value length: {}", value_length));
+        }
+        if (!blob_as_descriptor_ && value_length > std::numeric_limits<int32_t>::max()) {
+            return Status::Invalid(
+                fmt::format("MAP<..., BLOB> inline value is too large: {}", value_length));
+        }
+        if (value_length > maximum_value_data_length - value_data_length) {
+            return Status::Invalid("MAP<..., BLOB> value lengths exceed the payload data length");
+        }
+        value_data_length += value_length;
+    }
+    if (value_data_length != maximum_value_data_length) {
+        return Status::Invalid(
+            "MAP<..., BLOB> key/value lengths do not match the payload data length");
+    }
+    return MapBlobPayload{std::move(key_lengths), std::move(value_lengths), data_offset,
+                          key_data_length};
+}
+
+Status BlobFileBatchReader::AppendMapBlobKeys(const MapBlobPayload& payload,
+                                              const std::shared_ptr<arrow::DataType>& key_type,
+                                              arrow::ArrayBuilder* key_builder) const {
+    int64_t key_offset = payload.data_offset;
+    std::set<std::string> serialized_keys;
+    for (int64_t key_length_64 : payload.key_lengths) {
+        const auto key_length = static_cast<int32_t>(key_length_64);
+        PAIMON_UNIQUE_PTR<Bytes> key_bytes =
+            Bytes::AllocateBytes(static_cast<size_t>(key_length), pool_.get());
+        if (key_length > 0) {
+            PAIMON_RETURN_NOT_OK(ReadBlobContentAt(key_offset, key_length,
+                                                   reinterpret_cast<uint8_t*>(key_bytes->data())));
+        }
+        std::string serialized_key;
+        if (key_length > 0) {
+            serialized_key.assign(key_bytes->data(), key_length);
+        }
+        if (!serialized_keys.emplace(std::move(serialized_key)).second) {
+            return Status::Invalid("invalid MAP<..., BLOB> payload: duplicate key");
+        }
+        const uint8_t empty_key = 0;
+        const uint8_t* key_data =
+            key_length == 0 ? &empty_key : reinterpret_cast<const uint8_t*>(key_bytes->data());
+        PAIMON_RETURN_NOT_OK(AppendMapBlobKey(key_type, key_data, key_length, key_builder));
+        key_offset += key_length;
+    }
+    return Status::OK();
+}
+
+Status BlobFileBatchReader::AppendMapBlobValues(const MapBlobPayload& payload,
+                                                arrow::LargeBinaryBuilder* blob_builder) const {
+    int64_t value_offset = payload.data_offset + payload.key_data_length;
+    for (int64_t value_length : payload.value_lengths) {
+        if (value_length == BlobDefs::kNullBinLength) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->AppendNull());
+            continue;
+        }
+        if (blob_as_descriptor_) {
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
+                                   Blob::FromPath(file_path_, value_offset, value_length));
+            PAIMON_UNIQUE_PTR<Bytes> descriptor = blob->ToDescriptor(pool_);
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                blob_builder->Append(descriptor->data(), descriptor->size()));
+        } else {
+            PAIMON_UNIQUE_PTR<Bytes> value_bytes =
+                Bytes::AllocateBytes(static_cast<size_t>(value_length), pool_.get());
+            if (value_length > 0) {
+                PAIMON_RETURN_NOT_OK(ReadBlobContentAt(
+                    value_offset, value_length, reinterpret_cast<uint8_t*>(value_bytes->data())));
+            }
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(
+                blob_builder->Append(value_bytes->data(), value_length));
+        }
+        value_offset += value_length;
+    }
+    return Status::OK();
+}
+
+Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildMapBlobArray(
+    int32_t rows_to_read) const {
+    const auto& struct_type = static_cast<const arrow::StructType&>(*target_type_);
+    const std::shared_ptr<arrow::Field>& map_field = struct_type.field(0);
+    auto map_type = checked_pointer_cast<arrow::MapType>(map_field->type());
+    const std::shared_ptr<arrow::DataType>& key_type = map_type->key_type();
+    if (key_type->id() == arrow::Type::STRING) {
+        arrow::util::InitializeUTF8();
+    }
+    PAIMON_ASSIGN_OR_RAISE(int32_t fixed_key_length, GetMapBlobFixedKeyLength(key_type));
+
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> key_builder_unique,
+                                      arrow::MakeBuilder(key_type, arrow_pool_.get()));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> item_builder_unique,
+                                      arrow::MakeBuilder(map_type->item_type(), arrow_pool_.get()));
+    std::shared_ptr<arrow::ArrayBuilder> key_builder(std::move(key_builder_unique));
+    std::shared_ptr<arrow::ArrayBuilder> item_builder(std::move(item_builder_unique));
+    if (!item_builder || !item_builder->type() ||
+        item_builder->type()->id() != arrow::Type::LARGE_BINARY) {
+        return Status::Invalid("cast MAP<..., BLOB> item builder to large binary builder failed");
+    }
+    auto* blob_builder = checked_cast<arrow::LargeBinaryBuilder*>(item_builder.get());
+    arrow::MapBuilder map_builder(arrow_pool_.get(), key_builder, item_builder, map_type);
+
+    for (int32_t k = 0; k < rows_to_read; ++k) {
+        const size_t row_index = current_pos_ + k;
+        if (IsTargetNull(row_index)) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.AppendNull());
+            continue;
+        }
+        if (IsTargetPlaceholder(row_index)) {
+            // Duplicate map keys cannot occur in a valid Paimon map, so two empty/default keys
+            // with null values form an unambiguous, Arrow-valid internal sentinel.
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Append());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(key_builder->AppendEmptyValues(2));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(blob_builder->AppendNulls(2));
+            continue;
+        }
+
+        PAIMON_ASSIGN_OR_RAISE(MapBlobPayload payload,
+                               ReadMapBlobPayload(row_index, fixed_key_length));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Append());
+        PAIMON_RETURN_NOT_OK(AppendMapBlobKeys(payload, key_type, key_builder.get()));
+        PAIMON_RETURN_NOT_OK(AppendMapBlobValues(payload, blob_builder));
+    }
+
+    std::shared_ptr<arrow::MapArray> built_map_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Finish(&built_map_array));
+    auto map_array = std::make_shared<arrow::MapArray>(
+        map_type, built_map_array->length(), built_map_array->value_offsets(),
+        built_map_array->keys(), built_map_array->items(), built_map_array->null_bitmap(),
+        built_map_array->null_count(), built_map_array->offset());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
+                                      arrow::StructArray::Make({map_array}, {map_field}));
+    return struct_array;
+}
+
 Result<std::shared_ptr<arrow::Array>> BlobFileBatchReader::BuildTargetArray(
     int32_t rows_to_read) const {
-    std::shared_ptr<arrow::Array> blob_array;
+    const auto& struct_type = static_cast<const arrow::StructType&>(*target_type_);
+    if (struct_type.field(0)->type()->id() == arrow::Type::MAP) {
+        return BuildMapBlobArray(rows_to_read);
+    }
     if (!blob_as_descriptor_) {
         return BuildContentArray(rows_to_read);
     }

@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/core_options.h"
@@ -109,6 +110,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         return Status::Invalid(fmt::format("cannot found latest schema in branch {}", branch));
     }
     const auto& schema = table_schema.value();
+    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(arrow_schema));
     auto opts = schema->Options();
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
@@ -116,7 +119,6 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
                            CoreOptions::FromMap(opts, ctx->GetSpecificFileSystem(),
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
-    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 

@@ -23,6 +23,7 @@
 
 #include "arrow/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
@@ -1329,6 +1330,40 @@ TEST_F(TableSchemaTest, NullableMapKeySchemaIsSupported) {
     auto direct_map_type =
         checked_pointer_cast<arrow::MapType>(direct_table_schema->Fields()[0].Type());
     ASSERT_TRUE(direct_map_type->key_field()->nullable());
+}
+
+TEST_F(TableSchemaTest, MapBlobSchemaLoadsFromJson) {
+    std::string table_schema_str = R"json({
+        "version" : 3,
+        "id" : 0,
+        "fields" : [ {
+            "id" : 0,
+            "name" : "string_blob_map",
+            "type" : {"type":"MAP", "key":"STRING", "value":"BLOB"}
+        } ],
+        "highestFieldId" : 0,
+        "partitionKeys" : [],
+        "primaryKeys" : [],
+        "options" : {},
+        "timeMillis" : 1721614341162
+    })json";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> table_schema,
+                         TableSchema::CreateFromJson(table_schema_str));
+    ASSERT_TRUE(BlobUtils::IsMapBlobField(
+        DataField::ConvertDataFieldToArrowField(table_schema->Fields()[0])));
+    ASSERT_OK_AND_ASSIGN(std::string serialized, table_schema->ToJsonString());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> restored,
+                         TableSchema::CreateFromJson(serialized));
+    ASSERT_OK_AND_ASSIGN(std::string restored_json, restored->ToJsonString());
+    ASSERT_EQ(restored_json, serialized);
+}
+
+TEST_F(TableSchemaTest, CreatingMapBlobSchemaIsRejected) {
+    auto map_type = arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
+    ASSERT_NOK_WITH_MSG(
+        TableSchema::Create(/*schema_id=*/0, arrow::schema({arrow::field("blob_map", map_type)}),
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{}),
+        "not supported by the C++ writer");
 }
 
 TEST_F(TableSchemaTest, MapKeysSortedIsNormalized) {

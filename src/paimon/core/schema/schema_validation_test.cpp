@@ -25,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
@@ -1159,8 +1160,6 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRequiresNonNullableKey) {
 }
 
 TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
-    auto direct_blob_map =
-        arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
     auto nested_blob_map = arrow::map(
         arrow::utf8(), arrow::field("value", arrow::struct_({BlobUtils::ToArrowField("blob")})));
     std::map<std::string, std::string> options = {
@@ -1169,15 +1168,38 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
         {"fields.f1.map.storage-layout", "shared-shredding"},
     };
 
-    for (const auto& map_type : {direct_blob_map, nested_blob_map}) {
-        auto schema = arrow::schema({
-            arrow::field("f0", arrow::utf8()),
-            arrow::field("f1", map_type),
-        });
-        ASSERT_NOK_WITH_MSG(TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
-                                                /*primary_keys=*/{}, options),
-                            "Blob field must be a top-level field.");
-    }
+    const std::string loaded_schema = R"json({
+        "version": 3,
+        "id": 0,
+        "fields": [
+            {"id": 0, "name": "f0", "type": "STRING"},
+            {"id": 1, "name": "f1",
+             "type": {"type": "MAP", "key": "STRING", "value": "BLOB"}}
+        ],
+        "highestFieldId": 1,
+        "partitionKeys": [],
+        "primaryKeys": [],
+        "options": {
+            "bucket": "1",
+            "bucket-key": "f0",
+            "fields.f1.map.storage-layout": "shared-shredding"
+        },
+        "timeMillis": 0
+    })json";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::CreateFromJson(loaded_schema));
+    auto loaded_map = checked_pointer_cast<arrow::MapType>(table_schema->Fields()[1].Type());
+    ASSERT_TRUE(BlobUtils::IsBlobField(loaded_map->item_field()));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "MAP shared-shredding currently cannot contain BLOB fields.");
+
+    auto nested_schema = arrow::schema({
+        arrow::field("f0", arrow::utf8()),
+        arrow::field("f1", nested_blob_map),
+    });
+    ASSERT_NOK_WITH_MSG(TableSchema::Create(/*schema_id=*/0, nested_schema,
+                                            /*partition_keys=*/{}, /*primary_keys=*/{}, options),
+                        "Blob field must be a top-level field.");
 }
 
 TEST(SchemaValidationTest, TestMapSharedShreddingCompression) {

@@ -535,6 +535,50 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
             });
     }
 
+    Result<std::shared_ptr<arrow::MapArray>> NormalizeMapBlobValues(
+        const std::shared_ptr<arrow::MapArray>& map_array, bool blob_as_descriptor) const {
+        const auto& values = checked_cast<const arrow::LargeBinaryArray&>(*map_array->items());
+        auto fs = std::make_shared<LocalFileSystem>();
+        arrow::LargeBinaryBuilder builder;
+        for (int64_t i = 0; i < values.length(); ++i) {
+            if (values.IsNull(i)) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
+                continue;
+            }
+            std::string_view stored = values.GetView(i);
+            if (!blob_as_descriptor) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(stored));
+                continue;
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<Blob> blob,
+                Blob::FromDescriptor(stored.data(), static_cast<int64_t>(stored.size())));
+            PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> data, blob->ToData(fs, pool_));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(data->data(), data->size()));
+        }
+        std::shared_ptr<arrow::Array> normalized_values;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&normalized_values));
+        return std::make_shared<arrow::MapArray>(map_array->type(), map_array->length(),
+                                                 map_array->value_offsets(), map_array->keys(),
+                                                 normalized_values, map_array->null_bitmap(),
+                                                 map_array->null_count(), map_array->offset());
+    }
+
+    void CheckMapBlobColumn(const std::shared_ptr<arrow::StructArray>& rows,
+                            const std::string& field_name, const std::string& expected_json,
+                            bool blob_as_descriptor) const {
+        auto map_array =
+            std::dynamic_pointer_cast<arrow::MapArray>(rows->GetFieldByName(field_name));
+        ASSERT_TRUE(map_array) << field_name;
+        ASSERT_OK_AND_ASSIGN(auto normalized,
+                             NormalizeMapBlobValues(map_array, blob_as_descriptor));
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(map_array->type(), expected_json)
+                            .ValueOrDie();
+        ASSERT_TRUE(expected->Equals(normalized))
+            << field_name << " expected: " << expected->ToString()
+            << " actual: " << normalized->ToString();
+    }
+
     /// Verify DataFileMeta properties from a scan plan.
     /// Each vector element corresponds to one expected DataFileMeta (ordered by file index).
     static void VerifyDataFileMetas(
@@ -4332,6 +4376,113 @@ TEST_P(BlobTableInteTest, TestReadBlobDescriptorFieldFromJava) {
                          ConvertDescriptorToRawBlob(read_struct, {"b0", "b1"}, rewrite));
     ASSERT_OK_AND_ASSIGN(auto expected_with_rk, PrependRowKindColumn(raw_array));
     ASSERT_TRUE(resolved->Equals(expected_with_rk));
+}
+
+TEST_P(BlobTableInteTest, TestReadMapBlobTableFromJava) {
+    if (GetParam() != "parquet") {
+        GTEST_SKIP() << "the Java fixture uses Parquet";
+    }
+    const std::string table_path = GetDataDir() + "/parquet/map_blob_java.db/map_blob_java";
+    const std::vector<std::string> read_fields = {"id",
+                                                  "string_payloads",
+                                                  "boolean_payloads",
+                                                  "tinyint_payloads",
+                                                  "smallint_payloads",
+                                                  "int_payloads",
+                                                  "bigint_payloads",
+                                                  "date_payloads",
+                                                  "binary_payloads",
+                                                  "compact_decimal_payloads",
+                                                  "large_decimal_payloads"};
+
+    for (int64_t snapshot_id : {1, 3}) {
+        ScanContextBuilder scan_builder(table_path);
+        scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id));
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
+
+        size_t string_layer_count = 0;
+        for (const auto& split : plan->Splits()) {
+            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            ASSERT_TRUE(data_split);
+            for (const auto& file : data_split->DataFiles()) {
+                if (file->write_cols ==
+                    std::optional<std::vector<std::string>>({"string_payloads"})) {
+                    ++string_layer_count;
+                }
+            }
+        }
+        ASSERT_EQ(snapshot_id == 1 ? 1 : 3, string_layer_count);
+
+        for (bool blob_as_descriptor : {false, true}) {
+            std::map<std::string, std::string> read_options = {
+                {Options::BLOB_AS_DESCRIPTOR, blob_as_descriptor ? "true" : "false"}};
+            ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, read_fields, plan,
+                                                        /*predicate=*/nullptr, read_options));
+            ASSERT_TRUE(result);
+            auto combined = arrow::Concatenate(result->chunks()).ValueOrDie();
+            auto rows = std::dynamic_pointer_cast<arrow::StructArray>(combined);
+            ASSERT_TRUE(rows);
+            ASSERT_EQ(4, rows->length());
+            const auto& ids = checked_cast<const arrow::Int32Array&>(*rows->GetFieldByName("id"));
+            for (int64_t i = 0; i < ids.length(); ++i) {
+                ASSERT_EQ(i + 1, ids.Value(i));
+            }
+
+            CheckMapBlobColumn(
+                rows, "string_payloads",
+                R"json([[["", "string-empty"], ["alpha", "string-alpha"]], [], null, [["omega", "string-omega"]]])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "boolean_payloads",
+                R"json([[[false, "bool-false"], [true, "bool-true"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "tinyint_payloads",
+                R"json([[[-128, "tiny-min"], [-1, "tiny-negative"], [127, "tiny-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "smallint_payloads",
+                R"json([[[-32768, "small-min"], [-1, "small-negative"], [32767, "small-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "int_payloads",
+                R"json([[[-2147483648, "int-min"], [-1, "int-negative"], [2147483647, "int-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "bigint_payloads",
+                R"json([[[-9223372036854775808, "big-min"], [-1, "big-negative"], [9223372036854775807, "big-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "date_payloads",
+                R"json([[[-1, "date-negative"], [0, "date-epoch"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "compact_decimal_payloads",
+                R"json([[["-99999999.99", "compact-negative"], ["99999999.99", "compact-positive"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "large_decimal_payloads",
+                R"json([[["-999999999999999999.99", "large-negative"], ["999999999999999999.99", "large-positive"]], null, null, null])json",
+                blob_as_descriptor);
+
+            auto binary_map =
+                std::dynamic_pointer_cast<arrow::MapArray>(rows->GetFieldByName("binary_payloads"));
+            ASSERT_TRUE(binary_map);
+            ASSERT_OK_AND_ASSIGN(auto normalized_binary,
+                                 NormalizeMapBlobValues(binary_map, blob_as_descriptor));
+            const auto& binary_keys =
+                checked_cast<const arrow::BinaryArray&>(*normalized_binary->keys());
+            const auto& binary_values =
+                checked_cast<const arrow::LargeBinaryArray&>(*normalized_binary->items());
+            ASSERT_EQ(2, normalized_binary->value_length(0));
+            ASSERT_EQ("", binary_keys.GetString(0));
+            ASSERT_EQ(std::string("\0\xff\1\2", 4), binary_keys.GetString(1));
+            ASSERT_EQ("binary-empty", binary_values.GetString(0));
+            ASSERT_EQ("binary-bytes", binary_values.GetString(1));
+        }
+    }
 }
 
 }  // namespace paimon::test

@@ -29,6 +29,7 @@
 #include "arrow/memory_pool.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
@@ -546,6 +547,16 @@ TEST(NestedProjectionUtilsTest, GetMapSelectedKeysDuplicateKey) {
         arrow::field("m", arrow::map(arrow::utf8(), arrow::int32()), /*nullable=*/true, metadata);
     ASSERT_NOK_WITH_MSG(NestedProjectionUtils::GetMapSelectedKeys(field),
                         "Duplicate selected key 'a'");
+}
+
+TEST(NestedProjectionUtilsTest, GetMapSelectedKeysRejectsMapBlob) {
+    auto metadata = arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {"a"});
+    auto map_type = arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value"));
+    auto field = arrow::field("m", map_type, /*nullable=*/true, metadata);
+    ASSERT_NOK_WITH_MSG(NestedProjectionUtils::GetMapSelectedKeys(field),
+                        "paimon.map.selected-keys is not supported for MAP<..., BLOB>");
+    ASSERT_NOK_WITH_MSG(NestedProjectionUtils::HasMapSelectedKeysRecursively(field),
+                        "paimon.map.selected-keys is not supported for MAP<..., BLOB>");
 }
 
 // ============== MapSharedShreddingAccessField ==============
