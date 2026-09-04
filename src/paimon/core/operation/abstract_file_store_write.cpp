@@ -31,7 +31,7 @@
 #include "paimon/core/operation/file_system_write_restore.h"
 #include "paimon/core/operation/metrics/compaction_metrics.h"
 #include "paimon/core/operation/restore_files.h"
-#include "paimon/core/realtime/realtime_offset_utils.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -59,6 +59,7 @@ AbstractFileStoreWrite::AbstractFileStoreWrite(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<arrow::Schema>& schema,
     const std::shared_ptr<arrow::Schema>& write_schema,
+    const std::shared_ptr<RealtimeSchemaLayout>& realtime_schema_layout,
     const std::shared_ptr<arrow::Schema>& partition_schema,
     const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
     const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
@@ -73,6 +74,7 @@ AbstractFileStoreWrite::AbstractFileStoreWrite(
       root_path_(root_path),
       schema_(schema),
       write_schema_(write_schema),
+      realtime_schema_layout_(realtime_schema_layout),
       table_schema_(table_schema),
       partition_schema_(partition_schema),
       dv_maintainer_factory_(dv_maintainer_factory),
@@ -123,8 +125,11 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
         }
     }
     // check nullability
-    std::shared_ptr<arrow::Schema> input_schema =
-        IsRealtimeWrite() ? RealtimeOffsetUtils::CreateInputSchema(write_schema_) : write_schema_;
+    if (IsRealtimeWrite() && !realtime_schema_layout_) {
+        return Status::Invalid("real-time schema layout is null");
+    }
+    const std::shared_ptr<arrow::Schema>& input_schema =
+        realtime_schema_layout_ ? realtime_schema_layout_->InputSchema() : write_schema_;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::Array> data,
         arrow::ImportArray(batch->GetData(), arrow::struct_(input_schema->fields())));
@@ -138,6 +143,25 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
     assert(writer);
     PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
     return writer_memory_manager_->OnWriteCompleted(writer.get());
+}
+
+Status AbstractFileStoreWrite::Seal() {
+    if (!IsRealtimeWrite()) {
+        return FileStoreWrite::Seal();
+    }
+    std::vector<std::shared_ptr<BatchWriter>> writers;
+    {
+        std::lock_guard<std::mutex> lock(writers_mutex_);
+        for (const auto& [_, bucket_writers] : writers_) {
+            for (const auto& [_, writer_container] : bucket_writers) {
+                writers.push_back(writer_container.writer);
+            }
+        }
+    }
+    for (const std::shared_ptr<BatchWriter>& writer : writers) {
+        PAIMON_RETURN_NOT_OK(writer->Seal());
+    }
+    return Status::OK();
 }
 
 Status AbstractFileStoreWrite::Compact(const std::map<std::string, std::string>& partition,

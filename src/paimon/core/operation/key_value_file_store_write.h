@@ -58,6 +58,7 @@ class KeyValueFileStoreWrite : public AbstractFileStoreWrite {
         const std::shared_ptr<SchemaManager>& schema_manager, const std::string& commit_user,
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<arrow::Schema>& schema,
+        const std::shared_ptr<RealtimeSchemaLayout>& realtime_schema_layout,
         const std::shared_ptr<arrow::Schema>& partition_schema,
         const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
         const std::shared_ptr<IOManager>& io_manager,

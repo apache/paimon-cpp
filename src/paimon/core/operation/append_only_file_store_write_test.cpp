@@ -45,7 +45,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/restore_files.h"
-#include "paimon/core/realtime/realtime_offset_utils.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -278,7 +278,10 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
     };
     auto logical_schema =
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("name", arrow::utf8())});
-    auto realtime_schema = RealtimeOffsetUtils::CreateInputSchema(logical_schema);
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+        RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, logical_schema));
+    const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     CreateTable(dir->Str(), logical_schema, options);

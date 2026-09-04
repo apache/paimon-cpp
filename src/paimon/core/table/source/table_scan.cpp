@@ -350,7 +350,8 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
         return std::make_unique<DataTableStreamScan>(core_options, snapshot_reader);
     }
     auto batch_scan = std::make_unique<DataTableBatchScan>(
-        /*pk_table=*/pk_table, core_options, snapshot_reader, read_optimized, context->GetLimit());
+        /*pk_table=*/pk_table, core_options, snapshot_reader, read_optimized, context->GetLimit(),
+        /*realtime_pk_scan=*/pk_table && context->GetRealtimeContext() != nullptr);
     if (context->GetRealtimeContext()) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context,
                                RealtimeContextImpl::Cast(context->GetRealtimeContext()));

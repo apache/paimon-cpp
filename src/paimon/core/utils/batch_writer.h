@@ -47,6 +47,11 @@ class BatchWriter {
     /// Add a record batch to the writer.
     virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;
 
+    /// Seal the current in-memory segment without flushing it.
+    virtual Status Seal() {
+        return Status::NotImplemented("seal is not supported by this batch writer");
+    }
+
     /// Compact files related to the writer. Note that compaction process is only submitted and may
     /// not be completed when the method returns.
     ///

@@ -65,6 +65,7 @@ class MemoryPool;
 class RecordBatch;
 class RestoreFiles;
 class IOManager;
+class RealtimeSchemaLayout;
 
 class AbstractFileStoreWrite : public FileStoreWrite {
  public:
@@ -77,6 +78,7 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<arrow::Schema>& schema,
         const std::shared_ptr<arrow::Schema>& write_schema,
+        const std::shared_ptr<RealtimeSchemaLayout>& realtime_schema_layout,
         const std::shared_ptr<arrow::Schema>& partition_schema,
         const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
         const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
@@ -84,6 +86,7 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
+    Status Seal() override;
     Status Compact(const std::map<std::string, std::string>& partition, int32_t bucket,
                    bool full_compaction) override;
 
@@ -136,6 +139,7 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     std::string root_path_;
     std::shared_ptr<arrow::Schema> schema_;
     std::shared_ptr<arrow::Schema> write_schema_;
+    std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout_;
     std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<arrow::Schema> partition_schema_;
     std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory_;

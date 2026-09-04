@@ -60,6 +60,10 @@ class PAIMON_EXPORT FileStoreWrite {
     ///       the corresponding array in `batch` must have zero null entries.
     virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;
 
+    /// Seals the current in-memory real-time segment without flushing it to a data file.
+    /// Calling this method on a non-real-time writer returns an error.
+    virtual Status Seal();
+
     /// Compact data stored in given partition and bucket. Note that compaction process is only
     /// submitted and may not be completed when the method returns.
     ///
@@ -99,7 +103,7 @@ class PAIMON_EXPORT FileStoreWrite {
     /// Generates commit messages together with partition-bucket real-time offset ranges.
     ///
     /// Each range is returned atomically with the commit message generated from the same sealed
-    /// segment. Repeated calls return incremental progress. The upstream coordinator must retain
+    /// segments. Repeated calls return incremental progress. The upstream coordinator must retain
     /// every result until it is committed and include all earlier prepared-but-uncommitted
     /// progress when a later checkpoint subsumes it.
     ///

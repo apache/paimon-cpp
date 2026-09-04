@@ -52,11 +52,11 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
-#include "paimon/core/realtime/realtime_offset_utils.h"
-#include "paimon/core/realtime/realtime_primary_key_reader.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
+#include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
@@ -431,8 +431,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         }
         json += "]";
 
-        const std::shared_ptr<arrow::Schema> realtime_schema =
-            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+            RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, schema_));
+        const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ipc::internal::json::ArrayFromJSON(
                                               arrow::struct_(realtime_schema->fields()), json));
@@ -490,8 +492,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         }
         json += "]";
 
-        const std::shared_ptr<arrow::Schema> realtime_schema =
-            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+            RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, schema_));
+        const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ipc::internal::json::ArrayFromJSON(
                                               arrow::struct_(realtime_schema->fields()), json));
@@ -502,8 +506,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
 
     Result<std::unique_ptr<RecordBatch>> MakeUnpartitionedBatchFromJson(
         const std::string& json) const {
-        const std::shared_ptr<arrow::Schema> realtime_schema =
-            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+            RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, schema_));
+        const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ipc::internal::json::ArrayFromJSON(
                                               arrow::struct_(realtime_schema->fields()), json));
@@ -590,14 +596,15 @@ class RealtimeWriteInteTest : public ::testing::Test {
     }
 
     Result<Snapshot> CompactAndCommit(const std::map<std::string, std::string>& partition,
-                                      int32_t bucket, int64_t commit_identifier) const {
+                                      int32_t bucket, int64_t commit_identifier,
+                                      bool full_compaction = true) const {
         WriteContextBuilder write_builder(table_path_, commit_user_);
-        write_builder.SetOptions(options_).WithStreamingMode(true);
+        write_builder.SetOptions(options_).WithStreamingMode(true).WithTempDirectory(
+            PathUtil::JoinPath(dir_->Str(), "compact-tmp"));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> compaction_writer,
                                FileStoreWrite::Create(std::move(write_context)));
-        PAIMON_RETURN_NOT_OK(compaction_writer->Compact(partition, bucket,
-                                                        /*full_compaction=*/true));
+        PAIMON_RETURN_NOT_OK(compaction_writer->Compact(partition, bucket, full_compaction));
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::shared_ptr<CommitMessage>> compaction_messages,
             compaction_writer->PrepareCommit(/*wait_compaction=*/true, commit_identifier));
@@ -729,10 +736,17 @@ class RealtimeWriteInteTest : public ::testing::Test {
     Result<std::vector<Row>> ReadRows(
         const std::shared_ptr<Plan>& plan,
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
+        return ReadRows(plan, realtime_context, /*predicate=*/nullptr,
+                        /*enable_predicate_filter=*/false);
+    }
+
+    Result<std::vector<Row>> ReadRows(const std::shared_ptr<Plan>& plan,
+                                      const std::shared_ptr<RealtimeContext>& realtime_context,
+                                      const std::shared_ptr<Predicate>& predicate,
+                                      bool enable_predicate_filter) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> read_result,
-                               ReadPlan(plan, realtime_context, {"id", "payload", "pt"},
-                                        /*predicate=*/nullptr,
-                                        /*enable_predicate_filter=*/false));
+                               ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, predicate,
+                                        enable_predicate_filter));
         const std::shared_ptr<arrow::ChunkedArray>& result = read_result;
 
         std::vector<Row> rows;
@@ -818,11 +832,11 @@ class RealtimeWriteInteTest : public ::testing::Test {
         auto read_schema = std::make_unique<ArrowSchema>();
         std::shared_ptr<arrow::Schema> value_schema =
             DataField::ConvertDataFieldsToArrowSchema(table_schema.value()->Fields());
-        std::shared_ptr<arrow::Schema> realtime_input_schema =
-            RealtimeOffsetUtils::CreateInputSchema(value_schema);
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(
-            *RealtimePrimaryKeyLayout::CreateSchema(realtime_input_schema->fields()),
-            read_schema.get()));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+            RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, value_schema));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(
+            arrow::ExportSchema(*schema_layout->StoreWriteSchema(), read_schema.get()));
         ScopeGuard schema_guard([schema = read_schema.get()]() { ArrowSchemaRelease(schema); });
         RealtimeQueryContext query_context{read_schema.get(), /*predicate=*/nullptr};
         PAIMON_ASSIGN_OR_RAISE(
@@ -1047,6 +1061,52 @@ TEST_F(RealtimeWriteInteTest, TestAppendCommitAndRead) {
                          MakeBatch(rows, /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(batch)));
     FinalizeCommitAndCheck(writer.get(), /*realtime_commits=*/{}, /*prepare_identifier=*/0, rows);
+}
+
+TEST_F(RealtimeWriteInteTest, TestSealOnlySealsRealtimeSegment) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    std::vector<Row> first_rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first_batch,
+                         MakeBatch(first_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(first_batch)));
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_before_seal, GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_GT(memory_before_seal, 0);
+    ASSERT_OK(writer->Seal());
+    ASSERT_OK_AND_ASSIGN(uint64_t memory_after_seal, GetRealtimeMemoryUsage(realtime_context));
+    ASSERT_EQ(memory_before_seal, memory_after_seal);
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> sealed_rows, ReadRows(realtime_context));
+    ASSERT_EQ(first_rows, sealed_rows);
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> disk_rows_before_prepare, ReadRows());
+    ASSERT_TRUE(disk_rows_before_prepare.empty());
+
+    std::vector<Row> second_rows = MakeRows(/*first_id=*/3, /*count=*/2, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_batch,
+                         MakeBatch(second_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(second_batch)));
+    std::vector<Row> expected_rows = first_rows;
+    expected_rows.insert(expected_rows.end(), second_rows.begin(), second_rows.end());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_before_prepare);
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
+    ASSERT_EQ(OffsetRange(0, 5), progress[0].offset_range);
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_prepare, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_after_prepare);
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot_id));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_refresh, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_after_refresh);
+    ASSERT_OK(writer->Close());
+    realtime_context.reset();
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows());
+    ASSERT_EQ(expected_rows, actual_rows);
 }
 
 TEST_F(RealtimeWriteInteTest, TestSparseExternalOffsetsCommitAndRecover) {
@@ -1370,8 +1430,9 @@ TEST_F(RealtimeWriteInteTest, TestPkNestedProjectionAcrossDiskAndMemory) {
                          RealtimeContext::Create());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
                          CreateRealtimeWriter(realtime_context));
-    const std::shared_ptr<arrow::Schema> realtime_schema =
-        RealtimeOffsetUtils::CreateInputSchema(schema_);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                         RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, schema_));
+    const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
     auto make_batch = [&](const std::string& json) -> Result<std::unique_ptr<RecordBatch>> {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ipc::internal::json::ArrayFromJSON(
@@ -2157,6 +2218,148 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeWriteAcrossAppendCompaction) {
     ASSERT_OK(writer->RefreshCommittedSnapshot(final_snapshot_id));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> final_rows_after_refresh, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, final_rows_after_refresh);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestPkDvPredicateAcrossHighLevelLevel0AndMemory) {
+    options_[Options::FILE_FORMAT] = "parquet";
+    options_[Options::DELETION_VECTORS_ENABLED] = "true";
+    CreatePkTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    const std::string matching_payload = "match-" + std::string(2048, 'X');
+    const std::vector<Row> base_rows = {{1, matching_payload, "p0"},
+                                        {2, matching_payload, "p0"},
+                                        {3, matching_payload, "p0"},
+                                        {4, "base-four", "p0"},
+                                        {5, "base-five", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> base_batch,
+                         MakeBatch(base_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(base_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> base_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t base_snapshot_id, Commit(base_progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(base_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot full_compact_snapshot,
+                         CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                          /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(full_compact_snapshot.Id()));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_after_full_compaction, ReadRows(realtime_context));
+    ASSERT_EQ(base_rows, rows_after_full_compaction);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> dv_update_batch,
+                         MakeBatch({Row{5, "dv-current-five", "p0"}}, /*partitioned=*/false,
+                                   /*bucket=*/0, {RecordBatch::RowKind::UPDATE_AFTER}));
+    ASSERT_OK(writer->Write(std::move(dv_update_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> dv_update_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+    ASSERT_OK_AND_ASSIGN(int64_t dv_update_snapshot_id,
+                         Commit(dv_update_progress, /*commit_identifier=*/2));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(dv_update_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot dv_compact_snapshot,
+                         CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                          /*commit_identifier=*/3,
+                                          /*full_compaction=*/false));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(dv_compact_snapshot.Id()));
+    const std::vector<Row> expected_high_level_rows = {{1, matching_payload, "p0"},
+                                                       {2, matching_payload, "p0"},
+                                                       {3, matching_payload, "p0"},
+                                                       {4, "base-four", "p0"},
+                                                       {5, "dv-current-five", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> high_level_rows, ReadRows(realtime_context));
+    ASSERT_EQ(expected_high_level_rows, high_level_rows);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> level0_batch,
+        MakeBatch({Row{1, "level0-current-one", "p0"}, Row{2, "deleted-two", "p0"}},
+                  /*partitioned=*/false, /*bucket=*/0,
+                  {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE}));
+    ASSERT_OK(writer->Write(std::move(level0_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> level0_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/4));
+    ASSERT_OK_AND_ASSIGN(int64_t level0_snapshot_id,
+                         Commit(level0_progress, /*commit_identifier=*/4));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(level0_snapshot_id));
+    const std::vector<Row> expected_level0_rows = {{1, "level0-current-one", "p0"},
+                                                   {3, matching_payload, "p0"},
+                                                   {4, "base-four", "p0"},
+                                                   {5, "dv-current-five", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> level0_rows, ReadRows(realtime_context));
+    ASSERT_EQ(expected_level0_rows, level0_rows);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> memory_batch,
+        MakeBatch({Row{3, "memory-current-three", "p0"}, Row{7, matching_payload, "p0"}},
+                  /*partitioned=*/false, /*bucket=*/0,
+                  {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(writer->Write(std::move(memory_batch)));
+    const std::vector<Row> expected_memory_rows = {{1, "level0-current-one", "p0"},
+                                                   {3, "memory-current-three", "p0"},
+                                                   {4, "base-four", "p0"},
+                                                   {5, "dv-current-five", "p0"},
+                                                   {7, matching_payload, "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> memory_rows, ReadRows(realtime_context));
+    ASSERT_EQ(expected_memory_rows, memory_rows);
+
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+        Literal(FieldType::STRING, matching_payload.data(), matching_payload.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+    ASSERT_EQ(1, plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime_split);
+    ASSERT_GT(realtime_split->MemoryEndOffset(), realtime_split->CommittedEndOffset());
+
+    bool has_level0_file = false;
+    bool has_high_level_file = false;
+    bool has_high_level_deletion_vector = false;
+    for (const std::shared_ptr<Split>& disk_split : realtime_split->DiskSplits()) {
+        std::shared_ptr<DataSplitImpl> data_split =
+            std::dynamic_pointer_cast<DataSplitImpl>(disk_split);
+        ASSERT_NE(nullptr, data_split);
+        const std::vector<std::shared_ptr<DataFileMeta>>& files = data_split->DataFiles();
+        const std::vector<std::optional<DeletionFile>>& deletion_files =
+            data_split->DeletionFiles();
+        ASSERT_TRUE(deletion_files.empty() || deletion_files.size() == files.size());
+        for (size_t i = 0; i < files.size(); ++i) {
+            if (files[i]->level == 0) {
+                has_level0_file = true;
+            } else {
+                has_high_level_file = true;
+                if (!deletion_files.empty() && deletion_files[i]) {
+                    has_high_level_deletion_vector = true;
+                }
+            }
+        }
+    }
+    ASSERT_TRUE(has_level0_file);
+    ASSERT_TRUE(has_high_level_file);
+    ASSERT_TRUE(has_high_level_deletion_vector);
+
+    // Predicate pushdown may return false-positive candidates, but a newer unfiltered L0 or
+    // memory record must still suppress every matching old version from the high levels.
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> candidates, ReadRows(plan, realtime_context, predicate,
+                                                               /*enable_predicate_filter=*/false));
+    auto find_row = [&candidates](int64_t id) {
+        return std::find_if(candidates.begin(), candidates.end(),
+                            [id](const Row& row) { return std::get<0>(row) == id; });
+    };
+    auto id1 = find_row(1);
+    ASSERT_NE(candidates.end(), id1);
+    ASSERT_EQ("level0-current-one", std::get<1>(*id1));
+    ASSERT_EQ(candidates.end(), find_row(2));
+    auto id3 = find_row(3);
+    ASSERT_NE(candidates.end(), id3);
+    ASSERT_EQ("memory-current-three", std::get<1>(*id3));
+    auto id7 = find_row(7);
+    ASSERT_NE(candidates.end(), id7);
+    ASSERT_EQ(matching_payload, std::get<1>(*id7));
     ASSERT_OK(writer->Close());
 }
 
@@ -3088,8 +3291,12 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadWithVariantAccess) {
         arrow::ArrayVector disk_columns = {std::move(disk_offsets)};
         disk_columns.insert(disk_columns.end(), disk_data->fields().begin(),
                             disk_data->fields().end());
-        const std::shared_ptr<arrow::Schema> realtime_schema =
-            RealtimeOffsetUtils::CreateInputSchema(schema_);
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+            RealtimeSchemaLayout::Create(
+                primary_key ? RealtimeStoreMode::PRIMARY_KEY : RealtimeStoreMode::APPEND_ONLY,
+                schema_));
+        const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
         std::shared_ptr<arrow::StructArray> disk_realtime_data =
             arrow::StructArray::Make(std::move(disk_columns), realtime_schema->fields())
                 .ValueOrDie();

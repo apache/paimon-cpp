@@ -37,67 +37,52 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/append/append_only_writer.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_offset_utils.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/macros.h"
 #include "paimon/realtime/realtime_context.h"
 
 namespace paimon {
-namespace {
-
-Result<std::shared_ptr<arrow::Schema>> AddRealtimeOffsetToSchema(::ArrowSchema* write_schema) {
-    if (!write_schema || !write_schema->release) {
-        return Status::Invalid("real-time store write schema is null");
-    }
-    ScopeGuard schema_guard([write_schema]() { ArrowSchemaRelease(write_schema); });
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> input_schema,
-                                      arrow::ImportSchema(write_schema));
-    schema_guard.Release();
-    std::shared_ptr<arrow::Schema> realtime_write_schema =
-        RealtimeOffsetUtils::CreateInputSchema(input_schema);
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*realtime_write_schema, write_schema));
-    return realtime_write_schema;
-}
-
-}  // namespace
 
 Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Create(
     const std::map<std::string, std::string>& partition, int32_t bucket,
-    std::unique_ptr<::ArrowSchema> write_schema,
     const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
-    const std::shared_ptr<arrow::Schema>& input_schema, StatisticsMode statistics_mode,
-    const std::map<std::string, std::string>& options,
+    const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, const CoreOptions& options,
     const std::shared_ptr<MemoryPool>& memory_pool) {
     if (!realtime_context) {
         return Status::Invalid("real-time context is null");
     }
+    if (!schema_layout) {
+        return Status::Invalid("append real-time schema layout is null");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                            RealtimeContextImpl::Cast(realtime_context));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> realtime_write_schema,
-                           AddRealtimeOffsetToSchema(write_schema.get()));
-    RealtimeStoreCreateRequest request{std::move(write_schema), options, memory_pool,
-                                       RealtimeStoreMode::APPEND_ONLY, statistics_mode};
+    auto write_schema = std::make_unique<ArrowSchema>();
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::ExportSchema(*schema_layout->StoreWriteSchema(), write_schema.get()));
+    RealtimeStoreCreateRequest request{std::move(write_schema), options.ToMap(), memory_pool,
+                                       RealtimeStoreMode::APPEND_ONLY,
+                                       options.GetRealtimeStoreStatisticsMode()};
     PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,
                            realtime_context_impl->GetOrCreateRealtimeStore(
                                std::move(request), RealtimePartitionBucket(partition, bucket)));
     return std::shared_ptr<RealtimeAppendOnlyWriter>(new RealtimeAppendOnlyWriter(
-        store_state.store, file_writer, input_schema, realtime_write_schema,
-        store_state.initial_offset, memory_pool));
+        store_state.store, file_writer, schema_layout, store_state.initial_offset, memory_pool));
 }
 
 RealtimeAppendOnlyWriter::RealtimeAppendOnlyWriter(
     const std::shared_ptr<RealtimeStore>& realtime_store,
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
-    const std::shared_ptr<arrow::Schema>& input_schema,
-    const std::shared_ptr<arrow::Schema>& realtime_write_schema, int64_t next_offset,
+    const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, int64_t next_offset,
     const std::shared_ptr<MemoryPool>& memory_pool)
     : arrow_pool_(GetArrowPool(memory_pool)),
       realtime_store_(realtime_store),
       file_writer_(file_writer),
-      input_schema_(input_schema),
-      realtime_write_schema_(realtime_write_schema),
+      schema_layout_(schema_layout),
       next_offset_(next_offset) {}
 
 Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
@@ -118,9 +103,9 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         return Status::OK();
     }
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    PAIMON_ASSIGN_OR_RAISE(
-        RealtimeOffsetUtils::ValidatedBatch validated,
-        RealtimeOffsetUtils::ValidateBatch(batch.get(), realtime_write_schema_, next_offset_));
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetUtils::ValidatedBatch validated,
+                           RealtimeOffsetUtils::ValidateBatch(
+                               batch.get(), schema_layout_->InputSchema(), next_offset_));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*validated.data, batch->GetData()));
     PAIMON_RETURN_NOT_OK(
         realtime_store_->Write(RealtimeWriteBatch{std::move(batch), validated.offset_range}));
@@ -128,21 +113,38 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return Status::OK();
 }
 
+Status RealtimeAppendOnlyWriter::SealCurrentSegment() {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                           realtime_store_->SealForCommit());
+    if (segment) {
+        if (!segment.value()) {
+            return Status::Invalid("append real-time store sealed a null segment");
+        }
+        sealed_segments_.push_back(std::move(segment.value()));
+    }
+    return Status::OK();
+}
+
+Status RealtimeAppendOnlyWriter::Seal() {
+    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
+    return SealCurrentSegment();
+}
+
 Result<CommitIncrement> RealtimeAppendOnlyWriter::PrepareCommit(bool wait_compaction) {
     std::lock_guard<std::mutex> lock(prepare_mutex_);
-    std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment;
+    std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
     {
         std::lock_guard<std::mutex> realtime_store_lock(realtime_store_mutex_);
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> sealed_segment,
-                               realtime_store_->SealForCommit());
-        segment = std::move(sealed_segment);
+        PAIMON_RETURN_NOT_OK(SealCurrentSegment());
+        segments.swap(sealed_segments_);
     }
-    if (segment) {
-        PAIMON_RETURN_NOT_OK(FlushSegment(segment.value()));
+    for (const std::shared_ptr<RealtimeSegmentHandle>& segment : segments) {
+        PAIMON_RETURN_NOT_OK(FlushSegment(segment));
     }
     PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment, file_writer_->PrepareCommit(wait_compaction));
-    if (segment) {
-        increment.SetRealtimeOffsetRange(segment.value()->GetOffsetRange());
+    if (!segments.empty()) {
+        increment.SetRealtimeOffsetRange(OffsetRange(segments.front()->GetOffsetRange().begin,
+                                                     segments.back()->GetOffsetRange().end));
     }
     return increment;
 }
@@ -188,7 +190,8 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
         PAIMON_ASSIGN_OR_RAISE(struct_array,
                                ArrowUtils::RemoveFieldFromStructArray(
                                    struct_array, SpecialFields::RealtimeOffset().Name()));
-        if (!struct_array->type()->Equals(arrow::struct_(input_schema_->fields()))) {
+        if (!struct_array->type()->Equals(
+                arrow::struct_(schema_layout_->CommitSchema()->fields()))) {
             return Status::Invalid(
                 "real-time store commit reader schema does not match table write schema");
         }

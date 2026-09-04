@@ -46,14 +46,6 @@ class RealtimeOffsetUtils {
         OffsetRange offset_range;
     };
 
-    static std::shared_ptr<arrow::Schema> CreateInputSchema(
-        const std::shared_ptr<arrow::Schema>& write_schema) {
-        arrow::FieldVector fields = {
-            DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset())};
-        fields.insert(fields.end(), write_schema->fields().begin(), write_schema->fields().end());
-        return arrow::schema(std::move(fields), write_schema->metadata());
-    }
-
     static Result<ValidatedBatch> ValidateBatch(
         RecordBatch* batch, const std::shared_ptr<arrow::Schema>& realtime_input_schema,
         int64_t minimum_offset) {

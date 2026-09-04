@@ -38,8 +38,8 @@
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
-#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_reader.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/core/table/source/append_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
@@ -161,12 +161,13 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
 
     std::shared_ptr<arrow::Schema> table_schema =
         DataField::ConvertDataFieldsToArrowSchema(context_->GetTableSchema()->Fields());
-    std::shared_ptr<arrow::Schema> realtime_write_schema =
-        RealtimeOffsetUtils::CreateInputSchema(table_schema);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+        RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, table_schema));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
                            RealtimeStoreReadPipeline::Create(
-                               context_->GetReadSchema(), realtime_write_schema,
-                               context_->GetMemoryPool(), context_->GetArrowMemoryPool()));
+                               context_->GetReadSchema(), *schema_layout, context_->GetMemoryPool(),
+                               context_->GetArrowMemoryPool()));
     const std::shared_ptr<arrow::Schema>& store_read_schema = pipeline->StoreReadSchema();
     auto c_read_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_read_schema, c_read_schema.get()));

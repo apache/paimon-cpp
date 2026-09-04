@@ -105,7 +105,21 @@ Result<std::vector<SplitGenerator::SplitGroup>> MergeTreeSplitGenerator::SplitFo
     std::vector<SplitGenerator::SplitGroup> split_groups;
     split_groups.reserve(metas_vec.size());
     for (auto& metas : metas_vec) {
-        if (metas.size() == 1 && WithoutDeleteRow(metas[0])) {
+        bool packed_raw_convertible = true;
+        std::set<int32_t> packed_levels;
+        for (const std::shared_ptr<DataFileMeta>& meta : metas) {
+            if (meta->level == 0 || !WithoutDeleteRow(meta)) {
+                packed_raw_convertible = false;
+            }
+            packed_levels.insert(meta->level);
+        }
+        const bool single_file_raw_convertible =
+            metas.size() == 1 && WithoutDeleteRow(metas[0]) &&
+            (!deletion_vectors_enabled_ || metas[0]->level > 0);
+        if (single_file_raw_convertible ||
+            (packed_raw_convertible &&
+             (deletion_vectors_enabled_ || merge_engine_ == MergeEngine::FIRST_ROW ||
+              packed_levels.size() == 1))) {
             split_groups.push_back(
                 SplitGenerator::SplitGroup::RawConvertibleGroup(std::move(metas)));
         } else {

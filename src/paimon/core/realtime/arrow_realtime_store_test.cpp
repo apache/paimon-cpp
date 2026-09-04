@@ -74,7 +74,8 @@ class ArrowRealtimeStoreTest : public testing::Test {
     }
 
     std::shared_ptr<ArrowRealtimeStore> CreateStore(StatisticsMode statistics_mode) const {
-        return std::make_shared<ArrowRealtimeStore>(schema_, statistics_mode, pool_, arrow_pool_);
+        return std::make_shared<ArrowRealtimeStore>(schema_, RealtimeStoreMode::APPEND_ONLY,
+                                                    statistics_mode, pool_, arrow_pool_);
     }
 
     std::unique_ptr<RecordBatch> MakeBatch(const std::string& json) const {
@@ -320,6 +321,7 @@ TEST_F(ArrowRealtimeStoreTest, TestRejectsHandlesFromAnotherStoreImplementation)
     RealtimeQueryContext context{read_schema.get(), /*predicate=*/nullptr};
     ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(std::make_shared<ForeignReadView>(), context),
                         "read view was not created by the Arrow real-time store");
+
     read_schema->release(read_schema.get());
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store_->AcquireReadView());
