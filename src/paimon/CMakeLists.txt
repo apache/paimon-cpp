@@ -669,6 +669,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/range_helper_test.cpp
                     common/utils/read_ahead_cache_test.cpp
                     common/utils/file_block_cache_test.cpp
+                    common/utils/fetch_state_test.cpp
                     common/io/cache/lru_cache_test.cpp
                     common/io/cache/cache_manager_test.cpp
                     common/utils/byte_range_combiner_test.cpp

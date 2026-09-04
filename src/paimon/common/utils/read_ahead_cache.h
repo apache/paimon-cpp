@@ -23,6 +23,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -144,6 +145,31 @@ class PAIMON_EXPORT ReadAheadCache {
     /// @return true if the range was served by the cache and `dest` was
     /// filled; false on cache miss (`dest` is left untouched).
     Result<bool> Read(const ByteRange& range, char* dest);
+
+    /// Asynchronous variant of Read(), for a caller whose own interface is
+    /// asynchronous and must not block a thread: the block cache fetch serving a
+    /// range that no registered range covers is awaited through `callback`
+    /// instead of waited for.
+    ///
+    /// The prefetch of a COVERING entry is still waited for synchronously: it has
+    /// already been dispatched, so waiting for it is the latency hiding this cache
+    /// exists for.
+    ///
+    /// `callback` is invoked exactly once: inline when the read is served out of
+    /// an entry, out of an already cached block, or declined, and from the thread
+    /// resolving the block fetch otherwise. A non-ok status means the read failed
+    /// and must be reported to the caller; an ok status with `served == false`
+    /// means the cache declined the read and the caller reads the bytes itself,
+    /// exactly like Read() returning false.
+    ///
+    /// The caller must keep `dest` alive until `callback` has been invoked, the
+    /// way InputStream::ReadAsync() requires of its own callers.
+    /// @param range The byte range to read.
+    /// @param dest Destination buffer with at least `range.length` bytes.
+    /// @param callback Continuation receiving the outcome of the read and whether
+    /// the range was served and `dest` was filled.
+    void ReadAsync(const ByteRange& range, char* dest,
+                   std::function<void(Status status, bool served)> callback);
 
     /// Start fetching the first batch of pending ranges immediately.
     /// Init() only registers the ranges; without Warmup() the first fetch starts

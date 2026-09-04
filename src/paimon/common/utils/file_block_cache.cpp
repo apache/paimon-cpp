@@ -32,57 +32,30 @@ FileBlockCache::FileBlockCache(const std::shared_ptr<InputStream>& stream, uint6
       file_size_(file_size),
       block_size_(block_size),
       capacity_(capacity),
-      memory_pool_(memory_pool) {}
+      memory_pool_(memory_pool),
+      hits_(std::make_shared<AtomicCounterPair>()) {}
 
 FileBlockCache::~FileBlockCache() {
     // The fetches write into the block buffers, so they must not outlive the
     // stream they read from.
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& block : blocks_) {
-        block.second->future.wait();
+        block.second->state->Wait();
     }
 }
 
 bool FileBlockCache::Read(const ByteRange& range, char* dest) {
-    if (!CanServe(range)) {
-        return false;
-    }
-    const uint64_t index = IndexOf(range.offset);
-    std::shared_ptr<Block> block;
     bool dispatch = false;
-    {
-        // Publishing the promise-backed block under the lock before its fetch is
-        // dispatched is what makes concurrent readers of the same block wait for
-        // that one fetch instead of issuing their own.
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = blocks_.find(index);
-        if (it != blocks_.end()) {
-            block = it->second;
-        } else {
-            const ByteRange block_range = RangeOf(index);
-            // Blocks are never evicted, so an exhausted capacity means this read
-            // goes back to the caller instead of replacing a cached block.
-            if (cached_bytes_ + block_range.length > capacity_) {
-                return false;
-            }
-            block = std::make_shared<Block>();
-            block->range = block_range;
-            // The buffer keeps the pool alive, for the fetch callbacks that a
-            // stream destroys later than it resolves them.
-            block->buffer = AllocateBytesKeepingPoolAlive(block_range.length, memory_pool_);
-            block->promise = std::make_shared<std::promise<Status>>();
-            block->future = block->promise->get_future().share();
-            blocks_.emplace(index, block);
-            cached_bytes_ += block_range.length;
-            dispatch = true;
-        }
+    std::shared_ptr<Block> block = AcquireBlock(range, &dispatch);
+    if (block == nullptr) {
+        return false;
     }
     if (dispatch) {
         Fetch(block);
     }
-    // Wait and copy OUTSIDE the lock, so that a reader waiting for a fetch does
-    // not keep the other readers out of the map.
-    if (!block->future.get().ok()) {
+    // Wait OUTSIDE the lock, so that a reader waiting for a fetch does not keep
+    // the other readers out of the map.
+    if (!block->state->Wait().ok()) {
         // A block fetch reads more than the caller asked for, so its failure must
         // not fail the caller's read: the read goes back to the caller, which
         // reports the real error itself if its own bytes cannot be read either.
@@ -90,13 +63,39 @@ bool FileBlockCache::Read(const ByteRange& range, char* dest) {
         // file metadata records a size larger than the physical file - from
         // failing the reads of the region it covers.
         //
-        // The block is left in place with its failed future, so the later reads
-        // of that block are declined without fetching it again.
+        // The block is left in place with its failed state, so the later reads of
+        // that block are declined without fetching it again.
         return false;
     }
-    std::memcpy(dest, block->buffer->data() + (range.offset - block->range.offset), range.length);
-    hits_.Add(range.length);
-    return true;
+    return Serve(*block, range, dest, hits_);
+}
+
+void FileBlockCache::ReadAsync(const ByteRange& range, char* dest,
+                               std::function<void(bool served)> callback) {
+    bool dispatch = false;
+    std::shared_ptr<Block> block = AcquireBlock(range, &dispatch);
+    if (block == nullptr) {
+        callback(false);
+        return;
+    }
+    if (dispatch) {
+        Fetch(block);
+    }
+    // The continuation runs on the thread resolving the fetch, which may outlive
+    // this cache: it holds the block and the counters it touches, never `this`.
+    // A fetch resolving inline - the local filesystem reads inline - makes the
+    // state resolve before this point, and the continuation then runs here, the
+    // way a synchronous read would have.
+    block->state->OnComplete(
+        [block, range, dest, hits = hits_, callback = std::move(callback)](Status status) mutable {
+            // A failed fetch declines the read instead of reporting the failure, see
+            // Read().
+            if (!status.ok() || !Serve(*block, range, dest, hits)) {
+                callback(false);
+                return;
+            }
+            callback(true);
+        });
 }
 
 void FileBlockCache::Release() {
@@ -104,24 +103,63 @@ void FileBlockCache::Release() {
     // Blocks are never evicted, so waiting on blocks_ covers every dispatched
     // fetch before the buffers they write into go away.
     for (auto& block : blocks_) {
-        block.second->future.wait();
+        block.second->state->Wait();
     }
     blocks_.clear();
     cached_bytes_ = 0;
 }
 
 void FileBlockCache::ResetCounters() {
-    hits_.Reset();
+    hits_->Reset();
     fetches_.Reset();
 }
 
 FileBlockCache::Counters FileBlockCache::GetCounters() const {
     Counters counters;
-    counters.hits = hits_.Count();
-    counters.hit_bytes = hits_.Bytes();
+    counters.hits = hits_->Count();
+    counters.hit_bytes = hits_->Bytes();
     counters.fetches = fetches_.Count();
     counters.fetch_bytes = fetches_.Bytes();
     return counters;
+}
+
+std::shared_ptr<FileBlockCache::Block> FileBlockCache::AcquireBlock(const ByteRange& range,
+                                                                    bool* dispatch) {
+    if (!CanServe(range)) {
+        return nullptr;
+    }
+    const uint64_t index = IndexOf(range.offset);
+    // Publishing the state-backed block under the lock before its fetch is
+    // dispatched is what makes concurrent readers of the same block wait for
+    // that one fetch instead of issuing their own.
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = blocks_.find(index);
+    if (it != blocks_.end()) {
+        return it->second;
+    }
+    const ByteRange block_range = RangeOf(index);
+    // Blocks are never evicted, so an exhausted capacity means this read goes
+    // back to the caller instead of replacing a cached block.
+    if (cached_bytes_ + block_range.length > capacity_) {
+        return nullptr;
+    }
+    auto block = std::make_shared<Block>();
+    block->range = block_range;
+    // The buffer keeps the pool alive, for the fetch callbacks that a stream
+    // destroys later than it resolves them.
+    block->buffer = AllocateBytesKeepingPoolAlive(block_range.length, memory_pool_);
+    block->state = std::make_shared<FetchState>();
+    blocks_.emplace(index, block);
+    cached_bytes_ += block_range.length;
+    *dispatch = true;
+    return block;
+}
+
+bool FileBlockCache::Serve(const Block& block, const ByteRange& range, char* dest,
+                           const std::shared_ptr<AtomicCounterPair>& hits) {
+    std::memcpy(dest, block.buffer->data() + (range.offset - block.range.offset), range.length);
+    hits->Add(range.length);
+    return true;
 }
 
 bool FileBlockCache::CanServe(const ByteRange& range) const {
@@ -154,15 +192,15 @@ ByteRange FileBlockCache::RangeOf(uint64_t index) const {
 
 void FileBlockCache::Fetch(const std::shared_ptr<Block>& block) {
     fetches_.Add(block->range.length);
-    auto promise = block->promise;
+    auto state = block->state;
     auto buffer = block->buffer;
-    // The buffer and the promise are captured, so the async read keeps its
-    // destination and the future it resolves alive. The buffer keeps the memory
+    // The buffer and the state are captured, so the async read keeps its
+    // destination and the fetch it resolves alive. The buffer keeps the memory
     // pool alive as well, so a callback outliving this cache still frees the
     // buffer against a live pool.
     stream_->ReadAsync(buffer->data(), static_cast<int64_t>(buffer->size()),
                        static_cast<int64_t>(block->range.offset),
-                       [promise, buffer](Status status) { promise->set_value(status); });
+                       [state, buffer](Status status) { state->Complete(std::move(status)); });
 }
 
 }  // namespace paimon

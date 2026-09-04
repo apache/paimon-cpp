@@ -85,6 +85,38 @@ void AssertDeclined(const ByteRange& range, FileBlockCache* cache) {
     ASSERT_EQ(std::string(dest.size(), 'X'), dest);
 }
 
+// Assert that ReadAsync() serves the range with the expected content without
+// leaving the caller: either the block is cached already or its fetch completes
+// inline, the way the local filesystem completes its ReadAsync().
+void AssertServedAsyncInline(const ByteRange& range, const std::string& expected,
+                             FileBlockCache* cache) {
+    std::string dest(range.length, 'X');
+    bool served = false;
+    bool called = false;
+    cache->ReadAsync(range, dest.data(), [&](bool hit) {
+        called = true;
+        served = hit;
+    });
+    ASSERT_TRUE(called) << expected;
+    ASSERT_TRUE(served) << expected;
+    ASSERT_EQ(expected, std::string_view(dest.data(), range.length));
+}
+
+// Assert that ReadAsync() declines the range inline, leaving the destination
+// untouched, the way AssertDeclined() does for Read().
+void AssertDeclinedAsync(const ByteRange& range, FileBlockCache* cache) {
+    std::string dest(range.length, 'X');
+    bool served = true;
+    bool called = false;
+    cache->ReadAsync(range, dest.data(), [&](bool hit) {
+        called = true;
+        served = hit;
+    });
+    ASSERT_TRUE(called);
+    ASSERT_FALSE(served);
+    ASSERT_EQ(std::string(dest.size(), 'X'), dest);
+}
+
 }  // namespace
 
 // The tail of the file is fetched once and then serves every later read falling
@@ -323,6 +355,166 @@ TEST(TestFileBlockCache, TestBlockBufferKeepsPoolAliveAfterCacheIsGone) {
     ASSERT_FALSE(weak_pool.expired());
     gated->DropCompletedCallbacks();
     ASSERT_TRUE(weak_pool.expired());
+}
+
+// A caller whose own interface is asynchronous must not block on the fetch of a
+// missing block: ReadAsync() returns while the fetch is in flight and resolves
+// its callback when the fetch does.
+TEST(TestFileBlockCache, TestReadAsyncAwaitsTheBlockFetch) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir));
+    FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, /*capacity=*/1024, TestPool());
+
+    std::string dest(8, 'X');
+    bool called = false;
+    bool served = false;
+    cache.ReadAsync({18, 8}, dest.data(), [&](bool hit) {
+        called = true;
+        served = hit;
+    });
+
+    // The fetch is held and the caller was not blocked on it.
+    ASSERT_FALSE(called);
+    ASSERT_EQ(std::string(8, 'X'), dest);
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+
+    gated->ReleaseAll();
+    ASSERT_TRUE(called);
+    ASSERT_TRUE(served);
+    ASSERT_EQ("stuvwxyz", std::string_view(dest.data(), 8));
+
+    const FileBlockCache::Counters counters = cache.GetCounters();
+    ASSERT_EQ(counters.fetches, 1u);
+    ASSERT_EQ(counters.fetch_bytes, 8u);
+    ASSERT_EQ(counters.hits, 1u);
+    ASSERT_EQ(counters.hit_bytes, 8u);
+}
+
+// A block that is cached already resolves the callback inline, and so does a
+// fetch that the stream completes inline: the local filesystem reads inline, so
+// a reader on it observes exactly what Read() would have returned.
+TEST(TestFileBlockCache, TestReadAsyncCompletesInlineWhenTheBlockIsThere) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
+                         /*capacity=*/1024, TestPool());
+
+    // The whole last block, as the footer read of a parquet file does.
+    AssertServedAsyncInline({18, 8}, "stuvwxyz", &cache);
+    // Small reads inside the block that is cached now, as the page index reads do.
+    AssertServedAsyncInline({20, 2}, "uv", &cache);
+    AssertServedAsyncInline({25, 1}, "z", &cache);
+
+    const FileBlockCache::Counters counters = cache.GetCounters();
+    ASSERT_EQ(counters.fetches, 1u);
+    ASSERT_EQ(counters.fetch_bytes, 8u);
+    ASSERT_EQ(counters.hits, 3u);
+    ASSERT_EQ(counters.hit_bytes, 8u + 2u + 1u);
+}
+
+// Two asynchronous readers of the same missing block share the one fetch it
+// dispatches, the way two blocking readers do: neither waits on a thread, and
+// both callbacks run when the fetch is resolved.
+TEST(TestFileBlockCache, TestReadAsyncSingleFlightForConcurrentReads) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir));
+    FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, /*capacity=*/1024, TestPool());
+
+    std::string first_dest(4, 'X');
+    std::string second_dest(4, 'X');
+    int32_t served = 0;
+    cache.ReadAsync({18, 4}, first_dest.data(), [&served](bool hit) { served += hit ? 1 : 0; });
+    cache.ReadAsync({22, 4}, second_dest.data(), [&served](bool hit) { served += hit ? 1 : 0; });
+
+    // Both readers are waiting for the same held fetch, and neither was blocked.
+    ASSERT_EQ(served, 0);
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+    ASSERT_EQ(std::string(4, 'X'), first_dest);
+    ASSERT_EQ(std::string(4, 'X'), second_dest);
+
+    gated->ReleaseAll();
+    ASSERT_EQ(served, 2);
+    ASSERT_EQ("stuv", std::string_view(first_dest.data(), 4));
+    ASSERT_EQ("wxyz", std::string_view(second_dest.data(), 4));
+
+    const FileBlockCache::Counters counters = cache.GetCounters();
+    ASSERT_EQ(counters.fetches, 1u);
+    ASSERT_EQ(counters.hits, 2u);
+}
+
+// Every read the cache declines is declined inline, so an asynchronous caller
+// can fall back to its own read right away instead of waiting for a fetch that
+// was never dispatched.
+TEST(TestFileBlockCache, TestReadAsyncDeclinesInline) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir));
+    FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, /*capacity=*/1024, TestPool());
+
+    // [16, 20) straddles block 1 = [10, 18) and block 0 = [18, 26).
+    AssertDeclinedAsync({16, 4}, &cache);
+    // Larger than one block.
+    AssertDeclinedAsync({0, 12}, &cache);
+    // Reaches past the end of the file.
+    AssertDeclinedAsync({24, 4}, &cache);
+    // Starts past the end of the file.
+    AssertDeclinedAsync({26, 2}, &cache);
+
+    ASSERT_EQ(gated->AsyncReadCount(), 0);
+    const FileBlockCache::Counters counters = cache.GetCounters();
+    ASSERT_EQ(counters.fetches, 0u);
+    ASSERT_EQ(counters.hits, 0u);
+}
+
+// Blocks are never evicted, so a read whose block does not fit into the capacity
+// is declined inline instead of replacing a cached block.
+TEST(TestFileBlockCache, TestReadAsyncExhaustedCapacityDeclinesInline) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    // The capacity holds exactly one block.
+    FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
+                         /*capacity=*/kBlockSize, TestPool());
+
+    AssertServedAsyncInline({18, 4}, "stuv", &cache);
+    // Block 1 = [10, 18) does not fit anymore.
+    AssertDeclinedAsync({10, 4}, &cache);
+    // The block already cached still serves its reads.
+    AssertServedAsyncInline({20, 2}, "uv", &cache);
+
+    const FileBlockCache::Counters counters = cache.GetCounters();
+    ASSERT_EQ(counters.fetches, 1u);
+    ASSERT_EQ(counters.fetch_bytes, 8u);
+    ASSERT_EQ(counters.hits, 2u);
+}
+
+// A failed fetch declines an asynchronous read the way it declines a blocking
+// one: the failure is not reported to the caller, which reads its own bytes
+// instead, and the failed block is not fetched again.
+TEST(TestFileBlockCache, TestReadAsyncFetchErrorDeclinesTheReads) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir));
+    FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, /*capacity=*/1024, TestPool());
+
+    std::string dest(4, 'X');
+    bool called = false;
+    bool served = true;
+    cache.ReadAsync({18, 4}, dest.data(), [&](bool hit) {
+        called = true;
+        served = hit;
+    });
+    ASSERT_FALSE(called);
+    gated->FailAll(Status::IOError("fetch failed"));
+
+    // The caller sees a declined read, not the failure of the fetch.
+    ASSERT_TRUE(called);
+    ASSERT_FALSE(served);
+    ASSERT_EQ(std::string(4, 'X'), dest);
+
+    // The failed block is kept, so a later read of it is declined inline without
+    // a second fetch.
+    AssertDeclinedAsync({20, 2}, &cache);
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+
+    const FileBlockCache::Counters counters = cache.GetCounters();
+    ASSERT_EQ(counters.fetches, 1u);
+    ASSERT_EQ(counters.hits, 0u);
 }
 
 }  // namespace paimon::test

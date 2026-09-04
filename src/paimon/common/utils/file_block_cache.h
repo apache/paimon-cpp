@@ -20,12 +20,13 @@
 #pragma once
 
 #include <cstdint>
-#include <future>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 
 #include "paimon/common/metrics/atomic_counter_pair.h"
+#include "paimon/common/utils/fetch_state.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/bytes.h"
@@ -49,7 +50,8 @@ namespace paimon {
 /// costs the caching of that block, see Read().
 ///
 /// A block is published before its fetch is dispatched, so concurrent readers of
-/// the same block wait for that one fetch instead of issuing their own.
+/// the same block wait for that one fetch instead of issuing their own. Readers
+/// that must not block a thread wait for it through ReadAsync() instead.
 ///
 /// Blocks are never evicted: once the capacity is reached Read() declines
 /// instead of replacing a block. That keeps every dispatched fetch reachable
@@ -92,6 +94,25 @@ class PAIMON_EXPORT FileBlockCache {
     /// either. A block whose fetch failed is not fetched again.
     bool Read(const ByteRange& range, char* dest);
 
+    /// Asynchronous variant of Read(), for a caller whose own interface is
+    /// asynchronous and must not block a thread: the fetch of a missing block is
+    /// awaited through `callback` instead of waited for.
+    ///
+    /// `callback` is invoked exactly once, with the outcome Read() would have
+    /// returned: inline when the block is already cached, when the read is
+    /// declined and when the fetch of the block completes inline - the local
+    /// filesystem reads inline - and from the thread resolving the fetch
+    /// otherwise. A fetch failure is still not reported to the caller, see
+    /// Read().
+    ///
+    /// The caller must keep `dest` alive until `callback` has been invoked, the
+    /// way InputStream::ReadAsync() requires of its own callers.
+    /// @param range The byte range to read.
+    /// @param dest Destination buffer with at least `range.length` bytes.
+    /// @param callback Continuation receiving whether the range was served and
+    /// `dest` was filled.
+    void ReadAsync(const ByteRange& range, char* dest, std::function<void(bool served)> callback);
+
     /// Drop all cached blocks, waiting for the fetches still writing into their
     /// buffers. The counters are kept readable for the owner's metrics.
     void Release();
@@ -108,22 +129,40 @@ class PAIMON_EXPORT FileBlockCache {
     struct Block {
         ByteRange range;
         std::shared_ptr<Bytes> buffer;
-        std::shared_ptr<std::promise<Status>> promise;
-        // shared_future, as every reader of the block waits on it.
-        std::shared_future<Status> future;
+        // The completion of the fetch, resolved by the stream callback and
+        // waited for - or awaited through a continuation - by every reader of
+        // the block.
+        std::shared_ptr<FetchState> state;
     };
 
     /// Whether one block can serve the given range.
     bool CanServe(const ByteRange& range) const;
+    /// Look up the block serving `range`, publishing it when it is missing and
+    /// setting `*dispatch` when the caller must fetch it.
+    ///
+    /// Publishing the state-backed block under the lock before its fetch is
+    /// dispatched is what makes concurrent readers of the same block wait for
+    /// that one fetch instead of issuing their own.
+    /// @return null when one block cannot serve the range or the capacity is
+    /// exhausted, leaving the read to the caller.
+    std::shared_ptr<Block> AcquireBlock(const ByteRange& range, bool* dispatch);
     /// Index of the block holding `offset`, counted from the END of the file, so
     /// that block 0 is the last block. `offset` must be inside the file.
     uint64_t IndexOf(uint64_t offset) const;
     /// Range of the block with the given index, clamped at the start of the file.
     ByteRange RangeOf(uint64_t index) const;
-    /// Fetch the block into its buffer and resolve its promise with the outcome.
+    /// Fetch the block into its buffer and resolve its state with the outcome.
     /// Must be called after the block has been published, and only by the reader
     /// that published it.
     void Fetch(const std::shared_ptr<Block>& block);
+    /// Copy the requested window out of a block whose fetch has been resolved,
+    /// and count the hit into `hits`.
+    ///
+    /// Static and taking the counters explicitly: the continuation of an
+    /// asynchronous read runs on the thread resolving the fetch, which can
+    /// outlive this cache, so it must not reach the counters through it.
+    static bool Serve(const Block& block, const ByteRange& range, char* dest,
+                      const std::shared_ptr<AtomicCounterPair>& hits);
 
     std::shared_ptr<InputStream> stream_;
     uint64_t file_size_;
@@ -138,8 +177,10 @@ class PAIMON_EXPORT FileBlockCache {
     // Bytes held by blocks_, guarded by mutex_ and bounded by capacity_.
     uint64_t cached_bytes_ = 0;
     // The requests served out of a block, and the block fetches issued to the
-    // underlying stream.
-    AtomicCounterPair hits_;
+    // underlying stream. The hits are shared: the continuation of an
+    // asynchronous read counts them from the thread resolving the fetch, which
+    // can outlive this cache.
+    std::shared_ptr<AtomicCounterPair> hits_;
     AtomicCounterPair fetches_;
 };
 

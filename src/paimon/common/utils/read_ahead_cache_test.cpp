@@ -694,4 +694,230 @@ TEST(TestReadAheadCache, TestBlockCacheDisabled) {
     ASSERT_EQ(blocks.hits, 0u);
 }
 
+// Assert that ReadAsync() serves the range inline with the expected content:
+// either a registered range covers it, or a block is cached already, or the
+// stream completes the fetch of the missing block inline the way the local
+// filesystem does.
+void AssertReadAsyncEquals(const ByteRange& range, const std::string& expected,
+                           ReadAheadCache* cache) {
+    std::string dest(std::max<size_t>(range.length, 1), 'X');
+    bool called = false;
+    bool served = false;
+    cache->ReadAsync(range, dest.data(), [&](Status status, bool hit) {
+        EXPECT_OK(status);
+        called = true;
+        served = hit;
+    });
+    ASSERT_TRUE(called) << expected;
+    ASSERT_TRUE(served) << expected;
+    ASSERT_EQ(expected, std::string_view(dest.data(), range.length));
+}
+
+// Assert that ReadAsync() declines the range inline and leaves the destination
+// untouched, the way AssertReadMiss() does for Read().
+void AssertReadAsyncMiss(const ByteRange& range, ReadAheadCache* cache) {
+    std::string dest(std::max<size_t>(range.length, 1), 'X');
+    bool called = false;
+    bool served = true;
+    cache->ReadAsync(range, dest.data(), [&](Status status, bool hit) {
+        EXPECT_OK(status);
+        called = true;
+        served = hit;
+    });
+    ASSERT_TRUE(called);
+    ASSERT_FALSE(served);
+    ASSERT_EQ(std::string(dest.size(), 'X'), dest);
+}
+
+// A cache over a gated stream, so that a test can observe the block cache while
+// the fetch of a block is in flight. No range is registered: the reads of these
+// tests are the ones no registered range covers.
+std::shared_ptr<ReadAheadCache> CreateGatedBlockCache(
+    const CacheConfig& config, uint64_t file_size, std::shared_ptr<GatedAsyncInputStream>* gated) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    *gated = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "data_file", "abcdefghijklmnopqrstuvwxyz"));
+    std::shared_ptr<ReadAheadCache> cache =
+        std::make_shared<ReadAheadCache>(*gated, config, file_size, TestPool());
+    EXPECT_OK(cache->Init({}));
+    return cache;
+}
+
+// ReadAsync() serves a range a registered range covers without the caller having
+// to come back: the prefetch has already been dispatched, so waiting for it is
+// the latency hiding this cache exists for.
+TEST(TestReadAheadCache, TestReadAsyncServesCoveringEntriesInline) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10, /*hole_size_limit=*/2,
+                                         /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    AssertReadAsyncEquals({0, 5}, "abcde", &cache);
+    AssertReadAsyncEquals({8, 5}, "ijklm", &cache);
+    // A zero-sized read is served at once.
+    AssertReadAsyncEquals({14, 0}, "", &cache);
+
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t read_count,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
+    ASSERT_EQ(read_count, 2u);
+    ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_EQ(hits, 2u);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 0u);
+}
+
+// A covering entry whose prefetch failed is a failure of the read rather than a
+// decline: the bytes were expected to be in the cache, so the caller must report
+// the error instead of reading them again and failing the same way.
+TEST(TestReadAheadCache, TestReadAsyncReportsThePrefetchFailure) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10, /*hole_size_limit=*/2,
+                                         /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    auto io_hook = paimon::IOHook::GetInstance();
+    paimon::ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
+    io_hook->Reset(0, paimon::IOHook::Mode::RETURN_ERROR);
+
+    std::string dest(5, 'X');
+    bool called = false;
+    bool served = true;
+    Status status;
+    cache_ptr->ReadAsync({0, 5}, dest.data(), [&](Status read_status, bool hit) {
+        called = true;
+        served = hit;
+        status = std::move(read_status);
+    });
+    ASSERT_TRUE(called);
+    ASSERT_FALSE(served);
+    ASSERT_NOK(status);
+    ASSERT_TRUE(status.ToString().find("io hook triggered io error at position") !=
+                std::string::npos);
+    ASSERT_EQ(std::string(5, 'X'), dest);
+}
+
+// Without a block cache an uncovered read is declined inline, exactly like
+// Read() returning false.
+TEST(TestReadAheadCache, TestReadAsyncWithoutBlockCacheIsAnInlineMiss) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10, /*hole_size_limit=*/2,
+                                         /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {}, /*file_size=*/0);
+
+    AssertReadAsyncMiss({18, 4}, cache_ptr.get());
+
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache_ptr->CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t miss_bytes,
+                         metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
+    ASSERT_EQ(miss_bytes, 4u);
+}
+
+// An uncovered read the block cache has to fetch a block for does not block the
+// caller: this is the round trip an asynchronous caller used to wait for inline.
+TEST(TestReadAheadCache, TestReadAsyncAwaitsTheBlockFetch) {
+    CacheConfig config = BlockCacheConfig(/*block_size=*/8, /*block_cache_limit=*/1024);
+    std::shared_ptr<GatedAsyncInputStream> gated;
+    // The test content is 26 bytes, so block 0 is [18, 26).
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateGatedBlockCache(config, /*file_size=*/26, &gated);
+    ReadAheadCache& cache = *cache_ptr;
+
+    std::string dest(8, 'X');
+    bool called = false;
+    bool served = false;
+    Status status = Status::Invalid("not called");
+    cache.ReadAsync({18, 8}, dest.data(), [&](Status read_status, bool hit) {
+        called = true;
+        served = hit;
+        status = std::move(read_status);
+    });
+
+    // The fetch is held and the caller was not blocked on it.
+    ASSERT_FALSE(called);
+    ASSERT_EQ(std::string(8, 'X'), dest);
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+
+    gated->ReleaseAll();
+    ASSERT_TRUE(called);
+    ASSERT_OK(status);
+    ASSERT_TRUE(served);
+    ASSERT_EQ("stuvwxyz", std::string_view(dest.data(), 8));
+
+    BlockCounters blocks;
+    GetBlockCounters(&cache, &blocks);
+    ASSERT_EQ(blocks.fetches, 1u);
+    ASSERT_EQ(blocks.fetch_bytes, 8u);
+    ASSERT_EQ(blocks.hits, 1u);
+
+    // A block hit is neither a hit of a registered range nor a miss.
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t hits, metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
+    ASSERT_EQ(hits, 0u);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 0u);
+}
+
+// A block fetch reads more than the caller asked for, so its failure stays a
+// decline: the caller reads its own bytes and reports the failure itself.
+TEST(TestReadAheadCache, TestReadAsyncBlockFetchErrorIsAMiss) {
+    CacheConfig config = BlockCacheConfig(/*block_size=*/8, /*block_cache_limit=*/1024);
+    std::shared_ptr<GatedAsyncInputStream> gated;
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateGatedBlockCache(config, /*file_size=*/26, &gated);
+    ReadAheadCache& cache = *cache_ptr;
+
+    std::string dest(8, 'X');
+    bool called = false;
+    bool served = true;
+    Status status = Status::Invalid("not called");
+    cache.ReadAsync({18, 8}, dest.data(), [&](Status read_status, bool hit) {
+        called = true;
+        served = hit;
+        status = std::move(read_status);
+    });
+    ASSERT_FALSE(called);
+    gated->FailAll(Status::IOError("fetch failed"));
+
+    ASSERT_TRUE(called);
+    ASSERT_OK(status);
+    ASSERT_FALSE(served);
+    ASSERT_EQ(std::string(8, 'X'), dest);
+
+    BlockCounters blocks;
+    GetBlockCounters(&cache, &blocks);
+    ASSERT_EQ(blocks.fetches, 1u);
+    ASSERT_EQ(blocks.hits, 0u);
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache.CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t misses, metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
+    ASSERT_EQ(misses, 1u);
+}
+
+// A read the block cache declines is declined inline, without dispatching
+// anything for the caller to wait for.
+TEST(TestReadAheadCache, TestReadAsyncDeclinesWhatReadDeclines) {
+    CacheConfig config = BlockCacheConfig(/*block_size=*/8, /*block_cache_limit=*/1024);
+    std::shared_ptr<GatedAsyncInputStream> gated;
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateGatedBlockCache(config, /*file_size=*/26, &gated);
+
+    // Larger than one block, so the block cache leaves it to the caller.
+    AssertReadAsyncMiss({0, 12}, cache_ptr.get());
+    ASSERT_EQ(gated->AsyncReadCount(), 0);
+
+    BlockCounters blocks;
+    GetBlockCounters(cache_ptr.get(), &blocks);
+    ASSERT_EQ(blocks.fetches, 0u);
+    ASSERT_EQ(blocks.hits, 0u);
+}
+
 }  // namespace paimon::test
