@@ -158,6 +158,12 @@ Status RowToArrowArrayConverter<T, R>::Reserve(arrow::ArrayBuilder* array_builde
             PAIMON_RETURN_NOT_OK(Reserve(list_builder->value_builder(), idx));
             break;
         }
+        case arrow::Type::type::FIXED_SIZE_LIST: {
+            PAIMON_ASSIGN_OR_RAISE(auto* list_builder,
+                                   CastToTypedBuilder<arrow::FixedSizeListBuilder>(array_builder));
+            PAIMON_RETURN_NOT_OK(Reserve(list_builder->value_builder(), idx));
+            break;
+        }
         case arrow::Type::type::MAP: {
             PAIMON_ASSIGN_OR_RAISE(auto* map_builder,
                                    CastToTypedBuilder<arrow::MapBuilder>(array_builder));
@@ -221,6 +227,11 @@ Status RowToArrowArrayConverter<T, R>::Accumulate(const arrow::Array* array, int
         }
         case arrow::Type::type::LIST: {
             auto list_array = checked_cast<const arrow::ListArray*>(array);
+            PAIMON_RETURN_NOT_OK(Accumulate(list_array->values().get(), idx));
+            break;
+        }
+        case arrow::Type::type::FIXED_SIZE_LIST: {
+            auto list_array = checked_cast<const arrow::FixedSizeListArray*>(array);
             PAIMON_RETURN_NOT_OK(Accumulate(list_array->values().get(), idx));
             break;
         }
@@ -427,6 +438,31 @@ RowToArrowArrayConverter<T, R>::AppendField(bool use_view, arrow::ArrayBuilder* 
                     auto sub_array = data_getter.GetArray(pos);
                     assert(sub_array);
                     for (int32_t i = 0; i < sub_array->Size(); i++) {
+                        ARROW_RETURN_NOT_OK(value_func(*sub_array, i));
+                    }
+                    return arrow::Status::OK();
+                });
+        }
+        case arrow::Type::type::FIXED_SIZE_LIST: {
+            PAIMON_ASSIGN_OR_RAISE(auto* list_builder,
+                                   CastToTypedBuilder<arrow::FixedSizeListBuilder>(array_builder));
+            std::shared_ptr<arrow::FixedSizeListType> list_type =
+                checked_pointer_cast<arrow::FixedSizeListType>(list_builder->type());
+            int32_t list_size = list_type->list_size();
+            PAIMON_ASSIGN_OR_RAISE(AppendValueFunc value_func,
+                                   (RowToArrowArrayConverter<T, R>::AppendField(
+                                       use_view, list_builder->value_builder(), reserve_count)));
+            return RowToArrowArrayConverter<T, R>::AppendValueFunc(
+                [list_builder, list_size, value_func](const DataGetters& data_getter,
+                                                      int32_t pos) -> arrow::Status {
+                    CHECK_AND_APPEND_NULL(data_getter, list_builder, pos);
+                    std::shared_ptr<InternalArray> sub_array = data_getter.GetArray(pos);
+                    if (!sub_array || sub_array->Size() != list_size) {
+                        return arrow::Status::Invalid(
+                            "VECTOR length does not match its declared dimension");
+                    }
+                    ARROW_RETURN_NOT_OK(list_builder->Append());
+                    for (int32_t i = 0; i < list_size; ++i) {
                         ARROW_RETURN_NOT_OK(value_func(*sub_array, i));
                     }
                     return arrow::Status::OK();

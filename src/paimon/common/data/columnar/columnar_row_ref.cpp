@@ -61,6 +61,15 @@ std::shared_ptr<InternalRow> ColumnarRowRef::GetRow(int32_t pos, int32_t num_fie
 }
 
 std::shared_ptr<InternalArray> ColumnarRowRef::GetArray(int32_t pos) const {
+    if (ctx_->array_vec[pos]->type_id() == arrow::Type::FIXED_SIZE_LIST) {
+        auto fixed_size_list_array =
+            checked_cast<const arrow::FixedSizeListArray*>(ctx_->array_vec[pos].get());
+        auto fixed_size_list_type =
+            checked_pointer_cast<arrow::FixedSizeListType>(fixed_size_list_array->type());
+        int32_t offset = static_cast<int32_t>(fixed_size_list_array->value_offset(row_id_));
+        return std::make_shared<ColumnarArray>(fixed_size_list_array->values().get(), ctx_->pool,
+                                               offset, fixed_size_list_type->list_size());
+    }
     auto list_array = checked_cast<const arrow::ListArray*>(ctx_->array_vec[pos].get());
     int32_t offset = list_array->value_offset(row_id_);
     int32_t length = list_array->value_length(row_id_);

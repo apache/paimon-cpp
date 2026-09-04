@@ -156,6 +156,11 @@ Result<int64_t> InMemorySortBuffer::EstimateMemoryUse(const std::shared_ptr<arro
             PAIMON_ASSIGN_OR_RAISE(int64_t value_mem, EstimateMemoryUse(list_array->values()));
             return null_bits_size_in_bytes + value_mem;
         }
+        case arrow::Type::type::FIXED_SIZE_LIST: {
+            auto list_array = checked_cast<const arrow::FixedSizeListArray*>(array.get());
+            PAIMON_ASSIGN_OR_RAISE(int64_t value_mem, EstimateMemoryUse(list_array->values()));
+            return null_bits_size_in_bytes + value_mem;
+        }
         case arrow::Type::type::MAP: {
             auto map_array = checked_cast<const arrow::MapArray*>(array.get());
             PAIMON_ASSIGN_OR_RAISE(int64_t key_mem, EstimateMemoryUse(map_array->keys()));

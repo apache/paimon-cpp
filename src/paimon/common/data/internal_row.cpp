@@ -128,7 +128,8 @@ Result<InternalRow::FieldGetterFunc> InternalRow::CreateFieldGetter(
             };
             break;
         }
-        case arrow::Type::type::LIST: {
+        case arrow::Type::type::LIST:
+        case arrow::Type::type::FIXED_SIZE_LIST: {
             field_getter = [field_idx](const InternalRow& row) -> VariantType {
                 return row.GetArray(field_idx);
             };

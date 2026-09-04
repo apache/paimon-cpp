@@ -31,8 +31,7 @@ Result<std::shared_ptr<BinaryArray>> BinarySerializerUtils::WriteBinaryArray(
         return binary_array;
     }
     auto binary_array = std::make_shared<BinaryArray>();
-    auto list_type = checked_pointer_cast<arrow::ListType>(type);
-    auto value_type = list_type->value_type();
+    auto value_type = type->field(0)->type();
     // TODO(xinyu.lxy): reuse BinaryWriter
     BinaryArrayWriter binary_writer(binary_array.get(), value->Size(),
                                     BinaryArrayWriter::GetElementSize(value_type->id()), pool);
@@ -183,7 +182,8 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
             }
             break;
         }
-        case arrow::Type::type::LIST: {
+        case arrow::Type::type::LIST:
+        case arrow::Type::type::FIXED_SIZE_LIST: {
             auto internal_array = getter->GetArray(pos);
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BinaryArray> binary_array,
                                    WriteBinaryArray(internal_array, type, pool));

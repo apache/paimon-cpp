@@ -17,6 +17,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -69,6 +70,180 @@
 #include "rapidjson/writer.h"
 
 namespace paimon::test {
+namespace {
+
+struct PrimaryKeyVectorRow {
+    int64_t primary_key;
+    std::optional<std::array<float, 3>> embedding;
+    std::optional<std::string> tag;
+};
+
+struct NestedPrimaryKeyVectorPayload {
+    std::optional<std::array<float, 3>> embedding;
+    std::optional<std::string> tag;
+};
+
+struct NestedPrimaryKeyVectorRow {
+    int64_t primary_key;
+    std::optional<NestedPrimaryKeyVectorPayload> payload;
+};
+
+Result<std::shared_ptr<arrow::StructArray>> MakePrimaryKeyVectorArray(
+    const arrow::FieldVector& fields, const std::vector<PrimaryKeyVectorRow>& rows,
+    bool include_row_kind) {
+    const int32_t data_field_offset = include_row_kind ? 1 : 0;
+    const bool has_tags = fields.size() == static_cast<size_t>(data_field_offset + 3);
+    if (fields.size() != static_cast<size_t>(data_field_offset + (has_tags ? 3 : 2))) {
+        return Status::Invalid("unexpected primary-key VECTOR test schema");
+    }
+
+    arrow::Int8Builder row_kind_builder;
+    arrow::Int64Builder primary_key_builder;
+    std::shared_ptr<arrow::FloatBuilder> embedding_value_builder =
+        std::make_shared<arrow::FloatBuilder>();
+    arrow::FixedSizeListBuilder embedding_builder(arrow::default_memory_pool(),
+                                                  embedding_value_builder,
+                                                  fields[data_field_offset + 1]->type());
+    arrow::StringBuilder tag_builder;
+
+    for (const PrimaryKeyVectorRow& row : rows) {
+        if (include_row_kind) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(row_kind_builder.Append(0));
+        }
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(primary_key_builder.Append(row.primary_key));
+        if (row.embedding.has_value()) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_builder.Append());
+            for (float value : row.embedding.value()) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_value_builder->Append(value));
+            }
+        } else {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_builder.AppendNull());
+        }
+        if (has_tags) {
+            if (row.tag.has_value()) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(tag_builder.Append(row.tag.value()));
+            } else {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(tag_builder.AppendNull());
+            }
+        }
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    arrays.reserve(fields.size());
+    if (include_row_kind) {
+        std::shared_ptr<arrow::Array> row_kind_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(row_kind_builder.Finish(&row_kind_array));
+        arrays.push_back(std::move(row_kind_array));
+    }
+    std::shared_ptr<arrow::Array> primary_key_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(primary_key_builder.Finish(&primary_key_array));
+    arrays.push_back(std::move(primary_key_array));
+    std::shared_ptr<arrow::Array> embedding_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_builder.Finish(&embedding_array));
+    arrays.push_back(std::move(embedding_array));
+    if (has_tags) {
+        std::shared_ptr<arrow::Array> tag_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(tag_builder.Finish(&tag_array));
+        arrays.push_back(std::move(tag_array));
+    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
+                                      arrow::StructArray::Make(arrays, fields));
+    return array;
+}
+
+Result<std::unique_ptr<RecordBatch>> MakePrimaryKeyVectorRecordBatch(
+    const arrow::FieldVector& fields, const std::vector<PrimaryKeyVectorRow>& rows) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> array,
+                           MakePrimaryKeyVectorArray(fields, rows, /*include_row_kind=*/false));
+    ArrowArray c_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+    RecordBatchBuilder batch_builder(&c_array);
+    return batch_builder.SetBucket(0).Finish();
+}
+
+Result<std::shared_ptr<arrow::StructArray>> MakeNestedPrimaryKeyVectorArray(
+    const arrow::FieldVector& fields, const std::vector<NestedPrimaryKeyVectorRow>& rows,
+    bool include_row_kind) {
+    const int32_t data_field_offset = include_row_kind ? 1 : 0;
+    if (fields.size() != static_cast<size_t>(data_field_offset + 2) ||
+        fields[data_field_offset + 1]->type()->id() != arrow::Type::STRUCT) {
+        return Status::Invalid("unexpected nested primary-key VECTOR test schema");
+    }
+    std::shared_ptr<arrow::StructType> payload_type =
+        checked_pointer_cast<arrow::StructType>(fields[data_field_offset + 1]->type());
+    if (payload_type->num_fields() != 2) {
+        return Status::Invalid("unexpected nested primary-key VECTOR payload schema");
+    }
+
+    arrow::Int8Builder row_kind_builder;
+    arrow::Int64Builder primary_key_builder;
+    std::shared_ptr<arrow::FloatBuilder> embedding_value_builder =
+        std::make_shared<arrow::FloatBuilder>();
+    std::shared_ptr<arrow::FixedSizeListBuilder> embedding_builder =
+        std::make_shared<arrow::FixedSizeListBuilder>(
+            arrow::default_memory_pool(), embedding_value_builder, payload_type->field(0)->type());
+    std::shared_ptr<arrow::StringBuilder> tag_builder = std::make_shared<arrow::StringBuilder>();
+    arrow::StructBuilder payload_builder(payload_type, arrow::default_memory_pool(),
+                                         {embedding_builder, tag_builder});
+
+    for (const NestedPrimaryKeyVectorRow& row : rows) {
+        if (include_row_kind) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(row_kind_builder.Append(0));
+        }
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(primary_key_builder.Append(row.primary_key));
+        if (!row.payload.has_value()) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(payload_builder.AppendNull());
+            continue;
+        }
+
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(payload_builder.Append());
+        const NestedPrimaryKeyVectorPayload& payload = row.payload.value();
+        if (payload.embedding.has_value()) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_builder->Append());
+            for (float value : payload.embedding.value()) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_value_builder->Append(value));
+            }
+        } else {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_builder->AppendNull());
+        }
+        if (payload.tag.has_value()) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(tag_builder->Append(payload.tag.value()));
+        } else {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(tag_builder->AppendNull());
+        }
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    arrays.reserve(fields.size());
+    if (include_row_kind) {
+        std::shared_ptr<arrow::Array> row_kind_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(row_kind_builder.Finish(&row_kind_array));
+        arrays.push_back(std::move(row_kind_array));
+    }
+    std::shared_ptr<arrow::Array> primary_key_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(primary_key_builder.Finish(&primary_key_array));
+    arrays.push_back(std::move(primary_key_array));
+    std::shared_ptr<arrow::Array> payload_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(payload_builder.Finish(&payload_array));
+    arrays.push_back(std::move(payload_array));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
+                                      arrow::StructArray::Make(arrays, fields));
+    return array;
+}
+
+Result<std::unique_ptr<RecordBatch>> MakeNestedPrimaryKeyVectorRecordBatch(
+    const arrow::FieldVector& fields, const std::vector<NestedPrimaryKeyVectorRow>& rows) {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<arrow::StructArray> array,
+        MakeNestedPrimaryKeyVectorArray(fields, rows, /*include_row_kind=*/false));
+    ArrowArray c_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+    RecordBatchBuilder batch_builder(&c_array);
+    return batch_builder.SetBucket(0).Finish();
+}
+
+}  // namespace
+
 // This is a sdk end-to-end test demo that supports write, commit, scan, and read operations.
 class WriteAndReadInteTest
     : public ::testing::Test,
@@ -677,6 +852,204 @@ TEST_P(WriteAndReadInteTest, TestPKSimple) {
     ])";
     ASSERT_OK_AND_ASSIGN(bool success, helper->ReadAndCheckResult(data_type, data_splits, data));
     ASSERT_TRUE(success);
+}
+
+TEST_P(WriteAndReadInteTest, TestPKVector) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::int64()),
+        arrow::field("embedding", vector_type),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> initial_batch,
+                         MakePrimaryKeyVectorRecordBatch(
+                             fields, {{1, std::array<float, 3>{1.0F, 2.0F, 3.0F}, std::nullopt},
+                                      {2, std::nullopt, std::nullopt}}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update_batch,
+                         MakePrimaryKeyVectorRecordBatch(
+                             fields, {{1, std::array<float, 3>{4.0F, 5.0F, 6.0F}, std::nullopt},
+                                      {3, std::array<float, 3>{7.0F, 8.0F, 9.0F}, std::nullopt}}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/2));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         helper->ReadResult(data_splits));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::StructArray> expected,
+        MakePrimaryKeyVectorArray(result_fields,
+                                  {{1, std::array<float, 3>{4.0F, 5.0F, 6.0F}, std::nullopt},
+                                   {2, std::nullopt, std::nullopt},
+                                   {3, std::array<float, 3>{7.0F, 8.0F, 9.0F}, std::nullopt}},
+                                  /*include_row_kind=*/true));
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(actual));
+}
+
+TEST_P(WriteAndReadInteTest, TestPKNestedVector) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::int64()),
+        arrow::field("payload", arrow::struct_({arrow::field("embedding", vector_type),
+                                                arrow::field("tag", arrow::utf8())})),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "avro"},  {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"}, {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> initial_batch,
+        MakeNestedPrimaryKeyVectorRecordBatch(
+            fields, {{1, NestedPrimaryKeyVectorPayload{std::array<float, 3>{1.0F, 2.0F, 3.0F},
+                                                       std::string("initial")}},
+                     {2, NestedPrimaryKeyVectorPayload{std::nullopt, std::string("null-vector")}},
+                     {3, std::nullopt}}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> update_batch,
+        MakeNestedPrimaryKeyVectorRecordBatch(
+            fields, {{1, NestedPrimaryKeyVectorPayload{std::array<float, 3>{4.0F, 5.0F, 6.0F},
+                                                       std::string("updated")}},
+                     {2, NestedPrimaryKeyVectorPayload{std::array<float, 3>{7.0F, 8.0F, 9.0F},
+                                                       std::nullopt}}}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/2));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         helper->ReadResult(data_splits));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::StructArray> expected,
+        MakeNestedPrimaryKeyVectorArray(
+            result_fields,
+            {{1, NestedPrimaryKeyVectorPayload{std::array<float, 3>{4.0F, 5.0F, 6.0F},
+                                               std::string("updated")}},
+             {2,
+              NestedPrimaryKeyVectorPayload{std::array<float, 3>{7.0F, 8.0F, 9.0F}, std::nullopt}},
+             {3, std::nullopt}},
+            /*include_row_kind=*/true));
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(actual));
+}
+
+TEST_P(WriteAndReadInteTest, TestPKVectorWithListagg) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::int64()),
+        arrow::field("embedding", vector_type),
+        arrow::field("tags", arrow::utf8()),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::MANIFEST_FORMAT, "avro"},
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {"fields.embedding.aggregate-function", "last_non_null_value"},
+        {"fields.tags.aggregate-function", "listagg"},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> initial_batch,
+        MakePrimaryKeyVectorRecordBatch(
+            fields, {{1, std::array<float, 3>{1.0F, 2.0F, 3.0F}, std::string("alpha")},
+                     {2, std::nullopt, std::string("one")}}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> update_batch,
+        MakePrimaryKeyVectorRecordBatch(
+            fields, {{1, std::array<float, 3>{4.0F, 5.0F, 6.0F}, std::string("beta")},
+                     {2, std::array<float, 3>{7.0F, 8.0F, 9.0F}, std::string("two")}}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> null_vector_batch,
+        MakePrimaryKeyVectorRecordBatch(fields, {{1, std::nullopt, std::string("gamma")}}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(null_vector_batch), /*commit_identifier=*/2,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/3));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         helper->ReadResult(data_splits));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::StructArray> expected,
+        MakePrimaryKeyVectorArray(
+            result_fields,
+            {{1, std::array<float, 3>{4.0F, 5.0F, 6.0F}, std::string("alpha,beta,gamma")},
+             {2, std::array<float, 3>{7.0F, 8.0F, 9.0F}, std::string("one,two")}},
+            /*include_row_kind=*/true));
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(actual));
 }
 
 TEST_P(WriteAndReadInteTest, TestInputChangelogStreamRead) {

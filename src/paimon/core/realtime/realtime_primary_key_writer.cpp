@@ -77,17 +77,36 @@ Result<RealtimeOffsetUtils::ValidatedBatch> CreateRealtimePrimaryKeyTransportBat
         arrow::StructArray::Make(std::move(columns), transport_schema->fields()));
 
     std::vector<arrow::compute::SortKey> sort_keys;
+    std::vector<std::string> sort_field_names;
     sort_keys.reserve(trimmed_primary_keys.size() + 1);
+    sort_field_names.reserve(trimmed_primary_keys.size() + 1);
     for (const std::string& key : trimmed_primary_keys) {
         sort_keys.emplace_back(key, arrow::compute::SortOrder::Ascending);
+        sort_field_names.push_back(key);
     }
     sort_keys.emplace_back(SpecialFields::SequenceNumber().Name(),
                            arrow::compute::SortOrder::Ascending);
+    sort_field_names.push_back(SpecialFields::SequenceNumber().Name());
     arrow::compute::ExecContext context(arrow_pool);
     arrow::compute::SortOptions options(sort_keys, arrow::compute::NullPlacement::AtStart);
+    arrow::FieldVector sort_fields;
+    arrow::ArrayVector sort_columns;
+    sort_fields.reserve(sort_keys.size());
+    sort_columns.reserve(sort_keys.size());
+    const arrow::StructType* transport_type = transport->struct_type();
+    for (const std::string& name : sort_field_names) {
+        int32_t field_index = transport_type->GetFieldIndex(name);
+        if (field_index < 0) {
+            return Status::Invalid("PK sort field is missing from transport batch: ", name);
+        }
+        sort_fields.push_back(transport_type->field(field_index));
+        sort_columns.push_back(transport->field(field_index));
+    }
+    std::shared_ptr<arrow::RecordBatch> sort_batch = arrow::RecordBatch::Make(
+        arrow::schema(std::move(sort_fields)), transport->length(), std::move(sort_columns));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         arrow::Datum indices,
-        arrow::compute::SortIndices(arrow::Datum(transport), options, &context));
+        arrow::compute::SortIndices(arrow::Datum(sort_batch), options, &context));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         arrow::Datum sorted,
         arrow::compute::Take(arrow::Datum(transport), indices,

@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -106,6 +107,66 @@ class TableSchema;
 }  // namespace paimon
 
 namespace paimon::test {
+namespace {
+
+struct SpillableVectorRow {
+    std::string primary_key;
+    int32_t partition;
+    std::array<float, 3> embedding;
+};
+
+Result<std::shared_ptr<arrow::StructArray>> MakeSpillableVectorArray(
+    const arrow::FieldVector& fields, const std::vector<SpillableVectorRow>& rows,
+    bool include_row_kind) {
+    const int32_t data_field_offset = include_row_kind ? 1 : 0;
+    if (fields.size() != static_cast<size_t>(data_field_offset + 3)) {
+        return Status::Invalid("unexpected spillable VECTOR test schema");
+    }
+
+    arrow::Int8Builder row_kind_builder;
+    arrow::StringBuilder primary_key_builder;
+    arrow::Int32Builder partition_builder;
+    std::shared_ptr<arrow::FloatBuilder> embedding_value_builder =
+        std::make_shared<arrow::FloatBuilder>();
+    arrow::FixedSizeListBuilder embedding_builder(arrow::default_memory_pool(),
+                                                  embedding_value_builder,
+                                                  fields[data_field_offset + 2]->type());
+
+    for (const SpillableVectorRow& row : rows) {
+        if (include_row_kind) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(row_kind_builder.Append(0));
+        }
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(primary_key_builder.Append(row.primary_key));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(partition_builder.Append(row.partition));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_builder.Append());
+        for (float value : row.embedding) {
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_value_builder->Append(value));
+        }
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays;
+    arrays.reserve(fields.size());
+    if (include_row_kind) {
+        std::shared_ptr<arrow::Array> row_kind_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(row_kind_builder.Finish(&row_kind_array));
+        arrays.push_back(std::move(row_kind_array));
+    }
+    std::shared_ptr<arrow::Array> primary_key_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(primary_key_builder.Finish(&primary_key_array));
+    arrays.push_back(std::move(primary_key_array));
+    std::shared_ptr<arrow::Array> partition_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(partition_builder.Finish(&partition_array));
+    arrays.push_back(std::move(partition_array));
+    std::shared_ptr<arrow::Array> embedding_array;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(embedding_builder.Finish(&embedding_array));
+    arrays.push_back(std::move(embedding_array));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
+                                      arrow::StructArray::Make(arrays, fields));
+    return array;
+}
+
+}  // namespace
+
 class WriteInteTest : public testing::Test, public ::testing::WithParamInterface<std::string> {
  public:
     void SetUp() override {
@@ -4405,6 +4466,92 @@ TEST_P(WriteInteTest, TestPkSpillableIntermediateMergeWithTempFileTracking) {
         [0, "Bob", 10, 2]
     ])";
     ASSERT_OK(ScanAndVerifyResult(table_path, fields, expected));
+}
+
+TEST_P(WriteInteTest, TestPkSpillableVector) {
+    auto file_format = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto dir = UniqueTestDirectory::Create();
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::utf8()),
+        arrow::field("pt", arrow::int32()),
+        arrow::field("embedding", vector_type),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::WRITE_BUFFER_SIZE, "1"},
+        {Options::WRITE_BUFFER_SPILLABLE, "true"},
+        {Options::LOCAL_SORT_MAX_NUM_FILE_HANDLES, "2"},
+        {Options::WRITE_ONLY, "true"},
+    };
+    auto schema = arrow::schema(fields);
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ASSERT_OK_AND_ASSIGN(auto table_path, CreateTestTable(dir->Str(), "db", "tbl", &c_schema,
+                                                          /*partition_keys=*/{"pt"},
+                                                          /*primary_keys=*/{"pt", "f0"}, options));
+
+    std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
+    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+
+    auto write_array = [](FileStoreWrite* writer, const std::shared_ptr<arrow::Array>& array) {
+        ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        auto batch = std::make_unique<RecordBatch>(std::map<std::string, std::string>{{"pt", "10"}},
+                                                   /*bucket=*/0,
+                                                   std::vector<RecordBatch::RowKind>{}, &c_array);
+        return writer->Write(std::move(batch));
+    };
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> batch1,
+                         MakeSpillableVectorArray(fields, {{"Alice", 10, {1.0F, 2.0F, 3.0F}}},
+                                                  /*include_row_kind=*/false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> batch2,
+                         MakeSpillableVectorArray(fields, {{"Bob", 10, {4.0F, 5.0F, 6.0F}}},
+                                                  /*include_row_kind=*/false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> batch3,
+                         MakeSpillableVectorArray(fields, {{"Alice", 10, {7.0F, 8.0F, 9.0F}}},
+                                                  /*include_row_kind=*/false));
+
+    ASSERT_OK(write_array(file_store_write.get(), batch1));
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+    ASSERT_OK(write_array(file_store_write.get(), batch2));
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+    ASSERT_OK(write_array(file_store_write.get(), batch3));
+    ASSERT_EQ(2, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+
+    ASSERT_OK_AND_ASSIGN(auto commit_messages,
+                         file_store_write->PrepareCommit(/*wait_compaction=*/false,
+                                                         /*commit_identifier=*/0));
+    ASSERT_EQ(0, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+    ASSERT_OK(CommitMessages(table_path, commit_messages));
+    ASSERT_OK(file_store_write->Close());
+
+    std::map<std::string, std::string> scan_options = {{Options::FILE_SYSTEM, "local"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(table_path, scan_options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         helper->ReadResult(data_splits));
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::StructArray> expected,
+        MakeSpillableVectorArray(
+            result_fields, {{"Alice", 10, {7.0F, 8.0F, 9.0F}}, {"Bob", 10, {4.0F, 5.0F, 6.0F}}},
+            /*include_row_kind=*/true));
+    ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(actual));
 }
 
 TEST_P(WriteInteTest, TestPkSpillableMultiBucketMultiRoundDataCorrectness) {

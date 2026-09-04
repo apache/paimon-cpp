@@ -111,22 +111,42 @@ void KeyValueInMemoryRecordReader::Close() {
 Result<std::shared_ptr<arrow::NumericArray<arrow::UInt64Type>>>
 KeyValueInMemoryRecordReader::SortBatch() const {
     std::vector<arrow::compute::SortKey> sort_keys;
+    arrow::FieldVector sort_fields;
+    arrow::ArrayVector sort_columns;
     sort_keys.reserve(primary_keys_.size() + user_defined_sequence_fields_.size());
+    sort_fields.reserve(primary_keys_.size() + user_defined_sequence_fields_.size());
+    sort_columns.reserve(primary_keys_.size() + user_defined_sequence_fields_.size());
+    const arrow::StructType* value_type = value_struct_array_->struct_type();
+    auto append_sort_key = [&](const std::string& name, arrow::compute::SortOrder order) -> Status {
+        int32_t field_index = value_type->GetFieldIndex(name);
+        if (field_index < 0) {
+            return Status::Invalid(fmt::format("cannot find field {} in data batch", name));
+        }
+        sort_keys.emplace_back(name, order);
+        sort_fields.push_back(value_type->field(field_index));
+        sort_columns.push_back(value_struct_array_->field(field_index));
+        return Status::OK();
+    };
     for (const auto& name : primary_keys_) {
-        sort_keys.emplace_back(name, arrow::compute::SortOrder::Ascending);
+        PAIMON_RETURN_NOT_OK(append_sort_key(name, arrow::compute::SortOrder::Ascending));
     }
     const auto sequence_sort_order = sequence_fields_ascending_
                                          ? arrow::compute::SortOrder::Ascending
                                          : arrow::compute::SortOrder::Descending;
     for (const auto& name : user_defined_sequence_fields_) {
-        sort_keys.emplace_back(name, sequence_sort_order);
+        PAIMON_RETURN_NOT_OK(append_sort_key(name, sequence_sort_order));
     }
     auto sort_options =
         arrow::compute::SortOptions(sort_keys, arrow::compute::NullPlacement::AtStart);
     arrow::compute::ExecContext exec_context(arrow_pool_.get());
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> sorted_indices,
-                                      arrow::compute::SortIndices(arrow::Datum(value_struct_array_),
-                                                                  sort_options, &exec_context));
+    // Arrow's StructArray sorting path may inspect value columns outside the sort keys. Restrict
+    // the batch to the requested fields so non-sortable values, such as VECTOR, are never compared.
+    std::shared_ptr<arrow::RecordBatch> sort_batch =
+        arrow::RecordBatch::Make(arrow::schema(std::move(sort_fields)),
+                                 value_struct_array_->length(), std::move(sort_columns));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::Array> sorted_indices,
+        arrow::compute::SortIndices(arrow::Datum(sort_batch), sort_options, &exec_context));
     if (!sorted_indices || sorted_indices->type_id() != arrow::Type::UINT64) {
         return Status::Invalid("cannot cast sorted indices to UInt64Array");
     }

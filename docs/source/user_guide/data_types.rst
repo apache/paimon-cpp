@@ -194,12 +194,13 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        ``SMALLINT``, ``INT``, ``BIGINT``, ``FLOAT``, or ``DOUBLE``. A VECTOR
        value may be NULL, but its elements cannot be NULL.
 
-       Paimon C++ currently supports VECTOR columns only in append-only tables
-       backed by Parquet data files. They use the standard Parquet LIST
+       Paimon C++ supports VECTOR value columns in append-only and primary-key
+       tables backed by Parquet data files. They use the standard Parquet LIST
        representation on disk and are restored as Arrow ``FixedSizeList``
-       values on read. Primary-key tables and data-evolution tables containing
-       VECTOR fields are rejected. VECTOR columns also cannot be partition or
-       bucket keys. Dedicated vector storage is not included yet.
+       values on read. VECTOR is not supported in data-evolution tables. VECTOR
+       columns cannot be primary, partition, or bucket keys, nor comparator-based
+       ordering fields such as sequence and sequence-group fields. Dedicated
+       vector storage is not included yet.
 
        Paimon C++ also reads Parquet files written by Paimon Rust or Python whose
        embedded Arrow schema restores VECTOR columns as ``FixedSizeList``,
