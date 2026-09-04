@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 
 #include "paimon/common/metrics/atomic_counter_pair.h"
@@ -182,6 +183,9 @@ class PAIMON_EXPORT FileBlockCache {
     // can outlive this cache.
     std::shared_ptr<AtomicCounterPair> hits_;
     AtomicCounterPair fetches_;
+    // TEMPORARY: the file the traced IOs read, resolved once, empty when the
+    // tracing is off. See io_trace.h.
+    std::string trace_uri_;
 };
 
 }  // namespace paimon

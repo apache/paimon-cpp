@@ -29,11 +29,13 @@
 #include <functional>
 #include <future>
 #include <shared_mutex>
+#include <string>
 
 #include "paimon/common/memory/bytes_utils.h"
 #include "paimon/common/metrics/atomic_counter_pair.h"
 #include "paimon/common/utils/byte_range_combiner.h"
 #include "paimon/common/utils/file_block_cache.h"
+#include "paimon/common/utils/io_trace.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/metrics.h"
@@ -162,6 +164,9 @@ class ReadAheadCache::Impl {
     // The prefetch IO actually issued to the underlying stream. The block cache
     // counts its own fetches, which CollectMetrics() adds to these.
     AtomicCounterPair ios_;
+    // TEMPORARY: the file the traced IOs read, resolved once, empty when the
+    // tracing is off. See io_trace.h.
+    std::string trace_uri_;
 };
 
 void ReadAheadCache::Impl::Cache(std::vector<size_t> pending_indices) {
@@ -249,7 +254,8 @@ ReadAheadCache::Impl::Impl(const std::shared_ptr<InputStream>& stream, const Cac
     : stream_(stream),
       config_(config),
       memory_pool_(memory_pool),
-      misses_(std::make_shared<AtomicCounterPair>()) {
+      misses_(std::make_shared<AtomicCounterPair>()),
+      trace_uri_(io_trace::Uri(stream)) {
     // An unknown file size cannot be aligned to, and a zero limit or block size
     // means the block cache is turned off: leave it null in those cases.
     if (file_size > 0 && config_.GetBlockSize() > 0 && config_.GetBlockCacheLimit() > 0) {
@@ -378,14 +384,28 @@ std::vector<RangeCacheEntry> ReadAheadCache::Impl::PrepareRead(const ByteRange& 
 
 bool ReadAheadCache::Impl::ServeCovering(const std::vector<RangeCacheEntry>& covering,
                                          const ByteRange& range, char* dest, Status* status) {
+    // TEMPORARY: trace how long the reader waits for the prefetches covering its
+    // read, which is the latency this cache did not manage to hide. See
+    // io_trace.h.
+    const bool trace = io_trace::Enabled();
+    const io_trace::Instant wait_started_at = trace ? io_trace::Now() : io_trace::Instant{};
     // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
     // async reads complete, and holding rw_mutex_ would block Cache().
     for (const auto& entry : covering) {
         const Status prefetch_status = entry.future.get();
         if (!prefetch_status.ok()) {
+            if (trace) {
+                io_trace::Emit("prefetch-wait", trace_uri_, range.offset, range.length,
+                               wait_started_at, io_trace::ElapsedMicros(wait_started_at),
+                               io_trace::kNotApplicable, prefetch_status.ToString().c_str());
+            }
             *status = prefetch_status;
             return false;
         }
+    }
+    if (trace) {
+        io_trace::Emit("prefetch-wait", trace_uri_, range.offset, range.length, wait_started_at,
+                       io_trace::ElapsedMicros(wait_started_at), io_trace::kNotApplicable, "ok");
     }
     // The data copy runs OUTSIDE the lock for the same reason.
     CopyRangeFromEntries(covering, range, dest);
@@ -407,6 +427,12 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
             return true;
         }
         misses_->Add(range.length);
+        // TEMPORARY: trace the reads this cache declines, which the caller then
+        // reads itself: IO this cache did not manage to fold into a prefetch.
+        if (io_trace::Enabled()) {
+            io_trace::Emit("cache-miss", trace_uri_, range.offset, range.length, io_trace::Now(),
+                           io_trace::kNotApplicable, io_trace::kNotApplicable, nullptr);
+        }
         return false;
     }
     Status status;
@@ -434,6 +460,11 @@ void ReadAheadCache::Impl::ReadAsync(const ByteRange& range, char* dest,
     }
     if (block_cache_ == nullptr) {
         misses_->Add(range.length);
+        // TEMPORARY: see the miss trace in Read().
+        if (io_trace::Enabled()) {
+            io_trace::Emit("cache-miss", trace_uri_, range.offset, range.length, io_trace::Now(),
+                           io_trace::kNotApplicable, io_trace::kNotApplicable, nullptr);
+        }
         callback(Status::OK(), false);
         return;
     }
@@ -442,10 +473,17 @@ void ReadAheadCache::Impl::ReadAsync(const ByteRange& range, char* dest,
     // block buffer, never `this`.
     std::shared_ptr<AtomicCounterPair> misses = misses_;
     const uint64_t length = range.length;
+    // TEMPORARY: the uri is copied for the same reason, see io_trace.h.
     block_cache_->ReadAsync(range, dest,
-                            [misses, length, callback = std::move(callback)](bool served) {
+                            [misses, length, offset = range.offset, uri = trace_uri_,
+                             callback = std::move(callback)](bool served) {
                                 if (!served) {
                                     misses->Add(length);
+                                    if (io_trace::Enabled()) {
+                                        io_trace::Emit("cache-miss", uri, offset, length,
+                                                       io_trace::Now(), io_trace::kNotApplicable,
+                                                       io_trace::kNotApplicable, nullptr);
+                                    }
                                 }
                                 callback(Status::OK(), served);
                             });
@@ -457,9 +495,28 @@ void ReadAheadCache::Impl::DispatchFetches(const std::vector<PendingFetch>& fetc
         auto buffer = fetch.buffer;
         auto read_size = static_cast<int64_t>(buffer->size());
         auto read_offset = static_cast<int64_t>(fetch.range.offset);
-        stream_->ReadAsync(
-            buffer->data(), read_size, read_offset,
-            [promise, buffer](Status status) mutable { promise->set_value(status); });
+        // TEMPORARY: trace the IO this cache issues, see io_trace.h. The uri is
+        // copied into the callback rather than reached for through `this`, which
+        // the thread resolving the fetch may outlive.
+        const bool trace = io_trace::Enabled();
+        io_trace::Instant dispatched_at;
+        if (trace) {
+            dispatched_at = io_trace::Now();
+            io_trace::Emit("prefetch-dispatch", trace_uri_, fetch.range.offset, fetch.range.length,
+                           dispatched_at, io_trace::kNotApplicable, io_trace::EnterInflight(),
+                           nullptr);
+        }
+        stream_->ReadAsync(buffer->data(), read_size, read_offset,
+                           [promise, buffer, trace, dispatched_at, range = fetch.range,
+                            uri = trace_uri_](Status status) mutable {
+                               if (trace) {
+                                   const int64_t elapsed = io_trace::ElapsedMicros(dispatched_at);
+                                   io_trace::Emit("prefetch-done", uri, range.offset, range.length,
+                                                  dispatched_at, elapsed, io_trace::LeaveInflight(),
+                                                  status.ok() ? "ok" : status.ToString().c_str());
+                               }
+                               promise->set_value(status);
+                           });
         ios_.Add(fetch.range.length);
     }
 }

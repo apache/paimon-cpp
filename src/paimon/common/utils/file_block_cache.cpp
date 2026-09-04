@@ -20,8 +20,11 @@
 #include "paimon/common/utils/file_block_cache.h"
 
 #include <cstring>
+#include <string>
+#include <utility>
 
 #include "paimon/common/memory/bytes_utils.h"
+#include "paimon/common/utils/io_trace.h"
 
 namespace paimon {
 
@@ -33,7 +36,8 @@ FileBlockCache::FileBlockCache(const std::shared_ptr<InputStream>& stream, uint6
       block_size_(block_size),
       capacity_(capacity),
       memory_pool_(memory_pool),
-      hits_(std::make_shared<AtomicCounterPair>()) {}
+      hits_(std::make_shared<AtomicCounterPair>()),
+      trace_uri_(io_trace::Uri(stream)) {}
 
 FileBlockCache::~FileBlockCache() {
     // The fetches write into the block buffers, so they must not outlive the
@@ -53,9 +57,19 @@ bool FileBlockCache::Read(const ByteRange& range, char* dest) {
     if (dispatch) {
         Fetch(block);
     }
+    // TEMPORARY: trace how long the reader waits for the fetch of its block, see
+    // io_trace.h. Zero for a block that is already cached.
+    const bool trace = io_trace::Enabled();
+    const io_trace::Instant wait_started_at = trace ? io_trace::Now() : io_trace::Instant{};
     // Wait OUTSIDE the lock, so that a reader waiting for a fetch does not keep
     // the other readers out of the map.
-    if (!block->state->Wait().ok()) {
+    const Status fetch_status = block->state->Wait();
+    if (trace) {
+        io_trace::Emit("block-wait", trace_uri_, range.offset, range.length, wait_started_at,
+                       io_trace::ElapsedMicros(wait_started_at), io_trace::kNotApplicable,
+                       fetch_status.ok() ? "ok" : fetch_status.ToString().c_str());
+    }
+    if (!fetch_status.ok()) {
         // A block fetch reads more than the caller asked for, so its failure must
         // not fail the caller's read: the read goes back to the caller, which
         // reports the real error itself if its own bytes cannot be read either.
@@ -86,16 +100,27 @@ void FileBlockCache::ReadAsync(const ByteRange& range, char* dest,
     // A fetch resolving inline - the local filesystem reads inline - makes the
     // state resolve before this point, and the continuation then runs here, the
     // way a synchronous read would have.
-    block->state->OnComplete(
-        [block, range, dest, hits = hits_, callback = std::move(callback)](Status status) mutable {
-            // A failed fetch declines the read instead of reporting the failure, see
-            // Read().
-            if (!status.ok() || !Serve(*block, range, dest, hits)) {
-                callback(false);
-                return;
-            }
-            callback(true);
-        });
+    //
+    // TEMPORARY: the wait is traced the way the synchronous Read() traces it,
+    // with the uri copied in for the same reason the counters are.
+    const bool trace = io_trace::Enabled();
+    const io_trace::Instant wait_started_at = trace ? io_trace::Now() : io_trace::Instant{};
+    block->state->OnComplete([block, range, dest, hits = hits_, trace, wait_started_at,
+                              uri = trace_uri_,
+                              callback = std::move(callback)](Status status) mutable {
+        if (trace) {
+            io_trace::Emit("block-wait-async", uri, range.offset, range.length, wait_started_at,
+                           io_trace::ElapsedMicros(wait_started_at), io_trace::kNotApplicable,
+                           status.ok() ? "ok" : status.ToString().c_str());
+        }
+        // A failed fetch declines the read instead of reporting the failure, see
+        // Read().
+        if (!status.ok() || !Serve(*block, range, dest, hits)) {
+            callback(false);
+            return;
+        }
+        callback(true);
+    });
 }
 
 void FileBlockCache::Release() {
@@ -194,13 +219,32 @@ void FileBlockCache::Fetch(const std::shared_ptr<Block>& block) {
     fetches_.Add(block->range.length);
     auto state = block->state;
     auto buffer = block->buffer;
+    // TEMPORARY: trace the IO this cache issues, see io_trace.h. The uri is
+    // copied into the callback rather than reached for through `this`, which the
+    // thread resolving the fetch may outlive.
+    const bool trace = io_trace::Enabled();
+    io_trace::Instant dispatched_at;
+    if (trace) {
+        dispatched_at = io_trace::Now();
+        io_trace::Emit("block-dispatch", trace_uri_, block->range.offset, block->range.length,
+                       dispatched_at, io_trace::kNotApplicable, io_trace::EnterInflight(), nullptr);
+    }
     // The buffer and the state are captured, so the async read keeps its
     // destination and the fetch it resolves alive. The buffer keeps the memory
     // pool alive as well, so a callback outliving this cache still frees the
     // buffer against a live pool.
     stream_->ReadAsync(buffer->data(), static_cast<int64_t>(buffer->size()),
                        static_cast<int64_t>(block->range.offset),
-                       [state, buffer](Status status) { state->Complete(std::move(status)); });
+                       [state, buffer, trace, dispatched_at, range = block->range,
+                        uri = trace_uri_](Status status) {
+                           if (trace) {
+                               io_trace::Emit("block-done", uri, range.offset, range.length,
+                                              dispatched_at, io_trace::ElapsedMicros(dispatched_at),
+                                              io_trace::LeaveInflight(),
+                                              status.ok() ? "ok" : status.ToString().c_str());
+                           }
+                           state->Complete(std::move(status));
+                       });
 }
 
 }  // namespace paimon
