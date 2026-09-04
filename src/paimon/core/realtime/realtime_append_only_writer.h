@@ -74,6 +74,7 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
     RealtimeAppendOnlyWriter(const std::shared_ptr<RealtimeStore>& realtime_store,
                              const std::shared_ptr<AppendOnlyWriter>& file_writer,
                              const std::shared_ptr<arrow::Schema>& input_schema,
+                             const std::shared_ptr<arrow::Schema>& realtime_write_schema,
                              int64_t next_offset, const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
@@ -82,6 +83,7 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
     std::shared_ptr<RealtimeStore> realtime_store_;
     std::shared_ptr<AppendOnlyWriter> file_writer_;
     std::shared_ptr<arrow::Schema> input_schema_;
+    std::shared_ptr<arrow::Schema> realtime_write_schema_;
     int64_t next_offset_;
     std::mutex realtime_store_mutex_;
     std::mutex prepare_mutex_;

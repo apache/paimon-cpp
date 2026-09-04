@@ -50,10 +50,17 @@ struct StoredBatch {
 class Segment final : public RealtimeSegmentHandle {
  public:
     Segment(const OffsetRange& range, std::vector<StoredBatch>&& batches)
-        : range_(range), batches_(std::move(batches)) {}
+        : range_(range), batches_(std::move(batches)) {
+        for (const StoredBatch& batch : batches_) {
+            row_count_ += batch.data->length();
+        }
+    }
 
     OffsetRange GetOffsetRange() const override {
         return range_;
+    }
+    int64_t GetRowCount() const override {
+        return row_count_;
     }
     const std::vector<StoredBatch>& Batches() const {
         return batches_;
@@ -62,6 +69,7 @@ class Segment final : public RealtimeSegmentHandle {
  private:
     OffsetRange range_;
     std::vector<StoredBatch> batches_;
+    int64_t row_count_ = 0;
 };
 
 class ReadView final : public RealtimeReadView {
@@ -77,6 +85,7 @@ class ReadView final : public RealtimeReadView {
     std::optional<OffsetRange> GetOffsetRange() const override {
         return range_;
     }
+
     const std::vector<std::shared_ptr<Segment>>& Segments() const {
         return segments_;
     }
@@ -146,9 +155,9 @@ class PrimaryKeyRealtimeStore::Impl {
             return Status::Invalid("PK real-time write batch is null");
         }
         const int64_t row_count = write_batch.batch->GetData()->length;
-        if (write_batch.offset_range.begin < 0 || write_batch.offset_range.Count() != row_count ||
-            row_count <= 0) {
-            return Status::Invalid("PK real-time offset range does not match batch row count");
+        if (write_batch.offset_range.begin < 0 ||
+            write_batch.offset_range.begin >= write_batch.offset_range.end || row_count <= 0) {
+            return Status::Invalid("PK real-time offset range is invalid");
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::Array> array,
@@ -160,6 +169,11 @@ class PrimaryKeyRealtimeStore::Impl {
         std::shared_ptr<arrow::StructArray> transport =
             checked_pointer_cast<arrow::StructArray>(array);
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!building_.empty() &&
+            write_batch.offset_range.begin < building_.back().offset_range.end) {
+            return Status::Invalid(
+                "PK real-time offset ranges must be ordered and non-overlapping");
+        }
         building_.push_back(StoredBatch{transport, write_batch.offset_range,
                                         ArrowUtils::GetArrayMemoryUsage(transport->data())});
         building_memory_usage_ += building_.back().memory_usage;
@@ -206,8 +220,7 @@ class PrimaryKeyRealtimeStore::Impl {
     }
 
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
-        const std::shared_ptr<RealtimeReadView>& view, int64_t,
-        const RealtimeQueryContext& context) {
+        const std::shared_ptr<RealtimeReadView>& view, const RealtimeQueryContext& context) {
         std::shared_ptr<ReadView> typed = std::dynamic_pointer_cast<ReadView>(view);
         if (!typed) {
             return Status::Invalid("read view was not created by the PK real-time store");
@@ -295,9 +308,8 @@ Result<std::shared_ptr<RealtimeReadView>> PrimaryKeyRealtimeStore::AcquireReadVi
     return impl_->AcquireReadView();
 }
 Result<std::vector<std::unique_ptr<BatchReader>>> PrimaryKeyRealtimeStore::CreateQueryReaders(
-    const std::shared_ptr<RealtimeReadView>& view, int64_t offset,
-    const RealtimeQueryContext& context) {
-    return impl_->CreateQueryReaders(view, offset, context);
+    const std::shared_ptr<RealtimeReadView>& view, const RealtimeQueryContext& context) {
+    return impl_->CreateQueryReaders(view, context);
 }
 Status PrimaryKeyRealtimeStore::AdvanceCommittedOffset(int64_t committed_end_offset) {
     return impl_->AdvanceCommittedOffset(committed_end_offset);

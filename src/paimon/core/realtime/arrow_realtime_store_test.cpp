@@ -28,8 +28,10 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/core/realtime/realtime_offset_batch_reader.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -45,6 +47,10 @@ class ForeignSegment : public RealtimeSegmentHandle {
     OffsetRange GetOffsetRange() const override {
         return OffsetRange(0, 1);
     }
+
+    int64_t GetRowCount() const override {
+        return 1;
+    }
 };
 
 class ForeignReadView : public RealtimeReadView {
@@ -57,8 +63,11 @@ class ForeignReadView : public RealtimeReadView {
 class ArrowRealtimeStoreTest : public testing::Test {
  public:
     void SetUp() override {
-        schema_ = arrow::schema(
-            {arrow::field("id", arrow::int64()), arrow::field("value", arrow::utf8())});
+        schema_ = arrow::schema({
+            DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
+            arrow::field("id", arrow::int64()),
+            arrow::field("value", arrow::utf8()),
+        });
         pool_ = GetDefaultPool();
         arrow_pool_ = GetArrowPool(pool_);
         store_ = CreateStore(StatisticsMode::NONE);
@@ -101,7 +110,7 @@ class ArrowRealtimeStoreTest : public testing::Test {
         std::shared_ptr<arrow::StructArray> struct_array =
             checked_pointer_cast<arrow::StructArray>(array);
         std::shared_ptr<arrow::Int64Array> ids =
-            checked_pointer_cast<arrow::Int64Array>(struct_array->field(/*pos=*/1));
+            checked_pointer_cast<arrow::Int64Array>(struct_array->GetFieldByName("id"));
         std::vector<int64_t> result;
         for (RoaringBitmap32::Iterator iter = batch.second.Begin(); iter != batch.second.End();
              ++iter) {
@@ -124,22 +133,23 @@ TEST_F(ArrowRealtimeStoreTest, TestWriteValidationAndSeal) {
 
     ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{nullptr, OffsetRange(0, 1)}),
                         "write batch is null");
-    ASSERT_NOK_WITH_MSG(
-        store_->Write(RealtimeWriteBatch{MakeBatch(R"([[0, "a"], [1, "b"]])"), OffsetRange(0, 1)}),
-        "offset range does not match batch row count");
+    ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"),
+                                                         OffsetRange(0, 0)}),
+                        "offset range is invalid");
 
-    ASSERT_OK(
-        store_->Write(RealtimeWriteBatch{MakeBatch(R"([[0, "a"], [1, "b"]])"), OffsetRange(0, 2)}));
-    ASSERT_NOK_WITH_MSG(
-        store_->Write(RealtimeWriteBatch{MakeBatch(R"([[3, "d"], [4, "e"]])"), OffsetRange(3, 5)}),
-        "offset ranges must be contiguous");
-    ASSERT_OK(
-        store_->Write(RealtimeWriteBatch{MakeBatch(R"([[2, "c"], [3, "d"]])"), OffsetRange(2, 4)}));
+    ASSERT_OK(store_->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store_->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[3, 3, "d"], [4, 4, "e"]])"), OffsetRange(3, 5)}));
+    ASSERT_NOK_WITH_MSG(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[4, 4, "e"], [5, 5, "f"]])"),
+                                                         OffsetRange(4, 6)}),
+                        "offset ranges must be ordered and non-overlapping");
 
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                          store_->SealForCommit());
     ASSERT_TRUE(segment.has_value());
-    ASSERT_EQ(OffsetRange(0, 4), segment.value()->GetOffsetRange());
+    ASSERT_EQ(OffsetRange(0, 5), segment.value()->GetOffsetRange());
+    ASSERT_EQ(4, segment.value()->GetRowCount());
     ASSERT_OK_AND_ASSIGN(empty_segment, store_->SealForCommit());
     ASSERT_FALSE(empty_segment.has_value());
 
@@ -147,26 +157,29 @@ TEST_F(ArrowRealtimeStoreTest, TestWriteValidationAndSeal) {
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
-    ASSERT_OK(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[10, "a"], [11, "b"], [12, "c"]])"),
-                                               OffsetRange(10, 13)}));
+    ASSERT_OK(store_->Write(RealtimeWriteBatch{
+        MakeBatch(R"([[10, 10, "a"], [11, 11, "b"], [12, 12, "c"]])"), OffsetRange(10, 13)}));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                          store_->SealForCommit());
     ASSERT_TRUE(segment.has_value());
     ASSERT_OK(store_->Write(
-        RealtimeWriteBatch{MakeBatch(R"([[13, "d"], [14, "e"]])"), OffsetRange(13, 15)}));
+        RealtimeWriteBatch{MakeBatch(R"([[13, 13, "d"], [14, 14, "e"]])"), OffsetRange(13, 15)}));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store_->AcquireReadView());
     ASSERT_EQ(std::optional<OffsetRange>(OffsetRange(10, 15)), view->GetOffsetRange());
 
-    std::shared_ptr<arrow::Schema> read_schema =
-        arrow::schema({arrow::field("value", arrow::utf8())});
+    std::shared_ptr<arrow::Schema> read_schema = arrow::schema({
+        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
+        arrow::field("value", arrow::utf8()),
+    });
     {
         std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
-        RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
-                                     /*enable_predicate_pushdown=*/false};
+        RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
         ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                             store_->CreateQueryReaders(view, /*offset_begin=*/12, context));
+                             store_->CreateQueryReaders(view, context));
         ASSERT_EQ(1, readers.size());
+        readers[0] =
+            std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(12, 15));
 
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap first,
                              readers[0]->NextBatchWithBitmap());
@@ -193,16 +206,20 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
     }
 
     std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
-                                 /*enable_predicate_pushdown=*/false};
+    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                         store_->CreateQueryReaders(view, /*offset_begin=*/15, context));
-    ASSERT_TRUE(readers.empty());
+                         store_->CreateQueryReaders(view, context));
+    ASSERT_EQ(1, readers.size());
+    readers[0] =
+        std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(15, 15));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap eof, readers[0]->NextBatchWithBitmap());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
     ASSERT_OK(store_->Write(RealtimeWriteBatch{
-        MakeSlicedBatch(R"([[0, "a"], [1, null], [2, "c"]])", /*offset=*/1, /*length=*/2),
+        MakeSlicedBatch(R"([[-1, 0, "a"], [0, 1, null], [1, 2, "c"]])", /*offset=*/1,
+                        /*length=*/2),
         OffsetRange(0, 2)}));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                          store_->SealForCommit());
@@ -220,11 +237,13 @@ TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
     std::shared_ptr<arrow::Array> actual_array = std::move(import_result).ValueOrDie();
     std::shared_ptr<arrow::DataType> expected_type = arrow::struct_({
         arrow::field("_VALUE_KIND", arrow::int8()),
+        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
         arrow::field("id", arrow::int64()),
         arrow::field("value", arrow::utf8()),
     });
     std::shared_ptr<arrow::Array> expected_array =
-        arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([[0, 1, null], [0, 2, "c"]])")
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type,
+                                                  R"([[0, 0, 1, null], [0, 1, 2, "c"]])")
             .ValueOrDie();
     ASSERT_TRUE(actual_array->Equals(*expected_array))
         << "expected: " << expected_array->ToString() << ", actual: " << actual_array->ToString();
@@ -241,31 +260,32 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     std::shared_ptr<ArrowRealtimeStore> store =
         std::dynamic_pointer_cast<ArrowRealtimeStore>(realtime_store);
     ASSERT_NE(nullptr, store);
-    ASSERT_OK(
-        store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, "a"], [1, "b"]])"), OffsetRange(0, 2)}));
     ASSERT_OK(store->Write(
-        RealtimeWriteBatch{MakeBatch(R"([[10, "c"], [11, "d"]])"), OffsetRange(2, 4)}));
+        RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[2, 10, "c"], [3, 11, "d"]])"), OffsetRange(2, 4)}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
 
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
-        /*field_index=*/0, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
-    RealtimeQueryContext context{read_schema.get(), predicate, /*enable_predicate_pushdown=*/true};
+        /*field_index=*/1, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
+    RealtimeQueryContext context{read_schema.get(), predicate};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                         store->CreateQueryReaders(view, /*offset_begin=*/0, context));
+                         store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
+    readers[0] =
+        std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(3, 4));
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, readers[0]->NextBatchWithBitmap());
     ASSERT_FALSE(BatchReader::IsEofBatch(batch));
-    ASSERT_EQ(std::vector<int64_t>({10, 11}), ReadIds(batch));
+    ASSERT_EQ(std::vector<int64_t>({11}), ReadIds(batch));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap eof, readers[0]->NextBatchWithBitmap());
     ASSERT_TRUE(BatchReader::IsEofBatch(eof));
 
     std::unique_ptr<ArrowSchema> unfiltered_read_schema = MakeReadSchema(schema_);
-    RealtimeQueryContext unfiltered_context{unfiltered_read_schema.get(), predicate,
-                                            /*enable_predicate_pushdown=*/false};
+    RealtimeQueryContext unfiltered_context{unfiltered_read_schema.get(), /*predicate=*/nullptr};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> unfiltered_readers,
-                         store->CreateQueryReaders(view, /*offset_begin=*/0, unfiltered_context));
+                         store->CreateQueryReaders(view, unfiltered_context));
     ASSERT_EQ(1, unfiltered_readers.size());
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap unfiltered_batch,
                          unfiltered_readers[0]->NextBatchWithBitmap());
@@ -273,19 +293,18 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestMissingStatisticsRetainsNonMatchingBatch) {
-    ASSERT_OK(
-        store_->Write(RealtimeWriteBatch{MakeBatch(R"([[0, "a"], [1, "b"]])"), OffsetRange(0, 2)}));
     ASSERT_OK(store_->Write(
-        RealtimeWriteBatch{MakeBatch(R"([[10, "c"], [11, "d"]])"), OffsetRange(2, 4)}));
+        RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store_->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[2, 10, "c"], [3, 11, "d"]])"), OffsetRange(2, 4)}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store_->AcquireReadView());
 
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
-        /*field_index=*/0, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
-    RealtimeQueryContext context{read_schema.get(), predicate,
-                                 /*enable_predicate_pushdown=*/true};
+        /*field_index=*/1, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{5}));
+    RealtimeQueryContext context{read_schema.get(), predicate};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
-                         store_->CreateQueryReaders(view, /*offset_begin=*/0, context));
+                         store_->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, readers[0]->NextBatchWithBitmap());
@@ -298,17 +317,14 @@ TEST_F(ArrowRealtimeStoreTest, TestRejectsHandlesFromAnotherStoreImplementation)
                         "segment was not created by the Arrow real-time store");
 
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
-    RealtimeQueryContext context{read_schema.get(), /*predicate=*/nullptr,
-                                 /*enable_predicate_pushdown=*/false};
-    ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(std::make_shared<ForeignReadView>(),
-                                                   /*offset_begin=*/0, context),
+    RealtimeQueryContext context{read_schema.get(), /*predicate=*/nullptr};
+    ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(std::make_shared<ForeignReadView>(), context),
                         "read view was not created by the Arrow real-time store");
     read_schema->release(read_schema.get());
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store_->AcquireReadView());
     context.read_schema = nullptr;
-    ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(view, /*offset_begin=*/0, context),
-                        "mem query read schema is null");
+    ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(view, context), "mem query read schema is null");
 }
 
 }  // namespace

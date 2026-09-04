@@ -35,20 +35,20 @@
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/reader/file_batch_reader.h"
 #include "paimon/status.h"
 namespace paimon {
 class MemoryPool;
 
 KeyValueDataFileRecordReader::KeyValueDataFileRecordReader(
-    std::unique_ptr<FileBatchReader>&& reader, const std::shared_ptr<arrow::Schema>& key_schema,
+    std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema, int32_t level,
     const std::shared_ptr<MemoryPool>& pool)
     : level_(level),
       pool_(pool),
       reader_(std::move(reader)),
       key_schema_(key_schema),
-      value_schema_(value_schema),
-      value_names_(value_schema_->field_names()) {}
+      value_schema_(value_schema) {}
 
 Result<bool> KeyValueDataFileRecordReader::Iterator::HasNext() const {
     int64_t array_length = reader_->row_kind_array_->length();
@@ -83,8 +83,11 @@ Result<KeyValue> KeyValueDataFileRecordReader::Iterator::Next() {
 
 Result<std::pair<int64_t, KeyValue>> KeyValueDataFileRecordReader::Iterator::NextWithFilePos() {
     PAIMON_ASSIGN_OR_RAISE(KeyValue kv, Next());
+    if (!reader_->file_reader_) {
+        return Status::Invalid("KeyValueRecordReader does not support file row positions");
+    }
     PAIMON_ASSIGN_OR_RAISE(uint64_t global_row_id,
-                           reader_->reader_->GetPreviousBatchFileRowId(cursor_ - 1));
+                           reader_->file_reader_->GetPreviousBatchFileRowId(cursor_ - 1));
     return std::make_pair(static_cast<int64_t>(global_row_id), std::move(kv));
 }
 
@@ -107,26 +110,34 @@ Result<std::unique_ptr<KeyValueRecordReader::Iterator>> KeyValueDataFileRecordRe
         return Status::Invalid("cannot cast data batch to StructArray");
     }
     auto data_batch = checked_pointer_cast<arrow::StructArray>(arrow_array);
-    if (data_batch->num_fields() < SpecialFields::KEY_VALUE_SPECIAL_FIELD_COUNT) {
-        return Status::Invalid(
-            fmt::format("data batch field count {} is less than required special field count {}",
-                        data_batch->num_fields(), SpecialFields::KEY_VALUE_SPECIAL_FIELD_COUNT));
-    }
-    if (!data_batch->field(0) || data_batch->field(0)->type_id() != arrow::Type::INT64) {
+    std::shared_ptr<arrow::Array> sequence_number =
+        data_batch->GetFieldByName(SpecialFields::SequenceNumber().Name());
+    if (!sequence_number || sequence_number->type_id() != arrow::Type::INT64) {
         return Status::Invalid("cannot cast SEQUENCE_NUMBER column to int64 arrow array");
     }
     sequence_number_array_ =
-        checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(data_batch->field(0));
-    if (!data_batch->field(1) || data_batch->field(1)->type_id() != arrow::Type::INT8) {
+        checked_pointer_cast<arrow::NumericArray<arrow::Int64Type>>(sequence_number);
+    if (sequence_number_array_->null_count() != 0) {
+        return Status::Invalid("SEQUENCE_NUMBER column contains null");
+    }
+    std::shared_ptr<arrow::Array> row_kind =
+        data_batch->GetFieldByName(SpecialFields::ValueKind().Name());
+    if (!row_kind || row_kind->type_id() != arrow::Type::INT8) {
         return Status::Invalid("cannot cast VALUE_KIND column to int8 arrow array");
     }
-    row_kind_array_ =
-        checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(data_batch->field(1));
+    row_kind_array_ = checked_pointer_cast<arrow::NumericArray<arrow::Int8Type>>(row_kind);
+    if (row_kind_array_->null_count() != 0) {
+        return Status::Invalid("VALUE_KIND column contains null");
+    }
     arrow::ArrayVector key_fields;
     key_fields.reserve(key_schema_->num_fields());
     for (const auto& key_field : key_schema_->fields()) {
-        // skip special fields
-        key_fields.emplace_back(data_batch->GetFieldByName(key_field->name()));
+        std::shared_ptr<arrow::Array> field_array = data_batch->GetFieldByName(key_field->name());
+        if (!field_array) {
+            return Status::Invalid(
+                fmt::format("cannot find field {} in data batch", key_field->name()));
+        }
+        key_fields.emplace_back(std::move(field_array));
     }
     // e.g., file schema:    seq, kind, key1, key2, s1, s2, v1, v2
     // user raw read schema: key1, v1, s1
@@ -140,10 +151,11 @@ Result<std::unique_ptr<KeyValueRecordReader::Iterator>> KeyValueDataFileRecordRe
             return Status::Invalid(
                 fmt::format("cannot find field {} in data batch", value_field->name()));
         }
-        value_fields.emplace_back(field_array);
+        value_fields.emplace_back(std::move(field_array));
     }
 
     selection_bitmap_ = std::move(bitmap);
+    file_reader_ = dynamic_cast<FileBatchReader*>(reader_.get());
     key_ctx_ = std::make_shared<ColumnarBatchContext>(key_fields, pool_);
     value_ctx_ = std::make_shared<ColumnarBatchContext>(value_fields, pool_);
     ArrowUtils::TraverseArray(data_batch);
@@ -151,6 +163,7 @@ Result<std::unique_ptr<KeyValueRecordReader::Iterator>> KeyValueDataFileRecordRe
 }
 
 void KeyValueDataFileRecordReader::Reset() {
+    file_reader_ = nullptr;
     selection_bitmap_ = RoaringBitmap32();
     key_ctx_.reset();
     value_ctx_.reset();

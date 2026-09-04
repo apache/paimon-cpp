@@ -24,11 +24,26 @@
 
 #include "paimon/core/global_index/global_index_scan_impl.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 
 namespace paimon {
+namespace {
+
+bool UsesUnsupportedTimeTravel(const CoreOptions& core_options) {
+    const StartupMode startup_mode = core_options.GetStartupMode();
+    if (startup_mode == StartupMode::FromTimestamp()) {
+        return core_options.GetScanTimestampMillis().has_value();
+    }
+    return startup_mode == StartupMode::FromSnapshot() &&
+           !core_options.GetScanSnapshotId().has_value() &&
+           core_options.GetScanTagName().has_value();
+}
+
+}  // namespace
+
 DataEvolutionBatchScan::DataEvolutionBatchScan(
     const std::string& table_path, const std::shared_ptr<SnapshotReader>& snapshot_reader,
     std::unique_ptr<DataTableBatchScan>&& batch_scan,
@@ -44,27 +59,33 @@ DataEvolutionBatchScan::DataEvolutionBatchScan(
       executor_(executor) {}
 
 Result<std::shared_ptr<Plan>> DataEvolutionBatchScan::CreatePlan() {
-    std::optional<std::vector<Range>> row_ranges;
+    std::optional<int64_t> global_index_snapshot_id;
     std::shared_ptr<GlobalIndexResult> final_global_index_result = global_index_result_;
     if (!final_global_index_result) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> index_result, EvalGlobalIndex());
-        if (index_result) {
-            final_global_index_result = index_result;
-            PAIMON_ASSIGN_OR_RAISE(row_ranges, index_result->ToRanges());
+        PAIMON_ASSIGN_OR_RAISE(std::optional<EvaluatedGlobalIndex> evaluated_index,
+                               EvalGlobalIndex());
+        if (evaluated_index) {
+            final_global_index_result = evaluated_index->result;
+            global_index_snapshot_id = evaluated_index->snapshot_id;
         }
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(row_ranges, final_global_index_result->ToRanges());
     }
-    if (!row_ranges) {
+    if (!final_global_index_result) {
         return batch_scan_->CreatePlan();
     }
-    if (row_ranges.value().empty()) {
-        return PlanImpl::EmptyPlan();
+    PAIMON_ASSIGN_OR_RAISE(std::vector<Range> row_ranges, final_global_index_result->ToRanges());
+    if (row_ranges.empty()) {
+        if (!global_index_snapshot_id) {
+            return PlanImpl::EmptyPlan();
+        }
+        return std::make_shared<PlanImpl>(global_index_snapshot_id,
+                                          std::vector<std::shared_ptr<Split>>());
     }
-    PAIMON_ASSIGN_OR_RAISE(RowRangeIndex row_range_index,
-                           RowRangeIndex::Create(row_ranges.value()));
+    PAIMON_ASSIGN_OR_RAISE(RowRangeIndex row_range_index, RowRangeIndex::Create(row_ranges));
     batch_scan_->WithRowRangeIndex(row_range_index);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> data_plan, batch_scan_->CreatePlan());
+    if (global_index_snapshot_id && data_plan->SnapshotId() != global_index_snapshot_id) {
+        return Status::Invalid("Global index and data scan resolved different snapshots");
+    }
     std::map<int64_t, float> id_to_score;
     if (auto scored_result =
             std::dynamic_pointer_cast<ScoredGlobalIndexResult>(final_global_index_result)) {
@@ -136,35 +157,55 @@ Result<std::shared_ptr<Plan>> DataEvolutionBatchScan::WrapToIndexedSplits(
     return std::make_shared<PlanImpl>(data_plan->SnapshotId(), indexed_splits);
 }
 
-Result<std::shared_ptr<GlobalIndexResult>> DataEvolutionBatchScan::EvalGlobalIndex() const {
+Result<std::optional<DataEvolutionBatchScan::EvaluatedGlobalIndex>>
+DataEvolutionBatchScan::EvalGlobalIndex() const {
     auto predicate = batch_scan_->GetNonPartitionPredicate();
     if (!predicate) {
-        return std::shared_ptr<GlobalIndexResult>(nullptr);
+        return std::optional<EvaluatedGlobalIndex>();
     }
     if (!core_options_.GlobalIndexEnabled()) {
-        return std::shared_ptr<GlobalIndexResult>(nullptr);
+        return std::optional<EvaluatedGlobalIndex>();
+    }
+    if (UsesUnsupportedTimeTravel(core_options_)) {
+        return Status::NotImplemented("Global index scan does not support time travel");
     }
     auto partition_filter = batch_scan_->GetPartitionPredicate();
-    // TODO(lisizhuo.lsz): support time travel
-    std::optional<Snapshot> snapshot;
     const std::shared_ptr<SnapshotManager>& snapshot_manager =
         snapshot_reader_->GetSnapshotManager();
-    if (const std::optional<int64_t>& snapshot_id = core_options_.GetScanSnapshotId()) {
+    const StartupMode startup_mode = core_options_.GetStartupMode();
+    std::optional<Snapshot> snapshot;
+    if (startup_mode == StartupMode::FromSnapshot() ||
+        startup_mode == StartupMode::FromSnapshotFull()) {
+        const std::optional<int64_t>& snapshot_id = core_options_.GetScanSnapshotId();
+        if (!snapshot_id) {
+            if (startup_mode == StartupMode::FromSnapshotFull()) {
+                return Status::Invalid(
+                    "scan.snapshot-id must be set when startup mode is FROM_SNAPSHOT_FULL");
+            }
+            return Status::Invalid(
+                "scan.snapshot-id or scan.tag-name must be set when startup mode is "
+                "FROM_SNAPSHOT");
+        }
         PAIMON_ASSIGN_OR_RAISE(Snapshot loaded_snapshot,
                                snapshot_manager->LoadSnapshot(snapshot_id.value()));
         snapshot = std::move(loaded_snapshot);
+    } else if (startup_mode == StartupMode::FromTimestamp()) {
+        return Status::Invalid(
+            "scan.timestamp-millis or scan.timestamp must be set when startup mode is "
+            "FROM_TIMESTAMP");
     } else {
         PAIMON_ASSIGN_OR_RAISE(snapshot, snapshot_manager->LatestSnapshot());
     }
     if (!snapshot) {
-        return Status::Invalid("not found latest snapshot");
+        return std::optional<EvaluatedGlobalIndex>();
     }
 
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<GlobalIndexScanImpl> index_scan,
         GlobalIndexScanImpl::Create(table_path_, table_schema_, snapshot.value(), partition_filter,
                                     core_options_, executor_, pool_));
-    return index_scan->Scan(predicate);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result, index_scan->Scan(predicate));
+    return std::optional<EvaluatedGlobalIndex>(EvaluatedGlobalIndex{result, snapshot->Id()});
 }
 
 }  // namespace paimon

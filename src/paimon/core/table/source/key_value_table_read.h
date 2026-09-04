@@ -59,7 +59,7 @@ class KeyValueTableRead : public TableRead {
     KeyValueTableRead(std::vector<std::unique_ptr<SplitRead>>&& split_reads,
                       const std::shared_ptr<FileStorePathFactory>& path_factory,
                       const std::shared_ptr<InternalReadContext>& context,
-                      const std::shared_ptr<arrow::Schema>& realtime_primary_key_transport_schema,
+                      const std::shared_ptr<arrow::Schema>& realtime_primary_key_logical_schema,
                       const std::shared_ptr<Executor>& executor);
 
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
@@ -68,7 +68,7 @@ class KeyValueTableRead : public TableRead {
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<InternalReadContext> context_;
-    std::shared_ptr<arrow::Schema> realtime_primary_key_transport_schema_;
+    std::shared_ptr<arrow::Schema> realtime_primary_key_logical_schema_;
     std::shared_ptr<Executor> executor_;
     bool force_keep_delete_ = false;
 };

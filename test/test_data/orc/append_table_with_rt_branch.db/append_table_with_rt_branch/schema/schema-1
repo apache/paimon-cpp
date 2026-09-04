@@ -18,7 +18,7 @@
   "partitionKeys" : [ "dt" ],
   "primaryKeys" : [ ],
   "options" : {
-    "manifest.format" : "orc",
+    "manifest.format" : "avro",
     "file.format" : "orc",
     "scan.fallback-branch" : "rt"
   },

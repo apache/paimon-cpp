@@ -81,8 +81,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
                              int64_t last_sequence_number,
                              const std::shared_ptr<MemoryPool>& memory_pool);
 
-    Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment,
-                        const OffsetRange& sealed_offsets);
+    Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
 
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -91,6 +90,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
     std::shared_ptr<RealtimeContextImpl> realtime_context_;
     RealtimePartitionBucket partition_bucket_;
     std::shared_ptr<arrow::Schema> write_schema_;
+    std::shared_ptr<arrow::Schema> realtime_input_schema_;
     std::shared_ptr<arrow::Schema> transport_schema_;
     std::shared_ptr<arrow::Schema> key_schema_;
     std::vector<std::string> trimmed_primary_keys_;

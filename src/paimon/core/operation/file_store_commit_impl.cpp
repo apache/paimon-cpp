@@ -923,10 +923,9 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
             realtime_ranges.emplace(realtime_commit.partition_bucket, realtime_commit.offset_range);
         if (!inserted) {
             const OffsetRange& previous_range = range_iter->second;
-            if (realtime_commit.offset_range.begin != previous_range.end) {
-                return Status::Invalid(
-                    fmt::format("real-time commit offsets for bucket {} are not contiguous",
-                                realtime_commit.partition_bucket.bucket));
+            if (realtime_commit.offset_range.begin < previous_range.end) {
+                return Status::Invalid(fmt::format("real-time commit offsets for bucket {} overlap",
+                                                   realtime_commit.partition_bucket.bucket));
             }
             range_iter->second =
                 OffsetRange(previous_range.begin, realtime_commit.offset_range.end);

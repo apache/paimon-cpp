@@ -610,9 +610,9 @@ struct CoreOptions::Impl {
 
     // Parse manifest file configurations: format, compression, merge, and compaction thresholds.
     Status ParseManifestOptions(const ConfigParser& parser) {
-        // Parse manifest.format - manifest file format, default "avro"
+        // Parse the legacy manifest.format option for reading existing tables.
         PAIMON_RETURN_NOT_OK(parser.ParseObject<FileFormatFactory>(
-            Options::MANIFEST_FORMAT, /*default_identifier=*/"avro", &manifest_file_format));
+            "manifest.format", /*default_identifier=*/"avro", &manifest_file_format));
         // Parse manifest.compression - manifest file compression, default "zstd"
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::MANIFEST_COMPRESSION, &manifest_compression));
         // Parse manifest.target-file-size - suggested manifest file size, default 8MB

@@ -15,6 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+#include <limits>
+
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
@@ -85,8 +88,7 @@ class GlobalIndexTest : public ::testing::Test, public ::testing::WithParamInter
     }
 
     void CreateTable(const std::vector<std::string>& partition_keys) const {
-        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                      {Options::FILE_FORMAT, file_format_},
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
                                                       {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -264,8 +266,7 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndex) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
 
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -322,10 +323,11 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithMismatchedDimension) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, file_format_},
-        {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::READ_BATCH_SIZE, "1"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::READ_BATCH_SIZE, "1"}};
 
     CreateTable(/*partition_keys=*/{}, schema, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -366,10 +368,9 @@ TEST_P(GlobalIndexTest, TestWriteAndQueryLuminaIndexWithOrcDictionaryStringTags)
          R"([{"key_name":"color","type":"enum","value_type":"string"},)"
          R"({"key_name":"labels","type":"enum","value_type":"string"}])"}};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, file_format_},
-        {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"}, {"orc.dictionary-key-size-threshold", "1"},
-        {"orc.read.enable-lazy-decoding", "true"}};
+        {Options::FILE_FORMAT, file_format_},       {Options::FILE_SYSTEM, "local"},
+        {Options::ROW_TRACKING_ENABLED, "true"},    {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {"orc.dictionary-key-size-threshold", "1"}, {"orc.read.enable-lazy-decoding", "true"}};
     CreateTable(/*partition_keys=*/{}, schema, options);
 
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -961,8 +962,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndexWithPartition) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1102,8 +1102,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadIndexWithScore) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1248,8 +1247,7 @@ TEST_P(GlobalIndexTest, TestWriteAndQueryLuminaIndexWithTagNullAndEmptyValues) {
          R"({"key_name":"scores","type":"range","value_type":"float"},)"
          R"({"key_name":"category","type":"enum","value_type":"int32"},)"
          R"({"key_name":"category_ids","type":"enum","value_type":"int32"}])"}};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1507,6 +1505,99 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScan) {
             ScanGlobalIndexAndData(table_path, predicate, {{"global-index.enabled", "false"}}));
         ASSERT_OK(ReadData(table_path, write_cols, expected_all_array, predicate, plan));
     }
+}
+
+TEST_P(GlobalIndexTest, TestDataEvolutionGlobalIndexSnapshotSelection) {
+    CreateTable();
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+    std::vector<std::string> write_cols = schema->field_names();
+    auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Alice", 10, 1, 11.1],
+["Bob", 20, 0, 12.1]
+    ])")
+                         .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols, src_array));
+    ASSERT_OK(Commit(table_path, commit_msgs));
+    ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", "bitmap", /*options=*/{},
+                         Range(0, 1)));
+
+    auto predicate =
+        PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
+                                Literal(FieldType::STRING, "missing", 7));
+
+    ASSERT_OK_AND_ASSIGN(auto latest_plan, ScanGlobalIndexAndData(table_path, predicate));
+    ASSERT_TRUE(latest_plan->Splits().empty());
+    ASSERT_EQ(latest_plan->SnapshotId(), std::optional<int64_t>(2));
+
+    const std::map<std::string, std::string> explicit_latest_options = {
+        {Options::SCAN_MODE, "latest"},
+        {Options::SCAN_SNAPSHOT_ID, "999"},
+        {Options::SCAN_TAG_NAME, "ignored"},
+        {Options::SCAN_TIMESTAMP_MILLIS, "0"}};
+    ASSERT_OK_AND_ASSIGN(auto explicit_latest_plan,
+                         ScanGlobalIndexAndData(table_path, predicate, explicit_latest_options));
+    ASSERT_TRUE(explicit_latest_plan->Splits().empty());
+    ASSERT_EQ(explicit_latest_plan->SnapshotId(), std::optional<int64_t>(2));
+
+    auto empty_index_result = BitmapGlobalIndexResult::FromRanges({});
+    ASSERT_OK_AND_ASSIGN(auto supplied_latest_plan,
+                         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
+                                                explicit_latest_options, empty_index_result));
+    ASSERT_TRUE(supplied_latest_plan->Splits().empty());
+    ASSERT_FALSE(supplied_latest_plan->SnapshotId());
+
+    ASSERT_OK_AND_ASSIGN(auto supplied_explicit_plan,
+                         ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
+                                                {{Options::SCAN_SNAPSHOT_ID, "1"},
+                                                 {Options::SCAN_TAG_NAME, "ignored"},
+                                                 {Options::SCAN_TIMESTAMP_MILLIS, "0"}},
+                                                empty_index_result));
+    ASSERT_TRUE(supplied_explicit_plan->Splits().empty());
+    ASSERT_FALSE(supplied_explicit_plan->SnapshotId());
+
+    ASSERT_NOK_WITH_MSG(
+        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_MODE, "from-snapshot"}}),
+        "scan.snapshot-id or scan.tag-name must be set when startup mode is FROM_SNAPSHOT");
+
+    std::vector<std::map<std::string, std::string>> time_travel_options = {
+        {{Options::SCAN_TAG_NAME, "tag"}},
+        {{Options::SCAN_TIMESTAMP_MILLIS, std::to_string(std::numeric_limits<int64_t>::max())}}};
+    for (const auto& options : time_travel_options) {
+        Result<std::shared_ptr<Plan>> result =
+            ScanGlobalIndexAndData(table_path, predicate, options);
+        ASSERT_TRUE(result.status().IsNotImplemented()) << result.status().ToString();
+
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Plan> supplied_plan,
+            ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, options, empty_index_result));
+        ASSERT_TRUE(supplied_plan->Splits().empty());
+        ASSERT_FALSE(supplied_plan->SnapshotId());
+    }
+
+    auto unindexed_predicate = PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",
+                                                       FieldType::DOUBLE, Literal(99.9));
+    Result<std::shared_ptr<Plan>> unindexed_time_travel_result =
+        ScanGlobalIndexAndData(table_path, unindexed_predicate, time_travel_options.back());
+    ASSERT_TRUE(unindexed_time_travel_result.status().IsNotImplemented())
+        << unindexed_time_travel_result.status().ToString();
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Plan> no_index_plan,
+        ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr, time_travel_options.back()));
+    ASSERT_EQ(no_index_plan->SnapshotId(), std::optional<int64_t>(2));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Plan> supplied_nonexistent_snapshot_plan,
+        ScanGlobalIndexAndData(table_path, /*predicate=*/nullptr,
+                               {{Options::SCAN_SNAPSHOT_ID, "999"}}, empty_index_result));
+    ASSERT_TRUE(supplied_nonexistent_snapshot_plan->Splits().empty());
+    ASSERT_FALSE(supplied_nonexistent_snapshot_plan->SnapshotId());
+
+    ASSERT_NOK_WITH_MSG(
+        ScanGlobalIndexAndData(table_path, predicate, {{Options::SCAN_SNAPSHOT_ID, "999"}}),
+        "snapshot-999' not exists");
 }
 
 TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithOnlyOnePartitionHasIndex) {
@@ -1871,8 +1962,7 @@ TEST_P(GlobalIndexTest, TestScanIndexWithTwoIndexes) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1939,8 +2029,7 @@ TEST_P(GlobalIndexTest, TestDataEvolutionBatchScanWithExternalPath) {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::list(arrow::float32())),
         arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -2006,8 +2095,7 @@ TEST_P(GlobalIndexTest, TestIOException) {
     ])")
                          .ValueOrDie();
 
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -2332,8 +2420,7 @@ TEST_P(GlobalIndexTest, TestLuceneWriteCommitScanReadIndexWithScore) {
         {"lucene-fts.write.omit-term-freq-and-position", "false"},
         {"lucene-fts.write.tmp.directory", tmp_dir->Str()}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -2418,8 +2505,7 @@ TEST_P(GlobalIndexTest, TestWriteCommitScanReadLuceneIndexWithPartition) {
         {"lucene-fts.write.omit-term-freq-and-position", "false"},
         {"lucene-fts.write.tmp.directory", tmp_dir->Str()}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -2781,8 +2867,7 @@ TEST_P(GlobalIndexTest, TestBTreeEmptyStringKeyPredicates) {
 TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndexWithPartition) {
     // BTree index with partitioned table. Each partition's data is sorted by f0 independently.
     auto schema = arrow::schema(fields_);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -2926,8 +3011,7 @@ TEST_P(GlobalIndexTest, TestBTreeWithPartitionAndCustomExecutor) {
     // Test that UnionGlobalIndexReader uses a custom 8-thread executor to read
     // btree indexes from two partitions in parallel.
     auto schema = arrow::schema(fields_);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -3347,8 +3431,7 @@ TEST_P(GlobalIndexTest, TestBTreeWithLumina) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
     auto schema = arrow::schema(fields);
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format_},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};

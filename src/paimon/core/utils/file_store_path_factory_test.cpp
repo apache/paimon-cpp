@@ -65,7 +65,6 @@ class FileStorePathFactoryTest : public ::testing::Test {
 
         std::map<std::string, std::string> raw_options;
         raw_options[Options::FILE_FORMAT] = "mock_format";
-        raw_options[Options::MANIFEST_FORMAT] = "mock_format";
         raw_options[Options::FILE_SYSTEM] = "local";
         EXPECT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
         EXPECT_OK_AND_ASSIGN(std::vector<std::string> external_paths,

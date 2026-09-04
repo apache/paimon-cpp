@@ -611,6 +611,90 @@ Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::FilterMapArrayBySel
     return result_map;
 }
 
+Result<bool> NestedProjectionUtils::HasMapSelectedKeysRecursively(
+    const std::shared_ptr<arrow::Field>& read_field) {
+    if (!read_field) {
+        return false;
+    }
+    if (IsMapSharedShreddingAccessField(read_field)) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                               GetMapSelectedKeys(read_field));
+        auto read_struct = checked_pointer_cast<arrow::StructType>(read_field->type());
+        if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
+            return Status::Invalid(fmt::format(
+                "selected-key metadata size {} does not match STRUCT field count {} for {}",
+                selected_keys.size(), read_struct->num_fields(), read_field->name()));
+        }
+        return true;
+    }
+    if (read_field->type()->id() == arrow::Type::MAP) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                               GetMapSelectedKeys(read_field));
+        return !selected_keys.empty();
+    }
+    if (read_field->type()->id() == arrow::Type::STRUCT) {
+        for (const auto& child : read_field->type()->fields()) {
+            PAIMON_ASSIGN_OR_RAISE(bool has_selected_keys, HasMapSelectedKeysRecursively(child));
+            if (has_selected_keys) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+Result<std::shared_ptr<arrow::Array>>
+NestedProjectionUtils::FilterMapArrayBySelectedKeysRecursively(
+    const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::Field>& read_field,
+    arrow::MemoryPool* pool) {
+    if (!array || !read_field) {
+        return array;
+    }
+    if (IsMapSharedShreddingAccessField(read_field)) {
+        return array;
+    }
+    if (read_field->type()->id() == arrow::Type::MAP) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                               GetMapSelectedKeys(read_field));
+        if (selected_keys.empty()) {
+            return array;
+        }
+        return FilterMapArrayBySelectedKeys(array, selected_keys, pool);
+    }
+    if (read_field->type()->id() != arrow::Type::STRUCT) {
+        return array;
+    }
+    if (array->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid(fmt::format(
+            "FilterMapArrayBySelectedKeysRecursively requires struct array for read field '{}', "
+            "got {}",
+            read_field->name(), array->type()->ToString()));
+    }
+
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+    auto read_struct_type = checked_pointer_cast<arrow::StructType>(read_field->type());
+    if (struct_array->num_fields() != read_struct_type->num_fields()) {
+        return Status::Invalid(fmt::format(
+            "FilterMapArrayBySelectedKeysRecursively struct field count mismatch for '{}': "
+            "array {} vs read {}",
+            read_field->name(), struct_array->num_fields(), read_struct_type->num_fields()));
+    }
+
+    std::vector<std::shared_ptr<arrow::ArrayData>> filtered_child_data;
+    filtered_child_data.reserve(struct_array->num_fields());
+    for (int32_t i = 0; i < struct_array->num_fields(); ++i) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> filtered_child,
+                               FilterMapArrayBySelectedKeysRecursively(
+                                   struct_array->field(i), read_struct_type->field(i), pool));
+        filtered_child_data.push_back(filtered_child->data());
+    }
+
+    auto filtered_struct_data = arrow::ArrayData::Make(
+        read_struct_type, struct_array->length(), {struct_array->null_bitmap()},
+        std::move(filtered_child_data), struct_array->null_count(), struct_array->offset());
+    return arrow::MakeArray(std::move(filtered_struct_data));
+}
+
 namespace {
 // Strips physical-only differences from a leaf type: ORC lazy decoding wraps
 // strings in a dictionary and may widen them to large_string. binary is not

@@ -20,13 +20,11 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
-#include <vector>
 
 #include "arrow/type_fwd.h"
 #include "paimon/core/io/key_value_record_reader.h"
 #include "paimon/core/key_value.h"
-#include "paimon/reader/file_batch_reader.h"
+#include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
@@ -41,6 +39,7 @@ class NumericArray;
 }  // namespace arrow
 
 namespace paimon {
+class FileBatchReader;
 class MemoryPool;
 class Metrics;
 struct ColumnarBatchContext;
@@ -49,7 +48,7 @@ struct ColumnarBatchContext;
 // VALUE_KIND columns)
 class KeyValueDataFileRecordReader : public KeyValueRecordReader {
  public:
-    KeyValueDataFileRecordReader(std::unique_ptr<FileBatchReader>&& reader,
+    KeyValueDataFileRecordReader(std::unique_ptr<BatchReader>&& reader,
                                  const std::shared_ptr<arrow::Schema>& key_schema,
                                  const std::shared_ptr<arrow::Schema>& value_schema, int32_t level,
                                  const std::shared_ptr<MemoryPool>& pool);
@@ -85,10 +84,10 @@ class KeyValueDataFileRecordReader : public KeyValueRecordReader {
  private:
     int32_t level_;
     std::shared_ptr<MemoryPool> pool_;
-    std::unique_ptr<FileBatchReader> reader_;
+    std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<arrow::Schema> key_schema_;
     std::shared_ptr<arrow::Schema> value_schema_;
-    std::vector<std::string> value_names_;
+    FileBatchReader* file_reader_ = nullptr;
     RoaringBitmap32 selection_bitmap_;
     std::shared_ptr<arrow::NumericArray<arrow::Int64Type>> sequence_number_array_;
     std::shared_ptr<arrow::NumericArray<arrow::Int8Type>> row_kind_array_;

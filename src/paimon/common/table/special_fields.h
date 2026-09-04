@@ -91,7 +91,7 @@ struct SpecialFields {
         target_fields.push_back(DataField::ConvertDataFieldToArrowField(SequenceNumber()));
         target_fields.push_back(DataField::ConvertDataFieldToArrowField(ValueKind()));
         target_fields.insert(target_fields.end(), schema->fields().begin(), schema->fields().end());
-        return arrow::schema(target_fields);
+        return arrow::schema(target_fields, schema->metadata());
     }
 };
 

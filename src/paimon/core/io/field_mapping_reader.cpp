@@ -45,100 +45,6 @@
 namespace paimon {
 class MemoryPool;
 
-Result<bool> FieldMappingReader::HasMapSelectedKeysRecursively(
-    const std::shared_ptr<arrow::Field>& read_field) const {
-    if (!read_field) {
-        return false;
-    }
-    auto type_id = read_field->type()->id();
-    if (NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field)) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
-                               NestedProjectionUtils::GetMapSelectedKeys(read_field));
-        auto read_struct = checked_pointer_cast<arrow::StructType>(read_field->type());
-        if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
-            return Status::Invalid(fmt::format(
-                "selected-key metadata size {} does not match STRUCT field count {} for {}",
-                selected_keys.size(), read_struct->num_fields(), read_field->name()));
-        }
-        return true;
-    }
-    if (type_id == arrow::Type::MAP) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
-                               NestedProjectionUtils::GetMapSelectedKeys(read_field));
-        return !selected_keys.empty();
-    }
-    if (type_id == arrow::Type::STRUCT) {
-        for (const auto& child : read_field->type()->fields()) {
-            PAIMON_ASSIGN_OR_RAISE(bool has_selected_keys, HasMapSelectedKeysRecursively(child));
-            if (has_selected_keys) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-Result<std::shared_ptr<arrow::Array>> FieldMappingReader::FilterMapSelectedKeysRecursively(
-    const std::shared_ptr<arrow::Array>& array,
-    const std::shared_ptr<arrow::Field>& read_field) const {
-    if (!array || !read_field) {
-        return array;
-    }
-
-    auto type_id = read_field->type()->id();
-    if (NestedProjectionUtils::IsMapSharedShreddingAccessField(read_field)) {
-        // The shared-shredding wrapper (including its default MAP fallback) has already
-        // materialized this projection as a STRUCT.
-        return array;
-    }
-    if (type_id == arrow::Type::MAP) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
-                               NestedProjectionUtils::GetMapSelectedKeys(read_field));
-        if (selected_keys.empty()) {
-            return array;
-        }
-        return NestedProjectionUtils::FilterMapArrayBySelectedKeys(array, selected_keys,
-                                                                   arrow_pool_.get());
-    }
-
-    if (type_id == arrow::Type::STRUCT) {
-        if (array->type_id() != arrow::Type::STRUCT) {
-            return Status::Invalid(
-                fmt::format("FilterMapSelectedKeysRecursively requires struct array for read "
-                            "field '{}', got {}",
-                            read_field->name(), array->type()->ToString()));
-        }
-        auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
-        auto read_struct_type = checked_pointer_cast<arrow::StructType>(read_field->type());
-        if (struct_array->num_fields() != read_struct_type->num_fields()) {
-            return Status::Invalid(fmt::format(
-                "FilterMapSelectedKeysRecursively struct field count mismatch for '{}': "
-                "array {} vs read {}",
-                read_field->name(), struct_array->num_fields(), read_struct_type->num_fields()));
-        }
-
-        arrow::ArrayVector filtered_children;
-        std::vector<std::shared_ptr<arrow::ArrayData>> filtered_child_data;
-        filtered_children.reserve(struct_array->num_fields());
-        filtered_child_data.reserve(struct_array->num_fields());
-        for (int32_t i = 0; i < struct_array->num_fields(); ++i) {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> filtered_child,
-                                   FilterMapSelectedKeysRecursively(struct_array->field(i),
-                                                                    read_struct_type->field(i)));
-            filtered_child_data.push_back(filtered_child->data());
-            filtered_children.push_back(std::move(filtered_child));
-        }
-
-        // Preserve parent struct null semantics after filtering children.
-        auto filtered_struct_data = arrow::ArrayData::Make(
-            read_struct_type, struct_array->length(), {struct_array->null_bitmap()},
-            std::move(filtered_child_data), struct_array->null_count(), struct_array->offset());
-        return arrow::MakeArray(std::move(filtered_struct_data));
-    }
-
-    return array;
-}
-
 Result<std::unique_ptr<FieldMappingReader>> FieldMappingReader::Create(
     int32_t field_count, std::unique_ptr<FileBatchReader>&& reader, const BinaryRow& partition,
     std::unique_ptr<FieldMapping>&& mapping,
@@ -186,7 +92,7 @@ Result<std::unique_ptr<FieldMappingReader>> FieldMappingReader::Create(
         // FilterMapArrayBySelectedKeys can filter out unwanted entries.
         PAIMON_ASSIGN_OR_RAISE(
             bool has_map_selected_keys,
-            mapping_reader->HasMapSelectedKeysRecursively(
+            NestedProjectionUtils::HasMapSelectedKeysRecursively(
                 mapping_reader->non_partition_info_.non_partition_read_schema[i].ArrowField()));
         if (has_map_selected_keys &&
             mapping_reader->skip_map_selected_keys_filter_field_ids_.count(
@@ -443,8 +349,9 @@ Status FieldMappingReader::MappingFields(const std::shared_ptr<arrow::Array>& da
 
         // Filter map entries by selected keys recursively (supports MAP nested in STRUCT).
         if (skip_map_selected_keys_filter_field_ids_.count(read_field.Id()) == 0) {
-            PAIMON_ASSIGN_OR_RAISE(field_array, FilterMapSelectedKeysRecursively(
-                                                    field_array, read_field.ArrowField()));
+            PAIMON_ASSIGN_OR_RAISE(field_array,
+                                   NestedProjectionUtils::FilterMapArrayBySelectedKeysRecursively(
+                                       field_array, read_field.ArrowField(), arrow_pool_.get()));
         }
 
         (*target_array)[idx_in_target_schema[i]] = std::move(field_array);

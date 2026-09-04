@@ -31,6 +31,7 @@
 #include "paimon/core/operation/file_system_write_restore.h"
 #include "paimon/core/operation/metrics/compaction_metrics.h"
 #include "paimon/core/operation/restore_files.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -122,10 +123,12 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
         }
     }
     // check nullability
+    std::shared_ptr<arrow::Schema> input_schema =
+        IsRealtimeWrite() ? RealtimeOffsetUtils::CreateInputSchema(write_schema_) : write_schema_;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::Array> data,
-        arrow::ImportArray(batch->GetData(), arrow::struct_(write_schema_->fields())));
-    PAIMON_RETURN_NOT_OK(ArrowUtils::CheckNullabilityMatch(write_schema_, data));
+        arrow::ImportArray(batch->GetData(), arrow::struct_(input_schema->fields())));
+    PAIMON_RETURN_NOT_OK(ArrowUtils::CheckNullabilityMatch(input_schema, data));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*data, batch->GetData()));
 
     PAIMON_ASSIGN_OR_RAISE(BinaryRow partition,

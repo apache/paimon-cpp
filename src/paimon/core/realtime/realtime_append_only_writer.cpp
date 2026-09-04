@@ -27,6 +27,7 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
@@ -37,11 +38,29 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/append/append_only_writer.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/macros.h"
 #include "paimon/realtime/realtime_context.h"
 
 namespace paimon {
+namespace {
+
+Result<std::shared_ptr<arrow::Schema>> AddRealtimeOffsetToSchema(::ArrowSchema* write_schema) {
+    if (!write_schema || !write_schema->release) {
+        return Status::Invalid("real-time store write schema is null");
+    }
+    ScopeGuard schema_guard([write_schema]() { ArrowSchemaRelease(write_schema); });
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> input_schema,
+                                      arrow::ImportSchema(write_schema));
+    schema_guard.Release();
+    std::shared_ptr<arrow::Schema> realtime_write_schema =
+        RealtimeOffsetUtils::CreateInputSchema(input_schema);
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*realtime_write_schema, write_schema));
+    return realtime_write_schema;
+}
+
+}  // namespace
 
 Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Create(
     const std::map<std::string, std::string>& partition, int32_t bucket,
@@ -56,27 +75,35 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                            RealtimeContextImpl::Cast(realtime_context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> realtime_write_schema,
+                           AddRealtimeOffsetToSchema(write_schema.get()));
     RealtimeStoreCreateRequest request{std::move(write_schema), options, memory_pool,
                                        RealtimeStoreMode::APPEND_ONLY, statistics_mode};
     PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,
                            realtime_context_impl->GetOrCreateRealtimeStore(
                                std::move(request), RealtimePartitionBucket(partition, bucket)));
     return std::shared_ptr<RealtimeAppendOnlyWriter>(new RealtimeAppendOnlyWriter(
-        store_state.store, file_writer, input_schema, store_state.initial_offset, memory_pool));
+        store_state.store, file_writer, input_schema, realtime_write_schema,
+        store_state.initial_offset, memory_pool));
 }
 
 RealtimeAppendOnlyWriter::RealtimeAppendOnlyWriter(
     const std::shared_ptr<RealtimeStore>& realtime_store,
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
-    const std::shared_ptr<arrow::Schema>& input_schema, int64_t next_offset,
+    const std::shared_ptr<arrow::Schema>& input_schema,
+    const std::shared_ptr<arrow::Schema>& realtime_write_schema, int64_t next_offset,
     const std::shared_ptr<MemoryPool>& memory_pool)
     : arrow_pool_(GetArrowPool(memory_pool)),
       realtime_store_(realtime_store),
       file_writer_(file_writer),
       input_schema_(input_schema),
+      realtime_write_schema_(realtime_write_schema),
       next_offset_(next_offset) {}
 
 Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
+    if (!batch || !batch->GetData()) {
+        return Status::Invalid("append real-time write batch is null");
+    }
     for (RecordBatch::RowKind row_kind : batch->GetRowKind()) {
         if (row_kind != RecordBatch::RowKind::INSERT) {
             PAIMON_ASSIGN_OR_RAISE(const RowKind* kind,
@@ -91,13 +118,13 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         return Status::OK();
     }
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    // Reserve INT64_MAX as the exhausted next-offset sentinel.
-    if (row_count > std::numeric_limits<int64_t>::max() - next_offset_) {
-        return Status::Invalid("real-time offset range exceeds INT64_MAX");
-    }
-    OffsetRange range(next_offset_, next_offset_ + row_count);
-    PAIMON_RETURN_NOT_OK(realtime_store_->Write(RealtimeWriteBatch{std::move(batch), range}));
-    next_offset_ += row_count;
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeOffsetUtils::ValidatedBatch validated,
+        RealtimeOffsetUtils::ValidateBatch(batch.get(), realtime_write_schema_, next_offset_));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*validated.data, batch->GetData()));
+    PAIMON_RETURN_NOT_OK(
+        realtime_store_->Write(RealtimeWriteBatch{std::move(batch), validated.offset_range}));
+    next_offset_ = validated.offset_range.end;
     return Status::OK();
 }
 
@@ -126,7 +153,7 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
                            realtime_store_->CreateCommitReaders(segment));
     ConcatBatchReader reader(std::move(readers), arrow_pool_);
     ScopeGuard reader_guard([&reader]() { reader.Close(); });
-    const OffsetRange offset_range = segment->GetOffsetRange();
+    const int64_t expected_rows = segment->GetRowCount();
     int64_t emitted_rows = 0;
     while (true) {
         PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader.NextBatch());
@@ -158,13 +185,16 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
         }
         PAIMON_ASSIGN_OR_RAISE(struct_array, ArrowUtils::RemoveFieldFromStructArray(
                                                  struct_array, SpecialFields::ValueKind().Name()));
+        PAIMON_ASSIGN_OR_RAISE(struct_array,
+                               ArrowUtils::RemoveFieldFromStructArray(
+                                   struct_array, SpecialFields::RealtimeOffset().Name()));
         if (!struct_array->type()->Equals(arrow::struct_(input_schema_->fields()))) {
             return Status::Invalid(
                 "real-time store commit reader schema does not match table write schema");
         }
 
         int64_t row_count = struct_array->length();
-        if (row_count > offset_range.Count() - emitted_rows) {
+        if (row_count > expected_rows - emitted_rows) {
             return Status::Invalid(
                 "real-time store commit readers returned more rows than the sealed offset range");
         }
@@ -176,7 +206,7 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> record_batch, builder.Finish());
         PAIMON_RETURN_NOT_OK(file_writer_->Write(std::move(record_batch)));
     }
-    if (emitted_rows != offset_range.Count()) {
+    if (emitted_rows != expected_rows) {
         return Status::Invalid(
             "real-time store commit readers returned fewer rows than the sealed offset range");
     }
