@@ -32,8 +32,8 @@
 namespace paimon {
 class NullFalseLeafBinaryFunction : public LeafFunction {
  public:
-    /// Compares the whole batch against the literal with one `arrow::compute` comparison kernel when
-    /// the literal and the column allow it, and falls back to materializing every row into a
+    /// Compares the whole batch against the literal with one `arrow::compute` comparison kernel
+    /// when the literal and the column allow it, and falls back to materializing every row into a
     /// `Literal` and comparing one at a time otherwise. Every `LeafFunction` is a shared stateless
     /// singleton, so the scalar the kernel compares against is built per batch; that costs `O(1)`
     /// and buys an `O(rows)` compare with no `Literal` per row in between.

@@ -32,6 +32,7 @@
 #include "arrow/scalar.h"
 #include "arrow/type.h"
 #include "paimon/common/predicate/literal_converter.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
@@ -44,8 +45,8 @@ namespace {
 /// literal)` compares two `Literal`s, or `nullptr` for a function that is not a comparison.
 ///
 /// `STARTS_WITH`, `ENDS_WITH`, `CONTAINS` and `LIKE` are `NullFalseLeafBinaryFunction`s too, but
-/// they match a pattern instead of ordering two values, so they are not here and keep the row by row
-/// path.
+/// they match a pattern instead of ordering two values, so they are not here and keep the row by
+/// row path.
 const char* ComparisonKernel(Function::Type type) {
     switch (type) {
         case Function::Type::EQUAL:
@@ -196,13 +197,9 @@ Result<std::vector<char>> ProbeComparison(const arrow::Array& array, const char*
     // last owner at the end of the statement and leave that reference dangling.
     std::shared_ptr<arrow::Array> matches_array = matches.make_array();
     const auto& matched = checked_cast<const arrow::BooleanArray&>(*matches_array);
-    std::vector<char> is_valid(matched.length(), 0);
-    for (int64_t i = 0; i < matched.length(); i++) {
-        // A kernel emits a null for a null row, and every `NullFalseLeafBinaryFunction` is false on
-        // one, so a null row is left at 0 rather than read as a value.
-        is_valid[i] = static_cast<char>(!matched.IsNull(i) && matched.Value(i));
-    }
-    return is_valid;
+    // A kernel emits a null for a null row, and every `NullFalseLeafBinaryFunction` is false on
+    // one, so the null rows unpack to 0 rather than to a value they do not hold.
+    return ArrowUtils::UnpackBooleansToBytes(matched, /*negate=*/false);
 }
 }  // namespace
 
@@ -235,9 +232,8 @@ Result<std::vector<char>> NullFalseLeafBinaryFunction::Test(const arrow::Array& 
 
     // Materializing the column into `Literal` objects costs one heap allocation and one hash of the
     // value per row, so this only runs when no kernel can compare the column against the literal.
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<Literal> array_values,
-        LiteralConverter::ConvertLiteralsFromArray(array, /*own_data=*/false));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> array_values,
+                           LiteralConverter::ConvertLiteralsFromArray(array, /*own_data=*/false));
     for (int64_t i = 0; i < array.length(); i++) {
         if (!array.IsNull(i)) {
             PAIMON_ASSIGN_OR_RAISE(is_valid[i], Test(array_values[i], literals[0]));

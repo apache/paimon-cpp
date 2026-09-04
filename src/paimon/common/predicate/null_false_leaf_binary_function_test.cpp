@@ -67,7 +67,8 @@ class NullFalseLeafBinaryFunctionTest : public ::testing::Test {
     }
 
     // Evaluates the whole batch and returns the per row result, asserting the call succeeded. Both
-    // go through `LeafFunction`, because the `Test` overloads a subclass declares hide the batch one.
+    // go through `LeafFunction`, because the `Test` overloads a subclass declares hide the batch
+    // one.
     static std::vector<char> Eval(const LeafFunction& function, const Literal& literal,
                                   const std::shared_ptr<arrow::Array>& array) {
         EXPECT_OK_AND_ASSIGN(std::vector<char> is_valid,
@@ -82,9 +83,8 @@ class NullFalseLeafBinaryFunctionTest : public ::testing::Test {
 };
 
 TEST_F(NullFalseLeafBinaryFunctionTest, TestInt) {
-    auto array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0, 1, 2, 3, null])")
-            .ValueOrDie();
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0, 1, 2, 3, null])")
+                     .ValueOrDie();
     ASSERT_EQ(Eval(Equal::Instance(), Literal(2), array), std::vector<char>({0, 0, 1, 0, 0}));
     ASSERT_EQ(Eval(NotEqual::Instance(), Literal(2), array), std::vector<char>({1, 1, 0, 1, 0}));
     ASSERT_EQ(Eval(LessThan::Instance(), Literal(2), array), std::vector<char>({1, 1, 0, 0, 0}));
@@ -110,12 +110,13 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestTinyIntSmallIntAndBigInt) {
               std::vector<char>({1, 0, 0, 0}));
 
     // The int64 boundaries have to survive the trip through the scalar the kernel compares against.
-    auto bigint_array = arrow::ipc::internal::json::ArrayFromJSON(
-                            arrow::int64(), R"([-9223372036854775808, 0, 9223372036854775807, null])")
-                            .ValueOrDie();
-    ASSERT_EQ(Eval(LessOrEqual::Instance(), Literal(std::numeric_limits<int64_t>::min()),
-                   bigint_array),
-              std::vector<char>({1, 0, 0, 0}));
+    auto bigint_array =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::int64(), R"([-9223372036854775808, 0, 9223372036854775807, null])")
+            .ValueOrDie();
+    ASSERT_EQ(
+        Eval(LessOrEqual::Instance(), Literal(std::numeric_limits<int64_t>::min()), bigint_array),
+        std::vector<char>({1, 0, 0, 0}));
     ASSERT_EQ(Eval(GreaterOrEqual::Instance(), Literal(std::numeric_limits<int64_t>::max()),
                    bigint_array),
               std::vector<char>({0, 0, 1, 0}));
@@ -131,9 +132,8 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestBoolean) {
 }
 
 TEST_F(NullFalseLeafBinaryFunctionTest, TestDate) {
-    auto array =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::date32(), R"([1, 2, 3, null])")
-            .ValueOrDie();
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::date32(), R"([1, 2, 3, null])")
+                     .ValueOrDie();
     const Literal second{FieldType::DATE, 2};
     ASSERT_EQ(Eval(Equal::Instance(), second, array), std::vector<char>({0, 1, 0, 0}));
     ASSERT_EQ(Eval(LessThan::Instance(), second, array), std::vector<char>({1, 0, 0, 0}));
@@ -217,8 +217,8 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestDecimalOffTheKernelPath) {
 TEST_F(NullFalseLeafBinaryFunctionTest, TestTimestamp) {
     // A column of the unit the literal needs is compared by the kernel, both sides naming the very
     // same instant without a cast in between.
-    auto array = arrow::ipc::internal::json::ArrayFromJSON(
-                     arrow::timestamp(arrow::TimeUnit::MILLI), R"([1000, 2000, 3000, null])")
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MILLI),
+                                                           R"([1000, 2000, 3000, null])")
                      .ValueOrDie();
     const Literal two_seconds = TimestampLiteral(2000);
     ASSERT_EQ(Eval(Equal::Instance(), two_seconds, array), std::vector<char>({0, 1, 0, 0}));
@@ -303,8 +303,7 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestFloatAndDoubleStayOffTheKernelPath) 
             .ValueOrDie();
     ASSERT_EQ(Eval(LessThan::Instance(), Literal(2.5f), float_array),
               std::vector<char>({1, 0, 1, 0}));
-    ASSERT_EQ(Eval(Equal::Instance(), Literal(0.0f), float_array),
-              std::vector<char>({0, 0, 0, 0}));
+    ASSERT_EQ(Eval(Equal::Instance(), Literal(0.0f), float_array), std::vector<char>({0, 0, 0, 0}));
 }
 
 TEST_F(NullFalseLeafBinaryFunctionTest, TestDictionaryString) {
@@ -328,15 +327,14 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestLargeStringDictionary) {
     auto dictionary =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::large_utf8(), R"(["a", "b", "c"])")
             .ValueOrDie();
-    auto indices =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([0, 2, null, 1])").ValueOrDie();
+    auto indices = arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([0, 2, null, 1])")
+                       .ValueOrDie();
     std::shared_ptr<arrow::Array> array =
         arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int64(), arrow::large_utf8()),
                                            indices, dictionary)
             .ValueOrDie();
 
-    ASSERT_EQ(Eval(Equal::Instance(), StringLiteral("c"), array),
-              std::vector<char>({0, 1, 0, 0}));
+    ASSERT_EQ(Eval(Equal::Instance(), StringLiteral("c"), array), std::vector<char>({0, 1, 0, 0}));
     ASSERT_EQ(Eval(GreaterThan::Instance(), StringLiteral("b"), array),
               std::vector<char>({0, 1, 0, 0}));
 }
@@ -348,8 +346,8 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestDictionaryWithNullValue) {
     // not.
     auto dictionary =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"([null, "a"])").ValueOrDie();
-    auto indices =
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0, 1, null, 0])").ValueOrDie();
+    auto indices = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0, 1, null, 0])")
+                       .ValueOrDie();
     std::shared_ptr<arrow::Array> array =
         arrow::DictionaryArray::FromArrays(arrow::dictionary(arrow::int32(), arrow::utf8()),
                                            indices, dictionary)
@@ -372,8 +370,7 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestNullLiteralIsFalseForEveryRow) {
     const Literal null_string{FieldType::STRING};
     auto string_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", null])").ValueOrDie();
-    ASSERT_EQ(Eval(GreaterThan::Instance(), null_string, string_array),
-              std::vector<char>({0, 0}));
+    ASSERT_EQ(Eval(GreaterThan::Instance(), null_string, string_array), std::vector<char>({0, 0}));
 }
 
 TEST_F(NullFalseLeafBinaryFunctionTest, TestEmptyLiteralsReportTheError) {
@@ -384,9 +381,9 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestEmptyLiteralsReportTheError) {
 }
 
 TEST_F(NullFalseLeafBinaryFunctionTest, TestMismatchedLiteralTypeReportsTheError) {
-    // A literal typed differently from the column makes `Literal::CompareTo` fail, so it has to keep
-    // reporting the error instead of reaching a kernel that would cast one side to the other and
-    // compare by chance.
+    // A literal typed differently from the column makes `Literal::CompareTo` fail, so it has to
+    // keep reporting the error instead of reaching a kernel that would cast one side to the other
+    // and compare by chance.
     auto int_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([0])").ValueOrDie();
     AssertEvalFails(Equal::Instance(), {Literal(int64_t{0})}, int_array);
@@ -429,8 +426,8 @@ TEST_F(NullFalseLeafBinaryFunctionTest, TestLayoutsLiteralConversionRejects) {
 TEST_F(NullFalseLeafBinaryFunctionTest, TestStringPatternFunctionsKeepTheRowByRowPath) {
     // `STARTS_WITH`, `ENDS_WITH`, `CONTAINS` and `LIKE` are `NullFalseLeafBinaryFunction`s too, but
     // they match a pattern instead of ordering two values, so no kernel stands in for them.
-    auto array = arrow::ipc::internal::json::ArrayFromJSON(
-                     arrow::utf8(), R"(["apple", "pineapple", "app", null])")
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(),
+                                                           R"(["apple", "pineapple", "app", null])")
                      .ValueOrDie();
     ASSERT_EQ(Eval(StartsWith::Instance(), StringLiteral("app"), array),
               std::vector<char>({1, 0, 1, 0}));

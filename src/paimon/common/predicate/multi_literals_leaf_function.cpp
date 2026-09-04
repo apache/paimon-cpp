@@ -31,6 +31,7 @@
 #include "arrow/memory_pool.h"
 #include "arrow/type.h"
 #include "paimon/common/predicate/literal_converter.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/data/decimal.h"
@@ -201,15 +202,9 @@ Result<std::vector<char>> ProbeInValueSet(const arrow::Array& array, const arrow
     // last owner at the end of the statement and leave that reference dangling.
     std::shared_ptr<arrow::Array> matches_array = matches.make_array();
     const auto& matched = checked_cast<const arrow::BooleanArray&>(*matches_array);
-    std::vector<char> is_valid(matched.length(), 0);
-    for (int64_t i = 0; i < matched.length(); i++) {
-        if (matched.IsNull(i)) {
-            // `IN` and `NOT IN` are both false on a null value, leave the row at 0.
-            continue;
-        }
-        is_valid[i] = static_cast<char>(matched.Value(i) != negate);
-    }
-    return is_valid;
+    // `IN` and `NOT IN` are both false on a null value, so the null rows unpack to 0 rather than to
+    // the negation of a value they do not hold.
+    return ArrowUtils::UnpackBooleansToBytes(matched, negate);
 }
 }  // namespace
 
