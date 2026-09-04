@@ -1522,6 +1522,8 @@ TEST_F(FileStoreCommitImplTest, TestAbortDeletesDataAndIndexFiles) {
     const int32_t bucket = 0;
     auto new_data_file = CreateAppendDataFileMeta("abort-new-data", 1);
     auto compact_data_file = CreateAppendDataFileMeta("abort-compact-data", 1);
+    new_data_file->extra_files = {"abort-new-data.index"};
+    compact_data_file->extra_files = {"abort-compact-data.index"};
     auto new_index_file = CreateIndexFileMeta("abort-new-index");
     auto compact_index_file = CreateIndexFileMeta("abort-compact-index");
 
@@ -1540,9 +1542,12 @@ TEST_F(FileStoreCommitImplTest, TestAbortDeletesDataAndIndexFiles) {
                          commit_impl->path_factory_->CreateDataFilePathFactory(partition, bucket));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_pf,
                          commit_impl->path_factory_->CreateIndexFileFactory(partition, bucket));
-    std::vector<std::string> paths = {
-        data_pf->ToPath(new_data_file), data_pf->ToPath(compact_data_file),
-        index_pf->ToPath(new_index_file), index_pf->ToPath(compact_index_file)};
+    std::vector<std::string> paths = {data_pf->ToPath(new_data_file),
+                                      data_pf->ToPath(new_data_file->extra_files[0].value()),
+                                      data_pf->ToPath(compact_data_file),
+                                      data_pf->ToPath(compact_data_file->extra_files[0].value()),
+                                      index_pf->ToPath(new_index_file),
+                                      index_pf->ToPath(compact_index_file)};
     for (const auto& path : paths) {
         ASSERT_OK(file_system_->WriteFile(path, /*content=*/"", /*overwrite=*/false));
         ASSERT_OK_AND_ASSIGN(bool exist, file_system_->Exists(path));

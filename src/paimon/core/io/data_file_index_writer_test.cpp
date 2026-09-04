@@ -143,9 +143,10 @@ class DataFileIndexWriterTest : public ::testing::Test {
     std::shared_ptr<arrow::Schema> schema_;
 };
 
-TEST_F(DataFileIndexWriterTest, TestBitmapAndRangeBitmapEmbeddedRoundTrip) {
+TEST_F(DataFileIndexWriterTest, TestMultipleIndexesOnSameColumnEmbeddedRoundTrip) {
     ASSERT_OK_AND_ASSIGN(auto writer,
                          CreateWriter({{"file-index.bitmap.columns", "f0"},
+                                       {"file-index.bsi.columns", "f0"},
                                        {"file-index.range-bitmap.columns", "f1"},
                                        {"file-index.range-bitmap.f1.chunk-size", "1KB"},
                                        {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1MB"}}));
@@ -159,12 +160,14 @@ TEST_F(DataFileIndexWriterTest, TestBitmapAndRangeBitmapEmbeddedRoundTrip) {
     ASSERT_TRUE(result.extra_files.empty());
     ASSERT_OK_AND_ASSIGN(auto reader, CreateReader(result.embedded_index));
 
-    ASSERT_OK_AND_ASSIGN(auto bitmap_readers, ReadColumn(reader.get(), "f0"));
-    ASSERT_EQ(1, bitmap_readers.size());
-    ASSERT_OK_AND_ASSIGN(auto equal_result, bitmap_readers[0]->VisitEqual(Literal(1)));
-    ASSERT_EQ("{0,2}", equal_result->ToString());
-    ASSERT_OK_AND_ASSIGN(auto null_result, bitmap_readers[0]->VisitIsNull());
-    ASSERT_EQ("{3}", null_result->ToString());
+    ASSERT_OK_AND_ASSIGN(auto f0_readers, ReadColumn(reader.get(), "f0"));
+    ASSERT_EQ(2, f0_readers.size());
+    for (const std::shared_ptr<FileIndexReader>& f0_reader : f0_readers) {
+        ASSERT_OK_AND_ASSIGN(auto equal_result, f0_reader->VisitEqual(Literal(1)));
+        ASSERT_EQ("{0,2}", equal_result->ToString());
+        ASSERT_OK_AND_ASSIGN(auto null_result, f0_reader->VisitIsNull());
+        ASSERT_EQ("{3}", null_result->ToString());
+    }
 
     ASSERT_OK_AND_ASSIGN(auto range_readers, ReadColumn(reader.get(), "f1"));
     ASSERT_EQ(1, range_readers.size());
