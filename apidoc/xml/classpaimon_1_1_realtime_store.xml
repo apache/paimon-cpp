@@ -1,0 +1,172 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_store" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RealtimeStore</compoundname>
+    <includes refid="realtime__store_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1a48da46987f625c78da466e28f5857ebd" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::RealtimeStore::~RealtimeStore</definition>
+        <argsstring>()=default</argsstring>
+        <name>~RealtimeStore</name>
+        <qualifiedname>paimon::RealtimeStore::~RealtimeStore</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="134" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1ac580d83434337989542746cfc99e30fa" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::RealtimeStore::Write</definition>
+        <argsstring>(RealtimeWriteBatch &amp;&amp;batch)=0</argsstring>
+        <name>Write</name>
+        <qualifiedname>paimon::RealtimeStore::Write</qualifiedname>
+        <param>
+          <type><ref refid="structpaimon_1_1_realtime_write_batch" kindref="compound">RealtimeWriteBatch</ref> &amp;&amp;</type>
+          <declname>batch</declname>
+        </param>
+        <briefdescription>
+<para>Adds a batch to the current building segment. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The offset envelope may contain gaps. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="139" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1afdddb3cb41e8bfb019f1100cd94fefa8" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_segment_handle" kindref="compound">RealtimeSegmentHandle</ref> &gt; &gt; &gt;</type>
+        <definition>virtual Result&lt; std::optional&lt; std::shared_ptr&lt; RealtimeSegmentHandle &gt; &gt; &gt; paimon::RealtimeStore::SealForCommit</definition>
+        <argsstring>()=0</argsstring>
+        <name>SealForCommit</name>
+        <qualifiedname>paimon::RealtimeStore::SealForCommit</qualifiedname>
+        <briefdescription>
+<para>Seals the current building data and opens a new building segment. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Returns an immutable segment handle, or <computeroutput>std::nullopt</computeroutput> when there is no data to seal. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="144" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1abba5bc330040db71a131a465452934f6" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::vector&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_batch_reader" kindref="compound">BatchReader</ref> &gt; &gt; &gt;</type>
+        <definition>virtual Result&lt; std::vector&lt; std::unique_ptr&lt; BatchReader &gt; &gt; &gt; paimon::RealtimeStore::CreateCommitReaders</definition>
+        <argsstring>(const std::shared_ptr&lt; RealtimeSegmentHandle &gt; &amp;segment)=0</argsstring>
+        <name>CreateCommitReaders</name>
+        <qualifiedname>paimon::RealtimeStore::CreateCommitReaders</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_segment_handle" kindref="compound">RealtimeSegmentHandle</ref> &gt; &amp;</type>
+          <declname>segment</declname>
+        </param>
+        <briefdescription>
+<para>Creates readers that expose all rows in a sealed segment for Paimon file writing. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The returned readers collectively expose every sealed row exactly once. Append-mode readers preserve write order and contain <computeroutput>_VALUE_KIND</computeroutput>, <computeroutput>_REALTIME_OFFSET</computeroutput>, and table write fields. Primary-key readers contain the realtime primary-key transport fields; each reader&apos;s complete stream is sorted by full primary key then sequence number. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="152" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1aa5a673a8c86508d9e26491e85bae04ed" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_read_view" kindref="compound">RealtimeReadView</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; RealtimeReadView &gt; &gt; paimon::RealtimeStore::AcquireReadView</definition>
+        <argsstring>()=0</argsstring>
+        <name>AcquireReadView</name>
+        <qualifiedname>paimon::RealtimeStore::AcquireReadView</qualifiedname>
+        <briefdescription>
+<para>Acquires an immutable view containing the current sealed and building rows. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>This method may be called concurrently with query-reader creation and reclamation. It must also provide a consistent snapshot when a write or seal is in progress. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="159" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1a02739fd9a5f3f83032e5656048f566ce" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::vector&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_batch_reader" kindref="compound">BatchReader</ref> &gt; &gt; &gt;</type>
+        <definition>virtual Result&lt; std::vector&lt; std::unique_ptr&lt; BatchReader &gt; &gt; &gt; paimon::RealtimeStore::CreateQueryReaders</definition>
+        <argsstring>(const std::shared_ptr&lt; RealtimeReadView &gt; &amp;view, const RealtimeQueryContext &amp;context)=0</argsstring>
+        <name>CreateQueryReaders</name>
+        <qualifiedname>paimon::RealtimeStore::CreateQueryReaders</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_read_view" kindref="compound">RealtimeReadView</ref> &gt; &amp;</type>
+          <declname>view</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_realtime_query_context" kindref="compound">RealtimeQueryContext</ref> &amp;</type>
+          <declname>context</declname>
+        </param>
+        <briefdescription>
+<para>Creates readers over rows in <computeroutput>view</computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The readers collectively expose every candidate row exactly once. Primary-key reader streams are sorted by full primary key then sequence number. Paimon retains <computeroutput>view</computeroutput> for the lifetime of the resulting framework reader. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="164" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1a296f08ee48cd9327d342fc729a50e0c5" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::RealtimeStore::AdvanceCommittedOffset</definition>
+        <argsstring>(int64_t committed_end_offset)=0</argsstring>
+        <name>AdvanceCommittedOffset</name>
+        <qualifiedname>paimon::RealtimeStore::AdvanceCommittedOffset</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>committed_end_offset</declname>
+        </param>
+        <briefdescription>
+<para>Notifies the store that its partition-bucket committed end offset has advanced. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Calls are monotonic and may repeat the same offset after a previous call reports an error, so implementations must apply this notification idempotently.</para>
+<para>An implementation may reclaim covered segments immediately, defer destruction, spill them, or retain them. Existing read views continue to keep referenced resources alive. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="174" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_1abd597b708a08da280a92206a4b6a4a86" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>virtual uint64_t paimon::RealtimeStore::GetMemoryUsage</definition>
+        <argsstring>() const =0</argsstring>
+        <name>GetMemoryUsage</name>
+        <qualifiedname>paimon::RealtimeStore::GetMemoryUsage</qualifiedname>
+        <briefdescription>
+<para>Returns the number of bytes currently retained by building and sealed segments. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="177" column="22"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Customizable plugin interface for storing and querying real-time rows before Paimon data-file generation. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Paimon serializes calls to <computeroutput>Write</computeroutput> and <computeroutput>SealForCommit</computeroutput> for the same store. After sealing, <computeroutput>CreateCommitReaders</computeroutput> may read the immutable sealed segment while later <computeroutput>Write</computeroutput> calls append to a new building segment. Paimon retains control of file format, rolling, indexes, and commit-message generation. A store may choose its own in-memory representation, indexes, and spill strategy. It may outlive an individual writer because the shared real-time context and active read views retain it. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="132" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="132" bodyend="178"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_store_1aa5a673a8c86508d9e26491e85bae04ed" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStore</scope><name>AcquireReadView</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1a296f08ee48cd9327d342fc729a50e0c5" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStore</scope><name>AdvanceCommittedOffset</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1abba5bc330040db71a131a465452934f6" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStore</scope><name>CreateCommitReaders</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1a02739fd9a5f3f83032e5656048f566ce" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStore</scope><name>CreateQueryReaders</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1abd597b708a08da280a92206a4b6a4a86" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStore</scope><name>GetMemoryUsage</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1afdddb3cb41e8bfb019f1100cd94fefa8" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStore</scope><name>SealForCommit</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1ac580d83434337989542746cfc99e30fa" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStore</scope><name>Write</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1a48da46987f625c78da466e28f5857ebd" prot="public" virt="virtual"><scope>paimon::RealtimeStore</scope><name>~RealtimeStore</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

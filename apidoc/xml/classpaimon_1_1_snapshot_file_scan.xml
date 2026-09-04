@@ -1,0 +1,167 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_snapshot_file_scan" kind="class" language="C++" prot="public">
+    <compoundname>paimon::SnapshotFileScan</compoundname>
+    <includes refid="snapshot__file__scan_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/snapshot/snapshot_file_scan.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_snapshot_file_scan_1a3fc538687f0767a31ab52e5de36345fd" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::SnapshotFileScan::SnapshotFileScan</definition>
+        <argsstring>()=delete</argsstring>
+        <name>SnapshotFileScan</name>
+        <qualifiedname>paimon::SnapshotFileScan::SnapshotFileScan</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/snapshot/snapshot_file_scan.h" line="41" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_snapshot_file_scan_1a6f2bc87e7bf181601160bc5652d616e6" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::SnapshotFileScan::~SnapshotFileScan</definition>
+        <argsstring>()=delete</argsstring>
+        <name>~SnapshotFileScan</name>
+        <qualifiedname>paimon::SnapshotFileScan::~SnapshotFileScan</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/snapshot/snapshot_file_scan.h" line="42" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_snapshot_file_scan_1ac36a421415e3a3cf1fff7899a2d1b45f" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::set&lt; std::string &gt; &gt;</type>
+        <definition>static Result&lt; std::set&lt; std::string &gt; &gt; paimon::SnapshotFileScan::ListFiles</definition>
+        <argsstring>(const std::string &amp;table_path, const std::string &amp;branch, const std::optional&lt; int64_t &gt; &amp;snapshot_id, const std::shared_ptr&lt; ScanFilter &gt; &amp;scan_filter, const std::map&lt; std::string, std::string &gt; &amp;options, const std::shared_ptr&lt; FileSystem &gt; &amp;file_system, const std::shared_ptr&lt; Executor &gt; &amp;executor, const std::shared_ptr&lt; MemoryPool &gt; &amp;memory_pool)</argsstring>
+        <name>ListFiles</name>
+        <qualifiedname>paimon::SnapshotFileScan::ListFiles</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>table_path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>branch</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::optional&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt; &amp;</type>
+          <declname>snapshot_id</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_scan_filter" kindref="compound">ScanFilter</ref> &gt; &amp;</type>
+          <declname>scan_filter</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>options</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt; &amp;</type>
+          <declname>file_system</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_executor" kindref="compound">Executor</ref> &gt; &amp;</type>
+          <declname>executor</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>memory_pool</declname>
+        </param>
+        <briefdescription>
+<para>List the physical files required to materialize a snapshot. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The result includes the snapshot and schema files, manifest lists and manifest files, live data and changelog files, external file indexes, the index manifest and its live index files, statistics, and real-time offset files. Mutable snapshot hints such as <computeroutput>LATEST</computeroutput> and <computeroutput>EARLIEST</computeroutput> are not included.</para>
+<para>Partition and bucket filters apply only to files which belong to a partition or bucket. Snapshot-level shared metadata is always returned. A manifest file is returned when it cannot be pruned by manifest-level partition and bucket statistics, even if entry-level filtering later removes all of its entries. <ref refid="classpaimon_1_1_predicate" kindref="compound">Predicate</ref> filters are not supported.</para>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>table_path</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Root path of the table. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>branch</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Branch to list. An empty value selects the main branch. This parameter takes precedence over a branch configured in options. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>snapshot_id</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Snapshot to list, or <computeroutput>std::nullopt</computeroutput> to use the latest snapshot. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>scan_filter</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Optional partition and bucket filters. Partition maps use AND semantics, while the vector uses OR semantics. <ref refid="classpaimon_1_1_predicate" kindref="compound">Predicate</ref> filters are rejected. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>options</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>User options overriding options stored in the latest table schema. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>file_system</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Optional file system implementation. If null, it is resolved from options. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>executor</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Optional executor used to read manifest files in parallel. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>memory_pool</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Optional memory pool. If null, the default pool is used. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>Physical file paths required by the selected snapshot and filters. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/snapshot/snapshot_file_scan.h" line="68" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Lists the physical files required by a table snapshot. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/snapshot/snapshot_file_scan.h" line="39" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/snapshot/snapshot_file_scan.h" bodystart="39" bodyend="74"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_snapshot_file_scan_1ac36a421415e3a3cf1fff7899a2d1b45f" prot="public" virt="non-virtual"><scope>paimon::SnapshotFileScan</scope><name>ListFiles</name></member>
+      <member refid="classpaimon_1_1_snapshot_file_scan_1a3fc538687f0767a31ab52e5de36345fd" prot="public" virt="non-virtual"><scope>paimon::SnapshotFileScan</scope><name>SnapshotFileScan</name></member>
+      <member refid="classpaimon_1_1_snapshot_file_scan_1a6f2bc87e7bf181601160bc5652d616e6" prot="public" virt="non-virtual"><scope>paimon::SnapshotFileScan</scope><name>~SnapshotFileScan</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

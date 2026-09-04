@@ -1,0 +1,65 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_segment_handle" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RealtimeSegmentHandle</compoundname>
+    <includes refid="realtime__store_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_segment_handle_1a86ea2ec1c166a0cdba4420336d287e5a" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::RealtimeSegmentHandle::~RealtimeSegmentHandle</definition>
+        <argsstring>()=default</argsstring>
+        <name>~RealtimeSegmentHandle</name>
+        <qualifiedname>paimon::RealtimeSegmentHandle::~RealtimeSegmentHandle</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="88" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_segment_handle_1aadf858a18f76d0e230bdf03ad6a516de" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="structpaimon_1_1_offset_range" kindref="compound">OffsetRange</ref></type>
+        <definition>virtual OffsetRange paimon::RealtimeSegmentHandle::GetOffsetRange</definition>
+        <argsstring>() const =0</argsstring>
+        <name>GetOffsetRange</name>
+        <qualifiedname>paimon::RealtimeSegmentHandle::GetOffsetRange</qualifiedname>
+        <briefdescription>
+<para>Returns the left-closed, right-open offset range covered by this segment. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="91" column="25"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_segment_handle_1a92afb44a9e3f7c72820a356852130c0a" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>virtual int64_t paimon::RealtimeSegmentHandle::GetRowCount</definition>
+        <argsstring>() const =0</argsstring>
+        <name>GetRowCount</name>
+        <qualifiedname>paimon::RealtimeSegmentHandle::GetRowCount</qualifiedname>
+        <briefdescription>
+<para>Returns the number of rows represented by this segment. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="94" column="21"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Opaque handle to an immutable segment returned by <computeroutput><ref refid="classpaimon_1_1_realtime_store_1afdddb3cb41e8bfb019f1100cd94fefa8" kindref="member">RealtimeStore::SealForCommit</ref></computeroutput>. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>A plugin may store the segment in memory or in spill files. Callers use this handle only to request commit readers and inspect its offset range and row count. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="86" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="86" bodyend="95"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_segment_handle_1aadf858a18f76d0e230bdf03ad6a516de" prot="public" virt="pure-virtual"><scope>paimon::RealtimeSegmentHandle</scope><name>GetOffsetRange</name></member>
+      <member refid="classpaimon_1_1_realtime_segment_handle_1a92afb44a9e3f7c72820a356852130c0a" prot="public" virt="pure-virtual"><scope>paimon::RealtimeSegmentHandle</scope><name>GetRowCount</name></member>
+      <member refid="classpaimon_1_1_realtime_segment_handle_1a86ea2ec1c166a0cdba4420336d287e5a" prot="public" virt="virtual"><scope>paimon::RealtimeSegmentHandle</scope><name>~RealtimeSegmentHandle</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

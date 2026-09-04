@@ -1,0 +1,99 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_context" kind="class" language="C++" prot="public">
+    <compoundname>paimon::RealtimeContext</compoundname>
+    <includes refid="realtime__context_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h</includes>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_context_1aaa3d2a495a2173981fa67bfc2bec27a7" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_context" kindref="compound">RealtimeContext</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; RealtimeContext &gt; &gt; paimon::RealtimeContext::Create</definition>
+        <argsstring>()</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::RealtimeContext::Create</qualifiedname>
+        <briefdescription>
+<para>Creates a context backed by Paimon&apos;s default in-memory Arrow <computeroutput><ref refid="classpaimon_1_1_realtime_store" kindref="compound">RealtimeStore</ref></computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="84" column="19"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_context_1ab7b04f885d6b6ac18b1e22f845c3ad4a" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_context" kindref="compound">RealtimeContext</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; RealtimeContext &gt; &gt; paimon::RealtimeContext::Create</definition>
+        <argsstring>(const std::shared_ptr&lt; RealtimeStoreFactory &gt; &amp;factory)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::RealtimeContext::Create</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_store_factory" kindref="compound">RealtimeStoreFactory</ref> &gt; &amp;</type>
+          <declname>factory</declname>
+        </param>
+        <briefdescription>
+<para>Creates a context backed by an application-provided store factory. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>factory</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Non-null factory used to create stores on demand. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="89" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_context_1a69aa10a5b50ccd0a356831c579bc07ff" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::RealtimeContext::~RealtimeContext</definition>
+        <argsstring>()</argsstring>
+        <name>~RealtimeContext</name>
+        <qualifiedname>paimon::RealtimeContext::~RealtimeContext</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="92" column="13"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="protected-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_context_1ac9a4333b438b4d6d5c1d4a666b5b6525" prot="protected" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeContext::RealtimeContext</definition>
+        <argsstring>()=default</argsstring>
+        <name>RealtimeContext</name>
+        <qualifiedname>paimon::RealtimeContext::RealtimeContext</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="95" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Framework-managed context that owns the <computeroutput><ref refid="classpaimon_1_1_realtime_store" kindref="compound">RealtimeStore</ref></computeroutput> instances used by real-time operations. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Applications share one context between <computeroutput><ref refid="classpaimon_1_1_write_context" kindref="compound">WriteContext</ref></computeroutput>, <computeroutput><ref refid="classpaimon_1_1_scan_context" kindref="compound">ScanContext</ref></computeroutput>, and <computeroutput><ref refid="classpaimon_1_1_read_context" kindref="compound">ReadContext</ref></computeroutput>. The context uses either the default Arrow implementation or an application-provided factory and keeps each created store available across writes, prepare-commit operations, and process-local reads. <computeroutput><ref refid="classpaimon_1_1_realtime_context" kindref="compound">RealtimeContext</ref></computeroutput> itself is not a customization interface and must not be implemented by applications. Customize real-time storage and retrieval through <computeroutput><ref refid="classpaimon_1_1_realtime_store_factory" kindref="compound">RealtimeStoreFactory</ref></computeroutput> and <computeroutput><ref refid="classpaimon_1_1_realtime_store" kindref="compound">RealtimeStore</ref></computeroutput> instead.</para>
+<para>A context is valid only for one uninterrupted committed-progress history. Overwrite, truncate, partition drop, and rollback operations do not automatically clear process-local real-time state. Applications must coordinate these operations with active real-time writers and recreate the <computeroutput><ref refid="classpaimon_1_1_realtime_context" kindref="compound">RealtimeContext</ref></computeroutput> and writers before continuing. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="81" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="81" bodyend="96"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_context_1aaa3d2a495a2173981fa67bfc2bec27a7" prot="public" virt="non-virtual"><scope>paimon::RealtimeContext</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_realtime_context_1ab7b04f885d6b6ac18b1e22f845c3ad4a" prot="public" virt="non-virtual"><scope>paimon::RealtimeContext</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_realtime_context_1ac9a4333b438b4d6d5c1d4a666b5b6525" prot="protected" virt="non-virtual"><scope>paimon::RealtimeContext</scope><name>RealtimeContext</name></member>
+      <member refid="classpaimon_1_1_realtime_context_1a69aa10a5b50ccd0a356831c579bc07ff" prot="public" virt="virtual"><scope>paimon::RealtimeContext</scope><name>~RealtimeContext</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

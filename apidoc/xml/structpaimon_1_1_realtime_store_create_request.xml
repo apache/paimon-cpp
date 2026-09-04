@@ -1,0 +1,100 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_realtime_store_create_request" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::RealtimeStoreCreateRequest</compoundname>
+    <includes refid="realtime__store_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_store_create_request_1afe6233a64bdffa04b5fbfe5352cce72a" prot="public" static="no" mutable="no">
+        <type>std::unique_ptr&lt;<ref refid="struct_arrow_schema" kindref="compound">::ArrowSchema</ref> &gt;</type>
+        <definition>std::unique_ptr&lt;::ArrowSchema&gt; paimon::RealtimeStoreCreateRequest::write_schema</definition>
+        <argsstring></argsstring>
+        <name>write_schema</name>
+        <qualifiedname>paimon::RealtimeStoreCreateRequest::write_schema</qualifiedname>
+        <briefdescription>
+<para><ref refid="classpaimon_1_1_schema" kindref="compound">Schema</ref> whose ownership is transferred to the factory. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Append mode receives the complete append transport schema: [_REALTIME_OFFSET, table write fields]. Primary-key mode receives the realtime primary-key transport schema: [_VALUE_KIND, _SEQUENCE_NUMBER, _REALTIME_OFFSET, table write fields]. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="56" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="56" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_store_create_request_1a35491706a864117799bc41f10e3868cb" prot="public" static="no" mutable="no">
+        <type>std::map&lt; std::string, std::string &gt;</type>
+        <definition>std::map&lt;std::string, std::string&gt; paimon::RealtimeStoreCreateRequest::options</definition>
+        <argsstring></argsstring>
+        <name>options</name>
+        <qualifiedname>paimon::RealtimeStoreCreateRequest::options</qualifiedname>
+        <briefdescription>
+<para><ref refid="classpaimon_1_1_table" kindref="compound">Table</ref> options available to the store implementation. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="58" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="58" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_store_create_request_1a8622cf66a2998c72cc3b28e773dfe906" prot="public" static="no" mutable="no">
+        <type>std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt;</type>
+        <definition>std::shared_ptr&lt;MemoryPool&gt; paimon::RealtimeStoreCreateRequest::memory_pool</definition>
+        <argsstring></argsstring>
+        <name>memory_pool</name>
+        <qualifiedname>paimon::RealtimeStoreCreateRequest::memory_pool</qualifiedname>
+        <briefdescription>
+<para>Memory pool for allocations retained by the store. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="60" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="60" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_store_create_request_1a764217b59512e7d655122a23365283e4" prot="public" static="no" mutable="no">
+        <type><ref refid="namespacepaimon_1ac7773593b31d0fd4e149d200922ad4b1" kindref="member">RealtimeStoreMode</ref></type>
+        <definition>RealtimeStoreMode paimon::RealtimeStoreCreateRequest::mode</definition>
+        <argsstring></argsstring>
+        <name>mode</name>
+        <qualifiedname>paimon::RealtimeStoreCreateRequest::mode</qualifiedname>
+        <initializer>= <ref refid="namespacepaimon_1ac7773593b31d0fd4e149d200922ad4b1a06dbfbaf9bed15a8b8f05bf31003e8a6" kindref="member">RealtimeStoreMode::APPEND_ONLY</ref></initializer>
+        <briefdescription>
+<para><ref refid="classpaimon_1_1_table" kindref="compound">Table</ref> mode implemented by the store. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="62" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="62" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_store_create_request_1af07d3d2578aadd6dad4a103ceabdee73" prot="public" static="no" mutable="no">
+        <type><ref refid="namespacepaimon_1a750e4ac50858580c665fc66c50ef8f59" kindref="member">StatisticsMode</ref></type>
+        <definition>StatisticsMode paimon::RealtimeStoreCreateRequest::statistics_mode</definition>
+        <argsstring></argsstring>
+        <name>statistics_mode</name>
+        <qualifiedname>paimon::RealtimeStoreCreateRequest::statistics_mode</qualifiedname>
+        <initializer>= <ref refid="namespacepaimon_1a750e4ac50858580c665fc66c50ef8f59ab50339a10e1de285ac99d4c3990b8693" kindref="member">StatisticsMode::NONE</ref></initializer>
+        <briefdescription>
+<para>Statistics collected by append-only stores. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="64" column="20" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="64" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Parameters used by a <computeroutput><ref refid="classpaimon_1_1_realtime_store_factory" kindref="compound">RealtimeStoreFactory</ref></computeroutput> to create a store. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="51" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="51" bodyend="65"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_realtime_store_create_request_1a8622cf66a2998c72cc3b28e773dfe906" prot="public" virt="non-virtual"><scope>paimon::RealtimeStoreCreateRequest</scope><name>memory_pool</name></member>
+      <member refid="structpaimon_1_1_realtime_store_create_request_1a764217b59512e7d655122a23365283e4" prot="public" virt="non-virtual"><scope>paimon::RealtimeStoreCreateRequest</scope><name>mode</name></member>
+      <member refid="structpaimon_1_1_realtime_store_create_request_1a35491706a864117799bc41f10e3868cb" prot="public" virt="non-virtual"><scope>paimon::RealtimeStoreCreateRequest</scope><name>options</name></member>
+      <member refid="structpaimon_1_1_realtime_store_create_request_1af07d3d2578aadd6dad4a103ceabdee73" prot="public" virt="non-virtual"><scope>paimon::RealtimeStoreCreateRequest</scope><name>statistics_mode</name></member>
+      <member refid="structpaimon_1_1_realtime_store_create_request_1afe6233a64bdffa04b5fbfe5352cce72a" prot="public" virt="non-virtual"><scope>paimon::RealtimeStoreCreateRequest</scope><name>write_schema</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

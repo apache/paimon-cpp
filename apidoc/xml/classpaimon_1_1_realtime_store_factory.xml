@@ -1,0 +1,67 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_store_factory" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RealtimeStoreFactory</compoundname>
+    <derivedcompoundref refid="classpaimon_1_1_arrow_realtime_store_factory" prot="public" virt="non-virtual">paimon::ArrowRealtimeStoreFactory</derivedcompoundref>
+    <includes refid="realtime__store_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_factory_1a13b164a31f6c41e818661c63e7dd3c0a" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::RealtimeStoreFactory::~RealtimeStoreFactory</definition>
+        <argsstring>()=default</argsstring>
+        <name>~RealtimeStoreFactory</name>
+        <qualifiedname>paimon::RealtimeStoreFactory::~RealtimeStoreFactory</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="183" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_store_factory_1a8590b0ec459cf0ff009fc8bb1f9dc748" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_store" kindref="compound">RealtimeStore</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; RealtimeStore &gt; &gt; paimon::RealtimeStoreFactory::Create</definition>
+        <argsstring>(RealtimeStoreCreateRequest &amp;&amp;request)=0</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::RealtimeStoreFactory::Create</qualifiedname>
+        <reimplementedby refid="classpaimon_1_1_arrow_realtime_store_factory_1aaa34a42f757d45d501f1ed3e02d57258">Create</reimplementedby>
+        <param>
+          <type><ref refid="structpaimon_1_1_realtime_store_create_request" kindref="compound">RealtimeStoreCreateRequest</ref> &amp;&amp;</type>
+          <declname>request</declname>
+        </param>
+        <briefdescription>
+<para>Creates a store configured with the supplied schema, statistics, options, and memory pool. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Creates a store for the requested table mode. The factory consumes <computeroutput>request</computeroutput>, including ownership of <computeroutput>request.write_schema</computeroutput>. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="188" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para><ref refid="classpaimon_1_1_factory" kindref="compound">Factory</ref> for application-provided <computeroutput><ref refid="classpaimon_1_1_realtime_store" kindref="compound">RealtimeStore</ref></computeroutput> implementations. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::ArrowRealtimeStoreFactory</label>
+        <link refid="classpaimon_1_1_arrow_realtime_store_factory"/>
+        <childnode refid="1" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>paimon::RealtimeStoreFactory</label>
+        <link refid="classpaimon_1_1_realtime_store_factory"/>
+      </node>
+    </inheritancegraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="181" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="181" bodyend="189"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_store_factory_1a8590b0ec459cf0ff009fc8bb1f9dc748" prot="public" virt="pure-virtual"><scope>paimon::RealtimeStoreFactory</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_realtime_store_factory_1a13b164a31f6c41e818661c63e7dd3c0a" prot="public" virt="virtual"><scope>paimon::RealtimeStoreFactory</scope><name>~RealtimeStoreFactory</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

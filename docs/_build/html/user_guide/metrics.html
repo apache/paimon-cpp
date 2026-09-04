@@ -1,0 +1,881 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Metrics reference &#8212; Apache Paimon C++</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=d7227091" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=3bb21c8c"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/metrics';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Data Cleanup" href="clean.html" />
+    <link rel="prev" title="Read" href="read.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.4.0" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">Apache Paimon C++</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../user_guide.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api.html">
+    API Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/paimon-cpp" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../user_guide.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api.html">
+    API Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/paimon-cpp" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="catalog.html">Catalog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="schema.html">Schema</a></li>
+<li class="toctree-l1"><a class="reference internal" href="snapshot.html">Snapshot</a></li>
+<li class="toctree-l1"><a class="reference internal" href="manifest.html">Manifest</a></li>
+<li class="toctree-l1"><a class="reference internal" href="manifest_cache.html">Manifest Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="manifest_entry_cache.html">Manifest Entry Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="parquet_metadata_cache.html">Parquet Metadata Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="data_types.html">Data Types</a></li>
+<li class="toctree-l1"><a class="reference internal" href="primary_key_table.html">Primary Key Table</a></li>
+<li class="toctree-l1"><a class="reference internal" href="append_only_table.html">Append Only Table</a></li>
+<li class="toctree-l1"><a class="reference internal" href="system_tables.html">System Tables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="write.html">Write</a></li>
+<li class="toctree-l1"><a class="reference internal" href="commit.html">Commit</a></li>
+<li class="toctree-l1"><a class="reference internal" href="compaction.html">Compaction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read.html">Read</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Metrics reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="clean.html">Data Cleanup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="prefetch.html">Prefetch</a></li>
+
+
+
+<li class="toctree-l1"><a class="reference internal" href="arrow.html">Memory Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="global_index.html">Global Index</a></li>
+<li class="toctree-l1"><a class="reference internal" href="primary_key_global_index.html">Primary Key Global Index</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../user_guide.html" class="nav-link">User Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Metrics reference</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="metrics-reference">
+<h1>Metrics reference<a class="headerlink" href="#metrics-reference" title="Link to this heading">#</a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">Metrics</span></code> contains counters, gauges, and histogram snapshots. A counter is a non-negative
+integer, a gauge represents current state, and a histogram records a distribution of observed
+values. The scan and prefetch-reader metrics described below are returned as point-in-time
+snapshots. Modifying a returned snapshot does not modify the component that produced it.</p>
+<section id="scan-planning">
+<h2>Scan planning<a class="headerlink" href="#scan-planning" title="Link to this heading">#</a></h2>
+<p>The names below are declared by <code class="docutils literal notranslate"><span class="pre">ScanMetrics</span></code>. <code class="docutils literal notranslate"><span class="pre">last*</span></code> counters are replaced after each
+successful <code class="docutils literal notranslate"><span class="pre">CreatePlan()</span></code> call. Histograms and the cache hit/miss counters accumulate for the
+lifetime of the scan. They are unrelated to <code class="docutils literal notranslate"><span class="pre">SetReadSchema()</span></code> and <code class="docutils literal notranslate"><span class="pre">ReadAheadCache::Reset()</span></code>.
+The first six names match Java <code class="docutils literal notranslate"><span class="pre">ScanMetrics</span></code>; the remaining names are C++-only.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.9%" />
+<col style="width: 10.9%" />
+<col style="width: 10.9%" />
+<col style="width: 47.3%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Unit</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>lastScanDuration</p></td>
+<td><p>counter</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Duration of the last successful plan</p></td>
+</tr>
+<tr class="row-odd"><td><p>scanDuration</p></td>
+<td><p>histogram</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Distribution of successful plan durations</p></td>
+</tr>
+<tr class="row-even"><td><p>lastScannedSnapshotId</p></td>
+<td><p>counter</p></td>
+<td><p>snapshot ID</p></td>
+<td><p>Snapshot used by the last plan, or 0</p></td>
+</tr>
+<tr class="row-odd"><td><p>lastScannedManifests</p></td>
+<td><p>counter</p></td>
+<td><p>files</p></td>
+<td><p>Manifest files selected by the last plan</p></td>
+</tr>
+<tr class="row-even"><td><p>lastScanSkippedTableFiles</p></td>
+<td><p>counter</p></td>
+<td><p>files</p></td>
+<td><p>Table files skipped by the last plan</p></td>
+</tr>
+<tr class="row-odd"><td><p>lastScanResultedTableFiles</p></td>
+<td><p>counter</p></td>
+<td><p>files</p></td>
+<td><p>Table files returned by the last plan</p></td>
+</tr>
+<tr class="row-even"><td><p>lastManifestReadDuration</p></td>
+<td><p>counter</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Manifest-list and entry read time for the last plan</p></td>
+</tr>
+<tr class="row-odd"><td><p>manifestReadDuration</p></td>
+<td><p>histogram</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Distribution of manifest read times</p></td>
+</tr>
+<tr class="row-even"><td><p>lastSnapshotCacheEnabled</p></td>
+<td><p>counter</p></td>
+<td><p>boolean</p></td>
+<td><p>Whether snapshot manifest-entry cache was eligible</p></td>
+</tr>
+<tr class="row-odd"><td><p>lastSnapshotCacheHit</p></td>
+<td><p>counter</p></td>
+<td><p>boolean</p></td>
+<td><p>Whether the last eligible lookup hit</p></td>
+</tr>
+<tr class="row-even"><td><p>snapshotCacheHits</p></td>
+<td><p>counter</p></td>
+<td><p>lookups</p></td>
+<td><p>Cumulative exact-snapshot cache hits</p></td>
+</tr>
+<tr class="row-odd"><td><p>snapshotCacheMisses</p></td>
+<td><p>counter</p></td>
+<td><p>lookups</p></td>
+<td><p>Cumulative eligible cache misses</p></td>
+</tr>
+<tr class="row-even"><td><p>lastSnapshotCacheLoadDuration</p></td>
+<td><p>counter</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Cache load time for the last plan</p></td>
+</tr>
+<tr class="row-odd"><td><p>snapshotCacheLoadDuration</p></td>
+<td><p>histogram</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Distribution of cache load times</p></td>
+</tr>
+<tr class="row-even"><td><p>lastSnapshotCacheStoreDuration</p></td>
+<td><p>counter</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Cache store time for the last plan; 0 when not stored</p></td>
+</tr>
+<tr class="row-odd"><td><p>snapshotCacheStoreDuration</p></td>
+<td><p>histogram</p></td>
+<td><p>milliseconds</p></td>
+<td><p>Distribution of cache store times</p></td>
+</tr>
+<tr class="row-even"><td><p>lastLazyDecodeScannedRows</p></td>
+<td><p>counter</p></td>
+<td><p>manifest rows</p></td>
+<td><p>Candidate manifest rows inspected by the last plan</p></td>
+</tr>
+<tr class="row-odd"><td><p>lastLazyDecodeMaterializedRows</p></td>
+<td><p>counter</p></td>
+<td><p>manifest rows</p></td>
+<td><p>Manifest rows retained after lazy filtering</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="prefetch-reader">
+<h2>Prefetch reader<a class="headerlink" href="#prefetch-reader" title="Link to this heading">#</a></h2>
+<p>The names below are declared by <code class="docutils literal notranslate"><span class="pre">PrefetchMetrics</span></code>. Counters and histograms accumulate for the
+lifetime of the prefetch reader, including across <code class="docutils literal notranslate"><span class="pre">SetReadSchema()</span></code>. <code class="docutils literal notranslate"><span class="pre">enabled</span></code> and
+<code class="docutils literal notranslate"><span class="pre">parallelism</span></code> describe the most recently initialized schema. <code class="docutils literal notranslate"><span class="pre">queue-depth</span></code> is reset by
+<code class="docutils literal notranslate"><span class="pre">SetReadSchema()</span></code> and <code class="docutils literal notranslate"><span class="pre">Close()</span></code>; <code class="docutils literal notranslate"><span class="pre">queue-depth.max</span></code> remains the lifetime maximum.
+These metrics are C++-only and have no counterparts in Java Paimon.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 34.5%" />
+<col style="width: 10.9%" />
+<col style="width: 10.9%" />
+<col style="width: 43.6%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Unit</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>prefetch.enabled</p></td>
+<td><p>gauge</p></td>
+<td><p>boolean</p></td>
+<td><p>Whether the most recently initialized schema selected prefetch</p></td>
+</tr>
+<tr class="row-odd"><td><p>prefetch.parallelism</p></td>
+<td><p>gauge</p></td>
+<td><p>readers</p></td>
+<td><p>Effective reader parallelism</p></td>
+</tr>
+<tr class="row-even"><td><p>prefetch.read-ranges.total</p></td>
+<td><p>counter</p></td>
+<td><p>ranges</p></td>
+<td><p>Generated ranges before bitmap filtering</p></td>
+</tr>
+<tr class="row-odd"><td><p>prefetch.read-ranges.after-bitmap</p></td>
+<td><p>counter</p></td>
+<td><p>ranges</p></td>
+<td><p>Ranges retained after bitmap filtering</p></td>
+</tr>
+<tr class="row-even"><td><p>prefetch.seek.count</p></td>
+<td><p>counter</p></td>
+<td><p>operations</p></td>
+<td><p>Underlying reader seek operations</p></td>
+</tr>
+<tr class="row-odd"><td><p>prefetch.produced-batches</p></td>
+<td><p>counter</p></td>
+<td><p>batches</p></td>
+<td><p>Data batches placed into prefetch queues</p></td>
+</tr>
+<tr class="row-even"><td><p>prefetch.consumed-batches</p></td>
+<td><p>counter</p></td>
+<td><p>batches</p></td>
+<td><p>Data batches returned to the consumer</p></td>
+</tr>
+<tr class="row-odd"><td><p>prefetch.discarded-batches</p></td>
+<td><p>counter</p></td>
+<td><p>batches</p></td>
+<td><p>Data batches released without consumption, plus EOF entries released during cleanup</p></td>
+</tr>
+<tr class="row-even"><td><p>prefetch.errors</p></td>
+<td><p>counter</p></td>
+<td><p>errors</p></td>
+<td><p>Errors recorded by the background prefetch loop</p></td>
+</tr>
+<tr class="row-odd"><td><p>prefetch.adaptive-disabled-count</p></td>
+<td><p>counter</p></td>
+<td><p>decisions</p></td>
+<td><p>Times adaptive strategy disabled prefetch</p></td>
+</tr>
+<tr class="row-even"><td><p>prefetch.queue-full-count</p></td>
+<td><p>counter</p></td>
+<td><p>events</p></td>
+<td><p>Times production found a full queue</p></td>
+</tr>
+<tr class="row-odd"><td><p>prefetch.queue-depth</p></td>
+<td><p>gauge</p></td>
+<td><p>queue entries</p></td>
+<td><p>Current queued entries, including retained EOF markers</p></td>
+</tr>
+<tr class="row-even"><td><p>prefetch.queue-depth.max</p></td>
+<td><p>gauge</p></td>
+<td><p>queue entries</p></td>
+<td><p>Maximum queued entries in the reader lifetime</p></td>
+</tr>
+<tr class="row-odd"><td><p>prefetch.reader-read-latency-us</p></td>
+<td><p>histogram</p></td>
+<td><p>microseconds</p></td>
+<td><p>Underlying reader batch latency</p></td>
+</tr>
+<tr class="row-even"><td><p>prefetch.consumer-wait-latency-us</p></td>
+<td><p>histogram</p></td>
+<td><p>microseconds</p></td>
+<td><p>Consumer wait latency per returned batch or EOF</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="prefetch-i-o">
+<h2>Prefetch I/O<a class="headerlink" href="#prefetch-i-o" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">PrefetchIoMetrics</span></code> describes only I/O that passes through the prefetch reader’s instrumented
+input streams. It is not a whole-query or whole-table I/O total. All counters accumulate for the
+reader lifetime and are retained across <code class="docutils literal notranslate"><span class="pre">SetReadSchema()</span></code> and cache reset. Latency uses relaxed
+atomic count and sum counters instead of per-I/O histograms to reduce hot-path cost. Collection is
+disabled by default; set <code class="docutils literal notranslate"><span class="pre">prefetch.io-metrics.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> in the read options to enable
+it. When disabled, these per-I/O metrics are absent and the input streams have no metrics
+instrumentation.
+<code class="docutils literal notranslate"><span class="pre">io.async.pending</span></code> is current state and returns to zero when all callbacks complete.
+These metrics are C++-only and have no counterparts in Java Paimon.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.9%" />
+<col style="width: 10.9%" />
+<col style="width: 10.9%" />
+<col style="width: 47.3%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Name</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Unit</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>io.read.requests</p></td>
+<td><p>counter</p></td>
+<td><p>requests</p></td>
+<td><p>Synchronous read requests</p></td>
+</tr>
+<tr class="row-odd"><td><p>io.read.requested-bytes</p></td>
+<td><p>counter</p></td>
+<td><p>bytes</p></td>
+<td><p>Bytes requested by synchronous reads</p></td>
+</tr>
+<tr class="row-even"><td><p>io.read.physical-bytes</p></td>
+<td><p>counter</p></td>
+<td><p>bytes</p></td>
+<td><p>Bytes returned by successful synchronous reads</p></td>
+</tr>
+<tr class="row-odd"><td><p>io.read.failed</p></td>
+<td><p>counter</p></td>
+<td><p>requests</p></td>
+<td><p>Failed synchronous reads</p></td>
+</tr>
+<tr class="row-even"><td><p>io.read.latency.count</p></td>
+<td><p>counter</p></td>
+<td><p>requests</p></td>
+<td><p>Completed synchronous read latency samples</p></td>
+</tr>
+<tr class="row-odd"><td><p>io.read.latency.sum-us</p></td>
+<td><p>counter</p></td>
+<td><p>microseconds</p></td>
+<td><p>Sum of synchronous read latency</p></td>
+</tr>
+<tr class="row-even"><td><p>io.async.requests</p></td>
+<td><p>counter</p></td>
+<td><p>requests</p></td>
+<td><p>Asynchronous read requests</p></td>
+</tr>
+<tr class="row-odd"><td><p>io.async.requested-bytes</p></td>
+<td><p>counter</p></td>
+<td><p>bytes</p></td>
+<td><p>Bytes requested by asynchronous reads</p></td>
+</tr>
+<tr class="row-even"><td><p>io.async.physical-bytes</p></td>
+<td><p>counter</p></td>
+<td><p>bytes</p></td>
+<td><p>Bytes attributed to successful asynchronous reads</p></td>
+</tr>
+<tr class="row-odd"><td><p>io.async.completed</p></td>
+<td><p>counter</p></td>
+<td><p>requests</p></td>
+<td><p>Successful asynchronous reads</p></td>
+</tr>
+<tr class="row-even"><td><p>io.async.failed</p></td>
+<td><p>counter</p></td>
+<td><p>requests</p></td>
+<td><p>Failed asynchronous reads</p></td>
+</tr>
+<tr class="row-odd"><td><p>io.async.pending</p></td>
+<td><p>gauge</p></td>
+<td><p>requests</p></td>
+<td><p>Asynchronous callbacks not yet completed</p></td>
+</tr>
+<tr class="row-even"><td><p>io.async.latency.count</p></td>
+<td><p>counter</p></td>
+<td><p>requests</p></td>
+<td><p>Completed asynchronous callback latency samples</p></td>
+</tr>
+<tr class="row-odd"><td><p>io.async.latency.sum-us</p></td>
+<td><p>counter</p></td>
+<td><p>microseconds</p></td>
+<td><p>Sum of asynchronous callback latency</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="read.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Read</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="clean.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Data Cleanup</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scan-planning">Scan planning</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prefetch-reader">Prefetch reader</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prefetch-i-o">Prefetch I/O</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/apache/paimon-cpp/edit/main/docs/source/user_guide/metrics.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026-2026 Apache Software Foundation.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 9.1.0.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.21.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

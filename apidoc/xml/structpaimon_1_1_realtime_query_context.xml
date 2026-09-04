@@ -1,0 +1,68 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_realtime_query_context" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::RealtimeQueryContext</compoundname>
+    <includes refid="realtime__store_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_query_context_1a7e004aa6398d9a463999afc790134670" prot="public" static="no" mutable="no">
+        <type><ref refid="struct_arrow_schema" kindref="compound">::ArrowSchema</ref> *</type>
+        <definition>::ArrowSchema* paimon::RealtimeQueryContext::read_schema</definition>
+        <argsstring></argsstring>
+        <name>read_schema</name>
+        <qualifiedname>paimon::RealtimeQueryContext::read_schema</qualifiedname>
+        <briefdescription>
+<para>Physical source schema the store must materialize. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Query readers must include the mandatory <computeroutput>_VALUE_KIND</computeroutput> field in returned batches. Paimon may subsequently convert physical fields into the query&apos;s logical output schema, for example for selected-key MAP or VARIANT access. This schema is borrowed and remains valid only during <computeroutput>CreateQueryReaders</computeroutput>; plugins must import or copy it synchronously. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="117" column="19" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="117" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_query_context_1a09424e2a0f374a735aef838c8bbd2ad4" prot="public" static="no" mutable="no">
+        <type>std::shared_ptr&lt; <ref refid="classpaimon_1_1_predicate" kindref="compound">Predicate</ref> &gt;</type>
+        <definition>std::shared_ptr&lt;Predicate&gt; paimon::RealtimeQueryContext::predicate</definition>
+        <argsstring></argsstring>
+        <name>predicate</name>
+        <qualifiedname>paimon::RealtimeQueryContext::predicate</qualifiedname>
+        <briefdescription>
+<para>Optional predicate using field indexes from <computeroutput>read_schema</computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>A non-null predicate allows the plugin to prune candidate rows. Exact filtering is applied by the Paimon read framework. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="120" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="120" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Parameters used by a <computeroutput><ref refid="classpaimon_1_1_realtime_store" kindref="compound">RealtimeStore</ref></computeroutput> to create readers for a query. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <collaborationgraph>
+      <node id="2">
+        <label>ArrowSchema</label>
+        <link refid="struct_arrow_schema"/>
+        <childnode refid="2" relation="usage">
+          <edgelabel>children</edgelabel>
+          <edgelabel>dictionary</edgelabel>
+        </childnode>
+      </node>
+      <node id="1">
+        <label>paimon::RealtimeQueryContext</label>
+        <link refid="structpaimon_1_1_realtime_query_context"/>
+        <childnode refid="2" relation="usage">
+          <edgelabel>read_schema</edgelabel>
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="111" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="111" bodyend="121"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_realtime_query_context_1a09424e2a0f374a735aef838c8bbd2ad4" prot="public" virt="non-virtual"><scope>paimon::RealtimeQueryContext</scope><name>predicate</name></member>
+      <member refid="structpaimon_1_1_realtime_query_context_1a7e004aa6398d9a463999afc790134670" prot="public" virt="non-virtual"><scope>paimon::RealtimeQueryContext</scope><name>read_schema</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

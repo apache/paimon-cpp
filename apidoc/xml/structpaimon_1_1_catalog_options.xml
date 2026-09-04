@@ -1,0 +1,243 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_catalog_options" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::CatalogOptions</compoundname>
+    <includes refid="catalog__options_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h</includes>
+    <sectiondef kind="public-static-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a2c48c106d87c6d1262c1d3e3cd6827b6" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::METASTORE[]</definition>
+        <argsstring>[]</argsstring>
+        <name>METASTORE</name>
+        <qualifiedname>paimon::CatalogOptions::METASTORE</qualifiedname>
+        <briefdescription>
+<para>&quot;metastore&quot; - Metastore of the paimon catalog. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Supported values are &quot;filesystem&quot; (default) and &quot;rest&quot;. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="29" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="29" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1ab408141f0bf2397a961da7f5206ba4b1" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::URI[]</definition>
+        <argsstring>[]</argsstring>
+        <name>URI</name>
+        <qualifiedname>paimon::CatalogOptions::URI</qualifiedname>
+        <briefdescription>
+<para>&quot;uri&quot; - Server url of the REST catalog. Only used when METASTORE is &quot;rest&quot;. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="32" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="32" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a0f2d1fd220066a089ae858990d1b139d" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::TOKEN[]</definition>
+        <argsstring>[]</argsstring>
+        <name>TOKEN</name>
+        <qualifiedname>paimon::CatalogOptions::TOKEN</qualifiedname>
+        <briefdescription>
+<para>&quot;token&quot; - Token of the &quot;bear&quot; token provider of the REST catalog. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="35" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="35" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1ab43262fdf9f4e1ab7d169f65a600f801" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::TOKEN_PROVIDER[]</definition>
+        <argsstring>[]</argsstring>
+        <name>TOKEN_PROVIDER</name>
+        <qualifiedname>paimon::CatalogOptions::TOKEN_PROVIDER</qualifiedname>
+        <briefdescription>
+<para>&quot;token.provider&quot; - Authentication provider of the REST catalog. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Supported values are &quot;bear&quot; (the protocol&apos;s historical spelling of &quot;bearer&quot;) and &quot;dlf&quot;. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="39" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="39" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a07ab540b308f709a9caaa603e4041121" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_REGION[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_REGION</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_REGION</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.region&quot; - Region used by DLF request signing. Inferred from URI when absent. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="42" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="42" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a0929f819165620694c328f701304e5b7" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_TOKEN_PATH[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_TOKEN_PATH</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_TOKEN_PATH</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.token-path&quot; - Path of a JSON file containing refreshable DLF credentials. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="45" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="45" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a928a7368b5a209b286ccfdad7ad45c64" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_ACCESS_KEY_ID[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_ACCESS_KEY_ID</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_ACCESS_KEY_ID</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.access-key-id&quot; - DLF access key id. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="48" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="48" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a89bf15a1960891d1cbf23189ba15b681" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_ACCESS_KEY_SECRET[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_ACCESS_KEY_SECRET</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_ACCESS_KEY_SECRET</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.access-key-secret&quot; - DLF access key secret. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="51" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="51" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1af231cf6ba44b945a9cbc8f3d9aef150f" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_SECURITY_TOKEN[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_SECURITY_TOKEN</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_SECURITY_TOKEN</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.security-token&quot; - Optional STS security token used with a DLF access key. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="54" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="54" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1aec982f3a3321793cfa8c6092342fc318" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_TOKEN_LOADER[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_TOKEN_LOADER</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_TOKEN_LOADER</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.token-loader&quot; - Refreshable DLF token loader (&quot;ecs&quot; or &quot;local_file&quot;). </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="57" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="57" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a8c68eb2ee55e2b07b72c3f5640d2bd1f" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_TOKEN_ECS_METADATA_URL[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_TOKEN_ECS_METADATA_URL</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_TOKEN_ECS_METADATA_URL</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.token-ecs-metadata-url&quot; - ECS RAM role metadata endpoint. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="60" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="60" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1aac2acddfa9f6c9eea001b61a8793b48f" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_TOKEN_ECS_ROLE_NAME[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_TOKEN_ECS_ROLE_NAME</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_TOKEN_ECS_ROLE_NAME</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.token-ecs-role-name&quot; - Optional ECS RAM role name. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="63" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="63" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1a2d6dda0da2069dd179346ef6e1d22b74" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::DLF_SIGNING_ALGORITHM[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DLF_SIGNING_ALGORITHM</name>
+        <qualifiedname>paimon::CatalogOptions::DLF_SIGNING_ALGORITHM</qualifiedname>
+        <briefdescription>
+<para>&quot;dlf.signing-algorithm&quot; - DLF signer (&quot;default&quot; or &quot;openapi&quot;). </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="66" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="66" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_catalog_options_1ade3f44eef8913c83523c5156cbf3eee6" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX[]</definition>
+        <argsstring>[]</argsstring>
+        <name>TABLE_DEFAULT_OPTION_PREFIX</name>
+        <qualifiedname>paimon::CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX</qualifiedname>
+        <briefdescription>
+<para>&quot;table-default.&quot; - Prefix of the catalog options that provide table option defaults: &quot;table-default.&lt;key&gt;=&lt;value&gt;&quot; applies &quot;&lt;key&gt;=&lt;value&gt;&quot; to a created table when the caller left &quot;&lt;key&gt;&quot; unset. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="71" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="71" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Catalog-level configuration option keys; table-level keys live in <computeroutput><ref refid="structpaimon_1_1_options" kindref="compound">Options</ref></computeroutput>. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" line="26" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/catalog_options.h" bodystart="26" bodyend="72"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_catalog_options_1a928a7368b5a209b286ccfdad7ad45c64" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_ACCESS_KEY_ID</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1a89bf15a1960891d1cbf23189ba15b681" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_ACCESS_KEY_SECRET</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1a07ab540b308f709a9caaa603e4041121" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_REGION</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1af231cf6ba44b945a9cbc8f3d9aef150f" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_SECURITY_TOKEN</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1a2d6dda0da2069dd179346ef6e1d22b74" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_SIGNING_ALGORITHM</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1a8c68eb2ee55e2b07b72c3f5640d2bd1f" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_TOKEN_ECS_METADATA_URL</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1aac2acddfa9f6c9eea001b61a8793b48f" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_TOKEN_ECS_ROLE_NAME</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1aec982f3a3321793cfa8c6092342fc318" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_TOKEN_LOADER</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1a0929f819165620694c328f701304e5b7" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>DLF_TOKEN_PATH</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1a2c48c106d87c6d1262c1d3e3cd6827b6" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>METASTORE</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1ade3f44eef8913c83523c5156cbf3eee6" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>TABLE_DEFAULT_OPTION_PREFIX</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1a0f2d1fd220066a089ae858990d1b139d" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>TOKEN</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1ab43262fdf9f4e1ab7d169f65a600f801" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>TOKEN_PROVIDER</name></member>
+      <member refid="structpaimon_1_1_catalog_options_1ab408141f0bf2397a961da7f5206ba4b1" prot="public" virt="non-virtual"><scope>paimon::CatalogOptions</scope><name>URI</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

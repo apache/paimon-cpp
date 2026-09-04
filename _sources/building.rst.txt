@@ -1,0 +1,359 @@
+.. Licensed to the Apache Software Foundation (ASF) under one
+.. or more contributor license agreements.  See the NOTICE file
+.. distributed with this work for additional information
+.. regarding copyright ownership.  The ASF licenses this file
+.. to you under the Apache License, Version 2.0 (the
+.. "License"); you may not use this file except in compliance
+.. with the License.  You may obtain a copy of the License at
+
+..   http://www.apache.org/licenses/LICENSE-2.0
+
+.. Unless required by applicable law or agreed to in writing,
+.. software distributed under the License is distributed on an
+.. "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+.. KIND, either express or implied.  See the License for the
+.. specific language governing permissions and limitations
+.. under the License.
+
+.. highlight:: console
+
+.. _building-paimon-cpp:
+
+==========================
+Building Apache Paimon C++
+==========================
+
+System setup
+============
+
+Paimon uses CMake as a build configuration system. We recommend building
+out-of-source. For example, you could create ``paimon-cpp/build`` and invoke
+``cmake $CMAKE_ARGS ..`` from this directory.
+
+Building requires:
+
+* A C++17-enabled compiler. On Linux, gcc 8 and higher should be sufficient.
+  Windows is not supported for now.
+* At least 2GB of RAM for a minimal build, 8GB for a minimal
+  debug build with tests and 16GB for a full build.
+
+On Ubuntu/Debian you can install the requirements with:
+
+.. code-block:: shell
+
+   sudo apt-get install \
+        build-essential \
+        cmake
+
+We also provide a docker template to help you get started quickly. See in
+``.devcontainer`` folder for more details.
+
+.. _cpp-building-platforms:
+
+Supported platforms
+-------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 25 55
+
+   * - Operating system
+     - Architecture
+     - Support level
+   * - Linux
+     - ``x86_64``
+     - Built and tested in CI.
+   * - Linux
+     - ``aarch64`` / ``arm64``
+     - Built and tested in CI.
+   * - macOS
+     - ``x86_64``, ``arm64``
+     - Architecture detection is wired up, but macOS as a whole is not an
+       officially supported platform and is not covered by CI.
+   * - Windows
+     - any
+     - Not supported.
+
+The build system derives the target CPU family from
+``CMAKE_SYSTEM_PROCESSOR`` (or from ``CMAKE_OSX_ARCHITECTURES`` on macOS) and
+only applies tuning flags belonging to that family. On an architecture it does
+not recognise it simply adds no tuning flags of its own, which is not by itself
+a statement that the dependencies or the runtime work there. On aarch64 the
+``-march=`` value defaults to ``armv8-a`` and can be overridden with
+``-DPAIMON_AARCH64_MARCH=armv8.2-a+crc`` or similar; an explicitly empty value
+(``-DPAIMON_AARCH64_MARCH=""``) passes no ``-march`` flag at all, for toolchains
+that reject the flag, such as AppleClang targeting arm64.
+
+There is no x86 SIMD level to select, and no instruction-set flag is added on
+x86: the baseline stays whatever the toolchain defaults to. No persisted value
+depends on it, in particular the checksum written to SST files and to the B-tree
+global index is the same however Paimon was compiled.
+
+One optional component is architecture-restricted:
+``-DPAIMON_ENABLE_LUMINA=ON`` consumes a prebuilt binary that is only
+published for Linux ``x86_64``, so configuring it on any other platform fails
+with an explicit error.
+
+Cross compilation is not wired up end to end: the bundled third-party builds are
+handed only the C and C++ compilers, without a toolchain file, sysroot or find
+root, so they can still pick up host libraries. Build natively on each target.
+
+``build_and_package.sh`` therefore names its output after the host platform, for
+example ``output/paimon-cpp-linux-aarch64.tar.gz``, so artifacts built on several
+machines can be collected side by side. ``--platform <label>`` overrides that
+label alone; it does not configure a cross build.
+
+.. _cpp-building-building:
+
+Building
+========
+
+All the instructions below assume that you have cloned the paimon-cpp git
+repository:
+
+.. code-block::
+
+   $ git clone https://github.com/apache/paimon-cpp.git
+   $ cd paimon-cpp
+
+Manual configuration
+--------------------
+
+The build system uses ``CMAKE_BUILD_TYPE=Release`` by default, so if this
+argument is omitted then a release build will be produced.
+
+Two build types are possible:
+
+* ``Debug``: doesn't apply any compiler optimizations and adds debugging
+  information in the binary.
+* ``Release``: applies compiler optimizations and removes debug information
+  from the binary.
+
+.. note::
+
+  You can also run default build with flag ``-DPAIMON_EXTRA_ERROR_CONTEXT=ON``
+  for more error msg context.
+
+Minimal release build (2GB of RAM for building or more recommended):
+
+.. code-block::
+
+   $ mkdir build-release
+   $ cd build-release
+   $ cmake ..
+   $ make -j8       # if you have 8 CPU cores, otherwise adjust
+   $ make install
+
+Minimal debug build with unit tests (4GB of RAM for building or more recommended):
+
+.. code-block::
+
+   $ mkdir build-debug
+   $ cd build-debug
+   $ cmake -DCMAKE_BUILD_TYPE=Debug -DPAIMON_BUILD_TESTS=ON ..
+   $ make -j8       # if you have 8 CPU cores, otherwise adjust
+   $ make unittest  # to run the tests
+   $ make install
+
+The unit tests are not built by default. After building, one can also invoke
+the unit tests using the ``ctest`` tool provided by CMake.
+
+Faster builds with Ninja
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Many contributors use the `Ninja build system <https://ninja-build.org/>`_ to
+get faster builds. It especially speeds up incremental builds. To use
+``ninja``, pass ``-GNinja`` when calling ``cmake`` and then use the ``ninja``
+command instead of ``make``.
+
+.. _cpp_build_optional_components:
+
+Optional Components
+~~~~~~~~~~~~~~~~~~~
+
+By default, the C++ build system creates a fairly minimal build. We have
+several optional system components which you can opt into building by passing
+boolean flags to ``cmake``.
+
+* ``-DPAIMON_ENABLE_ORC=ON``: Paimon integration with Apache ORC
+* ``-DPAIMON_ENABLE_AVRO=ON``: Apache Avro libraries and Paimon integration
+* ``-DPAIMON_ENABLE_JINDO=ON``: Support for Alibaba Jindo filesystems
+* ``-DPAIMON_ENABLE_OSS=ON``: Support for Alibaba Cloud OSS through OSS SDK V2
+* ``-DPAIMON_ENABLE_S3=ON``: Support for Amazon S3-compatible filesystems
+* ``-DPAIMON_ENABLE_LUMINA=ON``: Support for the Lumina vector index. Requires
+  Linux ``x86_64``; see :ref:`cpp-building-platforms`.
+* ``-DPAIMON_ENABLE_LUCENE=ON``: Support for Lucene full-text search indexes
+* ``-DPAIMON_ENABLE_TANTIVY=ON``: Enable the experimental Tantivy full-text index Rust FFI.
+* ``-DPAIMON_ENABLE_REST=ON``: Support for the REST catalog
+  (``metastore=rest``), requires the libcurl and OpenSSL development packages.
+
+Third-party dependency source
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Paimon C++ can either build selected third-party dependencies from bundled
+sources or use libraries already installed on the system. The default mode is
+``AUTO``, which tries system packages first and falls back to bundled sources
+when they are not found.
+
+.. code-block:: shell
+
+   cmake -B build -DPAIMON_DEPENDENCY_SOURCE=AUTO
+
+The supported dependency source values are:
+
+* ``AUTO``: use a system package when available, otherwise build bundled sources.
+* ``BUNDLED``: always build bundled sources.
+* ``SYSTEM``: require system packages and fail if they are not found.
+
+You can override individual dependencies with ``<Dependency>_SOURCE``. The
+supported dependency set includes Arrow/Parquet, ORC, Protobuf, Avro, RE2, fmt,
+RapidJSON, TBB, glog, GoogleTest, and compression libraries. Arrow and ORC
+require project-specific patches, so their supported source values are
+``AUTO`` and ``BUNDLED``; ``AUTO`` resolves to bundled sources for them.
+
+.. code-block:: shell
+
+   cmake -B build \
+     -DPAIMON_DEPENDENCY_SOURCE=AUTO \
+     -Dfmt_SOURCE=SYSTEM \
+     -Dfmt_ROOT=/opt/fmt \
+     -Dzstd_SOURCE=BUNDLED
+
+Use ``PAIMON_PACKAGE_PREFIX`` to provide one common prefix for dependencies
+whose own ``<Package>_ROOT`` variable is not set. Because the patched Arrow and
+ORC dependencies cannot be resolved from the system, a global ``SYSTEM`` build
+must override them to ``BUNDLED``:
+
+.. code-block:: shell
+
+   cmake -B build \
+     -DPAIMON_DEPENDENCY_SOURCE=SYSTEM \
+     -DArrow_SOURCE=BUNDLED \
+     -DORC_SOURCE=BUNDLED \
+     -DPAIMON_PACKAGE_PREFIX=/opt/paimon-deps
+
+All other enabled dependencies must be available as system packages or under
+the specified prefix. When ORC support is disabled, the ``ORC_SOURCE`` override
+can be omitted.
+
+Package-manager-specific modes are intentionally out of scope for this first
+dependency source interface. They can still be used through standard CMake
+mechanisms such as ``CMAKE_PREFIX_PATH`` or ``CMAKE_TOOLCHAIN_FILE``, while
+Paimon keeps the dependency source values limited to ``AUTO``, ``BUNDLED``, and
+``SYSTEM``.
+
+When ``Arrow_SOURCE`` is explicitly set to ``BUNDLED`` or left as ``AUTO``, the
+compression dependencies default to bundled sources unless individually
+overridden. When ``ORC_SOURCE`` is explicitly set to ``BUNDLED`` or left as
+``AUTO``, ``Protobuf_SOURCE`` defaults to bundled sources unless individually
+overridden.
+
+During configuration, CMake prints a dependency resolution summary showing the
+requested source, actual source, compatibility target, and search root for each
+resolved dependency.
+
+Optional Targets
+~~~~~~~~~~~~~~~~
+
+For development builds, you will often want to enable additional targets in
+enable to exercise your changes, using the following ``cmake`` options.
+
+* ``-DPAIMON_BUILD_TESTS=ON``: Build executable unit tests.
+
+Optional Checks
+~~~~~~~~~~~~~~~
+
+The following special checks are available as well.  They instrument the
+generated code in various ways so as to detect select classes of problems
+at runtime (for example when executing unit tests).
+
+* ``-DPAIMON_USE_ASAN=ON``: Enable Address Sanitizer to check for memory leaks,
+  buffer overflows or other kinds of memory management issues.
+* ``-DPAIMON_USE_UBSAN=ON``: Enable Undefined Behavior Sanitizer to check for
+  situations which trigger C++ undefined behavior.
+
+Some of those options are mutually incompatible, so you may have to build
+several times with different options if you want to exercise all of them.
+
+CMake version requirements
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We support CMake 3.22 and higher.
+
+LLVM and Clang Tools
+~~~~~~~~~~~~~~~~~~~~
+
+We currently use LLVM for library builds and for developer tools such as code
+formatting with clang-format. LLVM can be installed via most modern package
+managers (apt, yum, etc.).
+
+Environment variables
+~~~~~~~~~~~~~~~~~~~~~
+
+The build system and helper scripts accept several environment variables that
+can alter fetch and build behaviour without changing CMake flags. These are
+especially useful when you want to use a local or corporate mirror for
+third-party archives, or to override a specific dependency's download URL.
+
+Common environment variables
+----------------------------
+
+* ``PAIMON_THIRDPARTY_MIRROR_URL``
+
+  When set, this string is used as a prefix for the default third-party
+  download URLs. For example, if a dependency would normally be downloaded
+  from
+
+  ``https://github.com/fmtlib/fmt/archive/refs/tags/${PAIMON_FMT_BUILD_VERSION}.tar.gz``
+
+  and ``PAIMON_THIRDPARTY_MIRROR_URL`` is set to
+
+  ``https://mirror.example.com/paimon/thirdparty/``, the build system will
+  attempt to download from
+
+  ``https://mirror.example.com/paimon/thirdparty/https://github.com/fmtlib/fmt/archive/refs/tags/${PAIMON_FMT_BUILD_VERSION}.tar.gz``
+
+  (the exact concatenation semantics follow the third-party fetch helpers
+  defined in ``cmake_modules/ThirdpartyToolchain.cmake``). If you set a
+  mirror URL, prefer including a trailing slash to avoid accidental URL
+  concatenation issues.
+
+* Per-dependency override variables (examples)
+
+  Many dependencies support overriding their download URL via a dedicated
+  environment variable. Examples implemented in the CMake helper include:
+
+  - ``PAIMON_FMT_URL`` to override the fmt archive URL
+  - ``PAIMON_RAPIDJSON_URL`` to override RapidJSON download URL
+  - ``PAIMON_ZLIB_URL``, ``PAIMON_ZSTD_URL``, ``PAIMON_LZ4_URL`` etc.
+
+  If one of these per-dependency environment variables is defined, it will
+  take precedence over the mirror prefix. Use these variables to precisely
+  control where a given dependency is fetched from.
+
+Usage examples
+--------------
+
+Use a mirror for all third-party downloads:
+
+.. code-block:: shell
+
+   export PAIMON_THIRDPARTY_MIRROR_URL="https://mirror.example.com/paimon/thirdparty/"
+   mkdir build
+   cd build
+   cmake -DPAIMON_BUILD_TESTS=ON ..
+
+Override only a single dependency (fmt):
+
+.. code-block:: shell
+
+   export PAIMON_FMT_URL="https://internal.example.com/archives/fmt-8.1.1.tar.gz"
+   mkdir build
+   cd build
+   cmake ..
+
+.. note::
+
+  The exact fetch behaviour (how the mirror prefix is concatenated, or whether the helper expects a full URL vs. a prefix)
+  is implemented in ``cmake_modules/ThirdpartyToolchain.cmake``. Consult that file when you need a custom setup.
+  Unset an environment variable to revert to the default upstream download locations: ``unset PAIMON_THIRDPARTY_MIRROR_URL``

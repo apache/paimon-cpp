@@ -1,0 +1,86 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_realtime_commit_progress" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::RealtimeCommitProgress</compoundname>
+    <includes refid="realtime__commit__progress_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_commit_progress_1aa5aa0332f295fb5a949defa9c6c4dc04" prot="public" static="no" mutable="no">
+        <type>std::shared_ptr&lt; <ref refid="classpaimon_1_1_commit_message" kindref="compound">CommitMessage</ref> &gt;</type>
+        <definition>std::shared_ptr&lt;CommitMessage&gt; paimon::RealtimeCommitProgress::commit_message</definition>
+        <argsstring></argsstring>
+        <name>commit_message</name>
+        <qualifiedname>paimon::RealtimeCommitProgress::commit_message</qualifiedname>
+        <briefdescription>
+<para>Paimon commit message generated from one sealed segment. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" line="39" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" bodystart="39" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_commit_progress_1ad74803d2287001e0e976b7f624ef7548" prot="public" static="no" mutable="no">
+        <type><ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref></type>
+        <definition>RealtimePartitionBucket paimon::RealtimeCommitProgress::partition_bucket</definition>
+        <argsstring></argsstring>
+        <name>partition_bucket</name>
+        <qualifiedname>paimon::RealtimeCommitProgress::partition_bucket</qualifiedname>
+        <briefdescription>
+<para>Partition-bucket containing the sealed segment. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" line="41" column="29" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" bodystart="41" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_commit_progress_1a1c001040b6dd0bad361458703b20de0a" prot="public" static="no" mutable="no">
+        <type><ref refid="structpaimon_1_1_offset_range" kindref="compound">OffsetRange</ref></type>
+        <definition>OffsetRange paimon::RealtimeCommitProgress::offset_range</definition>
+        <argsstring></argsstring>
+        <name>offset_range</name>
+        <qualifiedname>paimon::RealtimeCommitProgress::offset_range</qualifiedname>
+        <briefdescription>
+<para>Left-closed, right-open offset range represented by the commit message. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" line="43" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" bodystart="43" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A real-time commit message and its partition-bucket offset progress. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Offsets are scoped to one partition and bucket. <computeroutput>offset_range</computeroutput> is left-closed and right-open and bounds all offsets represented by <computeroutput>commit_message</computeroutput>. Offsets may have gaps, so the range count is not the represented row count. The progress fields are not embedded in <computeroutput><ref refid="classpaimon_1_1_commit_message" kindref="compound">CommitMessage</ref></computeroutput> serialization. </para>
+    </detaileddescription>
+    <collaborationgraph>
+      <node id="3">
+        <label>paimon::OffsetRange</label>
+        <link refid="structpaimon_1_1_offset_range"/>
+      </node>
+      <node id="1">
+        <label>paimon::RealtimeCommitProgress</label>
+        <link refid="structpaimon_1_1_realtime_commit_progress"/>
+        <childnode refid="2" relation="usage">
+          <edgelabel>partition_bucket</edgelabel>
+        </childnode>
+        <childnode refid="3" relation="usage">
+          <edgelabel>offset_range</edgelabel>
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::RealtimePartitionBucket</label>
+        <link refid="structpaimon_1_1_realtime_partition_bucket"/>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" line="37" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_commit_progress.h" bodystart="37" bodyend="44"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_realtime_commit_progress_1aa5aa0332f295fb5a949defa9c6c4dc04" prot="public" virt="non-virtual"><scope>paimon::RealtimeCommitProgress</scope><name>commit_message</name></member>
+      <member refid="structpaimon_1_1_realtime_commit_progress_1a1c001040b6dd0bad361458703b20de0a" prot="public" virt="non-virtual"><scope>paimon::RealtimeCommitProgress</scope><name>offset_range</name></member>
+      <member refid="structpaimon_1_1_realtime_commit_progress_1ad74803d2287001e0e976b7f624ef7548" prot="public" virt="non-virtual"><scope>paimon::RealtimeCommitProgress</scope><name>partition_bucket</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

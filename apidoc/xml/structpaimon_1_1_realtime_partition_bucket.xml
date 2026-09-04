@@ -1,0 +1,136 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_realtime_partition_bucket" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::RealtimePartitionBucket</compoundname>
+    <includes refid="realtime__context_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_partition_bucket_1a29ab4daf7fb0c0f8eef28facf7411323" prot="public" static="no" mutable="no">
+        <type>std::map&lt; std::string, std::string &gt;</type>
+        <definition>std::map&lt;std::string, std::string&gt; paimon::RealtimePartitionBucket::partition</definition>
+        <argsstring></argsstring>
+        <name>partition</name>
+        <qualifiedname>paimon::RealtimePartitionBucket::partition</qualifiedname>
+        <briefdescription>
+<para>Logical partition values, before partition-path escaping. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="60" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="60" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_realtime_partition_bucket_1af6222a4e83ea203dc3ff17d9811372e3" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>int32_t paimon::RealtimePartitionBucket::bucket</definition>
+        <argsstring></argsstring>
+        <name>bucket</name>
+        <qualifiedname>paimon::RealtimePartitionBucket::bucket</qualifiedname>
+        <initializer>= -1</initializer>
+        <briefdescription>
+<para>Fixed bucket id. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="62" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="62" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="structpaimon_1_1_realtime_partition_bucket_1a2a15f779b839f7679096fc105ec3df5e" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimePartitionBucket::RealtimePartitionBucket</definition>
+        <argsstring>(std::map&lt; std::string, std::string &gt; partition, int32_t bucket)</argsstring>
+        <name>RealtimePartitionBucket</name>
+        <qualifiedname>paimon::RealtimePartitionBucket::RealtimePartitionBucket</qualifiedname>
+        <param>
+          <type>std::map&lt; std::string, std::string &gt;</type>
+          <declname>partition</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+          <declname>bucket</declname>
+        </param>
+        <briefdescription>
+<para>Creates a key from logical partition values and a fixed bucket id. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="38" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="38" bodyend="39"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_realtime_partition_bucket_1af8964b4cb535a137ea134bce3eb5bc30" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::RealtimePartitionBucket::operator&lt;</definition>
+        <argsstring>(const RealtimePartitionBucket &amp;other) const</argsstring>
+        <name>operator&lt;</name>
+        <qualifiedname>paimon::RealtimePartitionBucket::operator&lt;</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+<para>Orders keys by partition values and then bucket id. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="42" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="42" bodyend="47"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_realtime_partition_bucket_1aabb217c3cbcfd56ed684b62f4855fa90" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::RealtimePartitionBucket::operator==</definition>
+        <argsstring>(const RealtimePartitionBucket &amp;other) const</argsstring>
+        <name>operator==</name>
+        <qualifiedname>paimon::RealtimePartitionBucket::operator==</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+<para>Returns whether both partition values and bucket id are equal. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="50" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="50" bodyend="52"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_realtime_partition_bucket_1a7742298973333542aa4fae98bffe337c" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::RealtimePartitionBucket::operator!=</definition>
+        <argsstring>(const RealtimePartitionBucket &amp;other) const</argsstring>
+        <name>operator!=</name>
+        <qualifiedname>paimon::RealtimePartitionBucket::operator!=</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_realtime_partition_bucket" kindref="compound">RealtimePartitionBucket</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+<para>Returns whether the partition values or bucket id differ. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="55" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="55" bodyend="57"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Identifies one partition-bucket by its logical partition values. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="36" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="36" bodyend="63"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_realtime_partition_bucket_1af6222a4e83ea203dc3ff17d9811372e3" prot="public" virt="non-virtual"><scope>paimon::RealtimePartitionBucket</scope><name>bucket</name></member>
+      <member refid="structpaimon_1_1_realtime_partition_bucket_1a7742298973333542aa4fae98bffe337c" prot="public" virt="non-virtual"><scope>paimon::RealtimePartitionBucket</scope><name>operator!=</name></member>
+      <member refid="structpaimon_1_1_realtime_partition_bucket_1af8964b4cb535a137ea134bce3eb5bc30" prot="public" virt="non-virtual"><scope>paimon::RealtimePartitionBucket</scope><name>operator&lt;</name></member>
+      <member refid="structpaimon_1_1_realtime_partition_bucket_1aabb217c3cbcfd56ed684b62f4855fa90" prot="public" virt="non-virtual"><scope>paimon::RealtimePartitionBucket</scope><name>operator==</name></member>
+      <member refid="structpaimon_1_1_realtime_partition_bucket_1a29ab4daf7fb0c0f8eef28facf7411323" prot="public" virt="non-virtual"><scope>paimon::RealtimePartitionBucket</scope><name>partition</name></member>
+      <member refid="structpaimon_1_1_realtime_partition_bucket_1a2a15f779b839f7679096fc105ec3df5e" prot="public" virt="non-virtual"><scope>paimon::RealtimePartitionBucket</scope><name>RealtimePartitionBucket</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

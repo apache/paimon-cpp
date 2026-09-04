@@ -1,0 +1,156 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_special_field_ids" kind="class" language="C++" prot="public">
+    <compoundname>paimon::SpecialFieldIds</compoundname>
+    <includes refid="special__field__ids_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h</includes>
+    <sectiondef kind="protected-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" prot="protected" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::CPP_FIELD_ID_END</definition>
+        <argsstring></argsstring>
+        <name>CPP_FIELD_ID_END</name>
+        <qualifiedname>paimon::SpecialFieldIds::CPP_FIELD_ID_END</qualifiedname>
+        <initializer>= std::numeric_limits&lt;<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref>&gt;::max() - 10000</initializer>
+        <briefdescription>
+<para>System defined constant for field id boundary. Value: INT32_MAX - 10000. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="31" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="31" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1a60db8ef8362514ddae9c8f09fb96c0a9" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::SEQUENCE_NUMBER</definition>
+        <argsstring></argsstring>
+        <name>SEQUENCE_NUMBER</name>
+        <qualifiedname>paimon::SpecialFieldIds::SEQUENCE_NUMBER</qualifiedname>
+        <initializer>= std::numeric_limits&lt;<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref>&gt;::max() - 1</initializer>
+        <briefdescription>
+<para>Special field ID reserved for sequence number. Value: INT32_MAX - 1. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="35" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="35" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1a66a717dc0735bf0d13698a7bb3e4b863" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::VALUE_KIND</definition>
+        <argsstring></argsstring>
+        <name>VALUE_KIND</name>
+        <qualifiedname>paimon::SpecialFieldIds::VALUE_KIND</qualifiedname>
+        <initializer>= std::numeric_limits&lt;<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref>&gt;::max() - 2</initializer>
+        <briefdescription>
+<para>Special field ID reserved for value kind. Value: INT32_MAX - 2. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="37" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="37" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1ac5dac77a4a0bbdd38cc89da32362c103" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::ROW_KIND</definition>
+        <argsstring></argsstring>
+        <name>ROW_KIND</name>
+        <qualifiedname>paimon::SpecialFieldIds::ROW_KIND</qualifiedname>
+        <initializer>= std::numeric_limits&lt;<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref>&gt;::max() - 3</initializer>
+        <briefdescription>
+<para>Special field ID reserved for row kind. Value: INT32_MAX - 3. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="39" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="39" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1a0843959789b9bdb37f5916cfee6b2dc4" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::ROW_ID</definition>
+        <argsstring></argsstring>
+        <name>ROW_ID</name>
+        <qualifiedname>paimon::SpecialFieldIds::ROW_ID</qualifiedname>
+        <initializer>= std::numeric_limits&lt;<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref>&gt;::max() - 5</initializer>
+        <briefdescription>
+<para>Special field ID reserved for row ID. Value: INT32_MAX - 5. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="41" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="41" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1a17151d6b0f70588133b969014e009c87" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::INDEX_SCORE</definition>
+        <argsstring></argsstring>
+        <name>INDEX_SCORE</name>
+        <qualifiedname>paimon::SpecialFieldIds::INDEX_SCORE</qualifiedname>
+        <initializer>= <ref refid="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" kindref="member">CPP_FIELD_ID_END</ref> - 1</initializer>
+        <briefdescription>
+<para>Special field ID reserved for index score. Value: CPP_FIELD_ID_END - 1. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="44" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="44" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1a3a36bd8aa1c0a5fd3ed12743724a8125" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::REALTIME_OFFSET</definition>
+        <argsstring></argsstring>
+        <name>REALTIME_OFFSET</name>
+        <qualifiedname>paimon::SpecialFieldIds::REALTIME_OFFSET</qualifiedname>
+        <initializer>= <ref refid="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" kindref="member">CPP_FIELD_ID_END</ref> - 2</initializer>
+        <briefdescription>
+<para>Special field ID reserved for realtime offset. Value: CPP_FIELD_ID_END - 2. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="46" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="46" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_special_field_ids_1a733b95bd0449e32a1416d3cd79c48667" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+        <definition>constexpr int32_t paimon::SpecialFieldIds::SYSTEM_FIELD_ID_START</definition>
+        <argsstring></argsstring>
+        <name>SYSTEM_FIELD_ID_START</name>
+        <qualifiedname>paimon::SpecialFieldIds::SYSTEM_FIELD_ID_START</qualifiedname>
+        <initializer>= std::numeric_limits&lt;<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref>&gt;::max() / 2</initializer>
+        <briefdescription>
+<para>Lowest field ID reserved for system fields; IDs at or above it are excluded from the highest field ID of a schema. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Value: INT32_MAX / 2 </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="50" column="37" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="50" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A utility class for accessing special field IDs used in metadata. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" line="28" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/special_field_ids.h" bodystart="28" bodyend="51"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_special_field_ids_1a6e76e7a190695b6ed2b81f90c7517ba0" prot="protected" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>CPP_FIELD_ID_END</name></member>
+      <member refid="classpaimon_1_1_special_field_ids_1a17151d6b0f70588133b969014e009c87" prot="public" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>INDEX_SCORE</name></member>
+      <member refid="classpaimon_1_1_special_field_ids_1a3a36bd8aa1c0a5fd3ed12743724a8125" prot="public" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>REALTIME_OFFSET</name></member>
+      <member refid="classpaimon_1_1_special_field_ids_1a0843959789b9bdb37f5916cfee6b2dc4" prot="public" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>ROW_ID</name></member>
+      <member refid="classpaimon_1_1_special_field_ids_1ac5dac77a4a0bbdd38cc89da32362c103" prot="public" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>ROW_KIND</name></member>
+      <member refid="classpaimon_1_1_special_field_ids_1a60db8ef8362514ddae9c8f09fb96c0a9" prot="public" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>SEQUENCE_NUMBER</name></member>
+      <member refid="classpaimon_1_1_special_field_ids_1a733b95bd0449e32a1416d3cd79c48667" prot="public" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>SYSTEM_FIELD_ID_START</name></member>
+      <member refid="classpaimon_1_1_special_field_ids_1a66a717dc0735bf0d13698a7bb3e4b863" prot="public" virt="non-virtual"><scope>paimon::SpecialFieldIds</scope><name>VALUE_KIND</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
