@@ -101,16 +101,16 @@ TEST(ScanContextTest, TestSetOptionsOverridesAddedOptions) {
     ASSERT_EQ(expected_options, ctx->GetOptions());
 }
 
-TEST(ScanContextTest, TestDefaultExecutorIsGlobalSingleton) {
-    // A builder without WithExecutor() must not own executor threads of its
-    // own: every context falls back to the process wide default executor.
+TEST(ScanContextTest, TestDefaultExecutorIsCreatedPerContext) {
+    // A builder without WithExecutor() gives every context a default executor
+    // of its own; nothing is shared across contexts.
     ScanContextBuilder first_builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto first_ctx, first_builder.Finish());
     ScanContextBuilder second_builder("table_root_path");
     ASSERT_OK_AND_ASSIGN(auto second_ctx, second_builder.Finish());
     ASSERT_TRUE(first_ctx->GetExecutor());
-    ASSERT_EQ(GetGlobalDefaultExecutor(), first_ctx->GetExecutor());
-    ASSERT_EQ(first_ctx->GetExecutor(), second_ctx->GetExecutor());
+    ASSERT_TRUE(second_ctx->GetExecutor());
+    ASSERT_NE(first_ctx->GetExecutor(), second_ctx->GetExecutor());
 
     // Finish() resets the builder; an explicit executor set before does not
     // leak into the next context built from the same builder.
@@ -119,7 +119,8 @@ TEST(ScanContextTest, TestDefaultExecutorIsGlobalSingleton) {
     ASSERT_OK_AND_ASSIGN(auto explicit_ctx, first_builder.Finish());
     ASSERT_EQ(executor, explicit_ctx->GetExecutor());
     ASSERT_OK_AND_ASSIGN(auto reset_ctx, first_builder.Finish());
-    ASSERT_EQ(GetGlobalDefaultExecutor(), reset_ctx->GetExecutor());
+    ASSERT_TRUE(reset_ctx->GetExecutor());
+    ASSERT_NE(executor, reset_ctx->GetExecutor());
 }
 
 }  // namespace paimon::test
