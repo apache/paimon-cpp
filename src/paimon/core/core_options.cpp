@@ -398,6 +398,7 @@ struct CoreOptions::Impl {
     int32_t manifest_merge_min_count = 30;
     int32_t scan_manifest_entry_cache_max_snapshots = 0;
     int32_t read_batch_size = 1024;
+    int32_t reader_build_max_parallel_num = 4;
     int32_t write_batch_size = 1024;
     int32_t local_sort_max_num_file_handles = 128;
     int32_t commit_max_retries = 10;
@@ -499,6 +500,13 @@ struct CoreOptions::Impl {
                                                     &source_split_open_file_cost));
         // Parse read.batch-size - read batch size for file formats
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::READ_BATCH_SIZE, &read_batch_size));
+        // Parse read.reader-build.max-parallel-num - readers built in parallel within one split
+        PAIMON_RETURN_NOT_OK(parser.Parse<int32_t>(Options::READ_READER_BUILD_MAX_PARALLEL_NUM,
+                                                   &reader_build_max_parallel_num));
+        if (reader_build_max_parallel_num < 1) {
+            return Status::Invalid(fmt::format("{} should be at least 1",
+                                               Options::READ_READER_BUILD_MAX_PARALLEL_NUM));
+        }
         // Parse write.batch-size - write batch size for file formats
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::WRITE_BATCH_SIZE, &write_batch_size));
         // Parse write-buffer-size - data to build up in memory before flushing to disk
@@ -1402,6 +1410,10 @@ bool CoreOptions::EnableAdaptivePrefetchStrategy() const {
 
 bool CoreOptions::PrefetchIoMetricsEnabled() const {
     return impl_->prefetch_io_metrics_enabled;
+}
+
+uint32_t CoreOptions::GetReaderBuildMaxParallelNum() const {
+    return static_cast<uint32_t>(impl_->reader_build_max_parallel_num);
 }
 
 Result<std::optional<std::string>> CoreOptions::GetFieldAggFunc(

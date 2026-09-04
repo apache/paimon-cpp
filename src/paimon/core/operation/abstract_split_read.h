@@ -102,6 +102,14 @@ class AbstractSplitRead : public SplitRead {
         const std::optional<std::vector<std::string>>& write_cols);
 
  private:
+    // return nullptr if data file is skipped by index or dv
+    Result<std::unique_ptr<FileBatchReader>> CreateRawFileReader(
+        const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+        const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
+        const std::optional<std::vector<Range>>& row_ranges,
+        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+        const std::map<std::string, std::string>& extra_format_options) const;
+
     Result<std::unique_ptr<ReaderBuilder>> PrepareReaderBuilder(
         const std::string& format_identifier,
         const std::map<std::string, std::string>& extra_format_options) const;

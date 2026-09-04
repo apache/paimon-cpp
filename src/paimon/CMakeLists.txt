@@ -63,6 +63,7 @@ set(PAIMON_COMMON_SRCS
     common/data/variant/variant_type_utils.cpp
     common/defs.cpp
     common/executor/executor.cpp
+    common/executor/reader_build_executor.cpp
     common/factories/singleton.cpp
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp

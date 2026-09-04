@@ -20,6 +20,7 @@
 #include "paimon/core/schema/schema_manager.h"
 
 #include <algorithm>
+#include <mutex>
 #include <utility>
 
 #include "paimon/common/utils/path_util.h"
@@ -69,6 +70,11 @@ Result<std::optional<std::shared_ptr<TableSchema>>> SchemaManager::Latest() cons
 }
 
 Result<std::shared_ptr<TableSchema>> SchemaManager::ReadSchema(int64_t schema_id) const {
+    // Readers of one split are built concurrently and files written under different schema
+    // ids all land here, so the cache is guarded. The lock is held across the file read to
+    // keep this a plain read-modify-write; contention is negligible because the caller only
+    // gets here for a file whose schema id differs from the table schema.
+    std::lock_guard<std::mutex> lock(schema_cache_mutex_);
     auto iter = schema_cache_.find(schema_id);
     if (iter != schema_cache_.end()) {
         return iter->second;

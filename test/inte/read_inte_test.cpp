@@ -2821,6 +2821,62 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolution) {
     }
 }
 
+// Building a reader for a file written under an older schema goes through SchemaManager, and the
+// readers of one split are built concurrently. Every split here mixes both schema ids, so the
+// parallel build has to produce exactly what the serial build produces.
+TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithReaderBuildParallelism) {
+    auto param = GetParam();
+    std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
+                       "/append_table_with_alter_table.db/append_table_with_alter_table/";
+
+    std::vector<std::string> file_list_0;
+    std::vector<std::string> file_list_1;
+    if (param.file_format == "orc") {
+        file_list_0 = {"data-2190cec3-ce87-4175-8d19-9268becf4440-0.orc",
+                       "data-b34cd128-03e3-4e70-ba9c-5dec2183849c-0.orc"};
+        file_list_1 = {"data-13824b84-8572-4a20-b712-c0475d1828b4-0.orc",
+                       "data-492ed5ab-4740-4e93-8a0a-79a6893b1770-0.orc"};
+    } else if (param.file_format == "parquet") {
+        file_list_0 = {"data-512651de-64b5-4a10-8068-65403aaccdb8-0.parquet",
+                       "data-1aaec161-5365-426f-b33d-3cd99a3908f2-0.parquet"};
+        file_list_1 = {"data-11b12094-192f-4ad8-92a8-ae8cba5e25ef-0.parquet",
+                       "data-9dfb749f-0509-4db2-ae7b-1e4448b32165-0.parquet"};
+    }
+
+    DataSplitsSchema input_data_splits = {
+        {path + "key0=0/key1=1/bucket-0", BinaryRowGenerator::GenerateRow({0, 1}, pool_.get()),
+         file_list_0,
+         /*schema ids*/ {0, 1}},
+        {path + "key0=1/key1=1/bucket-0", BinaryRowGenerator::GenerateRow({1, 1}, pool_.get()),
+         file_list_1,
+         /*schema ids*/ {1, 0}}};
+    auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
+
+    auto read_with_parallelism = [&](const std::string& parallel_num,
+                                     std::shared_ptr<arrow::ChunkedArray>* result_array) {
+        ReadContextBuilder context_builder(path);
+        context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
+        context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
+            .AddOption("read.batch-size", "2")
+            .AddOption(Options::READ_READER_BUILD_MAX_PARALLEL_NUM, parallel_num);
+        context_builder.EnablePrefetch(param.enable_prefetch)
+            .AddOption("test.enable-adaptive-prefetch-strategy",
+                       param.enable_adaptive_prefetch_strategy);
+        ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
+        ASSERT_OK_AND_ASSIGN(*result_array,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
+    };
+
+    std::shared_ptr<arrow::ChunkedArray> serial_result;
+    read_with_parallelism("1", &serial_result);
+    std::shared_ptr<arrow::ChunkedArray> parallel_result;
+    read_with_parallelism("4", &parallel_result);
+    ASSERT_TRUE(serial_result);
+    ASSERT_TRUE(serial_result->Equals(*parallel_result)) << parallel_result->ToString();
+}
+
 TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateFilter) {
     std::vector<DataField> read_fields = {DataField(5, arrow::field("a", arrow::int32())),
                                           DataField(6, arrow::field("k", arrow::int32())),

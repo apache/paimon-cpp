@@ -18,8 +18,10 @@
 
 #include "paimon/core/operation/abstract_split_read.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <future>
 #include <map>
 #include <set>
 #include <utility>
@@ -32,6 +34,8 @@
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/shredding_file_reader.h"
 #include "paimon/common/data/variant/variant_shredding_read_plan_factory.h"
+#include "paimon/common/executor/future.h"
+#include "paimon/common/executor/reader_build_executor.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
 #include "paimon/common/reader/late_materializing_reader_builder.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
@@ -62,6 +66,29 @@ class FileStorePathFactory;
 class MemoryPool;
 class Predicate;
 
+namespace {
+
+/// Set while a thread is building one data file reader. Building a reader may reach
+/// `CreateRawFileReaders` again, and that nested call has to stay serial: it would
+/// otherwise submit tasks to the reader build pool and block a worker of that same
+/// pool waiting for them.
+thread_local bool building_reader = false;
+
+class BuildingReaderGuard {
+ public:
+    BuildingReaderGuard() {
+        building_reader = true;
+    }
+    ~BuildingReaderGuard() {
+        building_reader = false;
+    }
+
+    BuildingReaderGuard(const BuildingReaderGuard&) = delete;
+    BuildingReaderGuard& operator=(const BuildingReaderGuard&) = delete;
+};
+
+}  // namespace
+
 AbstractSplitRead::AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
                                      const std::shared_ptr<InternalReadContext>& context,
                                      std::unique_ptr<SchemaManager>&& schema_manager,
@@ -91,21 +118,68 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
 
     std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers;
     raw_file_readers.reserve(data_files.size());
+    const uint32_t parallel_num = static_cast<uint32_t>(
+        std::min<size_t>(options_.GetReaderBuildMaxParallelNum(), data_files.size()));
+    if (parallel_num <= 1 || building_reader) {
+        for (const auto& file : data_files) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<FileBatchReader> file_reader,
+                CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
+                                    row_ranges, data_file_path_factory, extra_format_options));
+            if (file_reader) {
+                raw_file_readers.push_back(std::move(file_reader));
+            }
+        }
+        return std::move(raw_file_readers);
+    }
+
+    // Opening a file, reading its footer and building the reader is mostly waiting on remote
+    // I/O, so files are built concurrently. The tasks only reference locals of this frame,
+    // which stay alive because CollectAll below drains every future before returning.
+    std::shared_ptr<Executor> build_executor = GetReaderBuildExecutor(parallel_num);
+    std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
+    futures.reserve(data_files.size());
     for (const auto& file : data_files) {
-        auto data_file_path = data_file_path_factory->ToPath(file);
-        PAIMON_ASSIGN_OR_RAISE(std::string data_file_identifier, file->FileFormat());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> reader_builder,
-                               PrepareReaderBuilder(data_file_identifier, extra_format_options));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<FileBatchReader> file_reader,
-            CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
-                                     field_mapping_builder.get(), dv_factory, row_ranges,
-                                     data_file_path_factory));
+        futures.push_back(Via(
+            build_executor.get(), [this, file, &partition, &field_mapping_builder, &dv_factory,
+                                   &row_ranges, &data_file_path_factory, &extra_format_options]() {
+                BuildingReaderGuard guard;
+                return CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
+                                           row_ranges, data_file_path_factory,
+                                           extra_format_options);
+            }));
+    }
+    // Readers keep the file order of the split, and CollectAll preserves the submit order.
+    Status first_error;
+    for (auto& built : CollectAll(futures)) {
+        if (!built.ok()) {
+            if (first_error.ok()) {
+                first_error = built.status();
+            }
+            continue;
+        }
+        std::unique_ptr<FileBatchReader> file_reader = std::move(built).value();
         if (file_reader) {
             raw_file_readers.push_back(std::move(file_reader));
         }
     }
+    PAIMON_RETURN_NOT_OK(first_error);
     return std::move(raw_file_readers);
+}
+
+Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateRawFileReader(
+    const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+    const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
+    const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::map<std::string, std::string>& extra_format_options) const {
+    auto data_file_path = data_file_path_factory->ToPath(file);
+    PAIMON_ASSIGN_OR_RAISE(std::string data_file_identifier, file->FileFormat());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> reader_builder,
+                           PrepareReaderBuilder(data_file_identifier, extra_format_options));
+    return CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
+                                    field_mapping_builder, dv_factory, row_ranges,
+                                    data_file_path_factory);
 }
 
 bool AbstractSplitRead::NeedCompleteRowTrackingFields(
