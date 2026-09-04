@@ -193,8 +193,24 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
         // Compact the payload superset down to the matched rows (ascending file row order).
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
                                ReaderUtils::GenerateFilteredArrayVector(payload_array, valid));
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_compacted,
-                                          arrow::Concatenate(payload_slices, arrow_pool_.get()));
+        std::shared_ptr<arrow::Array> payload_compacted;
+        if (payload_slices.size() == 1) {
+            // A single run has nothing to merge, so the only thing `Concatenate` would add is
+            // moving it back to offset zero -- and `AssembleFullBatch` already normalizes every
+            // column it takes, per column and only where an offset survives. Handing the slice over
+            // instead lets a run that starts at the batch head (a page-filtered range predicate
+            // usually matches the whole batch) reach the output without copying the payload bytes a
+            // second time on top of the pass the format decoder already paid. A run that starts
+            // mid-batch is still copied, by the normalization rather than here, so this is never
+            // worse. Where it does stay zero-copy the slice keeps the batch's buffers alive until
+            // the consumer releases the assembled batch; that only exceeds the matched rows when
+            // the run starts at the head without reaching the end, and stays bounded by the batch
+            // size times the prefetch queue depth.
+            payload_compacted = std::move(payload_slices.front());
+        } else {
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                payload_compacted, arrow::Concatenate(payload_slices, arrow_pool_.get()));
+        }
 
         auto card = static_cast<int64_t>(valid.Cardinality());
         if (probe_cursor_ + card > probe_data_->length()) {
