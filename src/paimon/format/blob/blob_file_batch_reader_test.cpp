@@ -18,6 +18,7 @@
 
 #include "paimon/format/blob/blob_file_batch_reader.h"
 
+#include <algorithm>
 #include <string_view>
 
 #include "arrow/api.h"
@@ -154,6 +155,28 @@ class BlobFileBatchReaderTest : public testing::Test, public ::testing::WithPara
             return std::string();
         }
         return std::string(value->data(), value->size());
+    }
+
+    void CheckMapBlobReadFails(const std::string& file_bytes,
+                               const std::shared_ptr<arrow::DataType>& key_type,
+                               const std::string& expected_message) {
+        auto dir = paimon::test::UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        const std::string file_path = dir->Str() + "/corrupt-map.blob";
+        std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
+        ASSERT_OK(file_system->WriteFile(file_path, file_bytes, /*overwrite=*/true));
+
+        auto map_type = arrow::map(key_type, BlobUtils::ToArrowField("value", /*nullable=*/true));
+        auto schema = arrow::schema({arrow::field("blob_map", map_type)});
+        ::ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system->Open(file_path));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobFileBatchReader> reader,
+                             BlobFileBatchReader::Create(
+                                 input, /*batch_size=*/1, /*blob_as_descriptor=*/false,
+                                 /*emit_placeholder_sentinel=*/false, pool_, GetArrowPool(pool_)));
+        ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+        ASSERT_NOK_WITH_MSG(reader->NextBatch(), expected_message);
     }
 
  private:
@@ -411,6 +434,51 @@ TEST_F(BlobFileBatchReaderTest, RejectsNullMapKey) {
                              /*emit_placeholder_sentinel=*/false, pool_, GetArrowPool(pool_)));
     ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
     ASSERT_NOK_WITH_MSG(reader->NextBatch(), "MAP<..., BLOB> keys cannot be null");
+}
+
+TEST_F(BlobFileBatchReaderTest, RejectsCorruptMapPayloadMetadata) {
+    // The Java golden's first bin starts with the outer BLOB magic (4 bytes), followed by a
+    // 45-byte MAP payload: header [4, 13), key/value data [13, 35), indexes [35, 41), and the
+    // two index lengths [41, 49). Mutating the payload does not require updating the outer CRC,
+    // which BlobFileBatchReader intentionally does not validate.
+    const std::string golden = MapBlobGoldenBytes();
+
+    std::string corrupted = golden;
+    corrupted[4] = 0;
+    CheckMapBlobReadFails(corrupted, arrow::utf8(), "invalid MAP<..., BLOB> payload magic number");
+
+    corrupted = golden;
+    corrupted[8] = 2;
+    CheckMapBlobReadFails(corrupted, arrow::utf8(), "unsupported MAP<..., BLOB> payload version");
+
+    corrupted = golden;
+    std::fill(corrupted.begin() + 9, corrupted.begin() + 13, static_cast<char>(0xFF));
+    CheckMapBlobReadFails(corrupted, arrow::utf8(), "invalid MAP<..., BLOB> entry count");
+
+    corrupted = golden;
+    corrupted[41] = static_cast<char>(0xFF);
+    CheckMapBlobReadFails(corrupted, arrow::utf8(), "invalid MAP<..., BLOB> key index length");
+
+    corrupted = golden;
+    corrupted[9] = 2;
+    CheckMapBlobReadFails(corrupted, arrow::utf8(), "entry count does not match key index length");
+
+    CheckMapBlobReadFails(golden, arrow::int32(), "invalid MAP<..., BLOB> fixed-width key length");
+
+    corrupted = golden;
+    corrupted[38] = 0x0C;
+    corrupted[39] = 0x0B;
+    CheckMapBlobReadFails(corrupted, arrow::utf8(), "value lengths exceed the payload data length");
+
+    corrupted = golden;
+    corrupted[38] = 0x08;
+    corrupted[39] = 0x07;
+    CheckMapBlobReadFails(corrupted, arrow::utf8(),
+                          "key/value lengths do not match the payload data length");
+
+    corrupted = golden;
+    std::copy_n(corrupted.begin() + 13, 5, corrupted.begin() + 18);
+    CheckMapBlobReadFails(corrupted, arrow::utf8(), "payload: duplicate key");
 }
 
 TEST_P(BlobFileBatchReaderTest, TestPushdownBitmap) {
