@@ -255,8 +255,12 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
         return Status::Invalid("real-time union read does not support global index splits");
     }
     StartupMode startup_mode = core_options.GetStartupMode();
-    if (!(startup_mode == StartupMode::LatestFull() || startup_mode == StartupMode::Latest())) {
-        return Status::Invalid("real-time union read requires the latest snapshot");
+    const bool specified_snapshot =
+        startup_mode == StartupMode::FromSnapshot() && core_options.GetScanSnapshotId().has_value();
+    if (!(startup_mode == StartupMode::LatestFull() || startup_mode == StartupMode::Latest() ||
+          specified_snapshot)) {
+        return Status::Invalid(
+            "real-time union read requires the latest snapshot or an explicit snapshot id");
     }
     return Status::OK();
 }

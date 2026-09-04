@@ -804,10 +804,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                                RealtimeContextImpl::Cast(realtime_context));
-        PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimePartitionBucketView> views,
-                               realtime_context_impl->AcquireReadViews());
+        PAIMON_ASSIGN_OR_RAISE(RealtimeReadState read_state,
+                               realtime_context_impl->AcquireReadState());
         uint64_t memory_usage = 0;
-        for (const RealtimePartitionBucketView& view : views) {
+        for (const RealtimePartitionBucketView& view : read_state.views) {
             memory_usage += view.store->GetMemoryUsage();
         }
         return memory_usage;
@@ -817,8 +817,9 @@ class RealtimeWriteInteTest : public ::testing::Test {
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                                RealtimeContextImpl::Cast(realtime_context));
-        PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimePartitionBucketView> views,
-                               realtime_context_impl->AcquireReadViews());
+        PAIMON_ASSIGN_OR_RAISE(RealtimeReadState read_state,
+                               realtime_context_impl->AcquireReadState());
+        const std::vector<RealtimePartitionBucketView>& views = read_state.views;
         if (views.size() != 1) {
             return Status::Invalid("expected one PK real-time read view");
         }
@@ -1138,6 +1139,51 @@ TEST_F(RealtimeWriteInteTest, TestSparseExternalOffsetsCommitAndRecover) {
     ASSERT_EQ(31, committed_offsets.at(RealtimePartitionBucket(/*partition=*/{}, /*bucket=*/0)));
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
     ASSERT_EQ(rows, actual_rows);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestExplicitSnapshotIdWithSparseTailAndReclaimBoundary) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/10);
+    const std::vector<Row> disk_rows = {{1, "disk", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
+                         MakeBatch(disk_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(disk_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> disk_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t disk_snapshot_id, Commit(disk_progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(disk_snapshot_id));
+
+    // Offset gaps are valid. The snapshot high-watermark is 11 while the next memory row starts at
+    // 30, so a real-time scan must not require the two numeric offsets to be adjacent.
+    ResetExternalOffset(/*partition=*/{}, /*bucket=*/0, /*next_offset=*/30);
+    const std::vector<Row> memory_rows = {{2, "memory", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeBatch(memory_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(memory_batch)));
+
+    options_[Options::SCAN_SNAPSHOT_ID] = std::to_string(disk_snapshot_id);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(disk_snapshot_id, plan->SnapshotId());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
+    ASSERT_EQ((std::vector<Row>{{1, "disk", "p0"}, {2, "memory", "p0"}}), actual_rows);
+
+    options_.erase(Options::SCAN_SNAPSHOT_ID);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> memory_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(int64_t memory_snapshot_id,
+                         Commit(memory_progress, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(memory_snapshot_id));
+
+    options_[Options::SCAN_SNAPSHOT_ID] = std::to_string(disk_snapshot_id);
+    ASSERT_NOK_WITH_MSG(CreatePlan(realtime_context, /*predicate=*/nullptr),
+                        "behind context committed offset");
     ASSERT_OK(writer->Close());
 }
 
@@ -2309,7 +2355,9 @@ TEST_F(RealtimeWriteInteTest, TestPkDvPredicateAcrossHighLevelLevel0AndMemory) {
     std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
         Literal(FieldType::STRING, matching_payload.data(), matching_payload.size()));
+    options_[Options::SCAN_SNAPSHOT_ID] = std::to_string(level0_snapshot_id);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, predicate));
+    ASSERT_EQ(level0_snapshot_id, plan->SnapshotId());
     ASSERT_EQ(1, plan->Splits().size());
     std::shared_ptr<RealtimeSplit> realtime_split =
         std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);

@@ -59,6 +59,11 @@ struct RealtimePartitionBucketView {
     std::shared_ptr<RealtimeReadView> read_view;
 };
 
+struct RealtimeReadState {
+    std::vector<RealtimePartitionBucketView> views;
+    RealtimeOffsetMap committed_offsets;
+};
+
 class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
  public:
     static Result<std::shared_ptr<RealtimeContextImpl>> Create(
@@ -75,7 +80,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     Result<int64_t> AdvanceMaterializedMaxSequenceNumber(
         const RealtimePartitionBucket& partition_bucket, int64_t max_sequence_number);
 
-    Result<std::vector<RealtimePartitionBucketView>> AcquireReadViews();
+    Result<RealtimeReadState> AcquireReadState();
 
     Result<std::string> PinReadView(const RealtimePartitionBucketView& view, int64_t ttl_millis);
 

@@ -177,17 +177,19 @@ Result<int64_t> RealtimeContextImpl::AdvanceMaterializedMaxSequenceNumber(
     return entry.materialized_max_sequence_number;
 }
 
-Result<std::vector<RealtimePartitionBucketView>> RealtimeContextImpl::AcquireReadViews() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<RealtimePartitionBucketView> result;
-    result.reserve(stores_.size());
+Result<RealtimeReadState> RealtimeContextImpl::AcquireReadState() {
+    std::lock_guard<std::mutex> progress_lock(progress_mutex_);
+    std::lock_guard<std::mutex> registry_lock(mutex_);
+    RealtimeReadState result;
+    result.views.reserve(stores_.size());
+    result.committed_offsets = committed_offsets_;
     for (const auto& [partition_bucket, store] : stores_) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
                                store.store->AcquireReadView());
         if (!read_view) {
             return Status::Invalid("real-time store returned a null read view");
         }
-        result.push_back(
+        result.views.push_back(
             RealtimePartitionBucketView{partition_bucket, store.store, std::move(read_view)});
     }
     return result;

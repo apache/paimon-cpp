@@ -254,8 +254,8 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> context,
                                RealtimeContextImpl::Cast(realtime_context));
-        PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimePartitionBucketView> views,
-                               context->AcquireReadViews());
+        PAIMON_ASSIGN_OR_RAISE(RealtimeReadState read_state, context->AcquireReadState());
+        const std::vector<RealtimePartitionBucketView>& views = read_state.views;
         if (views.size() != 1) {
             return Status::Invalid("expected exactly one real-time store");
         }
@@ -620,11 +620,10 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
               store_rows);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context_impl,
                          RealtimeContextImpl::Cast(realtime_context));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context_impl->AcquireReadViews());
-    ASSERT_EQ(1, views.size());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context_impl->AcquireReadState());
+    ASSERT_EQ(1, read_state.views.size());
     ASSERT_EQ(std::optional<OffsetRange>(OffsetRange(max - 1, max)),
-              views[0].read_view->GetOffsetRange());
+              read_state.views[0].read_view->GetOffsetRange());
     ASSERT_OK(writer->Close());
     ASSERT_GE(snapshot_id, 1);
 }

@@ -159,8 +159,8 @@ TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
     ASSERT_NE(first.store, fourth.store);
     ASSERT_EQ(3, factory->stores.size());
 
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context->AcquireReadViews());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context->AcquireReadState());
+    const std::vector<RealtimePartitionBucketView>& views = read_state.views;
     ASSERT_EQ(3, views.size());
     const RealtimePartitionBucket expected_partition_bucket({{"dt", "2026-08-02"}}, 0);
     ASSERT_EQ(expected_partition_bucket, views[0].partition_bucket);
@@ -376,8 +376,8 @@ TEST(RealtimeContextTest, TestPinsResolvesAndReleasesReadViewTicket) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     ASSERT_OK(GetOrCreateAppendStore(context, /*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                      GetDefaultPool()));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context->AcquireReadViews());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context->AcquireReadState());
+    const std::vector<RealtimePartitionBucketView>& views = read_state.views;
     ASSERT_EQ(1, views.size());
 
     ASSERT_NOK_WITH_MSG(context->PinReadView(views[0], /*ttl_millis=*/0),
@@ -400,8 +400,8 @@ TEST(RealtimeContextTest, TestExpiresAbandonedReadViewTicket) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     ASSERT_OK(GetOrCreateAppendStore(context, /*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                      GetDefaultPool()));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context->AcquireReadViews());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context->AcquireReadState());
+    std::vector<RealtimePartitionBucketView>& views = read_state.views;
     ASSERT_EQ(1, views.size());
     std::weak_ptr<RealtimeReadView> weak_view = views[0].read_view;
     ASSERT_OK_AND_ASSIGN(std::string ticket, context->PinReadView(views[0], /*ttl_millis=*/10));
@@ -432,7 +432,7 @@ TEST(RealtimeContextTest, TestRejectsNullPluginResults) {
     ASSERT_OK(GetOrCreateAppendStore(context, /*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                      GetDefaultPool()));
     factory->stores[0]->return_null_read_view = true;
-    ASSERT_NOK_WITH_MSG(context->AcquireReadViews(), "real-time store returned a null read view");
+    ASSERT_NOK_WITH_MSG(context->AcquireReadState(), "real-time store returned a null read view");
 }
 
 }  // namespace
