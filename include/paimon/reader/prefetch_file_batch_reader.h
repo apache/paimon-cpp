@@ -45,6 +45,20 @@ class PAIMON_EXPORT PrefetchMetrics {
     static constexpr char QUEUE_DEPTH_MAX[] = "prefetch.queue-depth.max";
     static constexpr char READER_READ_LATENCY_US[] = "prefetch.reader-read-latency-us";
     static constexpr char CONSUMER_WAIT_LATENCY_US[] = "prefetch.consumer-wait-latency-us";
+
+    // Setup latencies (unit: microseconds), observed once per prefetch reader, i.e. per data file.
+    // Total wall time of Create(), covering both the cache stream and every sub-reader.
+    static constexpr char CREATE_TOTAL_US[] = "prefetch.create.total-us";
+    // Opening the extra stream that backs the read-ahead cache. Absent when the cache is disabled.
+    static constexpr char CREATE_CACHE_OPEN_US[] = "prefetch.create.cache-open-us";
+    // Wall time until all sub-readers are built. Compare against the sum of the two histograms
+    // below to see how much of the per-reader setup actually overlapped.
+    static constexpr char CREATE_READERS_WALL_US[] = "prefetch.create.readers-wall-us";
+    // Opening a sub-reader's stream, one observation per sub-reader.
+    static constexpr char CREATE_READER_OPEN_US[] = "prefetch.create.reader-open-us";
+    // Building a sub-reader on top of its stream, one observation per sub-reader. This is where
+    // format-level setup such as reading the parquet footer happens.
+    static constexpr char CREATE_READER_BUILD_US[] = "prefetch.create.reader-build-us";
 };
 
 /// C++-only metric names for I/O observed by the prefetch reader's instrumented input streams.

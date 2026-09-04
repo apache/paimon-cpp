@@ -125,6 +125,15 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
+    /// Publish the Create()-phase latencies. They are measured before this object exists, so they
+    /// are collected into locals and handed over once the metrics state is available.
+    /// \param cache_open_us nullopt when the read-ahead cache is disabled.
+    /// \param reader_open_us,reader_build_us one entry per sub-reader.
+    void RecordCreateMetrics(std::optional<uint64_t> cache_open_us,
+                             const std::vector<uint64_t>& reader_open_us,
+                             const std::vector<uint64_t>& reader_build_us, uint64_t readers_wall_us,
+                             uint64_t total_us);
+
     Status CleanUp();
     void Workloop();
     void SetReadStatus(const Status& status);

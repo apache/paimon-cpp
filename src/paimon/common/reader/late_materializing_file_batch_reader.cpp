@@ -20,6 +20,7 @@
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 
 #include <cassert>
+#include <chrono>
 #include <map>
 #include <set>
 #include <string>
@@ -43,6 +44,14 @@
 #include "paimon/status.h"
 
 namespace paimon {
+
+namespace {
+inline uint64_t ElapsedMicros(const std::chrono::steady_clock::time_point& start) {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count());
+}
+}  // namespace
 
 Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
     std::unique_ptr<FileBatchReader> inner, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
@@ -116,29 +125,48 @@ Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
 }
 
 Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
+    const auto probe_total_start = std::chrono::steady_clock::now();
+    uint64_t probe_io_us = 0;
+    uint64_t probe_predicate_us = 0;
+    uint64_t probe_compact_us = 0;
+    uint64_t rows_scanned = 0;
+    uint64_t rows_matched = 0;
+
     matched_bitmap_ = RoaringBitmap32();
     probe_cursor_ = 0;
     arrow::ArrayVector probe_arrays;
     while (true) {
+        const auto io_start = std::chrono::steady_clock::now();
         PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch batch, inner_->NextBatch());
+        probe_io_us += ElapsedMicros(io_start);
+
         if (BatchReader::IsEofBatch(batch)) {
             break;
         }
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
+        rows_scanned += static_cast<uint64_t>(array->length());
+
+        const auto predicate_start = std::chrono::steady_clock::now();
         PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 batch_matched,
                                FilterProbeBatch(array, probe_filter_));
+        probe_predicate_us += ElapsedMicros(predicate_start);
+
         // Compact each probe batch down to its matched rows so probe_data_ aligns row-for-row
         // (ascending file order) with matched_bitmap_ and the later payload output.
         if (!batch_matched.IsEmpty()) {
+            rows_matched += batch_matched.Cardinality();
+            const auto compact_start = std::chrono::steady_clock::now();
             PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector matched_slices,
                                    ReaderUtils::GenerateFilteredArrayVector(array, batch_matched));
             probe_arrays.insert(probe_arrays.end(), std::make_move_iterator(matched_slices.begin()),
                                 std::make_move_iterator(matched_slices.end()));
+            probe_compact_us += ElapsedMicros(compact_start);
         }
     }
 
+    const auto concat_start = std::chrono::steady_clock::now();
     std::shared_ptr<arrow::Array> probe_array;
     if (probe_arrays.empty()) {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
@@ -147,14 +175,36 @@ Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(probe_array,
                                           arrow::Concatenate(probe_arrays, arrow_pool_.get()));
     }
+    probe_compact_us += ElapsedMicros(concat_start);
     probe_data_ = arrow::internal::checked_pointer_cast<arrow::StructArray>(probe_array);
+
+    // Record metrics
+    own_metrics_->ObserveHistogram(LateMaterializingMetrics::PROBE_TOTAL_US,
+                                   static_cast<double>(ElapsedMicros(probe_total_start)));
+    own_metrics_->ObserveHistogram(LateMaterializingMetrics::PROBE_IO_US,
+                                   static_cast<double>(probe_io_us));
+    own_metrics_->ObserveHistogram(LateMaterializingMetrics::PROBE_PREDICATE_US,
+                                   static_cast<double>(probe_predicate_us));
+    own_metrics_->ObserveHistogram(LateMaterializingMetrics::PROBE_COMPACT_US,
+                                   static_cast<double>(probe_compact_us));
+    own_metrics_->SetCounter(LateMaterializingMetrics::PROBE_ROWS_SCANNED, rows_scanned);
+    own_metrics_->SetCounter(LateMaterializingMetrics::PROBE_ROWS_MATCHED, rows_matched);
     return Status::OK();
 }
 
 Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayloadBatch() {
+    const auto payload_start = std::chrono::steady_clock::now();
+    // Accumulated across iterations: a batch whose rows all miss matched_bitmap_ is dropped and the
+    // next one read, so producing one output batch can span several inner reads.
+    uint64_t payload_io_us = 0;
+    uint64_t payload_bitmap_us = 0;
+    uint64_t payload_assemble_us = 0;
     while (true) {
+        const auto io_start = std::chrono::steady_clock::now();
+        Result<FileBatchReader::ReadBatchWithBitmap> read_result = inner_->NextBatchWithBitmap();
+        payload_io_us += ElapsedMicros(io_start);
         PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatchWithBitmap batch_with_bitmap,
-                               inner_->NextBatchWithBitmap());
+                               std::move(read_result));
         if (BatchReader::IsEofBatch(batch_with_bitmap)) {
             state_ = kEOF;
             if (probe_cursor_ != probe_data_->length()) {
@@ -170,10 +220,13 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
             return Status::Invalid("inner read bitmap is empty.");
         }
         auto& [c_array, c_schema] = batch;
+        const auto import_start = std::chrono::steady_clock::now();
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> payload_array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
+        payload_assemble_us += ElapsedMicros(import_start);
 
         // Generate the valid bitmap and row_mapping_
+        const auto bitmap_start = std::chrono::steady_clock::now();
         RoaringBitmap32 valid;
         row_mapping_.clear();
         for (auto it = bitmap.Begin(); it != bitmap.End(); ++it) {
@@ -185,11 +238,13 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
             valid.Add(static_cast<uint32_t>(offset));
             row_mapping_.push_back(file_row);
         }
+        payload_bitmap_us += ElapsedMicros(bitmap_start);
         if (valid.IsEmpty()) {
             ReaderUtils::ReleaseReadBatch(std::move(batch));
             continue;
         }
 
+        const auto assemble_start = std::chrono::steady_clock::now();
         // Compact the payload superset down to the matched rows (ascending file row order).
         PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector payload_slices,
                                ReaderUtils::GenerateFilteredArrayVector(payload_array, valid));
@@ -225,6 +280,16 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
 
         PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch assembled,
                                AssembleFullBatch(payload_compacted, probe_selected));
+        payload_assemble_us += ElapsedMicros(assemble_start);
+
+        own_metrics_->ObserveHistogram(LateMaterializingMetrics::PAYLOAD_TOTAL_US,
+                                       static_cast<double>(ElapsedMicros(payload_start)));
+        own_metrics_->ObserveHistogram(LateMaterializingMetrics::PAYLOAD_IO_US,
+                                       static_cast<double>(payload_io_us));
+        own_metrics_->ObserveHistogram(LateMaterializingMetrics::PAYLOAD_BITMAP_US,
+                                       static_cast<double>(payload_bitmap_us));
+        own_metrics_->ObserveHistogram(LateMaterializingMetrics::PAYLOAD_ASSEMBLE_US,
+                                       static_cast<double>(payload_assemble_us));
         return assembled;
     }
 }

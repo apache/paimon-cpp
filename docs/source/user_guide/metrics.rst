@@ -61,6 +61,10 @@ The names below are declared by ``PrefetchMetrics``. Counters and histograms acc
 lifetime of the prefetch reader, including across ``SetReadSchema()``. ``enabled`` and
 ``parallelism`` describe the most recently initialized schema. ``queue-depth`` is reset by
 ``SetReadSchema()`` and ``Close()``; ``queue-depth.max`` remains the lifetime maximum.
+The ``prefetch.create.*`` histograms describe one-time reader setup, so they are observed once per
+prefetch reader rather than per schema; ``create.reader-open-us`` and ``create.reader-build-us``
+carry one observation per sub-reader, and ``create.cache-open-us`` is absent when the read-ahead
+cache is disabled.
 These metrics are C++-only and have no counterparts in Java Paimon.
 
 .. csv-table::
@@ -82,6 +86,11 @@ These metrics are C++-only and have no counterparts in Java Paimon.
    "prefetch.queue-depth.max", "gauge", "queue entries", "Maximum queued entries in the reader lifetime"
    "prefetch.reader-read-latency-us", "histogram", "microseconds", "Underlying reader batch latency"
    "prefetch.consumer-wait-latency-us", "histogram", "microseconds", "Consumer wait latency per returned batch or EOF"
+   "prefetch.create.total-us", "histogram", "microseconds", "Total reader setup, covering the cache stream and every sub-reader"
+   "prefetch.create.cache-open-us", "histogram", "microseconds", "Opening the stream that backs the read-ahead cache"
+   "prefetch.create.readers-wall-us", "histogram", "microseconds", "Wall time until all sub-readers are built"
+   "prefetch.create.reader-open-us", "histogram", "microseconds", "Opening one sub-reader's stream"
+   "prefetch.create.reader-build-us", "histogram", "microseconds", "Building one sub-reader, including format setup such as reading the parquet footer"
 
 Prefetch I/O
 ------------

@@ -228,14 +228,18 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         return Status::Invalid("executor should not be nullptr.");
     }
 
+    const auto create_start = std::chrono::steady_clock::now();
     std::shared_ptr<PrefetchIoMetricsState> io_metrics;
     if (enable_io_metrics) {
         io_metrics = std::make_shared<PrefetchIoMetricsState>();
     }
     std::shared_ptr<ReadAheadCache> cache;
+    std::optional<uint64_t> cache_open_us;
     if (read_ahead_cache_enabled) {
+        const auto cache_open_start = std::chrono::steady_clock::now();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
                                fs->Open(FileStatus(data_file_path, data_file_size)));
+        cache_open_us = ElapsedMicros(cache_open_start);
         if (io_metrics) {
             input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics);
         }
@@ -245,21 +249,32 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         cache = std::make_shared<ReadAheadCache>(input_stream, cache_config,
                                                  static_cast<uint64_t>(data_file_size), pool);
     }
+    // One slot per reader: the lambdas run concurrently, so each writes only its own entry.
+    std::vector<uint64_t> reader_open_us(prefetch_max_parallel_num, 0);
+    std::vector<uint64_t> reader_build_us(prefetch_max_parallel_num, 0);
+    const auto readers_start = std::chrono::steady_clock::now();
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
     for (uint32_t i = 0; i < prefetch_max_parallel_num; i++) {
         futures.push_back(Via(
             executor.get(),
-            [&fs, &data_file_path, data_file_size, &reader_builder, &cache,
-             io_metrics]() -> Result<std::unique_ptr<FileBatchReader>> {
+            [&fs, &data_file_path, data_file_size, &reader_builder, &cache, io_metrics,
+             open_us = &reader_open_us[i],
+             build_us = &reader_build_us[i]]() -> Result<std::unique_ptr<FileBatchReader>> {
+                const auto open_start = std::chrono::steady_clock::now();
                 PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
                                        fs->Open(FileStatus(data_file_path, data_file_size)));
+                *open_us = ElapsedMicros(open_start);
                 if (io_metrics) {
                     input_stream =
                         std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
                 }
                 auto cache_input_stream =
                     std::make_shared<CacheInputStream>(std::move(input_stream), cache);
-                return reader_builder->Build(cache_input_stream);
+                const auto build_start = std::chrono::steady_clock::now();
+                Result<std::unique_ptr<FileBatchReader>> built =
+                    reader_builder->Build(cache_input_stream);
+                *build_us = ElapsedMicros(build_start);
+                return built;
             }));
     }
     std::vector<std::shared_ptr<PrefetchFileBatchReader>> readers;
@@ -276,6 +291,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         }
         readers.emplace_back(prefetch_file_batch_reader);
     }
+    const uint64_t readers_wall_us = ElapsedMicros(readers_start);
     if (prefetch_batch_count < readers.size()) {
         prefetch_batch_count = readers.size();
     }
@@ -289,6 +305,8 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         // ranges, and set read schema will always be called before read.
         PAIMON_RETURN_NOT_OK(reader->RefreshReadRanges());
     }
+    reader->RecordCreateMetrics(cache_open_us, reader_open_us, reader_build_us, readers_wall_us,
+                                ElapsedMicros(create_start));
     return reader;
 }
 
@@ -313,6 +331,28 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
         reader_is_working_.emplace_back(false);
     }
     parallel_num_ = readers_.size();
+}
+
+void PrefetchFileBatchReaderImpl::RecordCreateMetrics(std::optional<uint64_t> cache_open_us,
+                                                      const std::vector<uint64_t>& reader_open_us,
+                                                      const std::vector<uint64_t>& reader_build_us,
+                                                      uint64_t readers_wall_us, uint64_t total_us) {
+    const std::shared_ptr<MetricsImpl>& histograms = prefetch_metrics_->histograms;
+    histograms->ObserveHistogram(PrefetchMetrics::CREATE_TOTAL_US, static_cast<double>(total_us));
+    histograms->ObserveHistogram(PrefetchMetrics::CREATE_READERS_WALL_US,
+                                 static_cast<double>(readers_wall_us));
+    if (cache_open_us.has_value()) {
+        histograms->ObserveHistogram(PrefetchMetrics::CREATE_CACHE_OPEN_US,
+                                     static_cast<double>(*cache_open_us));
+    }
+    for (uint64_t open_us : reader_open_us) {
+        histograms->ObserveHistogram(PrefetchMetrics::CREATE_READER_OPEN_US,
+                                     static_cast<double>(open_us));
+    }
+    for (uint64_t build_us : reader_build_us) {
+        histograms->ObserveHistogram(PrefetchMetrics::CREATE_READER_BUILD_US,
+                                     static_cast<double>(build_us));
+    }
 }
 
 PrefetchFileBatchReaderImpl::~PrefetchFileBatchReaderImpl() {
