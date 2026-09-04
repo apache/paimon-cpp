@@ -19,7 +19,6 @@
 
 #include "paimon/core/schema/arrow_schema_validator.h"
 
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,32 +39,6 @@ class KeyValueMetadata;
 }  // namespace arrow
 
 namespace paimon {
-namespace {
-
-constexpr char kTimePrecisionMetadata[] = "paimon.time.precision";
-
-Status ValidateTime32Field(const std::shared_ptr<arrow::Field>& field) {
-    const auto& time_type = checked_cast<const arrow::Time32Type&>(*field->type());
-    if (time_type.unit() != arrow::TimeUnit::MILLI) {
-        return Status::Invalid("Paimon TIME fields must use Arrow time32[ms], but got ",
-                               field->type()->ToString());
-    }
-    if (!field->HasMetadata() || !field->metadata()->Contains(kTimePrecisionMetadata)) {
-        return Status::OK();
-    }
-    auto precision_result = field->metadata()->Get(kTimePrecisionMetadata);
-    if (!precision_result.ok()) {
-        return Status::Invalid("Cannot read paimon.time.precision metadata");
-    }
-    std::optional<int32_t> precision =
-        StringUtils::StringToValue<int32_t>(precision_result.ValueUnsafe());
-    if (!precision || precision.value() < 0 || precision.value() > 9) {
-        return Status::Invalid("paimon.time.precision must be an integer between 0 and 9");
-    }
-    return Status::OK();
-}
-
-}  // namespace
 
 bool ArrowSchemaValidator::IsNestedType(const std::shared_ptr<arrow::DataType>& data_type) {
     return (data_type->id() == arrow::Type::MAP || data_type->id() == arrow::Type::LIST ||
@@ -148,7 +121,6 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
         case arrow::Type::type::STRING:
         case arrow::Type::type::BINARY:
         case arrow::Type::type::DATE32:
-        case arrow::Type::type::TIME32:
         case arrow::Type::type::DECIMAL128:
         case arrow::Type::type::TIMESTAMP:
             return Status::OK();
@@ -233,9 +205,6 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
         case arrow::Type::type::BINARY:
         case arrow::Type::type::DATE32:
         case arrow::Type::type::TIMESTAMP:
-            break;
-        case arrow::Type::type::TIME32:
-            PAIMON_RETURN_NOT_OK(ValidateTime32Field(field));
             break;
         case arrow::Type::type::DECIMAL128:
             PAIMON_RETURN_NOT_OK(DecimalUtils::CheckDecimalType(*field->type()));

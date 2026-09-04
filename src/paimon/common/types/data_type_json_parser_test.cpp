@@ -22,10 +22,8 @@
 #include <utility>
 #include <vector>
 
-#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
-#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/status.h"
@@ -160,11 +158,6 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
         {"NUMERIC", arrow::decimal128(10, 0)},
         {"NUMERIC(10)", arrow::decimal128(10, 0)},
         {"NUMERIC(10, 3)", arrow::decimal128(10, 3)},
-        {"TIME", arrow::time32(arrow::TimeUnit::MILLI)},
-        {"TIME(0)", arrow::time32(arrow::TimeUnit::MILLI)},
-        {"TIME(3)", arrow::time32(arrow::TimeUnit::MILLI)},
-        {"TIME(9)", arrow::time32(arrow::TimeUnit::MILLI)},
-        {"TIME(3) WITHOUT TIME ZONE", arrow::time32(arrow::TimeUnit::MILLI)},
         {"TIMESTAMP(0)", arrow::timestamp(arrow::TimeUnit::SECOND)},
         {"TIMESTAMP(3)", arrow::timestamp(arrow::TimeUnit::MILLI)},
         {"TIMESTAMP(6)", arrow::timestamp(arrow::TimeUnit::MICRO)},
@@ -224,12 +217,6 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
     }
     {
         rapidjson::Document invalid_doc;
-        rapidjson::Value value("TIME(10)", invalid_doc.GetAllocator());
-        ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
-                            "TIME precision must be between 0 and 9");
-    }
-    {
-        rapidjson::Document invalid_doc;
         rapidjson::Value value("TIMESTAMP(4)", invalid_doc.GetAllocator());
         ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
                             "only support precision 0/3/6/9 in timestamp type");
@@ -239,21 +226,6 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
         rapidjson::Value value("TIMESTAMP(8) WITH LOCAL TIME ZONE", invalid_doc.GetAllocator());
         ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
                             "only support precision 0/3/6/9 in timestamp type");
-    }
-}
-
-TEST(DataTypeJsonParserTest, TimePrecisionRoundTrip) {
-    for (int32_t precision = 0; precision <= 9; ++precision) {
-        const std::string type_string = fmt::format("TIME({})", precision);
-        rapidjson::Document doc;
-        rapidjson::Value value(type_string.c_str(), doc.GetAllocator());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> field,
-                             DataTypeJsonParser::ParseType("time_field", value));
-        std::unique_ptr<DataType> data_type =
-            DataType::Create(field->type(), field->nullable(), field->metadata());
-        rapidjson::Value serialized = data_type->ToJson(&doc.GetAllocator());
-        ASSERT_TRUE(serialized.IsString());
-        ASSERT_EQ(serialized.GetString(), type_string);
     }
 }
 

@@ -23,6 +23,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
@@ -148,17 +149,11 @@ class BlobFileBatchReaderTest : public testing::Test, public ::testing::WithPara
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<Blob> blob,
                                Blob::FromDescriptor(stored_value.data(), stored_value.size()));
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                               blob->NewInputStream(file_system));
-        PAIMON_ASSIGN_OR_RAISE(int64_t length, input_stream->Length());
-        std::string value(length, '\0');
-        if (length > 0) {
-            PAIMON_ASSIGN_OR_RAISE(int64_t actual_length, input_stream->Read(value.data(), length));
-            if (actual_length != length) {
-                return Status::IOError("failed to read MAP<..., BLOB> descriptor content");
-            }
+        PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> value, blob->ToData(file_system, pool_));
+        if (value->size() == 0) {
+            return std::string();
         }
-        return value;
+        return std::string(value->data(), value->size());
     }
 
  private:
@@ -192,12 +187,7 @@ TEST_P(BlobFileBatchReaderTest, TestMapBlob) {
     std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
 
     const std::string file_bytes = MapBlobGoldenBytes();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output_stream,
-                         file_system->Create(file_path, /*overwrite=*/true));
-    ASSERT_OK_AND_ASSIGN(int64_t written,
-                         output_stream->Write(file_bytes.data(), file_bytes.size()));
-    ASSERT_EQ(file_bytes.size(), written);
-    ASSERT_OK(output_stream->Close());
+    ASSERT_OK(file_system->WriteFile(file_path, file_bytes, /*overwrite=*/true));
 
     std::shared_ptr<arrow::Field> blob_item = BlobUtils::ToArrowField("value", true);
     auto key_field = arrow::field("key", arrow::utf8(), false);
@@ -224,34 +214,33 @@ TEST_P(BlobFileBatchReaderTest, TestMapBlob) {
     ASSERT_TRUE(struct_array);
     auto map_array = std::dynamic_pointer_cast<arrow::MapArray>(struct_array->field(0));
     ASSERT_TRUE(map_array);
-    ASSERT_EQ(arrow::Type::LARGE_BINARY, map_array->map_type()->item_type()->id());
-    ASSERT_EQ(4, map_array->length());
-    ASSERT_EQ(3, map_array->value_length(0));
-    ASSERT_TRUE(map_array->IsNull(1));
-    ASSERT_EQ(0, map_array->value_length(2));
-    ASSERT_EQ(1, map_array->value_length(3));
-
-    auto keys = std::dynamic_pointer_cast<arrow::StringArray>(map_array->keys());
     auto values = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(map_array->items());
-    ASSERT_TRUE(keys);
     ASSERT_TRUE(values);
-    ASSERT_EQ("alpha", keys->GetString(0));
-    ASSERT_EQ("empty", keys->GetString(1));
-    ASSERT_EQ("missing", keys->GetString(2));
-    ASSERT_EQ("omega", keys->GetString(3));
-    ASSERT_FALSE(values->IsNull(0));
-    ASSERT_FALSE(values->IsNull(1));
-    ASSERT_TRUE(values->IsNull(2));
-    ASSERT_FALSE(values->IsNull(3));
-    ASSERT_OK_AND_ASSIGN(std::string first_value,
-                         ReadMapBlobValue(values, 0, blob_as_descriptor, file_system));
-    ASSERT_OK_AND_ASSIGN(std::string empty_value,
-                         ReadMapBlobValue(values, 1, blob_as_descriptor, file_system));
-    ASSERT_OK_AND_ASSIGN(std::string last_value,
-                         ReadMapBlobValue(values, 3, blob_as_descriptor, file_system));
-    ASSERT_EQ("hello", first_value);
-    ASSERT_EQ("", empty_value);
-    ASSERT_EQ("world", last_value);
+    arrow::LargeBinaryBuilder normalized_values_builder;
+    for (int64_t i = 0; i < values->length(); ++i) {
+        if (values->IsNull(i)) {
+            ASSERT_TRUE(normalized_values_builder.AppendNull().ok());
+            continue;
+        }
+        ASSERT_OK_AND_ASSIGN(std::string value,
+                             ReadMapBlobValue(values, i, blob_as_descriptor, file_system));
+        ASSERT_TRUE(normalized_values_builder.Append(value).ok());
+    }
+    std::shared_ptr<arrow::Array> normalized_values;
+    ASSERT_TRUE(normalized_values_builder.Finish(&normalized_values).ok());
+    auto normalized_map = std::make_shared<arrow::MapArray>(
+        map_type, map_array->length(), map_array->value_offsets(), map_array->keys(),
+        normalized_values, map_array->null_bitmap(), map_array->null_count(), map_array->offset());
+    std::shared_ptr<arrow::Array> expected = arrow::ipc::internal::json::ArrayFromJSON(map_type,
+                                                                                       R"json([
+            [["alpha", "hello"], ["empty", ""], ["missing", null]],
+            null,
+            [],
+            [["omega", "world"]]
+        ])json")
+                                                 .ValueOrDie();
+    ASSERT_TRUE(expected->Equals(normalized_map))
+        << "expected: " << expected->ToString() << "\nactual: " << normalized_map->ToString();
 }
 
 TEST_P(BlobFileBatchReaderTest, MapBlobFallbackAcrossSequenceLayers) {
@@ -262,12 +251,7 @@ TEST_P(BlobFileBatchReaderTest, MapBlobFallbackAcrossSequenceLayers) {
     const std::string new_file_path = dir->Str() + "/new-placeholder.blob";
 
     const std::string old_bytes = MapBlobGoldenBytes();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> old_output,
-                         file_system->Create(old_file_path, /*overwrite=*/true));
-    ASSERT_OK_AND_ASSIGN(int64_t old_written,
-                         old_output->Write(old_bytes.data(), old_bytes.size()));
-    ASSERT_EQ(old_bytes.size(), old_written);
-    ASSERT_OK(old_output->Close());
+    ASSERT_OK(file_system->WriteFile(old_file_path, old_bytes, /*overwrite=*/true));
 
     // Generate four genuine -2 outer-file entries through the scalar writer. The outer blob
     // index is type-independent; the map reader turns them into its map placeholder sentinel.
@@ -362,11 +346,7 @@ TEST_F(BlobFileBatchReaderTest, RejectsNonCanonicalDecimalMapKey) {
     const std::string file_bytes = HexToBytes(
         "cf114e584243424d010200000000000002020000020000000200000028000000"
         "0000000000000000d0000200000001");
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
-                         file_system->Create(file_path, /*overwrite=*/true));
-    ASSERT_OK_AND_ASSIGN(int64_t written, output->Write(file_bytes.data(), file_bytes.size()));
-    ASSERT_EQ(file_bytes.size(), written);
-    ASSERT_OK(output->Close());
+    ASSERT_OK(file_system->WriteFile(file_path, file_bytes, /*overwrite=*/true));
 
     auto map_type =
         std::make_shared<arrow::MapType>(arrow::field("key", arrow::decimal128(20, 0), false),
@@ -392,11 +372,7 @@ TEST_F(BlobFileBatchReaderTest, RejectsInvalidUtf8StringMapKey) {
     ASSERT_GT(file_bytes.size(), 13);
     // The first key starts after the outer magic and the map header.
     file_bytes[13] = static_cast<char>(0xFF);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
-                         file_system->Create(file_path, /*overwrite=*/true));
-    ASSERT_OK_AND_ASSIGN(int64_t written, output->Write(file_bytes.data(), file_bytes.size()));
-    ASSERT_EQ(file_bytes.size(), written);
-    ASSERT_OK(output->Close());
+    ASSERT_OK(file_system->WriteFile(file_path, file_bytes, /*overwrite=*/true));
 
     auto map_type = arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
     auto schema = arrow::schema({arrow::field("blob_map", map_type)});
@@ -422,11 +398,7 @@ TEST_F(BlobFileBatchReaderTest, RejectsNullMapKey) {
     ASSERT_NE(std::string::npos, key_index_offset);
     // The first delta-varint changes from key length 5 to Java's null marker -1.
     file_bytes[key_index_offset] = static_cast<char>(0x01);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
-                         file_system->Create(file_path, /*overwrite=*/true));
-    ASSERT_OK_AND_ASSIGN(int64_t written, output->Write(file_bytes.data(), file_bytes.size()));
-    ASSERT_EQ(file_bytes.size(), written);
-    ASSERT_OK(output->Close());
+    ASSERT_OK(file_system->WriteFile(file_path, file_bytes, /*overwrite=*/true));
 
     auto map_type = arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
     auto schema = arrow::schema({arrow::field("blob_map", map_type)});

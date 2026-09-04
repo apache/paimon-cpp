@@ -1340,16 +1340,8 @@ TEST_F(TableSchemaTest, MapBlobSchemaLoadsFromJson) {
             "id" : 0,
             "name" : "string_blob_map",
             "type" : {"type":"MAP", "key":"STRING", "value":"BLOB"}
-        }, {
-            "id" : 1,
-            "name" : "time_blob_map",
-            "type" : {"type":"MAP", "key":"TIME(0)", "value":"BLOB"}
-        }, {
-            "id" : 2,
-            "name" : "time9",
-            "type" : "TIME(9)"
         } ],
-        "highestFieldId" : 2,
+        "highestFieldId" : 0,
         "partitionKeys" : [],
         "primaryKeys" : [],
         "options" : {},
@@ -1359,16 +1351,7 @@ TEST_F(TableSchemaTest, MapBlobSchemaLoadsFromJson) {
                          TableSchema::CreateFromJson(table_schema_str));
     ASSERT_TRUE(BlobUtils::IsMapBlobField(
         DataField::ConvertDataFieldToArrowField(table_schema->Fields()[0])));
-    ASSERT_TRUE(BlobUtils::IsMapBlobField(
-        DataField::ConvertDataFieldToArrowField(table_schema->Fields()[1])));
-    auto time_map = checked_pointer_cast<arrow::MapType>(table_schema->Fields()[1].Type());
-    ASSERT_EQ(time_map->key_type()->id(), arrow::Type::TIME32);
-    ASSERT_TRUE(time_map->key_field()->HasMetadata());
-    ASSERT_TRUE(time_map->key_field()->metadata()->Contains("paimon.time.precision"));
-    ASSERT_TRUE(BlobUtils::IsBlobField(time_map->item_field()));
     ASSERT_OK_AND_ASSIGN(std::string serialized, table_schema->ToJsonString());
-    ASSERT_NE(serialized.find("\"TIME(0) NOT NULL\""), std::string::npos) << serialized;
-    ASSERT_NE(serialized.find("\"TIME(9)\""), std::string::npos) << serialized;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> restored,
                          TableSchema::CreateFromJson(serialized));
     ASSERT_OK_AND_ASSIGN(std::string restored_json, restored->ToJsonString());

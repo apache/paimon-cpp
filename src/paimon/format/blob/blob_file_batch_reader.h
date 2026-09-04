@@ -36,6 +36,11 @@
 #include "paimon/result.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
+namespace arrow {
+class ArrayBuilder;
+class LargeBinaryBuilder;
+}  // namespace arrow
+
 namespace paimon::blob {
 
 /// Binary Blob File Layout Specification
@@ -149,6 +154,13 @@ class BlobFileBatchReader : public FileBatchReader {
     }
 
  private:
+    struct MapBlobPayload {
+        std::vector<int64_t> key_lengths;
+        std::vector<int64_t> value_lengths;
+        int64_t data_offset;
+        int64_t key_data_length;
+    };
+
     static constexpr uint64_t kDefaultReadChunkSize = 1024 * 1024;
 
     static int32_t GetIndexLength(const int8_t* bytes, int32_t offset);
@@ -167,6 +179,12 @@ class BlobFileBatchReader : public FileBatchReader {
     /// Builds a null bitmap buffer for the given rows. Returns nullptr if no nulls.
     Result<std::shared_ptr<arrow::Buffer>> BuildNullBitmap(int32_t rows_to_read) const;
     Result<std::shared_ptr<arrow::Array>> BuildContentArray(int32_t rows_to_read) const;
+    Result<MapBlobPayload> ReadMapBlobPayload(size_t row_index, int32_t fixed_key_length) const;
+    Status AppendMapBlobKeys(const MapBlobPayload& payload,
+                             const std::shared_ptr<arrow::DataType>& key_type,
+                             arrow::ArrayBuilder* key_builder) const;
+    Status AppendMapBlobValues(const MapBlobPayload& payload,
+                               arrow::LargeBinaryBuilder* blob_builder) const;
     Result<std::shared_ptr<arrow::Array>> BuildMapBlobArray(int32_t rows_to_read) const;
     Result<std::shared_ptr<arrow::Array>> BuildTargetArray(int32_t rows_to_read) const;
 
