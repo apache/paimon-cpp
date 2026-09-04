@@ -19,6 +19,7 @@
 
 #include "paimon/core/index/index_file_handler.h"
 
+#include <cstring>
 #include <functional>
 #include <optional>
 
@@ -26,6 +27,22 @@
 #include "paimon/status.h"
 
 namespace paimon {
+namespace {
+
+constexpr char kDataEvolutionSourceMetaMagic[] = "DEIX";
+
+}  // namespace
+
+bool IndexFileHandler::IsPrimaryKeySourceIndex(const IndexFileMeta& index_file) {
+    const std::optional<GlobalIndexMeta>& global_index_meta = index_file.GetGlobalIndexMeta();
+    if (!global_index_meta.has_value() || global_index_meta->source_meta == nullptr) {
+        return false;
+    }
+    const std::shared_ptr<Bytes>& source_meta = global_index_meta->source_meta;
+    constexpr size_t kMagicSize = sizeof(kDataEvolutionSourceMetaMagic) - 1;
+    return source_meta->size() < kMagicSize ||
+           std::memcmp(source_meta->data(), kDataEvolutionSourceMetaMagic, kMagicSize) != 0;
+}
 
 Result<IndexFileHandler::IndexFileMetaGroups> IndexFileHandler::Scan(
     const Snapshot& snapshot, const std::string& index_type,
@@ -71,6 +88,22 @@ Result<std::vector<std::shared_ptr<IndexFileMeta>>> IndexFileHandler::Scan(
         return iter->second;
     }
     return std::vector<std::shared_ptr<IndexFileMeta>>{};
+}
+
+Result<std::vector<std::shared_ptr<IndexFileMeta>>> IndexFileHandler::ScanPrimaryKeyIndexes(
+    const Snapshot& snapshot, const BinaryRow& partition, int32_t bucket) const {
+    std::function<Result<bool>(const IndexManifestEntry&)> filter =
+        [&partition, bucket](const IndexManifestEntry& entry) -> bool {
+        return entry.partition == partition && entry.bucket == bucket &&
+               IsPrimaryKeySourceIndex(*entry.index_file);
+    };
+    PAIMON_ASSIGN_OR_RAISE(std::vector<IndexManifestEntry> entries, Scan(snapshot, filter));
+    std::vector<std::shared_ptr<IndexFileMeta>> result;
+    result.reserve(entries.size());
+    for (const IndexManifestEntry& entry : entries) {
+        result.push_back(entry.index_file);
+    }
+    return result;
 }
 
 }  // namespace paimon

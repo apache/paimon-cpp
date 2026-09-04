@@ -95,7 +95,6 @@ namespace {
 
 constexpr const char* kCommitStrictModeLastSafeSnapshot = "commit.strict-mode.last-safe-snapshot";
 constexpr const char* kSequenceSnapshotOrdering = "sequence.snapshot-ordering";
-constexpr const char* kPkClusteringOverride = "pk-clustering-override";
 
 }  // namespace
 
@@ -109,8 +108,8 @@ Status FileStoreCommitImpl::ValidateCommitOptions(const CoreOptions& options) {
     if (raw_options.find(kSequenceSnapshotOrdering) != raw_options.end()) {
         unsupported_options.emplace_back(kSequenceSnapshotOrdering);
     }
-    if (raw_options.find(kPkClusteringOverride) != raw_options.end()) {
-        unsupported_options.emplace_back(kPkClusteringOverride);
+    if (raw_options.find(Options::PK_CLUSTERING_OVERRIDE) != raw_options.end()) {
+        unsupported_options.emplace_back(Options::PK_CLUSTERING_OVERRIDE);
     }
 
     if (!unsupported_options.empty()) {

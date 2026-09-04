@@ -55,6 +55,10 @@ class IndexFileHandler {
           dv_bitmap64_(dv_bitmap64),
           pool_(pool) {}
 
+    /// Returns whether an index file carries primary-key source metadata rather than Java's
+    /// data-evolution source metadata.
+    static bool IsPrimaryKeySourceIndex(const IndexFileMeta& index_file);
+
     /// 1.Scan specified index_type index. 2.Cluster with partition & bucket.
     Result<IndexFileMetaGroups> Scan(const Snapshot& snapshot, const std::string& index_type,
                                      const std::unordered_set<BinaryRow>& partitions) const;
@@ -63,6 +67,10 @@ class IndexFileHandler {
                                                              const std::string& index_type,
                                                              const BinaryRow& partition,
                                                              int32_t bucket) const;
+
+    /// Scan primary-key source-backed index payloads for a partition and bucket.
+    Result<std::vector<std::shared_ptr<IndexFileMeta>>> ScanPrimaryKeyIndexes(
+        const Snapshot& snapshot, const BinaryRow& partition, int32_t bucket) const;
 
     /// Scan specified all typed index.
     Result<std::vector<IndexManifestEntry>> Scan(

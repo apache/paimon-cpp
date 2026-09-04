@@ -60,6 +60,8 @@ class KeyValueFileStoreWrite : public AbstractFileStoreWrite {
         const std::shared_ptr<arrow::Schema>& schema,
         const std::shared_ptr<arrow::Schema>& partition_schema,
         const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
+        const std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>&
+            primary_key_index_maintainer_factory,
         const std::shared_ptr<IOManager>& io_manager,
         const std::shared_ptr<FieldsComparator>& key_comparator,
         const std::shared_ptr<FieldsComparator>& user_defined_seq_comparator,
