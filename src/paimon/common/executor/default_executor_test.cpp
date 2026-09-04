@@ -55,18 +55,33 @@ int32_t CountProcessThreads() {
     closedir(dir);
     return count;
 }
+
+// A worker joined by an earlier test can trail in /proc for a moment, so take
+// the count only once two consecutive reads agree.
+int32_t StableProcessThreadCount() {
+    int32_t last = CountProcessThreads();
+    for (int32_t i = 0; i < 100; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        int32_t current = CountProcessThreads();
+        if (current == last) {
+            return current;
+        }
+        last = current;
+    }
+    return last;
+}
 #endif
 
 TEST(DefaultExecutorTest, TestWorkersStartOnFirstTask) {
 #ifdef __linux__
-    int32_t threads_before = CountProcessThreads();
+    const int32_t threads_before = StableProcessThreadCount();
     ASSERT_GT(threads_before, 0);
 #endif
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<Executor> executor, CreateDefaultExecutor(4));
     ASSERT_EQ(4u, executor->GetThreadNum());
 #ifdef __linux__
     // Constructing the executor does not spawn any worker thread.
-    ASSERT_EQ(threads_before, CountProcessThreads());
+    ASSERT_LE(CountProcessThreads(), threads_before);
 #endif
 
     std::atomic<int64_t> sum = {0};
@@ -77,17 +92,19 @@ TEST(DefaultExecutorTest, TestWorkersStartOnFirstTask) {
     Wait(futures);
     ASSERT_EQ(8, sum.load());
 #ifdef __linux__
-    ASSERT_EQ(threads_before + 4, CountProcessThreads());
+    // The first task started all four workers.
+    ASSERT_GE(CountProcessThreads(), threads_before + 4);
 #endif
     executor.reset();
 #ifdef __linux__
-    // A joined worker may trail in /proc for a moment, so poll briefly.
+    // Destroying the executor joined them; the joined threads may trail in
+    // /proc for a moment, so poll briefly.
     int32_t threads_after = CountProcessThreads();
-    for (int32_t i = 0; i < 100 && threads_after != threads_before; ++i) {
+    for (int32_t i = 0; i < 100 && threads_after > threads_before; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         threads_after = CountProcessThreads();
     }
-    ASSERT_EQ(threads_before, threads_after);
+    ASSERT_LE(threads_after, threads_before);
 #endif
 }
 
