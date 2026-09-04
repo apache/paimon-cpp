@@ -2363,6 +2363,68 @@ TEST_F(RealtimeWriteInteTest, TestPkDvPredicateAcrossHighLevelLevel0AndMemory) {
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestPkDvMergesDuplicateKeysAcrossLevel0RunsAndMemory) {
+    options_[Options::FILE_FORMAT] = "parquet";
+    options_[Options::DELETION_VECTORS_ENABLED] = "true";
+    CreatePkTable();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first_level0_batch,
+                         MakeBatch({Row{1, "level0-old-one", "p0"}, Row{2, "level0-old-two", "p0"},
+                                    Row{3, "level0-stable-three", "p0"}},
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(first_level0_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> first_level0_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t first_level0_snapshot_id,
+                         Commit(first_level0_progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(first_level0_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> second_level0_batch,
+        MakeBatch({Row{1, "level0-new-one", "p0"}, Row{2, "level0-deleted-two", "p0"}},
+                  /*partitioned=*/false, /*bucket=*/0,
+                  {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE}));
+    ASSERT_OK(writer->Write(std::move(second_level0_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_level0_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(int64_t second_level0_snapshot_id,
+                         Commit(second_level0_progress, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(second_level0_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> memory_batch,
+                         MakeBatch({Row{1, "memory-new-one", "p0"}}, /*partitioned=*/false,
+                                   /*bucket=*/0, {RecordBatch::RowKind::UPDATE_AFTER}));
+    ASSERT_OK(writer->Write(std::move(memory_batch)));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, plan->Splits().size());
+    std::shared_ptr<RealtimeSplit> realtime_split =
+        std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+    ASSERT_NE(nullptr, realtime_split);
+    size_t level0_file_count = 0;
+    for (const std::shared_ptr<Split>& disk_split : realtime_split->DiskSplits()) {
+        std::shared_ptr<DataSplitImpl> data_split =
+            std::dynamic_pointer_cast<DataSplitImpl>(disk_split);
+        ASSERT_NE(nullptr, data_split);
+        for (const std::shared_ptr<DataFileMeta>& file : data_split->DataFiles()) {
+            if (file->level == 0) {
+                ++level0_file_count;
+            }
+        }
+    }
+    ASSERT_GE(level0_file_count, 2);
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
+    ASSERT_EQ((std::vector<Row>{{1, "memory-new-one", "p0"}, {3, "level0-stable-three", "p0"}}),
+              actual_rows);
+    ASSERT_OK(writer->Close());
+}
+
 TEST_F(RealtimeWriteInteTest, TestRealtimeOffsetFileLifecycle) {
     options_[Options::SNAPSHOT_NUM_RETAINED_MIN] = "1";
     options_[Options::SNAPSHOT_NUM_RETAINED_MAX] = "1";

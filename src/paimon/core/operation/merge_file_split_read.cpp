@@ -254,25 +254,36 @@ class MergeFileSplitRead::RealtimeReaderBuilder {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                                owner_->path_factory_->CreateDataFilePathFactory(partition, bucket));
 
-        PAIMON_RETURN_NOT_OK(CollectRawDiskReader(high_level_files, high_level_deletion_files,
-                                                  partition, owner_->context_->GetPredicate(),
-                                                  data_file_path_factory, readers));
-        return CollectRawDiskReader(level0_files, level0_deletion_files, partition,
-                                    /*predicate=*/nullptr, data_file_path_factory, readers);
+        PAIMON_RETURN_NOT_OK(CollectRawDiskReaders(high_level_files, high_level_deletion_files,
+                                                   partition, owner_->context_->GetPredicate(),
+                                                   data_file_path_factory, readers));
+        return CollectRawDiskReaders(level0_files, level0_deletion_files, partition,
+                                     /*predicate=*/nullptr, data_file_path_factory, readers);
     }
 
-    Status CollectRawDiskReader(const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
-                                const std::vector<std::optional<DeletionFile>>& deletion_files,
-                                const BinaryRow& partition,
-                                const std::shared_ptr<Predicate>& predicate,
-                                const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
-                                std::vector<std::unique_ptr<KeyValueRecordReader>>* readers) {
+    Status CollectRawDiskReaders(const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
+                                 const std::vector<std::optional<DeletionFile>>& deletion_files,
+                                 const BinaryRow& partition,
+                                 const std::shared_ptr<Predicate>& predicate,
+                                 const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+                                 std::vector<std::unique_ptr<KeyValueRecordReader>>* readers) {
         if (data_files.empty()) {
             return Status::OK();
         }
-        return CollectSectionedDiskReader(data_files, deletion_files, partition, predicate,
-                                          data_file_path_factory,
-                                          /*merge_function_wrapper=*/nullptr, readers);
+        DeletionVector::Factory dv_factory;
+        std::vector<std::vector<SortedRun>> disk_sections;
+        PAIMON_RETURN_NOT_OK(
+            owner_->CreateDiskSections(data_files, deletion_files, &dv_factory, &disk_sections));
+        for (const std::vector<SortedRun>& section : disk_sections) {
+            for (const SortedRun& run : section) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::unique_ptr<KeyValueRecordReader> run_reader,
+                    owner_->CreateReaderForRun(partition, run, dv_factory, predicate,
+                                               data_file_path_factory));
+                readers->push_back(std::move(run_reader));
+            }
+        }
+        return Status::OK();
     }
 
     Status CollectSectionedDiskReader(
@@ -293,18 +304,11 @@ class MergeFileSplitRead::RealtimeReaderBuilder {
         ScopeGuard section_readers_guard([&section_readers]() { close_readers_(section_readers); });
         section_readers.reserve(disk_sections.size());
         for (const std::vector<SortedRun>& section : disk_sections) {
-            std::unique_ptr<SortMergeReader> section_reader;
-            if (merge_function_wrapper) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    section_reader,
-                    owner_->CreateSortMergeReaderForSection(
-                        section, partition, dv_factory, predicate, data_file_path_factory,
-                        /*drop_delete=*/false, merge_function_wrapper));
-            } else {
-                PAIMON_ASSIGN_OR_RAISE(section_reader, owner_->CreateRawSortMergeReaderForSection(
-                                                           section, partition, dv_factory,
-                                                           predicate, data_file_path_factory));
-            }
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<SortMergeReader> section_reader,
+                owner_->CreateSortMergeReaderForSection(
+                    section, partition, dv_factory, predicate, data_file_path_factory,
+                    /*drop_delete=*/false, merge_function_wrapper));
             section_readers.push_back(
                 std::make_unique<SortMergeKeyValueRecordReader>(std::move(section_reader)));
         }

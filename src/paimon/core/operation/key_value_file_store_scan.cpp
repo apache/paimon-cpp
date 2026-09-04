@@ -76,7 +76,7 @@ Result<std::unique_ptr<KeyValueFileStoreScan>> KeyValueFileStoreScan::Create(
 }
 
 Result<bool> KeyValueFileStoreScan::FilterByStats(const ManifestEntry& entry) const {
-    PAIMON_ASSIGN_OR_RAISE(bool value_filter_enabled, IsValueFilterEnabled());
+    PAIMON_ASSIGN_OR_RAISE(bool value_filter_enabled, IsValueFilterEnabled(entry.Level()));
     if (value_filter_enabled) {
         PAIMON_ASSIGN_OR_RAISE(bool filtered, FilterByValueFilter(entry));
         if (!filtered) {
@@ -168,13 +168,14 @@ Status KeyValueFileStoreScan::SplitAndSetKeyValueFilter(
     return Status::OK();
 }
 
-Result<bool> KeyValueFileStoreScan::IsValueFilterEnabled() const {
+Result<bool> KeyValueFileStoreScan::IsValueFilterEnabled(int32_t level) const {
     if (value_filter_ == nullptr) {
         return false;
     }
     switch (scan_mode_) {
         case ScanMode::ALL:
-            return value_filter_force_enabled_;
+            return value_filter_force_enabled_ &&
+                   (value_filter_level_filter_ == nullptr || value_filter_level_filter_(level));
         case ScanMode::DELTA:
             return false;
         case ScanMode::CHANGELOG: {

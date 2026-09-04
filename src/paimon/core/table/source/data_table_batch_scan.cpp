@@ -48,10 +48,10 @@ DataTableBatchScan::DataTableBatchScan(bool pk_table, const CoreOptions& core_op
         snapshot_reader_->EnableValueFilter();
     } else if (pk_table && (core_options.DeletionVectorsEnabled() ||
                             core_options.GetMergeEngine() == MergeEngine::FIRST_ROW)) {
-        // A PK real-time scan reads committed level-0 files as its durable tail. Value
-        // predicates cannot be applied while planning that tail because its rows still have to
-        // suppress older high-level rows in the final merge-on-read.
-        if (!realtime_pk_scan) {
+        if (realtime_pk_scan) {
+            snapshot_reader_->EnableValueFilterForLevels(
+                [](int32_t level) -> bool { return level > 0; });
+        } else {
             auto level_filter = [](int32_t level) -> bool { return level > 0; };
             snapshot_reader_->WithLevelFilter(level_filter);
             snapshot_reader_->EnableValueFilter();
