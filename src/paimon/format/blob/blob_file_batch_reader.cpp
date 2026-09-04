@@ -397,17 +397,17 @@ Result<BlobFileBatchReader::MapBlobPayload> BlobFileBatchReader::ReadMapBlobPayl
 
     std::array<uint8_t, kMapBlobHeaderLength> header;
     PAIMON_RETURN_NOT_OK(ReadBlobContentAt(payload_offset, header.size(), header.data()));
-    const int32_t magic_number = ReadLittleEndian<int32_t>(header.data());
+    const auto magic_number = ReadLittleEndian<int32_t>(header.data());
     if (magic_number != kMapBlobMagicNumber) {
         return Status::Invalid(
             fmt::format("invalid MAP<..., BLOB> payload magic number: {}", magic_number));
     }
-    const int8_t version = static_cast<int8_t>(header[4]);
+    const auto version = static_cast<int8_t>(header[4]);
     if (version != kMapBlobVersion) {
         return Status::NotImplemented(
             fmt::format("unsupported MAP<..., BLOB> payload version: {}", version));
     }
-    const int32_t entry_count = ReadLittleEndian<int32_t>(header.data() + 5);
+    const auto entry_count = ReadLittleEndian<int32_t>(header.data() + 5);
     if (entry_count < 0) {
         return Status::Invalid(fmt::format("invalid MAP<..., BLOB> entry count: {}", entry_count));
     }
@@ -416,8 +416,8 @@ Result<BlobFileBatchReader::MapBlobPayload> BlobFileBatchReader::ReadMapBlobPayl
     std::array<uint8_t, kMapBlobIndexLengthsSize> index_lengths;
     PAIMON_RETURN_NOT_OK(
         ReadBlobContentAt(index_lengths_offset, index_lengths.size(), index_lengths.data()));
-    const int32_t key_index_length = ReadLittleEndian<int32_t>(index_lengths.data());
-    const int32_t value_index_length =
+    const auto key_index_length = ReadLittleEndian<int32_t>(index_lengths.data());
+    const auto value_index_length =
         ReadLittleEndian<int32_t>(index_lengths.data() + sizeof(int32_t));
     const int64_t maximum_indexes_length = payload_length - kMapBlobMinPayloadLength;
     if (key_index_length < 0 || key_index_length > maximum_indexes_length) {
@@ -507,7 +507,7 @@ Status BlobFileBatchReader::AppendMapBlobKeys(const MapBlobPayload& payload,
     int64_t key_offset = payload.data_offset;
     std::set<std::string> serialized_keys;
     for (int64_t key_length_64 : payload.key_lengths) {
-        const int32_t key_length = static_cast<int32_t>(key_length_64);
+        const auto key_length = static_cast<int32_t>(key_length_64);
         PAIMON_UNIQUE_PTR<Bytes> key_bytes =
             Bytes::AllocateBytes(static_cast<size_t>(key_length), pool_.get());
         if (key_length > 0) {
