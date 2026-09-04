@@ -128,6 +128,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/multi_literals_leaf_function.cpp
     common/predicate/not_equal.cpp
     common/predicate/not_in.cpp
+    common/predicate/null_false_leaf_binary_function.cpp
     common/predicate/or.cpp
     common/predicate/predicate.cpp
     common/predicate/predicate_builder.cpp
@@ -612,6 +613,7 @@ if(PAIMON_BUILD_TESTS)
                     common/predicate/literal_converter_test.cpp
                     common/predicate/literal_test.cpp
                     common/predicate/multi_literals_leaf_function_test.cpp
+                    common/predicate/null_false_leaf_binary_function_test.cpp
                     common/predicate/predicate_test.cpp
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp
