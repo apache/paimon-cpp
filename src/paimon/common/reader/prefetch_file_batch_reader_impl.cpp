@@ -235,9 +235,10 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     }
     std::shared_ptr<ReadAheadCache> cache;
     std::optional<uint64_t> cache_open_us;
+    std::shared_ptr<InputStream> input_stream;
     if (read_ahead_cache_enabled) {
         const auto cache_open_start = std::chrono::steady_clock::now();
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
+        PAIMON_ASSIGN_OR_RAISE(input_stream,
                                fs->Open(FileStatus(data_file_path, data_file_size)));
         cache_open_us = ElapsedMicros(cache_open_start);
         if (io_metrics) {
@@ -257,12 +258,12 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     for (uint32_t i = 0; i < prefetch_max_parallel_num; i++) {
         futures.push_back(Via(
             executor.get(),
-            [&fs, &data_file_path, data_file_size, &reader_builder, &cache, io_metrics,
+            [&input_stream, &reader_builder, &cache, io_metrics,
              open_us = &reader_open_us[i],
              build_us = &reader_build_us[i]]() -> Result<std::unique_ptr<FileBatchReader>> {
                 const auto open_start = std::chrono::steady_clock::now();
-                PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                                       fs->Open(FileStatus(data_file_path, data_file_size)));
+                //PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
+                //                       fs->Open(FileStatus(data_file_path, data_file_size)));
                 *open_us = ElapsedMicros(open_start);
                 if (io_metrics) {
                     input_stream =
