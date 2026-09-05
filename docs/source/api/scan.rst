@@ -21,6 +21,17 @@ Scan
 
 .. _cpp-api-scan:
 
+Bucket pruning
+==============
+
+For fixed-bucket append tables, an equality predicate on every bucket key lets
+the scan derive the target bucket using the table's bucket function. Other buckets
+are excluded from the scan plan without requiring an explicit bucket ID from the
+caller. An explicit bucket filter takes precedence. Queries that do not constrain
+all bucket keys with equality, and bucket-unaware tables, keep the existing scan
+behavior. Inferred pruning applies only to files matching the scan schema and
+bucket count; older layouts retain the existing filtering behavior.
+
 Interface
 =========
 

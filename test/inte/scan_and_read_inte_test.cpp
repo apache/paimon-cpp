@@ -29,8 +29,12 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
+#include "fmt/format.h"
+#include "fmt/ranges.h"
 #include "gtest/gtest.h"
+#include "paimon/bucket/bucket_id_calculator.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
@@ -419,6 +423,93 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot3) {
             .ValueOrDie());
     ASSERT_TRUE(expected);
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
+TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
+    for (const auto& key_type : {arrow::utf8(), arrow::binary()}) {
+        SCOPED_TRACE(key_type->ToString());
+        auto test_dir = UniqueTestDirectory::Create("local");
+        arrow::FieldVector fields = {arrow::field("rowkey", key_type),
+                                     arrow::field("value", arrow::int32())};
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, FileFormat()},
+                                                      {Options::FILE_SYSTEM, "local"},
+                                                      {Options::BUCKET, "4"},
+                                                      {Options::BUCKET_KEY, "rowkey"}};
+        ASSERT_OK_AND_ASSIGN(
+            auto helper, TestHelper::Create(test_dir->Str(), arrow::schema(fields), {}, {}, options,
+                                            /*is_streaming_mode=*/false));
+        std::string table_path = test_dir->Str() + "/foo.db/bar";
+        // Route writes through the public bucket calculator, as a KV client does.
+        constexpr int32_t kNumKeys = 64;
+        constexpr int32_t kNumBuckets = 4;
+        std::vector<std::string> keys;
+        for (int32_t i = 0; i < kNumKeys; ++i) {
+            keys.push_back(fmt::format(R"(["key{:03}"])", i));
+        }
+        auto key_array = arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::struct_({fields[0]}), fmt::format("[{}]", fmt::join(keys, ",")))
+                             .ValueOrDie();
+        ::ArrowArray c_keys;
+        ::ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportArray(*key_array, &c_keys, &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(auto calculator,
+                             BucketIdCalculator::Create(false, kNumBuckets, GetDefaultPool()));
+        std::vector<int32_t> bucket_ids(kNumKeys);
+        ASSERT_OK(calculator->CalculateBucketIds(&c_keys, &c_schema, bucket_ids.data()));
+        std::vector<std::vector<std::string>> rows(kNumBuckets);
+        for (int32_t i = 0; i < kNumKeys; ++i) {
+            rows[bucket_ids[i]].push_back(fmt::format(R"(["key{:03}", {}])", i, i));
+        }
+        std::vector<std::unique_ptr<RecordBatch>> batches;
+        for (int32_t bucket = 0; bucket < kNumBuckets; ++bucket) {
+            ASSERT_FALSE(rows[bucket].empty());
+            ASSERT_OK_AND_ASSIGN(
+                auto batch, TestHelper::MakeRecordBatch(
+                                arrow::struct_(fields),
+                                fmt::format("[{}]", fmt::join(rows[bucket], ",")), {}, bucket, {}));
+            batches.push_back(std::move(batch));
+        }
+        ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
+
+        FieldType field_type =
+            key_type->id() == arrow::Type::STRING ? FieldType::STRING : FieldType::BINARY;
+        auto predicate =
+            PredicateBuilder::Equal(0, "rowkey", field_type, Literal(field_type, "key032", 6));
+        // All buckets have overlapping stats for this key. An explicit filter bypasses
+        // inference, proving that ordinary statistics cannot account for the pruning.
+        for (int32_t bucket = 0; bucket < kNumBuckets; ++bucket) {
+            ScanContextBuilder builder(table_path);
+            builder.SetPredicate(predicate).SetBucketFilter(bucket);
+            ASSERT_OK_AND_ASSIGN(auto context, FinishScanContext(builder));
+            ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(context)));
+            ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+            ASSERT_FALSE(plan->Splits().empty());
+        }
+        ScanContextBuilder scan_builder(table_path);
+        scan_builder.SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_builder));
+        ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        ASSERT_FALSE(plan->Splits().empty());
+        for (const auto& split : plan->Splits()) {
+            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            ASSERT_TRUE(data_split);
+            ASSERT_EQ(data_split->Bucket(), bucket_ids[32]);
+        }
+        ReadContextBuilder read_builder(table_path);
+        AddReadOptionsForPrefetch(&read_builder);
+        read_builder.SetPredicate(predicate).EnablePredicateFilter(true);
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(reader)));
+        fields.insert(fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+        auto expected_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                                        R"([[0, "key032", 32]])")
+                                  .ValueOrDie();
+        auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+        ASSERT_TRUE(expected->Equals(result)) << result->ToString();
+    }
 }
 
 TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
