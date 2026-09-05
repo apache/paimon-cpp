@@ -24,13 +24,15 @@ Scan
 Bucket pruning
 ==============
 
-For fixed-bucket append tables, an equality predicate on every bucket key lets
+For fixed-bucket append and primary-key tables, an equality predicate on every bucket key lets
 the scan derive the target bucket using the table's bucket function. Other buckets
 are excluded from the scan plan without requiring an explicit bucket ID from the
 caller. An explicit bucket filter takes precedence. Queries that do not constrain
 all bucket keys with equality, and bucket-unaware tables, keep the existing scan
-behavior. Inferred pruning applies only to files matching the scan schema and
-bucket count; older layouts retain the existing filtering behavior.
+behavior. Both scan types use a shared selector that computes the bucket with
+each manifest entry's total bucket count, so rescaled files are not filtered using
+the current table's bucket count. Files with an older schema ID or a nonpositive
+total bucket count retain the existing filtering behavior.
 
 This inference prunes data files at the manifest-entry level. It does not enable
 manifest min/max-bucket skipping or the bucket-specific live-manifest-entry cache,

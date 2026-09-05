@@ -163,8 +163,12 @@ TEST_F(AppendBucketPruningTest, DoesNotPruneBucketUnawareTable) {
     CheckBuckets(KeyEquals(), std::nullopt);
 }
 
-TEST_F(AppendBucketPruningTest, DoesNotPruneDifferentBucketCount) {
-    CheckBuckets(KeyEquals(), std::nullopt, std::nullopt, 8);
+TEST_F(AppendBucketPruningTest, UsesEachEntriesBucketCount) {
+    BinaryRow key = BinaryRowGenerator::GenerateRow({std::string("key")}, pool_.get());
+    for (int32_t total_buckets : {2, 4, 8, 17}) {
+        CheckBuckets(KeyEquals(), DefaultBucketFunction().Bucket(key, total_buckets), std::nullopt,
+                     total_buckets);
+    }
 }
 
 TEST_F(AppendBucketPruningTest, DoesNotPruneDifferentSchema) {

@@ -20,7 +20,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <vector>
 
 #include "paimon/core/operation/file_store_scan.h"
@@ -81,6 +80,5 @@ class AppendOnlyFileStoreScan : public FileStoreScan {
 
  private:
     std::shared_ptr<SimpleStatsEvolutions> evolutions_;
-    std::optional<int32_t> predicate_bucket_;
 };
 }  // namespace paimon

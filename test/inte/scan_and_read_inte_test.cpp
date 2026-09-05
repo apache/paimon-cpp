@@ -485,30 +485,37 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
             ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
             ASSERT_FALSE(plan->Splits().empty());
         }
-        ScanContextBuilder scan_builder(table_path);
-        scan_builder.SetPredicate(predicate);
-        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_builder));
-        ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
-        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
-        ASSERT_FALSE(plan->Splits().empty());
-        for (const auto& split : plan->Splits()) {
-            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
-            ASSERT_TRUE(data_split);
-            ASSERT_EQ(data_split->Bucket(), bucket_ids[32]);
+        // The data was written with four buckets. Read it with rescaled table options too.
+        for (const std::string& current_bucket_count : {"2", "4", "8", "17"}) {
+            SCOPED_TRACE(current_bucket_count);
+            ScanContextBuilder scan_builder(table_path);
+            scan_builder.SetPredicate(predicate).AddOption(Options::BUCKET, current_bucket_count);
+            ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_builder));
+            ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+            ASSERT_FALSE(plan->Splits().empty());
+            for (const auto& split : plan->Splits()) {
+                auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+                ASSERT_TRUE(data_split);
+                ASSERT_EQ(data_split->Bucket(), bucket_ids[32]);
+            }
+            ReadContextBuilder read_builder(table_path);
+            AddReadOptionsForPrefetch(&read_builder);
+            read_builder.SetPredicate(predicate).EnablePredicateFilter(true);
+            ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+            ASSERT_OK_AND_ASSIGN(auto result,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            auto expected_fields = fields;
+            expected_fields.insert(expected_fields.begin(),
+                                   arrow::field("_VALUE_KIND", arrow::int8()));
+            auto expected_array = arrow::ipc::internal::json::ArrayFromJSON(
+                                      arrow::struct_(expected_fields), R"([[0, "key032", 32]])")
+                                      .ValueOrDie();
+            auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+            ASSERT_TRUE(expected->Equals(result)) << result->ToString();
         }
-        ReadContextBuilder read_builder(table_path);
-        AddReadOptionsForPrefetch(&read_builder);
-        read_builder.SetPredicate(predicate).EnablePredicateFilter(true);
-        ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
-        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
-        ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(reader)));
-        fields.insert(fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
-        auto expected_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
-                                                                        R"([[0, "key032", 32]])")
-                                  .ValueOrDie();
-        auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
-        ASSERT_TRUE(expected->Equals(result)) << result->ToString();
     }
 }
 
@@ -3116,46 +3123,51 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
     auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT,
                                              Literal(static_cast<int32_t>(0)));
 
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
-    scan_context_builder.SetPartitionFilter({{{"f1", "10"}}});
-    scan_context_builder.SetPredicate(predicate);
-    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    // Historical files use two buckets even when the current option has changed.
+    for (const std::string& current_bucket_count : {"2", "4", "8", "17"}) {
+        SCOPED_TRACE(current_bucket_count);
+        ScanContextBuilder scan_context_builder(table_path);
+        scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
+        scan_context_builder.AddOption(Options::BUCKET, current_bucket_count);
+        scan_context_builder.SetPartitionFilter({{{"f1", "10"}}});
+        scan_context_builder.SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
 
-    ReadContextBuilder read_context_builder(table_path);
-    AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate);
-    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ReadContextBuilder read_context_builder(table_path);
+        AddReadOptionsForPrefetch(&read_context_builder);
+        read_context_builder.SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
-    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
-    ASSERT_EQ(result_plan->SnapshotId().value(), 6);
+        ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+        ASSERT_EQ(result_plan->SnapshotId().value(), 6);
 
-    // Verify all returned splits are from bucket 1 (f2=0 hashes to bucket 1)
-    auto splits = result_plan->Splits();
-    ASSERT_FALSE(splits.empty());
-    for (const auto& split : splits) {
-        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
-        ASSERT_TRUE(data_split);
-        ASSERT_EQ(data_split->Bucket(), 1);
-    }
+        // Verify all returned splits are from bucket 1 (f2=0 hashes to bucket 1)
+        auto splits = result_plan->Splits();
+        ASSERT_FALSE(splits.empty());
+        for (const auto& split : splits) {
+            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            ASSERT_TRUE(data_split);
+            ASSERT_EQ(data_split->Bucket(), 1);
+        }
 
-    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result,
-                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+        ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(auto read_result,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
 
-    // Only rows with f2=0 in partition f1=10 should be returned
-    auto expected = std::make_shared<arrow::ChunkedArray>(
-        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
+        // Only rows with f2=0 in partition f1=10 should be returned
+        auto expected = std::make_shared<arrow::ChunkedArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
 [0, "Alex", 10, 0, 16.1],
 [0, "Bob", 10, 0, 12.1],
 [0, "David", 10, 0, 17.1],
 [0, "Emily", 10, 0, 13.1]
    ])")
-            .ValueOrDie());
-    ASSERT_TRUE(expected);
-    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+                .ValueOrDie());
+        ASSERT_TRUE(expected);
+        ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+    }
 }
 
 TEST_P(ScanAndReadInteTest, TestReadNullableMapKey) {

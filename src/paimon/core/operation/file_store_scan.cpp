@@ -557,6 +557,13 @@ Result<bool> FileStoreScan::FilterManifestEntry(const ManifestEntry& entry) cons
     if (bucket_filter_ != std::nullopt && entry.Bucket() != bucket_filter_.value()) {
         return false;
     }
+    // Hash with the file's bucket count, never the current table's count. An older schema
+    // may encode bucket keys differently, so leave those files to the existing stats filter.
+    if (bucket_selector_ && entry.TotalBuckets() > 0 &&
+        entry.File()->schema_id == table_schema_->Id() &&
+        entry.Bucket() != bucket_selector_->Bucket(entry.TotalBuckets())) {
+        return false;
+    }
     if (level_filter_ != nullptr && !level_filter_(entry.Level())) {
         return false;
     }
@@ -602,6 +609,19 @@ Status FileStoreScan::SplitAndSetFilter(const std::vector<std::string>& partitio
         }
     }
     bucket_filter_ = scan_filters->GetBucketFilter();
+    const auto& bucket_keys = table_schema_->BucketKeys();
+    if (predicates_ && !bucket_filter_ && core_options_.GetBucket() > 0 && !bucket_keys.empty()) {
+        std::vector<std::shared_ptr<arrow::DataType>> bucket_key_types;
+        bucket_key_types.reserve(bucket_keys.size());
+        for (const auto& key : bucket_keys) {
+            PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema_->GetField(key));
+            bucket_key_types.push_back(field.Type());
+        }
+        PAIMON_ASSIGN_OR_RAISE(bucket_selector_,
+                               BucketSelectConverter::ConvertToSelector(
+                                   predicates_, bucket_keys, bucket_key_types,
+                                   core_options_.GetBucketFunctionType(), pool_.get()));
+    }
     if (!scan_filters->GetPartitionFilters().empty()) {
         PAIMON_ASSIGN_OR_RAISE(
             partition_filter_,

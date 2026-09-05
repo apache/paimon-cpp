@@ -61,6 +61,30 @@ class BucketSelectConverterTest : public ::testing::Test {
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
 };
 
+TEST_F(BucketSelectConverterTest, SelectorUsesEachBucketCount) {
+    auto pool = GetDefaultPool();
+    auto predicate =
+        PredicateBuilder::Equal(0, "key", FieldType::INT, Literal(static_cast<int32_t>(-23)));
+    BinaryRow row = BinaryRowGenerator::GenerateRow({static_cast<int32_t>(-23)}, pool.get());
+    ASSERT_OK_AND_ASSIGN(auto mod_function, ModBucketFunction::Create(FieldType::INT));
+    ASSERT_OK_AND_ASSIGN(auto hive_function,
+                         HiveBucketFunction::Create({HiveFieldInfo(FieldType::INT)}));
+    DefaultBucketFunction default_function;
+    const std::map<BucketFunctionType, const BucketFunction*> functions = {
+        {BucketFunctionType::DEFAULT, &default_function},
+        {BucketFunctionType::MOD, mod_function.get()},
+        {BucketFunctionType::HIVE, hive_function.get()}};
+    for (const auto& [type, function] : functions) {
+        ASSERT_OK_AND_ASSIGN(auto selector,
+                             BucketSelectConverter::ConvertToSelector(
+                                 predicate, {"key"}, {arrow::int32()}, type, pool.get()));
+        ASSERT_TRUE(selector);
+        for (int32_t total_buckets : {2, 4, 8, 17, 2}) {
+            ASSERT_EQ(selector->Bucket(total_buckets), function->Bucket(row, total_buckets));
+        }
+    }
+}
+
 TEST_F(BucketSelectConverterTest, SingleStringEqualDefault) {
     std::string value = "hello_world";
     AssertDefaultBucket(FieldType::STRING, Literal(FieldType::STRING, value.c_str(), value.size()),

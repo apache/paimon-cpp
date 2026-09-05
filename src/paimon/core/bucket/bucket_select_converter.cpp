@@ -48,9 +48,25 @@ Result<std::optional<int32_t>> BucketSelectConverter::Convert(
     const std::shared_ptr<Predicate>& predicate, const std::vector<std::string>& bucket_key_names,
     const std::vector<std::shared_ptr<arrow::DataType>>& bucket_key_arrow_types,
     BucketFunctionType bucket_function_type, int32_t num_buckets, MemoryPool* pool) {
+    if (num_buckets <= 0) {
+        return std::optional<int32_t>();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BucketSelector> selector,
+                           ConvertToSelector(predicate, bucket_key_names, bucket_key_arrow_types,
+                                             bucket_function_type, pool));
+    if (!selector) {
+        return std::optional<int32_t>();
+    }
+    return std::optional<int32_t>(selector->Bucket(num_buckets));
+}
+
+Result<std::unique_ptr<BucketSelector>> BucketSelectConverter::ConvertToSelector(
+    const std::shared_ptr<Predicate>& predicate, const std::vector<std::string>& bucket_key_names,
+    const std::vector<std::shared_ptr<arrow::DataType>>& bucket_key_arrow_types,
+    BucketFunctionType bucket_function_type, MemoryPool* pool) {
     assert(pool);
-    if (!predicate || bucket_key_names.empty() || num_buckets <= 0) {
-        return std::optional<int32_t>(std::nullopt);
+    if (!predicate || bucket_key_names.empty()) {
+        return std::unique_ptr<BucketSelector>();
     }
 
     if (bucket_key_names.size() != bucket_key_arrow_types.size()) {
@@ -68,7 +84,7 @@ Result<std::optional<int32_t>> BucketSelectConverter::Convert(
 
     auto literals_opt = ExtractEqualLiterals(predicate, bucket_key_names);
     if (!literals_opt.has_value()) {
-        return std::optional<int32_t>(std::nullopt);
+        return std::unique_ptr<BucketSelector>();
     }
 
     const auto& literals_map = literals_opt.value();
@@ -85,14 +101,14 @@ Result<std::optional<int32_t>> BucketSelectConverter::Convert(
         // Equal NaNs can have different stored bit patterns and therefore different buckets.
         if ((bucket_key_types[i] == FieldType::FLOAT && std::isnan(literal.GetValue<float>())) ||
             (bucket_key_types[i] == FieldType::DOUBLE && std::isnan(literal.GetValue<double>()))) {
-            return std::optional<int32_t>(std::nullopt);
+            return std::unique_ptr<BucketSelector>();
         }
         if (bucket_key_types[i] == FieldType::DECIMAL) {
             PAIMON_ASSIGN_OR_RAISE(Literal scaled, DecimalToDecimalCastExecutor().Cast(
                                                        literal, bucket_key_arrow_types[i]));
             // Hash the field's representation only when rescaling preserves the exact value.
             if (scaled.IsNull() || !(scaled.GetValue<Decimal>() == literal.GetValue<Decimal>())) {
-                return std::optional<int32_t>(std::nullopt);
+                return std::unique_ptr<BucketSelector>();
             }
             literal = std::move(scaled);
         }
@@ -101,12 +117,11 @@ Result<std::optional<int32_t>> BucketSelectConverter::Convert(
     }
     writer.Complete();
 
-    // Create the bucket function and compute the bucket
+    // Retain the key and function; the bucket count belongs to each manifest entry.
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BucketFunction> bucket_function,
         CreateBucketFunction(bucket_function_type, bucket_key_types, bucket_key_arrow_types));
-    int32_t bucket = bucket_function->Bucket(row, num_buckets);
-    return std::optional<int32_t>(bucket);
+    return std::make_unique<BucketSelector>(std::move(row), std::move(bucket_function));
 }
 
 std::optional<std::map<std::string, Literal>> BucketSelectConverter::ExtractEqualLiterals(
