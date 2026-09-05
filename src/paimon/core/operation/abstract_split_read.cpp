@@ -20,10 +20,15 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cinttypes>
 #include <cstddef>
+#include <cstdio>
 #include <future>
 #include <map>
+#include <optional>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "arrow/type.h"
@@ -42,6 +47,7 @@
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/io_trace.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/core/io/complete_row_tracking_fields_reader.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -120,6 +126,50 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
     raw_file_readers.reserve(data_files.size());
     const uint32_t parallel_num = static_cast<uint32_t>(
         std::min<size_t>(options_.GetReaderBuildMaxParallelNum(), data_files.size()));
+    // TEMPORARY DIAGNOSTIC, on with PAIMON_IO_TRACE like the io tracing it is read next to,
+    // and removed with it. It says how many files a build was handed, which branch that put it
+    // on and how long the whole batch took, which is what tells "the files were opened one
+    // after another" apart from "there was never more than one file to open at a time". The io
+    // trace alone cannot: it traces the cache fetches, not the opens, and the fetches are
+    // consumed reader by reader in any case. The wall time is what makes the answer
+    // quantitative — compare it against the per-file `prefetch.create.total-us` sum.
+    struct BuildTrace {
+        size_t files;
+        const char* branch;
+        std::chrono::steady_clock::time_point started;
+
+        BuildTrace(size_t files_arg, const char* branch_arg)
+            : files(files_arg), branch(branch_arg), started(std::chrono::steady_clock::now()) {}
+
+        BuildTrace(const BuildTrace&) = delete;
+        BuildTrace& operator=(const BuildTrace&) = delete;
+
+        ~BuildTrace() {
+            const int64_t wall_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - started)
+                                        .count();
+            std::fprintf(stderr, "[paimon-build-trace] done files=%zu branch=%s wall_us=%" PRId64
+                                 "\n",
+                         files, branch, wall_us);
+            std::fflush(stderr);
+        }
+    };
+    std::optional<BuildTrace> build_trace;
+    if (io_trace::Enabled()) {
+        std::string levels;
+        for (const auto& file : data_files) {
+            levels += levels.empty() ? "" : ",";
+            levels += std::to_string(file->level);
+        }
+        const char* branch = (parallel_num <= 1 || building_reader) ? "serial" : "parallel";
+        std::fprintf(stderr,
+                     "[paimon-build-trace] files=%zu max_parallel=%u parallel_num=%u nested=%d "
+                     "branch=%s levels=%s\n",
+                     data_files.size(), options_.GetReaderBuildMaxParallelNum(), parallel_num,
+                     building_reader ? 1 : 0, branch, levels.c_str());
+        std::fflush(stderr);
+        build_trace.emplace(data_files.size(), branch);
+    }
     if (parallel_num <= 1 || building_reader) {
         for (const auto& file : data_files) {
             PAIMON_ASSIGN_OR_RAISE(

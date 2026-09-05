@@ -77,6 +77,10 @@ class CompleteRowTrackingFieldsBatchReader : public FileBatchReader {
         return reader_->SupportPreciseBitmapSelection();
     }
 
+    Status Warmup() override {
+        return reader_->Warmup();
+    }
+
  private:
     Status ConvertRowTrackingField(int64_t array_length, int64_t init_value,
                                    const std::function<Result<int64_t>(int32_t)>& convert_func,

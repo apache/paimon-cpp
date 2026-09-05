@@ -662,14 +662,53 @@ MergeFileSplitRead::CreateRecordReadersForSection(
     const std::vector<SortedRun>& section, const BinaryRow& partition,
     DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    // Every run of a section is read by the same merge, so the section's files are built as ONE
+    // batch instead of run by run. Building run by run serializes the runs against each other,
+    // and a run boundary is not a reason to stop opening files: a keyed table written in key
+    // order puts its non-overlapping files in one big run and each later commit's wide file in a
+    // run of its own, so the last run is regularly a single file whose open used to wait for all
+    // of the first run's opens to finish. One batch also keeps the concurrency where it was
+    // measured to pay off, capped by `read.reader-build.max-parallel-num` over the whole section
+    // rather than per run: opening a remote file is I/O wait that saturates, so nesting a
+    // per-run parallelism inside the per-file one would only queue.
+    std::vector<std::shared_ptr<DataFileMeta>> section_files;
+    for (const SortedRun& run : section) {
+        const std::vector<std::shared_ptr<DataFileMeta>>& run_files = run.Files();
+        section_files.insert(section_files.end(), run_files.begin(), run_files.end());
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
+        CreateRawFileReaders(partition, section_files, read_schema_, predicate, dv_factory,
+                             /*row_ranges=*/{}, data_file_path_factory,
+                             /*extra_format_options=*/{}));
+    // The readers are handed back to the run they belong to by position, so a build that dropped
+    // one would silently shift every following file into the wrong run. The merge path never
+    // drops: its `ApplyIndexAndDvReaderIfNeeded` returns a reader or an error, never the nullptr
+    // the raw path uses to mean "skipped". Checked rather than asserted, because a release build
+    // would otherwise mis-assign readers instead of failing.
+    if (raw_file_readers.size() != section_files.size()) {
+        return Status::Invalid(fmt::format(
+            "built {} readers for {} files of a section, cannot map readers back to their runs",
+            raw_file_readers.size(), section_files.size()));
+    }
+
     std::vector<std::unique_ptr<KeyValueRecordReader>> record_readers;
     record_readers.reserve(section.size());
+    size_t next_reader = 0;
     for (const SortedRun& run : section) {
         // no overlap in a run
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<KeyValueRecordReader> run_reader,
-            CreateReaderForRun(partition, run, dv_factory, predicate, data_file_path_factory));
-        record_readers.emplace_back(std::move(run_reader));
+        const std::vector<std::shared_ptr<DataFileMeta>>& run_files = run.Files();
+        std::vector<std::unique_ptr<KeyValueRecordReader>> file_record_readers;
+        file_record_readers.reserve(run_files.size());
+        for (size_t i = 0; i < run_files.size(); i++, next_reader++) {
+            // KeyValueDataFileRecordReader converts arrow array from format reader to KeyValue
+            // objects
+            file_record_readers.push_back(std::make_unique<KeyValueDataFileRecordReader>(
+                std::move(raw_file_readers[next_reader]), key_schema_, value_schema_,
+                run_files[i]->level, pool_));
+        }
+        record_readers.push_back(
+            std::make_unique<ConcatKeyValueRecordReader>(std::move(file_record_readers)));
     }
     return record_readers;
 }
@@ -743,14 +782,11 @@ Result<std::unique_ptr<SortMergeReader>> MergeFileSplitRead::CreateRawSortMergeR
     const std::vector<SortedRun>& section, const BinaryRow& partition,
     DeletionVector::Factory dv_factory, const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) {
-    std::vector<std::unique_ptr<KeyValueRecordReader>> record_readers;
-    record_readers.reserve(section.size());
-    for (const auto& run : section) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<KeyValueRecordReader> run_reader,
-            CreateReaderForRun(partition, run, dv_factory, predicate, data_file_path_factory));
-        record_readers.emplace_back(std::move(run_reader));
-    }
+    // Same section, same batching as the merge read, so a section's runs are built one way and
+    // not two.
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<KeyValueRecordReader>> record_readers,
+                           CreateRecordReadersForSection(section, partition, dv_factory, predicate,
+                                                         data_file_path_factory));
     return std::make_unique<SortMergeReaderWithMinHeap>(std::move(record_readers), key_comparator_,
                                                         user_defined_seq_comparator_,
                                                         /*merge_function_wrapper=*/nullptr);

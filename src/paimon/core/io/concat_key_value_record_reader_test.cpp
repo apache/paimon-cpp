@@ -206,4 +206,130 @@ TEST_F(ConcatKeyValueRecordReaderTest, TestEmptyReader) {
     CheckResult({src_array2, src_array1}, expected, key_schema, value_schema);
 }
 
+namespace {
+/// Counts Warmup() calls and forwards everything else, so a test can assert how far ahead the
+/// lookahead reaches.
+class CountingWarmupReader : public KeyValueRecordReader {
+ public:
+    explicit CountingWarmupReader(std::unique_ptr<KeyValueRecordReader>&& inner)
+        : inner_(std::move(inner)) {}
+
+    Result<std::unique_ptr<KeyValueRecordReader::Iterator>> NextBatch() override {
+        return inner_->NextBatch();
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return inner_->GetReaderMetrics();
+    }
+
+    Status Warmup() override {
+        warmups_++;
+        return inner_->Warmup();
+    }
+
+    void Close() override {
+        inner_->Close();
+    }
+
+    int warmups() const {
+        return warmups_;
+    }
+
+ private:
+    std::unique_ptr<KeyValueRecordReader> inner_;
+    int warmups_ = 0;
+};
+}  // namespace
+
+TEST_F(ConcatKeyValueRecordReaderTest, TestWarmupLooksOneReaderAhead) {
+    arrow::FieldVector fields = {arrow::field("_SEQUENCE_NUMBER", arrow::int64()),
+                                 arrow::field("_VALUE_KIND", arrow::int8()),
+                                 arrow::field("k0", arrow::int32()),
+                                 arrow::field("k1", arrow::int32()),
+                                 arrow::field("v0", arrow::int32()),
+                                 arrow::field("v1", arrow::int32()),
+                                 arrow::field("v2", arrow::int32())};
+    std::shared_ptr<arrow::Schema> key_schema =
+        arrow::schema(arrow::FieldVector({fields[2], fields[3]}));
+    std::shared_ptr<arrow::Schema> value_schema =
+        arrow::schema(arrow::FieldVector({fields[2], fields[3], fields[4], fields[5], fields[6]}));
+    std::shared_ptr<arrow::DataType> src_type = arrow::struct_(fields);
+    auto make_array = [&src_type](const std::string& json) {
+        return std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(src_type, json).ValueOrDie());
+    };
+    const std::vector<std::shared_ptr<arrow::StructArray>> src_array_vec = {
+        make_array(R"([[0, 0, 1, 1, 10, 20, 30], [0, 0, 1, 2, 11, 21, 31]])"),
+        make_array(R"([[0, 0, 2, 1, 12, 22, 32], [0, 0, 2, 2, 13, 23, 33]])"),
+        make_array(R"([[0, 0, 3, 1, 14, 24, 34], [0, 0, 3, 2, 15, 25, 35]])")};
+
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    std::vector<CountingWarmupReader*> counters;
+    // The counters point into what the returned Concat owns, so they are only valid while it is.
+    auto build = [&](std::vector<CountingWarmupReader*>* out) {
+        out->clear();
+        std::vector<std::unique_ptr<KeyValueRecordReader>> record_readers;
+        for (const auto& src_array : src_array_vec) {
+            auto file_batch_reader = std::make_unique<MockFileBatchReader>(
+                src_array, src_array->type(), /*batch_size=*/100);
+            auto record_reader = std::make_unique<MockKeyValueDataFileRecordReader>(
+                std::move(file_batch_reader), key_schema, value_schema, /*level=*/0, pool);
+            auto counting = std::make_unique<CountingWarmupReader>(std::move(record_reader));
+            out->push_back(counting.get());
+            record_readers.push_back(std::move(counting));
+        }
+        return std::make_unique<ConcatKeyValueRecordReader>(std::move(record_readers));
+    };
+
+    {
+        std::unique_ptr<ConcatKeyValueRecordReader> concat = build(&counters);
+        // Nothing is started before a read asks for it.
+        EXPECT_EQ(counters[0]->warmups(), 0);
+        EXPECT_EQ(counters[1]->warmups(), 0);
+        EXPECT_EQ(counters[2]->warmups(), 0);
+
+        // The first batch warms the file it reads and the one after it, and no further: a deeper
+        // lookahead would hold more files open at once than the prefetch executor has threads for.
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader::Iterator> iterator,
+                             concat->NextBatch());
+        ASSERT_NE(iterator, nullptr);
+        EXPECT_EQ(counters[0]->warmups(), 1);
+        EXPECT_EQ(counters[1]->warmups(), 1);
+        EXPECT_EQ(counters[2]->warmups(), 0);
+
+        // Rows may reference buffers the child allocated, so drop them before closing it.
+        iterator.reset();
+        // Idempotent: warming an already-warm reader is not an error.
+        EXPECT_TRUE(concat->Warmup().ok());
+        EXPECT_TRUE(concat->Warmup().ok());
+        concat->Close();
+    }
+
+    {
+        std::unique_ptr<ConcatKeyValueRecordReader> concat = build(&counters);
+        ASSERT_OK_AND_ASSIGN(
+            auto results,
+            (ReadResultCollector::CollectKeyValueResult<ConcatKeyValueRecordReader,
+                                                        KeyValueRecordReader::Iterator>(
+                concat.get())));
+        std::vector<KeyValue> expected = KeyValueChecker::GenerateKeyValues(
+            /*seq_vec=*/{0, 0, 0, 0, 0, 0},
+            /*key_vec=*/{{1, 1}, {1, 2}, {2, 1}, {2, 2}, {3, 1}, {3, 2}},
+            /*value_vec=*/
+            {{1, 1, 10, 20, 30},
+             {1, 2, 11, 21, 31},
+             {2, 1, 12, 22, 32},
+             {2, 2, 13, 23, 33},
+             {3, 1, 14, 24, 34},
+             {3, 2, 15, 25, 35}},
+            pool);
+        // Warming up changes when a file is opened, never what it reads.
+        KeyValueChecker::CheckResult(expected, results, key_schema->num_fields(),
+                                     value_schema->num_fields());
+        for (const CountingWarmupReader* counter : counters) {
+            EXPECT_GE(counter->warmups(), 1);
+        }
+    }
+}
+
 }  // namespace paimon::test
