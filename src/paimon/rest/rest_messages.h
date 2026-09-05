@@ -323,6 +323,34 @@ class GetTableResponse : public Jsonizable<GetTableResponse> {
     RestAuditFields audit_;
 };
 
+/// The temporary file system credentials of one table. `token` carries file system
+/// options (e.g. "fs.oss.accessKeyId") that are merged over the catalog options.
+class GetTableTokenResponse : public Jsonizable<GetTableTokenResponse> {
+ public:
+    GetTableTokenResponse(const std::map<std::string, std::string>& token,
+                          int64_t expires_at_millis)
+        : token_(token), expires_at_millis_(expires_at_millis) {}
+
+    rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
+        noexcept(false) override;
+    void FromJson(const rapidjson::Value& obj) noexcept(false) override;
+
+    const std::map<std::string, std::string>& GetToken() const {
+        return token_;
+    }
+    /// Expiration of the credentials; 0 when the server did not report one, which
+    /// makes them expire immediately.
+    int64_t GetExpiresAtMillis() const {
+        return expires_at_millis_;
+    }
+
+    GetTableTokenResponse() = default;
+
+ private:
+    std::map<std::string, std::string> token_;
+    int64_t expires_at_millis_ = 0;
+};
+
 /// `schema_json` uses the same schema JSON layout as `GetTableResponse`.
 class CreateTableRequest : public Jsonizable<CreateTableRequest> {
  public:

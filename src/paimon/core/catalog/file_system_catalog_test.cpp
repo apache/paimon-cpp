@@ -40,6 +40,23 @@
 
 namespace paimon::test {
 
+TEST(FileSystemCatalogTest, TestGetTableFileSystem) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+
+    // a catalog without per-table credentials serves the table data with the catalog wide
+    // file system, whatever the table is
+    ASSERT_OK_AND_ASSIGN(auto table_fs, catalog.GetTableFileSystem(Identifier("db1", "t1")));
+    ASSERT_EQ(catalog.GetFileSystem(), table_fs);
+    ASSERT_OK_AND_ASSIGN(auto other_fs, catalog.GetTableFileSystem(Identifier("db2", "t2")));
+    ASSERT_EQ(catalog.GetFileSystem(), other_fs);
+}
+
 TEST(FileSystemCatalogTest, TestDatabaseExists) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
