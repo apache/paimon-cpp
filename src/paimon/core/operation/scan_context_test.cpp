@@ -111,6 +111,9 @@ TEST(ScanContextTest, TestDefaultExecutorIsCreatedPerContext) {
     ASSERT_TRUE(first_ctx->GetExecutor());
     ASSERT_TRUE(second_ctx->GetExecutor());
     ASSERT_NE(first_ctx->GetExecutor(), second_ctx->GetExecutor());
+    // Neither falls back to the process wide singleton.
+    ASSERT_NE(GetGlobalDefaultExecutor(), first_ctx->GetExecutor());
+    ASSERT_NE(GetGlobalDefaultExecutor(), second_ctx->GetExecutor());
 
     // Finish() resets the builder; an explicit executor set before does not
     // leak into the next context built from the same builder.
