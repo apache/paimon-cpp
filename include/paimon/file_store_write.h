@@ -60,7 +60,9 @@ class PAIMON_EXPORT FileStoreWrite {
     ///       the corresponding array in `batch` must have zero null entries.
     virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;
 
-    /// Seals the current in-memory real-time segment without flushing it to a data file.
+    /// Slices the current in-memory real-time data into a sealed segment so it can be reclaimed
+    /// independently. A future implementation will support spilling sealed segments to a
+    /// temporary directory; currently this method only creates the in-memory segment boundary.
     /// Calling this method on a non-real-time writer returns an error.
     virtual Status Seal();
 

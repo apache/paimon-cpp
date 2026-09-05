@@ -38,8 +38,7 @@ TEST(RealtimeSchemaLayoutTest, TestSchemaLayouts) {
     ASSERT_EQ((std::vector<std::string>{"_REALTIME_OFFSET", "key", "value"}),
               append_layout->InputSchema()->field_names());
     ASSERT_TRUE(append_layout->InputSchema()->Equals(*append_layout->StoreWriteSchema()));
-    ASSERT_EQ((std::vector<std::string>{"_VALUE_KIND", "_REALTIME_OFFSET", "key", "value"}),
-              append_layout->StoreCommitSchema()->field_names());
+    ASSERT_TRUE(append_layout->StoreWriteSchema()->Equals(*append_layout->StoreCommitSchema()));
     ASSERT_TRUE(user_schema->Equals(*append_layout->CommitSchema()));
     ASSERT_EQ((std::vector<std::string>{"_VALUE_KIND", "key", "value"}),
               append_layout->QuerySchema()->field_names());

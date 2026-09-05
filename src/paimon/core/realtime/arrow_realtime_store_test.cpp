@@ -178,6 +178,19 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
         RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
         ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                              store_->CreateQueryReaders(view, context));
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch,
+                             readers[0]->NextBatchWithBitmap());
+        arrow::Result<std::shared_ptr<arrow::Array>> import_result =
+            arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
+        ASSERT_TRUE(import_result.ok());
+        std::shared_ptr<arrow::Array> array = std::move(import_result).ValueOrDie();
+        ASSERT_TRUE(array->type()->Equals(arrow::struct_(read_schema->fields())));
+    }
+    {
+        std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
+        RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+        ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                             store_->CreateQueryReaders(view, context));
         ASSERT_EQ(1, readers.size());
         readers[0] =
             std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(12, 15));
@@ -236,15 +249,9 @@ TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
         arrow::ImportArray(batch.first.get(), batch.second.get());
     ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();
     std::shared_ptr<arrow::Array> actual_array = std::move(import_result).ValueOrDie();
-    std::shared_ptr<arrow::DataType> expected_type = arrow::struct_({
-        arrow::field("_VALUE_KIND", arrow::int8()),
-        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
-        arrow::field("id", arrow::int64()),
-        arrow::field("value", arrow::utf8()),
-    });
+    std::shared_ptr<arrow::DataType> expected_type = arrow::struct_(schema_->fields());
     std::shared_ptr<arrow::Array> expected_array =
-        arrow::ipc::internal::json::ArrayFromJSON(expected_type,
-                                                  R"([[0, 0, 1, null], [0, 1, 2, "c"]])")
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([[0, 1, null], [1, 2, "c"]])")
             .ValueOrDie();
     ASSERT_TRUE(actual_array->Equals(*expected_array))
         << "expected: " << expected_array->ToString() << ", actual: " << actual_array->ToString();

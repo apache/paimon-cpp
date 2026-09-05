@@ -2394,20 +2394,11 @@ TEST_F(RealtimeWriteInteTest, TestPkDvPredicateAcrossHighLevelLevel0AndMemory) {
     // memory record must still suppress every matching old version from the high levels.
     ASSERT_OK_AND_ASSIGN(std::vector<Row> candidates, ReadRows(plan, realtime_context, predicate,
                                                                /*enable_predicate_filter=*/false));
-    auto find_row = [&candidates](int64_t id) {
-        return std::find_if(candidates.begin(), candidates.end(),
-                            [id](const Row& row) { return std::get<0>(row) == id; });
-    };
-    auto id1 = find_row(1);
-    ASSERT_NE(candidates.end(), id1);
-    ASSERT_EQ("level0-current-one", std::get<1>(*id1));
-    ASSERT_EQ(candidates.end(), find_row(2));
-    auto id3 = find_row(3);
-    ASSERT_NE(candidates.end(), id3);
-    ASSERT_EQ("memory-current-three", std::get<1>(*id3));
-    auto id7 = find_row(7);
-    ASSERT_NE(candidates.end(), id7);
-    ASSERT_EQ(matching_payload, std::get<1>(*id7));
+    ASSERT_EQ((std::vector<Row>{{1, "level0-current-one", "p0"},
+                                {3, "memory-current-three", "p0"},
+                                {4, "base-four", "p0"},
+                                {7, matching_payload, "p0"}}),
+              candidates);
     ASSERT_OK(writer->Close());
 }
 

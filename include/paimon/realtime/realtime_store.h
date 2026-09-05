@@ -110,11 +110,11 @@ class PAIMON_EXPORT RealtimeReadView {
 
 /// Parameters used by a `RealtimeStore` to create readers for a query.
 struct PAIMON_EXPORT RealtimeQueryContext {
-    /// Physical source schema the store must materialize. Query readers must include the mandatory
-    /// `_VALUE_KIND` field in returned batches. Paimon may subsequently convert physical fields
-    /// into the query's logical output schema, for example for selected-key MAP or VARIANT access.
-    /// This schema is borrowed and remains valid only during `CreateQueryReaders`; plugins must
-    /// import or copy it synchronously.
+    /// Physical source schema the store must materialize. Every returned batch must match this
+    /// schema exactly. Paimon may subsequently add framework fields or convert physical fields into
+    /// the query's logical output schema, for example for selected-key MAP or VARIANT access. This
+    /// schema is borrowed and remains valid only during `CreateQueryReaders`; plugins must import
+    /// or copy it synchronously.
     ::ArrowSchema* read_schema;
     /// Optional predicate using field indexes from `read_schema`. A non-null predicate allows the
     /// plugin to prune candidate rows. Exact filtering is applied by the Paimon read framework.
@@ -147,9 +147,9 @@ class PAIMON_EXPORT RealtimeStore {
     /// Creates readers that expose all rows in a sealed segment for Paimon file writing.
     ///
     /// The returned readers collectively expose every sealed row exactly once. Append-mode readers
-    /// preserve write order and contain `_VALUE_KIND`, `_REALTIME_OFFSET`, and table write fields.
-    /// Primary-key readers contain the real-time primary-key store fields; each reader's
-    /// complete stream is sorted by full primary key then sequence number.
+    /// preserve write order and contain `_REALTIME_OFFSET` followed by the table write fields.
+    /// Primary-key readers contain the real-time primary-key store fields; each reader's complete
+    /// stream is sorted by full primary key then sequence number.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) = 0;
 

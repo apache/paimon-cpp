@@ -176,9 +176,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestCommitReaderPerStoredBatch) {
         std::shared_ptr<arrow::Array> expected,
         ArrayFromJson(actual->type(),
                       R"([[6, 1, 1, 1, "before"], [5, 0, 0, 3, "three"], [7, 2, 2, 2, "after"]])"));
-    ASSERT_TRUE(expected->Equals(actual)) << "expected:\n"
-                                          << expected->ToString() << "\nactual:\n"
-                                          << actual->ToString();
+    ASSERT_TRUE(expected->Equals(actual));
 }
 
 void AssertSlicedBatch(BatchReader* reader) {
@@ -283,9 +281,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestReclaimKeepsReadView) {
         std::shared_ptr<arrow::Array> expected,
         ArrayFromJson(actual->type(),
                       R"([[0, 0, 4, 1, "one"], [1, 0, 5, 2, "two"], [2, 0, 6, 3, "three"]])"));
-    ASSERT_TRUE(expected->Equals(actual)) << "expected:\n"
-                                          << expected->ToString() << "\nactual:\n"
-                                          << actual->ToString();
+    ASSERT_TRUE(expected->Equals(actual));
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
@@ -308,9 +304,7 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> expected,
         ArrayFromJson(actual->type(), R"([[1, 0, 0, 2, "two"], [2, 0, 1, 1, "one"]])"));
-    ASSERT_TRUE(expected->Equals(actual)) << "expected:\n"
-                                          << expected->ToString() << "\nactual:\n"
-                                          << actual->ToString();
+    ASSERT_TRUE(expected->Equals(actual));
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestQueryBatchOutlivesStoreAndReader) {

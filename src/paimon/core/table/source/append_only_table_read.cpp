@@ -28,6 +28,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
 #include "paimon/common/types/data_field.h"
@@ -197,6 +198,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
                                pipeline->Wrap(std::move(memory_reader),
                                               OffsetRange(realtime_split->CommittedEndOffset(),
                                                           realtime_split->MemoryEndOffset())));
+        memory_reader = std::make_unique<CompleteRowKindBatchReader>(
+            std::move(memory_reader), context_->GetArrowMemoryPool());
         if (context_->EnablePredicateFilter() && context_->GetPredicate()) {
             PAIMON_ASSIGN_OR_RAISE(
                 memory_reader,

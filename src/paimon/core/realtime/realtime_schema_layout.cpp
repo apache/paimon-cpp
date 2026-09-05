@@ -62,7 +62,7 @@ RealtimeSchemaLayout::RealtimeSchemaLayout(RealtimeStoreMode mode,
     : user_schema_(user_schema), input_schema_(Prepend({RealtimeOffsetField()}, user_schema_)) {
     if (mode == RealtimeStoreMode::APPEND_ONLY) {
         store_write_schema_ = input_schema_;
-        store_commit_schema_ = Prepend({ValueKindField()}, input_schema_);
+        store_commit_schema_ = store_write_schema_;
         commit_schema_ = user_schema_;
         query_schema_ = Prepend({ValueKindField()}, user_schema_);
         return;

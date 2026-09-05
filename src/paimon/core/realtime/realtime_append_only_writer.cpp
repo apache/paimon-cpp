@@ -170,23 +170,6 @@ Status RealtimeAppendOnlyWriter::FlushSegment(
         }
         std::shared_ptr<arrow::StructArray> struct_array =
             checked_pointer_cast<arrow::StructArray>(imported);
-        std::shared_ptr<arrow::Array> value_kind =
-            struct_array->GetFieldByName(SpecialFields::ValueKind().Name());
-        if (!value_kind || value_kind->type_id() != arrow::Type::INT8) {
-            return Status::Invalid(
-                "real-time store commit reader must return an INT8 _VALUE_KIND field");
-        }
-        std::shared_ptr<arrow::Int8Array> row_kinds =
-            checked_pointer_cast<arrow::Int8Array>(value_kind);
-        for (int64_t i = 0; i < row_kinds->length(); ++i) {
-            if (row_kinds->IsNull(i) ||
-                row_kinds->Value(i) != static_cast<int8_t>(RecordBatch::RowKind::INSERT)) {
-                return Status::Invalid(
-                    "append real-time store commit reader returned a non-INSERT row");
-            }
-        }
-        PAIMON_ASSIGN_OR_RAISE(struct_array, ArrowUtils::RemoveFieldFromStructArray(
-                                                 struct_array, SpecialFields::ValueKind().Name()));
         PAIMON_ASSIGN_OR_RAISE(struct_array,
                                ArrowUtils::RemoveFieldFromStructArray(
                                    struct_array, SpecialFields::RealtimeOffset().Name()));

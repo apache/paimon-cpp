@@ -56,7 +56,7 @@ class RealtimeSchemaLayout {
         return store_write_schema_;
     }
 
-    /// Append-only fields: [_VALUE_KIND, _REALTIME_OFFSET, user fields].
+    /// Append-only fields: [_REALTIME_OFFSET, user fields].
     /// Primary-key fields: [_SEQUENCE_NUMBER, _VALUE_KIND, _REALTIME_OFFSET, user fields].
     const std::shared_ptr<arrow::Schema>& StoreCommitSchema() const {
         return store_commit_schema_;

@@ -468,12 +468,10 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
     ASSERT_NOK_WITH_MSG(writer->Write(MakeBatch(realtime_schema, R"([[30, 3, "backwards"]])")),
                         "offset moved backwards or was duplicated");
     ASSERT_NOK(writer->Write(MakeBatch(realtime_schema, R"([[null, 3, "null-offset"]])")));
-    using RealtimePrimaryKeyStoreRow = std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>;
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyStoreRow> store_rows,
-                         ReadRealtimePrimaryKeyStoreRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyStoreRow>{
-                  {0, 1, "old", 0, 10}, {2, 1, "new", 2, 30}, {3, 2, "two", 1, 20}}),
-              store_rows);
+    ASSERT_OK_AND_ASSIGN(auto store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
+    ASSERT_EQ(
+        (decltype(store_rows){{0, 1, "old", 0, 10}, {2, 1, "new", 2, 30}, {3, 2, "two", 1, 20}}),
+        store_rows);
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progresses,
                          writer->PrepareCommitWithProgress(0));
     ASSERT_EQ(1, progresses.size());
@@ -523,10 +521,8 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
     ASSERT_GT(pool->allocation_count, allocations_before_write);
     ASSERT_OK(writer->Close());
     writer.reset();
-    using RealtimePrimaryKeyStoreRow = std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>;
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyStoreRow> retained_rows,
-                         ReadRealtimePrimaryKeyStoreRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyStoreRow>{{0, 1, "one", 0, 0}}), retained_rows);
+    ASSERT_OK_AND_ASSIGN(auto retained_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
+    ASSERT_EQ((decltype(retained_rows){{0, 1, "one", 0, 0}}), retained_rows);
 
     std::shared_ptr<TestingMemoryPool> rejecting_pool = std::make_shared<TestingMemoryPool>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> rejecting_context,
@@ -546,8 +542,7 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
     ASSERT_NOK_WITH_MSG(rejecting_writer->Write(MakeBatch(realtime_schema, R"([[0, 2, "two"]])")),
                         "Out of memory");
     ASSERT_GT(rejecting_pool->allocation_count, rejecting_allocations_before_write);
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyStoreRow> rejected_rows,
-                         ReadRealtimePrimaryKeyStoreRows(rejecting_context));
+    ASSERT_OK_AND_ASSIGN(auto rejected_rows, ReadRealtimePrimaryKeyStoreRows(rejecting_context));
     ASSERT_TRUE(rejected_rows.empty());
     ASSERT_OK(rejecting_writer->Close());
 }
@@ -606,18 +601,14 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
                          FileStoreWrite::Create(std::move(write_context)));
     ASSERT_OK(
         writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 1, "legal"]])", max - 1))));
-    using RealtimePrimaryKeyStoreRow = std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>;
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyStoreRow> store_rows,
-                         ReadRealtimePrimaryKeyStoreRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyStoreRow>{{0, 1, "legal", max - 1, max - 1}}),
-              store_rows);
+    ASSERT_OK_AND_ASSIGN(auto store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
+    ASSERT_EQ((decltype(store_rows){{0, 1, "legal", max - 1, max - 1}}), store_rows);
 
     ASSERT_NOK_WITH_MSG(
         writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 2, "overflow"]])", max))),
         "real-time offset range exceeds INT64_MAX");
     ASSERT_OK_AND_ASSIGN(store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyStoreRow>{{0, 1, "legal", max - 1, max - 1}}),
-              store_rows);
+    ASSERT_EQ((decltype(store_rows){{0, 1, "legal", max - 1, max - 1}}), store_rows);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context_impl,
                          RealtimeContextImpl::Cast(realtime_context));
     ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context_impl->AcquireReadState());

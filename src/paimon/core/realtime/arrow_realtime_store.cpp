@@ -30,7 +30,6 @@
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
-#include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -424,10 +423,7 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateComm
     }
     std::vector<std::unique_ptr<BatchReader>> readers;
     if (mode_ == RealtimeStoreMode::APPEND_ONLY) {
-        std::unique_ptr<BatchReader> reader =
-            std::make_unique<AppendCommitBatchReader>(arrow_segment);
-        readers.push_back(
-            std::make_unique<CompleteRowKindBatchReader>(std::move(reader), arrow_pool_));
+        readers.push_back(std::make_unique<AppendCommitBatchReader>(arrow_segment));
         return readers;
     }
     readers.reserve(arrow_segment->GetBatches().size());
@@ -486,7 +482,6 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
     std::unique_ptr<BatchReader> reader = std::make_unique<AppendQueryBatchReader>(
         arrow_view, read_schema, predicate_filter, std::move(statistics_mapping), arrow_pool_,
         memory_pool_);
-    reader = std::make_unique<CompleteRowKindBatchReader>(std::move(reader), arrow_pool_);
     readers.push_back(std::move(reader));
     return readers;
 }
