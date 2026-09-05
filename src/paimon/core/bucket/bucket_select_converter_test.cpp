@@ -18,6 +18,7 @@
 
 #include "paimon/core/bucket/bucket_select_converter.h"
 
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -244,6 +245,55 @@ TEST_F(BucketSelectConverterTest, HiveBucketFunctionWithDecimal) {
                          HiveBucketFunction::Create({HiveFieldInfo(FieldType::INT),
                                                      HiveFieldInfo(FieldType::DECIMAL, 10, 2)}));
     ASSERT_EQ(function->Bucket(row, num_buckets), selected_bucket.value());
+}
+
+TEST_F(BucketSelectConverterTest, RescalesDecimalLiteralsExactly) {
+    for (int32_t precision : {10, 20}) {
+        for (BucketFunctionType function_type :
+             {BucketFunctionType::DEFAULT, BucketFunctionType::HIVE}) {
+            Decimal stored = Decimal::FromUnscaledLong(120, precision, 2);
+            auto stored_predicate =
+                PredicateBuilder::Equal(0, "amount", FieldType::DECIMAL, Literal(stored));
+            ASSERT_OK_AND_ASSIGN(auto expected,
+                                 BucketSelectConverter::Convert(stored_predicate, {"amount"},
+                                                                {arrow::decimal128(precision, 2)},
+                                                                function_type, 17, pool_.get()));
+            ASSERT_TRUE(expected.has_value());
+            for (const auto& query : {Decimal::FromUnscaledLong(12, precision, 1),
+                                      Decimal::FromUnscaledLong(1200, precision, 3)}) {
+                auto predicate =
+                    PredicateBuilder::Equal(0, "amount", FieldType::DECIMAL, Literal(query));
+                ASSERT_OK_AND_ASSIGN(
+                    auto result, BucketSelectConverter::Convert(predicate, {"amount"},
+                                                                {arrow::decimal128(precision, 2)},
+                                                                function_type, 17, pool_.get()));
+                ASSERT_EQ(result, expected);
+            }
+        }
+    }
+}
+
+TEST_F(BucketSelectConverterTest, InexactDecimalConversionReturnsNullopt) {
+    for (const auto& value :
+         {Decimal::FromUnscaledLong(123, 10, 3), Decimal::FromUnscaledLong(9999999999LL, 10, 0)}) {
+        auto predicate = PredicateBuilder::Equal(0, "amount", FieldType::DECIMAL, Literal(value));
+        ASSERT_OK_AND_ASSIGN(auto result, BucketSelectConverter::Convert(
+                                              predicate, {"amount"}, {arrow::decimal128(10, 2)},
+                                              BucketFunctionType::DEFAULT, 17, pool_.get()));
+        ASSERT_FALSE(result.has_value());
+    }
+}
+
+TEST_F(BucketSelectConverterTest, NaNReturnsNullopt) {
+    for (const auto& value : {Literal(std::numeric_limits<float>::quiet_NaN()),
+                              Literal(std::numeric_limits<double>::quiet_NaN())}) {
+        auto type = value.GetType() == FieldType::FLOAT ? arrow::float32() : arrow::float64();
+        auto predicate = PredicateBuilder::Equal(0, "key", value.GetType(), value);
+        ASSERT_OK_AND_ASSIGN(auto result, BucketSelectConverter::Convert(
+                                              predicate, {"key"}, {type},
+                                              BucketFunctionType::DEFAULT, 17, pool_.get()));
+        ASSERT_FALSE(result.has_value());
+    }
 }
 
 TEST_F(BucketSelectConverterTest, UnsupportedFieldTypeReturnsError) {
