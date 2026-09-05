@@ -48,6 +48,16 @@ class PAIMON_EXPORT CacheKey {
                                                                     const std::string& branch,
                                                                     int32_t bucket);
 
+    /// Cache candidates for an inferred bucket, including files with other bucket counts or
+    /// schemas.
+    /// @param total_buckets Positive bucket count used to compute the inferred bucket.
+    /// @param schema_id Schema used to build the selector.
+    static std::shared_ptr<CacheKey> ForSnapshotLiveManifestEntries(const std::string& table_path,
+                                                                    const std::string& branch,
+                                                                    int32_t bucket,
+                                                                    int32_t total_buckets,
+                                                                    int64_t schema_id);
+
  public:
     virtual ~CacheKey() = default;
 

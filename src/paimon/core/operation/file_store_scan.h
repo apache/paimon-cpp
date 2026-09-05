@@ -34,6 +34,7 @@
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/utils/concurrent_hash_map.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/core/bucket/bucket_select_converter.h"
@@ -293,6 +294,7 @@ class FileStoreScan {
                                 std::vector<ManifestEntry>* entries) const;
 
     Result<bool> FilterManifestEntry(const ManifestEntry& entry) const;
+    Result<bool> HasCompatibleBucketKeys(int64_t data_schema_id) const;
 
  protected:
     std::shared_ptr<MemoryPool> pool_;
@@ -315,6 +317,7 @@ class FileStoreScan {
     std::shared_ptr<Executor> executor_;
     std::optional<int32_t> bucket_filter_;
     std::unique_ptr<BucketSelector> bucket_selector_;
+    mutable ConcurrentHashMap<int64_t, bool> bucket_schema_compatibility_;
     std::function<bool(int32_t)> level_filter_;
     std::optional<Snapshot> specified_snapshot_;
     std::shared_ptr<Metrics> metrics_;
