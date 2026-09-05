@@ -284,7 +284,9 @@ Status AppendOnlyWriter::Close() {
     for (const auto& file : compact_after_) {
         // AppendOnlyCompactManager will rewrite the file and no file upgrade will occur, so we
         // can directly delete the file in compact_after_.
-        [[maybe_unused]] auto s = fs->Delete(path_factory_->ToPath(file));
+        for (const std::string& path : path_factory_->CollectFiles(file)) {
+            [[maybe_unused]] Status s = fs->Delete(path);
+        }
     }
 
     if (writer_) {

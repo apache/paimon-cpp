@@ -53,8 +53,10 @@ TEST(OrphanFilesCleanerTest, TestSupportToClean) {
     ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean("bucket-0"));
     ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean(
         "changelog-ce64d06d-c4cd-456b-a1b3-ae570042620f-0.parquet"));
-    ASSERT_FALSE(OrphanFilesCleanerImpl::SupportToClean(
+    ASSERT_TRUE(OrphanFilesCleanerImpl::SupportToClean(
         "data-5515726b-0f0f-4556-a942-e795e9f94c4a-0.orc.index"));
+    ASSERT_TRUE(OrphanFilesCleanerImpl::SupportToClean(
+        "data-5515726b-0f0f-4556-a942-e795e9f94c4a-0.orc.128.processor.v1.lookup"));
     ASSERT_FALSE(
         OrphanFilesCleanerImpl::SupportToClean("index-aa60193d-d7cd-434f-bc1a-c1adb210e1f7-0"));
     ASSERT_FALSE(
@@ -121,6 +123,35 @@ TEST(OrphanFilesCleanerTest, TestTableWithIndex) {
     ASSERT_OK_AND_ASSIGN(auto cleaner, OrphanFilesCleaner::Create(std::move(clean_context)));
     ASSERT_OK_AND_ASSIGN(std::set<std::string> cleaned_paths, cleaner->Clean());
     ASSERT_TRUE(cleaned_paths.empty());
+}
+
+TEST(OrphanFilesCleanerTest, TestCleanOrphanExtraFiles) {
+    std::string test_data_path =
+        paimon::test::GetDataDir() + "/orc/append_with_bsi.db/append_with_bsi/";
+    auto dir = UniqueTestDirectory::Create();
+    std::string table_path = dir->Str();
+    ASSERT_TRUE(TestUtil::CopyDirectory(test_data_path, table_path));
+    auto file_system = std::make_shared<LocalFileSystem>();
+    std::string orphan_index_path =
+        PathUtil::JoinPath(table_path, "bucket-0/data-orphan-0.orc.index");
+    std::string orphan_lookup_path =
+        PathUtil::JoinPath(table_path, "bucket-0/data-orphan-0.orc.128.processor.v1.lookup");
+    ASSERT_OK(file_system->WriteFile(orphan_index_path, "orphan", /*overwrite=*/true));
+    ASSERT_OK(file_system->WriteFile(orphan_lookup_path, "orphan", /*overwrite=*/true));
+
+    CleanContextBuilder clean_context_builder(table_path);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CleanContext> clean_context,
+                         clean_context_builder.AddOption(Options::FILE_SYSTEM, "local")
+                             .WithOlderThanMs(std::numeric_limits<int64_t>::max())
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OrphanFilesCleaner> cleaner,
+                         OrphanFilesCleaner::Create(std::move(clean_context)));
+    ASSERT_OK_AND_ASSIGN(std::set<std::string> cleaned_paths, cleaner->Clean());
+    ASSERT_EQ(cleaned_paths, std::set<std::string>({orphan_index_path, orphan_lookup_path}));
+    for (const std::string& path : cleaned_paths) {
+        ASSERT_OK_AND_ASSIGN(bool exists, file_system->Exists(path));
+        ASSERT_FALSE(exists) << path;
+    }
 }
 
 TEST(OrphanFilesCleanerTest, TestTableWithBrokenSnapshot) {

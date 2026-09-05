@@ -443,6 +443,9 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndClose) {
     std::map<std::string, std::string> raw_options;
     raw_options[Options::FILE_FORMAT] = "orc";
     raw_options[Options::FILE_SYSTEM] = "local";
+    raw_options[Options::TARGET_FILE_ROW_NUM] = "1";
+    raw_options["file-index.bitmap.columns"] = "f0";
+    raw_options[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
 
     arrow::FieldVector fields = {arrow::field("f0", arrow::utf8())};
@@ -475,10 +478,14 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndClose) {
     ASSERT_OK_AND_ASSIGN(auto record_batch, batch_builder.Finish());
     ASSERT_OK(writer->Write(std::move(record_batch)));
     ASSERT_TRUE(ArrowArrayIsReleased(&arrow_array));
-    ASSERT_OK(writer->Close());
 
     auto file_system = std::make_shared<LocalFileSystem>();
     std::vector<BasicFileStatus> file_status_list;
+    ASSERT_OK(file_system->ListDir(dir->Str(), &file_status_list));
+    ASSERT_EQ(2, file_status_list.size());
+
+    ASSERT_OK(writer->Close());
+    file_status_list.clear();
     ASSERT_OK(file_system->ListDir(dir->Str(), &file_status_list));
     ASSERT_TRUE(file_status_list.empty());
 }
@@ -634,8 +641,12 @@ TEST_F(AppendOnlyWriterTest, TestCloseDeletesCompactAfterFiles) {
     auto compact_manager = std::make_shared<FakeCompactManager>();
 
     auto compact_after = NewAppendFile("compact-after.orc", 1, 0, 0);
+    compact_after->extra_files = {"compact-after.orc.index"};
     auto compact_after_path = path_factory->ToPath(compact_after->file_name);
+    auto compact_after_index_path = path_factory->ToPath(compact_after->extra_files[0].value());
     ASSERT_OK_AND_ASSIGN(auto output, options.GetFileSystem()->Create(compact_after_path, true));
+    ASSERT_OK(output->Close());
+    ASSERT_OK_AND_ASSIGN(output, options.GetFileSystem()->Create(compact_after_index_path, true));
     ASSERT_OK(output->Close());
 
     auto result =
@@ -653,8 +664,10 @@ TEST_F(AppendOnlyWriterTest, TestCloseDeletesCompactAfterFiles) {
 
     ASSERT_OK(writer->Sync());
     ASSERT_TRUE(options.GetFileSystem()->Exists(compact_after_path).value());
+    ASSERT_TRUE(options.GetFileSystem()->Exists(compact_after_index_path).value());
     ASSERT_OK(writer->Close());
     ASSERT_FALSE(options.GetFileSystem()->Exists(compact_after_path).value());
+    ASSERT_FALSE(options.GetFileSystem()->Exists(compact_after_index_path).value());
     ASSERT_TRUE(compact_manager->request_cancel_called);
     ASSERT_TRUE(compact_manager->wait_called);
     ASSERT_TRUE(compact_manager->close_called);

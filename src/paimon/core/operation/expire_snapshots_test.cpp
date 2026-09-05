@@ -28,6 +28,7 @@
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
@@ -72,7 +73,9 @@ class ExpireSnapshotsTest : public testing::Test {
                              FieldMapping::GetPartitionSchema(schema_, partition_keys_));
         fs_ = std::make_shared<LocalFileSystem>();
 
-        test_data_path_ = "tmp";
+        directory_ = UniqueTestDirectory::Create();
+        ASSERT_TRUE(directory_);
+        test_data_path_ = directory_->Str();
         path_factory_ = CreateFactory(test_data_path_);
 
         std::shared_ptr<FileFormat> manifest_format = options.GetManifestFormat();
@@ -132,6 +135,13 @@ class ExpireSnapshotsTest : public testing::Test {
 
     ManifestEntry CreateManifestEntry(const std::string& file_name, int32_t bucket,
                                       const FileKind& kind) const {
+        return CreateManifestEntry(file_name, bucket, kind,
+                                   std::vector<std::optional<std::string>>());
+    }
+
+    ManifestEntry CreateManifestEntry(
+        const std::string& file_name, int32_t bucket, const FileKind& kind,
+        const std::vector<std::optional<std::string>>& extra_files) const {
         int32_t arity = 2;
         BinaryRow row(arity);
         BinaryRowWriter writer(&row, 20, mem_pool_.get());
@@ -143,7 +153,7 @@ class ExpireSnapshotsTest : public testing::Test {
             file_name, 1024, 8, DataFileMeta::EmptyMinKey(), DataFileMeta::EmptyMaxKey(),
             SimpleStats::EmptyStats(), SimpleStats::EmptyStats(), /*min_seq_no=*/16,
             /*max_seq_no=*/32,
-            /*schema_id=*/1, /*level=*/2, /*extra_files=*/std::vector<std::optional<std::string>>(),
+            /*schema_id=*/1, /*level=*/2, extra_files,
             /*creation_time=*/Timestamp(0, 0), /*delete_row_count=*/3,
             /*embedded_index=*/nullptr, /*file_source=*/std::nullopt,
             /*external_path=*/std::nullopt,
@@ -154,6 +164,7 @@ class ExpireSnapshotsTest : public testing::Test {
 
  private:
     std::string test_data_path_;
+    std::unique_ptr<UniqueTestDirectory> directory_;
     std::vector<std::string> partition_keys_;
     std::shared_ptr<arrow::Schema> schema_;
     std::shared_ptr<arrow::Schema> partition_schema_;
@@ -250,6 +261,38 @@ TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {
                        {{test_data_path_ + "/f0=true/f3=3/bucket-0/file1", data_file_entries[2]},
                         {test_data_path_ + "/f0=true/f3=3/bucket-1/file2", data_file_entries[1]},
                         {test_data_path_ + "/f0=true/f3=3/bucket-2/file3", data_file_entries[3]}}));
+    }
+}
+
+TEST_F(ExpireSnapshotsTest, TestCleanUnusedDataFileDeletesExtraFiles) {
+    auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, fs_,
+                           options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
+
+    ManifestEntry entry = CreateManifestEntry("file1", /*bucket=*/0, FileKind::Delete(),
+                                              {"file1.index", "file1.lookup"});
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<DataFilePathFactory> data_file_path_factory,
+        path_factory_->CreateDataFilePathFactory(entry.Partition(), entry.Bucket()));
+    std::vector<std::string> files = data_file_path_factory->CollectFiles(entry.File());
+    ASSERT_EQ(3, files.size());
+    for (const std::string& file : files) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output,
+                             fs_->Create(file, /*overwrite=*/true));
+        ASSERT_OK(output->Close());
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> manifest_files,
+                         manifest_file_->Write({entry}));
+    std::pair<std::string, int64_t> manifest_list;
+    ASSERT_OK_AND_ASSIGN(manifest_list, manifest_list_->Write(manifest_files));
+    ExpireSnapshots::DataFilePathFactoryCache data_file_path_factory_cache;
+    ASSERT_OK(expire.CleanUnusedDataFiles(manifest_list.first, &data_file_path_factory_cache));
+
+    for (const std::string& file : files) {
+        ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(file));
+        ASSERT_FALSE(exists) << file;
     }
 }
 

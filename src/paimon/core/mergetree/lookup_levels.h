@@ -45,6 +45,8 @@ struct RemoteSstFile {
 template <typename T>
 class LookupLevels : public Levels::DropFileCallback {
  public:
+    static constexpr const char* REMOTE_LOOKUP_FILE_SUFFIX = ".lookup";
+
     static Result<std::unique_ptr<LookupLevels<T>>> Create(
         const std::shared_ptr<FileSystem>& fs, const BinaryRow& partition, int32_t bucket,
         const CoreOptions& options, const std::shared_ptr<SchemaManager>& schema_manager,
@@ -118,8 +120,6 @@ class LookupLevels : public Levels::DropFileCallback {
 
     Result<std::shared_ptr<PersistProcessor<T>>> GetOrCreateProcessor(
         int64_t schema_id, const std::string& ser_version);
-
-    static constexpr const char* REMOTE_LOOKUP_FILE_SUFFIX = ".lookup";
 
  private:
     std::shared_ptr<MemoryPool> pool_;

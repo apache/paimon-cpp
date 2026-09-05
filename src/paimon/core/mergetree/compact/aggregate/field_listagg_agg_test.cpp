@@ -47,13 +47,13 @@ class FieldListaggAggTest : public testing::Test {
 TEST_F(FieldListaggAggTest, TestSimple) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg());
     auto ret = agg->Agg(std::string_view("hello"), std::string_view(" world")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "hello, world");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "hello, world");
 }
 
 TEST_F(FieldListaggAggTest, TestDelimiter) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg("-"));
     auto ret = agg->Agg(std::string_view("user1"), std::string_view("user2")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "user1-user2");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "user1-user2");
 }
 
 TEST_F(FieldListaggAggTest, TestNull) {
@@ -62,12 +62,12 @@ TEST_F(FieldListaggAggTest, TestNull) {
     // input null -> return accumulator
     {
         auto ret = agg->Agg(std::string_view("hello"), NullType()).value();
-        ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "hello");
+        ASSERT_EQ(DataDefine::GetStringView(ret), "hello");
     }
     // accumulator null -> return input
     {
         auto ret = agg->Agg(NullType(), std::string_view("world")).value();
-        ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "world");
+        ASSERT_EQ(DataDefine::GetStringView(ret), "world");
     }
     // both null -> return null
     {
@@ -82,17 +82,17 @@ TEST_F(FieldListaggAggTest, TestEmptyString) {
     // empty input -> return accumulator
     {
         auto ret = agg->Agg(std::string_view("hello"), std::string_view("")).value();
-        ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "hello");
+        ASSERT_EQ(DataDefine::GetStringView(ret), "hello");
     }
     // empty accumulator -> return input
     {
         auto ret = agg->Agg(std::string_view(""), std::string_view("world")).value();
-        ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "world");
+        ASSERT_EQ(DataDefine::GetStringView(ret), "world");
     }
     // blank input -> return accumulator (which is empty)
     {
         auto ret = agg->Agg(std::string_view(""), std::string_view("")).value();
-        ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "");
+        ASSERT_EQ(DataDefine::GetStringView(ret), "");
     }
 }
 
@@ -112,12 +112,12 @@ TEST_F(FieldListaggAggTest, TestBlankStrings) {
                                                     u8" \t\u3000\u2000\n"};
     for (const std::string& blank : blank_strings) {
         auto ret = agg->Agg(std::string_view("user1"), std::string_view(blank)).value();
-        ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "user1");
+        ASSERT_EQ(DataDefine::GetStringView(ret), "user1");
     }
 
     // A blank accumulator must not add a leading delimiter.
     auto ret = agg->Agg(std::string_view(u8"\u3000\t"), std::string_view("user1")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "user1");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "user1");
 
     // A blank input must not turn a null accumulator into a non-null value.
     ret = agg->Agg(NullType(), std::string_view(u8" \t\u3000")).value();
@@ -129,9 +129,21 @@ TEST_F(FieldListaggAggTest, TestMultipleAccumulation) {
 
     // "a" + "," + "b" = "a,b", then "a,b" + "," + "c" = "a,b,c"
     auto ret = agg->Agg(std::string_view("a"), std::string_view("b")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a,b");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "a,b");
     ret = agg->Agg(std::move(ret), std::string_view("c")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a,b,c");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "a,b,c");
+}
+
+TEST_F(FieldListaggAggTest, TestResultOwnershipAcrossAggregations) {
+    ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg());
+
+    ASSERT_OK_AND_ASSIGN(VariantType first,
+                         agg->Agg(std::string_view("alpha"), std::string_view("beta")));
+    ASSERT_OK_AND_ASSIGN(VariantType second,
+                         agg->Agg(std::string_view("one"), std::string_view("two")));
+
+    ASSERT_EQ(DataDefine::GetStringView(first), "alpha,beta");
+    ASSERT_EQ(DataDefine::GetStringView(second), "one,two");
 }
 
 TEST_F(FieldListaggAggTest, TestDistinct) {
@@ -139,7 +151,7 @@ TEST_F(FieldListaggAggTest, TestDistinct) {
 
     // "a;b" + "b;c" -> "a;b;c" (deduplicate "b")
     auto ret = agg->Agg(std::string_view("a;b"), std::string_view("b;c")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a;b;c");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "a;b;c");
 }
 
 TEST_F(FieldListaggAggTest, TestDistinctIgnoresBlankTokens) {
@@ -148,7 +160,7 @@ TEST_F(FieldListaggAggTest, TestDistinctIgnoresBlankTokens) {
     auto ret =
         agg->Agg(std::string_view("user1"), std::string_view(u8" ,user2,\t,\u3000,user1,\u2000"))
             .value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "user1,user2");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "user1,user2");
 }
 
 TEST_F(FieldListaggAggTest, TestDistinctNoDuplicates) {
@@ -156,7 +168,7 @@ TEST_F(FieldListaggAggTest, TestDistinctNoDuplicates) {
 
     // "a b" + "c d" -> "a b c d" (no dups to remove)
     auto ret = agg->Agg(std::string_view("a b"), std::string_view("c d")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a b c d");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "a b c d");
 }
 
 TEST_F(FieldListaggAggTest, TestDistinctWithEmptyDelimiterFallsBackToWhitespace) {
@@ -164,7 +176,7 @@ TEST_F(FieldListaggAggTest, TestDistinctWithEmptyDelimiterFallsBackToWhitespace)
 
     // Empty delimiter falls back to whitespace, so the repeated "b" is removed.
     auto ret = agg->Agg(std::string_view("a b"), std::string_view("b c")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a b c");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "a b c");
 }
 
 TEST_F(FieldListaggAggTest, TestDistinctEmptyInput) {
@@ -172,7 +184,7 @@ TEST_F(FieldListaggAggTest, TestDistinctEmptyInput) {
 
     // empty input -> return accumulator
     auto ret = agg->Agg(std::string_view("a;b"), std::string_view("")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a;b");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "a;b");
 }
 
 TEST_F(FieldListaggAggTest, TestDistinctFalse) {
@@ -180,7 +192,7 @@ TEST_F(FieldListaggAggTest, TestDistinctFalse) {
 
     // "a;b" + "b;c" -> "a;b;b;c" (no dedup)
     auto ret = agg->Agg(std::string_view("a;b"), std::string_view("b;c")).value();
-    ASSERT_EQ(DataDefine::GetVariantValue<std::string_view>(ret), "a;b;b;c");
+    ASSERT_EQ(DataDefine::GetStringView(ret), "a;b;b;c");
 }
 
 TEST_F(FieldListaggAggTest, TestInvalidType) {

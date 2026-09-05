@@ -779,6 +779,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/complete_row_tracking_fields_reader_test.cpp
                     core/io/vector_file_batch_reader_test.cpp
                     core/io/data_file_meta_test.cpp
+                    core/io/data_file_writer_base_test.cpp
                     core/io/data_file_index_writer_test.cpp
                     core/io/file_index_options_test.cpp
                     core/io/file_index_evaluator_test.cpp

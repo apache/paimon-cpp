@@ -62,6 +62,7 @@ KeyValueDataFileWriterFactory::CreateWriter() const {
     auto writer = std::make_unique<KeyValueDataFileWriter>(
         GetFileCompression(), std::move(converter), schema_id_, level_, file_source_, primary_keys_,
         resources.stats_extractor, write_schema_, path_factory_->IsExternalPath(), pool_);
+    // Changelog files are consumed sequentially and intentionally do not produce file indexes.
     if (!is_changelog_) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
                                CreateFileIndexWriter(write_schema_, path_factory_));

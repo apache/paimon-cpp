@@ -88,6 +88,7 @@ class DataFileWriterBase : public SingleFileWriter<Record, std::shared_ptr<DataF
     /// Extracts the pre-conversion Arrow batch from record for file index construction, then
     /// passes record to the underlying data file writer, which may convert it to a physical schema.
     Status WriteRecordWithFileIndex(Record record) {
+        PAIMON_RETURN_NOT_OK(this->CheckNotClosed());
         PAIMON_RETURN_NOT_OK(AddFileIndexBatch(GetFileIndexBatch(record)));
         return Base::Write(std::move(record));
     }

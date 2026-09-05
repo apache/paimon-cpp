@@ -111,6 +111,7 @@ class MergeTreeWriter : public BatchWriter {
     Status TrySyncLatestCompaction(bool blocking);
     Status UpdateCompactResult(const std::shared_ptr<CompactResult>& compact_result);
     Status UpdateCompactDeletionFile(const std::shared_ptr<CompactDeletionFile>& new_deletion_file);
+    void DeleteFileQuietly(const std::shared_ptr<DataFileMeta>& file) const;
 
  private:
     MergeTreeWriter(const std::vector<std::string>& trimmed_primary_keys,

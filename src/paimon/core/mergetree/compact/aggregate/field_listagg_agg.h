@@ -77,18 +77,16 @@ class FieldListaggAgg : public FieldAggregator {
             return input_field;
         }
 
+        std::string result;
         if (distinct_) {
-            result_ = AggDistinctImpl(acc_str, in_str);
+            result = AggDistinctImpl(acc_str, in_str);
         } else {
-            // Build into a local string to avoid aliasing when acc_str points into result_
-            std::string new_result;
-            new_result.reserve(acc_str.size() + delimiter_.size() + in_str.size());
-            new_result.append(acc_str);
-            new_result.append(delimiter_);
-            new_result.append(in_str);
-            result_ = std::move(new_result);
+            result.reserve(acc_str.size() + delimiter_.size() + in_str.size());
+            result.append(acc_str);
+            result.append(delimiter_);
+            result.append(in_str);
         }
-        return VariantType(std::string_view{result_});
+        return VariantType(BinaryString::FromString(result, pool_.get()));
     }
 
  private:
@@ -136,6 +134,5 @@ class FieldListaggAgg : public FieldAggregator {
 
     std::string delimiter_;
     bool distinct_;
-    std::string result_;
 };
 }  // namespace paimon

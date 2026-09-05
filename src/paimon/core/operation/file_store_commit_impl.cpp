@@ -230,8 +230,9 @@ Status FileStoreCommitImpl::Abort(
         append_data_files(compact_increment.ChangelogFiles());
         for (const auto& file : data_files_to_delete) {
             // Best-effort cleanup: ignore delete failures, aligning with Java deleteQuietly.
-            [[maybe_unused]] Status status =
-                fs_->Delete(data_file_path_factory->ToPath(file), /*recursive=*/false);
+            for (const std::string& path : data_file_path_factory->CollectFiles(file)) {
+                [[maybe_unused]] Status status = fs_->Delete(path, /*recursive=*/false);
+            }
         }
 
         std::vector<std::shared_ptr<IndexFileMeta>> index_files_to_delete;

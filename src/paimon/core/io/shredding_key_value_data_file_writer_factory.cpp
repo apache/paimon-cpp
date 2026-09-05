@@ -90,6 +90,7 @@ ShreddingKeyValueDataFileWriterFactory::CreateShreddedWriter(
     auto writer = std::make_unique<KeyValueDataFileWriter>(
         compression, std::move(batch_converter), schema_id_, level_, file_source_, primary_keys_,
         resources.stats_extractor, file_schema, path_factory_->IsExternalPath(), pool_);
+    // Changelog files are consumed sequentially and intentionally do not produce file indexes.
     if (!is_changelog_) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataFileIndexWriter> file_index_writer,
                                CreateFileIndexWriter(write_schema_, path_factory_));
