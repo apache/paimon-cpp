@@ -69,6 +69,8 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
 
     Status Close() override;
 
+    bool HasUnpreparedRealtimeData() const override;
+
     std::shared_ptr<Metrics> GetMetrics() const override;
 
  private:
@@ -86,7 +88,8 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
     std::shared_ptr<RealtimeSchemaLayout> schema_layout_;
     std::vector<std::shared_ptr<RealtimeSegmentHandle>> sealed_segments_;
     int64_t next_offset_;
-    std::mutex realtime_store_mutex_;
+    bool has_building_data_ = false;
+    mutable std::mutex realtime_store_mutex_;
     std::mutex prepare_mutex_;
 };
 

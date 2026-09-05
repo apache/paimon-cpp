@@ -519,6 +519,9 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
     const int64_t allocations_before_write = pool->allocation_count;
     ASSERT_OK(writer->Write(MakeBatch(realtime_schema, R"([[0, 1, "one"]])")));
     ASSERT_GT(pool->allocation_count, allocations_before_write);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
     ASSERT_OK(writer->Close());
     writer.reset();
     ASSERT_OK_AND_ASSIGN(auto retained_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
@@ -615,6 +618,9 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
     ASSERT_EQ(1, read_state.views.size());
     ASSERT_EQ(std::optional<OffsetRange>(OffsetRange(max - 1, max)),
               read_state.views[0].read_view->GetOffsetRange());
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> boundary_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, boundary_progress.size());
     ASSERT_OK(writer->Close());
     ASSERT_GE(snapshot_id, 1);
 }

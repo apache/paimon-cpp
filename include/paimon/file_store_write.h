@@ -64,6 +64,9 @@ class PAIMON_EXPORT FileStoreWrite {
     /// independently. A future implementation will support spilling sealed segments to a
     /// temporary directory; currently this method only creates the in-memory segment boundary.
     /// Calling this method on a non-real-time writer returns an error.
+    /// If sealing fails, the caller must recreate both the `RealtimeContext` and writer. The
+    /// upstream must then recover input from the durable recovery offset persisted in the
+    /// snapshot. Reusing the failed writer is unsupported.
     virtual Status Seal();
 
     /// Compact data stored in given partition and bucket. Note that compaction process is only
@@ -112,6 +115,10 @@ class PAIMON_EXPORT FileStoreWrite {
     /// @param commit_identifier Identifier of this prepare-commit operation in streaming mode.
     /// @return Real-time commit messages with their partition-bucket offset ranges.
     /// @note Calling this method on a non-real-time writer or in batch mode returns an error.
+    /// @note If preparation fails, the caller must recreate both the `RealtimeContext` and writer.
+    ///       The upstream must then recover input from the durable recovery offset persisted in the
+    ///       snapshot. The failed writer may contain partially prepared bucket state and must not
+    ///       be reused.
     virtual Result<std::vector<RealtimeCommitProgress>> PrepareCommitWithProgress(
         int64_t commit_identifier);
 
@@ -128,6 +135,12 @@ class PAIMON_EXPORT FileStoreWrite {
     virtual Status RefreshCommittedSnapshot(int64_t snapshot_id);
 
     virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
+
+    /// Releases resources owned by this writer.
+    ///
+    /// Closing a real-time writer with data not covered by a successful
+    /// `PrepareCommitWithProgress()` returns an error and invalidates its `RealtimeContext`.
+    /// The caller must rebuild both objects and recover input from the durable snapshot offset.
     virtual Status Close() = 0;
 };
 

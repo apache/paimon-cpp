@@ -921,6 +921,13 @@ class RealtimeWriteInteTest : public ::testing::Test {
         return RealtimeCommitProperties::ReadOffsets(snapshot, options.GetFileSystem());
     }
 
+    Status PrepareAndClose(FileStoreWrite* writer) const {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimeCommitProgress> progress,
+                               writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+        static_cast<void>(progress);
+        return writer->Close();
+    }
+
     void FinalizeCommitAndCheck(FileStoreWrite* writer,
                                 std::vector<RealtimeCommitProgress> realtime_commits,
                                 int64_t prepare_identifier, std::vector<Row> expected_rows) const {
@@ -1236,7 +1243,7 @@ TEST_F(RealtimeWriteInteTest, TestPkRead) {
                                   predicate, /*enable_predicate_filter=*/true));
     ASSERT_EQ(nullptr, filtered_result);
     ASSERT_FALSE(saw_query_predicate->load(std::memory_order_acquire));
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
     writer.reset();
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> lifetime_plan,
@@ -1410,7 +1417,7 @@ TEST_F(RealtimeWriteInteTest, TestPkMergeDiskSealedAndActive) {
             .ValueOrDie();
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
         << result->ToString();
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkMergeAllDiskSplitsWithMemory) {
@@ -1460,7 +1467,7 @@ TEST_F(RealtimeWriteInteTest, TestPkMergeAllDiskSplitsWithMemory) {
                                 {20, "disk-20", "p0"},
                                 {21, "disk-21", "p0"}}),
               actual_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkNestedProjectionAcrossDiskAndMemory) {
@@ -1545,7 +1552,7 @@ TEST_F(RealtimeWriteInteTest, TestPkNestedProjectionAcrossDiskAndMemory) {
             .ValueOrDie();
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*actual))
         << actual->ToString();
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkKeylessProjection) {
@@ -1572,7 +1579,7 @@ TEST_F(RealtimeWriteInteTest, TestPkKeylessProjection) {
                                arrow::schema({arrow::field("payload", arrow::utf8())}), R"([
         [0, "memory"]
     ])");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestCompositePkKeylessProjection) {
@@ -1599,7 +1606,7 @@ TEST_F(RealtimeWriteInteTest, TestCompositePkKeylessProjection) {
                                arrow::schema({arrow::field("pt", arrow::utf8())}), R"([
         [0, "memory"]
     ])");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkCompositeMerge) {
@@ -1659,7 +1666,7 @@ TEST_F(RealtimeWriteInteTest, TestPkCompositeMerge) {
                                 {2, "b", "sealed-2b"},
                                 {3, "c", "disk-3c"}}),
               actual_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkWriterHandoff) {
@@ -2104,7 +2111,7 @@ TEST_F(RealtimeWriteInteTest, TestAppendScanKeepsDiskSplitsIndependent) {
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(expected_rows, actual_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestCommitOrdersPreparedOffsetRanges) {
@@ -2399,7 +2406,7 @@ TEST_F(RealtimeWriteInteTest, TestPkDvPredicateAcrossHighLevelLevel0AndMemory) {
                                 {4, "base-four", "p0"},
                                 {7, matching_payload, "p0"}}),
               candidates);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkDvMergesDuplicateKeysAcrossLevel0RunsAndMemory) {
@@ -2461,7 +2468,7 @@ TEST_F(RealtimeWriteInteTest, TestPkDvMergesDuplicateKeysAcrossLevel0RunsAndMemo
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ((std::vector<Row>{{1, "memory-new-one", "p0"}, {3, "level0-stable-three", "p0"}}),
               actual_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestRealtimeOffsetFileLifecycle) {
@@ -2610,7 +2617,7 @@ TEST_F(RealtimeWriteInteTest, TestReadMemoryBeforePrepareCommit) {
                          RealtimeContextImpl::Cast(realtime_context));
     ASSERT_NOK_WITH_MSG(realtime_context_impl->ResolveReadView(realtime_split->OpaqueTicket()),
                         "ticket does not exist or has expired");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPlanExcludesRowsWrittenAfterMemoryEndOffset) {
@@ -2654,7 +2661,7 @@ TEST_F(RealtimeWriteInteTest, TestPlanExcludesRowsWrittenAfterMemoryEndOffset) {
     ASSERT_OK_AND_ASSIGN(std::vector<Row> second_actual_rows,
                          ReadRows(second_plan, realtime_context));
     ASSERT_EQ(expected_rows, second_actual_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestReadFailsAfterRealtimeSplitTicketExpires) {
@@ -2673,7 +2680,7 @@ TEST_F(RealtimeWriteInteTest, TestReadFailsAfterRealtimeSplitTicketExpires) {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     ASSERT_NOK_WITH_MSG(ReadRows(plan, realtime_context), "ticket does not exist or has expired");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestSuccessfulReaderCreationConsumesRealtimeSplitTicket) {
@@ -2704,7 +2711,7 @@ TEST_F(RealtimeWriteInteTest, TestSuccessfulReaderCreationConsumesRealtimeSplitT
 
     ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
                         "ticket does not exist or has expired");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTicket) {
@@ -2736,10 +2743,10 @@ TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTick
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(rows, actual_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
-TEST_F(RealtimeWriteInteTest, TestCloseWriterKeepsContextReadable) {
+TEST_F(RealtimeWriteInteTest, TestCloseWriterWithBuildingDataInvalidatesContext) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
@@ -2749,10 +2756,28 @@ TEST_F(RealtimeWriteInteTest, TestCloseWriterKeepsContextReadable) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
                          MakeBatch(rows, /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(batch)));
-    ASSERT_OK(writer->Close());
+    ASSERT_NOK_WITH_MSG(writer->Close(), "not covered by a successful");
 
-    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
-    ASSERT_EQ(rows, actual_rows);
+    ASSERT_NOK_WITH_MSG(ReadRows(realtime_context), "real-time context cannot be reused");
+    ASSERT_NOK_WITH_MSG(CreateRealtimeWriter(realtime_context),
+                        "real-time context cannot be reused");
+}
+
+TEST_F(RealtimeWriteInteTest, TestCloseWriterWithSealedDataInvalidatesContext) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0"),
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK(writer->Seal());
+    ASSERT_NOK_WITH_MSG(writer->Close(), "not covered by a successful");
+
+    ASSERT_NOK_WITH_MSG(CreateRealtimeWriter(realtime_context),
+                        "real-time context cannot be reused");
 }
 
 TEST_F(RealtimeWriteInteTest, TestPinnedPlanRemainsReadableAfterWriterClose) {
@@ -2767,7 +2792,7 @@ TEST_F(RealtimeWriteInteTest, TestPinnedPlanRemainsReadableAfterWriterClose) {
     ASSERT_OK(writer->Write(std::move(batch)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(rows, actual_rows);
@@ -2835,7 +2860,7 @@ TEST_F(RealtimeWriteInteTest, TestReadCommittedDiskAndBuildingMemory) {
     expected_rows.insert(expected_rows.end(), memory_rows.begin(), memory_rows.end());
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
     ASSERT_EQ(expected_rows, actual_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestCountReaderDoesNotSupportRealtimeSplit) {
@@ -2853,7 +2878,7 @@ TEST_F(RealtimeWriteInteTest, TestCountReaderDoesNotSupportRealtimeSplit) {
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
     ASSERT_NOK_WITH_MSG(CountRows(plan, realtime_context),
                         "does not support process-local real-time splits");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
@@ -2914,7 +2939,7 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
             .ValueOrDie();
     ASSERT_NE(nullptr, union_result);
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected_union)->Equals(*union_result));
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestDiskPredicatePushdownWithoutMemoryFiltering) {
@@ -2964,7 +2989,7 @@ TEST_F(RealtimeWriteInteTest, TestDiskPredicatePushdownWithoutMemoryFiltering) {
     ASSERT_NE(nullptr, result);
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
         << result->ToString();
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestMemoryBatchStatisticsPredicatePushdown) {
@@ -3018,7 +3043,7 @@ TEST_F(RealtimeWriteInteTest, TestMemoryBatchStatisticsPredicatePushdown) {
                                        actual->ToString());
             }
         }
-        PAIMON_RETURN_NOT_OK(writer->Close());
+        PAIMON_RETURN_NOT_OK(PrepareAndClose(writer.get()));
         return Status::OK();
     };
 
@@ -3102,7 +3127,7 @@ TEST_F(RealtimeWriteInteTest, TestMemoryBatchStatisticsPredicatePushdownWithDisk
     ASSERT_NE(nullptr, result);
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
         << result->ToString();
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestNullPredicateForMemoryAndDisk) {
@@ -3163,7 +3188,7 @@ TEST_F(RealtimeWriteInteTest, TestNullPredicateForMemoryAndDisk) {
     ASSERT_NE(nullptr, result);
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
         << result->ToString();
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestUnionReadAfterColumnRename) {
@@ -3217,7 +3242,7 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadAfterColumnRename) {
     ASSERT_NE(nullptr, result);
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
         << result->ToString();
-    ASSERT_OK(second_writer->Close());
+    ASSERT_OK(PrepareAndClose(second_writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestUnionReadWithNestedStructProjection) {
@@ -3267,7 +3292,7 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadWithNestedStructProjection) {
         [0, 2, [["beijing"]], "p0"],
         [0, 3, [["shenzhen"]], "p0"]
     ])");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestUnionReadWithSelectedMapKeys) {
@@ -3341,7 +3366,7 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadWithSelectedMapKeys) {
         [0, 2, [40, null], "p0"],
         [0, 3, null, "p0"]
     ])");
-        ASSERT_OK(writer->Close());
+        ASSERT_OK(PrepareAndClose(writer.get()));
     };
     run_test(/*primary_key=*/false);
     ASSERT_FALSE(HasFatalFailure());
@@ -3459,7 +3484,7 @@ TEST_F(RealtimeWriteInteTest, TestUnionReadWithVariantAccess) {
         [0, 2, [30, "memory-a", null]],
         [0, 3, [40, "memory-b", "memory-fallback-b"]]
     ])");
-        ASSERT_OK(writer->Close());
+        ASSERT_OK(PrepareAndClose(writer.get()));
     };
     run_test(/*primary_key=*/false);
     ASSERT_FALSE(HasFatalFailure());
@@ -3503,7 +3528,7 @@ TEST_F(RealtimeWriteInteTest, TestRefreshCommittedSnapshotReclaimsMemory) {
     ASSERT_OK_AND_ASSIGN(uint64_t memory_usage_after_refresh,
                          GetRealtimeMemoryUsage(realtime_context));
     ASSERT_LT(memory_usage_after_refresh, memory_usage_before_refresh);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPlanPinsMemoryAcrossRefresh) {
@@ -3541,7 +3566,7 @@ TEST_F(RealtimeWriteInteTest, TestPlanPinsMemoryAcrossRefresh) {
     ASSERT_OK_AND_ASSIGN(std::vector<Row> refreshed_rows,
                          ReadRows(refreshed_plan, realtime_context));
     ASSERT_EQ(pinned_rows, refreshed_rows);
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestReaderPinsMemoryAcrossRefresh) {
@@ -3726,7 +3751,7 @@ TEST_F(RealtimeWriteInteTest, TestOverwriteRequiresReopenRealtimeContext) {
     ASSERT_OK_AND_ASSIGN(uint64_t memory_usage_after_failed_refresh,
                          GetRealtimeMemoryUsage(realtime_context));
     ASSERT_EQ(memory_usage_before_overwrite, memory_usage_after_failed_refresh);
-    ASSERT_OK(writer->Close());
+    ASSERT_NOK_WITH_MSG(writer->Close(), "not covered by a successful");
     writer.reset();
     realtime_context.reset();
 
@@ -4208,7 +4233,7 @@ TEST_F(RealtimeWriteInteTest, TestDropPartitionRequiresReopenRealtimeContext) {
     ASSERT_OK_AND_ASSIGN(uint64_t memory_usage_after_refresh,
                          GetRealtimeMemoryUsage(realtime_context));
     ASSERT_EQ(memory_usage_before_refresh, memory_usage_after_refresh);
-    ASSERT_OK(writer->Close());
+    ASSERT_NOK_WITH_MSG(writer->Close(), "not covered by a successful");
     writer.reset();
     realtime_context.reset();
 

@@ -96,8 +96,23 @@ Status RealtimeContextImpl::Start() {
     return Status::OK();
 }
 
+void RealtimeContextImpl::Invalidate() {
+    invalidated_.store(true);
+}
+
+Status RealtimeContextImpl::CheckUsable() const {
+    if (invalidated_.load()) {
+        return Status::Invalid(
+            "real-time context cannot be reused after a writer failure or an unprepared writer "
+            "close; create a new RealtimeContext and FileStoreWrite, then let upstream recover "
+            "input from the durable recovery offset persisted in the snapshot");
+    }
+    return Status::OK();
+}
+
 Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     if (!request.write_schema || !request.write_schema->release) {
         return Status::Invalid("real-time store write schema is null");
     }
@@ -163,6 +178,7 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
 
 Result<int64_t> RealtimeContextImpl::AdvanceMaterializedMaxSequenceNumber(
     const RealtimePartitionBucket& partition_bucket, int64_t max_sequence_number) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     std::lock_guard<std::mutex> lock(mutex_);
     auto iter = stores_.find(partition_bucket);
     if (iter == stores_.end()) {
@@ -178,6 +194,7 @@ Result<int64_t> RealtimeContextImpl::AdvanceMaterializedMaxSequenceNumber(
 }
 
 Result<RealtimeReadState> RealtimeContextImpl::AcquireReadState() {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     std::lock_guard<std::mutex> progress_lock(progress_mutex_);
     std::lock_guard<std::mutex> registry_lock(mutex_);
     RealtimeReadState result;
@@ -197,6 +214,7 @@ Result<RealtimeReadState> RealtimeContextImpl::AcquireReadState() {
 
 Result<std::string> RealtimeContextImpl::PinReadView(const RealtimePartitionBucketView& view,
                                                      int64_t ttl_millis) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     if (!view.store || !view.read_view) {
         return Status::Invalid("cannot pin an incomplete real-time read view");
     }
@@ -271,6 +289,7 @@ Status RealtimeContextImpl::ReleaseReadView(const std::string& opaque_ticket) {
 
 Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
                                                      const RealtimeOffsetMap& committed_offsets) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     if (snapshot_id < 0) {
         return Status::Invalid("real-time refresh snapshot id must not be negative");
     }

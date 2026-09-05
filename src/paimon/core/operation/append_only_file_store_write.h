@@ -120,6 +120,10 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
         return realtime_context_ != nullptr;
     }
 
+    std::shared_ptr<RealtimeContext> GetRealtimeContext() const override {
+        return realtime_context_;
+    }
+
     /// @param plan_factory The active shredding write plan, or nullptr when the rewrite stays a
     ///                     plain passthrough. Resolved by the caller because
     ///                     `GetDictionaryPassthroughVetoReason` needs the same answer.

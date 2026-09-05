@@ -110,6 +110,7 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     PAIMON_RETURN_NOT_OK(
         realtime_store_->Write(RealtimeWriteBatch{std::move(batch), validated.offset_range}));
     next_offset_ = validated.offset_range.end;
+    has_building_data_ = true;
     return Status::OK();
 }
 
@@ -121,6 +122,7 @@ Status RealtimeAppendOnlyWriter::SealCurrentSegment() {
             return Status::Invalid("append real-time store sealed a null segment");
         }
         sealed_segments_.push_back(std::move(segment.value()));
+        has_building_data_ = false;
     }
     return Status::OK();
 }
@@ -224,6 +226,11 @@ Status RealtimeAppendOnlyWriter::Sync() {
 Status RealtimeAppendOnlyWriter::Close() {
     // The shared real-time context owns the real-time store for scans and later writers.
     return file_writer_->Close();
+}
+
+bool RealtimeAppendOnlyWriter::HasUnpreparedRealtimeData() const {
+    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
+    return has_building_data_ || !sealed_segments_.empty();
 }
 
 std::shared_ptr<Metrics> RealtimeAppendOnlyWriter::GetMetrics() const {

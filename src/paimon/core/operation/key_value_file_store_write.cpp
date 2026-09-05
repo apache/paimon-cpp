@@ -188,9 +188,9 @@ Status KeyValueFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
 }
 
 Status KeyValueFileStoreWrite::Close() {
-    PAIMON_RETURN_NOT_OK(AbstractFileStoreWrite::Close());
+    Status writer_status = AbstractFileStoreWrite::Close();
     compact_manager_factory_->Close();
-    return Status::OK();
+    return writer_status;
 }
 
 }  // namespace paimon

@@ -87,6 +87,10 @@ class KeyValueFileStoreWrite : public AbstractFileStoreWrite {
         return realtime_context_ != nullptr;
     }
 
+    std::shared_ptr<RealtimeContext> GetRealtimeContext() const override {
+        return realtime_context_;
+    }
+
  private:
     bool enable_multi_thread_spill_;
     std::shared_ptr<RealtimeContext> realtime_context_;

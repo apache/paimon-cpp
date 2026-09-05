@@ -200,6 +200,7 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         RealtimeWriteBatch{std::move(store_record_batch), store_batch.offset_range}));
     next_offset_ = store_batch.offset_range.end;
     last_sequence_number_ += count;
+    has_building_data_ = true;
     PAIMON_RETURN_NOT_OK(realtime_context_->AdvanceMaterializedMaxSequenceNumber(
         partition_bucket_, last_sequence_number_));
     return Status::OK();
@@ -213,6 +214,7 @@ Status RealtimePrimaryKeyWriter::SealCurrentSegment() {
             return Status::Invalid("PK real-time store sealed a null segment");
         }
         sealed_segments_.push_back(std::move(segment.value()));
+        has_building_data_ = false;
     }
     return Status::OK();
 }
@@ -283,6 +285,10 @@ Status RealtimePrimaryKeyWriter::Sync() {
 }
 Status RealtimePrimaryKeyWriter::Close() {
     return merge_tree_writer_->Close();
+}
+bool RealtimePrimaryKeyWriter::HasUnpreparedRealtimeData() const {
+    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
+    return has_building_data_ || !sealed_segments_.empty();
 }
 std::shared_ptr<Metrics> RealtimePrimaryKeyWriter::GetMetrics() const {
     return merge_tree_writer_->GetMetrics();

@@ -63,14 +63,15 @@ namespace {
 Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& realtime_context,
                                         const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                         const CoreOptions& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context));
+    PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
     PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
                            snapshot_manager->LatestSnapshot());
     if (latest_snapshot) {
         PAIMON_ASSIGN_OR_RAISE(
             RealtimeOffsetMap realtime_committed_offsets,
             RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                               RealtimeContextImpl::Cast(realtime_context));
         PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
             latest_snapshot->Id(), realtime_committed_offsets));
     }

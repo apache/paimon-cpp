@@ -66,6 +66,7 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
     Result<bool> CompactNotCompleted() override;
     Status Sync() override;
     Status Close() override;
+    bool HasUnpreparedRealtimeData() const override;
     std::shared_ptr<Metrics> GetMetrics() const override;
 
  private:
@@ -98,7 +99,8 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
     CoreOptions options_;
     int64_t next_offset_;
     int64_t last_sequence_number_;
-    std::mutex realtime_store_mutex_;
+    bool has_building_data_ = false;
+    mutable std::mutex realtime_store_mutex_;
     std::mutex prepare_mutex_;
 };
 
