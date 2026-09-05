@@ -440,6 +440,15 @@ TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithValueStatsCols) {
 
     ASSERT_OK_AND_ASSIGN(keep, scan->FilterByStats(entry_keep));
     ASSERT_TRUE(keep);
+
+    scan->EnableValueFilterForLevels([](int32_t level) -> bool { return level > 0; });
+    ASSERT_FALSE(scan->WholeBucketFilterEnabled());
+    entry.File()->level = 0;
+    ASSERT_OK_AND_ASSIGN(keep, scan->FilterByStats(entry));
+    ASSERT_TRUE(keep);
+    entry.File()->level = 1;
+    ASSERT_OK_AND_ASSIGN(keep, scan->FilterByStats(entry));
+    ASSERT_FALSE(keep);
 }
 
 TEST_F(KeyValueFileStoreScanTest, TestFilterByValueFilterWithSchemaEvolution) {

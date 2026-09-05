@@ -37,6 +37,7 @@
 #include "paimon/core/options/merge_engine.h"
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -62,14 +63,15 @@ namespace {
 Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& realtime_context,
                                         const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                         const CoreOptions& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context));
+    PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
     PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
                            snapshot_manager->LatestSnapshot());
     if (latest_snapshot) {
         PAIMON_ASSIGN_OR_RAISE(
             RealtimeOffsetMap realtime_committed_offsets,
             RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                               RealtimeContextImpl::Cast(realtime_context));
         PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
             latest_snapshot->Id(), realtime_committed_offsets));
     }
@@ -80,6 +82,10 @@ Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& 
 
 Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithProgress(int64_t) {
     return Status::Invalid("prepare commit with progress requires a real-time writer");
+}
+
+Status FileStoreWrite::Seal() {
+    return Status::Invalid("seal requires a real-time writer");
 }
 
 Status FileStoreWrite::RefreshCommittedSnapshot(int64_t) {
@@ -184,6 +190,14 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             write_schema = arrow::schema(write_fields);
         }
 
+        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
+        if (ctx->GetRealtimeContext()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<RealtimeSchemaLayout> layout,
+                RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, write_schema));
+            realtime_schema_layout = std::move(layout);
+        }
+
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
         if (need_dv_maintainer_factory) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -201,8 +215,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
         auto file_store_write = std::make_unique<AppendOnlyFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
-            ctx->GetRootPath(), schema, arrow_schema, write_schema, partition_schema,
-            dv_maintainer_factory, io_manager, options, ignore_previous_files,
+            ctx->GetRootPath(), schema, arrow_schema, write_schema, realtime_schema_layout,
+            partition_schema, dv_maintainer_factory, io_manager, options, ignore_previous_files,
             ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->GetRealtimeContext(),
             ctx->GetExecutor(), ctx->GetMemoryPool());
         return std::unique_ptr<FileStoreWrite>(std::move(file_store_write));
@@ -269,13 +283,21 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
         }
 
+        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
+        if (ctx->GetRealtimeContext()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<RealtimeSchemaLayout> layout,
+                RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, arrow_schema));
+            realtime_schema_layout = std::move(layout);
+        }
+
         return std::make_unique<KeyValueFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
-            ctx->GetRootPath(), schema, arrow_schema, partition_schema, dv_maintainer_factory,
-            io_manager, key_comparator, sequence_fields_comparator, merge_function_wrapper, options,
-            ignore_previous_files, ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(),
-            ctx->EnableMultiThreadSpill(), ctx->GetRealtimeContext(), ctx->GetExecutor(),
-            ctx->GetMemoryPool());
+            ctx->GetRootPath(), schema, arrow_schema, realtime_schema_layout, partition_schema,
+            dv_maintainer_factory, io_manager, key_comparator, sequence_fields_comparator,
+            merge_function_wrapper, options, ignore_previous_files, ctx->IsStreamingMode(),
+            ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(), ctx->GetRealtimeContext(),
+            ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 }
 

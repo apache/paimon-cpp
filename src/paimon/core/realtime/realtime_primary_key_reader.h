@@ -31,17 +31,6 @@ class BatchReader;
 class MemoryPool;
 class RealtimeStoreReadPipeline;
 
-/// Creates the Arrow schema used for PK realtime transport batches.
-class RealtimePrimaryKeyLayout {
- public:
-    RealtimePrimaryKeyLayout() = delete;
-    ~RealtimePrimaryKeyLayout() = delete;
-
-    /// Creates `_VALUE_KIND`, `_SEQUENCE_NUMBER`, then value fields.
-    static std::shared_ptr<arrow::Schema> CreateSchema(
-        const std::vector<std::shared_ptr<arrow::Field>>& value_fields);
-};
-
 class RealtimePrimaryKeyReaderFactory {
  public:
     RealtimePrimaryKeyReaderFactory() = delete;

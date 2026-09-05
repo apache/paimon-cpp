@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,6 +62,14 @@ class KeyValueFileStoreScan : public FileStoreScan {
 
     FileStoreScan* EnableValueFilter() override {
         value_filter_force_enabled_ = true;
+        value_filter_level_filter_ = nullptr;
+        return this;
+    }
+
+    FileStoreScan* EnableValueFilterForLevels(
+        const std::function<bool(int32_t)>& level_filter) override {
+        value_filter_force_enabled_ = true;
+        value_filter_level_filter_ = level_filter;
         return this;
     }
 
@@ -67,7 +77,8 @@ class KeyValueFileStoreScan : public FileStoreScan {
     Result<bool> FilterByStats(const ManifestEntry& entry) const override;
 
     bool WholeBucketFilterEnabled() const override {
-        return value_filter_ != nullptr && scan_mode_ == ScanMode::ALL;
+        return value_filter_ != nullptr && scan_mode_ == ScanMode::ALL &&
+               value_filter_level_filter_ == nullptr;
     }
 
     Result<std::vector<ManifestEntry>> FilterWholeBucketByStats(
@@ -86,7 +97,7 @@ class KeyValueFileStoreScan : public FileStoreScan {
 
     Status SplitAndSetKeyValueFilter(const std::vector<std::string>& trimmed_pk);
 
-    Result<bool> IsValueFilterEnabled() const;
+    Result<bool> IsValueFilterEnabled(int32_t level) const;
 
     Result<bool> FilterByValueFilter(const ManifestEntry& entry) const;
 
@@ -110,6 +121,7 @@ class KeyValueFileStoreScan : public FileStoreScan {
 
  private:
     bool value_filter_force_enabled_ = false;
+    std::function<bool(int32_t)> value_filter_level_filter_;
     std::shared_ptr<PredicateFilter> key_filter_;
     std::shared_ptr<PredicateFilter> value_filter_;
     std::shared_ptr<SimpleStatsEvolutions> evolutions_;

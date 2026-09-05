@@ -132,6 +132,11 @@ class FileStoreScan {
         return this;
     }
 
+    virtual FileStoreScan* EnableValueFilterForLevels(
+        const std::function<bool(int32_t)>& level_filter) {
+        return this;
+    }
+
     /// Drop value statistics from entries after all scan filters have been applied.
     ///
     /// @return This scan for chained configuration.

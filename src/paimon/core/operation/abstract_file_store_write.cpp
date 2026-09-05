@@ -31,7 +31,8 @@
 #include "paimon/core/operation/file_system_write_restore.h"
 #include "paimon/core/operation/metrics/compaction_metrics.h"
 #include "paimon/core/operation/restore_files.h"
-#include "paimon/core/realtime/realtime_offset_utils.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -59,6 +60,7 @@ AbstractFileStoreWrite::AbstractFileStoreWrite(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<arrow::Schema>& schema,
     const std::shared_ptr<arrow::Schema>& write_schema,
+    const std::shared_ptr<RealtimeSchemaLayout>& realtime_schema_layout,
     const std::shared_ptr<arrow::Schema>& partition_schema,
     const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
     const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
@@ -73,6 +75,7 @@ AbstractFileStoreWrite::AbstractFileStoreWrite(
       root_path_(root_path),
       schema_(schema),
       write_schema_(write_schema),
+      realtime_schema_layout_(realtime_schema_layout),
       table_schema_(table_schema),
       partition_schema_(partition_schema),
       dv_maintainer_factory_(dv_maintainer_factory),
@@ -95,6 +98,7 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
     if (PAIMON_UNLIKELY(batch == nullptr)) {
         return Status::Invalid("batch is null pointer");
     }
+    PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
     // in FileStoreWrite::Create() we have checked the table kind and bucket mode, here we only
     // check the bucket id in batch
     if (options_.GetBucket() == -1) {
@@ -123,8 +127,11 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
         }
     }
     // check nullability
-    std::shared_ptr<arrow::Schema> input_schema =
-        IsRealtimeWrite() ? RealtimeOffsetUtils::CreateInputSchema(write_schema_) : write_schema_;
+    if (IsRealtimeWrite() && !realtime_schema_layout_) {
+        return Status::Invalid("real-time schema layout is null");
+    }
+    const std::shared_ptr<arrow::Schema>& input_schema =
+        realtime_schema_layout_ ? realtime_schema_layout_->InputSchema() : write_schema_;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::Array> data,
         arrow::ImportArray(batch->GetData(), arrow::struct_(input_schema->fields())));
@@ -140,8 +147,34 @@ Status AbstractFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
     return writer_memory_manager_->OnWriteCompleted(writer.get());
 }
 
+Status AbstractFileStoreWrite::Seal() {
+    if (!IsRealtimeWrite()) {
+        return FileStoreWrite::Seal();
+    }
+    std::lock_guard<std::mutex> seal_prepare_lock(realtime_seal_prepare_mutex_);
+    PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
+    std::vector<std::shared_ptr<BatchWriter>> writers;
+    {
+        std::lock_guard<std::mutex> lock(writers_mutex_);
+        for (const auto& [_, bucket_writers] : writers_) {
+            for (const auto& [_, writer_container] : bucket_writers) {
+                writers.push_back(writer_container.writer);
+            }
+        }
+    }
+    for (const std::shared_ptr<BatchWriter>& writer : writers) {
+        Status status = writer->Seal();
+        if (!status.ok()) {
+            // Earlier buckets may already be sealed, so the writer cannot safely continue.
+            return PoisonRealtimeWrite(status);
+        }
+    }
+    return Status::OK();
+}
+
 Status AbstractFileStoreWrite::Compact(const std::map<std::string, std::string>& partition,
                                        int32_t bucket, bool full_compaction) {
+    PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
     PAIMON_ASSIGN_OR_RAISE(BinaryRow part, file_store_path_factory_->ToBinaryRow(partition));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer, GetWriter(part, bucket));
     assert(writer);
@@ -276,10 +309,18 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareCommi
     if (is_streaming_mode_ == false) {
         return Status::Invalid("PrepareCommitWithProgress requires streaming mode");
     }
+    // Keep one seal/prepare attempt in flight so a failure fences every later checkpoint.
+    std::lock_guard<std::mutex> seal_prepare_lock(realtime_seal_prepare_mutex_);
+    PAIMON_RETURN_NOT_OK(CheckRealtimeWriteUsable());
     // Real-time prepare snapshots writers under a short lock so writes can continue while sealed
     // segments are flushed. The normal path iterates and may erase writers in place, which would
     // either race with concurrent writer creation or hold writers_mutex_ for the whole prepare.
-    return PrepareRealtimeCommit();
+    Result<std::vector<RealtimeCommitProgress>> result = PrepareRealtimeCommit();
+    if (!result.ok()) {
+        // Prepare may have drained an earlier bucket or partially written the failing bucket.
+        return PoisonRealtimeWrite(result.status());
+    }
+    return result;
 }
 
 Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealtimeCommit() {
@@ -338,20 +379,89 @@ Result<std::vector<RealtimeCommitProgress>> AbstractFileStoreWrite::PrepareRealt
 }
 
 Status AbstractFileStoreWrite::Close() {
+    std::unique_lock<std::mutex> seal_prepare_lock(realtime_seal_prepare_mutex_, std::defer_lock);
+    if (IsRealtimeWrite()) {
+        seal_prepare_lock.lock();
+    }
     std::lock_guard<std::mutex> lock(writers_mutex_);
+    bool has_unprepared_realtime_data = false;
+    Status unprepared_error = Status::OK();
+    if (IsRealtimeWrite()) {
+        for (const auto& [_, bucket_writers] : writers_) {
+            for (const auto& [_, writer_container] : bucket_writers) {
+                if (writer_container.writer->HasUnpreparedRealtimeData()) {
+                    has_unprepared_realtime_data = true;
+                    break;
+                }
+            }
+            if (has_unprepared_realtime_data) {
+                break;
+            }
+        }
+        if (has_unprepared_realtime_data) {
+            // Close cannot publish pending segments for its caller.
+            unprepared_error = PoisonRealtimeWrite(
+                Status::Invalid("real-time writer closed with data not covered by a successful "
+                                "PrepareCommitWithProgress"));
+        }
+    }
+    Status first_error = Status::OK();
     for (auto& [_, bucket_writers] : writers_) {
         for (auto& [_, writer_container] : bucket_writers) {
             writer_memory_manager_->UnregisterWriter(writer_container.writer.get());
-            PAIMON_RETURN_NOT_OK(writer_container.writer->Close());
+            Status status = writer_container.writer->Close();
+            if (!status.ok() && first_error.ok()) {
+                first_error = std::move(status);
+            }
         }
     }
     writers_.clear();
     compact_executor_->ShutdownNow();
-    return Status::OK();
+    if (!first_error.ok() && IsRealtimeWrite()) {
+        return PoisonRealtimeWrite(first_error);
+    }
+    if (has_unprepared_realtime_data) {
+        return unprepared_error;
+    }
+    return first_error;
 }
 
 std::shared_ptr<Metrics> AbstractFileStoreWrite::GetMetrics() const {
     return metrics_;
+}
+
+Status AbstractFileStoreWrite::CheckRealtimeWriteUsable() const {
+    if (IsRealtimeWrite() && realtime_write_poisoned_.load()) {
+        return Status::Invalid(
+            "real-time writer cannot be reused after Seal or PrepareCommitWithProgress failed, "
+            "or after it closed with unprepared data; recreate RealtimeContext and "
+            "FileStoreWrite, then let upstream recover input from the durable recovery offset "
+            "persisted in the snapshot");
+    }
+    std::shared_ptr<RealtimeContext> context = GetRealtimeContext();
+    if (!context) {
+        return Status::OK();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> context_impl,
+                           RealtimeContextImpl::Cast(context));
+    return context_impl->CheckUsable();
+}
+
+void AbstractFileStoreWrite::InvalidateRealtimeContext() {
+    std::shared_ptr<RealtimeContextImpl> context =
+        std::dynamic_pointer_cast<RealtimeContextImpl>(GetRealtimeContext());
+    if (context) {
+        context->Invalidate();
+    }
+}
+
+Status AbstractFileStoreWrite::PoisonRealtimeWrite(const Status& cause) {
+    realtime_write_poisoned_.store(true);
+    InvalidateRealtimeContext();
+    return cause.WithMessage(cause.message(),
+                             "; recreate RealtimeContext and FileStoreWrite, then let upstream "
+                             "recover input from the durable recovery offset persisted in the "
+                             "snapshot");
 }
 
 int32_t AbstractFileStoreWrite::GetDefaultBucketNum() const {
