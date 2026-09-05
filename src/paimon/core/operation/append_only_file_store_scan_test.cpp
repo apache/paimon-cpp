@@ -61,9 +61,12 @@ class AppendBucketPruningTest : public testing::Test {
     Result<std::unique_ptr<AppendOnlyFileStoreScan>> CreateScan(
         const std::shared_ptr<Predicate>& predicate,
         const std::optional<int32_t>& bucket = std::nullopt) const {
-        auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(
-            {DataField(0, arrow::field("rowkey", rowkey_type_)),
-             DataField(1, arrow::field("value", arrow::int32()))});
+        std::vector<DataField> fields = {DataField(0, arrow::field("rowkey", rowkey_type_)),
+                                         DataField(1, arrow::field("value", arrow::int32()))};
+        if (extra_field_) {
+            fields.emplace_back(2, arrow::field("extra", arrow::int32()));
+        }
+        auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(fields);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                                TableSchema::Create(schema_id_, arrow_schema, {}, {}, options_));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(options_));
@@ -131,6 +134,7 @@ class AppendBucketPruningTest : public testing::Test {
     std::shared_ptr<arrow::DataType> rowkey_type_ = arrow::utf8();
     static constexpr int32_t kNumBuckets = 4;
     int64_t schema_id_ = 0;
+    bool extra_field_ = false;
     std::shared_ptr<SchemaManager> schema_manager_;
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
     std::map<std::string, std::string> options_ = {{Options::BUCKET, "4"},
@@ -171,14 +175,29 @@ TEST_F(AppendBucketPruningTest, UsesEachEntriesBucketCount) {
     }
 }
 
-TEST_F(AppendBucketPruningTest, DoesNotPruneDifferentSchema) {
+TEST_F(AppendBucketPruningTest, PrunesCompatibleHistoricalSchema) {
     auto test_dir = UniqueTestDirectory::Create("local");
     schema_manager_ =
         std::make_shared<SchemaManager>(std::make_shared<LocalFileSystem>(), test_dir->Str());
     ASSERT_OK_AND_ASSIGN(auto scan, CreateScan(nullptr));
     ASSERT_OK(schema_manager_->CreateTable(scan->schema_, {}, {}, options_));
     schema_id_ = 1;
-    CheckBuckets(KeyEquals(), std::nullopt);
+    extra_field_ = true;
+    BinaryRow key = BinaryRowGenerator::GenerateRow({std::string("key")}, pool_.get());
+    CheckBuckets(KeyEquals(), DefaultBucketFunction().Bucket(key, kNumBuckets));
+}
+
+TEST_F(AppendBucketPruningTest, PreservesIncompatibleHistoricalBucketKeys) {
+    auto test_dir = UniqueTestDirectory::Create("local");
+    schema_manager_ =
+        std::make_shared<SchemaManager>(std::make_shared<LocalFileSystem>(), test_dir->Str());
+    ASSERT_OK_AND_ASSIGN(auto scan, CreateScan(nullptr));
+    ASSERT_OK(schema_manager_->CreateTable(scan->schema_, {}, {}, options_));
+    schema_id_ = 1;
+    rowkey_type_ = arrow::binary();
+    auto predicate = PredicateBuilder::Equal(0, "rowkey", FieldType::BINARY,
+                                             Literal(FieldType::BINARY, "key", 3));
+    CheckBuckets(predicate, std::nullopt);
 }
 
 TEST_F(AppendBucketPruningTest, PreservesCrossScaleDecimalMatch) {

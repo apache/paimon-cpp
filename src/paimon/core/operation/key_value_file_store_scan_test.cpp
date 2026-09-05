@@ -45,6 +45,7 @@
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/format/file_format.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
 #include "paimon/predicate/literal.h"
@@ -64,33 +65,42 @@ TEST(KeyValueBucketPruningTest, UsesEachEntriesBucketCount) {
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(
         {DataField(0, arrow::field("rowkey", arrow::utf8()))});
     std::map<std::string, std::string> options = {{Options::BUCKET, "4"}};
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
-                         TableSchema::Create(0, arrow_schema, {}, {"rowkey"}, options));
-    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
-    auto predicate = PredicateBuilder::Equal(0, "rowkey", FieldType::STRING,
-                                             Literal(FieldType::STRING, "key", 3));
-    auto filters = std::make_shared<ScanFilter>(
-        predicate, std::vector<std::map<std::string, std::string>>(), std::nullopt);
-    ASSERT_OK_AND_ASSIGN(auto scan, KeyValueFileStoreScan::Create(
-                                        nullptr, nullptr, nullptr, nullptr, schema, arrow_schema,
-                                        filters, core_options, GetGlobalDefaultExecutor(), pool));
-    SimpleStats stats =
-        BinaryRowGenerator::GenerateStats({std::string("a")}, {std::string("z")}, {0}, pool.get());
-    ASSERT_OK_AND_ASSIGN(
-        auto file, DataFileMeta::ForAppend("data.parquet", 100, 10, stats, 0, 9, 0, std::nullopt,
-                                           std::nullopt, std::nullopt, std::nullopt, std::nullopt));
-    file->key_stats = stats;
-    BinaryRow key = BinaryRowGenerator::GenerateRow({std::string("key")}, pool.get());
-    for (int32_t total_buckets : {2, 4, 8, 17}) {
-        int32_t expected = DefaultBucketFunction().Bucket(key, total_buckets);
-        for (int32_t bucket = 0; bucket < total_buckets; ++bucket) {
-            ManifestEntry entry(FileKind::Add(), BinaryRow::EmptyRow(), bucket, total_buckets,
-                                file);
-            ASSERT_OK_AND_ASSIGN(bool stats_match, scan->FilterByStats(entry));
-            ASSERT_TRUE(stats_match);
-            ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterManifestEntry(entry));
-            ASSERT_EQ(keep, bucket == expected)
-                << "bucket=" << bucket << " total=" << total_buckets;
+    auto test_dir = UniqueTestDirectory::Create("local");
+    auto manager =
+        std::make_shared<SchemaManager>(std::make_shared<LocalFileSystem>(), test_dir->Str());
+    ASSERT_OK(manager->CreateTable(arrow_schema, {}, {"rowkey"}, options));
+    for (int64_t current_schema_id : {0, 1}) {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> schema,
+            TableSchema::Create(current_schema_id, arrow_schema, {}, {"rowkey"}, options));
+        ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+        auto predicate = PredicateBuilder::Equal(0, "rowkey", FieldType::STRING,
+                                                 Literal(FieldType::STRING, "key", 3));
+        auto filters = std::make_shared<ScanFilter>(
+            predicate, std::vector<std::map<std::string, std::string>>(), std::nullopt);
+        ASSERT_OK_AND_ASSIGN(
+            auto scan,
+            KeyValueFileStoreScan::Create(nullptr, manager, nullptr, nullptr, schema, arrow_schema,
+                                          filters, core_options, GetGlobalDefaultExecutor(), pool));
+        SimpleStats stats = BinaryRowGenerator::GenerateStats({std::string("a")},
+                                                              {std::string("z")}, {0}, pool.get());
+        ASSERT_OK_AND_ASSIGN(
+            auto file,
+            DataFileMeta::ForAppend("data.parquet", 100, 10, stats, 0, 9, 0, std::nullopt,
+                                    std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+        file->key_stats = stats;
+        BinaryRow key = BinaryRowGenerator::GenerateRow({std::string("key")}, pool.get());
+        for (int32_t total_buckets : {2, 4, 8, 17}) {
+            int32_t expected = DefaultBucketFunction().Bucket(key, total_buckets);
+            for (int32_t bucket = 0; bucket < total_buckets; ++bucket) {
+                ManifestEntry entry(FileKind::Add(), BinaryRow::EmptyRow(), bucket, total_buckets,
+                                    file);
+                ASSERT_OK_AND_ASSIGN(bool stats_match, scan->FilterByStats(entry));
+                ASSERT_TRUE(stats_match);
+                ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterManifestEntry(entry));
+                ASSERT_EQ(keep, bucket == expected)
+                    << "bucket=" << bucket << " total=" << total_buckets;
+            }
         }
     }
 }

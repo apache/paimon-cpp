@@ -69,16 +69,16 @@ Result<std::optional<std::shared_ptr<TableSchema>>> SchemaManager::Latest() cons
 }
 
 Result<std::shared_ptr<TableSchema>> SchemaManager::ReadSchema(int64_t schema_id) const {
-    auto iter = schema_cache_.find(schema_id);
-    if (iter != schema_cache_.end()) {
-        return iter->second;
+    auto cached = schema_cache_.Find(schema_id);
+    if (cached) {
+        return cached.value();
     }
     auto path = ToSchemaPath(schema_id);
     std::string content;
     PAIMON_RETURN_NOT_OK(file_system_->ReadFile(path, &content));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                            TableSchema::CreateFromJson(content));
-    schema_cache_[schema_id] = schema;
+    schema_cache_.Insert(schema_id, schema);
     return schema;
 }
 
