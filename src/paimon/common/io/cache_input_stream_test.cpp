@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -32,6 +33,7 @@
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/testing/utils/gated_async_input_stream.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -60,10 +62,31 @@ class CacheInputStreamTest : public ::testing::Test {
 
     std::shared_ptr<ReadAheadCache> CreateCache(std::vector<ByteRange> ranges) {
         auto stream = OpenFile();
-        CacheConfig config(/*range_size_limit=*/1024,
-                           /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
-        auto cache = std::make_shared<ReadAheadCache>(std::move(stream), config, pool_);
+        CacheConfig config;
+        config.SetRangeSizeLimit(1024);
+        config.SetHoleSizeLimit(0);
+        config.SetPreBufferLimit(1024 * 1024);
+        // The file size is left unknown so the block cache stays off: these
+        // tests exercise the fallback of CacheInputStream on a cache miss.
+        auto cache =
+            std::make_shared<ReadAheadCache>(std::move(stream), config, /*file_size=*/0, pool_);
         EXPECT_OK(cache->Init(std::move(ranges)));
+        return cache;
+    }
+
+    // A cache reading from the given gated stream, with the block cache enabled
+    // and no range registered, so that a test can observe a read falling to the
+    // block cache while the fetch of a cold block is in flight.
+    std::shared_ptr<ReadAheadCache> CreateGatedBlockCache(
+        const std::shared_ptr<GatedAsyncInputStream>& gated) {
+        CacheConfig config;
+        config.SetRangeSizeLimit(1024);
+        config.SetHoleSizeLimit(0);
+        config.SetPreBufferLimit(1024 * 1024);
+        config.SetBlockSize(8);
+        config.SetBlockCacheLimit(1024);
+        auto cache = std::make_shared<ReadAheadCache>(gated, config, content_.size(), pool_);
+        EXPECT_OK(cache->Init(std::vector<ByteRange>{}));
         return cache;
     }
 
@@ -204,9 +227,12 @@ TEST_F(CacheInputStreamTest, TestReadAsyncCacheReadError) {
         ASSERT_OK_AND_ASSIGN(auto fs, FileSystemFactory::Get("local", file_path_, {}));
         ASSERT_OK_AND_ASSIGN(auto cache_stream, fs->Open(file_path_));
         ASSERT_OK_AND_ASSIGN(auto underlying, fs->Open(file_path_));
-        CacheConfig config(/*range_size_limit=*/1024,
-                           /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
-        auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config, pool_);
+        CacheConfig config;
+        config.SetRangeSizeLimit(1024);
+        config.SetHoleSizeLimit(0);
+        config.SetPreBufferLimit(1024 * 1024);
+        auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config,
+                                                      /*file_size=*/0, pool_);
         ASSERT_OK(cache->Init(std::vector<ByteRange>{{0, 10}}));
 
         // Now activate IOHook so that the prefetch IO (triggered by cache_->Read -> PreBuffer)
@@ -229,6 +255,73 @@ TEST_F(CacheInputStreamTest, TestReadAsyncCacheReadError) {
         break;
     }
     ASSERT_TRUE(error_triggered);
+}
+
+// A read no registered range covers falls to the block cache, whose fetch of a
+// cold block must not block the asynchronous caller: ReadAsync() returns while
+// the fetch is in flight and the callback runs when the fetch does.
+TEST_F(CacheInputStreamTest, TestReadAsyncAwaitsTheBlockCacheFetch) {
+    auto cache_stream = std::make_shared<GatedAsyncInputStream>(OpenFile());
+    auto cache = CreateGatedBlockCache(cache_stream);
+    // The stream of the reader is gated too, so that a test can tell its own
+    // fallback read apart from the fetch the block cache issues.
+    auto underlying_gated = std::make_unique<GatedAsyncInputStream>(OpenFile());
+    GatedAsyncInputStream* underlying = underlying_gated.get();
+    CacheInputStream stream(std::move(underlying_gated), cache);
+
+    // Block 0 = [28, 36) of the 36-byte test file, which no range covers.
+    std::string buffer(8, '\0');
+    bool callback_called = false;
+    Status callback_status = Status::Invalid("not called");
+    stream.ReadAsync(buffer.data(), 8, /*offset=*/28, [&](Status status) {
+        callback_called = true;
+        callback_status = status;
+    });
+
+    // The block fetch is held, the reader was not blocked on it and issued no
+    // fallback read of its own.
+    ASSERT_FALSE(callback_called);
+    ASSERT_EQ(cache_stream->AsyncReadCount(), 1);
+    ASSERT_EQ(underlying->AsyncReadCount(), 0);
+    ASSERT_EQ(std::string(8, '\0'), buffer);
+
+    cache_stream->ReleaseAll();
+    ASSERT_TRUE(callback_called);
+    ASSERT_OK(callback_status);
+    ASSERT_EQ(content_.substr(28, 8), buffer);
+    // The block cache served the read, so the stream of the reader was never
+    // touched: no second read of bytes that are cached now.
+    ASSERT_EQ(underlying->AsyncReadCount(), 0);
+}
+
+// A block fetch reads more than the caller asked for, so its failure stays a
+// decline: the reader falls back to its own stream instead of reporting it.
+TEST_F(CacheInputStreamTest, TestReadAsyncFallsBackWhenTheBlockFetchFails) {
+    auto cache_stream = std::make_shared<GatedAsyncInputStream>(OpenFile());
+    auto cache = CreateGatedBlockCache(cache_stream);
+    auto underlying_gated = std::make_unique<GatedAsyncInputStream>(OpenFile());
+    GatedAsyncInputStream* underlying = underlying_gated.get();
+    CacheInputStream stream(std::move(underlying_gated), cache);
+
+    std::string buffer(8, '\0');
+    bool callback_called = false;
+    Status callback_status = Status::Invalid("not called");
+    stream.ReadAsync(buffer.data(), 8, /*offset=*/28, [&](Status status) {
+        callback_called = true;
+        callback_status = status;
+    });
+    ASSERT_FALSE(callback_called);
+    cache_stream->FailAll(Status::IOError("fetch failed"));
+
+    // The declined read fell back to the stream of the reader, whose own read is
+    // held: the failure of the block fetch was not reported to the caller.
+    ASSERT_FALSE(callback_called);
+    ASSERT_EQ(underlying->AsyncReadCount(), 1);
+
+    underlying->ReleaseAll();
+    ASSERT_TRUE(callback_called);
+    ASSERT_OK(callback_status);
+    ASSERT_EQ(content_.substr(28, 8), buffer);
 }
 
 }  // namespace paimon::test

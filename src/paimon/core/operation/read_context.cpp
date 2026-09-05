@@ -18,6 +18,7 @@
 
 #include "paimon/read_context.h"
 
+#include <cstdlib>
 #include <utility>
 
 #include "arrow/c/abi.h"
@@ -298,6 +299,16 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (!impl_->executor_) {
         // If the user do not set executor, create default executor by prefetch batch count
         uint32_t thread_count = impl_->enable_prefetch_ ? impl_->prefetch_max_parallel_num_ : 1;
+        // This one executor is shared by every file's prefetch loop, so its size is what caps how
+        // many files can have a read in flight at once. It is overridable on its own because
+        // widening it through prefetch_max_parallel_num would also build that many sub-readers per
+        // file, and a file with one read range leaves the extra ones idle.
+        if (const char* raw = std::getenv("PAIMON_READ_EXECUTOR_THREADS")) {
+            const auto override_count = static_cast<uint32_t>(std::strtoul(raw, nullptr, 10));
+            if (override_count > 0) {
+                thread_count = override_count;
+            }
+        }
         PAIMON_ASSIGN_OR_RAISE(impl_->executor_, CreateDefaultExecutor(thread_count));
     }
 

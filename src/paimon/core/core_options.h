@@ -237,6 +237,10 @@ class PAIMON_EXPORT CoreOptions {
 
     bool PrefetchIoMetricsEnabled() const;
 
+    /// Maximum number of data file readers built in parallel within one split.
+    /// 1 means readers are built serially.
+    uint32_t GetReaderBuildMaxParallelNum() const;
+
     bool IndexFileInDataFileDir() const;
 
     bool RowTrackingEnabled() const;

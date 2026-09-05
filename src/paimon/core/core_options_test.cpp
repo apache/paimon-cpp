@@ -76,6 +76,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(128 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
     ASSERT_EQ(4 * 1024 * 1024L, core_options.GetSourceSplitOpenFileCost());
     ASSERT_EQ(1024, core_options.GetReadBatchSize());
+    ASSERT_EQ(4u, core_options.GetReaderBuildMaxParallelNum());
     ASSERT_EQ(1024, core_options.GetWriteBatchSize());
     ASSERT_EQ(256 * 1024 * 1024, core_options.GetWriteBufferSize());
     ASSERT_TRUE(core_options.GetWriteBufferSpillable());
@@ -213,6 +214,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::SOURCE_SPLIT_TARGET_SIZE, "24MB"},
         {Options::SOURCE_SPLIT_OPEN_FILE_COST, "32MB"},
         {Options::READ_BATCH_SIZE, "2048"},
+        {Options::READ_READER_BUILD_MAX_PARALLEL_NUM, "6"},
         {Options::WRITE_BUFFER_SIZE, "16MB"},
         {Options::WRITE_BATCH_SIZE, "1234"},
         {Options::WRITE_BUFFER_SPILLABLE, "false"},
@@ -358,6 +360,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(24 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
     ASSERT_EQ(32 * 1024 * 1024L, core_options.GetSourceSplitOpenFileCost());
     ASSERT_EQ(2048, core_options.GetReadBatchSize());
+    ASSERT_EQ(6u, core_options.GetReaderBuildMaxParallelNum());
     ASSERT_EQ(1234, core_options.GetWriteBatchSize());
     ASSERT_EQ(16 * 1024 * 1024, core_options.GetWriteBufferSize());
     ASSERT_FALSE(core_options.GetWriteBufferSpillable());
@@ -507,6 +510,8 @@ TEST(CoreOptionsTest, TestFromMap) {
 TEST(CoreOptionsTest, TestInvalidCase) {
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::TARGET_FILE_ROW_NUM, "0"}}),
                         "target-file-row-num should be at least 1");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::READ_READER_BUILD_MAX_PARALLEL_NUM, "0"}}),
+                        "read.reader-build.max-parallel-num should be at least 1");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BUCKET, "3.5"}}),
                         "Invalid Config [bucket: 3.5]");
     ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::SCAN_SNAPSHOT_ID, "3.5"}}),

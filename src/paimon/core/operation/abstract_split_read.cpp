@@ -18,10 +18,17 @@
 
 #include "paimon/core/operation/abstract_split_read.h"
 
+#include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cinttypes>
 #include <cstddef>
+#include <cstdio>
+#include <future>
 #include <map>
+#include <optional>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "arrow/type.h"
@@ -32,12 +39,15 @@
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/data/shredding/shredding_file_reader.h"
 #include "paimon/common/data/variant/variant_shredding_read_plan_factory.h"
+#include "paimon/common/executor/future.h"
+#include "paimon/common/executor/reader_build_executor.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
 #include "paimon/common/reader/late_materializing_reader_builder.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/io_trace.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/core/io/complete_row_tracking_fields_reader.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -61,6 +71,29 @@ class Executor;
 class FileStorePathFactory;
 class MemoryPool;
 class Predicate;
+
+namespace {
+
+/// Set while a thread is building one data file reader. Building a reader may reach
+/// `CreateRawFileReaders` again, and that nested call has to stay serial: it would
+/// otherwise submit tasks to the reader build pool and block a worker of that same
+/// pool waiting for them.
+thread_local bool building_reader = false;
+
+class BuildingReaderGuard {
+ public:
+    BuildingReaderGuard() {
+        building_reader = true;
+    }
+    ~BuildingReaderGuard() {
+        building_reader = false;
+    }
+
+    BuildingReaderGuard(const BuildingReaderGuard&) = delete;
+    BuildingReaderGuard& operator=(const BuildingReaderGuard&) = delete;
+};
+
+}  // namespace
 
 AbstractSplitRead::AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
                                      const std::shared_ptr<InternalReadContext>& context,
@@ -91,21 +124,112 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
 
     std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers;
     raw_file_readers.reserve(data_files.size());
+    const uint32_t parallel_num = static_cast<uint32_t>(
+        std::min<size_t>(options_.GetReaderBuildMaxParallelNum(), data_files.size()));
+    // TEMPORARY DIAGNOSTIC, on with PAIMON_IO_TRACE like the io tracing it is read next to,
+    // and removed with it. It says how many files a build was handed, which branch that put it
+    // on and how long the whole batch took, which is what tells "the files were opened one
+    // after another" apart from "there was never more than one file to open at a time". The io
+    // trace alone cannot: it traces the cache fetches, not the opens, and the fetches are
+    // consumed reader by reader in any case. The wall time is what makes the answer
+    // quantitative — compare it against the per-file `prefetch.create.total-us` sum.
+    struct BuildTrace {
+        size_t files;
+        const char* branch;
+        std::chrono::steady_clock::time_point started;
+
+        BuildTrace(size_t files_arg, const char* branch_arg)
+            : files(files_arg), branch(branch_arg), started(std::chrono::steady_clock::now()) {}
+
+        BuildTrace(const BuildTrace&) = delete;
+        BuildTrace& operator=(const BuildTrace&) = delete;
+
+        ~BuildTrace() {
+            const int64_t wall_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - started)
+                                        .count();
+            std::fprintf(stderr, "[paimon-build-trace] done files=%zu branch=%s wall_us=%" PRId64
+                                 "\n",
+                         files, branch, wall_us);
+            std::fflush(stderr);
+        }
+    };
+    std::optional<BuildTrace> build_trace;
+    if (io_trace::Enabled()) {
+        std::string levels;
+        for (const auto& file : data_files) {
+            levels += levels.empty() ? "" : ",";
+            levels += std::to_string(file->level);
+        }
+        const char* branch = (parallel_num <= 1 || building_reader) ? "serial" : "parallel";
+        std::fprintf(stderr,
+                     "[paimon-build-trace] files=%zu max_parallel=%u parallel_num=%u nested=%d "
+                     "branch=%s levels=%s\n",
+                     data_files.size(), options_.GetReaderBuildMaxParallelNum(), parallel_num,
+                     building_reader ? 1 : 0, branch, levels.c_str());
+        std::fflush(stderr);
+        build_trace.emplace(data_files.size(), branch);
+    }
+    if (parallel_num <= 1 || building_reader) {
+        for (const auto& file : data_files) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<FileBatchReader> file_reader,
+                CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
+                                    row_ranges, data_file_path_factory, extra_format_options));
+            if (file_reader) {
+                raw_file_readers.push_back(std::move(file_reader));
+            }
+        }
+        return std::move(raw_file_readers);
+    }
+
+    // Opening a file, reading its footer and building the reader is mostly waiting on remote
+    // I/O, so files are built concurrently. The tasks only reference locals of this frame,
+    // which stay alive because CollectAll below drains every future before returning.
+    std::shared_ptr<Executor> build_executor = GetReaderBuildExecutor(parallel_num);
+    std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
+    futures.reserve(data_files.size());
     for (const auto& file : data_files) {
-        auto data_file_path = data_file_path_factory->ToPath(file);
-        PAIMON_ASSIGN_OR_RAISE(std::string data_file_identifier, file->FileFormat());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> reader_builder,
-                               PrepareReaderBuilder(data_file_identifier, extra_format_options));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<FileBatchReader> file_reader,
-            CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
-                                     field_mapping_builder.get(), dv_factory, row_ranges,
-                                     data_file_path_factory));
+        futures.push_back(Via(
+            build_executor.get(), [this, file, &partition, &field_mapping_builder, &dv_factory,
+                                   &row_ranges, &data_file_path_factory, &extra_format_options]() {
+                BuildingReaderGuard guard;
+                return CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
+                                           row_ranges, data_file_path_factory,
+                                           extra_format_options);
+            }));
+    }
+    // Readers keep the file order of the split, and CollectAll preserves the submit order.
+    Status first_error;
+    for (auto& built : CollectAll(futures)) {
+        if (!built.ok()) {
+            if (first_error.ok()) {
+                first_error = built.status();
+            }
+            continue;
+        }
+        std::unique_ptr<FileBatchReader> file_reader = std::move(built).value();
         if (file_reader) {
             raw_file_readers.push_back(std::move(file_reader));
         }
     }
+    PAIMON_RETURN_NOT_OK(first_error);
     return std::move(raw_file_readers);
+}
+
+Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateRawFileReader(
+    const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+    const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
+    const std::optional<std::vector<Range>>& row_ranges,
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    const std::map<std::string, std::string>& extra_format_options) const {
+    auto data_file_path = data_file_path_factory->ToPath(file);
+    PAIMON_ASSIGN_OR_RAISE(std::string data_file_identifier, file->FileFormat());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReaderBuilder> reader_builder,
+                           PrepareReaderBuilder(data_file_identifier, extra_format_options));
+    return CreateFieldMappingReader(data_file_path, file, partition, std::move(reader_builder),
+                                    field_mapping_builder, dv_factory, row_ranges,
+                                    data_file_path_factory);
 }
 
 bool AbstractSplitRead::NeedCompleteRowTrackingFields(

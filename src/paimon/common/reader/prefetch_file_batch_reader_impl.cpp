@@ -29,6 +29,7 @@
 #include "arrow/c/bridge.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/common/io/cache_input_stream.h"
+#include "paimon/common/io/shared_input_stream_view.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -215,6 +216,9 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     if (batch_size <= 0) {
         return Status::Invalid("batch size should be greater than 0.");
     }
+    if (data_file_size < 0) {
+        return Status::Invalid("data file size should not be negative.");
+    }
     if (reader_builder == nullptr) {
         return Status::Invalid("reader_builder should not be nullptr.");
     }
@@ -225,34 +229,45 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         return Status::Invalid("executor should not be nullptr.");
     }
 
+    const auto create_start = std::chrono::steady_clock::now();
     std::shared_ptr<PrefetchIoMetricsState> io_metrics;
     if (enable_io_metrics) {
         io_metrics = std::make_shared<PrefetchIoMetricsState>();
     }
+    // The file is opened once and every sub-reader reads it through a view of
+    // that one stream, so a file costs a single open no matter how many readers
+    // prefetch it. The views keep a position each, see SharedInputStreamView.
+    const auto open_start = std::chrono::steady_clock::now();
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
+                           fs->Open(FileStatus(data_file_path, data_file_size)));
+    const uint64_t open_us = ElapsedMicros(open_start);
+    if (io_metrics) {
+        input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics);
+    }
     std::shared_ptr<ReadAheadCache> cache;
     if (read_ahead_cache_enabled) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
-                               fs->Open(FileStatus(data_file_path, data_file_size)));
-        if (io_metrics) {
-            input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics);
-        }
-        cache = std::make_shared<ReadAheadCache>(input_stream, cache_config, pool);
+        // The file size lets the cache align its blocks to the end of the file,
+        // where the metadata the readers read before any range is registered
+        // lives. A zero size means unknown and disables the block cache.
+        cache = std::make_shared<ReadAheadCache>(input_stream, cache_config,
+                                                 static_cast<uint64_t>(data_file_size), pool);
     }
+    // One slot per reader: the lambdas run concurrently, so each writes only its own entry.
+    std::vector<uint64_t> reader_build_us(prefetch_max_parallel_num, 0);
+    const auto readers_start = std::chrono::steady_clock::now();
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
     for (uint32_t i = 0; i < prefetch_max_parallel_num; i++) {
         futures.push_back(Via(
             executor.get(),
-            [&fs, &data_file_path, data_file_size, &reader_builder, &cache,
-             io_metrics]() -> Result<std::unique_ptr<FileBatchReader>> {
-                PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                                       fs->Open(FileStatus(data_file_path, data_file_size)));
-                if (io_metrics) {
-                    input_stream =
-                        std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
-                }
-                auto cache_input_stream =
-                    std::make_shared<CacheInputStream>(std::move(input_stream), cache);
-                return reader_builder->Build(cache_input_stream);
+            [&input_stream, &reader_builder, &cache,
+             build_us = &reader_build_us[i]]() -> Result<std::unique_ptr<FileBatchReader>> {
+                auto cache_input_stream = std::make_shared<CacheInputStream>(
+                    std::make_unique<SharedInputStreamView>(input_stream), cache);
+                const auto build_start = std::chrono::steady_clock::now();
+                Result<std::unique_ptr<FileBatchReader>> built =
+                    reader_builder->Build(cache_input_stream);
+                *build_us = ElapsedMicros(build_start);
+                return built;
             }));
     }
     std::vector<std::shared_ptr<PrefetchFileBatchReader>> readers;
@@ -269,6 +284,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         }
         readers.emplace_back(prefetch_file_batch_reader);
     }
+    const uint64_t readers_wall_us = ElapsedMicros(readers_start);
     if (prefetch_batch_count < readers.size()) {
         prefetch_batch_count = readers.size();
     }
@@ -282,6 +298,8 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         // ranges, and set read schema will always be called before read.
         PAIMON_RETURN_NOT_OK(reader->RefreshReadRanges());
     }
+    reader->RecordCreateMetrics(open_us, reader_build_us, readers_wall_us,
+                                ElapsedMicros(create_start));
     return reader;
 }
 
@@ -306,6 +324,20 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
         reader_is_working_.emplace_back(false);
     }
     parallel_num_ = readers_.size();
+}
+
+void PrefetchFileBatchReaderImpl::RecordCreateMetrics(uint64_t open_us,
+                                                      const std::vector<uint64_t>& reader_build_us,
+                                                      uint64_t readers_wall_us, uint64_t total_us) {
+    const std::shared_ptr<MetricsImpl>& histograms = prefetch_metrics_->histograms;
+    histograms->ObserveHistogram(PrefetchMetrics::CREATE_TOTAL_US, static_cast<double>(total_us));
+    histograms->ObserveHistogram(PrefetchMetrics::CREATE_READERS_WALL_US,
+                                 static_cast<double>(readers_wall_us));
+    histograms->ObserveHistogram(PrefetchMetrics::CREATE_OPEN_US, static_cast<double>(open_us));
+    for (uint64_t build_us : reader_build_us) {
+        histograms->ObserveHistogram(PrefetchMetrics::CREATE_READER_BUILD_US,
+                                     static_cast<double>(build_us));
+    }
 }
 
 PrefetchFileBatchReaderImpl::~PrefetchFileBatchReaderImpl() {
@@ -722,14 +754,29 @@ Status PrefetchFileBatchReaderImpl::DoReadBatch(size_t reader_idx) {
     return HandleReadResult(reader_idx, read_range, std::move(read_batch_with_bitmap));
 }
 
-Result<BatchReader::ReadBatchWithBitmap> PrefetchFileBatchReaderImpl::NextBatchWithBitmap() {
-    if (!read_ranges_freshed_) {
-        return Status::Invalid("prefetch reader read ranges are not initialized");
-    }
+void PrefetchFileBatchReaderImpl::EnsureBackgroundThread() {
     if (!background_thread_) {
         background_thread_ =
             std::make_unique<std::thread>(&PrefetchFileBatchReaderImpl::Workloop, this);
     }
+}
+
+Status PrefetchFileBatchReaderImpl::Warmup() {
+    // Not an error: a reader whose ranges are not set yet, or one already shut down, has nothing
+    // to warm up. NextBatchWithBitmap still rejects the former, so a genuinely unprepared read is
+    // not hidden by returning OK here.
+    if (!read_ranges_freshed_ || is_shutdown_) {
+        return Status::OK();
+    }
+    EnsureBackgroundThread();
+    return Status::OK();
+}
+
+Result<BatchReader::ReadBatchWithBitmap> PrefetchFileBatchReaderImpl::NextBatchWithBitmap() {
+    if (!read_ranges_freshed_) {
+        return Status::Invalid("prefetch reader read ranges are not initialized");
+    }
+    EnsureBackgroundThread();
 
     const auto wait_start = std::chrono::steady_clock::now();
     while (true) {

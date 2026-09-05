@@ -29,11 +29,33 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/reader/prefetch_file_batch_reader.h"
 
 namespace paimon {
 
 class PredicateFilter;
+
+/// C++-only late materialization metrics. Java Paimon has no corresponding metrics.
+class LateMaterializingMetrics {
+ public:
+    // Probe phase histograms (unit: microseconds)
+    static constexpr char PROBE_TOTAL_US[] = "lat-mat.probe.total-us";
+    static constexpr char PROBE_IO_US[] = "lat-mat.probe.io-us";
+    static constexpr char PROBE_PREDICATE_US[] = "lat-mat.probe.predicate-us";
+    static constexpr char PROBE_COMPACT_US[] = "lat-mat.probe.compact-us";
+    // Payload phase histograms (unit: microseconds)
+    static constexpr char PAYLOAD_TOTAL_US[] = "lat-mat.payload.total-us";
+    // Time spent inside the inner reader, i.e. the part an internal payload prefetch could hide.
+    static constexpr char PAYLOAD_IO_US[] = "lat-mat.payload.io-us";
+    // Time spent intersecting the inner batch bitmap with matched_bitmap_ row by row.
+    static constexpr char PAYLOAD_BITMAP_US[] = "lat-mat.payload.bitmap-us";
+    // Time spent importing, compacting, normalizing and assembling the output batch.
+    static constexpr char PAYLOAD_ASSEMBLE_US[] = "lat-mat.payload.assemble-us";
+    // Auxiliary counters
+    static constexpr char PROBE_ROWS_SCANNED[] = "lat-mat.probe.rows-scanned";
+    static constexpr char PROBE_ROWS_MATCHED[] = "lat-mat.probe.rows-matched";
+};
 
 // For convenience, we abbreviate `Later Materializing` as `LatMat`.
 // This reader is installed below the prefetch layer (see
@@ -48,7 +70,11 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Result<FileBatchReader::ReadBatch> NextBatch() override;
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        return inner_->GetReaderMetrics();
+        auto inner_metrics = inner_->GetReaderMetrics();
+        if (inner_metrics) {
+            own_metrics_->Merge(inner_metrics);
+        }
+        return own_metrics_;
     };
 
     void Close() override {
@@ -107,7 +133,8 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
                                      std::shared_ptr<arrow::MemoryPool> arrow_pool)
         : inner_(std::move(inner)),
           prefetch_inner_(prefetch_inner),
-          arrow_pool_(std::move(arrow_pool)) {}
+          arrow_pool_(std::move(arrow_pool)),
+          own_metrics_(std::make_shared<MetricsImpl>()) {}
 
     /// Reset the state of the late materializing reader, does not close inner reader.
     void Reset();
@@ -180,6 +207,8 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     int64_t probe_cursor_ = 0;
     // to support GetPreviousBatchFileRowId
     std::vector<uint64_t> row_mapping_;
+    // own metrics for late materialization timing
+    std::shared_ptr<MetricsImpl> own_metrics_;
 };
 
 }  // namespace paimon

@@ -62,6 +62,7 @@ const char Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS[] =
 const char Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED[] =
     "scan.manifest-entry.lazy-decode.enabled";
 const char Options::PREFETCH_IO_METRICS_ENABLED[] = "prefetch.io-metrics.enabled";
+const char Options::READ_READER_BUILD_MAX_PARALLEL_NUM[] = "read.reader-build.max-parallel-num";
 const char Options::READ_BATCH_SIZE[] = "read.batch-size";
 const char Options::WRITE_BATCH_SIZE[] = "write.batch-size";
 const char Options::WRITE_BUFFER_SIZE[] = "write-buffer-size";

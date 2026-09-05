@@ -469,6 +469,42 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
     ASSERT_EQ(count, read_result->length());
 }
 
+// One reader is built per data file of a split, and those readers are built in parallel unless
+// read.reader-build.max-parallel-num is 1. Snapshot 5 has a bucket holding five files, so both
+// branches are exercised here and have to return the very same rows in the very same order.
+TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5WithReaderBuildParallelism) {
+    auto file_format = FileFormat();
+    std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
+
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "5");
+    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    auto splits = result_plan->Splits();
+    ASSERT_EQ(3, splits.size());
+
+    auto read_with_parallelism = [&](const std::string& parallel_num,
+                                     std::shared_ptr<arrow::ChunkedArray>* read_result) {
+        ReadContextBuilder read_context_builder(table_path);
+        AddReadOptionsForPrefetch(&read_context_builder);
+        read_context_builder.AddOption(Options::READ_READER_BUILD_MAX_PARALLEL_NUM, parallel_num);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(*read_result,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
+    };
+
+    std::shared_ptr<arrow::ChunkedArray> serial_result;
+    read_with_parallelism("1", &serial_result);
+    std::shared_ptr<arrow::ChunkedArray> parallel_result;
+    read_with_parallelism("4", &parallel_result);
+    ASSERT_TRUE(serial_result);
+    ASSERT_TRUE(serial_result->Equals(parallel_result)) << parallel_result->ToString();
+}
+
 TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotWithStreamWithDefaultMode) {
     auto file_format = FileFormat();
     std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";

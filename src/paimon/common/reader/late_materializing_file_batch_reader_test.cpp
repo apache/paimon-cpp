@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/array/builder_dict.h"
 #include "arrow/array/builder_nested.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
@@ -208,6 +209,27 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
             EXPECT_TRUE(arr_values->Append(i).ok());
             EXPECT_TRUE(arr_values->Append(i + 1).ok());
             EXPECT_TRUE(tag->Append("t_" + std::to_string(i)).ok());
+        }
+        std::shared_ptr<arrow::Array> array;
+        EXPECT_TRUE(builder.Finish(&array).ok());
+        return array;
+    }
+
+    // Build a struct with a dictionary-encoded payload column [k:int64, v:dictionary<int32,utf8>].
+    std::shared_ptr<arrow::Array> BuildDictionaryPayloadData(int32_t n) {
+        auto type =
+            arrow::struct_({arrow::field("k", arrow::int64()),
+                            arrow::field("v", arrow::dictionary(arrow::int32(), arrow::utf8()))});
+        arrow::StructBuilder builder(type, arrow::default_memory_pool(),
+                                     {std::make_shared<arrow::Int64Builder>(),
+                                      std::make_shared<arrow::StringDictionaryBuilder>()});
+        auto* k = checked_cast<arrow::Int64Builder*>(builder.field_builder(0));
+        auto* v = checked_cast<arrow::StringDictionaryBuilder*>(builder.field_builder(1));
+        for (int32_t i = 0; i < n; ++i) {
+            EXPECT_TRUE(builder.Append().ok());
+            EXPECT_TRUE(k->Append(i).ok());
+            // Repeat a few values so the dictionary is shorter than the column it encodes.
+            EXPECT_TRUE(v->Append("d_" + std::to_string(i % 3)).ok());
         }
         std::shared_ptr<arrow::Array> array;
         EXPECT_TRUE(builder.Finish(&array).ok());
@@ -530,6 +552,58 @@ TEST_F(LateMaterializingFileBatchReaderTest, NestedPayloadColumn) {
         ASSERT_EQ(sub->length(), 2);
         EXPECT_EQ(sub->Value(0), i);
         EXPECT_EQ(sub->Value(1), i + 1);
+    }
+}
+
+// A payload column that the inner reader hands over dictionary-encoded has to stay that way in the
+// output. Compacting a batch down to a single matched run passes the run straight to the assembly
+// step rather than concatenating it, so on that path the encoding survives only because nothing
+// rewrites the array. Both shapes of a lone run are covered: one starting at the batch head, which
+// reaches the output untouched, and one starting mid-batch, which the per-column offset
+// normalization still copies.
+TEST_F(LateMaterializingFileBatchReaderTest, DictionaryPayloadColumnKeepsEncoding) {
+    auto data = BuildDictionaryPayloadData(8);
+    auto type = data->type();
+    auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
+    ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
+                                          std::move(mock), GetArrowPool(pool_)));
+    // probe = {k}; payload = {v}. k >= 5 matches only row 5 of the batch holding rows 3..5, a run
+    // at batch offset 2, and both rows of the batch holding rows 6..7, a run at batch offset 0.
+    auto predicate =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(type->fields()), predicate, std::nullopt));
+
+    std::vector<std::pair<int64_t, std::string>> rows;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
+                             reader->NextBatchWithBitmap());
+        if (BatchReader::IsEofBatch(batch_with_bitmap)) {
+            break;
+        }
+        auto& [batch, bitmap] = batch_with_bitmap;
+        auto& [c_array, c_schema] = batch;
+        arrow::Result<std::shared_ptr<arrow::Array>> imported =
+            arrow::ImportArray(c_array.get(), c_schema.get());
+        ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+        auto struct_array = arrow::internal::checked_pointer_cast<arrow::StructArray>(*imported);
+        auto k = arrow::internal::checked_pointer_cast<arrow::Int64Array>(
+            struct_array->GetFieldByName("k"));
+        std::shared_ptr<arrow::Array> v = struct_array->GetFieldByName("v");
+        ASSERT_TRUE(k && v);
+        ASSERT_EQ(v->type_id(), arrow::Type::DICTIONARY);
+        auto dict = arrow::internal::checked_pointer_cast<arrow::DictionaryArray>(v);
+        auto indices = arrow::internal::checked_pointer_cast<arrow::Int32Array>(dict->indices());
+        auto values = arrow::internal::checked_pointer_cast<arrow::StringArray>(dict->dictionary());
+        ASSERT_TRUE(indices && values);
+        for (int64_t i = 0; i < struct_array->length(); ++i) {
+            rows.emplace_back(k->Value(i), values->GetString(indices->Value(i)));
+        }
+    }
+    ASSERT_EQ(rows.size(), 3u);  // k = 5,6,7
+    for (size_t i = 0; i < rows.size(); ++i) {
+        int64_t expected_k = 5 + static_cast<int64_t>(i);
+        EXPECT_EQ(rows[i].first, expected_k);
+        EXPECT_EQ(rows[i].second, "d_" + std::to_string(expected_k % 3));
     }
 }
 

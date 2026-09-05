@@ -20,8 +20,25 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
+
+#include "paimon/common/utils/io_trace.h"
 
 namespace paimon {
+namespace {
+/// How many leaves get their first read started before InitializeIfNeeded blocks on one; 0 warms
+/// all of them. Read once from PAIMON_WARMUP_DEPTH so a sweep needs no rebuild. Note the ceiling
+/// that actually binds is the shared read executor's thread count, not this number.
+size_t WarmupDepth() {
+    static const size_t depth = [] {
+        const char* raw = std::getenv("PAIMON_WARMUP_DEPTH");
+        return raw == nullptr ? size_t{0} : static_cast<size_t>(std::strtoul(raw, nullptr, 10));
+    }();
+    return depth;
+}
+}  // namespace
+
 LoserTree::LoserTree(std::vector<std::unique_ptr<KeyValueRecordReader>>&& readers,
                      const CompareFunc& first_comparator, const CompareFunc& second_comparator)
     : size_(readers.size()),
@@ -36,14 +53,49 @@ LoserTree::LoserTree(std::vector<std::unique_ptr<KeyValueRecordReader>>&& reader
     }
 }
 
+Status LoserTree::WarmupLeaves() {
+    const size_t depth = WarmupDepth();
+    // The loop in InitializeIfNeeded consumes leaves from the back, so a capped depth warms the
+    // ones it reaches first rather than the ones it reaches last.
+    int32_t lowest = 0;
+    if (depth > 0 && static_cast<int32_t>(depth) < size_) {
+        lowest = size_ - static_cast<int32_t>(depth);
+    }
+    for (int32_t i = size_ - 1; i >= lowest; i--) {
+        PAIMON_RETURN_NOT_OK(leaves_[i].reader->Warmup());
+    }
+    return Status::OK();
+}
+
 Status LoserTree::InitializeIfNeeded() {
     if (!initialized_) {
+        // Every leaf's first read below blocks on its own file, and the leaves of a section are
+        // independent sorted runs, so without warming them the section pays those read latencies
+        // one after another. Warming starts them together, and the loop then collects reads that
+        // are already in flight.
+        //
+        // TEMPORARY DIAGNOSTIC, on with PAIMON_IO_TRACE like the io tracing it reports next to.
+        // The two timings are what tells a warmup that went through from one that was swallowed on
+        // its way down the reader stack: warming is meant to be near-free and to leave the loop
+        // costing about ONE file's read latency instead of the sum of every leaf's.
+        const bool trace = io_trace::Enabled();
+        const auto warmup_started = io_trace::Now();
+        PAIMON_RETURN_NOT_OK(WarmupLeaves());
+        const int64_t warmup_us = trace ? io_trace::ElapsedMicros(warmup_started) : 0;
+        const auto loop_started = io_trace::Now();
         std::fill(tree_.begin(), tree_.end(), -1);
         for (int32_t i = size_ - 1; i >= 0; i--) {
             PAIMON_RETURN_NOT_OK(leaves_[i].AdvanceIfAvailable());
             Adjust(i);
         }
         initialized_ = true;
+        if (trace) {
+            std::fprintf(stderr,
+                         "[paimon-warmup-trace] leaves=%d depth=%zu warmup_us=%lld loop_us=%lld\n",
+                         size_, WarmupDepth(), static_cast<long long>(warmup_us),
+                         static_cast<long long>(io_trace::ElapsedMicros(loop_started)));
+            std::fflush(stderr);
+        }
     }
     return Status::OK();
 }

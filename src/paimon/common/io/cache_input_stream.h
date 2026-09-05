@@ -68,15 +68,26 @@ class CacheInputStream : public InputStream {
                 return;
             }
             ByteRange range{static_cast<uint64_t>(offset), static_cast<uint64_t>(size)};
-            Result<bool> hit = cache_->Read(range, buffer);
-            if (!hit.ok()) {
-                callback(hit.status());
-                return;
-            }
-            if (hit.value()) {
-                callback(Status::OK());
-                return;
-            }
+            // The cache read is asynchronous too: a block cache fetch dispatched for
+            // this range resolves the callback later instead of making the caller
+            // wait a whole round trip inline.
+            cache_->ReadAsync(range, buffer,
+                              [this, buffer, size, offset, callback = std::move(callback)](
+                                  Status status, bool served) mutable {
+                                  if (!status.ok()) {
+                                      callback(status);
+                                      return;
+                                  }
+                                  if (served) {
+                                      callback(Status::OK());
+                                      return;
+                                  }
+                                  // Declined by the cache: read the bytes from the
+                                  // underlying stream, the way Read() falls back to it.
+                                  input_stream_->ReadAsync(buffer, size, offset,
+                                                           std::move(callback));
+                              });
+            return;
         }
         return input_stream_->ReadAsync(buffer, size, offset, std::move(callback));
     }

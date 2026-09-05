@@ -63,6 +63,7 @@ set(PAIMON_COMMON_SRCS
     common/data/variant/variant_type_utils.cpp
     common/defs.cpp
     common/executor/executor.cpp
+    common/executor/reader_build_executor.cpp
     common/factories/singleton.cpp
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
@@ -128,6 +129,7 @@ set(PAIMON_COMMON_SRCS
     common/predicate/multi_literals_leaf_function.cpp
     common/predicate/not_equal.cpp
     common/predicate/not_in.cpp
+    common/predicate/null_false_leaf_binary_function.cpp
     common/predicate/or.cpp
     common/predicate/predicate.cpp
     common/predicate/predicate_builder.cpp
@@ -179,6 +181,7 @@ set(PAIMON_COMMON_SRCS
     common/data/shredding/shredding_file_reader.cpp
     common/utils/delta_varint_compressor.cpp
     common/utils/fields_comparator.cpp
+    common/utils/file_block_cache.cpp
     common/utils/path_util.cpp
     common/utils/range.cpp
     common/utils/read_ahead_cache.cpp
@@ -614,6 +617,7 @@ if(PAIMON_BUILD_TESTS)
                     common/predicate/literal_converter_test.cpp
                     common/predicate/literal_test.cpp
                     common/predicate/multi_literals_leaf_function_test.cpp
+                    common/predicate/null_false_leaf_binary_function_test.cpp
                     common/predicate/predicate_test.cpp
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp
@@ -670,6 +674,8 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/roaring_bitmap64_test.cpp
                     common/utils/range_helper_test.cpp
                     common/utils/read_ahead_cache_test.cpp
+                    common/utils/file_block_cache_test.cpp
+                    common/utils/fetch_state_test.cpp
                     common/io/cache/lru_cache_test.cpp
                     common/io/cache/cache_manager_test.cpp
                     common/utils/byte_range_combiner_test.cpp

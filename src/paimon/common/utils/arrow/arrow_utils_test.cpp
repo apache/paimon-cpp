@@ -19,6 +19,8 @@
 
 #include "paimon/common/utils/arrow/arrow_utils.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -1213,6 +1215,126 @@ TEST(ArrowUtilsTest, TestFlattenUnresolvableDictionaries) {
         ASSERT_TRUE(flattened->field(0)->type()->Equals(*arrow::utf8()));
         ASSERT_TRUE(flattened->field(1)->type()->Equals(*arrow::utf8()));
     }
+}
+
+namespace {
+
+/// What `ArrowUtils::UnpackBooleansToBytes` has to agree with: every row taken one at a time
+/// through the very accessors the helper replaces.
+std::vector<char> UnpackRowByRow(const arrow::BooleanArray& array, bool negate) {
+    std::vector<char> is_valid(static_cast<size_t>(array.length()), 0);
+    for (int64_t i = 0; i < array.length(); i++) {
+        if (array.IsNull(i)) {
+            continue;
+        }
+        is_valid[i] = static_cast<char>(array.Value(i) != negate);
+    }
+    return is_valid;
+}
+
+/// A boolean array of `values.size()` rows holding the value `values[i]` at row `i`, with a
+/// validity bitmap that marks row `i` as holding one when `valid[i]` is true.
+std::shared_ptr<arrow::BooleanArray> BooleansOf(const std::vector<bool>& values,
+                                                const std::vector<bool>& valid) {
+    const int64_t length = static_cast<int64_t>(values.size());
+    std::shared_ptr<arrow::Buffer> value_bits = arrow::AllocateBitmap(length).ValueOrDie();
+    std::shared_ptr<arrow::Buffer> valid_bits = arrow::AllocateBitmap(length).ValueOrDie();
+    int64_t null_count = 0;
+    for (int64_t i = 0; i < length; i++) {
+        arrow::bit_util::SetBitTo(value_bits->mutable_data(), i, values[static_cast<size_t>(i)]);
+        arrow::bit_util::SetBitTo(valid_bits->mutable_data(), i, valid[static_cast<size_t>(i)]);
+        null_count += valid[static_cast<size_t>(i)] ? 0 : 1;
+    }
+    return std::make_shared<arrow::BooleanArray>(length, value_bits, valid_bits, null_count);
+}
+
+}  // namespace
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytes) {
+    std::shared_ptr<arrow::Array> made =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::boolean(), R"([true, false, null, true])")
+            .ValueOrDie();
+    const auto& array = checked_cast<const arrow::BooleanArray&>(*made);
+
+    // A null row is left at 0 whatever the value bitmap holds for it.
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false),
+              std::vector<char>({1, 0, 0, 1}));
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true),
+              std::vector<char>({0, 1, 0, 0}));
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesAgreesWithTheAccessorsOnEverySlice) {
+    // Neither the row count nor the periods the values and the nulls repeat on are a multiple of
+    // eight, so the slices below land on a partial leading byte, on whole bytes and on a partial
+    // trailing one, whichever offset and length they take.
+    constexpr int64_t kRows = 41;
+    std::vector<bool> values;
+    std::vector<bool> valid;
+    for (int64_t i = 0; i < kRows; i++) {
+        values.push_back((i * 7 + 3) % 5 != 0);
+        valid.push_back(i % 4 != 0);
+    }
+    const std::shared_ptr<arrow::BooleanArray> source = BooleansOf(values, valid);
+
+    for (int64_t offset = 0; offset <= kRows; offset++) {
+        for (int64_t length = 0; length <= kRows - offset; length++) {
+            // `Slice` returns a new owner, so it has to be held for as long as the slice is read.
+            std::shared_ptr<arrow::Array> sliced = source->Slice(offset, length);
+            const auto& slice = checked_cast<const arrow::BooleanArray&>(*sliced);
+            for (bool negate : {false, true}) {
+                ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(slice, negate),
+                          UnpackRowByRow(slice, negate))
+                    << "offset=" << offset << " length=" << length << " negate=" << negate;
+            }
+        }
+    }
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesWithoutAValidityBitmap) {
+    // A bitmap written for a column with no null in it carries no validity buffer at all, which
+    // `Array::IsValid` reads as every row holding a value.
+    const int64_t length = 10;
+    std::shared_ptr<arrow::Buffer> value_bits = arrow::AllocateBitmap(length).ValueOrDie();
+    for (int64_t i = 0; i < length; i++) {
+        arrow::bit_util::SetBitTo(value_bits->mutable_data(), i, i % 3 != 0);
+    }
+    const arrow::BooleanArray array(length, value_bits, /*null_bitmap=*/nullptr,
+                                    /*null_count=*/0);
+
+    std::vector<char> expected(static_cast<size_t>(length));
+    for (int64_t i = 0; i < length; i++) {
+        expected[static_cast<size_t>(i)] = static_cast<char>(i % 3 != 0);
+    }
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false), expected);
+    ASSERT_EQ(UnpackRowByRow(array, /*negate=*/false), expected);
+
+    // `negate` still applies once every row holds a value.
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true),
+              UnpackRowByRow(array, /*negate=*/true));
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesOfAnArrayThatIsNullThroughout) {
+    // Without a validity bitmap `Array::IsValid` falls back to `null_count != length`, so an array
+    // whose null count is its length holds no value at any row, however its value bitmap reads.
+    const int64_t length = 9;
+    std::shared_ptr<arrow::Buffer> value_bits = arrow::AllocateBitmap(length).ValueOrDie();
+    arrow::bit_util::SetBitsTo(value_bits->mutable_data(), /*offset=*/0, length, /*bits=*/true);
+    const arrow::BooleanArray array(length, value_bits, /*null_bitmap=*/nullptr,
+                                    /*null_count=*/length);
+
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false),
+              std::vector<char>(static_cast<size_t>(length), 0));
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true),
+              std::vector<char>(static_cast<size_t>(length), 0));
+    ASSERT_EQ(UnpackRowByRow(array, /*negate=*/true),
+              std::vector<char>(static_cast<size_t>(length), 0));
+}
+
+TEST(ArrowUtilsTest, TestUnpackBooleansToBytesOfAnEmptyArray) {
+    const arrow::BooleanArray array(/*length=*/0, /*data=*/nullptr);
+
+    ASSERT_TRUE(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false).empty());
+    ASSERT_TRUE(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true).empty());
 }
 
 }  // namespace paimon::test

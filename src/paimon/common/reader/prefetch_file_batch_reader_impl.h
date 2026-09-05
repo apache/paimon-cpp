@@ -103,6 +103,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
 
     Status RefreshReadRanges();
 
+    Status Warmup() override;
+
     inline PrefetchFileBatchReader* GetFirstReader() const {
         return readers_[0].get();
     }
@@ -125,8 +127,18 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
+    /// Publish the Create()-phase latencies. They are measured before this object exists, so they
+    /// are collected into locals and handed over once the metrics state is available.
+    /// \param open_us opening the data file, shared by every sub-reader.
+    /// \param reader_build_us one entry per sub-reader.
+    void RecordCreateMetrics(uint64_t open_us, const std::vector<uint64_t>& reader_build_us,
+                             uint64_t readers_wall_us, uint64_t total_us);
+
     Status CleanUp();
     void Workloop();
+    /// Starts the background prefetch thread if it is not running yet. The first read does this
+    /// itself; Warmup() is the same call made earlier, so the two must not diverge.
+    void EnsureBackgroundThread();
     void SetReadStatus(const Status& status);
     Status GetReadStatus() const;
     Result<bool> IsEofRange(const std::pair<uint64_t, uint64_t>& read_range) const;

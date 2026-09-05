@@ -59,8 +59,10 @@ TEST(ReadContextTest, TestSetContent) {
     ReadContextBuilder builder("table_root_path");
     std::shared_ptr<MemoryPool> memory_pool = GetDefaultPool();
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
-    CacheConfig cache_config(/*range_size_limit=*/512, /*hole_size_limit=*/128,
-                             /*pre_buffer_limit=*/2048);
+    CacheConfig cache_config;
+    cache_config.SetRangeSizeLimit(512);
+    cache_config.SetHoleSizeLimit(128);
+    cache_config.SetPreBufferLimit(2048);
 
     builder.AddOption("key", "value");
     builder.SetReadFieldNames({"f1", "f2"});

@@ -208,6 +208,12 @@ struct PAIMON_EXPORT Options {
     /// Default value is false.
     static const char PREFETCH_IO_METRICS_ENABLED[];
 
+    /// "read.reader-build.max-parallel-num" - Maximum number of data file readers built in
+    /// parallel within one split. It also decides the size of the dedicated reader building
+    /// thread pool, which is created on first use, so the first reader build in the process
+    /// decides the pool size. Setting it to 1 builds readers serially. Default value is 4.
+    static const char READ_READER_BUILD_MAX_PARALLEL_NUM[];
+
     /// "read.batch-size" - Read batch size for any file format if it supports.
     /// The default value is 1024.
     static const char READ_BATCH_SIZE[];

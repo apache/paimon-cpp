@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -46,6 +47,7 @@ class SchemaManager {
                   const std::string& branch);
 
     /// Read schema for schema id. Find schema in cache first.
+    /// Safe to call concurrently.
     Result<std::shared_ptr<TableSchema>> ReadSchema(int64_t schema_id) const;
     Result<std::optional<std::shared_ptr<TableSchema>>> Latest() const;
     Result<std::unique_ptr<TableSchema>> CreateTable(
@@ -69,6 +71,7 @@ class SchemaManager {
     std::shared_ptr<FileSystem> file_system_;
     std::string table_root_;
     const std::string branch_;
+    mutable std::mutex schema_cache_mutex_;
     mutable std::map<int64_t, std::shared_ptr<TableSchema>> schema_cache_;
 };
 

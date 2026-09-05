@@ -53,6 +53,22 @@ class PAIMON_EXPORT ArrowUtils {
 
     static uint64_t GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>& data);
 
+    /// Expands the booleans of `array` into one byte per row, the shape `LeafFunction::Test`
+    /// returns. Row `i` becomes 1 when it holds a value and that value, once `negate` has been
+    /// applied to it, is true; a null row becomes 0.
+    ///
+    /// A kernel a leaf function probes with writes a boolean bitmap, one bit per row, so the rows
+    /// it selects have to be spread over a byte each before the caller can use them. Reading that
+    /// bitmap a byte at a time and writing eight rows at once keeps the spread off the per row
+    /// path, where reading it a bit at a time costs a shift, a mask and a byte store per row.
+    ///
+    /// @param array The bitmap to expand. Its offset and its validity are honoured exactly as
+    ///              `BooleanArray::Value()` and `Array::IsValid()` honour them.
+    /// @param negate Whether to take the rows whose bit is clear rather than the rows whose bit is
+    ///               set, which is what `NOT IN` needs. A null row stays 0 either way.
+    /// @return One byte per row of `array`.
+    static std::vector<char> UnpackBooleansToBytes(const arrow::BooleanArray& array, bool negate);
+
     static Result<std::shared_ptr<arrow::StructArray>> RemoveFieldFromStructArray(
         const std::shared_ptr<arrow::StructArray>& struct_array, const std::string& field_name);
 

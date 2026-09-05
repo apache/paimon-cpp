@@ -18,38 +18,27 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <vector>
 
-#include "arrow/array/array_nested.h"
-#include "arrow/c/bridge.h"
-#include "fmt/format.h"
+#include "arrow/array/array_base.h"
+#include "arrow/type_fwd.h"
 #include "paimon/common/predicate/leaf_function.h"
-#include "paimon/common/predicate/literal_converter.h"
-#include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
 class NullFalseLeafBinaryFunction : public LeafFunction {
  public:
+    /// Compares the whole batch against the literal with one `arrow::compute` comparison kernel
+    /// when the literal and the column allow it, and falls back to materializing every row into a
+    /// `Literal` and comparing one at a time otherwise. Every `LeafFunction` is a shared stateless
+    /// singleton, so the scalar the kernel compares against is built per batch; that costs `O(1)`
+    /// and buys an `O(rows)` compare with no `Literal` per row in between.
     Result<std::vector<char>> Test(const arrow::Array& array, const std::vector<Literal>& literals,
-                                   arrow::MemoryPool* pool) const override {
-        if (literals.size() < LITERAL_LIMIT) {
-            return Status::Invalid("NullFalseLeafBinaryFunction needs single literal for field");
-        }
-        std::vector<char> is_valid(array.length(), false);
-        if (literals[0].IsNull()) {
-            return is_valid;
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::vector<Literal> array_values,
-            LiteralConverter::ConvertLiteralsFromArray(array, /*own_data=*/false));
-        for (int64_t i = 0; i < array.length(); i++) {
-            if (!array.IsNull(i)) {
-                PAIMON_ASSIGN_OR_RAISE(is_valid[i], Test(array_values[i], literals[0]));
-            }
-        }
-        return is_valid;
-    }
+                                   arrow::MemoryPool* pool) const override;
 
     Result<bool> Test(const Literal& value, const std::vector<Literal>& literals) const override {
         if (literals.size() < LITERAL_LIMIT) {
