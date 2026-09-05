@@ -343,6 +343,92 @@ TEST_F(ParquetFileBatchReaderTest, TestParquetMetadataCacheBypassesWhenGetUriFai
     ASSERT_EQ(0, cache->Size());
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestPageIndexBytesSurviveReaderClose) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/3,
+               /*max_page_size=*/1);
+    auto cache = std::make_shared<paimon::test::CountingRoutingCache>(CacheKind::DATA_FILE_FOOTER,
+                                                                      128 * 1024 * 1024);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> raw_input, fs_->Open(file_path_));
+    ASSERT_OK_AND_ASSIGN(int64_t length, raw_input->Length());
+    auto raw = std::make_shared<ArrowInputStreamAdapter>(raw_input, length, pool_);
+    auto raw_reader = ::parquet::ParquetFileReader::Open(raw);
+    auto metadata = raw_reader->metadata();
+    int64_t expected_index_reads = 0;
+    for (int32_t round = 0; round < 3; ++round) {
+        if (round == 2) {
+            cache->InvalidateAll();
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        auto stream = std::make_shared<ParquetInputStream>(input, length, pool_, GetDefaultPool(),
+                                                           cache, file_path_);
+        stream->SetPageIndexRanges(*metadata);
+        for (int32_t rg = 0; rg < metadata->num_row_groups(); ++rg) {
+            auto ranges = ::parquet::PageIndexReader::DeterminePageIndexRangesInRowGroup(
+                *metadata->RowGroup(rg), {});
+            for (const auto& range : {ranges.column_index, ranges.offset_index}) {
+                ASSERT_TRUE(range.has_value());
+                auto expected = raw->ReadAt(range->offset, range->length);
+                ASSERT_TRUE(expected.ok()) << expected.status().ToString();
+                auto actual = stream->ReadAt(range->offset, range->length);
+                ASSERT_TRUE(actual.ok()) << actual.status().ToString();
+                ASSERT_TRUE(actual.ValueOrDie()->Equals(*expected.ValueOrDie()));
+                if (round != 1) {
+                    ++expected_index_reads;
+                }
+            }
+        }
+        ASSERT_EQ(expected_index_reads, cache->SupplierCallCount());
+        // Reader 2 serves all indexes from the shared cache without storage IO.
+        if (round == 1) {
+            ASSERT_EQ(0, stream->StorageReadBytes()->load());
+        } else {
+            ASSERT_GT(stream->StorageReadBytes()->load(), 0);
+        }
+        // Ordinary file bytes must still use storage, even on a cache hit round.
+        uint64_t bytes_before = stream->StorageReadBytes()->load();
+        auto magic = stream->ReadAt(0, 4);
+        ASSERT_TRUE(magic.ok()) << magic.status().ToString();
+        ASSERT_EQ("PAR1", magic.ValueOrDie()->ToString());
+        ASSERT_EQ(bytes_before + 4, stream->StorageReadBytes()->load());
+        ASSERT_EQ(expected_index_reads, cache->SupplierCallCount());
+        ASSERT_TRUE(stream->Close().ok());
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestPointReadReusesFooterAndPageIndexes) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/3,
+               /*max_page_size=*/1);
+    auto cache = std::make_shared<paimon::test::CountingRoutingCache>(CacheKind::DATA_FILE_FOOTER,
+                                                                      128 * 1024 * 1024);
+    auto projection = arrow::schema({schema_->GetFieldByName("f4"), schema_->GetFieldByName("f8")});
+    auto predicate = PredicateBuilder::Equal(0, "f4", FieldType::INT, Literal(300002));
+    int64_t cold_reads = 0;
+    std::shared_ptr<arrow::ChunkedArray> cold_result;
+    for (int32_t round = 0; round < 2; ++round) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        ParquetReaderBuilder builder({{PARQUET_READ_ENABLE_PAGE_INDEX_FILTER, "true"}}, 10);
+        builder.WithCache(cache);
+        ASSERT_OK_AND_ASSIGN(auto reader, builder.Build(input));
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*projection, &c_schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             paimon::test::ReadResultCollector::CollectResult(reader.get()));
+        ASSERT_EQ(1, result->length());
+        if (round == 0) {
+            cold_reads = cache->SupplierCallCount();
+            ASSERT_GT(cold_reads, 1);  // Footer plus actual page-index ranges.
+            cold_result = result;
+        } else {
+            ASSERT_TRUE(result->Equals(cold_result));
+            ASSERT_EQ(cold_reads, cache->SupplierCallCount());
+            ASSERT_GT(cache->GetCount(), cold_reads);
+        }
+    }
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestReadBinaryWrittenFromBinaryAndLargeBinary) {
     auto check_binary_read_result = [&](const std::shared_ptr<arrow::DataType>& write_type,
                                         const std::string& file_name) {

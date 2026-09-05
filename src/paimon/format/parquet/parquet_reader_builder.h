@@ -35,6 +35,7 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/parquet/parquet_file_batch_reader.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
+#include "paimon/format/parquet/parquet_input_stream.h"
 #include "paimon/format/read_hints.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/memory/memory_pool.h"
@@ -88,13 +89,14 @@ class ParquetReaderBuilder : public ReaderBuilder {
                     file_uri = std::move(file_uri_result).value();
                 }
             }
-            auto unique_input_stream =
-                std::make_unique<ArrowInputStreamAdapter>(path, file_length, arrow_pool_);
-            auto storage_read_bytes = unique_input_stream->StorageReadBytes();
-            std::shared_ptr<arrow::io::RandomAccessFile> input_stream(
-                std::move(unique_input_stream));
+            auto input_stream = std::make_shared<ParquetInputStream>(
+                path, file_length, arrow_pool_, pool_, cache_, file_uri);
+            auto storage_read_bytes = input_stream->StorageReadBytes();
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<::parquet::FileMetaData> file_metadata,
                                    GetCachedParquetMetadata(input_stream, file_uri, arrow_pool_));
+            if (file_metadata) {
+                input_stream->SetPageIndexRanges(*file_metadata);
+            }
             return ParquetFileBatchReader::Create(
                 std::move(input_stream), options_, batch_size_, std::move(file_metadata),
                 std::move(storage_read_bytes), arrow_pool_, hints_);
