@@ -30,6 +30,20 @@
 
 namespace paimon::parquet {
 
+inline MemorySegment AllocateParquetCacheSegment(int32_t size,
+                                                 const std::shared_ptr<MemoryPool>& pool) {
+    struct PooledBytes {
+        PooledBytes(int32_t size, const std::shared_ptr<MemoryPool>& memory_pool)
+            : pool(memory_pool), bytes(size, memory_pool.get()) {}
+        // Destroy bytes before releasing their allocator.
+        std::shared_ptr<MemoryPool> pool;
+        Bytes bytes;
+    };
+    auto owner = std::make_shared<PooledBytes>(size, pool);
+    auto* bytes = &owner->bytes;
+    return MemorySegment::Wrap(std::shared_ptr<Bytes>(std::move(owner), bytes));
+}
+
 // Cache immutable page-index bytes, not Arrow readers: the latter borrow their
 // input stream, reader properties and decryptor from the current file reader.
 class ParquetInputStream : public ArrowInputStreamAdapter {
@@ -79,7 +93,8 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
             key,
             [this, position,
              nbytes](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
-                MemorySegment segment = MemorySegment::AllocateHeapMemory(nbytes, pool_.get());
+                MemorySegment segment =
+                    AllocateParquetCacheSegment(static_cast<int32_t>(nbytes), pool_);
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                     int64_t size,
                     ArrowInputStreamAdapter::ReadAt(position, nbytes, segment.MutableData()));

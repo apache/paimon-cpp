@@ -355,13 +355,16 @@ TEST_F(ParquetFileBatchReaderTest, TestPageIndexBytesSurviveReaderClose) {
     auto raw_reader = ::parquet::ParquetFileReader::Open(raw);
     auto metadata = raw_reader->metadata();
     int64_t expected_index_reads = 0;
+    std::weak_ptr<MemoryPool> cached_pool;
     for (int32_t round = 0; round < 3; ++round) {
         if (round == 2) {
             cache->InvalidateAll();
+            ASSERT_TRUE(cached_pool.expired());
         }
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
-        auto stream = std::make_shared<ParquetInputStream>(input, length, pool_, GetDefaultPool(),
-                                                           cache, file_path_);
+        std::shared_ptr<MemoryPool> query_pool = GetMemoryPool();
+        auto stream = std::make_shared<ParquetInputStream>(input, length, pool_, query_pool, cache,
+                                                           file_path_);
         stream->SetPageIndexRanges(*metadata);
         for (int32_t rg = 0; rg < metadata->num_row_groups(); ++rg) {
             auto ranges = ::parquet::PageIndexReader::DeterminePageIndexRangesInRowGroup(
@@ -393,7 +396,34 @@ TEST_F(ParquetFileBatchReaderTest, TestPageIndexBytesSurviveReaderClose) {
         ASSERT_EQ(bytes_before + 4, stream->StorageReadBytes()->load());
         ASSERT_EQ(expected_index_reads, cache->SupplierCallCount());
         ASSERT_TRUE(stream->Close().ok());
+        if (round != 1) {
+            cached_pool = query_pool;
+        }
+        stream.reset();
+        query_pool.reset();
+        ASSERT_FALSE(cached_pool.expired());
     }
+    cache->InvalidateAll();
+    ASSERT_TRUE(cached_pool.expired());
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestCachedFooterKeepsAllocatorAliveUntilEviction) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/3);
+    auto cache = std::make_shared<paimon::test::CountingRoutingCache>(CacheKind::DATA_FILE_FOOTER,
+                                                                      128 * 1024 * 1024);
+    std::weak_ptr<MemoryPool> cached_pool;
+    {
+        std::shared_ptr<MemoryPool> query_pool = GetMemoryPool();
+        cached_pool = query_pool;
+        ParquetReaderBuilder builder({}, 10);
+        builder.WithMemoryPool(query_pool)->WithCache(cache);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        ASSERT_OK_AND_ASSIGN(auto reader, builder.Build(input));
+    }
+    ASSERT_FALSE(cached_pool.expired());
+    cache->InvalidateAll();
+    ASSERT_TRUE(cached_pool.expired());
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestPointReadReusesFooterAndPageIndexes) {

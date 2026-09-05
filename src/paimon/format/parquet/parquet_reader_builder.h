@@ -125,8 +125,7 @@ class ParquetReaderBuilder : public ReaderBuilder {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Buffer> metadata_footer,
                                           output_stream->Finish());
 
-        MemorySegment segment =
-            MemorySegment::AllocateHeapMemory(metadata_footer->size(), pool_.get());
+        MemorySegment segment = AllocateParquetCacheSegment(metadata_footer->size(), pool_);
         std::memcpy(segment.MutableData(), metadata_footer->data(), metadata_footer->size());
         return segment;
     }
