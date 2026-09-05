@@ -24,8 +24,11 @@
 #include <vector>
 
 #include "arrow/type.h"
+#include "arrow/util/decimal.h"
 #include "fmt/format.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
+#include "paimon/data/decimal.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/leaf_predicate.h"
@@ -86,8 +89,14 @@ class PredicateValidator {
                                 field_name, schema_field_idx, leaf_predicate->FieldIndex()));
             }
             // check field type (schema vs. predicate)
+            const std::shared_ptr<arrow::DataType>& schema_type =
+                schema.field(schema_field_idx)->type();
             PAIMON_RETURN_NOT_OK(ValidateDataTypeWithSchemaAndPredicate(
-                *schema.field(schema_field_idx)->type(), leaf_predicate->GetFieldType()));
+                *schema_type, leaf_predicate->GetFieldType()));
+            if (schema_type->id() == arrow::Type::DECIMAL128) {
+                PAIMON_RETURN_NOT_OK(ValidateDecimalLiterals(
+                    *checked_pointer_cast<arrow::Decimal128Type>(schema_type), *leaf_predicate));
+            }
         } else if (auto compound_predicate =
                        std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
             const auto& children = compound_predicate->Children();
@@ -100,6 +109,28 @@ class PredicateValidator {
     }
 
  private:
+    static Status ValidateDecimalLiterals(const arrow::Decimal128Type& field_type,
+                                          const LeafPredicate& predicate) {
+        const std::string& field_name = predicate.FieldName();
+        for (const Literal& literal : predicate.Literals()) {
+            const auto decimal = literal.GetValue<Decimal>();
+            if (decimal.Scale() != field_type.scale()) {
+                return Status::Invalid(fmt::format(
+                    "decimal literal for field {} has scale {}, expected {}; rescale the literal "
+                    "before building the predicate",
+                    field_name, decimal.Scale(), field_type.scale()));
+            }
+
+            arrow::Decimal128 unscaled_value(decimal.HighBits(), decimal.LowBits());
+            if (!unscaled_value.FitsInPrecision(field_type.precision())) {
+                return Status::Invalid(fmt::format(
+                    "decimal literal {} for field {} does not fit field type DECIMAL({}, {})",
+                    decimal.ToString(), field_name, field_type.precision(), field_type.scale()));
+            }
+        }
+        return Status::OK();
+    }
+
     static Status ValidateDataTypeWithSchemaAndPredicate(const arrow::DataType& schema_type,
                                                          const FieldType& field_type) {
         const auto kind = schema_type.id();

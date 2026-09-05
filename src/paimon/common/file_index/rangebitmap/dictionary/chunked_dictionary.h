@@ -96,7 +96,6 @@ class ChunkedDictionary final : public Dictionary {
 
     // for lazy loading
     PAIMON_UNIQUE_PTR<Bytes> offsets_bytes_;
-    PAIMON_UNIQUE_PTR<Bytes> chunks_bytes_;
 
     // mmap chunks cache
     std::vector<std::shared_ptr<Chunk>> chunks_cache_;

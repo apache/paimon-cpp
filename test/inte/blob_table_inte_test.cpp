@@ -2181,9 +2181,8 @@ TEST_P(BlobTableInteTest, TestPartitionWithPredicate) {
     }
     {
         // set partition predicate and data field predicate, blob type not support predicate
-        auto equal =
-            PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::STRING,
-                                    Literal(FieldType::BLOB, "2024", 4));
+        auto equal = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1",
+                                             FieldType::BLOB, Literal(FieldType::BLOB, "2024", 4));
         auto greater_than = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"f0",
                                                           FieldType::INT, Literal(100));
         ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({equal, greater_than}));

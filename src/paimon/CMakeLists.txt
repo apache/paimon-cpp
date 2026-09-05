@@ -577,6 +577,7 @@ if(PAIMON_BUILD_TESTS)
                     common/file_index/rangebitmap/dictionary/chunked_dictionary_test.cpp
                     common/file_index/rangebitmap/range_bitmap_file_index_test.cpp
                     common/file_index/rangebitmap/range_bitmap_io_test.cpp
+                    common/file_index/rangebitmap/range_bitmap_type_adapter_test.cpp
                     common/file_index/bloomfilter/bloom_filter_file_index_test.cpp
                     common/file_index/bloomfilter/fast_hash_test.cpp
                     common/global_index/complete_index_score_batch_reader_test.cpp

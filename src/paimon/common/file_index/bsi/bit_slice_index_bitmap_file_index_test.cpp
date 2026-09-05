@@ -27,6 +27,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
+#include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/bitmap_index_result.h"
@@ -418,6 +419,31 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestTimestampType) {
     // test invalid case
     ASSERT_NOK_WITH_MSG(reader->VisitEqual(Literal(FieldType::TIMESTAMP)).value()->IsRemain(),
                         "literal cannot be null when GetValue in BitSliceIndexBitmapFileIndex");
+}
+
+TEST_F(BitSliceIndexBitmapIndexReaderTest, TestDecimalType) {
+    const auto type = arrow::decimal128(10, 2);
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> index_bytes,
+                         WriteIndex(type, R"([["1.00"], ["2.50"], [null], ["-1.25"], ["2.50"]])"));
+    auto input_stream =
+        std::make_shared<ByteArrayInputStream>(index_bytes->data(), index_bytes->size());
+    BitSliceIndexBitmapFileIndex file_index({});
+    ASSERT_OK_AND_ASSIGN(
+        auto reader, file_index.CreateReader(CreateArrowSchema(type).get(), 0, index_bytes->size(),
+                                             input_stream, pool_));
+
+    CheckResult(reader->VisitEqual(Literal(Decimal(10, 2, 250))).value(), {1, 4});
+    CheckResult(reader->VisitGreaterThan(Literal(Decimal(10, 2, 100))).value(), {1, 4});
+    CheckResult(reader->VisitLessThan(Literal(Decimal(10, 2, 0))).value(), {3});
+    CheckResult(reader->VisitIsNull().value(), {2});
+
+    // BSI does not rescale Decimal literals. A mathematically equivalent literal with a
+    // different scale produces an incorrect empty result, so callers must use the field's scale.
+    CheckResult(reader->VisitEqual(Literal(Decimal(10, 3, 2500))).value(), {});
+
+    // test invalid case for decimal128(20, 0) which exceeds int64 range
+    ASSERT_NOK_WITH_MSG(WriteIndex(arrow::decimal128(20, 0), R"([["9223372036854775808"]])"),
+                        "does not fit in int64 for bsi index");
 }
 
 TEST_F(BitSliceIndexBitmapIndexReaderTest, TestUnInvalidType) {

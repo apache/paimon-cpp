@@ -1331,6 +1331,14 @@ TEST_P(BTreeGlobalIndexIntegrationTest, WriteAndReadDecimalCompactData) {
         CheckResult(result, {2, 3});
     }
     {
+        // BTree does not rescale Decimal literals. A mathematically equivalent literal with a
+        // different scale produces an incorrect empty result, so callers must use the field's
+        // scale.
+        Literal lit_2500(Decimal::FromUnscaledLong(2500, 10, 3));
+        ASSERT_OK_AND_ASSIGN(auto result, reader->VisitEqual(lit_2500));
+        CheckResult(result, {});
+    }
+    {
         Literal lit_250(Decimal::FromUnscaledLong(250, 10, 2));
         ASSERT_OK_AND_ASSIGN(auto result, reader->VisitNotEqual(lit_250));
         CheckResult(result, {0, 4, 6});

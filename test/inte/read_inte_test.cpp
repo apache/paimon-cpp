@@ -2078,7 +2078,7 @@ TEST_P(ReadInteTest, TestAppendReadWithComplexTypePredicate) {
         PredicateBuilder::And(
             {PredicateBuilder::Or(
                  {PredicateBuilder::GreaterThan(/*field_index=*/4, /*field_name=*/"f5",
-                                                FieldType::DECIMAL, Literal(Decimal(5, 2, 0))),
+                                                FieldType::DECIMAL, Literal(Decimal(23, 5, 0))),
                   PredicateBuilder::LessThan(/*field_index=*/2, /*field_name=*/"f4",
                                              FieldType::TIMESTAMP,
                                              Literal(Timestamp(-2240521239999l, 1002))),

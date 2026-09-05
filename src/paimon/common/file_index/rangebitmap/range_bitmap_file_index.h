@@ -36,6 +36,7 @@ namespace paimon {
 
 class RangeBitmapFileIndexWriter;
 class RangeBitmapFileIndexReader;
+class RangeBitmapTypeAdapter;
 
 class PAIMON_EXPORT RangeBitmapFileIndex final : public FileIndexer {
  public:
@@ -64,20 +65,19 @@ class RangeBitmapFileIndexWriter final : public FileIndexWriter {
         const std::shared_ptr<arrow::Field>& field,
         const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool);
 
+    ~RangeBitmapFileIndexWriter() override;
+
     Status AddBatch(::ArrowArray* batch) override;
     Result<PAIMON_UNIQUE_PTR<Bytes>> SerializedBytes() const override;
 
+ private:
     RangeBitmapFileIndexWriter(const std::shared_ptr<arrow::DataType>& struct_type,
-                               const std::shared_ptr<MemoryPool>& pool,
-                               const std::shared_ptr<KeyFactory>& key_factory,
+                               std::unique_ptr<RangeBitmapTypeAdapter> type_adapter,
                                std::unique_ptr<RangeBitmap::Appender> appender);
 
- private:
-    /// @note struct_type_ contains only one field with arrow_type_, used for import from C
-    /// interface.
+    /// @note struct_type_ contains only the indexed field and is used to import Arrow C data.
     std::shared_ptr<arrow::DataType> struct_type_;
-    std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<KeyFactory> key_factory_;
+    std::unique_ptr<RangeBitmapTypeAdapter> type_adapter_;
     std::unique_ptr<RangeBitmap::Appender> appender_;
 };
 
@@ -89,8 +89,11 @@ class RangeBitmapFileIndexReader final
         const std::shared_ptr<arrow::DataType>& arrow_type, int32_t start, int32_t length,
         const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool);
 
+    ~RangeBitmapFileIndexReader() override;
+
  private:
-    explicit RangeBitmapFileIndexReader(std::unique_ptr<RangeBitmap> range_bitmap);
+    RangeBitmapFileIndexReader(std::unique_ptr<RangeBitmapTypeAdapter> type_adapter,
+                               std::unique_ptr<RangeBitmap> range_bitmap);
 
     Result<std::shared_ptr<FileIndexResult>> VisitEqual(const Literal& literal) override;
     Result<std::shared_ptr<FileIndexResult>> VisitNotEqual(const Literal& literal) override;
@@ -104,6 +107,7 @@ class RangeBitmapFileIndexReader final
     Result<std::shared_ptr<FileIndexResult>> VisitGreaterOrEqual(const Literal& literal) override;
     Result<std::shared_ptr<FileIndexResult>> VisitLessOrEqual(const Literal& literal) override;
 
+    std::unique_ptr<RangeBitmapTypeAdapter> type_adapter_;
     std::unique_ptr<RangeBitmap> range_bitmap_;
 };
 

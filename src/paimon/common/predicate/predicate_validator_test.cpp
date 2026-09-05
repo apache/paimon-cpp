@@ -158,8 +158,7 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                                                                   /*validate_field_idx=*/true));
     }
     {
-        // f2 schema type is DECIMAL(23,5), predicate type can be different precision and scale,
-        // such as DECIMAL(22,4)
+        // f2 schema type is DECIMAL(23,5), but the literal scale is 4.
         std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({
             arrow::field("f0", arrow::int16()),
             arrow::field("f1", arrow::float32()),
@@ -180,8 +179,11 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                                         Literal(true)),
             }));
         ASSERT_OK(PredicateValidator::ValidatePredicateWithLiterals(predicate));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/true));
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "decimal literal for field f2 has scale 4, expected 5; rescale the literal before "
+            "building the predicate");
     }
     {
         // predicate field idx mismatch
@@ -339,6 +341,64 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
             PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
                                                             /*validate_field_idx=*/true),
             "field f2 does not exist in schema");
+    }
+}
+
+TEST(PredicateValidatorTest, TestValidateDecimalLiteral) {
+    std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("amount", arrow::decimal128(10, 2))});
+
+    {
+        auto predicate =
+            PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
+                                    Literal(Decimal(10, 2, 12345)));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                                  /*validate_field_idx=*/true));
+    }
+    {
+        // Literal precision metadata may be smaller than the field precision.
+        auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount",
+                                                 FieldType::DECIMAL, Literal(Decimal(9, 2, 12345)));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                                  /*validate_field_idx=*/true));
+    }
+    {
+        // Literal precision metadata may be larger than the field precision if the value fits.
+        auto predicate =
+            PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
+                                    Literal(Decimal(12, 2, 12345)));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                                  /*validate_field_idx=*/true));
+    }
+    {
+        auto predicate =
+            PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
+                                    Literal(Decimal(10, 1, 12345)));
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "decimal literal for field amount has scale 1, expected 2; rescale the literal before "
+            "building the predicate");
+    }
+    {
+        auto predicate = PredicateBuilder::In(
+            /*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
+            {Literal(Decimal(10, 2, 12345)), Literal(Decimal(10, 3, 123450))});
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "decimal literal for field amount has scale 3, expected 2; rescale the literal before "
+            "building the predicate");
+    }
+    {
+        auto predicate =
+            PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
+                                    Literal(Decimal(10, 2, 10000000000LL)));
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "decimal literal 100000000.00 for field amount does not fit field type DECIMAL(10, "
+            "2)");
     }
 }
 }  // namespace paimon::test

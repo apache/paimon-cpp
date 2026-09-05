@@ -34,6 +34,8 @@ namespace paimon {
 /// `std::shared_ptr<FileIndexResult>` objects. It reads pre-built file-level index data
 /// (e.g., bitmap, bsi or bloom filters) from index file and evaluates
 /// whether a given data file may contain rows matching a specific predicate.
+/// @note Callers of `Visit*` for DECIMAL fields must ensure each literal's scale matches the scale
+/// of the indexed data; otherwise, index filtering results may be incorrect.
 class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<FileIndexResult>> {
  public:
     Result<std::shared_ptr<FileIndexResult>> VisitIsNotNull() override;
