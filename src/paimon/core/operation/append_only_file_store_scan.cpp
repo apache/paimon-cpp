@@ -32,7 +32,6 @@
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/types/data_field.h"
-#include "paimon/core/bucket/bucket_select_converter.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/file_index_evaluator.h"
@@ -69,21 +68,6 @@ Result<std::unique_ptr<AppendOnlyFileStoreScan>> AppendOnlyFileStoreScan::Create
                                     table_schema, arrow_schema, core_options, executor, pool));
     PAIMON_RETURN_NOT_OK(
         scan->SplitAndSetFilter(table_schema->PartitionKeys(), arrow_schema, scan_filters));
-    const auto& bucket_keys = table_schema->BucketKeys();
-    int32_t num_buckets = core_options.GetBucket();
-    if (scan->predicates_ && !scan_filters->GetBucketFilter().has_value() && num_buckets > 0 &&
-        !bucket_keys.empty()) {
-        std::vector<std::shared_ptr<arrow::DataType>> bucket_key_types;
-        bucket_key_types.reserve(bucket_keys.size());
-        for (const auto& key : bucket_keys) {
-            PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema->GetField(key));
-            bucket_key_types.push_back(field.Type());
-        }
-        PAIMON_ASSIGN_OR_RAISE(scan->predicate_bucket_,
-                               BucketSelectConverter::Convert(
-                                   scan->predicates_, bucket_keys, bucket_key_types,
-                                   core_options.GetBucketFunctionType(), num_buckets, pool.get()));
-    }
     return scan;
 }
 
@@ -103,12 +87,6 @@ AppendOnlyFileStoreScan::AppendOnlyFileStoreScan(
 Result<bool> AppendOnlyFileStoreScan::FilterByStats(const ManifestEntry& entry) const {
     if (!predicates_) {
         return true;
-    }
-    // A historical file may use a different schema or bucket count after a rescale.
-    // Keep the inferred bucket separate from the caller's explicit bucket filter.
-    if (predicate_bucket_ && entry.TotalBuckets() == core_options_.GetBucket() &&
-        entry.File()->schema_id == table_schema_->Id() && entry.Bucket() != *predicate_bucket_) {
-        return false;
     }
     const auto& meta = entry.File();
     std::shared_ptr<TableSchema> data_schema = table_schema_;
