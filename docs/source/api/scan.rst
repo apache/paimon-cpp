@@ -32,6 +32,14 @@ all bucket keys with equality, and bucket-unaware tables, keep the existing scan
 behavior. Inferred pruning applies only to files matching the scan schema and
 bucket count; older layouts retain the existing filtering behavior.
 
+This inference prunes data files at the manifest-entry level. It does not enable
+manifest min/max-bucket skipping or the bucket-specific live-manifest-entry cache,
+which require an explicit bucket filter.
+
+Decimal literals are rescaled to the bucket field's type only when the conversion
+is exact. NaN literals and decimals that cannot be represented exactly disable
+inferred bucket pruning.
+
 Interface
 =========
 

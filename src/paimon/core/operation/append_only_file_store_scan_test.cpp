@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <optional>
 #include <string>
@@ -61,7 +62,7 @@ class AppendBucketPruningTest : public testing::Test {
         const std::shared_ptr<Predicate>& predicate,
         const std::optional<int32_t>& bucket = std::nullopt) const {
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(
-            {DataField(0, arrow::field("rowkey", arrow::utf8())),
+            {DataField(0, arrow::field("rowkey", rowkey_type_)),
              DataField(1, arrow::field("value", arrow::int32()))});
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                                TableSchema::Create(schema_id_, arrow_schema, {}, {}, options_));
@@ -101,6 +102,33 @@ class AppendBucketPruningTest : public testing::Test {
                                        Literal(FieldType::STRING, "key", 3));
     }
 
+    template <typename T>
+    void CheckMatchingValue(FieldType field_type, const T& query_value, const T& stored_value) {
+        options_[Options::BUCKET] = "17";
+        auto predicate = PredicateBuilder::Equal(0, "rowkey", field_type, Literal(query_value));
+        ASSERT_OK_AND_ASSIGN(auto comparison,
+                             Literal(query_value).CompareTo(Literal(stored_value)));
+        ASSERT_EQ(comparison, 0);
+        BinaryRow stored_key = BinaryRowGenerator::GenerateRow({stored_value}, pool_.get());
+        BinaryRow query_key = BinaryRowGenerator::GenerateRow({query_value}, pool_.get());
+        int32_t bucket = DefaultBucketFunction().Bucket(stored_key, 17);
+        ASSERT_NE(bucket, DefaultBucketFunction().Bucket(query_key, 17));
+        SimpleStats stats = BinaryRowGenerator::GenerateStats(
+            {stored_value, 0}, {stored_value, 100}, {0, 0}, pool_.get());
+        ASSERT_OK_AND_ASSIGN(
+            auto file,
+            DataFileMeta::ForAppend("data.parquet", 100, 10, stats, 0, 9, 0, std::nullopt,
+                                    std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+        ManifestEntry entry(FileKind::Add(), BinaryRow::EmptyRow(), bucket, 17, file);
+        ASSERT_OK_AND_ASSIGN(auto stats_scan, CreateScan(predicate, bucket));
+        ASSERT_OK_AND_ASSIGN(bool stats_match, stats_scan->FilterByStats(entry));
+        ASSERT_TRUE(stats_match);
+        ASSERT_OK_AND_ASSIGN(auto scan, CreateScan(predicate));
+        ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterManifestEntry(entry));
+        ASSERT_TRUE(keep);
+    }
+
+    std::shared_ptr<arrow::DataType> rowkey_type_ = arrow::utf8();
     static constexpr int32_t kNumBuckets = 4;
     int64_t schema_id_ = 0;
     std::shared_ptr<SchemaManager> schema_manager_;
@@ -147,6 +175,23 @@ TEST_F(AppendBucketPruningTest, DoesNotPruneDifferentSchema) {
     ASSERT_OK(schema_manager_->CreateTable(scan->schema_, {}, {}, options_));
     schema_id_ = 1;
     CheckBuckets(KeyEquals(), std::nullopt);
+}
+
+TEST_F(AppendBucketPruningTest, PreservesCrossScaleDecimalMatch) {
+    rowkey_type_ = arrow::decimal128(10, 2);
+    CheckMatchingValue(FieldType::DECIMAL, Decimal::FromUnscaledLong(12, 10, 1),
+                       Decimal::FromUnscaledLong(120, 10, 2));
+}
+
+TEST_F(AppendBucketPruningTest, PreservesDifferentNaNPayloadMatch) {
+    rowkey_type_ = arrow::float64();
+    uint64_t query_bits = 0x7ff8000000000000ULL;
+    uint64_t stored_bits = 0x7ff8000000000001ULL;
+    double query_value;
+    double stored_value;
+    std::memcpy(&query_value, &query_bits, sizeof(query_value));
+    std::memcpy(&stored_value, &stored_bits, sizeof(stored_value));
+    CheckMatchingValue(FieldType::DOUBLE, query_value, stored_value);
 }
 
 TEST(AppendOnlyFileStoreScanTest, TestReconstructPredicateWithNonCastedFields) {

@@ -19,6 +19,7 @@
 #include "paimon/core/bucket/bucket_select_converter.h"
 
 #include <cassert>
+#include <cmath>
 #include <set>
 #include <string>
 #include <utility>
@@ -34,6 +35,7 @@
 #include "paimon/core/bucket/default_bucket_function.h"
 #include "paimon/core/bucket/hive_bucket_function.h"
 #include "paimon/core/bucket/mod_bucket_function.h"
+#include "paimon/core/casting/decimal_to_decimal_cast_executor.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/leaf_predicate.h"
@@ -79,7 +81,21 @@ Result<std::optional<int32_t>> BucketSelectConverter::Convert(
 
     for (int32_t i = 0; i < num_fields; i++) {
         const auto& field_name = bucket_key_names[i];
-        const auto& literal = literals_map.at(field_name);
+        Literal literal = literals_map.at(field_name);
+        // Equal NaNs can have different stored bit patterns and therefore different buckets.
+        if ((bucket_key_types[i] == FieldType::FLOAT && std::isnan(literal.GetValue<float>())) ||
+            (bucket_key_types[i] == FieldType::DOUBLE && std::isnan(literal.GetValue<double>()))) {
+            return std::optional<int32_t>(std::nullopt);
+        }
+        if (bucket_key_types[i] == FieldType::DECIMAL) {
+            PAIMON_ASSIGN_OR_RAISE(Literal scaled, DecimalToDecimalCastExecutor().Cast(
+                                                       literal, bucket_key_arrow_types[i]));
+            // Hash the field's representation only when rescaling preserves the exact value.
+            if (scaled.IsNull() || !(scaled.GetValue<Decimal>() == literal.GetValue<Decimal>())) {
+                return std::optional<int32_t>(std::nullopt);
+            }
+            literal = std::move(scaled);
+        }
         PAIMON_RETURN_NOT_OK(
             WriteLiteralToRow(i, literal, bucket_key_types[i], bucket_key_arrow_types[i], &writer));
     }
