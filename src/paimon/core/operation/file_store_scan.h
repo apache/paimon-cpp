@@ -34,8 +34,10 @@
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/utils/concurrent_hash_map.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/linked_hash_map.h"
+#include "paimon/core/bucket/bucket_select_converter.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
@@ -241,14 +243,6 @@ class FileStoreScan {
                              const std::shared_ptr<arrow::Schema>& arrow_schema,
                              const std::shared_ptr<ScanFilter>& scan_filters);
 
-    /// Set the bucket filter derived from predicate analysis (e.g., BucketSelectConverter).
-    /// Only sets the filter if no explicit bucket filter was already set.
-    void SetBucketFilterIfAbsent(int32_t bucket) {
-        if (!bucket_filter_.has_value()) {
-            bucket_filter_ = bucket;
-        }
-    }
-
     // When schema evolves, predicates might contain fields requiring casting. To avoid false
     // negatives when filtering by stats, we exclude those fields from predicate.
     static Result<std::shared_ptr<Predicate>> ReconstructPredicateWithNonCastedFields(
@@ -300,6 +294,7 @@ class FileStoreScan {
                                 std::vector<ManifestEntry>* entries) const;
 
     Result<bool> FilterManifestEntry(const ManifestEntry& entry) const;
+    Result<bool> HasCompatibleBucketKeys(int64_t data_schema_id) const;
 
  protected:
     std::shared_ptr<MemoryPool> pool_;
@@ -321,6 +316,8 @@ class FileStoreScan {
     std::shared_ptr<PredicateFilter> partition_filter_;
     std::shared_ptr<Executor> executor_;
     std::optional<int32_t> bucket_filter_;
+    std::unique_ptr<BucketSelector> bucket_selector_;
+    mutable ConcurrentHashMap<int64_t, bool> bucket_schema_compatibility_;
     std::function<bool(int32_t)> level_filter_;
     std::optional<Snapshot> specified_snapshot_;
     std::shared_ptr<Metrics> metrics_;

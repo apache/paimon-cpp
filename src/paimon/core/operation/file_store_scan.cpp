@@ -146,16 +146,20 @@ Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() cons
         ReadManifests(&snapshot, &all_manifest_file_metas, &filtered_manifest_file_metas));
 
     std::vector<ManifestEntry> manifest_entries;
+    std::optional<int32_t> cache_bucket = bucket_filter_;
+    if (!cache_bucket && bucket_selector_) {
+        cache_bucket = bucket_selector_->Bucket(core_options_.GetBucket());
+    }
     const bool use_snapshot_live_manifest_cache =
         snapshot.has_value() && scan_mode_ == ScanMode::ALL &&
         core_options_.GetScanManifestEntryCacheMaxSnapshots() > 0 &&
         core_options_.GetCache() != nullptr && !table_path_.empty() &&
-        !row_range_index_.has_value() && bucket_filter_.has_value();
+        !row_range_index_.has_value() && cache_bucket.has_value();
     uint64_t lazy_decode_scanned_rows = 0;
     bool snapshot_cache_hit = false;
     if (use_snapshot_live_manifest_cache) {
         PAIMON_RETURN_NOT_OK(ReadManifestEntriesWithCache(snapshot.value(), all_manifest_file_metas,
-                                                          bucket_filter_.value(), &manifest_entries,
+                                                          cache_bucket.value(), &manifest_entries,
                                                           &snapshot_cache_hit));
         lazy_decode_scanned_rows = manifest_entries.size();
         std::vector<ManifestEntry> filtered_entries;
@@ -325,7 +329,8 @@ Status FileStoreScan::ReadManifestEntries(const std::vector<ManifestFileMeta>& m
 }
 
 // Cache merged live manifest entries for one bucket before applying scan filters. Each cache value
-// keeps a bounded number of snapshot results for the same table/branch/bucket. Exact snapshot hits
+// keeps bounded snapshot results for a table/branch/bucket. Inferred entries also include other
+// bucket counts and schema IDs, with the current count and schema in the cache key. Exact hits
 // can be returned directly; cache misses rebuild the target snapshot bucket from the target
 // snapshot's data manifests.
 Status FileStoreScan::ReadManifestEntriesWithCache(
@@ -351,7 +356,7 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
     // cache.
     std::vector<ManifestFileMeta> bucket_manifest_metas;
     for (const auto& meta : all_manifest_metas) {
-        if (MayContainBucket(meta, bucket)) {
+        if ((!bucket_filter_ && bucket_selector_) || MayContainBucket(meta, bucket)) {
             bucket_manifest_metas.push_back(meta);
         }
     }
@@ -369,6 +374,11 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
 }
 
 std::shared_ptr<CacheKey> FileStoreScan::SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const {
+    if (!bucket_filter_ && bucket_selector_) {
+        return CacheKey::ForSnapshotLiveManifestEntries(
+            table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket,
+            core_options_.GetBucket(), table_schema_->Id());
+    }
     return CacheKey::ForSnapshotLiveManifestEntries(
         table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket);
 }
@@ -409,7 +419,9 @@ Status FileStoreScan::StoreSnapshotLiveManifestEntries(
 Status FileStoreScan::ReadAndMergeBucketFileEntries(
     const std::vector<ManifestFileMeta>& manifest_metas, int32_t bucket,
     std::vector<ManifestEntry>* merged_entries) const {
-    if (core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+    const bool inferred_bucket = !bucket_filter_ && bucket_selector_ != nullptr;
+    // Explicit-bucket lazy decoding cannot retain entries with a different layout.
+    if (!inferred_bucket && core_options_.ScanManifestEntryLazyDecodeEnabled()) {
         std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
         futures.reserve(manifest_metas.size());
         for (const auto& meta : manifest_metas) {
@@ -441,7 +453,9 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     PAIMON_RETURN_NOT_OK(ReadFileEntries(manifest_metas, &entries, /*apply_scan_filter=*/false));
     unmerged_entries.reserve(entries.size());
     for (auto& entry : entries) {
-        if (entry.Bucket() == bucket) {
+        if (entry.Bucket() == bucket ||
+            (inferred_bucket && (entry.TotalBuckets() != core_options_.GetBucket() ||
+                                 entry.File()->schema_id != table_schema_->Id()))) {
             unmerged_entries.emplace_back(std::move(entry));
         }
     }
@@ -557,10 +571,41 @@ Result<bool> FileStoreScan::FilterManifestEntry(const ManifestEntry& entry) cons
     if (bucket_filter_ != std::nullopt && entry.Bucket() != bucket_filter_.value()) {
         return false;
     }
+    if (bucket_selector_ && entry.TotalBuckets() > 0) {
+        PAIMON_ASSIGN_OR_RAISE(bool compatible, HasCompatibleBucketKeys(entry.File()->schema_id));
+        if (compatible && entry.Bucket() != bucket_selector_->Bucket(entry.TotalBuckets())) {
+            return false;
+        }
+    }
     if (level_filter_ != nullptr && !level_filter_(entry.Level())) {
         return false;
     }
     return FilterByStats(entry);
+}
+
+Result<bool> FileStoreScan::HasCompatibleBucketKeys(int64_t data_schema_id) const {
+    if (data_schema_id == table_schema_->Id()) {
+        return true;
+    }
+    auto cached = bucket_schema_compatibility_.Find(data_schema_id);
+    if (cached) {
+        return cached.value();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> data_schema,
+                           schema_manager_->ReadSchema(data_schema_id));
+    const auto& current_keys = table_schema_->BucketKeys();
+    const auto& data_keys = data_schema->BucketKeys();
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions data_options, CoreOptions::FromMap(data_schema->Options()));
+    bool compatible = current_keys.size() == data_keys.size() &&
+                      core_options_.GetBucketFunctionType() == data_options.GetBucketFunctionType();
+    for (size_t i = 0; compatible && i < current_keys.size(); ++i) {
+        PAIMON_ASSIGN_OR_RAISE(DataField current_field, table_schema_->GetField(current_keys[i]));
+        PAIMON_ASSIGN_OR_RAISE(DataField data_field, data_schema->GetField(data_keys[i]));
+        compatible = current_field.Id() == data_field.Id() &&
+                     current_field.Type()->Equals(data_field.Type());
+    }
+    bucket_schema_compatibility_.Insert(data_schema_id, compatible);
+    return compatible;
 }
 
 Status FileStoreScan::SplitAndSetFilter(const std::vector<std::string>& partition_keys,
@@ -602,6 +647,19 @@ Status FileStoreScan::SplitAndSetFilter(const std::vector<std::string>& partitio
         }
     }
     bucket_filter_ = scan_filters->GetBucketFilter();
+    const auto& bucket_keys = table_schema_->BucketKeys();
+    if (predicates_ && !bucket_filter_ && core_options_.GetBucket() > 0 && !bucket_keys.empty()) {
+        std::vector<std::shared_ptr<arrow::DataType>> bucket_key_types;
+        bucket_key_types.reserve(bucket_keys.size());
+        for (const auto& key : bucket_keys) {
+            PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema_->GetField(key));
+            bucket_key_types.push_back(field.Type());
+        }
+        PAIMON_ASSIGN_OR_RAISE(bucket_selector_,
+                               BucketSelectConverter::ConvertToSelector(
+                                   predicates_, bucket_keys, bucket_key_types,
+                                   core_options_.GetBucketFunctionType(), pool_.get()));
+    }
     if (!scan_filters->GetPartitionFilters().empty()) {
         PAIMON_ASSIGN_OR_RAISE(
             partition_filter_,

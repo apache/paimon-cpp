@@ -21,6 +21,32 @@ Scan
 
 .. _cpp-api-scan:
 
+Bucket pruning
+==============
+
+For fixed-bucket append and primary-key tables, an equality predicate on every bucket key lets
+the scan derive the target bucket using the table's bucket function. Other buckets
+are excluded from the scan plan without requiring an explicit bucket ID from the
+caller. An explicit bucket filter takes precedence. Queries that do not constrain
+all bucket keys with equality, and bucket-unaware tables, keep the existing scan
+behavior. Both scan types use a shared selector that computes the bucket with
+each manifest entry's total bucket count, so rescaled files are not filtered using
+the current table's bucket count. Historical schemas remain eligible when their ordered bucket-key field IDs,
+types and bucket function match. Changes to unrelated columns do not disable
+pruning. Incompatible bucket schemas and nonpositive total bucket counts retain
+the existing filtering behavior.
+
+This inference prunes data files at the manifest-entry level. Manifest min/max-bucket
+skipping requires an explicit bucket filter. When the snapshot live-manifest-entry
+cache is enabled, inferred scans cache candidates by bucket, current bucket count
+and current schema ID. Files with other bucket counts or schema IDs remain in the
+cached candidates and are filtered after lookup. This permits cache reuse without
+discarding files that require a different bucket calculation or schema fallback.
+
+Decimal literals are rescaled to the bucket field's type only when the conversion
+is exact. NaN literals and decimals that cannot be represented exactly disable
+inferred bucket pruning.
+
 Interface
 =========
 

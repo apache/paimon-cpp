@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/common/utils/concurrent_hash_map.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
@@ -69,7 +70,7 @@ class SchemaManager {
     std::shared_ptr<FileSystem> file_system_;
     std::string table_root_;
     const std::string branch_;
-    mutable std::map<int64_t, std::shared_ptr<TableSchema>> schema_cache_;
+    mutable ConcurrentHashMap<int64_t, std::shared_ptr<TableSchema>> schema_cache_;
 };
 
 }  // namespace paimon

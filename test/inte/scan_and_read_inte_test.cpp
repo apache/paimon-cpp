@@ -29,8 +29,12 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
+#include "fmt/format.h"
+#include "fmt/ranges.h"
 #include "gtest/gtest.h"
+#include "paimon/bucket/bucket_id_calculator.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
@@ -56,6 +60,7 @@
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/plan.h"
+#include "paimon/table/source/scan_metrics.h"
 #include "paimon/table/source/startup_mode.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
@@ -419,6 +424,136 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot3) {
             .ValueOrDie());
     ASSERT_TRUE(expected);
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
+TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
+    for (const auto& key_type : {arrow::utf8(), arrow::binary()}) {
+        SCOPED_TRACE(key_type->ToString());
+        auto test_dir = UniqueTestDirectory::Create("local");
+        arrow::FieldVector fields = {arrow::field("rowkey", key_type),
+                                     arrow::field("value", arrow::int32())};
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, FileFormat()},
+                                                      {Options::FILE_SYSTEM, "local"},
+                                                      {Options::BUCKET, "4"},
+                                                      {Options::BUCKET_KEY, "rowkey"}};
+        ASSERT_OK_AND_ASSIGN(
+            auto helper, TestHelper::Create(test_dir->Str(), arrow::schema(fields), {}, {}, options,
+                                            /*is_streaming_mode=*/false));
+        std::string table_path = test_dir->Str() + "/foo.db/bar";
+        // Route writes through the public bucket calculator, as a KV client does.
+        constexpr int32_t kNumKeys = 64;
+        constexpr int32_t kNumBuckets = 4;
+        std::vector<std::string> keys;
+        for (int32_t i = 0; i < kNumKeys; ++i) {
+            keys.push_back(fmt::format(R"(["key{:03}"])", i));
+        }
+        auto key_array = arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::struct_({fields[0]}), fmt::format("[{}]", fmt::join(keys, ",")))
+                             .ValueOrDie();
+        ::ArrowArray c_keys;
+        ::ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportArray(*key_array, &c_keys, &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(auto calculator,
+                             BucketIdCalculator::Create(false, kNumBuckets, GetDefaultPool()));
+        std::vector<int32_t> bucket_ids(kNumKeys);
+        ASSERT_OK(calculator->CalculateBucketIds(&c_keys, &c_schema, bucket_ids.data()));
+        std::vector<std::vector<std::string>> rows(kNumBuckets);
+        for (int32_t i = 0; i < kNumKeys; ++i) {
+            rows[bucket_ids[i]].push_back(fmt::format(R"(["key{:03}", {}])", i, i));
+        }
+        std::vector<std::unique_ptr<RecordBatch>> batches;
+        for (int32_t bucket = 0; bucket < kNumBuckets; ++bucket) {
+            ASSERT_FALSE(rows[bucket].empty());
+            ASSERT_OK_AND_ASSIGN(
+                auto batch, TestHelper::MakeRecordBatch(
+                                arrow::struct_(fields),
+                                fmt::format("[{}]", fmt::join(rows[bucket], ",")), {}, bucket, {}));
+            batches.push_back(std::move(batch));
+        }
+        ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
+
+        FieldType field_type =
+            key_type->id() == arrow::Type::STRING ? FieldType::STRING : FieldType::BINARY;
+        auto predicate =
+            PredicateBuilder::Equal(0, "rowkey", field_type, Literal(field_type, "key032", 6));
+        // All buckets have overlapping stats for this key. An explicit filter bypasses
+        // inference, proving that ordinary statistics cannot account for the pruning.
+        for (int32_t bucket = 0; bucket < kNumBuckets; ++bucket) {
+            ScanContextBuilder builder(table_path);
+            builder.SetPredicate(predicate).SetBucketFilter(bucket);
+            ASSERT_OK_AND_ASSIGN(auto context, FinishScanContext(builder));
+            ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(context)));
+            ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+
+            ASSERT_FALSE(plan->Splits().empty());
+        }
+        int32_t other_index = -1;
+        for (int32_t i = 0; i < kNumKeys; ++i) {
+            if (bucket_ids[i] % 2 == bucket_ids[32] % 2 && bucket_ids[i] != bucket_ids[32]) {
+                other_index = i;
+                break;
+            }
+        }
+        ASSERT_GE(other_index, 0);
+        // These keys share a current two-bucket selection but need different historical buckets.
+        for (int32_t lookup_index : {32, other_index}) {
+            // The data was written with four buckets. Read it with rescaled table options too.
+            for (const std::string& current_bucket_count : {"2", "4", "8", "17"}) {
+                SCOPED_TRACE(current_bucket_count);
+                const std::string lookup_key = fmt::format("key{:03}", lookup_index);
+                auto lookup_predicate = PredicateBuilder::Equal(
+                    0, "rowkey", field_type,
+                    Literal(field_type, lookup_key.data(), lookup_key.size()));
+                ScanContextBuilder scan_builder(table_path);
+                scan_builder.SetPredicate(lookup_predicate)
+                    .AddOption(Options::BUCKET, current_bucket_count);
+                ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_builder));
+                ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+                ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+                if (EnableSnapshotLiveManifestCache()) {
+                    ASSERT_OK_AND_ASSIGN(
+                        uint64_t enabled,
+                        scan->GetMetrics()->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
+                    ASSERT_EQ(enabled, 1);
+                    ScanContextBuilder cached_builder(table_path);
+                    cached_builder.SetPredicate(lookup_predicate)
+                        .AddOption(Options::BUCKET, current_bucket_count);
+                    ASSERT_OK_AND_ASSIGN(auto cached_context, FinishScanContext(cached_builder));
+                    ASSERT_OK_AND_ASSIGN(auto cached_scan,
+                                         TableScan::Create(std::move(cached_context)));
+                    ASSERT_OK_AND_ASSIGN(plan, cached_scan->CreatePlan());
+                    ASSERT_OK_AND_ASSIGN(uint64_t hit, cached_scan->GetMetrics()->GetCounter(
+                                                           ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+                    ASSERT_EQ(hit, 1);
+                }
+
+                ASSERT_FALSE(plan->Splits().empty());
+                for (const auto& split : plan->Splits()) {
+                    auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+                    ASSERT_TRUE(data_split);
+                    ASSERT_EQ(data_split->Bucket(), bucket_ids[lookup_index]);
+                }
+                ReadContextBuilder read_builder(table_path);
+                AddReadOptionsForPrefetch(&read_builder);
+                read_builder.SetPredicate(lookup_predicate).EnablePredicateFilter(true);
+                ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+                ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+                ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+                ASSERT_OK_AND_ASSIGN(auto result,
+                                     ReadResultCollector::CollectResult(std::move(reader)));
+                auto expected_fields = fields;
+                expected_fields.insert(expected_fields.begin(),
+                                       arrow::field("_VALUE_KIND", arrow::int8()));
+                auto expected_array =
+                    arrow::ipc::internal::json::ArrayFromJSON(
+                        arrow::struct_(expected_fields),
+                        fmt::format(R"([[0, "{}", {}]])", lookup_key, lookup_index))
+                        .ValueOrDie();
+                auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+                ASSERT_TRUE(expected->Equals(result)) << result->ToString();
+            }
+        }
+    }
 }
 
 TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
@@ -3025,46 +3160,68 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
     auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT,
                                              Literal(static_cast<int32_t>(0)));
 
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
-    scan_context_builder.SetPartitionFilter({{{"f1", "10"}}});
-    scan_context_builder.SetPredicate(predicate);
-    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    // Historical files use two buckets even when the current option has changed.
+    for (const std::string& current_bucket_count : {"2", "4", "8", "17"}) {
+        SCOPED_TRACE(current_bucket_count);
+        ScanContextBuilder scan_context_builder(table_path);
+        scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
+        scan_context_builder.AddOption(Options::BUCKET, current_bucket_count);
+        scan_context_builder.SetPartitionFilter({{{"f1", "10"}}});
+        scan_context_builder.SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
 
-    ReadContextBuilder read_context_builder(table_path);
-    AddReadOptionsForPrefetch(&read_context_builder);
-    read_context_builder.SetPredicate(predicate);
-    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ReadContextBuilder read_context_builder(table_path);
+        AddReadOptionsForPrefetch(&read_context_builder);
+        read_context_builder.SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
-    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
-    ASSERT_EQ(result_plan->SnapshotId().value(), 6);
+        ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+        if (EnableSnapshotLiveManifestCache()) {
+            ASSERT_OK_AND_ASSIGN(uint64_t enabled, table_scan->GetMetrics()->GetCounter(
+                                                       ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
+            ASSERT_EQ(enabled, 1);
+            ScanContextBuilder cached_builder(table_path);
+            cached_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6")
+                .AddOption(Options::BUCKET, current_bucket_count)
+                .SetPartitionFilter({{{"f1", "10"}}})
+                .SetPredicate(predicate);
+            ASSERT_OK_AND_ASSIGN(auto cached_context, FinishScanContext(cached_builder));
+            ASSERT_OK_AND_ASSIGN(auto cached_scan, TableScan::Create(std::move(cached_context)));
+            ASSERT_OK_AND_ASSIGN(result_plan, cached_scan->CreatePlan());
+            ASSERT_OK_AND_ASSIGN(uint64_t hit, cached_scan->GetMetrics()->GetCounter(
+                                                   ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+            ASSERT_EQ(hit, 1);
+        }
 
-    // Verify all returned splits are from bucket 1 (f2=0 hashes to bucket 1)
-    auto splits = result_plan->Splits();
-    ASSERT_FALSE(splits.empty());
-    for (const auto& split : splits) {
-        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
-        ASSERT_TRUE(data_split);
-        ASSERT_EQ(data_split->Bucket(), 1);
-    }
+        ASSERT_EQ(result_plan->SnapshotId().value(), 6);
 
-    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
-    ASSERT_OK_AND_ASSIGN(auto read_result,
-                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+        // Verify all returned splits are from bucket 1 (f2=0 hashes to bucket 1)
+        auto splits = result_plan->Splits();
+        ASSERT_FALSE(splits.empty());
+        for (const auto& split : splits) {
+            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            ASSERT_TRUE(data_split);
+            ASSERT_EQ(data_split->Bucket(), 1);
+        }
 
-    // Only rows with f2=0 in partition f1=10 should be returned
-    auto expected = std::make_shared<arrow::ChunkedArray>(
-        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
+        ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(auto read_result,
+                             ReadResultCollector::CollectResult(std::move(batch_reader)));
+
+        // Only rows with f2=0 in partition f1=10 should be returned
+        auto expected = std::make_shared<arrow::ChunkedArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
 [0, "Alex", 10, 0, 16.1],
 [0, "Bob", 10, 0, 12.1],
 [0, "David", 10, 0, 17.1],
 [0, "Emily", 10, 0, 13.1]
    ])")
-            .ValueOrDie());
-    ASSERT_TRUE(expected);
-    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+                .ValueOrDie());
+        ASSERT_TRUE(expected);
+        ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+    }
 }
 
 TEST_P(ScanAndReadInteTest, TestReadNullableMapKey) {
