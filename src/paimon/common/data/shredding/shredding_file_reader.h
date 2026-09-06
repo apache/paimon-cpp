@@ -59,6 +59,10 @@ class ShreddingFileReader : public FileBatchReader {
 
     bool SupportPreciseBitmapSelection() const override;
 
+    Status Warmup() override {
+        return reader_->Warmup();
+    }
+
  private:
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<FileBatchReader> reader_;

@@ -103,6 +103,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
 
     Status RefreshReadRanges();
 
+    Status Warmup() override;
+
     inline PrefetchFileBatchReader* GetFirstReader() const {
         return readers_[0].get();
     }
@@ -127,6 +129,9 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
 
     Status CleanUp();
     void Workloop();
+    /// Starts the background prefetch thread if it is not running yet. The first read does this
+    /// itself; Warmup() is the same call made earlier, so the two must not diverge.
+    void EnsureBackgroundThread();
     void SetReadStatus(const Status& status);
     Status GetReadStatus() const;
     Result<bool> IsEofRange(const std::pair<uint64_t, uint64_t>& read_range) const;
