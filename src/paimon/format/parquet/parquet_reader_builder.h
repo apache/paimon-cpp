@@ -89,8 +89,8 @@ class ParquetReaderBuilder : public ReaderBuilder {
                     file_uri = std::move(file_uri_result).value();
                 }
             }
-            auto input_stream = std::make_shared<ParquetInputStream>(
-                path, file_length, arrow_pool_, pool_, cache_, file_uri);
+            auto input_stream = std::make_shared<ParquetInputStream>(path, file_length, arrow_pool_,
+                                                                     pool_, cache_, file_uri);
             auto storage_read_bytes = input_stream->StorageReadBytes();
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<::parquet::FileMetaData> file_metadata,
                                    GetCachedParquetMetadata(input_stream, file_uri, arrow_pool_));

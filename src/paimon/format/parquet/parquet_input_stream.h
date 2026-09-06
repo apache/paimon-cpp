@@ -29,6 +29,7 @@
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/memory/memory_pool.h"
+#include "parquet/metadata.h"
 #include "parquet/page_index.h"
 
 namespace paimon::parquet {
