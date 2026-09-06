@@ -20,6 +20,7 @@
 
 #include <filesystem>
 #include <limits>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/utils/path_util.h"
@@ -137,6 +138,48 @@ TEST(SnapshotManagerTest, TestPathNotExist) {
     ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot,
                          mgr.LatestSnapshotOfUser("b02e4322-9c5f-41e1-a560-c0156fdf7b9c"));
     ASSERT_EQ(snapshot, std::nullopt);
+}
+
+TEST(SnapshotManagerTest, LatestHintAvoidsDirectoryProbeAndStillFindsNewSnapshots) {
+    class TrackingFileSystem : public LocalFileSystem {
+     public:
+        Result<bool> Exists(const std::string& path) const override {
+            exists_paths.push_back(path);
+            return LocalFileSystem::Exists(path);
+        }
+        mutable std::vector<std::string> exists_paths;
+    };
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = std::make_shared<TrackingFileSystem>();
+    SnapshotManager mgr(fs, dir->Str());
+    ASSERT_OK(fs->Mkdirs(mgr.SnapshotDirectory()));
+    ASSERT_OK(fs->WriteFile(mgr.SnapshotPath(1), "{}", true));
+    ASSERT_OK(mgr.CommitLatestHint(1));
+    fs->exists_paths.clear();
+
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 1);
+    ASSERT_EQ(fs->exists_paths, std::vector<std::string>({mgr.SnapshotPath(2)}));
+
+    // A commit can publish its snapshot before updating the hint.
+    ASSERT_OK(fs->WriteFile(mgr.SnapshotPath(2), "{}", true));
+    fs->exists_paths.clear();
+    ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 2);
+    ASSERT_EQ(fs->exists_paths,
+              std::vector<std::string>({mgr.SnapshotPath(2), mgr.SnapshotDirectory()}));
+
+    const std::string hint_path = PathUtil::JoinPath(mgr.SnapshotDirectory(), "LATEST");
+    ASSERT_OK(fs->Delete(hint_path));
+    fs->exists_paths.clear();
+    ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 2);
+    ASSERT_EQ(fs->exists_paths, std::vector<std::string>({mgr.SnapshotDirectory()}));
+
+    ASSERT_OK(fs->WriteFile(hint_path, "invalid", true));
+    ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 2);
 }
 
 TEST(SnapshotManagerTest, TestEarlierOrEqualTimeMillisExactMatch) {
