@@ -91,6 +91,12 @@ class FieldMappingReader : public FileBatchReader {
         return reader_->SupportPreciseBitmapSelection();
     }
 
+    /// This is the outermost wrapper of every data file's reader stack, so swallowing the call here
+    /// would leave the whole stack cold no matter who asked for the warmup.
+    Status Warmup() override {
+        return reader_->Warmup();
+    }
+
  private:
     FieldMappingReader(int32_t field_count, std::unique_ptr<FileBatchReader>&& reader,
                        const BinaryRow& partition, std::unique_ptr<FieldMapping>&& mapping,

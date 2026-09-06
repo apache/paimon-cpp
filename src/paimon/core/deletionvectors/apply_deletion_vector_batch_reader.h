@@ -96,6 +96,10 @@ class ApplyDeletionVectorBatchReader : public FileBatchReader {
         return reader_->SupportPreciseBitmapSelection();
     }
 
+    Status Warmup() override {
+        return reader_->Warmup();
+    }
+
  private:
     Result<RoaringBitmap32> Filter(int32_t batch_size) const {
         RoaringBitmap32 is_valid;

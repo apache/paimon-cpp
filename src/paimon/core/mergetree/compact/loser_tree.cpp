@@ -36,8 +36,22 @@ LoserTree::LoserTree(std::vector<std::unique_ptr<KeyValueRecordReader>>&& reader
     }
 }
 
+Status LoserTree::WarmupLeaves() {
+    // Warmed in the same order the loop below consumes them, so the leaf it blocks on first is the
+    // one whose read was started first.
+    for (int32_t i = size_ - 1; i >= 0; i--) {
+        PAIMON_RETURN_NOT_OK(leaves_[i].reader->Warmup());
+    }
+    return Status::OK();
+}
+
 Status LoserTree::InitializeIfNeeded() {
     if (!initialized_) {
+        // Every leaf's first read below blocks on its own file, and the leaves of a section are
+        // independent sorted runs, so without warming them the section pays those read latencies
+        // one after another. Warming starts them together, and the loop then collects reads that
+        // are already in flight.
+        PAIMON_RETURN_NOT_OK(WarmupLeaves());
         std::fill(tree_.begin(), tree_.end(), -1);
         for (int32_t i = size_ - 1; i >= 0; i--) {
             PAIMON_RETURN_NOT_OK(leaves_[i].AdvanceIfAvailable());

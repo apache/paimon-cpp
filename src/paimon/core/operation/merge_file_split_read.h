@@ -170,11 +170,6 @@ class MergeFileSplitRead : public AbstractSplitRead {
         const std::shared_ptr<DataFilePathFactory>& data_file_path_factory, bool drop_delete,
         const std::shared_ptr<MergeFunctionWrapper<KeyValue>>& merge_function_wrapper);
 
-    Result<std::unique_ptr<KeyValueRecordReader>> CreateReaderForRun(
-        const BinaryRow& partition, const SortedRun& sorted_run, DeletionVector::Factory dv_factory,
-        const std::shared_ptr<Predicate>& predicate,
-        const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const;
-
     Result<std::unique_ptr<SortMergeReader>> CreateSortMergeReader(
         std::vector<std::unique_ptr<KeyValueRecordReader>>&& record_readers);
 

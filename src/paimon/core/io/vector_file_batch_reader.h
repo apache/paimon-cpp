@@ -74,6 +74,10 @@ class VectorFileBatchReader : public FileBatchReader {
         return reader_->SupportPreciseBitmapSelection();
     }
 
+    Status Warmup() override {
+        return reader_->Warmup();
+    }
+
  private:
     Result<ReadBatch> ConvertBatch(ReadBatch&& batch) const;
 

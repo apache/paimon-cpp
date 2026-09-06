@@ -63,6 +63,14 @@ class PAIMON_EXPORT FileBatchReader : public BatchReader {
 
     /// Get whether or not support read precisely while bitmap pushed down.
     virtual bool SupportPreciseBitmapSelection() const = 0;
+
+    /// Starts whatever background work the reader would otherwise start on its
+    /// first read, so a caller that knows this reader is next can pay that
+    /// startup while still consuming the previous one. Optional: a reader with
+    /// nothing to start, or one not yet ready to start it, returns OK unchanged.
+    virtual Status Warmup() {
+        return Status::OK();
+    }
 };
 
 }  // namespace paimon

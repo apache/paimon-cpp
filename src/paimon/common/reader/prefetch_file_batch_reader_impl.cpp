@@ -722,14 +722,29 @@ Status PrefetchFileBatchReaderImpl::DoReadBatch(size_t reader_idx) {
     return HandleReadResult(reader_idx, read_range, std::move(read_batch_with_bitmap));
 }
 
-Result<BatchReader::ReadBatchWithBitmap> PrefetchFileBatchReaderImpl::NextBatchWithBitmap() {
-    if (!read_ranges_freshed_) {
-        return Status::Invalid("prefetch reader read ranges are not initialized");
-    }
+void PrefetchFileBatchReaderImpl::EnsureBackgroundThread() {
     if (!background_thread_) {
         background_thread_ =
             std::make_unique<std::thread>(&PrefetchFileBatchReaderImpl::Workloop, this);
     }
+}
+
+Status PrefetchFileBatchReaderImpl::Warmup() {
+    // Not an error: a reader whose ranges are not set yet, or one already shut down, has nothing
+    // to warm up. NextBatchWithBitmap still rejects the former, so a genuinely unprepared read is
+    // not hidden by returning OK here.
+    if (!read_ranges_freshed_ || is_shutdown_) {
+        return Status::OK();
+    }
+    EnsureBackgroundThread();
+    return Status::OK();
+}
+
+Result<BatchReader::ReadBatchWithBitmap> PrefetchFileBatchReaderImpl::NextBatchWithBitmap() {
+    if (!read_ranges_freshed_) {
+        return Status::Invalid("prefetch reader read ranges are not initialized");
+    }
+    EnsureBackgroundThread();
 
     const auto wait_start = std::chrono::steady_clock::now();
     while (true) {
