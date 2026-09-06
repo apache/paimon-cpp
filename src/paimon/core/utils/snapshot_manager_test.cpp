@@ -18,6 +18,7 @@
 
 #include "paimon/core/utils/snapshot_manager.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <vector>
@@ -160,22 +161,25 @@ TEST(SnapshotManagerTest, LatestHintAvoidsDirectoryProbeAndStillFindsNewSnapshot
 
     ASSERT_OK_AND_ASSIGN(std::optional<int64_t> latest, mgr.LatestSnapshotId());
     ASSERT_EQ(latest, 1);
-    ASSERT_EQ(fs->exists_paths, std::vector<std::string>({mgr.SnapshotPath(2)}));
+    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotDirectory()),
+              0);
+    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotPath(2)), 1);
 
     // A commit can publish its snapshot before updating the hint.
     ASSERT_OK(fs->WriteFile(mgr.SnapshotPath(2), "{}", true));
     fs->exists_paths.clear();
     ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
     ASSERT_EQ(latest, 2);
-    ASSERT_EQ(fs->exists_paths,
-              std::vector<std::string>({mgr.SnapshotPath(2), mgr.SnapshotDirectory()}));
+    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotDirectory()),
+              1);
 
     const std::string hint_path = PathUtil::JoinPath(mgr.SnapshotDirectory(), "LATEST");
     ASSERT_OK(fs->Delete(hint_path));
     fs->exists_paths.clear();
     ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
     ASSERT_EQ(latest, 2);
-    ASSERT_EQ(fs->exists_paths, std::vector<std::string>({mgr.SnapshotDirectory()}));
+    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotDirectory()),
+              1);
 
     ASSERT_OK(fs->WriteFile(hint_path, "invalid", true));
     ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());

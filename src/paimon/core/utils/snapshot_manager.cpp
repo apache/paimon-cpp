@@ -151,12 +151,8 @@ Result<std::optional<int64_t>> SnapshotManager::FindLatest(
             return snapshot_id;
         }
     }
-    // Reading a valid hint already establishes that its directory exists. Only
-    // check the directory when falling back to listing snapshots.
-    PAIMON_ASSIGN_OR_RAISE(bool is_exist, fs_->Exists(dir));
-    if (!is_exist) {
-        return std::optional<int64_t>();
-    }
+    // A valid hint needs no parent-directory probe. The listing fallback checks
+    // directory existence itself, including tables without any snapshots yet.
     return FindByListFiles([](int64_t lhs, int64_t rhs) -> int64_t { return std::max(lhs, rhs); },
                            dir, prefix);
 }
