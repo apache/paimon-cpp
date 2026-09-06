@@ -87,18 +87,20 @@ inline Status ToPaimonStatus(const arrow::Status& status) {
     }
 }
 
+// The conversion is spelled with its full name because these macros are also used outside of
+// namespace paimon, where an unqualified name would not be found.
 #define PAIMON_RETURN_NOT_OK_FROM_ARROW(ARROW_STATUS) \
     do {                                              \
         arrow::Status __s = (ARROW_STATUS);           \
         if (PAIMON_UNLIKELY(!(__s).ok())) {           \
-            return ToPaimonStatus(__s);               \
+            return ::paimon::ToPaimonStatus(__s);     \
         }                                             \
     } while (false)
 
-#define PAIMON_ASSIGN_OR_RAISE_IMPL_FROM_ARROW(result_name, lhs, rexpr)            \
-    auto&& result_name = (rexpr);                                                  \
-    PAIMON_RETURN_IF_(!(result_name).ok(), ToPaimonStatus((result_name).status()), \
-                      PAIMON_STRINGIFY(rexpr));                                    \
+#define PAIMON_ASSIGN_OR_RAISE_IMPL_FROM_ARROW(result_name, lhs, rexpr)                      \
+    auto&& result_name = (rexpr);                                                            \
+    PAIMON_RETURN_IF_(!(result_name).ok(), ::paimon::ToPaimonStatus((result_name).status()), \
+                      PAIMON_STRINGIFY(rexpr));                                              \
     lhs = std::move(result_name).ValueUnsafe()
 
 #define PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(lhs, rexpr) \
