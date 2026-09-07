@@ -81,6 +81,22 @@ class PAIMON_EXPORT BatchReader {
     /// bitmap. Noted that the returned bitmap has at least one valid row id.
     virtual Result<ReadBatchWithBitmap> NextBatchWithBitmap();
 
+    /// Starts whatever background work this reader would otherwise start on its first read, so a
+    /// caller that knows this reader is next can pay that startup while still consuming the
+    /// previous one.
+    ///
+    /// This is an optional hint and never changes what the reader returns: ordering, filtering and
+    /// metrics are the same with or without it. A reader with nothing to start, or one that is not
+    /// yet ready to start it, returns OK unchanged, so an OK result does not mean work was
+    /// started. Calling it before the reader is configured (for example before `SetReadSchema()` on
+    /// a file reader), or after `Close()`, is such a no-op.
+    /// @warning The call starts background work owned by this reader, so it must be made from the
+    /// same thread that reads this reader, and not concurrently with any other call on it.
+    /// @return The status of the operation.
+    virtual Status Warmup() {
+        return Status::OK();
+    }
+
     /// Retrieves the reader's metrics.
     /// Note that calling this method frequently may incur significant performance overhead.
     /// @return A shared pointer to the `Metrics` object.

@@ -737,10 +737,11 @@ void PrefetchFileBatchReaderImpl::EnsureBackgroundThread() {
 }
 
 Status PrefetchFileBatchReaderImpl::Warmup() {
-    // Not an error: a reader whose ranges are not set yet, or one already shut down, has nothing
-    // to warm up. NextBatchWithBitmap still rejects the former, so a genuinely unprepared read is
-    // not hidden by returning OK here.
-    if (!read_ranges_freshed_ || is_shutdown_) {
+    // Not an error: ranges that are not set mean the reader is either not configured yet or already
+    // cleaned up, and CleanUp() leaves no background thread behind, so there is nothing to warm up
+    // in either state. NextBatchWithBitmap still rejects the former, so a genuinely unprepared read
+    // is not hidden by returning OK here.
+    if (!read_ranges_freshed_) {
         return Status::OK();
     }
     EnsureBackgroundThread();
