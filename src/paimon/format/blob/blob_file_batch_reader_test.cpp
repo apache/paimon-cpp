@@ -740,7 +740,7 @@ TEST_F(BlobFileBatchReaderTest, SetReadSchemaWithInvalidInputs) {
                                                      GetArrowPool(pool_)));
         ASSERT_NOK_WITH_MSG(reader->SetReadSchema(&c_schema, /*predicate=*/nullptr,
                                                   /*selection_bitmap=*/std::nullopt),
-                            "field my_blob_field: large_binary is not BLOB");
+                            "field my_blob_field: large_binary must be BLOB or MAP<..., BLOB>");
     }
     {
         auto schema = arrow::schema({BlobUtils::ToArrowField("my_blob_field", false)});

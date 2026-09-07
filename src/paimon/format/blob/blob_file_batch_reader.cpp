@@ -259,7 +259,8 @@ Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     }
     std::shared_ptr<arrow::Field> read_field = arrow_schema->field(0);
     if (!BlobUtils::IsBlobField(read_field) && !BlobUtils::IsMapBlobField(read_field)) {
-        return Status::Invalid(fmt::format("field {} is not BLOB", read_field->ToString()));
+        return Status::Invalid(
+            fmt::format("field {} must be BLOB or MAP<..., BLOB>", read_field->ToString()));
     }
     if (BlobUtils::IsMapBlobField(read_field)) {
         const auto& map_type = static_cast<const arrow::MapType&>(*read_field->type());
