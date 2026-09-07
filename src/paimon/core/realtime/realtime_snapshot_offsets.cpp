@@ -64,7 +64,7 @@ Result<int64_t> RealtimeSnapshotOffsets::ReadOffset(
     }
     PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap offsets,
                            ReadAll(table_path, branch, snapshot_id, options_map, file_system));
-    RealtimeOffsetMap::const_iterator iter = offsets.find(partition_bucket);
+    auto iter = offsets.find(partition_bucket);
     return iter == offsets.end() ? -1 : iter->second;
 }
 
