@@ -46,7 +46,7 @@ class ConcatKeyValueRecordReader : public KeyValueRecordReader {
             // consumed, instead of serially after its EOF. The files here are read strictly one
             // after another, and a filtered read of a keyed table yields about one batch per file,
             // so without this every file costs a full round trip nobody overlaps with.
-            PAIMON_RETURN_NOT_OK(WarmupFrom(current_));
+            WarmupRange(current_, 1 + kWarmupLookahead);
             auto& current_reader = readers_[current_];
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<KeyValueRecordReader::Iterator> iterator,
                                    current_reader->NextBatch());
@@ -71,10 +71,13 @@ class ConcatKeyValueRecordReader : public KeyValueRecordReader {
         return MetricsImpl::CollectReadMetrics(readers_);
     }
 
-    /// Forwards to the children a read would touch next, so a Concat nested in another one is
-    /// warmed through instead of swallowing the call.
-    Status Warmup() override {
-        return WarmupFrom(current_);
+    /// Forwards to the child a read would touch next, so a Concat nested in another one is warmed
+    /// through instead of swallowing the call. Only that one child, without the lookahead: the
+    /// caller warming this reader is not consuming it yet, and the lookahead is started by the
+    /// first read anyway, so a section's runs do not each hold two warm files before the merge has
+    /// consumed anything.
+    void Warmup() override {
+        WarmupRange(current_, /*count=*/1);
     }
 
  private:
@@ -83,15 +86,14 @@ class ConcatKeyValueRecordReader : public KeyValueRecordReader {
     /// what a strictly sequential consumer can actually use.
     static constexpr size_t kWarmupLookahead = 1;
 
-    /// Warms up the reader at \p idx and the files after it that a read would reach next.
-    /// Idempotent, so calling it on every batch costs one virtual call plus one pointer test per
-    /// already-warm reader.
-    Status WarmupFrom(size_t idx) {
-        const size_t end = std::min(idx + 1 + kWarmupLookahead, readers_.size());
+    /// Warms up \p count readers starting at \p idx, stopping at the end of the list. Idempotent,
+    /// so calling it on every batch costs one virtual call plus one pointer test per already-warm
+    /// reader.
+    void WarmupRange(size_t idx, size_t count) {
+        const size_t end = std::min(idx + count, readers_.size());
         for (size_t i = idx; i < end; i++) {
-            PAIMON_RETURN_NOT_OK(readers_[i]->Warmup());
+            readers_[i]->Warmup();
         }
-        return Status::OK();
     }
 
     // KeyValue rows may outlive the active child and still reference buffers allocated by it.

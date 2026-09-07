@@ -59,8 +59,8 @@ class ShreddingFileReader : public FileBatchReader {
 
     bool SupportPreciseBitmapSelection() const override;
 
-    Status Warmup() override {
-        return reader_->Warmup();
+    void Warmup() override {
+        reader_->Warmup();
     }
 
  private:

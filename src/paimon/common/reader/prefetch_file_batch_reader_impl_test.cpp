@@ -253,7 +253,8 @@ class PrefetchFileBatchReaderImplTest : public ::testing::Test,
         const std::string& file_format_str, const arrow::Schema* read_schema,
         const std::shared_ptr<Predicate>& predicate,
         const std::optional<RoaringBitmap32>& selection_bitmap, int32_t batch_size,
-        int32_t prefetch_max_parallel_num, bool read_ahead_cache_enabled) const {
+        int32_t prefetch_max_parallel_num, bool read_ahead_cache_enabled,
+        WarmupMode warmup_mode = WarmupMode::FULL) const {
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<FileFormat> file_format,
                              FileFormatFactory::Get(file_format_str, {}));
         EXPECT_OK_AND_ASSIGN(auto reader_builder, file_format->CreateReaderBuilder(batch_size));
@@ -269,7 +270,7 @@ class PrefetchFileBatchReaderImplTest : public ::testing::Test,
                 prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
                 /*enable_adaptive_prefetch_strategy=*/false, executor,
                 /*initialize_read_ranges=*/false, read_ahead_cache_enabled, CacheConfig(),
-                /*enable_io_metrics=*/true, pool_, GetArrowPool(pool_)));
+                /*enable_io_metrics=*/true, pool_, GetArrowPool(pool_), warmup_mode));
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
         auto arrow_status = arrow::ExportSchema(*read_schema, c_schema.get());
         EXPECT_TRUE(arrow_status.ok());
@@ -1156,6 +1157,98 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestRowMapping) {
     for (uint64_t i = 0; i < 10; i++) {
         ASSERT_EQ(reader->GetPreviousBatchFileRowId(i).value(), 40 + i);
     }
+}
+
+// WarmupMode::NONE makes Warmup() a complete no-op: it neither starts the background decode thread
+// nor warms the read-ahead cache. Reading still returns every row, starting cold on the first
+// NextBatch, which lazily starts the background loop.
+TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupModeNone) {
+    auto [file_format, read_ahead_cache_enabled] = GetParam();
+    auto data_array = PrepareArray(90);
+    PrepareTestData(file_format, data_array, /*stripe_row_count=*/30, /*row_index_stride=*/10);
+    auto schema = arrow::schema(fields_);
+    auto reader = PreparePrefetchReader(file_format, schema.get(), /*predicate=*/nullptr,
+                                        /*selection_bitmap=*/std::nullopt, /*batch_size=*/10,
+                                        /*prefetch_max_parallel_num=*/3, read_ahead_cache_enabled,
+                                        WarmupMode::NONE);
+
+    reader->Warmup();
+
+    // Warmup() did nothing: no batch was decoded and the cache issued no prefetch IO.
+    std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t produced_batches,
+                         metrics->GetCounter(PrefetchMetrics::PRODUCED_BATCHES));
+    ASSERT_EQ(produced_batches, 0);
+    if (read_ahead_cache_enabled) {
+        ASSERT_OK_AND_ASSIGN(uint64_t io_count,
+                             metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+        ASSERT_EQ(io_count, 0);
+    }
+
+    ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
+    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
+    ASSERT_TRUE(expected_array->Equals(array_and_row_ids.first));
+}
+
+// WarmupMode::CACHE_ONLY warms the read-ahead cache (the file's raw bytes are prefetched into
+// memory) but does NOT start the decoder, so no batch is produced until the first real read. This
+// is the "temperate" mode: it overlaps the remote fetch while keeping memory lower than FULL.
+TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupModeCacheOnly) {
+    auto [file_format, read_ahead_cache_enabled] = GetParam();
+    auto data_array = PrepareArray(90);
+    PrepareTestData(file_format, data_array, /*stripe_row_count=*/30, /*row_index_stride=*/10);
+    auto schema = arrow::schema(fields_);
+    auto reader = PreparePrefetchReader(file_format, schema.get(), /*predicate=*/nullptr,
+                                        /*selection_bitmap=*/std::nullopt, /*batch_size=*/10,
+                                        /*prefetch_max_parallel_num=*/3, read_ahead_cache_enabled,
+                                        WarmupMode::CACHE_ONLY);
+
+    reader->Warmup();
+    // A second Warmup() must be a no-op: the one-shot guard prevents a duplicate cache Init(),
+    // which would otherwise fail with "Cache has already been initialized".
+    reader->Warmup();
+
+    std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
+    if (read_ahead_cache_enabled) {
+        // The cache was warmed synchronously on the caller's thread, so prefetch IO was issued.
+        ASSERT_OK_AND_ASSIGN(uint64_t io_count,
+                             metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+        ASSERT_GT(io_count, 0);
+    }
+    // The decoder never started, so no batch has been produced yet.
+    ASSERT_OK_AND_ASSIGN(uint64_t produced_batches,
+                         metrics->GetCounter(PrefetchMetrics::PRODUCED_BATCHES));
+    ASSERT_EQ(produced_batches, 0);
+
+    // Reading returns every row: the background loop started by the first NextBatch finds the
+    // cache already warmed and skips re-initializing it.
+    ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
+    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
+    ASSERT_TRUE(expected_array->Equals(array_and_row_ids.first));
+}
+
+// WarmupMode::FULL (the default) starts the background decode loop during Warmup(). Reading returns
+// every row and reports produced batches, matching the behavior from before warmup modes existed.
+TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupModeFull) {
+    auto [file_format, read_ahead_cache_enabled] = GetParam();
+    auto data_array = PrepareArray(90);
+    PrepareTestData(file_format, data_array, /*stripe_row_count=*/30, /*row_index_stride=*/10);
+    auto schema = arrow::schema(fields_);
+    auto reader = PreparePrefetchReader(file_format, schema.get(), /*predicate=*/nullptr,
+                                        /*selection_bitmap=*/std::nullopt, /*batch_size=*/10,
+                                        /*prefetch_max_parallel_num=*/3, read_ahead_cache_enabled,
+                                        WarmupMode::FULL);
+
+    reader->Warmup();
+
+    ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
+    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
+    ASSERT_TRUE(expected_array->Equals(array_and_row_ids.first));
+
+    std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
+    ASSERT_OK_AND_ASSIGN(uint64_t produced_batches,
+                         metrics->GetCounter(PrefetchMetrics::PRODUCED_BATCHES));
+    ASSERT_GT(produced_batches, 0);
 }
 
 }  // namespace paimon::test

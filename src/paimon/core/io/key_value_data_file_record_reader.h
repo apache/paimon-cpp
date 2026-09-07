@@ -73,8 +73,8 @@ class KeyValueDataFileRecordReader : public KeyValueRecordReader {
         return reader_->GetReaderMetrics();
     }
 
-    Status Warmup() override {
-        return reader_->Warmup();
+    void Warmup() override {
+        reader_->Warmup();
     }
 
     void Close() override {

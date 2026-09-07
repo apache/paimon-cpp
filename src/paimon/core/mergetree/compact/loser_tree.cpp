@@ -36,13 +36,14 @@ LoserTree::LoserTree(std::vector<std::unique_ptr<KeyValueRecordReader>>&& reader
     }
 }
 
-Status LoserTree::WarmupLeaves() {
+void LoserTree::WarmupLeaves() {
     // Warmed in the same order the loop below consumes them, so the leaf it blocks on first is the
-    // one whose read was started first.
+    // one whose read was started first. Each leaf only starts the file it is about to read: a
+    // deeper lookahead here would put two warm files per run in flight before the merge has
+    // consumed anything, and the run itself starts its next file once it is being read.
     for (int32_t i = size_ - 1; i >= 0; i--) {
-        PAIMON_RETURN_NOT_OK(leaves_[i].reader->Warmup());
+        leaves_[i].reader->Warmup();
     }
-    return Status::OK();
 }
 
 Status LoserTree::InitializeIfNeeded() {
@@ -51,7 +52,7 @@ Status LoserTree::InitializeIfNeeded() {
         // independent sorted runs, so without warming them the section pays those read latencies
         // one after another. Warming starts them together, and the loop then collects reads that
         // are already in flight.
-        PAIMON_RETURN_NOT_OK(WarmupLeaves());
+        WarmupLeaves();
         std::fill(tree_.begin(), tree_.end(), -1);
         for (int32_t i = size_ - 1; i >= 0; i--) {
             PAIMON_RETURN_NOT_OK(leaves_[i].AdvanceIfAvailable());

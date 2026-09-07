@@ -93,8 +93,8 @@ class FieldMappingReader : public FileBatchReader {
 
     /// This is the outermost wrapper of every data file's reader stack, so swallowing the call here
     /// would leave the whole stack cold no matter who asked for the warmup.
-    Status Warmup() override {
-        return reader_->Warmup();
+    void Warmup() override {
+        reader_->Warmup();
     }
 
  private:

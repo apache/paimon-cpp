@@ -222,9 +222,9 @@ class CountingWarmupReader : public KeyValueRecordReader {
         return inner_->GetReaderMetrics();
     }
 
-    Status Warmup() override {
+    void Warmup() override {
         warmups_++;
-        return inner_->Warmup();
+        inner_->Warmup();
     }
 
     void Close() override {
@@ -299,9 +299,26 @@ TEST_F(ConcatKeyValueRecordReaderTest, TestWarmupLooksOneReaderAhead) {
 
         // Rows may reference buffers the child allocated, so drop them before closing it.
         iterator.reset();
+        // A caller that only warms this Concat is not consuming it yet, so the call reaches the
+        // child a read would touch next and stops there: it must not add the lookahead on top of
+        // what the read above already started.
+        concat->Warmup();
+        EXPECT_EQ(counters[0]->warmups(), 2);
+        EXPECT_EQ(counters[1]->warmups(), 1);
+        EXPECT_EQ(counters[2]->warmups(), 0);
         // Idempotent: warming an already-warm reader is not an error.
-        EXPECT_TRUE(concat->Warmup().ok());
-        EXPECT_TRUE(concat->Warmup().ok());
+        concat->Warmup();
+        concat->Close();
+    }
+
+    {
+        // Warmup() before the first read reaches only the first file, so a merge that warms k runs
+        // starts k files and not 2k.
+        std::unique_ptr<ConcatKeyValueRecordReader> concat = build(&counters);
+        concat->Warmup();
+        EXPECT_EQ(counters[0]->warmups(), 1);
+        EXPECT_EQ(counters[1]->warmups(), 0);
+        EXPECT_EQ(counters[2]->warmups(), 0);
         concat->Close();
     }
 

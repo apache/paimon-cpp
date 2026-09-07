@@ -87,15 +87,16 @@ class PAIMON_EXPORT BatchReader {
     ///
     /// This is an optional hint and never changes what the reader returns: ordering, filtering and
     /// metrics are the same with or without it. A reader with nothing to start, or one that is not
-    /// yet ready to start it, returns OK unchanged, so an OK result does not mean work was
-    /// started. Calling it before the reader is configured (for example before `SetReadSchema()` on
-    /// a file reader), or after `Close()`, is such a no-op.
+    /// yet ready to start it, does nothing. Calling it before the reader is configured (for example
+    /// before `SetReadSchema()` on a file reader), or after `Close()`, is such a no-op.
+    ///
+    /// It reports no error on purpose: the caller may warm up a reader it never ends up reading,
+    /// and a hint about a file nobody reads must not fail the read in progress. An implementation
+    /// that cannot start its work leaves it to be started by the first read, which reports the
+    /// failure itself.
     /// @warning The call starts background work owned by this reader, so it must be made from the
     /// same thread that reads this reader, and not concurrently with any other call on it.
-    /// @return The status of the operation.
-    virtual Status Warmup() {
-        return Status::OK();
-    }
+    virtual void Warmup() {}
 
     /// Retrieves the reader's metrics.
     /// Note that calling this method frequently may incur significant performance overhead.

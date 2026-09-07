@@ -205,7 +205,8 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
     bool read_ahead_cache_enabled, const CacheConfig& cache_config, bool enable_io_metrics,
-    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+    WarmupMode warmup_mode) {
     if (prefetch_max_parallel_num == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0.");
     }
@@ -283,7 +284,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 
     auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(new PrefetchFileBatchReaderImpl(
         readers, batch_size, prefetch_queue_capacity, enable_adaptive_prefetch_strategy, executor,
-        cache, io_metrics, arrow_pool));
+        cache, io_metrics, arrow_pool, warmup_mode));
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read
         // ranges, and set read schema will always be called before read.
@@ -297,7 +298,7 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
     uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
     const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupMode warmup_mode)
     : readers_(std::move(readers)),
       batch_size_(batch_size),
       executor_(executor),
@@ -305,6 +306,7 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
       arrow_pool_(arrow_pool),
       prefetch_queue_capacity_(prefetch_queue_capacity),
       enable_adaptive_prefetch_strategy_(enable_adaptive_prefetch_strategy),
+      warmup_mode_(warmup_mode),
       prefetch_metrics_(std::make_shared<PrefetchMetricsState>()),
       io_metrics_(io_metrics) {
     for (size_t i = 0; i < readers_.size(); i++) {
@@ -470,6 +472,9 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
     read_ranges_in_group_.clear();
     current_batch_global_row_ids_.clear();
     read_ranges_freshed_ = false;
+    // SetReadSchema()/RefreshReadRanges() call cache_->Reset() right after CleanUp(), clearing the
+    // cache's initialized state, so the next read-range generation must be allowed to Init again.
+    cache_warmed_.store(false);
     clean_prefetch_queue();
     prefetch_metrics_->queue_depth.store(0, kMetricsMemoryOrder);
     for (size_t i = 0; i < readers_pos_.size(); i++) {
@@ -484,26 +489,10 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
 void PrefetchFileBatchReaderImpl::Workloop() {
     std::vector<std::future<void>> futures;
     futures.resize(readers_.size());
-    if (cache_) {
-        auto read_ranges = readers_[0]->PreBufferRange();
-        if (read_ranges.ok()) {
-            std::vector<ByteRange> ranges;
-            for (const auto& read_range : read_ranges.value()) {
-                ranges.emplace_back(read_range.first, read_range.second);
-            }
-            auto s = cache_->Init(std::move(ranges));
-            if (!s.ok()) {
-                SetReadStatus(s);
-            } else {
-                // Init() only registers the ranges, so without this the first
-                // cache fetch races the readers' first reads instead of running
-                // ahead of them.
-                cache_->Warmup();
-            }
-        } else {
-            SetReadStatus(read_ranges.status());
-        }
-    }
+    // Warm the read-ahead cache before decoding. In FULL mode this is the first warmup; in
+    // CACHE_ONLY mode Warmup() already ran it on the caller's thread and the guard makes this a
+    // no-op, so the cache is never Init'd twice.
+    WarmCacheOnce();
 
     while (true) {
         if (!GetReadStatus().ok()) {
@@ -736,16 +725,54 @@ void PrefetchFileBatchReaderImpl::EnsureBackgroundThread() {
     }
 }
 
-Status PrefetchFileBatchReaderImpl::Warmup() {
-    // Not an error: ranges that are not set mean the reader is either not configured yet or already
-    // cleaned up, and CleanUp() leaves no background thread behind, so there is nothing to warm up
-    // in either state. NextBatchWithBitmap still rejects the former, so a genuinely unprepared read
-    // is not hidden by returning OK here.
-    if (!read_ranges_freshed_) {
-        return Status::OK();
+void PrefetchFileBatchReaderImpl::WarmCacheOnce() {
+    if (!cache_) {
+        return;
     }
+    // Init() is not idempotent (a second call returns Invalid), so at most one warmup may run per
+    // read-range generation. exchange() makes the guard correct whether the CACHE_ONLY Warmup() on
+    // the caller's thread and the Workloop() call on the background thread race or run in sequence.
+    if (cache_warmed_.exchange(true)) {
+        return;
+    }
+    auto read_ranges = readers_[0]->PreBufferRange();
+    if (!read_ranges.ok()) {
+        SetReadStatus(read_ranges.status());
+        return;
+    }
+    std::vector<ByteRange> ranges;
+    for (const auto& read_range : read_ranges.value()) {
+        ranges.emplace_back(read_range.first, read_range.second);
+    }
+    Status s = cache_->Init(std::move(ranges));
+    if (!s.ok()) {
+        SetReadStatus(s);
+        return;
+    }
+    // Init() only registers the ranges, so without this the first cache fetch races the readers'
+    // first reads instead of running ahead of them.
+    cache_->Warmup();
+}
+
+void PrefetchFileBatchReaderImpl::Warmup() {
+    if (warmup_mode_ == WarmupMode::NONE) {
+        return;
+    }
+    // Ranges that are not set mean the reader is either not configured yet or already cleaned up,
+    // and CleanUp() leaves no background thread behind, so there is nothing to warm up in either
+    // state. NextBatchWithBitmap still rejects the former, so a genuinely unprepared read is
+    // reported there rather than swallowed here.
+    if (!read_ranges_freshed_) {
+        return;
+    }
+    if (warmup_mode_ == WarmupMode::CACHE_ONLY) {
+        // Prefetch the raw bytes only, without starting the decoder. The first real read starts the
+        // background thread, whose Workloop() finds the cache already warmed and skips re-Init.
+        WarmCacheOnce();
+        return;
+    }
+    // FULL: start the background decode loop now so decoded batches are ready before the read.
     EnsureBackgroundThread();
-    return Status::OK();
 }
 
 Result<BatchReader::ReadBatchWithBitmap> PrefetchFileBatchReaderImpl::NextBatchWithBitmap() {

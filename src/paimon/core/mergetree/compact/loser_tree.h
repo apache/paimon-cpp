@@ -156,7 +156,7 @@ class LoserTree {
  private:
     /// Starts the first read of the leaves InitializeIfNeeded is about to block on, so the sorted
     /// runs of a section overlap their read latencies instead of serializing them.
-    Status WarmupLeaves();
+    void WarmupLeaves();
 
     int32_t size_;
     bool initialized_;

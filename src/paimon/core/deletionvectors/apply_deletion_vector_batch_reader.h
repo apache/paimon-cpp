@@ -96,8 +96,8 @@ class ApplyDeletionVectorBatchReader : public FileBatchReader {
         return reader_->SupportPreciseBitmapSelection();
     }
 
-    Status Warmup() override {
-        return reader_->Warmup();
+    void Warmup() override {
+        reader_->Warmup();
     }
 
  private:
