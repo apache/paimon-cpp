@@ -67,7 +67,7 @@ class ScanContextBuilder::Impl {
         global_index_result_.reset();
         realtime_context_.reset();
         memory_pool_ = GetDefaultPool();
-        executor_ = CreateDefaultExecutor();
+        executor_.reset();
         specific_file_system_.reset();
         table_schema_ = std::nullopt;
         options_.clear();
@@ -84,7 +84,8 @@ class ScanContextBuilder::Impl {
     std::shared_ptr<GlobalIndexResult> global_index_result_;
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::shared_ptr<MemoryPool> memory_pool_ = GetDefaultPool();
-    std::shared_ptr<Executor> executor_ = CreateDefaultExecutor();
+    // Lazily resolved in Finish(): a builder must not spawn executor threads.
+    std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
@@ -178,13 +179,14 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot scan with empty table path");
     }
+    std::shared_ptr<Executor> executor =
+        impl_->executor_ ? impl_->executor_ : GetGlobalDefaultExecutor();
     auto ctx = std::make_unique<ScanContext>(
         impl_->path_, impl_->is_streaming_mode_, impl_->limit_,
         std::make_shared<ScanFilter>(impl_->predicates_, impl_->partition_filters_,
                                      impl_->bucket_filter_),
-        impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_,
-        impl_->executor_, impl_->specific_file_system_, impl_->table_schema_, impl_->options_,
-        impl_->cache_);
+        impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
+        impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_);
     impl_->Reset();
     return ctx;
 }
