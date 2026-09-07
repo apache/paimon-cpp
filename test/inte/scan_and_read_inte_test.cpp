@@ -498,7 +498,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
         // These keys share a current two-bucket selection but need different historical buckets.
         for (int32_t lookup_index : {32, other_index}) {
             // The data was written with four buckets. Read it with rescaled table options too.
-            for (const std::string& current_bucket_count : {"2", "4", "8", "17"}) {
+            for (const std::string current_bucket_count : {"2", "4", "8", "17"}) {
                 SCOPED_TRACE(current_bucket_count);
                 const std::string lookup_key = fmt::format("key{:03}", lookup_index);
                 auto lookup_predicate = PredicateBuilder::Equal(
@@ -3161,7 +3161,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
                                              Literal(static_cast<int32_t>(0)));
 
     // Historical files use two buckets even when the current option has changed.
-    for (const std::string& current_bucket_count : {"2", "4", "8", "17"}) {
+    for (const std::string current_bucket_count : {"2", "4", "8", "17"}) {
         SCOPED_TRACE(current_bucket_count);
         ScanContextBuilder scan_context_builder(table_path);
         scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "6");
