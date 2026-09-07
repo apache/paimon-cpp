@@ -26,6 +26,10 @@
 #include <thread>
 #include <vector>
 
+#ifdef __linux__
+#include <dirent.h>
+#endif
+
 #include "gtest/gtest.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/executor.h"
@@ -34,6 +38,72 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+#ifdef __linux__
+// Number of threads of the current process according to /proc.
+int32_t CountProcessThreads() {
+    DIR* dir = opendir("/proc/self/task");
+    if (dir == nullptr) {
+        return -1;
+    }
+    int32_t count = 0;
+    while (struct dirent* entry = readdir(dir)) {
+        if (entry->d_name[0] != '.') {
+            ++count;
+        }
+    }
+    closedir(dir);
+    return count;
+}
+#endif
+
+TEST(DefaultExecutorTest, TestWorkersStartOnFirstTask) {
+#ifdef __linux__
+    int32_t threads_before = CountProcessThreads();
+    ASSERT_GT(threads_before, 0);
+#endif
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Executor> executor, CreateDefaultExecutor(4));
+    ASSERT_EQ(4u, executor->GetThreadNum());
+#ifdef __linux__
+    // Constructing the executor does not spawn any worker thread.
+    ASSERT_EQ(threads_before, CountProcessThreads());
+#endif
+
+    std::atomic<int64_t> sum = {0};
+    std::vector<std::future<void>> futures;
+    for (int32_t index = 0; index < 8; ++index) {
+        futures.push_back(Via(executor.get(), [&sum]() { sum++; }));
+    }
+    Wait(futures);
+    ASSERT_EQ(8, sum.load());
+#ifdef __linux__
+    ASSERT_EQ(threads_before + 4, CountProcessThreads());
+#endif
+    executor.reset();
+#ifdef __linux__
+    // A joined worker may trail in /proc for a moment, so poll briefly.
+    int32_t threads_after = CountProcessThreads();
+    for (int32_t i = 0; i < 100 && threads_after != threads_before; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        threads_after = CountProcessThreads();
+    }
+    ASSERT_EQ(threads_before, threads_after);
+#endif
+}
+
+TEST(DefaultExecutorTest, TestShutdownWithoutTasks) {
+    // Shutting down or destroying an executor that never ran a task must not
+    // block or touch workers that were never started.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Executor> executor, CreateDefaultExecutor(2));
+    executor->ShutdownNow();
+    std::atomic<bool> ran = {false};
+    executor->Add([&ran]() { ran = true; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    ASSERT_FALSE(ran.load());
+    executor.reset();
+    std::unique_ptr<Executor> idle_executor = CreateDefaultExecutor();
+    idle_executor.reset();
+}
 
 TEST(DefaultExecutorTest, TestViaVoidFunc) {
     auto executor = GetGlobalDefaultExecutor();
