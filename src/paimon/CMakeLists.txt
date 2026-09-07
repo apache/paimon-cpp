@@ -393,6 +393,7 @@ set(PAIMON_CORE_SRCS
     core/realtime/realtime_context.cpp
     core/realtime/realtime_context_impl.cpp
     core/realtime/realtime_schema_layout.cpp
+    core/realtime/realtime_snapshot_offsets.cpp
     core/realtime/realtime_store_read_pipeline.cpp
     core/realtime/realtime_primary_key_writer.cpp
     core/postpone/postpone_bucket_writer.cpp

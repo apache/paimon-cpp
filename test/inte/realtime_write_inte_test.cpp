@@ -74,6 +74,7 @@
 #include "paimon/reader/count_reader.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
 #include "paimon/realtime/realtime_context.h"
+#include "paimon/realtime/realtime_snapshot_offsets.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
@@ -4433,6 +4434,74 @@ TEST_F(RealtimeWriteInteTest, TestRestoreOffsetFromCommittedSnapshot) {
     RealtimePartitionBucket partition_bucket(/*partition=*/{}, /*bucket=*/0);
     ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap second_committed_offsets, ReadCommittedOffsets());
     ASSERT_EQ(5, second_committed_offsets.at(partition_bucket));
+}
+
+TEST_F(RealtimeWriteInteTest, TestReadRealtimeOffsetsFromExactSnapshot) {
+    options_[Options::BUCKET] = "2";
+    CreateTable(/*partition_keys=*/{"pt"});
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p0_bucket0_batch,
+                         MakeBatch(MakeRows(/*first_id=*/0, /*count=*/2, /*partition=*/"p0"),
+                                   /*partitioned=*/true, /*bucket=*/0));
+    ASSERT_OK(writer->Write(std::move(p0_bucket0_batch)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p0_bucket1_batch,
+                         MakeBatch(MakeRows(/*first_id=*/10, /*count=*/3, /*partition=*/"p0"),
+                                   /*partitioned=*/true, /*bucket=*/1));
+    ASSERT_OK(writer->Write(std::move(p0_bucket1_batch)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> p1_bucket0_batch,
+                         MakeBatch(MakeRows(/*first_id=*/20, /*count=*/1, /*partition=*/"p1"),
+                                   /*partitioned=*/true, /*bucket=*/0));
+    ASSERT_OK(writer->Write(std::move(p1_bucket0_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> first_commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t first_snapshot_id, Commit(first_commits, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(first_snapshot_id));
+
+    const RealtimePartitionBucket p0_bucket0({{"pt", "p0"}}, /*bucket=*/0);
+    const RealtimePartitionBucket p0_bucket1({{"pt", "p0"}}, /*bucket=*/1);
+    const RealtimePartitionBucket p1_bucket0({{"pt", "p1"}}, /*bucket=*/0);
+    ASSERT_OK_AND_ASSIGN(
+        RealtimeOffsetMap first_offsets,
+        RealtimeSnapshotOffsets::ReadAll(table_path_, /*branch=*/"", first_snapshot_id, options_,
+                                         /*file_system=*/nullptr));
+    ASSERT_EQ(3, first_offsets.size());
+    ASSERT_EQ(2, first_offsets.at(p0_bucket0));
+    ASSERT_EQ(3, first_offsets.at(p0_bucket1));
+    ASSERT_EQ(1, first_offsets.at(p1_bucket0));
+    ASSERT_OK_AND_ASSIGN(int64_t p0_bucket1_offset,
+                         RealtimeSnapshotOffsets::ReadOffset(
+                             table_path_, /*branch=*/"", first_snapshot_id, p0_bucket1, options_,
+                             /*file_system=*/nullptr));
+    ASSERT_EQ(3, p0_bucket1_offset);
+    ASSERT_OK_AND_ASSIGN(int64_t missing_offset,
+                         RealtimeSnapshotOffsets::ReadOffset(
+                             table_path_, /*branch=*/"", first_snapshot_id,
+                             RealtimePartitionBucket({{"pt", "missing"}}, /*bucket=*/0), options_,
+                             /*file_system=*/nullptr));
+    ASSERT_EQ(-1, missing_offset);
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_batch,
+                         MakeBatch(MakeRows(/*first_id=*/2, /*count=*/1, /*partition=*/"p0"),
+                                   /*partitioned=*/true, /*bucket=*/0));
+    ASSERT_OK(writer->Write(std::move(second_batch)));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_commits,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(int64_t second_snapshot_id,
+                         Commit(second_commits, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(second_snapshot_id));
+
+    ASSERT_OK_AND_ASSIGN(int64_t first_snapshot_offset,
+                         RealtimeSnapshotOffsets::ReadOffset(
+                             table_path_, /*branch=*/"", first_snapshot_id, p0_bucket0, options_,
+                             /*file_system=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(int64_t second_snapshot_offset,
+                         RealtimeSnapshotOffsets::ReadOffset(
+                             table_path_, /*branch=*/"", second_snapshot_id, p0_bucket0, options_,
+                             /*file_system=*/nullptr));
+    ASSERT_EQ(2, first_snapshot_offset);
+    ASSERT_EQ(3, second_snapshot_offset);
+    ASSERT_OK(writer->Close());
 }
 
 }  // namespace paimon::test

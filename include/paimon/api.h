@@ -42,6 +42,7 @@
 
 // IWYU pragma: begin_exports
 #include "paimon/realtime/realtime_context.h"
+#include "paimon/realtime/realtime_snapshot_offsets.h"
 #include "paimon/realtime/realtime_store.h"
 // IWYU pragma: end_exports
 
