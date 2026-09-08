@@ -867,4 +867,21 @@ TEST_F(MapSharedShreddingReadPlanFactoryTest, TestReadsRealFormatFile) {
     AssertChunkedArrayEquals(expected, actual);
 }
 
+// Warmup() is only a hint, but it must reach the wrapped reader: this wrapper sits between the
+// split read and the file, and swallowing the hint here would leave the whole stack below it cold
+// no matter which layer asked for the warmup.
+TEST(ShreddingFileReaderTest, WarmupForwardsToInnerReader) {
+    auto file_type = arrow::struct_({arrow::field("id", arrow::int32())});
+    auto mock_reader =
+        std::make_unique<MockFileBatchReader>(/*data=*/nullptr, file_type, /*read_batch_size=*/1);
+    auto* inner_reader = mock_reader.get();
+    auto reader = std::make_unique<ShreddingFileReader>(
+        std::move(mock_reader), std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>>(),
+        GetArrowPool(GetDefaultPool()));
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader->Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 }  // namespace paimon::test

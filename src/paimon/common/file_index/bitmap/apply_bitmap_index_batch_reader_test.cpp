@@ -193,6 +193,23 @@ TEST_P(ApplyBitmapIndexBatchReaderTest, TestBulkData) {
     std::string result_str = fmt::format("[{}]", fmt::join(bitmap_data, ","));
     CheckResult(data_str, bitmap_data, result_str, /*specified_batch_size=*/1024);
 }
+
+// Warmup() is only a hint, but it must reach the wrapped reader: this wrapper sits between the
+// split read and the file, and swallowing the hint here would leave the whole stack below it cold
+// no matter which layer asked for the warmup.
+TEST(ApplyBitmapIndexBatchReaderWarmupTest, WarmupForwardsToInnerReader) {
+    auto target_type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    auto mock_reader =
+        std::make_unique<MockFileBatchReader>(/*data=*/nullptr, target_type, /*batch_size=*/1);
+    auto* inner_reader = mock_reader.get();
+    ApplyBitmapIndexBatchReader reader(std::move(mock_reader),
+                                       RoaringBitmap32::From(/*values=*/{0}));
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader.Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 INSTANTIATE_TEST_SUITE_P(EnablePrefetch, ApplyBitmapIndexBatchReaderTest,
                          ::testing::Values(false, true));
 

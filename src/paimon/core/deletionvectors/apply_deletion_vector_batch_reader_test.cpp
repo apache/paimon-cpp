@@ -166,6 +166,24 @@ TEST_P(ApplyDeletionVectorBatchReaderTest, TestSimple2) {
         CheckResult(data_str, dv_data, "[10, 11, 12, 13, 14, 15, 16]");
     }
 }
+
+// Warmup() is only a hint, but it must reach the wrapped reader: this wrapper sits between the
+// split read and the file, and swallowing the hint here would leave the whole stack below it cold
+// no matter which layer asked for the warmup.
+TEST(ApplyDeletionVectorBatchReaderWarmupTest, WarmupForwardsToInnerReader) {
+    auto target_type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    auto mock_reader =
+        std::make_unique<MockFileBatchReader>(/*data=*/nullptr, target_type, /*batch_size=*/1);
+    auto* inner_reader = mock_reader.get();
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    auto deletion_vector = DeletionVector::FromPrimitiveArray(/*is_deleted=*/{}, pool.get());
+    ApplyDeletionVectorBatchReader reader(std::move(mock_reader), std::move(deletion_vector));
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader.Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 INSTANTIATE_TEST_SUITE_P(EnablePrefetch, ApplyDeletionVectorBatchReaderTest,
                          ::testing::Values(false, true));
 }  // namespace paimon::test

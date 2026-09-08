@@ -25,6 +25,7 @@
 #include "arrow/compute/api.h"
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/reader/delegating_prefetch_reader.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
@@ -336,6 +337,17 @@ CollectResultAndRowIds(FileBatchReader* reader) {
     return std::make_pair(result_array, row_ids);
 }
 
+/// Whether Warmup() started the background decode loop.
+///
+/// The modes differ only in what Warmup() itself starts, and metrics cannot show that: the first
+/// NextBatch starts the same loop lazily, so once a read is under way every mode reports produced
+/// batches, while right after Warmup() a FULL decode may not have finished its first batch yet.
+/// Whether the thread exists is settled the moment Warmup() returns, so it separates the modes
+/// without racing the background work.
+bool DecodeThreadStarted(const PrefetchFileBatchReaderImpl* reader) {
+    return reader->background_thread_ != nullptr;
+}
+
 std::vector<TestParam> PrepareTestParam() {
     std::vector<TestParam> values = {TestParam{"parquet", /*read_ahead_cache_enabled=*/true},
                                      TestParam{"parquet", /*read_ahead_cache_enabled=*/false}};
@@ -592,6 +604,68 @@ TEST_F(PrefetchFileBatchReaderImplTest, RefreshReadRangesDisablePrefetchByAdapti
     ASSERT_EQ(enabled, 0.0);
     ASSERT_EQ(parallelism, 1.0);
     ASSERT_EQ(adaptive_disabled_count, 1);
+}
+
+// DelegatingPrefetchReader is the layer that decides whether a read goes through the prefetch
+// machinery or straight to the first inner reader, so its Warmup() has to follow the same decision.
+// With prefetching on it must forward, otherwise the FULL warmup silently degrades to a cold read.
+TEST_F(PrefetchFileBatchReaderImplTest, DelegatingPrefetchReaderWarmupForwardsWhenPrefetchEnabled) {
+    auto data_array = PrepareArray(100);
+    int32_t batch_size = 10;
+    int32_t prefetch_max_parallel_num = 1;
+    MockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size);
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        PrefetchFileBatchReaderImpl::Create(
+            /*data_file_path=*/"", /*data_file_size=*/0, &reader_builder, mock_fs_,
+            prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
+            /*enable_adaptive_prefetch_strategy=*/false, executor_,
+            /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
+    auto* prefetch_reader = reader.get();
+    ASSERT_TRUE(prefetch_reader->NeedPrefetch());
+
+    DelegatingPrefetchReader delegating_reader(std::move(reader));
+    delegating_reader.Warmup();
+    ASSERT_TRUE(DecodeThreadStarted(prefetch_reader));
+
+    ASSERT_OK_AND_ASSIGN(auto array, ReadResultCollector::CollectResult(&delegating_reader));
+    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
+    ASSERT_TRUE(expected_array->Equals(array));
+}
+
+// With prefetching off the delegating layer hands the consumer readers_[0] directly, so forwarding
+// the warmup would start a Workloop that decodes readers_[0] on a background thread while the
+// consumer reads that same reader on its own thread. Warmup() must stay a no-op in that state and
+// the bypassed read must still return every row.
+TEST_F(PrefetchFileBatchReaderImplTest, DelegatingPrefetchReaderWarmupSkippedWhenPrefetchBypassed) {
+    auto data_array = PrepareArray(200);
+    int32_t batch_size = 10;
+    int32_t prefetch_max_parallel_num = 1;
+    ControlledMockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size,
+                                                     /*read_ranges=*/{{0, 100}},
+                                                     /*need_prefetch=*/true,
+                                                     /*set_read_ranges_statuses=*/{});
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        PrefetchFileBatchReaderImpl::Create(
+            /*data_file_path=*/"", /*data_file_size=*/0, &reader_builder, mock_fs_,
+            prefetch_max_parallel_num, batch_size,
+            /*prefetch_batch_count=*/2,
+            /*enable_adaptive_prefetch_strategy=*/true, executor_,
+            /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
+    auto* prefetch_reader = reader.get();
+    ASSERT_FALSE(prefetch_reader->NeedPrefetch());
+
+    DelegatingPrefetchReader delegating_reader(std::move(reader));
+    delegating_reader.Warmup();
+    ASSERT_FALSE(DecodeThreadStarted(prefetch_reader));
+
+    ASSERT_OK_AND_ASSIGN(auto array, ReadResultCollector::CollectResult(&delegating_reader));
+    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
+    ASSERT_TRUE(expected_array->Equals(array));
+    ASSERT_FALSE(DecodeThreadStarted(prefetch_reader));
 }
 
 TEST_F(PrefetchFileBatchReaderImplTest, SetReadRanges) {
@@ -1174,7 +1248,9 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupModeNone) {
 
     reader->Warmup();
 
-    // Warmup() did nothing: no batch was decoded and the cache issued no prefetch IO.
+    // Warmup() did nothing: it started no decode thread, decoded no batch and the cache issued no
+    // prefetch IO.
+    ASSERT_FALSE(DecodeThreadStarted(reader.get()));
     std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
     ASSERT_OK_AND_ASSIGN(uint64_t produced_batches,
                          metrics->GetCounter(PrefetchMetrics::PRODUCED_BATCHES));
@@ -1209,19 +1285,60 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupModeCacheOnly) {
     reader->Warmup();
 
     std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
+    // The decoder never started, so no decode thread exists and no batch has been produced yet.
+    ASSERT_FALSE(DecodeThreadStarted(reader.get()));
     if (read_ahead_cache_enabled) {
         // The cache was warmed synchronously on the caller's thread, so prefetch IO was issued.
         ASSERT_OK_AND_ASSIGN(uint64_t io_count,
                              metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
         ASSERT_GT(io_count, 0);
     }
-    // The decoder never started, so no batch has been produced yet.
     ASSERT_OK_AND_ASSIGN(uint64_t produced_batches,
                          metrics->GetCounter(PrefetchMetrics::PRODUCED_BATCHES));
     ASSERT_EQ(produced_batches, 0);
 
     // Reading returns every row: the background loop started by the first NextBatch finds the
     // cache already warmed and skips re-initializing it.
+    ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
+    auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
+    ASSERT_TRUE(expected_array->Equals(array_and_row_ids.first));
+}
+
+// RefreshReadRanges() starts a new read-range generation, and it resets the read-ahead cache right
+// after CleanUp(), so the generation begins cold. The one-shot warmup guard has to be rearmed at
+// the same time: otherwise every generation after the first skips its warmup and reads cold while
+// the guard still claims the cache is warm.
+TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupCacheRearmsForNewReadRangeGeneration) {
+    auto [file_format, read_ahead_cache_enabled] = GetParam();
+    if (!read_ahead_cache_enabled) {
+        GTEST_SKIP() << "there is no read-ahead cache to rearm";
+    }
+    auto data_array = PrepareArray(90);
+    PrepareTestData(file_format, data_array, /*stripe_row_count=*/30, /*row_index_stride=*/10);
+    auto schema = arrow::schema(fields_);
+    auto reader = PreparePrefetchReader(file_format, schema.get(), /*predicate=*/nullptr,
+                                        /*selection_bitmap=*/std::nullopt, /*batch_size=*/10,
+                                        /*prefetch_max_parallel_num=*/3, read_ahead_cache_enabled,
+                                        WarmupMode::CACHE_ONLY);
+
+    // GetReaderMetrics() returns a snapshot, so it is re-read at every step.
+    ASSERT_OK(reader->RefreshReadRanges());
+    reader->Warmup();
+    ASSERT_OK_AND_ASSIGN(uint64_t first_io_count,
+                         reader->GetReaderMetrics()->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_GT(first_io_count, 0);
+
+    ASSERT_OK(reader->RefreshReadRanges());
+    ASSERT_OK_AND_ASSIGN(uint64_t reset_io_count,
+                         reader->GetReaderMetrics()->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_EQ(reset_io_count, 0);
+
+    // The new generation must be warmed again, which a stale guard would silently skip.
+    reader->Warmup();
+    ASSERT_OK_AND_ASSIGN(uint64_t second_io_count,
+                         reader->GetReaderMetrics()->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_GT(second_io_count, 0);
+
     ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
     auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
     ASSERT_TRUE(expected_array->Equals(array_and_row_ids.first));
@@ -1240,6 +1357,12 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupModeFull) {
                                         WarmupMode::FULL);
 
     reader->Warmup();
+
+    // The discriminating assertion: FULL is the only mode that starts the decode loop inside
+    // Warmup() itself, and it must have done so before the first read. Checking produced batches
+    // instead cannot tell FULL from NONE, because the first NextBatch starts the same loop lazily
+    // and every mode ends up with produced_batches > 0 once the read is over.
+    ASSERT_TRUE(DecodeThreadStarted(reader.get()));
 
     ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
     auto expected_array = std::make_shared<arrow::ChunkedArray>(data_array);
