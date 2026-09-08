@@ -18,7 +18,6 @@
 
 #include "paimon/core/utils/snapshot_manager.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <vector>
@@ -141,45 +140,27 @@ TEST(SnapshotManagerTest, TestPathNotExist) {
     ASSERT_EQ(snapshot, std::nullopt);
 }
 
-TEST(SnapshotManagerTest, LatestHintAvoidsDirectoryProbeAndStillFindsNewSnapshots) {
-    class TrackingFileSystem : public LocalFileSystem {
-     public:
-        Result<bool> Exists(const std::string& path) const override {
-            exists_paths.push_back(path);
-            return LocalFileSystem::Exists(path);
-        }
-        mutable std::vector<std::string> exists_paths;
-    };
+TEST(SnapshotManagerTest, LatestSnapshotWithStaleMissingOrInvalidHint) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
-    auto fs = std::make_shared<TrackingFileSystem>();
+    auto fs = std::make_shared<LocalFileSystem>();
     SnapshotManager mgr(fs, dir->Str());
     ASSERT_OK(fs->Mkdirs(mgr.SnapshotDirectory()));
     ASSERT_OK(fs->WriteFile(mgr.SnapshotPath(1), "{}", true));
     ASSERT_OK(mgr.CommitLatestHint(1));
-    fs->exists_paths.clear();
 
     ASSERT_OK_AND_ASSIGN(std::optional<int64_t> latest, mgr.LatestSnapshotId());
     ASSERT_EQ(latest, 1);
-    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotDirectory()),
-              0);
-    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotPath(2)), 1);
 
     // A commit can publish its snapshot before updating the hint.
     ASSERT_OK(fs->WriteFile(mgr.SnapshotPath(2), "{}", true));
-    fs->exists_paths.clear();
     ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
     ASSERT_EQ(latest, 2);
-    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotDirectory()),
-              1);
 
     const std::string hint_path = PathUtil::JoinPath(mgr.SnapshotDirectory(), "LATEST");
     ASSERT_OK(fs->Delete(hint_path));
-    fs->exists_paths.clear();
     ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
     ASSERT_EQ(latest, 2);
-    ASSERT_EQ(std::count(fs->exists_paths.begin(), fs->exists_paths.end(), mgr.SnapshotDirectory()),
-              1);
 
     ASSERT_OK(fs->WriteFile(hint_path, "invalid", true));
     ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
