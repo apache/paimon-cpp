@@ -25,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/testing/utils/testharness.h"
@@ -86,12 +87,54 @@ TEST(SchemaValidationTest, TestVectorType) {
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                         "in primary key field embedding is unsupported");
 
+    ASSERT_OK_AND_ASSIGN(
+        table_schema, TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{"embedding"},
+                                          /*primary_keys=*/{}, parquet_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "in partition field embedding is unsupported");
+
+    std::map<std::string, std::string> bucket_key_options = {
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "embedding"},
+        {Options::FILE_FORMAT, "parquet"},
+    };
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{}, bucket_key_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "Nested type cannot be in bucket-key");
+
+    std::map<std::string, std::string> sequence_field_options = {
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::SEQUENCE_FIELD, "embedding"},
+    };
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"id"}, sequence_field_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "VECTOR field 'embedding' cannot be used as a sequence field.");
+
+    std::map<std::string, std::string> sequence_group_options = {
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "id"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::MERGE_ENGINE, "partial-update"},
+        {"fields.embedding.sequence-group", "id"},
+    };
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"id"}, sequence_group_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "VECTOR field 'embedding' cannot be used as a sequence-group ordering "
+                        "field.");
+
     primary_key_options[Options::FILE_FORMAT] = "parquet";
     ASSERT_OK_AND_ASSIGN(table_schema,
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{"id"}, primary_key_options));
-    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR fields in primary-key tables are not implemented yet.");
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 
     auto nested_schema = arrow::schema({
         arrow::field("id", arrow::int64()),
@@ -101,8 +144,7 @@ TEST(SchemaValidationTest, TestVectorType) {
         table_schema,
         TableSchema::Create(/*schema_id=*/0, nested_schema,
                             /*partition_keys=*/{}, /*primary_keys=*/{"id"}, primary_key_options));
-    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR fields in primary-key tables are not implemented yet.");
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
 
     std::map<std::string, std::string> data_evolution_options = {
         {Options::BUCKET, "-1"},
@@ -116,10 +158,10 @@ TEST(SchemaValidationTest, TestVectorType) {
                                              /*primary_keys=*/{}, data_evolution_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                         "VECTOR fields in data-evolution tables are not implemented yet.");
-    ASSERT_OK_AND_ASSIGN(table_schema,
-                         TableSchema::Create(/*schema_id=*/0, nested_schema,
-                                             /*partition_keys=*/{},
-                                             /*primary_keys=*/{}, data_evolution_options));
+    ASSERT_OK_AND_ASSIGN(
+        table_schema,
+        TableSchema::Create(/*schema_id=*/0, nested_schema,
+                            /*partition_keys=*/{}, /*primary_keys=*/{}, data_evolution_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                         "VECTOR fields in data-evolution tables are not implemented yet.");
 }
@@ -1159,8 +1201,6 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRequiresNonNullableKey) {
 }
 
 TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
-    auto direct_blob_map =
-        arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", /*nullable=*/true));
     auto nested_blob_map = arrow::map(
         arrow::utf8(), arrow::field("value", arrow::struct_({BlobUtils::ToArrowField("blob")})));
     std::map<std::string, std::string> options = {
@@ -1169,15 +1209,38 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
         {"fields.f1.map.storage-layout", "shared-shredding"},
     };
 
-    for (const auto& map_type : {direct_blob_map, nested_blob_map}) {
-        auto schema = arrow::schema({
-            arrow::field("f0", arrow::utf8()),
-            arrow::field("f1", map_type),
-        });
-        ASSERT_NOK_WITH_MSG(TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
-                                                /*primary_keys=*/{}, options),
-                            "Blob field must be a top-level field.");
-    }
+    const std::string loaded_schema = R"json({
+        "version": 3,
+        "id": 0,
+        "fields": [
+            {"id": 0, "name": "f0", "type": "STRING"},
+            {"id": 1, "name": "f1",
+             "type": {"type": "MAP", "key": "STRING", "value": "BLOB"}}
+        ],
+        "highestFieldId": 1,
+        "partitionKeys": [],
+        "primaryKeys": [],
+        "options": {
+            "bucket": "1",
+            "bucket-key": "f0",
+            "fields.f1.map.storage-layout": "shared-shredding"
+        },
+        "timeMillis": 0
+    })json";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::CreateFromJson(loaded_schema));
+    auto loaded_map = checked_pointer_cast<arrow::MapType>(table_schema->Fields()[1].Type());
+    ASSERT_TRUE(BlobUtils::IsBlobField(loaded_map->item_field()));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "MAP shared-shredding currently cannot contain BLOB fields.");
+
+    auto nested_schema = arrow::schema({
+        arrow::field("f0", arrow::utf8()),
+        arrow::field("f1", nested_blob_map),
+    });
+    ASSERT_NOK_WITH_MSG(TableSchema::Create(/*schema_id=*/0, nested_schema,
+                                            /*partition_keys=*/{}, /*primary_keys=*/{}, options),
+                        "Blob field must be a top-level field.");
 }
 
 TEST(SchemaValidationTest, TestMapSharedShreddingCompression) {

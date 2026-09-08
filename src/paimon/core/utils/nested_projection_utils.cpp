@@ -33,6 +33,7 @@
 #include "arrow/compute/cast.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -433,6 +434,10 @@ Result<std::vector<std::string>> NestedProjectionUtils::GetMapSelectedKeys(
     auto get_result = field->metadata()->Get(DataField::MAP_SELECTED_KEYS);
     if (!get_result.ok()) {
         return result;
+    }
+    if (BlobUtils::IsMapBlobField(field)) {
+        return Status::NotImplemented(
+            "paimon.map.selected-keys is not supported for MAP<..., BLOB>");
     }
     auto tokens = StringUtils::Split(get_result.ValueUnsafe(), ",", /*ignore_empty=*/false);
     std::unordered_set<std::string> deduplicated;

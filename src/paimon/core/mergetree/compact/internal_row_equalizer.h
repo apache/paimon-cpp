@@ -144,11 +144,10 @@ class InternalRowEqualizer {
                                .CompareTo(rhs.GetDecimal(rhs_pos, precision, scale)) == 0;
                 });
             }
-            case arrow::Type::LIST: {
-                std::shared_ptr<arrow::ListType> list_type =
-                    checked_pointer_cast<arrow::ListType>(type);
+            case arrow::Type::LIST:
+            case arrow::Type::FIXED_SIZE_LIST: {
                 PAIMON_ASSIGN_OR_RAISE(ValueEqualizer element_equalizer,
-                                       CreateValueEqualizer(list_type->value_type()));
+                                       CreateValueEqualizer(type->field(0)->type()));
                 return ValueEqualizer([element_equalizer = std::move(element_equalizer)](
                                           const DataGetters& lhs, int32_t lhs_pos,
                                           const DataGetters& rhs, int32_t rhs_pos) {

@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/common/data/binary_row.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/core/append/append_compact_task.h"
@@ -198,7 +199,9 @@ Result<std::pair<std::shared_ptr<TableSchema>, CoreOptions>> LoadSchemaAndOption
 
 /// Validate that the table is an append-only unaware-bucket table without DV.
 Status ValidateTable(const std::shared_ptr<TableSchema>& table_schema,
+                     const std::shared_ptr<arrow::Schema>& arrow_schema,
                      const CoreOptions& core_options) {
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(arrow_schema));
     if (!table_schema->PrimaryKeys().empty() || core_options.GetBucket() != -1) {
         return Status::Invalid(
             "AppendCompactCoordinator only supports append-only tables "
@@ -320,12 +323,12 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> AppendCompactCoordinator::Ru
     PAIMON_ASSIGN_OR_RAISE(schema_and_options,
                            LoadSchemaAndOptions(table_path, options, file_system));
     const auto& [table_schema, core_options] = schema_and_options;
+    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
 
     // Validate table type
-    PAIMON_RETURN_NOT_OK(ValidateTable(table_schema, core_options));
+    PAIMON_RETURN_NOT_OK(ValidateTable(table_schema, arrow_schema, core_options));
 
     // Build shared objects
-    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<arrow::Schema> partition_schema,
         FieldMapping::GetPartitionSchema(arrow_schema, table_schema->PartitionKeys()));

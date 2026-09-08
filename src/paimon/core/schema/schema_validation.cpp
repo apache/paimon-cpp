@@ -127,6 +127,16 @@ Status ValidatePerLevelOption(
     return Status::OK();
 }
 
+Status ValidateVectorComparatorField(const TableSchema& schema, const std::string& field_name,
+                                     const std::string& role) {
+    PAIMON_ASSIGN_OR_RAISE(DataField field, schema.GetField(field_name));
+    if (VectorUtils::ContainsVectorField(field.ArrowField())) {
+        return Status::Invalid(
+            fmt::format("VECTOR field '{}' cannot be used as {}.", field_name, role));
+    }
+    return Status::OK();
+}
+
 }  // namespace
 
 bool SchemaValidation::IsComplexType(const std::shared_ptr<arrow::Field>& field) {
@@ -378,6 +388,8 @@ Status SchemaValidation::ValidateSequenceGroup(const TableSchema& schema,
                     fmt::format("The sequence field group: {} can not be found in table schema.",
                                 sequence_field_name));
             }
+            PAIMON_RETURN_NOT_OK(ValidateVectorComparatorField(schema, sequence_field_name,
+                                                               "a sequence-group ordering field"));
         }
 
         for (const auto& field : StringUtils::Split(v, Options::FIELDS_SEPARATOR)) {
@@ -445,6 +457,7 @@ Status SchemaValidation::ValidateSequenceField(const TableSchema& schema,
             PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
                 std::find(field_names.begin(), field_names.end(), field) != field_names.end(),
                 fmt::format("Sequence field: '{}' cannot be found in table schema.", field)));
+            PAIMON_RETURN_NOT_OK(ValidateVectorComparatorField(schema, field, "a sequence field"));
 
             PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> agg_func,
                                    options.GetFieldAggFunc(field));
@@ -775,10 +788,6 @@ Status SchemaValidation::ValidateVectorFields(const TableSchema& schema,
     }
     if (!has_vector) {
         return Status::OK();
-    }
-    if (!schema.PrimaryKeys().empty()) {
-        return Status::NotImplemented(
-            "VECTOR fields in primary-key tables are not implemented yet.");
     }
     if (options.DataEvolutionEnabled()) {
         return Status::NotImplemented(

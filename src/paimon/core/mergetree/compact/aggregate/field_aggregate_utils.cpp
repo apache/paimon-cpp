@@ -73,12 +73,12 @@ Result<bool> EqualRows(const std::shared_ptr<InternalRow>& lhs,
 
 Result<bool> EqualArrays(const std::shared_ptr<InternalArray>& lhs,
                          const std::shared_ptr<InternalArray>& rhs,
-                         const std::shared_ptr<arrow::ListType>& type) {
+                         const std::shared_ptr<arrow::DataType>& type) {
     if (!lhs || !rhs || lhs->Size() != rhs->Size()) {
         return lhs == rhs;
     }
     for (int32_t i = 0; i < lhs->Size(); ++i) {
-        PAIMON_ASSIGN_OR_RAISE(bool equal, EqualGetters(*lhs, i, *rhs, i, type->value_type()));
+        PAIMON_ASSIGN_OR_RAISE(bool equal, EqualGetters(*lhs, i, *rhs, i, type->field(0)->type()));
         if (!equal) {
             return false;
         }
@@ -174,6 +174,7 @@ Result<VariantType> FieldAggregateUtils::GetValue(const DataGetters& getters, in
                 getters.GetDecimal(pos, decimal_type->precision(), decimal_type->scale()));
         }
         case arrow::Type::LIST:
+        case arrow::Type::FIXED_SIZE_LIST:
             return VariantType(getters.GetArray(pos));
         case arrow::Type::MAP:
             return VariantType(getters.GetMap(pos));
@@ -229,9 +230,10 @@ Result<bool> FieldAggregateUtils::Equals(const VariantType& lhs, const VariantTy
                              DataDefine::GetVariantValue<std::shared_ptr<InternalRow>>(rhs),
                              checked_pointer_cast<arrow::StructType>(type));
         case arrow::Type::LIST:
+        case arrow::Type::FIXED_SIZE_LIST:
             return EqualArrays(DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(lhs),
                                DataDefine::GetVariantValue<std::shared_ptr<InternalArray>>(rhs),
-                               checked_pointer_cast<arrow::ListType>(type));
+                               type);
         case arrow::Type::MAP:
             return EqualMaps(DataDefine::GetVariantValue<std::shared_ptr<InternalMap>>(lhs),
                              DataDefine::GetVariantValue<std::shared_ptr<InternalMap>>(rhs),

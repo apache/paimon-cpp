@@ -106,6 +106,7 @@ class TableSchema;
 }  // namespace paimon
 
 namespace paimon::test {
+
 class WriteInteTest : public testing::Test, public ::testing::WithParamInterface<std::string> {
  public:
     void SetUp() override {
@@ -4405,6 +4406,81 @@ TEST_P(WriteInteTest, TestPkSpillableIntermediateMergeWithTempFileTracking) {
         [0, "Bob", 10, 2]
     ])";
     ASSERT_OK(ScanAndVerifyResult(table_path, fields, expected));
+}
+
+TEST_P(WriteInteTest, TestPkSpillableVector) {
+    auto file_format = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto dir = UniqueTestDirectory::Create();
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("f0", arrow::utf8()),
+        arrow::field("pt", arrow::int32()),
+        arrow::field("embedding", vector_type),
+    };
+    auto data_type = arrow::struct_(fields);
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::WRITE_BUFFER_SIZE, "1"},
+        {Options::WRITE_BUFFER_SPILLABLE, "true"},
+        {Options::LOCAL_SORT_MAX_NUM_FILE_HANDLES, "2"},
+        {Options::WRITE_ONLY, "true"},
+    };
+    auto schema = arrow::schema(fields);
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ASSERT_OK_AND_ASSIGN(auto table_path, CreateTestTable(dir->Str(), "db", "tbl", &c_schema,
+                                                          /*partition_keys=*/{"pt"},
+                                                          /*primary_keys=*/{"pt", "f0"}, options));
+
+    std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
+    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+
+    auto write_array = [](FileStoreWrite* writer, const std::shared_ptr<arrow::Array>& array) {
+        ArrowArray c_array;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, &c_array));
+        auto batch = std::make_unique<RecordBatch>(std::map<std::string, std::string>{{"pt", "10"}},
+                                                   /*bucket=*/0,
+                                                   std::vector<RecordBatch::RowKind>{}, &c_array);
+        return writer->Write(std::move(batch));
+    };
+
+    auto batch1 =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([["Alice", 10, [1.0, 2.0, 3.0]]])")
+            .ValueOrDie();
+    auto batch2 =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([["Bob", 10, [4.0, 5.0, 6.0]]])")
+            .ValueOrDie();
+    auto batch3 =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([["Alice", 10, [7.0, 8.0, 9.0]]])")
+            .ValueOrDie();
+
+    ASSERT_OK(write_array(file_store_write.get(), batch1));
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+    ASSERT_OK(write_array(file_store_write.get(), batch2));
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+    ASSERT_OK(write_array(file_store_write.get(), batch3));
+    ASSERT_EQ(2, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+
+    ASSERT_OK_AND_ASSIGN(auto commit_messages,
+                         file_store_write->PrepareCommit(/*wait_compaction=*/false,
+                                                         /*commit_identifier=*/0));
+    ASSERT_EQ(0, TestHelper::CountChannelFiles(file_system_, tmp_dir));
+    ASSERT_OK(CommitMessages(table_path, commit_messages));
+    ASSERT_OK(file_store_write->Close());
+
+    ASSERT_OK(ScanAndVerifyResult(table_path, fields,
+                                  R"([[0, "Alice", 10, [7.0, 8.0, 9.0]],
+                                      [0, "Bob", 10, [4.0, 5.0, 6.0]]])"));
 }
 
 TEST_P(WriteInteTest, TestPkSpillableMultiBucketMultiRoundDataCorrectness) {
