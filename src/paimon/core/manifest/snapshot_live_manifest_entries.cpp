@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <utility>
 
 #include "paimon/common/io/memory_segment_output_stream.h"
@@ -34,7 +35,9 @@
 namespace paimon {
 namespace {
 
-constexpr int32_t kMagic = 0x534d4543;  // SMEC
+// Bumped from SMEC when the delta manifest list was added to every cached snapshot; older bytes
+// fail the magic check and are rebuilt.
+constexpr int32_t kMagic = 0x534d4544;  // SMED
 
 size_t NormalizeMaxSnapshots(int32_t max_snapshots) {
     return static_cast<size_t>(std::max(0, max_snapshots));
@@ -68,15 +71,27 @@ std::optional<SnapshotLiveManifestEntries::Entry> SnapshotLiveManifestEntries::L
         return std::optional<Entry>();
     }
     --iter;
-    return Entry{iter->first, iter->second};
+    return Entry{iter->first, iter->second.delta_manifest_list, iter->second.entries};
 }
 
-void SnapshotLiveManifestEntries::Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries) {
+std::optional<SnapshotLiveManifestEntries::Entry> SnapshotLiveManifestEntries::Find(
+    int64_t snapshot_id, const std::string& delta_manifest_list) const {
+    auto iter = entries_by_snapshot_.find(snapshot_id);
+    if (iter == entries_by_snapshot_.end() ||
+        iter->second.delta_manifest_list != delta_manifest_list) {
+        return std::optional<Entry>();
+    }
+    return Entry{iter->first, iter->second.delta_manifest_list, iter->second.entries};
+}
+
+void SnapshotLiveManifestEntries::Put(int64_t snapshot_id, const std::string& delta_manifest_list,
+                                      std::vector<ManifestEntry>&& entries) {
     if (NormalizeMaxSnapshots(max_snapshots_) == 0) {
         return;
     }
     entries_by_snapshot_[snapshot_id] =
-        std::make_shared<const std::vector<ManifestEntry>>(std::move(entries));
+        Value{delta_manifest_list,
+              std::make_shared<const std::vector<ManifestEntry>>(std::move(entries))};
     EvictIfNeeded();
 }
 
@@ -91,9 +106,10 @@ Result<std::shared_ptr<Bytes>> SnapshotLiveManifestEntries::Serialize(
     out.WriteValue<int32_t>(static_cast<int32_t>(entries_by_snapshot_.size()));
 
     ManifestEntrySerializer serializer(pool);
-    for (const auto& [snapshot_id, entries] : entries_by_snapshot_) {
+    for (const auto& [snapshot_id, value] : entries_by_snapshot_) {
         out.WriteValue<int64_t>(snapshot_id);
-        PAIMON_RETURN_NOT_OK(serializer.SerializeList(*entries, &out));
+        out.WriteString(value.delta_manifest_list);
+        PAIMON_RETURN_NOT_OK(serializer.SerializeList(*value.entries, &out));
     }
     return ToBytes(out, pool);
 }
@@ -121,9 +137,11 @@ Result<SnapshotLiveManifestEntries> SnapshotLiveManifestEntries::Deserialize(
     ManifestEntrySerializer serializer(pool);
     for (int32_t i = 0; i < snapshot_count; i++) {
         PAIMON_ASSIGN_OR_RAISE(int64_t snapshot_id, in.ReadValue<int64_t>());
+        PAIMON_ASSIGN_OR_RAISE(std::string delta_manifest_list, in.ReadString());
         PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries, serializer.DeserializeList(&in));
         snapshot_live_manifest_entries.entries_by_snapshot_[snapshot_id] =
-            std::make_shared<const std::vector<ManifestEntry>>(std::move(entries));
+            Value{std::move(delta_manifest_list),
+                  std::make_shared<const std::vector<ManifestEntry>>(std::move(entries))};
     }
     snapshot_live_manifest_entries.EvictIfNeeded();
     return snapshot_live_manifest_entries;

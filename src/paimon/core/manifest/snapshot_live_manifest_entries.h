@@ -24,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "paimon/core/manifest/manifest_entry.h"
@@ -38,17 +39,27 @@ class MemorySegment;
 ///
 /// This value object owns merged live manifest entries by snapshot id. It does not own or access a
 /// cache; callers are responsible for storing the serialized bytes in the cache layer.
+///
+/// A snapshot id alone does not identify a snapshot: after a rollback, or after a table is dropped
+/// and recreated at the same path, later commits reuse the ids of the deleted snapshots. Every
+/// cached snapshot therefore also records the delta manifest list it was built from, whose name is
+/// unique per commit, and `Find()` only reports a hit when both match.
 class SnapshotLiveManifestEntries {
  public:
     struct Entry {
         int64_t snapshot_id;
+        std::string delta_manifest_list;
         std::shared_ptr<const std::vector<ManifestEntry>> entries;
     };
 
     explicit SnapshotLiveManifestEntries(int32_t max_snapshots);
 
     std::optional<Entry> LatestBeforeOrEqual(int64_t snapshot_id) const;
-    void Put(int64_t snapshot_id, std::vector<ManifestEntry>&& entries);
+    /// Returns the entries cached for exactly this snapshot: the same id, built from the same delta
+    /// manifest list. A snapshot with the same id but another delta manifest list is a miss.
+    std::optional<Entry> Find(int64_t snapshot_id, const std::string& delta_manifest_list) const;
+    void Put(int64_t snapshot_id, const std::string& delta_manifest_list,
+             std::vector<ManifestEntry>&& entries);
     size_t Size() const;
 
     Result<std::shared_ptr<Bytes>> Serialize(const std::shared_ptr<MemoryPool>& pool) const;
@@ -59,7 +70,12 @@ class SnapshotLiveManifestEntries {
  private:
     void EvictIfNeeded();
 
-    std::map<int64_t, std::shared_ptr<const std::vector<ManifestEntry>>> entries_by_snapshot_;
+    struct Value {
+        std::string delta_manifest_list;
+        std::shared_ptr<const std::vector<ManifestEntry>> entries;
+    };
+
+    std::map<int64_t, Value> entries_by_snapshot_;
     int32_t max_snapshots_;
 };
 
