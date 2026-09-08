@@ -35,6 +35,8 @@ namespace paimon {
 /// Derived classes are expected to implement the visitor methods (e.g., `VisitEqual`,
 /// `VisitIsNull`, etc.) to return index-based results that indicate which
 /// rows satisfy the given predicate.
+/// @note Callers of `Visit*` for DECIMAL fields must ensure each literal's scale matches the scale
+/// of the indexed data; otherwise, index filtering results may be incorrect.
 class PAIMON_EXPORT GlobalIndexReader : public FunctionVisitor<std::shared_ptr<GlobalIndexResult>> {
  public:
     /// VisitVectorSearch performs approximate vector similarity search.

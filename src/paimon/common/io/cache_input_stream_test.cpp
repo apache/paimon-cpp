@@ -40,7 +40,10 @@ namespace paimon::test {
 class CacheInputStreamTest : public ::testing::Test {
  public:
     void SetUp() override {
-        pool_ = GetDefaultPool();
+        // A pool of its own, so that a cache buffer outliving the pool it was
+        // allocated from shows up instead of being covered by the global pool,
+        // which never goes away.
+        pool_ = std::shared_ptr<MemoryPool>(GetMemoryPool());
         test_dir_ = UniqueTestDirectory::Create();
         ASSERT_TRUE(test_dir_);
         content_ = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -60,9 +63,14 @@ class CacheInputStreamTest : public ::testing::Test {
 
     std::shared_ptr<ReadAheadCache> CreateCache(std::vector<ByteRange> ranges) {
         auto stream = OpenFile();
-        CacheConfig config(/*range_size_limit=*/1024,
-                           /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
-        auto cache = std::make_shared<ReadAheadCache>(std::move(stream), config, pool_);
+        CacheConfig config;
+        config.SetRangeSizeLimit(1024);
+        config.SetHoleSizeLimit(0);
+        config.SetPreBufferLimit(1024 * 1024);
+        // The file size is left unknown so the block cache stays off: these
+        // tests exercise the fallback of CacheInputStream on a cache miss.
+        auto cache =
+            std::make_shared<ReadAheadCache>(std::move(stream), config, /*file_size=*/0, pool_);
         EXPECT_OK(cache->Init(std::move(ranges)));
         return cache;
     }
@@ -204,9 +212,12 @@ TEST_F(CacheInputStreamTest, TestReadAsyncCacheReadError) {
         ASSERT_OK_AND_ASSIGN(auto fs, FileSystemFactory::Get("local", file_path_, {}));
         ASSERT_OK_AND_ASSIGN(auto cache_stream, fs->Open(file_path_));
         ASSERT_OK_AND_ASSIGN(auto underlying, fs->Open(file_path_));
-        CacheConfig config(/*range_size_limit=*/1024,
-                           /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024 * 1024);
-        auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config, pool_);
+        CacheConfig config;
+        config.SetRangeSizeLimit(1024);
+        config.SetHoleSizeLimit(0);
+        config.SetPreBufferLimit(1024 * 1024);
+        auto cache = std::make_shared<ReadAheadCache>(std::move(cache_stream), config,
+                                                      /*file_size=*/0, pool_);
         ASSERT_OK(cache->Init(std::vector<ByteRange>{{0, 10}}));
 
         // Now activate IOHook so that the prefetch IO (triggered by cache_->Read -> PreBuffer)

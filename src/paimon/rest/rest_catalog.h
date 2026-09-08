@@ -66,7 +66,7 @@ class RestCatalog : public Catalog {
     Result<std::vector<std::string>> ListTables(const std::string& db_name) const override;
     Result<bool> DatabaseExists(const std::string& db_name) const override;
     Result<bool> TableExists(const Identifier& identifier) const override;
-    std::string GetDatabaseLocation(const std::string& db_name) const override;
+    Result<std::string> GetDatabaseLocation(const std::string& db_name) const override;
     Result<std::string> GetTableLocation(const Identifier& identifier) const override;
     Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier) const override;
     std::string GetRootPath() const override;
@@ -77,6 +77,12 @@ class RestCatalog : public Catalog {
 
     /// Options merged with the server side config.
     const std::map<std::string, std::string>& GetOptions() const override;
+
+ protected:
+    /// Loads the location and the schema from one `GetTable` response, so the table cannot be
+    /// built from a location and a schema that two requests disagreed on.
+    Result<std::shared_ptr<FormatTable>> LoadFormatTable(
+        const Identifier& identifier) const override;
 
  private:
     RestCatalog(std::unique_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,

@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -35,10 +36,13 @@
 #include "arrow/array/builder_primitive.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "arrow/compute/api.h"
 #include "arrow/io/caching.h"
+#include "arrow/io/file.h"
 #include "arrow/io/interfaces.h"
 #include "arrow/ipc/api.h"
 #include "arrow/ipc/json_simple.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/metrics/metrics_impl.h"
@@ -67,7 +71,9 @@
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
 #include "paimon/utils/roaring_bitmap32.h"
+#include "parquet/arrow/reader.h"
 #include "parquet/file_reader.h"
+#include "parquet/metadata.h"
 #include "parquet/properties.h"
 
 namespace paimon {
@@ -336,6 +342,122 @@ TEST_F(ParquetFileBatchReaderTest, TestParquetMetadataCacheBypassesWhenGetUriFai
     ASSERT_EQ(0, cache->GetCount());
     ASSERT_EQ(0, cache->SupplierCallCount());
     ASSERT_EQ(0, cache->Size());
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestPageIndexBytesSurviveReaderClose) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/3,
+               /*max_page_size=*/1);
+    auto cache = std::make_shared<paimon::test::CountingRoutingCache>(CacheKind::DATA_FILE_FOOTER,
+                                                                      128 * 1024 * 1024);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> raw_input, fs_->Open(file_path_));
+    ASSERT_OK_AND_ASSIGN(int64_t length, raw_input->Length());
+    auto raw = std::make_shared<ArrowInputStreamAdapter>(raw_input, length, pool_);
+    auto raw_reader = ::parquet::ParquetFileReader::Open(raw);
+    auto metadata = raw_reader->metadata();
+    int64_t expected_index_reads = 0;
+    std::weak_ptr<MemoryPool> cached_pool;
+    for (int32_t round = 0; round < 3; ++round) {
+        if (round == 2) {
+            cache->InvalidateAll();
+            ASSERT_TRUE(cached_pool.expired());
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        std::shared_ptr<MemoryPool> query_pool = GetMemoryPool();
+        auto stream = std::make_shared<ParquetInputStream>(input, length, pool_, query_pool, cache,
+                                                           file_path_);
+        stream->SetPageIndexRanges(*metadata);
+        for (int32_t rg = 0; rg < metadata->num_row_groups(); ++rg) {
+            auto ranges = ::parquet::PageIndexReader::DeterminePageIndexRangesInRowGroup(
+                *metadata->RowGroup(rg), {});
+            for (const auto& range : {ranges.column_index, ranges.offset_index}) {
+                ASSERT_TRUE(range.has_value());
+                auto expected = raw->ReadAt(range->offset, range->length);
+                ASSERT_TRUE(expected.ok()) << expected.status().ToString();
+                auto actual = stream->ReadAt(range->offset, range->length);
+                ASSERT_TRUE(actual.ok()) << actual.status().ToString();
+                ASSERT_TRUE(actual.ValueOrDie()->Equals(*expected.ValueOrDie()));
+                if (round != 1) {
+                    ++expected_index_reads;
+                }
+            }
+        }
+        ASSERT_EQ(expected_index_reads, cache->SupplierCallCount());
+        // Reader 2 serves all indexes from the shared cache without storage IO.
+        if (round == 1) {
+            ASSERT_EQ(0, stream->StorageReadBytes()->load());
+        } else {
+            ASSERT_GT(stream->StorageReadBytes()->load(), 0);
+        }
+        // Ordinary file bytes must still use storage, even on a cache hit round.
+        uint64_t bytes_before = stream->StorageReadBytes()->load();
+        auto magic = stream->ReadAt(0, 4);
+        ASSERT_TRUE(magic.ok()) << magic.status().ToString();
+        ASSERT_EQ("PAR1", magic.ValueOrDie()->ToString());
+        ASSERT_EQ(bytes_before + 4, stream->StorageReadBytes()->load());
+        ASSERT_EQ(expected_index_reads, cache->SupplierCallCount());
+        ASSERT_TRUE(stream->Close().ok());
+        if (round != 1) {
+            cached_pool = query_pool;
+        }
+        stream.reset();
+        query_pool.reset();
+        ASSERT_FALSE(cached_pool.expired());
+    }
+    cache->InvalidateAll();
+    ASSERT_TRUE(cached_pool.expired());
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestCachedFooterKeepsAllocatorAliveUntilEviction) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/3);
+    auto cache = std::make_shared<paimon::test::CountingRoutingCache>(CacheKind::DATA_FILE_FOOTER,
+                                                                      128 * 1024 * 1024);
+    std::weak_ptr<MemoryPool> cached_pool;
+    {
+        std::shared_ptr<MemoryPool> query_pool = GetMemoryPool();
+        cached_pool = query_pool;
+        ParquetReaderBuilder builder({}, 10);
+        builder.WithMemoryPool(query_pool)->WithCache(cache);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        ASSERT_OK_AND_ASSIGN(auto reader, builder.Build(input));
+    }
+    ASSERT_FALSE(cached_pool.expired());
+    cache->InvalidateAll();
+    ASSERT_TRUE(cached_pool.expired());
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestPointReadReusesFooterAndPageIndexes) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/3,
+               /*max_page_size=*/1);
+    auto cache = std::make_shared<paimon::test::CountingRoutingCache>(CacheKind::DATA_FILE_FOOTER,
+                                                                      128 * 1024 * 1024);
+    auto projection = arrow::schema({schema_->GetFieldByName("f4"), schema_->GetFieldByName("f8")});
+    auto predicate = PredicateBuilder::Equal(0, "f4", FieldType::INT, Literal(300002));
+    int64_t cold_reads = 0;
+    std::shared_ptr<arrow::ChunkedArray> cold_result;
+    for (int32_t round = 0; round < 2; ++round) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        ParquetReaderBuilder builder({{PARQUET_READ_ENABLE_PAGE_INDEX_FILTER, "true"}}, 10);
+        builder.WithCache(cache);
+        ASSERT_OK_AND_ASSIGN(auto reader, builder.Build(input));
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*projection, &c_schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             paimon::test::ReadResultCollector::CollectResult(reader.get()));
+        ASSERT_EQ(1, result->length());
+        if (round == 0) {
+            cold_reads = cache->SupplierCallCount();
+            ASSERT_GT(cold_reads, 1);  // Footer plus actual page-index ranges.
+            cold_result = result;
+        } else {
+            ASSERT_TRUE(result->Equals(cold_result));
+            ASSERT_EQ(cold_reads, cache->SupplierCallCount());
+            ASSERT_GT(cache->GetCount(), cold_reads);
+        }
+    }
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestReadBinaryWrittenFromBinaryAndLargeBinary) {
@@ -1673,14 +1795,22 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
     WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/10,
                /*enable_dictionary=*/true, /*max_row_group_length=*/10);
 
+    // A pool of its own, so that a buffer outliving the pool it was allocated
+    // from shows up instead of being covered by the global pool, which never
+    // goes away. Declared first, so that it outlives the cache and the reader.
+    std::shared_ptr<MemoryPool> pool(GetMemoryPool());
+
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> cache_stream, fs_->Open(file_path_));
-    auto cache = std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), GetDefaultPool());
+    // The file size is left unknown so the block cache stays off: this test is
+    // about the pre-buffered ranges feeding the cache.
+    auto cache =
+        std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), /*file_size=*/0, pool);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> reader_stream, fs_->Open(file_path_));
     auto cache_input_stream = std::make_shared<CacheInputStream>(std::move(reader_stream), cache);
 
     std::map<std::string, std::string> options;
     ParquetReaderBuilder builder(options, batch_size_);
-    builder.WithMemoryPool(GetDefaultPool());
+    builder.WithMemoryPool(pool);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> base_reader,
                          builder.Build(cache_input_stream));
     auto parquet_batch_reader = dynamic_cast<ParquetFileBatchReader*>(base_reader.get());
@@ -1733,6 +1863,433 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
     ASSERT_OK_AND_ASSIGN(uint64_t miss_bytes,
                          cache_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
     ASSERT_EQ(miss_bytes, baseline_miss_bytes);
+}
+
+struct DictionaryPassthroughResult {
+    // First batch of a {f4: int32, f8: utf8} projection.
+    std::shared_ptr<arrow::StructArray> batch;
+    // Struct type the reader reports for the whole file, all 13 fields in file order.
+    std::shared_ptr<arrow::DataType> file_type;
+};
+
+TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthrough) {
+    // `std::nullopt` leaves the option out of the map entirely, which is what an ordinary read
+    // does and what has to keep resolving to "off".
+    auto read_projection = [&](std::optional<bool> enable_dictionary_passthrough,
+                               bool enable_dictionary_on_write) {
+        WriteArray(file_path_, struct_array_, schema_,
+                   /*write_batch_size=*/struct_array_->length(), enable_dictionary_on_write,
+                   /*max_row_group_length=*/struct_array_->length());
+
+        EXPECT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path_));
+        auto length = fs_->GetFileStatus(file_path_).value().GetLen();
+        auto in_stream =
+            std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, pool_);
+        std::map<std::string, std::string> options;
+        if (enable_dictionary_passthrough.has_value()) {
+            options[PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH] =
+                *enable_dictionary_passthrough ? "true" : "false";
+        }
+        auto read_schema =
+            MakeReadSchema({arrow::field("f4", arrow::int32()), arrow::field("f8", arrow::utf8())});
+        auto reader = PrepareParquetFileBatchReader(std::move(in_stream), options, read_schema,
+                                                    /*predicate=*/nullptr,
+                                                    /*selection_bitmap=*/std::nullopt, batch_size_);
+
+        DictionaryPassthroughResult result;
+        EXPECT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> c_file_schema, reader->GetFileSchema());
+        result.file_type = arrow::ImportType(c_file_schema.get()).ValueOrDie();
+
+        EXPECT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        EXPECT_FALSE(BatchReader::IsEofBatch(batch));
+        auto& [c_array, c_schema] = batch;
+        result.batch = checked_pointer_cast<arrow::StructArray>(
+            arrow::ImportArray(c_array.get(), c_schema.get()).ValueOrDie());
+        reader->Close();
+        return result;
+    };
+
+    {
+        // The column is handed over encoded while the file schema keeps reporting the logical
+        // type: the dictionary describes the emitted batches, not the file.
+        DictionaryPassthroughResult result = read_projection(/*enable_dictionary_passthrough=*/true,
+                                                             /*enable_dictionary_on_write=*/true);
+        ASSERT_EQ(arrow::Type::STRING, result.file_type->field(7)->type()->id());
+        ASSERT_EQ(arrow::Type::INT32, result.batch->field(0)->type()->id());
+        ASSERT_EQ(arrow::Type::DICTIONARY, result.batch->field(1)->type()->id());
+        auto decoded =
+            arrow::compute::Cast(result.batch->field(1), arrow::utf8()).ValueOrDie().make_array();
+        auto strings = checked_pointer_cast<arrow::StringArray>(decoded);
+        ASSERT_EQ(struct_array_->length(), strings->length());
+        for (int64_t i = 0; i < strings->length(); ++i) {
+            ASSERT_EQ(fmt::format("s3{}", i + 1), strings->GetString(i));
+        }
+    }
+    {
+        // The file has no dictionary pages, so the gate keeps the column materialized instead of
+        // moving the hashing from the writer to the reader.
+        DictionaryPassthroughResult result = read_projection(/*enable_dictionary_passthrough=*/true,
+                                                             /*enable_dictionary_on_write=*/false);
+        ASSERT_EQ(arrow::Type::STRING, result.batch->field(1)->type()->id());
+    }
+    {
+        // Explicitly off: the kill switch a table can set to opt the rewrite out.
+        DictionaryPassthroughResult result =
+            read_projection(/*enable_dictionary_passthrough=*/false,
+                            /*enable_dictionary_on_write=*/true);
+        ASSERT_EQ(arrow::Type::STRING, result.batch->field(1)->type()->id());
+    }
+    {
+        // Absent, which is how this reader is reached on a table that never set the option -
+        // most of them. The default has to be off, or an ordinary scan would start emitting
+        // dictionary batches at consumers that do not unwrap them. A table that does set it gets
+        // them on every read, not only in the compaction rewrite.
+        DictionaryPassthroughResult result =
+            read_projection(/*enable_dictionary_passthrough=*/std::nullopt,
+                            /*enable_dictionary_on_write=*/true);
+        ASSERT_EQ(arrow::Type::STRING, result.batch->field(1)->type()->id());
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughSkipsBinaryColumn) {
+    // Parquet stores STRING and BINARY in the same BYTE_ARRAY leaf and dictionary-encodes both, so
+    // the gate has to exclude BINARY by logical type. It does, because nothing downstream can read
+    // `dictionary(int32, binary)`: ColumnarUtils::GetView() asserts on it and returns an empty view
+    // in a release build, and LiteralConverter rejects it. `f8` is the control - same physical
+    // type, same pages, and it is forwarded - so this fails if the exclusion is ever widened back.
+    WriteArray(file_path_, struct_array_, schema_,
+               /*write_batch_size=*/struct_array_->length(), /*enable_dictionary=*/true,
+               /*max_row_group_length=*/struct_array_->length());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path_));
+    auto length = fs_->GetFileStatus(file_path_).value().GetLen();
+    auto in_stream =
+        std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, pool_);
+    std::map<std::string, std::string> options;
+    options[PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH] = "true";
+    auto read_schema =
+        MakeReadSchema({arrow::field("f8", arrow::utf8()), arrow::field("f9", arrow::binary())});
+    auto reader = PrepareParquetFileBatchReader(std::move(in_stream), options, read_schema,
+                                                /*predicate=*/nullptr,
+                                                /*selection_bitmap=*/std::nullopt, batch_size_);
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    auto& [c_array, c_schema] = batch;
+    auto read_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ImportArray(c_array.get(), c_schema.get()).ValueOrDie());
+    ASSERT_EQ(arrow::Type::DICTIONARY, read_array->field(0)->type()->id())
+        << read_array->field(0)->type()->ToString();
+    ASSERT_EQ(arrow::Type::BINARY, read_array->field(1)->type()->id())
+        << read_array->field(1)->type()->ToString();
+    // Materialized, and still the bytes the file holds.
+    ASSERT_EQ("a31", checked_pointer_cast<arrow::BinaryArray>(read_array->field(1))->GetString(0));
+    reader->Close();
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughSkipsFallbackToPlain) {
+    // A column whose dictionary outgrows its page limit keeps the dictionary page the writer had
+    // already emitted and encodes the rest as PLAIN. Reading that back as a dictionary would hash
+    // the plain values into a large in-memory dictionary, which is the work passthrough exists to
+    // avoid, so the gate has to look at the data page encodings rather than the dictionary page.
+    constexpr int32_t kRows = 4000;
+    arrow::StringBuilder value_builder;
+    for (int32_t i = 0; i < kRows; ++i) {
+        ASSERT_TRUE(value_builder.Append(fmt::format("unique_value_{}", i)).ok());
+    }
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(value_builder.Finish(&values).ok());
+    auto field = arrow::field("f0", arrow::utf8());
+    auto write_schema = arrow::schema({field});
+    auto struct_array = arrow::StructArray::Make({values}, {field}).ValueOrDie();
+
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_fallback.parquet");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                         fs_->Create(file_path, /*overwrite=*/true));
+    ::parquet::WriterProperties::Builder writer_builder;
+    writer_builder.enable_dictionary();
+    // Small enough that the dictionary overflows partway through and the writer falls back.
+    writer_builder.dictionary_pagesize_limit(1024);
+    ASSERT_OK_AND_ASSIGN(auto format_writer,
+                         ParquetFormatWriter::Create(out, write_schema, writer_builder.build(),
+                                                     DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, pool_));
+    auto arrow_array = std::make_unique<ArrowArray>();
+    ASSERT_TRUE(arrow::ExportArray(*struct_array, arrow_array.get()).ok());
+    ASSERT_OK(format_writer->AddBatch(arrow_array.get()));
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    // The dictionary page written before the fallback is still in the chunk, which is exactly why
+    // its presence cannot be the signal; the data pages are what say the column went plain. Both
+    // are asserted so the test fails loudly if the fixture stops producing a mixed chunk rather
+    // than quietly passing for the wrong reason.
+    auto metadata_file = arrow::io::ReadableFile::Open(file_path, pool_.get());
+    ASSERT_TRUE(metadata_file.ok());
+    std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
+    ASSERT_TRUE(
+        ::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), pool_.get(), &metadata_reader).ok());
+    std::unique_ptr<::parquet::ColumnChunkMetaData> column_chunk =
+        metadata_reader->parquet_reader()->metadata()->RowGroup(0)->ColumnChunk(0);
+    ASSERT_TRUE(column_chunk->has_dictionary_page());
+    int32_t plain_data_pages = 0;
+    int32_t data_pages = 0;
+    for (const ::parquet::PageEncodingStats& stats : column_chunk->encoding_stats()) {
+        if (stats.page_type != ::parquet::PageType::DATA_PAGE &&
+            stats.page_type != ::parquet::PageType::DATA_PAGE_V2) {
+            continue;
+        }
+        data_pages += stats.count;
+        if (stats.encoding == ::parquet::Encoding::PLAIN) {
+            plain_data_pages += stats.count;
+        }
+    }
+    ASSERT_GT(data_pages, 0);
+    ASSERT_GT(plain_data_pages, 0) << "fixture no longer falls back to plain encoding";
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path));
+    auto length = fs_->GetFileStatus(file_path).value().GetLen();
+    auto in_stream =
+        std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, pool_);
+    std::map<std::string, std::string> options;
+    options[PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH] = "true";
+    auto reader = PrepareParquetFileBatchReader(std::move(in_stream), options, write_schema,
+                                                /*predicate=*/nullptr,
+                                                /*selection_bitmap=*/std::nullopt, kRows);
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    auto& [c_array, c_schema] = batch;
+    auto read_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ImportArray(c_array.get(), c_schema.get()).ValueOrDie());
+    ASSERT_EQ(arrow::Type::STRING, read_array->field(0)->type()->id());
+    reader->Close();
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughRequiresEveryRowGroup) {
+    // The gate is a per-file decision taken over every row group, which is what the documentation
+    // promises. A file whose first row group is fully dictionary-encoded and whose second falls
+    // back to plain is the case that separates "checked the first row group" from "checked all of
+    // them": looking only at row group 0 would forward the column and then hash the plain values
+    // of row group 1 back into a large in-memory dictionary.
+    constexpr int32_t kRowsPerGroup = 64;
+    constexpr int32_t kWriteBatchSize = 16;
+    auto field = arrow::field("f0", arrow::utf8());
+    auto write_schema = arrow::schema({field});
+
+    // Two distinct short values, so this row group stays dictionary-encoded end to end.
+    arrow::StringBuilder low_cardinality_builder;
+    for (int32_t i = 0; i < kRowsPerGroup; ++i) {
+        ASSERT_TRUE(low_cardinality_builder.Append(i % 2 == 0 ? "a" : "b").ok());
+    }
+    // Distinct long values, so the dictionary outgrows its page limit after the first write batch
+    // and the rest of this row group is plain.
+    arrow::StringBuilder high_cardinality_builder;
+    for (int32_t i = 0; i < kRowsPerGroup; ++i) {
+        ASSERT_TRUE(
+            high_cardinality_builder.Append(fmt::format("distinct_value_padded_out_{}", i)).ok());
+    }
+    std::shared_ptr<arrow::Array> low_cardinality, high_cardinality;
+    ASSERT_TRUE(low_cardinality_builder.Finish(&low_cardinality).ok());
+    ASSERT_TRUE(high_cardinality_builder.Finish(&high_cardinality).ok());
+
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "dictionary_mixed_row_groups.parquet");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
+                         fs_->Create(file_path, /*overwrite=*/true));
+    ::parquet::WriterProperties::Builder writer_builder;
+    writer_builder.enable_dictionary();
+    writer_builder.dictionary_pagesize_limit(64);
+    // The dictionary limit is only checked once per write batch, so the fallback can only land
+    // mid-chunk if a row group spans several of them.
+    writer_builder.write_batch_size(kWriteBatchSize);
+    // One row group per AddBatch, which is what puts the two encodings in separate chunks.
+    writer_builder.max_row_group_length(kRowsPerGroup);
+    ASSERT_OK_AND_ASSIGN(auto format_writer,
+                         ParquetFormatWriter::Create(out, write_schema, writer_builder.build(),
+                                                     DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, pool_));
+    for (const std::shared_ptr<arrow::Array>& values : {low_cardinality, high_cardinality}) {
+        auto struct_array = arrow::StructArray::Make({values}, {field}).ValueOrDie();
+        auto arrow_array = std::make_unique<ArrowArray>();
+        ASSERT_TRUE(arrow::ExportArray(*struct_array, arrow_array.get()).ok());
+        ASSERT_OK(format_writer->AddBatch(arrow_array.get()));
+    }
+    ASSERT_OK(format_writer->Flush());
+    ASSERT_OK(format_writer->Finish());
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+
+    // Pin the fixture: without this the read assertion below would also pass on a file whose
+    // first row group was never dictionary-encoded in the first place.
+    auto metadata_file = arrow::io::ReadableFile::Open(file_path, pool_.get());
+    ASSERT_TRUE(metadata_file.ok());
+    std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
+    ASSERT_TRUE(
+        ::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), pool_.get(), &metadata_reader).ok());
+    std::shared_ptr<::parquet::FileMetaData> metadata =
+        metadata_reader->parquet_reader()->metadata();
+    ASSERT_EQ(2, metadata->num_row_groups());
+    auto count_plain_data_pages = [](const ::parquet::ColumnChunkMetaData& chunk) {
+        int32_t plain = 0;
+        for (const ::parquet::PageEncodingStats& stats : chunk.encoding_stats()) {
+            if ((stats.page_type == ::parquet::PageType::DATA_PAGE ||
+                 stats.page_type == ::parquet::PageType::DATA_PAGE_V2) &&
+                stats.encoding == ::parquet::Encoding::PLAIN) {
+                plain += stats.count;
+            }
+        }
+        return plain;
+    };
+    ASSERT_EQ(0, count_plain_data_pages(*metadata->RowGroup(0)->ColumnChunk(0)))
+        << "first row group was expected to stay dictionary-encoded";
+    ASSERT_GT(count_plain_data_pages(*metadata->RowGroup(1)->ColumnChunk(0)), 0)
+        << "second row group was expected to fall back to plain";
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input_stream, fs_->Open(file_path));
+    auto length = fs_->GetFileStatus(file_path).value().GetLen();
+    auto in_stream =
+        std::make_unique<ArrowInputStreamAdapter>(std::move(input_stream), length, pool_);
+    std::map<std::string, std::string> options;
+    options[PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH] = "true";
+    auto reader = PrepareParquetFileBatchReader(std::move(in_stream), options, write_schema,
+                                                /*predicate=*/nullptr,
+                                                /*selection_bitmap=*/std::nullopt, kRowsPerGroup);
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    auto& [c_array, c_schema] = batch;
+    auto read_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ImportArray(c_array.get(), c_schema.get()).ValueOrDie());
+    // One row group disqualifies the whole column, including the row group that did qualify.
+    ASSERT_EQ(arrow::Type::STRING, read_array->field(0)->type()->id());
+    reader->Close();
+}
+
+// Counts the positional reads landing in the tail region of the file, i.e. the
+// footer and the page index of a parquet file. The counter is shared by all the
+// streams of one test, so it totals the reads reaching the storage.
+class TailReadCountingInputStream : public InputStream {
+ public:
+    TailReadCountingInputStream(std::unique_ptr<InputStream> input, int64_t tail_begin,
+                                std::shared_ptr<std::atomic<int32_t>> tail_read_count)
+        : input_(std::move(input)),
+          tail_begin_(tail_begin),
+          tail_read_count_(std::move(tail_read_count)) {}
+
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return input_->Seek(offset, origin);
+    }
+    Result<int64_t> GetPos() const override {
+        return input_->GetPos();
+    }
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        return input_->Read(buffer, size);
+    }
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        CountIfInTail(offset);
+        return input_->Read(buffer, size, offset);
+    }
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        CountIfInTail(offset);
+        return input_->ReadAsync(buffer, size, offset, std::move(callback));
+    }
+    Status Close() override {
+        return input_->Close();
+    }
+    Result<std::string> GetUri() const override {
+        return input_->GetUri();
+    }
+    Result<int64_t> Length() const override {
+        return input_->Length();
+    }
+
+ private:
+    void CountIfInTail(int64_t offset) {
+        if (offset >= tail_begin_) {
+            tail_read_count_->fetch_add(1);
+        }
+    }
+
+    std::unique_ptr<InputStream> input_;
+    int64_t tail_begin_;
+    std::shared_ptr<std::atomic<int32_t>> tail_read_count_;
+};
+
+// The sub-readers of a prefetch reader share one ReadAheadCache and read the
+// footer and the page index before any pre-buffer range is registered. The block
+// cache turns all those tail reads into a single read of the last block.
+TEST_F(ParquetFileBatchReaderTest, TestBlockCacheSharesTailReadsAcrossReaders) {
+    arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
+    auto src_array = MakeSequentialIntData(60000);
+    auto arrow_schema = arrow::schema(fields);
+    WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/1024,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/30000);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> length_stream, fs_->Open(file_path_));
+    ASSERT_OK_AND_ASSIGN(int64_t file_length, length_stream->Length());
+    ASSERT_OK(length_stream->Close());
+    // The tail region is the last block of the cache, which is also the footer
+    // read size of the parquet reader.
+    const int64_t tail_begin = file_length - static_cast<int64_t>(CacheConfig().GetBlockSize());
+    ASSERT_GT(tail_begin, 0);
+
+    // A pool of its own, so that a buffer outliving the pool it was allocated
+    // from shows up instead of being covered by the global pool, which never
+    // goes away. Declared first, so that it outlives the cache and the readers.
+    std::shared_ptr<MemoryPool> pool(GetMemoryPool());
+
+    auto tail_read_count = std::make_shared<std::atomic<int32_t>>(0);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> cache_stream, fs_->Open(file_path_));
+    auto counting_cache_stream = std::make_shared<TailReadCountingInputStream>(
+        std::move(cache_stream), tail_begin, tail_read_count);
+    auto cache = std::make_shared<ReadAheadCache>(counting_cache_stream, CacheConfig(),
+                                                  static_cast<uint64_t>(file_length), pool);
+
+    std::map<std::string, std::string> options;
+    options[PARQUET_READ_ENABLE_PAGE_INDEX_FILTER] = "true";
+    ParquetReaderBuilder builder(options, batch_size_);
+    builder.WithMemoryPool(pool);
+
+    constexpr int32_t kReaderCount = 3;
+    std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
+    for (int32_t i = 0; i < kReaderCount; ++i) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> reader_stream, fs_->Open(file_path_));
+        auto counting = std::make_unique<TailReadCountingInputStream>(std::move(reader_stream),
+                                                                      tail_begin, tail_read_count);
+        std::shared_ptr<InputStream> cache_input_stream =
+            std::make_shared<CacheInputStream>(std::move(counting), cache);
+        futures.push_back(std::async(std::launch::async, [&builder, cache_input_stream]() {
+            return builder.Build(cache_input_stream);
+        }));
+    }
+    std::vector<std::unique_ptr<FileBatchReader>> readers;
+    for (auto& future : futures) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, future.get());
+        readers.push_back(std::move(reader));
+    }
+
+    // Only the last 1000 rows match, so the page index of the last row group is
+    // read to filter its pages.
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterOrEqual(
+        /*field_index=*/0, /*field_name=*/"f0", FieldType::INT, Literal(59000));
+    for (auto& reader : readers) {
+        auto parquet_batch_reader = dynamic_cast<ParquetFileBatchReader*>(reader.get());
+        ASSERT_TRUE(parquet_batch_reader);
+        std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
+        ASSERT_TRUE(arrow::ExportSchema(*arrow_schema, c_schema.get()).ok());
+        ASSERT_OK(parquet_batch_reader->SetReadSchema(c_schema.get(), predicate, std::nullopt));
+    }
+
+    // One block fetch served the footer read and the page index reads of all the
+    // readers.
+    ASSERT_EQ(tail_read_count->load(), 1);
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t block_fetches,
+                         metrics->GetCounter(ReadAheadCacheMetrics::BLOCK_FETCHES));
+    ASSERT_EQ(block_fetches, 1u);
+    ASSERT_OK_AND_ASSIGN(uint64_t block_hits,
+                         metrics->GetCounter(ReadAheadCacheMetrics::BLOCK_HITS));
+    ASSERT_GT(block_hits, 1u);
 }
 
 }  // namespace paimon::parquet::test

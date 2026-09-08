@@ -346,6 +346,48 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
     std::string table_path_;
 };
 
+TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsIndexForColumnNamedLikeInternalRowId) {
+    constexpr char kColumnName[] = "_PK_INDEX_ROW_ID";
+    schema_ = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
+                             arrow::field(kColumnName, arrow::utf8(), /*nullable=*/false)});
+    options_[Options::PK_BTREE_INDEX_COLUMNS] = kColumnName;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> catalog, Catalog::Create(directory_->Str(), {}));
+    for (bool spillable : {false, true}) {
+        SCOPED_TRACE(spillable);
+        const std::string table_name = spillable ? "row_id_spill" : "row_id_memory";
+        options_[Options::WRITE_BUFFER_SIZE] = spillable ? "1" : "1048576";
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema_, &c_schema).ok());
+        ASSERT_OK(catalog->CreateTable(Identifier("db", table_name), &c_schema,
+                                       /*partition_keys=*/{}, /*primary_keys=*/{"id"}, options_,
+                                       /*ignore_if_exists=*/false));
+        table_path_ = PathUtil::JoinPath(directory_->Str(), "db.db/" + table_name);
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
+                             WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",
+                                             /*commit_identifier=*/0));
+        ASSERT_OK(Commit(initial_messages, /*commit_identifier=*/0));
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                             CreateWriter(/*with_temp_directory=*/true, spillable));
+        ASSERT_OK(writer->Compact(/*partition=*/{}, /*bucket=*/0, /*full_compaction=*/true));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> compact_messages,
+                             writer->PrepareCommit(/*wait_compaction=*/true,
+                                                   /*commit_identifier=*/1));
+        ASSERT_OK(writer->Close());
+        ASSERT_EQ(1, compact_messages.size());
+        auto compact = std::dynamic_pointer_cast<CommitMessageImpl>(compact_messages[0]);
+        ASSERT_NE(nullptr, compact);
+        std::vector<std::shared_ptr<IndexFileMeta>> payloads =
+            BTreeIndexFiles(*compact, /*added=*/true);
+        ASSERT_EQ(1, payloads.size());
+        ASSERT_EQ(4, payloads[0]->RowCount());
+        ASSERT_OK_AND_ASSIGN(PrimaryKeyIndexSourceMeta source_meta,
+                             PrimaryKeyIndexSourceMeta::FromIndexFile(*payloads[0]));
+        ASSERT_EQ(ExpectedSources(compact->GetCompactIncrement().CompactAfter()),
+                  source_meta.SourceFiles());
+    }
+}
+
 TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompactedLevelPayload) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_messages,
                          WriteAndPrepare(R"([[4, "b"], [1, "z"], [3, "a"], [2, "y"]])",

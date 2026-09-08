@@ -34,7 +34,7 @@
   "partitionKeys" : [ "key0", "key1" ],
   "primaryKeys" : [ ],
   "options" : {
-    "manifest.format" : "orc",
+    "manifest.format" : "avro",
     "file.format" : "orc"
   },
   "timeMillis" : 1730430023755

@@ -33,8 +33,10 @@
 #include "arrow/compute/cast.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/casting/casting_utils.h"
@@ -164,6 +166,13 @@ Result<bool> EqualWithFieldIds(const std::shared_ptr<arrow::DataType>& a,
     if (a->id() != b->id() || a->num_fields() != b->num_fields()) {
         return false;
     }
+    if (a->id() == arrow::Type::FIXED_SIZE_LIST) {
+        const auto& vector_a = checked_cast<const arrow::FixedSizeListType&>(*a);
+        const auto& vector_b = checked_cast<const arrow::FixedSizeListType&>(*b);
+        if (vector_a.list_size() != vector_b.list_size()) {
+            return false;
+        }
+    }
     if (a->num_fields() == 0) {
         return a->Equals(*b);
     }
@@ -196,6 +205,7 @@ Result<bool> EqualWithFieldIds(const std::shared_ptr<arrow::DataType>& a,
 /// projections and nothing else changed (matching paimon field IDs).
 Result<bool> IsVariantAccessSubstitution(const std::shared_ptr<arrow::DataType>& read_type,
                                          const std::shared_ptr<arrow::DataType>& data_type) {
+    PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorEvolution(read_type, data_type));
     PAIMON_ASSIGN_OR_RAISE(bool equal, EqualWithFieldIds(read_type, data_type));
     if (equal) {
         return true;
@@ -238,6 +248,7 @@ Result<bool> IsVariantAccessSubstitution(const std::shared_ptr<arrow::DataType>&
 Result<std::shared_ptr<arrow::DataType>> PruneRepeatedItemType(
     const std::shared_ptr<arrow::DataType>& read_type,
     const std::shared_ptr<arrow::DataType>& data_type, const char* container) {
+    PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorEvolution(read_type, data_type));
     PAIMON_ASSIGN_OR_RAISE(bool same, EqualWithFieldIds(read_type, data_type));
     if (same) {
         return data_type;
@@ -315,6 +326,7 @@ Result<std::shared_ptr<arrow::DataType>> PruneRepeatedItemType(
 Result<std::optional<std::shared_ptr<arrow::DataType>>> NestedProjectionUtils::PruneDataType(
     const std::shared_ptr<arrow::DataType>& read_type,
     const std::shared_ptr<arrow::DataType>& data_type) {
+    PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorEvolution(read_type, data_type));
     // Identical types (including paimon field IDs) need no pruning.
     PAIMON_ASSIGN_OR_RAISE(bool same, EqualWithFieldIds(read_type, data_type));
     if (same) {
@@ -433,6 +445,10 @@ Result<std::vector<std::string>> NestedProjectionUtils::GetMapSelectedKeys(
     auto get_result = field->metadata()->Get(DataField::MAP_SELECTED_KEYS);
     if (!get_result.ok()) {
         return result;
+    }
+    if (BlobUtils::IsMapBlobField(field)) {
+        return Status::NotImplemented(
+            "paimon.map.selected-keys is not supported for MAP<..., BLOB>");
     }
     auto tokens = StringUtils::Split(get_result.ValueUnsafe(), ",", /*ignore_empty=*/false);
     std::unordered_set<std::string> deduplicated;
@@ -609,6 +625,90 @@ Result<std::shared_ptr<arrow::Array>> NestedProjectionUtils::FilterMapArrayBySel
     std::shared_ptr<arrow::Array> result_map;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.Finish(&result_map));
     return result_map;
+}
+
+Result<bool> NestedProjectionUtils::HasMapSelectedKeysRecursively(
+    const std::shared_ptr<arrow::Field>& read_field) {
+    if (!read_field) {
+        return false;
+    }
+    if (IsMapSharedShreddingAccessField(read_field)) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                               GetMapSelectedKeys(read_field));
+        auto read_struct = checked_pointer_cast<arrow::StructType>(read_field->type());
+        if (selected_keys.size() != static_cast<size_t>(read_struct->num_fields())) {
+            return Status::Invalid(fmt::format(
+                "selected-key metadata size {} does not match STRUCT field count {} for {}",
+                selected_keys.size(), read_struct->num_fields(), read_field->name()));
+        }
+        return true;
+    }
+    if (read_field->type()->id() == arrow::Type::MAP) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                               GetMapSelectedKeys(read_field));
+        return !selected_keys.empty();
+    }
+    if (read_field->type()->id() == arrow::Type::STRUCT) {
+        for (const auto& child : read_field->type()->fields()) {
+            PAIMON_ASSIGN_OR_RAISE(bool has_selected_keys, HasMapSelectedKeysRecursively(child));
+            if (has_selected_keys) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+Result<std::shared_ptr<arrow::Array>>
+NestedProjectionUtils::FilterMapArrayBySelectedKeysRecursively(
+    const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::Field>& read_field,
+    arrow::MemoryPool* pool) {
+    if (!array || !read_field) {
+        return array;
+    }
+    if (IsMapSharedShreddingAccessField(read_field)) {
+        return array;
+    }
+    if (read_field->type()->id() == arrow::Type::MAP) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> selected_keys,
+                               GetMapSelectedKeys(read_field));
+        if (selected_keys.empty()) {
+            return array;
+        }
+        return FilterMapArrayBySelectedKeys(array, selected_keys, pool);
+    }
+    if (read_field->type()->id() != arrow::Type::STRUCT) {
+        return array;
+    }
+    if (array->type_id() != arrow::Type::STRUCT) {
+        return Status::Invalid(fmt::format(
+            "FilterMapArrayBySelectedKeysRecursively requires struct array for read field '{}', "
+            "got {}",
+            read_field->name(), array->type()->ToString()));
+    }
+
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+    auto read_struct_type = checked_pointer_cast<arrow::StructType>(read_field->type());
+    if (struct_array->num_fields() != read_struct_type->num_fields()) {
+        return Status::Invalid(fmt::format(
+            "FilterMapArrayBySelectedKeysRecursively struct field count mismatch for '{}': "
+            "array {} vs read {}",
+            read_field->name(), struct_array->num_fields(), read_struct_type->num_fields()));
+    }
+
+    std::vector<std::shared_ptr<arrow::ArrayData>> filtered_child_data;
+    filtered_child_data.reserve(struct_array->num_fields());
+    for (int32_t i = 0; i < struct_array->num_fields(); ++i) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> filtered_child,
+                               FilterMapArrayBySelectedKeysRecursively(
+                                   struct_array->field(i), read_struct_type->field(i), pool));
+        filtered_child_data.push_back(filtered_child->data());
+    }
+
+    auto filtered_struct_data = arrow::ArrayData::Make(
+        read_struct_type, struct_array->length(), {struct_array->null_bitmap()},
+        std::move(filtered_child_data), struct_array->null_count(), struct_array->offset());
+    return arrow::MakeArray(std::move(filtered_struct_data));
 }
 
 namespace {

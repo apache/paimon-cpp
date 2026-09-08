@@ -20,7 +20,6 @@
 #include "paimon/core/index/pksorted/pk_sorted_index_builder.h"
 
 #include <algorithm>
-#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -29,6 +28,7 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -53,8 +53,6 @@
 
 namespace paimon {
 namespace {
-
-constexpr char kRowIdFieldName[] = "_PK_INDEX_ROW_ID";
 
 class TrackingGlobalIndexFileWriter : public GlobalIndexFileWriter {
  public:
@@ -149,8 +147,7 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
                            FieldsComparator::Create({field_}, {0},
                                                     /*is_ascending_order=*/true));
     auto comparator = std::shared_ptr<FieldsComparator>(std::move(unique_comparator));
-    DataField row_id_field(std::numeric_limits<int32_t>::max(),
-                           arrow::field(kRowIdFieldName, arrow::int64(), false));
+    const DataField& row_id_field = SpecialFields::RowId();
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FieldsComparator> unique_sequence_comparator,
         FieldsComparator::Create({field_, row_id_field}, {1}, /*is_ascending_order=*/true));
@@ -164,11 +161,11 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     auto value_schema = arrow::schema({field_.ArrowField(), row_id_field.ArrowField()});
     // Keep the Arrow memory-pool adapter alive for as long as the sort buffer can retain
     // arrays allocated through it.
-    std::unique_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
     auto in_memory_buffer = std::make_unique<InMemorySortBuffer>(
         /*last_sequence_number=*/-1, arrow::struct_(value_schema->fields()),
         std::vector<std::string>{field_.Name()},
-        /*user_defined_sequence_fields=*/std::vector<std::string>{kRowIdFieldName},
+        /*user_defined_sequence_fields=*/std::vector<std::string>{row_id_field.Name()},
         /*sequence_fields_ascending=*/true, comparator, options_.GetWriteBufferSize(), pool_,
         in_memory_comparator);
     std::unique_ptr<SortBuffer> sort_buffer;
@@ -225,7 +222,8 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
                     arrow::Concatenate({indexed_values}, arrow_pool.get()));
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                     std::shared_ptr<arrow::StructArray> sort_batch,
-                    arrow::StructArray::Make({values, row_ids}, {field_.Name(), kRowIdFieldName}));
+                    arrow::StructArray::Make({values, row_ids},
+                                             {field_.Name(), row_id_field.Name()}));
                 ArrowArray c_array;
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*sort_batch, &c_array));
                 auto record_batch = std::make_unique<RecordBatch>(

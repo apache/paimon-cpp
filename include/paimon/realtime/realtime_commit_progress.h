@@ -31,12 +31,13 @@ namespace paimon {
 /// A real-time commit message and its partition-bucket offset progress.
 ///
 /// Offsets are scoped to one partition and bucket. `offset_range` is left-closed and right-open
-/// and covers all rows represented by `commit_message`. The progress fields are not embedded in
-/// `CommitMessage` serialization.
+/// and bounds all offsets represented by `commit_message`. Offsets may have gaps, so the range
+/// count is not the represented row count. The progress fields are not embedded in `CommitMessage`
+/// serialization.
 struct PAIMON_EXPORT RealtimeCommitProgress {
-    /// Paimon commit message generated from one sealed segment.
+    /// Paimon commit message generated from one or more sealed segments.
     std::shared_ptr<CommitMessage> commit_message;
-    /// Partition-bucket containing the sealed segment.
+    /// Partition-bucket containing the sealed segments.
     RealtimePartitionBucket partition_bucket;
     /// Left-closed, right-open offset range represented by the commit message.
     OffsetRange offset_range;

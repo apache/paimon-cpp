@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
@@ -44,15 +45,19 @@
 #include "paimon/core/options/merge_engine.h"
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/table/format/format_table_file_store_write.h"
+#include "paimon/core/table/format/format_table_loader.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/format/file_format.h"
 #include "paimon/result.h"
+#include "paimon/table/format/format_table.h"
 #include "paimon/write_context.h"
 
 namespace arrow {
@@ -91,24 +96,57 @@ Result<bool> HasHistoricalPrimaryKeyBTreeDefinition(
 Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& realtime_context,
                                         const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                         const CoreOptions& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context));
+    PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
     PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
                            snapshot_manager->LatestSnapshot());
     if (latest_snapshot) {
         PAIMON_ASSIGN_OR_RAISE(
             RealtimeOffsetMap realtime_committed_offsets,
             RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                               RealtimeContextImpl::Cast(realtime_context));
         PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
             latest_snapshot->Id(), realtime_committed_offsets));
     }
     return Status::OK();
 }
 
+/// Maps a `WriteContext` onto `FormatTableFileStoreWrite`, refusing by name what a format table
+/// cannot honour rather than silently dropping it.
+Result<std::unique_ptr<FileStoreWrite>> NewFormatTableWrite(
+    const std::shared_ptr<FormatTable>& table, const WriteContext& ctx) {
+    if (ctx.IsStreamingMode()) {
+        return Status::NotImplemented(
+            "a format table has no snapshots, so there is nothing a streaming write could "
+            "commit against");
+    }
+    if (ctx.GetRealtimeContext() != nullptr) {
+        return Status::NotImplemented("a format table has no real-time store to write into");
+    }
+    if (!ctx.GetWriteSchema().empty()) {
+        return Status::NotImplemented(
+            "a format table write takes the table's own columns; a write schema naming a "
+            "subset of them is not supported yet");
+    }
+    // A write id prefixes a postpone-bucket writer's files so that one compaction reader can
+    // put them back in order. A format table has no buckets, so it would identify nothing.
+    if (ctx.GetWriteId().has_value()) {
+        return Status::NotImplemented(
+            "a format table has no buckets, so a write id would name nothing");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreWrite> format_write,
+                           FormatTableFileStoreWrite::Create(table, ctx.GetMemoryPool()));
+    return std::unique_ptr<FileStoreWrite>(std::move(format_write));
+}
+
 }  // namespace
 
 Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithProgress(int64_t) {
     return Status::Invalid("prepare commit with progress requires a real-time writer");
+}
+
+Status FileStoreWrite::Seal() {
+    return Status::Invalid("seal requires a real-time writer");
 }
 
 Status FileStoreWrite::RefreshCommittedSnapshot(int64_t) {
@@ -126,18 +164,38 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         return Status::Invalid("executor is null pointer");
     }
 
+    // A table the caller already loaded says what it is, so nothing is read to find out.
+    if (ctx->GetFormatTable() != nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
+                               FormatTable::Copy(ctx->GetFormatTable(), ctx->GetOptions()));
+        return NewFormatTableWrite(given_table, *ctx);
+    }
+
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), ctx->GetSpecificFileSystem(),
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
     std::string branch = ctx->GetBranch();
+    // A format table writes plain data files into a directory, so it never reaches the manifest
+    // path below.
     auto schema_manager =
         std::make_shared<SchemaManager>(tmp_options.GetFileSystem(), ctx->GetRootPath(), branch);
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                           schema_manager->Latest());
-    if (table_schema == std::nullopt) {
+    std::shared_ptr<TableSchema> latest_schema;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FormatTable> format_table,
+        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), ctx->GetRootPath(), branch,
+                                   ctx->GetOptions(), /*specific_table_schema=*/std::nullopt,
+                                   schema_manager.get(), &latest_schema));
+    if (format_table != nullptr) {
+        return NewFormatTableWrite(format_table, *ctx);
+    }
+    // The schema the dispatch above already read through `schema_manager`, rather than a second
+    // read of the same file.
+    if (latest_schema == nullptr) {
         return Status::Invalid(fmt::format("cannot found latest schema in branch {}", branch));
     }
-    const auto& schema = table_schema.value();
+    const std::shared_ptr<TableSchema>& schema = latest_schema;
+    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
+    PAIMON_RETURN_NOT_OK(BlobUtils::ValidateMapBlobWriteSchema(arrow_schema));
     auto opts = schema->Options();
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
@@ -145,7 +203,6 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
                            CoreOptions::FromMap(opts, ctx->GetSpecificFileSystem(),
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
-    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 
@@ -213,6 +270,14 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             write_schema = arrow::schema(write_fields);
         }
 
+        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
+        if (ctx->GetRealtimeContext()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<RealtimeSchemaLayout> layout,
+                RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, write_schema));
+            realtime_schema_layout = std::move(layout);
+        }
+
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
         if (need_dv_maintainer_factory) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -230,8 +295,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
         auto file_store_write = std::make_unique<AppendOnlyFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
-            ctx->GetRootPath(), schema, arrow_schema, write_schema, partition_schema,
-            dv_maintainer_factory, io_manager, options, ignore_previous_files,
+            ctx->GetRootPath(), schema, arrow_schema, write_schema, realtime_schema_layout,
+            partition_schema, dv_maintainer_factory, io_manager, options, ignore_previous_files,
             ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->GetRealtimeContext(),
             ctx->GetExecutor(), ctx->GetMemoryPool());
         return std::unique_ptr<FileStoreWrite>(std::move(file_store_write));
@@ -344,10 +409,18 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                     ctx->EnableMultiThreadSpill(), ctx->GetExecutor(), ctx->GetMemoryPool()));
         }
 
+        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
+        if (ctx->GetRealtimeContext()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<RealtimeSchemaLayout> layout,
+                RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, arrow_schema));
+            realtime_schema_layout = std::move(layout);
+        }
+
         return std::make_unique<KeyValueFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
-            ctx->GetRootPath(), schema, arrow_schema, partition_schema, dv_maintainer_factory,
-            primary_key_index_maintainer_factory, io_manager, key_comparator,
+            ctx->GetRootPath(), schema, arrow_schema, realtime_schema_layout, partition_schema,
+            dv_maintainer_factory, primary_key_index_maintainer_factory, io_manager, key_comparator,
             sequence_fields_comparator, merge_function_wrapper, options, ignore_previous_files,
             ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(),
             ctx->GetRealtimeContext(), ctx->GetExecutor(), ctx->GetMemoryPool());

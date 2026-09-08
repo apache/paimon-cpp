@@ -141,10 +141,6 @@ Result<std::optional<int64_t>> SnapshotManager::FindEarliest(
 Result<std::optional<int64_t>> SnapshotManager::FindLatest(
     const std::string& dir, const std::string& prefix,
     const std::function<std::string(int64_t)>& path_func) const {
-    PAIMON_ASSIGN_OR_RAISE(bool is_exist, fs_->Exists(dir));
-    if (!is_exist) {
-        return std::optional<int64_t>();
-    }
     std::optional<int64_t> snapshot_id = ReadHint(LATEST, dir);
     if (snapshot_id != std::nullopt && snapshot_id.value() > 0) {
         int64_t next_snapshot = snapshot_id.value() + 1;
@@ -155,6 +151,8 @@ Result<std::optional<int64_t>> SnapshotManager::FindLatest(
             return snapshot_id;
         }
     }
+    // A valid hint needs no parent-directory probe. The listing fallback checks
+    // directory existence itself, including tables without any snapshots yet.
     return FindByListFiles([](int64_t lhs, int64_t rhs) -> int64_t { return std::max(lhs, rhs); },
                            dir, prefix);
 }

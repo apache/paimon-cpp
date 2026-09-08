@@ -32,12 +32,14 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/index/index_file_meta.h"
+#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/mergetree/lookup_levels.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/metrics/clean_metrics.h"
 #include "paimon/core/snapshot.h"
@@ -92,6 +94,14 @@ bool OrphanFilesCleanerImpl::SupportToClean(const std::string& file_name) {
     for (const auto& format : supported_formats) {
         if (StringUtils::StartsWith(file_name, "data-") &&
             StringUtils::EndsWith(file_name, format)) {
+            return true;
+        }
+    }
+    static std::vector<std::string> supported_extra_file_suffixes = {
+        DataFilePathFactory::INDEX_PATH_SUFFIX, LookupLevels<bool>::REMOTE_LOOKUP_FILE_SUFFIX};
+    for (const std::string& suffix : supported_extra_file_suffixes) {
+        if (StringUtils::StartsWith(file_name, "data-") &&
+            StringUtils::EndsWith(file_name, suffix)) {
             return true;
         }
     }

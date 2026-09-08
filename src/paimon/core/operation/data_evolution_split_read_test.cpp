@@ -111,7 +111,7 @@ TEST_F(DataEvolutionSplitReadTest, TestCreatePushDownPredicate) {
     auto f1_predicate =
         PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"f1", FieldType::INT, Literal(2));
     auto row_id_predicate = PredicateBuilder::Equal(
-        /*field_index=*/2, SpecialFields::RowId().Name(), FieldType::BIGINT, Literal(3l));
+        /*field_index=*/2, SpecialFields::RowId().Name(), FieldType::BIGINT, Literal(int64_t{3}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
                          PredicateBuilder::And({f0_predicate, f1_predicate, row_id_predicate}));
 

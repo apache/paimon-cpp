@@ -78,6 +78,11 @@ class SnapshotReader {
         return this;
     }
 
+    SnapshotReader* EnableValueFilterForLevels(const std::function<bool(int32_t)>& level_filter) {
+        scan_->EnableValueFilterForLevels(level_filter);
+        return this;
+    }
+
     SnapshotReader* OnlyReadRealBuckets() {
         scan_->OnlyReadRealBuckets();
         return this;
@@ -90,6 +95,10 @@ class SnapshotReader {
 
     const std::shared_ptr<SnapshotManager>& GetSnapshotManager() const {
         return scan_->GetSnapshotManager();
+    }
+
+    const std::optional<Snapshot>& GetSpecifiedSnapshot() const {
+        return scan_->GetSpecifiedSnapshot();
     }
 
     const std::unique_ptr<IndexFileHandler>& GetIndexFileHandler() const {

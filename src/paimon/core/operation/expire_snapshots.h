@@ -38,6 +38,7 @@ namespace paimon {
 class Snapshot;
 class SnapshotManager;
 class FileStorePathFactory;
+class DataFilePathFactory;
 class FileSystem;
 class IndexManifestFile;
 class ManifestEntry;
@@ -59,10 +60,15 @@ class ExpireSnapshots {
     Result<int32_t> Expire();
 
  private:
+    using DataFilePathFactoryCache =
+        std::unordered_map<BinaryRow,
+                           std::unordered_map<int32_t, std::shared_ptr<DataFilePathFactory>>>;
+
     Result<int32_t> ExpireUntil(int64_t earliest_snapshot_id, int64_t end_exclusive_id);
 
     Status CleanUnusedDataFiles(const std::string& manifest_list_name,
-                                const std::set<std::string>& retained_data_files);
+                                const std::set<std::string>& retained_data_files,
+                                DataFilePathFactoryCache* data_file_path_factory_cache);
     Status CleanUnusedManifests(const std::string& manifest_list_name,
                                 const std::set<std::string>& skipping_sets);
     Status CleanUnusedIndexManifest(const std::optional<std::string>& index_manifest,

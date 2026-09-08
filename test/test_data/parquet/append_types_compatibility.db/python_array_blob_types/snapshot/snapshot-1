@@ -1,0 +1,15 @@
+{
+  "version": 3,
+  "id": 1,
+  "schemaId": 0,
+  "baseManifestList": "manifest-list-2f17c472-fea6-42d0-8300-12da4874d53a-0",
+  "deltaManifestList": "manifest-list-2f17c472-fea6-42d0-8300-12da4874d53a-1",
+  "totalRecordCount": 6,
+  "deltaRecordCount": 6,
+  "commitUser": "657b7800-ea12-4a26-8075-4b2fd4e20d51",
+  "commitIdentifier": 9223372036854775807,
+  "commitKind": "APPEND",
+  "timeMillis": 1788859561849,
+  "nextRowId": 3,
+  "uuid": "43460238-f728-4ee1-8600-1f3d0c13234a"
+}

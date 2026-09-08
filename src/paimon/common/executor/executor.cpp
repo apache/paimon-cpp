@@ -52,15 +52,15 @@ class DefaultExecutor : public Executor {
 
  private:
     uint32_t thread_count_;
+    // Guarded by state_->mutex; populated on the first Add().
     std::vector<std::thread> workers_;
     std::shared_ptr<State> state_ = std::make_shared<State>();
 };
 
 DefaultExecutor::DefaultExecutor(uint32_t thread_count) : thread_count_(thread_count) {
     assert(thread_count > 0);
-    for (uint32_t i = 0; i < thread_count_; ++i) {
-        workers_.emplace_back(&DefaultExecutor::WorkerThread, state_);
-    }
+    // Worker threads are started lazily by the first Add(): an executor that
+    // never receives a task never spawns a thread.
 }
 
 uint32_t DefaultExecutor::GetThreadNum() const {
@@ -68,6 +68,7 @@ uint32_t DefaultExecutor::GetThreadNum() const {
 }
 
 void DefaultExecutor::ShutdownInternal(bool wait_for_pending_tasks) {
+    std::vector<std::thread> workers;
     {
         std::unique_lock<std::mutex> lock(state_->mutex);
         if (state_->stop) {
@@ -80,8 +81,9 @@ void DefaultExecutor::ShutdownInternal(bool wait_for_pending_tasks) {
             state_->tasks.swap(empty);
         }
         state_->condition.notify_all();
+        workers.swap(workers_);
     }
-    for (std::thread& worker : workers_) {
+    for (std::thread& worker : workers) {
         if (worker.joinable()) {
             if (worker.get_id() == std::this_thread::get_id()) {
                 worker.detach();
@@ -112,6 +114,12 @@ void DefaultExecutor::Add(std::function<void()> func) {
             return;
         }
         state_->tasks.emplace(std::move(func));
+        if (workers_.empty()) {
+            workers_.reserve(thread_count_);
+            for (uint32_t i = 0; i < thread_count_; ++i) {
+                workers_.emplace_back(&DefaultExecutor::WorkerThread, state_);
+            }
+        }
     }
     state_->condition.notify_one();
 }

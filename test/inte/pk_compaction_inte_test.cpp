@@ -538,7 +538,7 @@ TEST_P(PkCompactionInteTest, TestKeyValueTableDvCompactionWithMapSharedShredding
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "2"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
         {"parquet.write.max-row-group-length", "1"},
         {"parquet.read.enable-page-index-filter", "true"},

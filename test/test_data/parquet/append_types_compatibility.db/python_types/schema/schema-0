@@ -1,0 +1,387 @@
+{
+  "version": 3,
+  "id": 0,
+  "fields": [
+    {
+      "id": 0,
+      "name": "id",
+      "type": "INT NOT NULL"
+    },
+    {
+      "id": 1,
+      "name": "f_boolean",
+      "type": "BOOLEAN"
+    },
+    {
+      "id": 2,
+      "name": "f_tinyint",
+      "type": "TINYINT"
+    },
+    {
+      "id": 3,
+      "name": "f_smallint",
+      "type": "SMALLINT"
+    },
+    {
+      "id": 4,
+      "name": "f_int",
+      "type": "INT"
+    },
+    {
+      "id": 5,
+      "name": "f_bigint",
+      "type": "BIGINT"
+    },
+    {
+      "id": 6,
+      "name": "f_float",
+      "type": "FLOAT"
+    },
+    {
+      "id": 7,
+      "name": "f_double",
+      "type": "DOUBLE"
+    },
+    {
+      "id": 8,
+      "name": "f_char",
+      "type": "CHAR(8)"
+    },
+    {
+      "id": 9,
+      "name": "f_varchar",
+      "type": "VARCHAR(64)"
+    },
+    {
+      "id": 10,
+      "name": "f_string",
+      "type": "STRING"
+    },
+    {
+      "id": 11,
+      "name": "f_binary",
+      "type": "BINARY(8)"
+    },
+    {
+      "id": 12,
+      "name": "f_varbinary",
+      "type": "VARBINARY(64)"
+    },
+    {
+      "id": 13,
+      "name": "f_bytes",
+      "type": "BYTES"
+    },
+    {
+      "id": 14,
+      "name": "f_blob",
+      "type": "BLOB"
+    },
+    {
+      "id": 15,
+      "name": "f_blob_descriptor",
+      "type": "BLOB"
+    },
+    {
+      "id": 16,
+      "name": "f_decimal_1_0",
+      "type": "DECIMAL(1, 0)"
+    },
+    {
+      "id": 17,
+      "name": "f_decimal_9_2",
+      "type": "DECIMAL(9, 2)"
+    },
+    {
+      "id": 18,
+      "name": "f_decimal_18_2",
+      "type": "DECIMAL(18, 2)"
+    },
+    {
+      "id": 19,
+      "name": "f_decimal_19_2",
+      "type": "DECIMAL(19, 2)"
+    },
+    {
+      "id": 20,
+      "name": "f_decimal_38_18",
+      "type": "DECIMAL(38, 18)"
+    },
+    {
+      "id": 21,
+      "name": "f_decimal_38_38",
+      "type": "DECIMAL(38, 38)"
+    },
+    {
+      "id": 22,
+      "name": "f_date",
+      "type": "DATE"
+    },
+    {
+      "id": 23,
+      "name": "f_timestamp_0",
+      "type": "TIMESTAMP(0)"
+    },
+    {
+      "id": 24,
+      "name": "f_timestamp_3",
+      "type": "TIMESTAMP(3)"
+    },
+    {
+      "id": 25,
+      "name": "f_timestamp_6",
+      "type": "TIMESTAMP(6)"
+    },
+    {
+      "id": 26,
+      "name": "f_timestamp_9",
+      "type": "TIMESTAMP(9)"
+    },
+    {
+      "id": 27,
+      "name": "f_timestamp_ltz_0",
+      "type": "TIMESTAMP_LTZ(0)"
+    },
+    {
+      "id": 28,
+      "name": "f_timestamp_ltz_3",
+      "type": "TIMESTAMP_LTZ(3)"
+    },
+    {
+      "id": 29,
+      "name": "f_timestamp_ltz_6",
+      "type": "TIMESTAMP_LTZ(6)"
+    },
+    {
+      "id": 30,
+      "name": "f_timestamp_ltz_9",
+      "type": "TIMESTAMP_LTZ(9)"
+    },
+    {
+      "id": 31,
+      "name": "f_variant",
+      "type": "VARIANT"
+    },
+    {
+      "id": 32,
+      "name": "f_array_int",
+      "type": {
+        "type": "ARRAY",
+        "element": "INT",
+        "nullable": true
+      }
+    },
+    {
+      "id": 33,
+      "name": "f_map_string_bigint",
+      "type": {
+        "type": "MAP<STRING NOT NULL, BIGINT>",
+        "key": "STRING NOT NULL",
+        "value": "BIGINT",
+        "nullable": true
+      }
+    },
+    {
+      "id": 39,
+      "name": "f_row",
+      "type": {
+        "type": "ROW",
+        "fields": [
+          {
+            "id": 34,
+            "name": "nested_int",
+            "type": "INT"
+          },
+          {
+            "id": 35,
+            "name": "nested_string",
+            "type": "STRING"
+          },
+          {
+            "id": 36,
+            "name": "nested_decimal",
+            "type": "DECIMAL(19, 4)"
+          },
+          {
+            "id": 37,
+            "name": "nested_timestamp",
+            "type": "TIMESTAMP(9)"
+          },
+          {
+            "id": 38,
+            "name": "nested_timestamp_ltz",
+            "type": "TIMESTAMP_LTZ(9)"
+          }
+        ],
+        "nullable": true
+      }
+    },
+    {
+      "id": 40,
+      "name": "f_array_array_int",
+      "type": {
+        "type": "ARRAY",
+        "element": {
+          "type": "ARRAY",
+          "element": "INT",
+          "nullable": true
+        },
+        "nullable": true
+      }
+    },
+    {
+      "id": 41,
+      "name": "f_array_map",
+      "type": {
+        "type": "ARRAY",
+        "element": {
+          "type": "MAP<STRING NOT NULL, INT>",
+          "key": "STRING NOT NULL",
+          "value": "INT",
+          "nullable": true
+        },
+        "nullable": true
+      }
+    },
+    {
+      "id": 42,
+      "name": "f_map_array",
+      "type": {
+        "type": "MAP<STRING NOT NULL, ARRAY<INT>>",
+        "key": "STRING NOT NULL",
+        "value": {
+          "type": "ARRAY",
+          "element": "INT",
+          "nullable": true
+        },
+        "nullable": true
+      }
+    },
+    {
+      "id": 45,
+      "name": "f_array_row",
+      "type": {
+        "type": "ARRAY",
+        "element": {
+          "type": "ROW",
+          "fields": [
+            {
+              "id": 43,
+              "name": "name",
+              "type": "STRING"
+            },
+            {
+              "id": 44,
+              "name": "score",
+              "type": "DECIMAL(9, 2)"
+            }
+          ],
+          "nullable": true
+        },
+        "nullable": true
+      }
+    },
+    {
+      "id": 48,
+      "name": "f_map_row",
+      "type": {
+        "type": "MAP<STRING NOT NULL, ROW<enabled: BOOLEAN, event_time: TIMESTAMP(6)>>",
+        "key": "STRING NOT NULL",
+        "value": {
+          "type": "ROW",
+          "fields": [
+            {
+              "id": 46,
+              "name": "enabled",
+              "type": "BOOLEAN"
+            },
+            {
+              "id": 47,
+              "name": "event_time",
+              "type": "TIMESTAMP(6)"
+            }
+          ],
+          "nullable": true
+        },
+        "nullable": true
+      }
+    },
+    {
+      "id": 53,
+      "name": "f_deep_row",
+      "type": {
+        "type": "ROW",
+        "fields": [
+          {
+            "id": 51,
+            "name": "children",
+            "type": {
+              "type": "ARRAY",
+              "element": {
+                "type": "ROW",
+                "fields": [
+                  {
+                    "id": 49,
+                    "name": "leaf_id",
+                    "type": "BIGINT"
+                  },
+                  {
+                    "id": 50,
+                    "name": "leaf_variant",
+                    "type": "VARIANT"
+                  }
+                ],
+                "nullable": true
+              },
+              "nullable": true
+            }
+          },
+          {
+            "id": 52,
+            "name": "labels",
+            "type": {
+              "type": "MAP<STRING NOT NULL, STRING>",
+              "key": "STRING NOT NULL",
+              "value": "STRING",
+              "nullable": true
+            }
+          }
+        ],
+        "nullable": true
+      }
+    },
+    {
+      "id": 54,
+      "name": "f_array_variant",
+      "type": {
+        "type": "ARRAY",
+        "element": "VARIANT",
+        "nullable": true
+      }
+    },
+    {
+      "id": 55,
+      "name": "f_map_variant",
+      "type": {
+        "type": "MAP<STRING NOT NULL, VARIANT>",
+        "key": "STRING NOT NULL",
+        "value": "VARIANT",
+        "nullable": true
+      }
+    }
+  ],
+  "highestFieldId": 55,
+  "partitionKeys": [],
+  "primaryKeys": [],
+  "options": {
+    "bucket": "-1",
+    "file.format": "parquet",
+    "manifest.format": "avro",
+    "row-tracking.enabled": "true",
+    "data-evolution.enabled": "true",
+    "blob-field": "f_blob,f_blob_descriptor",
+    "blob-descriptor-field": "f_blob_descriptor"
+  },
+  "comment": "Generated by pypaimon 2.0.0 with scalar, blob, variant, and nested types.",
+  "timeMillis": 1788513128436
+}

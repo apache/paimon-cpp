@@ -171,4 +171,43 @@ TEST(PathUtilsTest, TestCreateTempPath) {
     ASSERT_TRUE(StringUtils::EndsWith(tmp_name, ".tmp"));
 }
 
+TEST(PathUtilsTest, TestCheckSinglePathComponent) {
+    // Names that stay a single path component, including names that merely contain a dot and
+    // names outside ascii.
+    for (const char* name : {"db1", "my.db", "a..b", "a b", "数据", "\u00e9t\u00e9"}) {
+        ASSERT_OK(PathUtil::CheckSinglePathComponent("database", name));
+    }
+
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("database", ""),
+                        "database name cannot be empty or whitespace");
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("database", " \t\n "),
+                        "database name cannot be empty or whitespace");
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("table", "."),
+                        "table name cannot be '.' or '..'");
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("table", ".."),
+                        "table name cannot be '.' or '..'");
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("table", "../escaped"),
+                        "table name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("table", "back\\slash"),
+                        "table name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("branch", "line\nfeed"),
+                        "branch name cannot contain control characters");
+    ASSERT_NOK_WITH_MSG(PathUtil::CheckSinglePathComponent("branch", std::string("nul\0byte", 8)),
+                        "branch name cannot contain control characters");
+}
+
+TEST(PathUtilsTest, TestCheckSinglePathComponentEscapesRejectedName) {
+    // The rejected name is escaped, so that it can neither add a line to the log the error is
+    // written to nor truncate the C string it is copied into.
+    Status newline = PathUtil::CheckSinglePathComponent("database", "line\nfeed\r\t");
+    ASSERT_FALSE(newline.ok());
+    ASSERT_EQ(newline.ToString().find('\n'), std::string::npos);
+    ASSERT_NE(newline.ToString().find("line\\nfeed\\r\\t"), std::string::npos);
+
+    Status nul = PathUtil::CheckSinglePathComponent("database", std::string("nul\0byte", 8));
+    ASSERT_FALSE(nul.ok());
+    ASSERT_EQ(nul.ToString().find('\0'), std::string::npos);
+    ASSERT_NE(nul.ToString().find("nul\\x{00}byte"), std::string::npos);
+}
+
 }  // namespace paimon::test

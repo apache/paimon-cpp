@@ -383,14 +383,32 @@ TEST_F(LruCacheTest, TestForKindSetsKeyKind) {
     ASSERT_EQ(CacheKind::MANIFEST, put_key->GetKind());
 }
 
-TEST_F(LruCacheTest, TestForSnapshotLiveManifestEntries) {
-    auto main_key = CacheKey::ForSnapshotLiveManifestEntries("table_path", "main", 0);
-    auto same_key = CacheKey::ForSnapshotLiveManifestEntries("table_path", "main", 0);
-    auto branch_key = CacheKey::ForSnapshotLiveManifestEntries("table_path", "dev", 0);
-    auto table_key = CacheKey::ForSnapshotLiveManifestEntries("other_table_path", "main", 0);
-    auto bucket_key = CacheKey::ForSnapshotLiveManifestEntries("table_path", "main", 1);
-    auto hash_in_path_key = CacheKey::ForSnapshotLiveManifestEntries("table#path", "main", 0);
-    auto hash_in_branch_key = CacheKey::ForSnapshotLiveManifestEntries("table", "path#main", 0);
+TEST_F(LruCacheTest, InferredManifestCacheKeysIncludeBucketCountAndSchema) {
+    auto key = SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 4, 0);
+    auto same = SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 4, 0);
+    ASSERT_TRUE(key->Equals(*same));
+    ASSERT_EQ(key->HashCode(), same->HashCode());
+    auto explicit_key = SnapshotLiveManifestEntriesCacheKey::ForExplicit("table", "main", 1);
+    // Schema zero is real inferred metadata, not an explicit-mode placeholder.
+    ASSERT_FALSE(key->Equals(*explicit_key));
+    ASSERT_FALSE(explicit_key->Equals(*key));
+    ASSERT_FALSE(
+        key->Equals(*SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 8, 0)));
+    ASSERT_FALSE(
+        key->Equals(*SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 4, 1)));
+}
+
+TEST_F(LruCacheTest, TestExplicitSnapshotLiveManifestEntriesKeys) {
+    auto main_key = SnapshotLiveManifestEntriesCacheKey::ForExplicit("table_path", "main", 0);
+    auto same_key = SnapshotLiveManifestEntriesCacheKey::ForExplicit("table_path", "main", 0);
+    auto branch_key = SnapshotLiveManifestEntriesCacheKey::ForExplicit("table_path", "dev", 0);
+    auto table_key =
+        SnapshotLiveManifestEntriesCacheKey::ForExplicit("other_table_path", "main", 0);
+    auto bucket_key = SnapshotLiveManifestEntriesCacheKey::ForExplicit("table_path", "main", 1);
+    auto hash_in_path_key =
+        SnapshotLiveManifestEntriesCacheKey::ForExplicit("table#path", "main", 0);
+    auto hash_in_branch_key =
+        SnapshotLiveManifestEntriesCacheKey::ForExplicit("table", "path#main", 0);
 
     ASSERT_EQ(CacheKind::SNAPSHOT_LIVE_MANIFEST, main_key->GetKind());
     ASSERT_TRUE(CacheKeyEqual()(main_key, same_key));

@@ -39,7 +39,7 @@
   "primaryKeys" : [ "k0", "k1", "p0", "p1" ],
   "options" : {
     "bucket" : "1",
-    "manifest.format" : "orc",
+    "manifest.format" : "avro",
     "file.format" : "orc",
     "sequence.field" : "s0,s1"
   },

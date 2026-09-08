@@ -20,13 +20,18 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <set>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/math.h"
+#include "paimon/data/decimal.h"
+#include "paimon/data/timestamp.h"
 #include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_indexer_factory.h"
@@ -98,6 +103,17 @@ class RangeBitmapFileIndexTest : public ::testing::Test {
         const std::set<int32_t>& null_indices, const std::map<std::string, std::string>& options,
         PAIMON_UNIQUE_PTR<Bytes>* serialized_bytes_out);
 
+    Result<std::shared_ptr<RangeBitmapFileIndexReader>> CreateReaderFromJson(
+        const std::shared_ptr<arrow::DataType>& arrow_type, const std::string& json,
+        const std::map<std::string, std::string>& options,
+        PAIMON_UNIQUE_PTR<Bytes>* serialized_bytes_out);
+
+    Result<std::shared_ptr<RangeBitmapFileIndexReader>> CreateReaderFromArray(
+        const std::shared_ptr<arrow::DataType>& arrow_type,
+        const std::shared_ptr<arrow::Array>& array,
+        const std::map<std::string, std::string>& options,
+        PAIMON_UNIQUE_PTR<Bytes>* serialized_bytes_out);
+
  protected:
     std::shared_ptr<MemoryPool> pool_;
 
@@ -122,11 +138,18 @@ Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexTest::Cr
     }
     std::shared_ptr<arrow::Array> arrow_array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Finish(&arrow_array));
+    return CreateReaderFromArray(arrow_type, arrow_array, options, serialized_bytes_out);
+}
+
+Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexTest::CreateReaderFromArray(
+    const std::shared_ptr<arrow::DataType>& arrow_type, const std::shared_ptr<arrow::Array>& array,
+    const std::map<std::string, std::string>& options,
+    PAIMON_UNIQUE_PTR<Bytes>* serialized_bytes_out) {
     // Wrap in StructArray (single field) as required by RangeBitmapFileIndexWriter
     auto field = arrow::field("test_field", arrow_type);
     arrow::FieldVector fields = {field};
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> struct_array,
-                                      arrow::StructArray::Make({arrow_array}, fields));
+                                      arrow::StructArray::Make({array}, fields));
     auto c_array = std::make_unique<::ArrowArray>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*struct_array, c_array.get()));
     // Create writer
@@ -147,6 +170,18 @@ Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexTest::Cr
                                arrow_type, 0, static_cast<int32_t>((*serialized_bytes_out)->size()),
                                input_stream, pool_));
     return reader;
+}
+
+Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexTest::CreateReaderFromJson(
+    const std::shared_ptr<arrow::DataType>& arrow_type, const std::string& json,
+    const std::map<std::string, std::string>& options,
+    PAIMON_UNIQUE_PTR<Bytes>* serialized_bytes_out) {
+    const auto field = arrow::field("test_field", arrow_type);
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+        std::shared_ptr<arrow::Array> array,
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({field}), json));
+    const auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+    return CreateReaderFromArray(arrow_type, struct_array->field(0), options, serialized_bytes_out);
 }
 
 // Test with all NULL values
@@ -532,6 +567,106 @@ TEST_F(RangeBitmapFileIndexTest, TestWriteAndReadRangeBitmapIndexDouble) {
     CheckResult(is_not_null_result, all_positions);
 }
 
+TEST_F(RangeBitmapFileIndexTest, TestFloatingPointSpecialValues) {
+    const std::vector<int32_t> nan_positions = {0, 1, 2, 5};
+    const std::vector<int32_t> negative_zero_positions = {3, 6};
+    const std::vector<int32_t> positive_zero_positions = {4, 7};
+    const std::vector<int32_t> non_nan_positions = {3, 4, 6, 7, 8, 9, 10, 11};
+    const std::vector<int32_t> less_than_positive_zero_positions = {3, 6, 8, 10};
+    const std::vector<int32_t> nan_and_negative_zero_positions = {0, 1, 2, 3, 5, 6};
+    const std::vector<int32_t> non_nan_and_non_negative_zero_positions = {4, 7, 8, 9, 10, 11};
+
+    const auto check_reader = [&](const std::shared_ptr<RangeBitmapFileIndexReader>& reader,
+                                  const std::vector<Literal>& nan_literals,
+                                  const Literal& negative_zero, const Literal& positive_zero,
+                                  const Literal& positive_infinity) {
+        for (const Literal& nan_literal : nan_literals) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
+                                 reader->VisitEqual(nan_literal));
+            CheckResult(result, nan_positions);
+        }
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> negative_zero_result,
+                             reader->VisitEqual(negative_zero));
+        CheckResult(negative_zero_result, negative_zero_positions);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> positive_zero_result,
+                             reader->VisitEqual(positive_zero));
+        CheckResult(positive_zero_result, positive_zero_positions);
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> less_than_nan_result,
+                             reader->VisitLessThan(nan_literals.front()));
+        CheckResult(less_than_nan_result, non_nan_positions);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> greater_than_infinity_result,
+                             reader->VisitGreaterThan(positive_infinity));
+        CheckResult(greater_than_infinity_result, nan_positions);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> less_than_positive_zero_result,
+                             reader->VisitLessThan(positive_zero));
+        CheckResult(less_than_positive_zero_result, less_than_positive_zero_positions);
+
+        const std::vector<Literal> nan_and_negative_zero = {nan_literals[1], negative_zero};
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> in_result,
+                             reader->VisitIn(nan_and_negative_zero));
+        CheckResult(in_result, nan_and_negative_zero_positions);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> not_in_result,
+                             reader->VisitNotIn(nan_and_negative_zero));
+        CheckResult(not_in_result, non_nan_and_non_negative_zero_positions);
+    };
+
+    const auto float_nan = FloatingPointFromBits<float>(kCanonicalFloatNaNBits);
+    const auto float_positive_payload_nan = FloatingPointFromBits<float>(uint32_t{0x7fc12345});
+    const auto float_negative_payload_nan = FloatingPointFromBits<float>(uint32_t{0xffc54321});
+    const std::vector<float> float_values = {
+        float_nan,
+        float_positive_payload_nan,
+        float_negative_payload_nan,
+        -0.0f,
+        +0.0f,
+        float_negative_payload_nan,
+        -0.0f,
+        +0.0f,
+        -std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::infinity(),
+        -1.0f,
+        +1.0f,
+    };
+    PAIMON_UNIQUE_PTR<Bytes> float_serialized_bytes;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RangeBitmapFileIndexReader> float_reader,
+                         (CreateReaderForTest<arrow::FloatBuilder, float>(
+                             arrow::float32(), float_values, &float_serialized_bytes)));
+    check_reader(float_reader,
+                 {Literal(float_nan), Literal(float_positive_payload_nan),
+                  Literal(float_negative_payload_nan)},
+                 Literal(-0.0f), Literal(+0.0f), Literal(std::numeric_limits<float>::infinity()));
+
+    const auto double_nan = FloatingPointFromBits<double>(kCanonicalDoubleNaNBits);
+    const auto double_positive_payload_nan =
+        FloatingPointFromBits<double>(uint64_t{0x7ff8123456789abc});
+    const auto double_negative_payload_nan =
+        FloatingPointFromBits<double>(uint64_t{0xfff8abcdef012345});
+    const std::vector<double> double_values = {
+        double_nan,
+        double_positive_payload_nan,
+        double_negative_payload_nan,
+        -0.0,
+        +0.0,
+        double_negative_payload_nan,
+        -0.0,
+        +0.0,
+        -std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        -1.0,
+        +1.0,
+    };
+    PAIMON_UNIQUE_PTR<Bytes> double_serialized_bytes;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RangeBitmapFileIndexReader> double_reader,
+                         (CreateReaderForTest<arrow::DoubleBuilder, double>(
+                             arrow::float64(), double_values, &double_serialized_bytes)));
+    check_reader(double_reader,
+                 {Literal(double_nan), Literal(double_positive_payload_nan),
+                  Literal(double_negative_payload_nan)},
+                 Literal(-0.0), Literal(+0.0), Literal(std::numeric_limits<double>::infinity()));
+}
+
 TEST_F(RangeBitmapFileIndexTest, TestWriteAndReadRangeBitmapIndexDate) {
     std::vector<int32_t> test_data = {42432, 24649, 42432, 38001, 24649, 50000, 12000};
     const auto& arrow_type = arrow::date32();
@@ -578,6 +713,56 @@ TEST_F(RangeBitmapFileIndexTest, TestWriteAndReadRangeBitmapIndexDate) {
     std::vector<int32_t> all_positions = {0, 1, 2, 3, 4, 5, 6};
     ASSERT_OK_AND_ASSIGN(auto is_not_null_result, reader->VisitIsNotNull());
     CheckResult(is_not_null_result, all_positions);
+}
+
+TEST_F(RangeBitmapFileIndexTest, TestWriteAndReadStringDecimalAndTimestamp) {
+    {
+        const auto type = arrow::utf8();
+        PAIMON_UNIQUE_PTR<Bytes> serialized_bytes;
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            CreateReaderFromJson(type, R"([["pear"], ["apple"], [null], ["banana"], ["apple"]])",
+                                 {{"chunk-size", "12b"}}, &serialized_bytes));
+        const Literal apple(FieldType::STRING, "apple", 5);
+        const Literal banana(FieldType::STRING, "banana", 6);
+        CheckResult(reader->VisitEqual(apple).value(), {1, 4});
+        CheckResult(reader->VisitGreaterOrEqual(banana).value(), {0, 3});
+        CheckResult(reader->VisitIsNull().value(), {2});
+    }
+    {
+        const auto type = arrow::decimal128(10, 2);
+        PAIMON_UNIQUE_PTR<Bytes> serialized_bytes;
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            CreateReaderFromJson(type, R"([["1.00"], ["2.50"], [null], ["-1.25"], ["2.50"]])", {},
+                                 &serialized_bytes));
+        CheckResult(reader->VisitEqual(Literal(Decimal(10, 2, 250))).value(), {1, 4});
+        CheckResult(reader->VisitLessThan(Literal(Decimal(10, 2, 0))).value(), {3});
+        CheckResult(reader->VisitIsNull().value(), {2});
+
+        // Range Bitmap does not rescale Decimal literals. A mathematically equivalent literal
+        // with a different scale produces an incorrect empty result, so callers must use the
+        // field's scale.
+        CheckResult(reader->VisitEqual(Literal(Decimal(10, 3, 2500))).value(), {});
+    }
+    {
+        const auto type = arrow::timestamp(arrow::TimeUnit::MICRO);
+        PAIMON_UNIQUE_PTR<Bytes> serialized_bytes;
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            CreateReaderFromJson(type, R"([[1000001], [2000002], [null], [-1000001], [2000002]])",
+                                 {}, &serialized_bytes));
+        CheckResult(reader->VisitEqual(Literal(Timestamp(2000, 2000))).value(), {1, 4});
+        CheckResult(reader->VisitLessThan(Literal(Timestamp(0, 0))).value(), {3});
+        CheckResult(reader->VisitIsNull().value(), {2});
+    }
+
+    ASSERT_NOK_WITH_MSG(
+        RangeBitmapFileIndexWriter::Create(arrow::field("f0", arrow::decimal128(19, 2)), {}, pool_),
+        "DECIMAL with precision in [1, 18]");
+    ASSERT_NOK_WITH_MSG(RangeBitmapFileIndexWriter::Create(
+                            arrow::field("f0", arrow::timestamp(arrow::TimeUnit::NANO)), {}, pool_),
+                        "TIMESTAMP with precision in [0, 6]");
 }
 
 TEST_F(RangeBitmapFileIndexTest, TestRangeBitmapEdgeCases) {

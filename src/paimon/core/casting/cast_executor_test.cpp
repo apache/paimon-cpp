@@ -1427,6 +1427,18 @@ TEST_F(CastExecutorTest, TestBinaryToBlobCastExecutorCastArray) {
     ASSERT_EQ(target_array->data()->buffers[2], src_array->data()->buffers[2]);
 }
 
+TEST_F(CastExecutorTest, TestBinaryToBlobCastExecutorAlreadyLargeBinary) {
+    auto cast_executor = std::make_shared<BinaryToBlobCastExecutor>();
+    auto src_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::large_binary(), R"(["foo", null, "bar"])")
+            .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::Array> target_array,
+        cast_executor->Cast(src_array, arrow::large_binary(), arrow::default_memory_pool()));
+    ASSERT_EQ(target_array, src_array);
+}
+
 TEST_F(CastExecutorTest, TestBinaryToBlobCastExecutorCastArrayWithOffset) {
     auto cast_executor = std::make_shared<BinaryToBlobCastExecutor>();
     auto src_array =

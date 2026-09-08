@@ -89,9 +89,9 @@ if(PAIMON_BUILD_TESTS)
                     paimon_shared
                     ${GTEST_LINK_TOOLCHAIN})
 
-    # Guards the format-layer assumptions parquet_format_benchmark.cpp is built on. The benchmark
-    # itself is only compiled under PAIMON_BUILD_BENCHMARKS, which CI does not set, so this test is
-    # what keeps those assumptions covered.
+    # Guards the format-layer assumptions parquet_format_benchmark.cpp is built on. Links the same
+    # libraries as the benchmark itself: CoreOptions resolves manifest.format, whose default is avro,
+    # so a binary that builds CoreOptions needs every enabled format factory registered.
     add_paimon_test(parquet_format_benchmark_test
                     SOURCES
                     parquet_format_benchmark_test.cpp
@@ -100,9 +100,7 @@ if(PAIMON_BUILD_TESTS)
                     STATIC_LINK_LIBS
                     arrow
                     parquet
-                    paimon_shared
-                    ${PAIMON_LOCAL_FILE_SYSTEM_SHARED_LINK_LIBS}
-                    ${PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS}
+                    ${PAIMON_BENCHMARK_STATIC_LINK_LIBS}
                     test_utils_static
                     ${GTEST_LINK_TOOLCHAIN})
 endif()

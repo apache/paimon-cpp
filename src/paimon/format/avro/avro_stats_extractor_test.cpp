@@ -74,8 +74,7 @@ class AvroStatsExtractorTest : public ::testing::Test {
     }
 
  private:
-    std::map<std::string, std::string> options_ = {{Options::FILE_FORMAT, "avro"},
-                                                   {Options::MANIFEST_FORMAT, "avro"}};
+    std::map<std::string, std::string> options_ = {{Options::FILE_FORMAT, "avro"}};
 };
 
 TEST_F(AvroStatsExtractorTest, TestPrimitiveStatsExtractor) {

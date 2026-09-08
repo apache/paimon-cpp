@@ -285,7 +285,8 @@ Result<RowCompactedSerializer::FieldReader> RowCompactedSerializer::CreateFieldR
             };
             break;
         }
-        case arrow::Type::type::LIST: {
+        case arrow::Type::type::LIST:
+        case arrow::Type::type::FIXED_SIZE_LIST: {
             field_reader = [](int32_t pos, RowReader* reader) -> Result<VariantType> {
                 PAIMON_ASSIGN_OR_RAISE(VariantType value, reader->ReadArray());
                 return value;
@@ -414,7 +415,8 @@ Result<RowCompactedSerializer::FieldWriter> RowCompactedSerializer::CreateFieldW
             };
             break;
         }
-        case arrow::Type::type::LIST: {
+        case arrow::Type::type::LIST:
+        case arrow::Type::type::FIXED_SIZE_LIST: {
             field_writer = [field_type](int32_t pos, const VariantType& field,
                                         RowWriter* writer) -> Status {
                 return writer->WriteArray(

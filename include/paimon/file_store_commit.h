@@ -74,15 +74,29 @@ class PAIMON_EXPORT FileStoreCommit {
 
     /// Commit sealed real-time segments and persist their partition-bucket offset progress.
     ///
-    /// Entries for each partition-bucket must form a contiguous range beginning after the offset
+    /// Entries for each partition-bucket must be ordered and non-overlapping after the offset
     /// recorded by the latest committed snapshot. Input entries may be unordered; this method
-    /// orders them by partition, bucket, and offset before validating continuity. The resulting
-    /// snapshot atomically publishes the data files and the updated offset map.
+    /// orders them by partition, bucket, and offset before validation. Offset gaps are allowed.
+    /// The resulting snapshot atomically publishes the data files and the updated offset map.
     ///
-    /// If this method returns an error, the caller may retry with the same arguments. Each call
-    /// reloads the latest committed state. As in `FilterAndCommit`, a retry's identifier is
-    /// considered committed when it is not newer than the latest identifier for `commit_user`.
-    /// The requested offset ranges must also be covered by the latest committed progress.
+    /// For each partition-bucket, the upstream coordinator must include the complete prefix of
+    /// prepared-but-uncommitted entries through the requested progress. Because offsets may be
+    /// sparse, this method cannot distinguish a valid offset gap from an omitted prepared entry.
+    /// Omitting an earlier entry may advance committed progress past unpublished files and allow
+    /// their real-time data to be reclaimed.
+    ///
+    /// Snapshot conflicts are retried internally using the configured commit retry limit, timeout,
+    /// and backoff. Each attempt reloads the latest snapshot and rebases both file changes and
+    /// offset progress. A retry succeeds idempotently when both the identifier and all requested
+    /// ranges are already committed. Inconsistent identifiers, overlapping offset progress, and
+    /// file or index conflicts fail without further retry.
+    ///
+    /// An error is terminal for the writer state which produced `realtime_commits`. The caller must
+    /// discard its `RealtimeContext` and `FileStoreWrite`, load the current latest snapshot's
+    /// durable offsets, recreate both objects, and replay input from those exclusive offsets.
+    /// External conflicts returned after submitting a REST catalog request are not retried by this
+    /// method. Concurrent rollback or partition deletion from another process must be fenced by
+    /// the upstream coordinator.
     ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.

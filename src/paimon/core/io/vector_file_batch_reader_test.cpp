@@ -83,6 +83,18 @@ TEST(VectorFileBatchReaderTest, ConvertSchemaAndNextBatch) {
     ASSERT_TRUE(BatchReader::IsEofBatch(batch));
 }
 
+TEST(VectorFileBatchReaderTest, WarmupForwardsToInnerReader) {
+    auto physical_type = AsStructType(arrow::struct_({arrow::field("id", arrow::int32())}));
+    auto mock_reader =
+        std::make_unique<MockFileBatchReader>(/*data=*/nullptr, physical_type, /*batch_size=*/1);
+    MockFileBatchReader* inner_reader = mock_reader.get();
+    VectorFileBatchReader reader(std::move(mock_reader), GetArrowPool(GetDefaultPool()));
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader.Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 TEST(VectorFileBatchReaderTest, KeepFixedSizeListFileSchema) {
     auto logical_type = AsStructType(arrow::struct_({
         arrow::field("id", arrow::int32()),

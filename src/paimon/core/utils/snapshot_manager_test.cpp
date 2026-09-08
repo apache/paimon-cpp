@@ -20,6 +20,7 @@
 
 #include <filesystem>
 #include <limits>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/utils/path_util.h"
@@ -137,6 +138,33 @@ TEST(SnapshotManagerTest, TestPathNotExist) {
     ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot,
                          mgr.LatestSnapshotOfUser("b02e4322-9c5f-41e1-a560-c0156fdf7b9c"));
     ASSERT_EQ(snapshot, std::nullopt);
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotWithStaleMissingOrInvalidHint) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(fs, dir->Str());
+    ASSERT_OK(fs->Mkdirs(mgr.SnapshotDirectory()));
+    ASSERT_OK(fs->WriteFile(mgr.SnapshotPath(1), "{}", true));
+    ASSERT_OK(mgr.CommitLatestHint(1));
+
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 1);
+
+    // A commit can publish its snapshot before updating the hint.
+    ASSERT_OK(fs->WriteFile(mgr.SnapshotPath(2), "{}", true));
+    ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 2);
+
+    const std::string hint_path = PathUtil::JoinPath(mgr.SnapshotDirectory(), "LATEST");
+    ASSERT_OK(fs->Delete(hint_path));
+    ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 2);
+
+    ASSERT_OK(fs->WriteFile(hint_path, "invalid", true));
+    ASSERT_OK_AND_ASSIGN(latest, mgr.LatestSnapshotId());
+    ASSERT_EQ(latest, 2);
 }
 
 TEST(SnapshotManagerTest, TestEarlierOrEqualTimeMillisExactMatch) {

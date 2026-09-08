@@ -38,6 +38,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
+#include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/bitmap_index_result.h"
@@ -252,10 +253,26 @@ Result<BitSliceIndexBitmapFileIndex::ValueMapperType> BitSliceIndexBitmapFileInd
                     return literal.GetValue<Timestamp>().ToMicrosecond();
                 });
         }
+        case FieldType::DECIMAL:
+            return BitSliceIndexBitmapFileIndex::ValueMapperType(
+                [](const Literal& literal) -> Result<int64_t> {
+                    if (literal.IsNull()) {
+                        return Status::Invalid(
+                            "literal cannot be null when GetValue in BitSliceIndexBitmapFileIndex");
+                    }
+                    const auto value = literal.GetValue<Decimal>();
+                    if (value.Value() < std::numeric_limits<int64_t>::min() ||
+                        value.Value() > std::numeric_limits<int64_t>::max()) {
+                        return Status::Invalid(fmt::format(
+                            "decimal unscaled value {} does not fit in int64 for bsi index",
+                            value.ToString()));
+                    }
+                    return value.ToUnscaledLong();
+                });
         default:
-            // TODO(xinyu.lxy): support decimal
             return Status::Invalid(
-                "BitSliceIndexBitmapFileIndex only support TINYINT/SMALLINT/INT/BIGINT/DATE");
+                "BitSliceIndexBitmapFileIndex only support "
+                "TINYINT/SMALLINT/INT/BIGINT/DATE/TIMESTAMP/DECIMAL");
     }
 }
 

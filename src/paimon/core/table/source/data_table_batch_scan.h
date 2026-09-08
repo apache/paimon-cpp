@@ -37,7 +37,7 @@ class DataTableBatchScan : public AbstractTableScan {
  public:
     DataTableBatchScan(bool pk_table, const CoreOptions& core_options,
                        const std::shared_ptr<SnapshotReader>& snapshot_reader, bool read_optimized,
-                       std::optional<int32_t> push_down_limit);
+                       std::optional<int32_t> push_down_limit, bool realtime_pk_scan);
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
 

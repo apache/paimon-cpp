@@ -91,6 +91,12 @@ class FieldMappingReader : public FileBatchReader {
         return reader_->SupportPreciseBitmapSelection();
     }
 
+    /// This is the outermost wrapper of every data file's reader stack, so swallowing the call here
+    /// would leave the whole stack cold no matter who asked for the warmup.
+    void Warmup() override {
+        reader_->Warmup();
+    }
+
  private:
     FieldMappingReader(int32_t field_count, std::unique_ptr<FileBatchReader>&& reader,
                        const BinaryRow& partition, std::unique_ptr<FieldMapping>&& mapping,
@@ -110,13 +116,6 @@ class FieldMappingReader : public FileBatchReader {
                          const std::vector<int32_t>& idx_in_target_schema,
                          arrow::ArrayVector* target_array,
                          std::vector<std::string>* target_field_names);
-
-    Result<bool> HasMapSelectedKeysRecursively(
-        const std::shared_ptr<arrow::Field>& read_field) const;
-
-    Result<std::shared_ptr<arrow::Array>> FilterMapSelectedKeysRecursively(
-        const std::shared_ptr<arrow::Array>& array,
-        const std::shared_ptr<arrow::Field>& read_field) const;
 
  private:
     bool need_mapping_ = false;

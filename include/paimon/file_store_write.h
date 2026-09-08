@@ -52,9 +52,22 @@ class PAIMON_EXPORT FileStoreWrite {
     virtual ~FileStoreWrite() = default;
 
     /// Support write an input `RecordBatch` to internal buffer or file.
+    /// @note Real-time writers require a non-nullable int64 `_REALTIME_OFFSET` field before the
+    ///       table write fields. Its values must be strictly increasing within each batch and
+    ///       monotonically increasing for each partition-bucket across batches; gaps are allowed.
+    ///       The field is used for snapshot progress and is not written to data files.
     /// @note If a field in table schema is marked as non-nullable (`nullable = false`),
     ///       the corresponding array in `batch` must have zero null entries.
     virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;
+
+    /// Slices the current in-memory real-time data into a sealed segment so it can be reclaimed
+    /// independently. A future implementation will support spilling sealed segments to a
+    /// temporary directory; currently this method only creates the in-memory segment boundary.
+    /// Calling this method on a non-real-time writer returns an error.
+    /// If sealing fails, the caller must recreate both the `RealtimeContext` and writer. The
+    /// upstream must then recover input from the durable recovery offset persisted in the
+    /// snapshot. Reusing the failed writer is unsupported.
+    virtual Status Seal();
 
     /// Compact data stored in given partition and bucket. Note that compaction process is only
     /// submitted and may not be completed when the method returns.
@@ -95,11 +108,17 @@ class PAIMON_EXPORT FileStoreWrite {
     /// Generates commit messages together with partition-bucket real-time offset ranges.
     ///
     /// Each range is returned atomically with the commit message generated from the same sealed
-    /// segment.
+    /// segments. Repeated calls return incremental progress. The upstream coordinator must retain
+    /// every result until it is committed and include all earlier prepared-but-uncommitted
+    /// progress when a later checkpoint subsumes it.
     ///
     /// @param commit_identifier Identifier of this prepare-commit operation in streaming mode.
     /// @return Real-time commit messages with their partition-bucket offset ranges.
     /// @note Calling this method on a non-real-time writer or in batch mode returns an error.
+    /// @note If preparation fails, the caller must recreate both the `RealtimeContext` and writer.
+    ///       The upstream must then recover input from the durable recovery offset persisted in the
+    ///       snapshot. The failed writer may contain partially prepared bucket state and must not
+    ///       be reused.
     virtual Result<std::vector<RealtimeCommitProgress>> PrepareCommitWithProgress(
         int64_t commit_identifier);
 
@@ -116,6 +135,12 @@ class PAIMON_EXPORT FileStoreWrite {
     virtual Status RefreshCommittedSnapshot(int64_t snapshot_id);
 
     virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
+
+    /// Releases resources owned by this writer.
+    ///
+    /// Closing a real-time writer with data not covered by a successful
+    /// `PrepareCommitWithProgress()` returns an error and invalidates its `RealtimeContext`.
+    /// The caller must rebuild both objects and recover input from the durable snapshot offset.
     virtual Status Close() = 0;
 };
 

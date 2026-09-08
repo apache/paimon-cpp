@@ -23,6 +23,7 @@
 #include "fmt/format.h"
 #include "paimon/common/file_index/rangebitmap/dictionary/chunked_dictionary.h"
 #include "paimon/common/file_index/rangebitmap/dictionary/fixed_length_chunk.h"
+#include "paimon/common/file_index/rangebitmap/dictionary/variable_length_chunk.h"
 #include "paimon/common/file_index/rangebitmap/utils/literal_serialization_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/fields_comparator.h"
@@ -48,6 +49,8 @@ Result<std::shared_ptr<KeyFactory>> KeyFactory::Create(FieldType field_type) {
             return std::make_shared<FloatKeyFactory>();
         case FieldType::DOUBLE:
             return std::make_shared<DoubleKeyFactory>();
+        case FieldType::STRING:
+            return std::make_shared<StringKeyFactory>();
         default:
             return Status::Invalid(fmt::format("Unsupported field type for KeyFactory: {}",
                                                FieldTypeUtils::FieldTypeToString(field_type)));
@@ -91,12 +94,31 @@ Result<std::unique_ptr<Chunk>> FixedLengthKeyFactory::MmapChunk(
 Result<std::unique_ptr<Chunk>> VariableLengthKeyFactory::CreateChunk(
     const Literal& key, int32_t code, int32_t keys_length_limit,
     const std::shared_ptr<MemoryPool>& pool) {
-    return Status::NotImplemented("VariableLengthKeyFactory::CreateChunk not implemented");
+    PAIMON_ASSIGN_OR_RAISE(LiteralSerDeUtils::Serializer serializer,
+                           LiteralSerDeUtils::CreateValueWriter(GetFieldType()));
+    return std::make_unique<VariableLengthChunk>(key, code, keys_length_limit, shared_from_this(),
+                                                 serializer, pool);
 }
 Result<std::unique_ptr<Chunk>> VariableLengthKeyFactory::MmapChunk(
     const std::shared_ptr<InputStream>& input_stream, int32_t chunk_offset,
     int32_t keys_base_offset, const std::shared_ptr<MemoryPool>& pool) {
-    return Status::NotImplemented("VariableLengthKeyFactory::MmapChunk not implemented");
+    PAIMON_RETURN_NOT_OK(input_stream->Seek(chunk_offset, FS_SEEK_SET));
+    const auto data_in = std::make_shared<DataInputStream>(input_stream);
+    PAIMON_ASSIGN_OR_RAISE(int8_t version, data_in->ReadValue<int8_t>());
+    if (version != VariableLengthChunk::kCurrentVersion) {
+        return Status::Invalid(fmt::format("Unsupported version for KeyFactory: {}", version));
+    }
+    PAIMON_ASSIGN_OR_RAISE(LiteralSerDeUtils::Deserializer deserializer,
+                           LiteralSerDeUtils::CreateValueReader(GetFieldType()));
+    PAIMON_ASSIGN_OR_RAISE(Literal key_literal, deserializer(data_in, pool.get()));
+    PAIMON_ASSIGN_OR_RAISE(int32_t code, data_in->ReadValue<int32_t>());
+    PAIMON_ASSIGN_OR_RAISE(int32_t offset, data_in->ReadValue<int32_t>());
+    PAIMON_ASSIGN_OR_RAISE(int32_t size, data_in->ReadValue<int32_t>());
+    PAIMON_ASSIGN_OR_RAISE(int32_t offsets_length, data_in->ReadValue<int32_t>());
+    PAIMON_ASSIGN_OR_RAISE(int32_t keys_length, data_in->ReadValue<int32_t>());
+    return std::make_unique<VariableLengthChunk>(key_literal, code, offset, size,
+                                                 shared_from_this(), input_stream, keys_base_offset,
+                                                 offsets_length, keys_length, pool);
 }
 
 /// Java-compatible ordering for floats

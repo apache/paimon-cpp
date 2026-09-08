@@ -37,6 +37,7 @@
 #include "arrow/c/helpers.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
@@ -50,7 +51,7 @@
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/restore_files.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
-#include "paimon/core/realtime/realtime_primary_key_reader.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/file_store_commit.h"
@@ -249,12 +250,12 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
     }
 
     Result<std::vector<std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>>>
-    ReadRealtimePrimaryKeyTransportRows(
+    ReadRealtimePrimaryKeyStoreRows(
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> context,
                                RealtimeContextImpl::Cast(realtime_context));
-        PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimePartitionBucketView> views,
-                               context->AcquireReadViews());
+        PAIMON_ASSIGN_OR_RAISE(RealtimeReadState read_state, context->AcquireReadState());
+        const std::vector<RealtimePartitionBucketView>& views = read_state.views;
         if (views.size() != 1) {
             return Status::Invalid("expected exactly one real-time store");
         }
@@ -262,14 +263,17 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
                                                0, arrow::field("id", arrow::int64(), false))),
                                            DataField::ConvertDataFieldToArrowField(
                                                DataField(1, arrow::field("value", arrow::utf8())))};
-        std::shared_ptr<arrow::Schema> transport_schema =
-            RealtimePrimaryKeyLayout::CreateSchema(value_fields);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                               RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY,
+                                                            arrow::schema(value_fields)));
+        const std::shared_ptr<arrow::Schema>& store_write_schema =
+            schema_layout->StoreWriteSchema();
         auto c_schema = std::make_unique<ArrowSchema>();
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*transport_schema, c_schema.get()));
-        RealtimeQueryContext query_context{c_schema.get(), nullptr, false};
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_write_schema, c_schema.get()));
+        RealtimeQueryContext query_context{c_schema.get(), /*predicate=*/nullptr};
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::unique_ptr<BatchReader>> readers,
-            views[0].store->CreateQueryReaders(views[0].read_view, 0, query_context));
+            views[0].store->CreateQueryReaders(views[0].read_view, query_context));
         std::vector<std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>> rows;
         for (const std::unique_ptr<BatchReader>& reader : readers) {
             while (true) {
@@ -283,12 +287,12 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
                 std::shared_ptr<arrow::StructArray> values =
                     std::dynamic_pointer_cast<arrow::StructArray>(array);
                 if (!values || values->num_fields() != 5) {
-                    return Status::Invalid("unexpected realtime primary-key transport batch");
+                    return Status::Invalid("unexpected real-time primary-key store batch");
                 }
-                std::shared_ptr<arrow::Int8Array> row_kinds =
-                    std::dynamic_pointer_cast<arrow::Int8Array>(values->field(0));
                 std::shared_ptr<arrow::Int64Array> sequences =
-                    std::dynamic_pointer_cast<arrow::Int64Array>(values->field(1));
+                    std::dynamic_pointer_cast<arrow::Int64Array>(values->field(0));
+                std::shared_ptr<arrow::Int8Array> row_kinds =
+                    std::dynamic_pointer_cast<arrow::Int8Array>(values->field(1));
                 std::shared_ptr<arrow::Int64Array> offsets =
                     std::dynamic_pointer_cast<arrow::Int64Array>(values->field(2));
                 std::shared_ptr<arrow::Int64Array> ids =
@@ -296,7 +300,7 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
                 std::shared_ptr<arrow::StringArray> payloads =
                     std::dynamic_pointer_cast<arrow::StringArray>(values->field(4));
                 if (!row_kinds || !sequences || !offsets || !ids || !payloads) {
-                    return Status::Invalid("unexpected realtime primary-key transport column type");
+                    return Status::Invalid("unexpected real-time primary-key store column type");
                 }
                 for (int64_t row = 0; row < values->length(); ++row) {
                     rows.emplace_back(row_kinds->Value(row), ids->Value(row),
@@ -428,6 +432,9 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
         arrow::field("id", arrow::int64(), false),
         arrow::field("value", arrow::utf8()),
     });
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                         RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, schema));
+    const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     CreateTable(dir->Str(), schema, options);
@@ -445,25 +452,44 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
                          FileStoreWrite::Create(std::move(write_context)));
 
     std::unique_ptr<RecordBatch> batch =
-        MakeBatch(schema, R"([
-        [1, "old"],
-        [2, "two"],
-        [1, "new"]
+        MakeBatch(realtime_schema, R"([
+        [10, 1, "old"],
+        [20, 2, "two"],
+        [30, 1, "new"]
     ])",
                   {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::DELETE,
                    RecordBatch::RowKind::UPDATE_AFTER});
     ASSERT_OK(writer->Write(std::move(batch)));
-    using RealtimePrimaryKeyTransportRow =
-        std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>;
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyTransportRow> transport_rows,
-                         ReadRealtimePrimaryKeyTransportRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyTransportRow>{
-                  {0, 1, "old", 0, 0}, {2, 1, "new", 2, 2}, {3, 2, "two", 1, 1}}),
-              transport_rows);
+    ASSERT_NOK(writer->Write(MakeBatch(schema, R"([[3, "missing-offset"]])")));
+    ASSERT_NOK_WITH_MSG(
+        writer->Write(
+            MakeBatch(realtime_schema, R"([[31, 3, "duplicate-a"], [31, 4, "duplicate-b"]])")),
+        "offsets must be strictly increasing");
+    ASSERT_NOK_WITH_MSG(writer->Write(MakeBatch(realtime_schema, R"([[30, 3, "backwards"]])")),
+                        "offset moved backwards or was duplicated");
+    ASSERT_NOK(writer->Write(MakeBatch(realtime_schema, R"([[null, 3, "null-offset"]])")));
+    std::shared_ptr<Metrics> building_metrics = writer->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double building_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(double total_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    // The real-time gauges count physical versions, including the delete record.
+    ASSERT_EQ(3, building_rows);
+    ASSERT_EQ(3, total_rows);
+    ASSERT_OK_AND_ASSIGN(auto store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
+    ASSERT_EQ(
+        (decltype(store_rows){{0, 1, "old", 0, 10}, {2, 1, "new", 2, 30}, {3, 2, "two", 1, 20}}),
+        store_rows);
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progresses,
                          writer->PrepareCommitWithProgress(0));
+    std::shared_ptr<Metrics> sealed_metrics = writer->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double sealed_rows,
+                         sealed_metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(total_rows, sealed_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(3, sealed_rows);
+    ASSERT_EQ(3, total_rows);
     ASSERT_EQ(1, progresses.size());
-    ASSERT_EQ(OffsetRange(0, 3), progresses[0].offset_range);
+    ASSERT_EQ(OffsetRange(10, 31), progresses[0].offset_range);
     std::shared_ptr<CommitMessageImpl> commit_message =
         std::dynamic_pointer_cast<CommitMessageImpl>(progresses[0].commit_message);
     ASSERT_NE(nullptr, commit_message);
@@ -484,6 +510,9 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
         arrow::field("id", arrow::int64(), false),
         arrow::field("value", arrow::utf8()),
     });
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                         RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, schema));
+    const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     CreateTable(dir->Str(), schema, options);
@@ -502,15 +531,15 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
                          FileStoreWrite::Create(std::move(write_context)));
 
     const int64_t allocations_before_write = pool->allocation_count;
-    ASSERT_OK(writer->Write(MakeBatch(schema, R"([[1, "one"]])")));
+    ASSERT_OK(writer->Write(MakeBatch(realtime_schema, R"([[0, 1, "one"]])")));
     ASSERT_GT(pool->allocation_count, allocations_before_write);
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, progress.size());
     ASSERT_OK(writer->Close());
     writer.reset();
-    using RealtimePrimaryKeyTransportRow =
-        std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>;
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyTransportRow> retained_rows,
-                         ReadRealtimePrimaryKeyTransportRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyTransportRow>{{0, 1, "one", 0, 0}}), retained_rows);
+    ASSERT_OK_AND_ASSIGN(auto retained_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
+    ASSERT_EQ((decltype(retained_rows){{0, 1, "one", 0, 0}}), retained_rows);
 
     std::shared_ptr<TestingMemoryPool> rejecting_pool = std::make_shared<TestingMemoryPool>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> rejecting_context,
@@ -524,14 +553,13 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimePool) {
                          rejecting_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> rejecting_writer,
                          FileStoreWrite::Create(std::move(rejecting_write_context)));
-    ASSERT_OK(rejecting_writer->Write(MakeBatch(schema, "[]")));
+    ASSERT_OK(rejecting_writer->Write(MakeBatch(realtime_schema, "[]")));
     const int64_t rejecting_allocations_before_write = rejecting_pool->allocation_count;
     rejecting_pool->reject_allocations = true;
-    ASSERT_NOK_WITH_MSG(rejecting_writer->Write(MakeBatch(schema, R"([[2, "two"]])")),
+    ASSERT_NOK_WITH_MSG(rejecting_writer->Write(MakeBatch(realtime_schema, R"([[0, 2, "two"]])")),
                         "Out of memory");
     ASSERT_GT(rejecting_pool->allocation_count, rejecting_allocations_before_write);
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyTransportRow> rejected_rows,
-                         ReadRealtimePrimaryKeyTransportRows(rejecting_context));
+    ASSERT_OK_AND_ASSIGN(auto rejected_rows, ReadRealtimePrimaryKeyStoreRows(rejecting_context));
     ASSERT_TRUE(rejected_rows.empty());
     ASSERT_OK(rejecting_writer->Close());
 }
@@ -544,6 +572,9 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
         arrow::field("id", arrow::int64(), false),
         arrow::field("value", arrow::utf8()),
     });
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                         RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, schema));
+    const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     CreateTable(dir->Str(), schema, options);
@@ -558,7 +589,7 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
                          initial_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> initial_writer,
                          FileStoreWrite::Create(std::move(initial_write_context)));
-    ASSERT_OK(initial_writer->Write(MakeBatch(schema, R"([[0, "initial"]])")));
+    ASSERT_OK(initial_writer->Write(MakeBatch(realtime_schema, R"([[0, 0, "initial"]])")));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> initial_progress,
                          initial_writer->PrepareCommitWithProgress(0));
     ASSERT_EQ(1, initial_progress.size());
@@ -585,26 +616,25 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeLimits) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
                          FileStoreWrite::Create(std::move(write_context)));
-    ASSERT_OK(writer->Write(MakeBatch(schema, R"([[1, "legal"]])")));
-    using RealtimePrimaryKeyTransportRow =
-        std::tuple<int8_t, int64_t, std::string, int64_t, int64_t>;
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePrimaryKeyTransportRow> transport_rows,
-                         ReadRealtimePrimaryKeyTransportRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyTransportRow>{{0, 1, "legal", max - 1, max - 1}}),
-              transport_rows);
+    ASSERT_OK(
+        writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 1, "legal"]])", max - 1))));
+    ASSERT_OK_AND_ASSIGN(auto store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
+    ASSERT_EQ((decltype(store_rows){{0, 1, "legal", max - 1, max - 1}}), store_rows);
 
-    ASSERT_NOK_WITH_MSG(writer->Write(MakeBatch(schema, R"([[2, "overflow"]])")),
-                        "real-time offset range exceeds INT64_MAX");
-    ASSERT_OK_AND_ASSIGN(transport_rows, ReadRealtimePrimaryKeyTransportRows(realtime_context));
-    ASSERT_EQ((std::vector<RealtimePrimaryKeyTransportRow>{{0, 1, "legal", max - 1, max - 1}}),
-              transport_rows);
+    ASSERT_NOK_WITH_MSG(
+        writer->Write(MakeBatch(realtime_schema, fmt::format(R"([[{}, 2, "overflow"]])", max))),
+        "real-time offset range exceeds INT64_MAX");
+    ASSERT_OK_AND_ASSIGN(store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
+    ASSERT_EQ((decltype(store_rows){{0, 1, "legal", max - 1, max - 1}}), store_rows);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context_impl,
                          RealtimeContextImpl::Cast(realtime_context));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context_impl->AcquireReadViews());
-    ASSERT_EQ(1, views.size());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context_impl->AcquireReadState());
+    ASSERT_EQ(1, read_state.views.size());
     ASSERT_EQ(std::optional<OffsetRange>(OffsetRange(max - 1, max)),
-              views[0].read_view->GetOffsetRange());
+              read_state.views[0].read_view->GetOffsetRange());
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> boundary_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, boundary_progress.size());
     ASSERT_OK(writer->Close());
     ASSERT_GE(snapshot_id, 1);
 }
@@ -743,7 +773,7 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriterRestoreKeepsValueStats) {
     std::map<std::string, std::string> options = {
         {Options::BUCKET, "1"},
         {Options::FILE_FORMAT, "orc"},
-        {Options::MANIFEST_FORMAT, "orc"},
+
         {Options::MANIFEST_DELETE_FILE_DROP_STATS, "true"}};
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(dir->Str(), options));
     ASSERT_OK(catalog->CreateDatabase("foo", {}, /*ignore_if_exists=*/false));

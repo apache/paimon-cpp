@@ -31,6 +31,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -96,7 +97,16 @@ class PAIMON_EXPORT StringUtils {
 
     static bool EndsWith(const std::string& str, const std::string& suffix);
 
-    static bool IsNullOrWhitespaceOnly(const std::string& str);
+    /// Returns true if the string is empty or contains only characters recognized by Java
+    /// Character.isWhitespace.
+    static bool IsBlank(std::string_view str);
+
+    /// Whether `str` is empty or holds nothing but whitespace. Takes a view so that a caller
+    /// checking one row of a column at a time does not allocate.
+    static bool IsNullOrWhitespaceOnly(std::string_view str);
+
+    /// Returns true if Java String::trim would produce an empty string.
+    static bool IsEmptyAfterTrim(std::string_view str);
 
     static void Trim(std::string* str);
 

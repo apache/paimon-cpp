@@ -73,6 +73,10 @@ class PAIMON_EXPORT BlobUtils {
         const std::set<std::string>& inline_fields);
 
     static bool IsBlobField(const std::shared_ptr<arrow::Field>& field);
+    /// Returns whether the field is a top-level MAP whose values are BLOBs.
+    static bool IsMapBlobField(const std::shared_ptr<arrow::Field>& field);
+    /// Rejects schemas that the C++ writer cannot safely mutate.
+    static Status ValidateMapBlobWriteSchema(const std::shared_ptr<arrow::Schema>& schema);
     static bool IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata);
     static bool IsBlobFile(const std::string& file_name);
 

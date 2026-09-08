@@ -46,6 +46,11 @@ class PAIMON_EXPORT VectorUtils {
 
     static bool ContainsVector(const std::shared_ptr<arrow::Schema>& schema);
 
+    /// Rejects VECTOR dimension or element type changes and VECTOR/non-VECTOR conversions.
+    /// Checks only these types; callers validate nested children recursively.
+    static Status ValidateVectorEvolution(const std::shared_ptr<arrow::DataType>& read_type,
+                                          const std::shared_ptr<arrow::DataType>& data_type);
+
     /// Rejects VECTOR values whose elements are not fully materialized or contain nulls.
     /// `array` must be the List or FixedSizeList array holding the VECTOR values.
     static Status ValidateVectorElements(const arrow::Array& array);

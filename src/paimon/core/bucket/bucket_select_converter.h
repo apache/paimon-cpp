@@ -23,10 +23,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arrow/type_fwd.h"
 #include "paimon/bucket/bucket_function_type.h"
+#include "paimon/common/data/binary_row.h"
+#include "paimon/core/bucket/bucket_function.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/result.h"
@@ -37,6 +40,22 @@ class BinaryRowWriter;
 class BucketFunction;
 class MemoryPool;
 class Predicate;
+
+/// Selects a bucket using the bucket count recorded in each manifest entry.
+class BucketSelector {
+ public:
+    BucketSelector(BinaryRow key, std::unique_ptr<BucketFunction> function)
+        : key_(std::move(key)), function_(std::move(function)) {}
+
+    /// Compute the bucket for a positive total bucket count.
+    int32_t Bucket(int32_t num_buckets) const {
+        return function_->Bucket(key_, num_buckets);
+    }
+
+ private:
+    BinaryRow key_;
+    std::unique_ptr<BucketFunction> function_;
+};
 
 /// Converts predicates on bucket key fields to a target bucket ID.
 /// When all bucket key fields have EQUAL predicates, the converter computes
@@ -61,6 +80,14 @@ class BucketSelectConverter {
         const std::vector<std::string>& bucket_key_names,
         const std::vector<std::shared_ptr<arrow::DataType>>& bucket_key_arrow_types,
         BucketFunctionType bucket_function_type, int32_t num_buckets, MemoryPool* pool);
+
+    /// Build a selector once, then evaluate it with each file's bucket count.
+    /// Returns nullptr when the predicate cannot safely constrain all bucket keys.
+    static Result<std::unique_ptr<BucketSelector>> ConvertToSelector(
+        const std::shared_ptr<Predicate>& predicate,
+        const std::vector<std::string>& bucket_key_names,
+        const std::vector<std::shared_ptr<arrow::DataType>>& bucket_key_arrow_types,
+        BucketFunctionType bucket_function_type, MemoryPool* pool);
 
  private:
     /// Extract single literal per bucket key field from EQUAL predicates.

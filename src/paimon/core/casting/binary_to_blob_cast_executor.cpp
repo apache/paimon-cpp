@@ -45,15 +45,20 @@ Result<Literal> BinaryToBlobCastExecutor::Cast(
 Result<std::shared_ptr<arrow::Array>> BinaryToBlobCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
-    if (array->type_id() != arrow::Type::BINARY) {
-        return Status::Invalid(
-            fmt::format("BinaryToBlobCastExecutor only supports binary input, got {}",
-                        array->type()->ToString()));
-    }
     if (target_type->id() != arrow::Type::LARGE_BINARY) {
         return Status::Invalid(
             fmt::format("BinaryToBlobCastExecutor only supports large_binary target, got {}",
                         target_type->ToString()));
+    }
+    // Parquet may have already restored the logical BLOB representation from ARROW:schema.
+    if (array->type_id() == arrow::Type::LARGE_BINARY) {
+        return array;
+    }
+    if (array->type_id() != arrow::Type::BINARY) {
+        return Status::Invalid(
+            fmt::format("BinaryToBlobCastExecutor only supports binary or large_binary input, "
+                        "got {}",
+                        array->type()->ToString()));
     }
 
     auto binary_array = checked_pointer_cast<arrow::BinaryArray>(array);

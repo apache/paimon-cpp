@@ -142,11 +142,20 @@ TEST_F(ManifestListTest, TestEmptyManifestList) {
     ASSERT_EQ(manifest_file_metas.size(), 0);
 }
 
-TEST_F(ManifestListTest, TestReadChangelogManifests) {
+TEST_F(ManifestListTest, TestLegacyManifestFormatIsReadOnly) {
     auto pool = GetDefaultPool();
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto manifest_list = CreateManifestList("orc", dir->Str(), pool);
+
+    ASSERT_NOK_WITH_MSG(manifest_list->Write({}), "manifest.format 'orc' is read-only");
+}
+
+TEST_F(ManifestListTest, TestReadChangelogManifests) {
+    auto pool = GetDefaultPool();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto manifest_list = CreateManifestList("avro", dir->Str(), pool);
     ManifestFileMeta expected_meta(
         "changelog-manifest", /*file_size=*/100, /*num_added_files=*/1,
         /*num_deleted_files=*/0, SimpleStats::EmptyStats(), /*schema_id=*/0,
@@ -224,11 +233,11 @@ TEST_F(ManifestListTest, TestReadWithMinAndMaxRowId) {
     // test write meta
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
-    auto manifest_list = CreateManifestList("orc", dir->Str(), pool);
+    auto manifest_list = CreateManifestList("avro", dir->Str(), pool);
     std::pair<std::string, int64_t> file_meta;
     ASSERT_OK_AND_ASSIGN(file_meta, manifest_list->Write({expected_meta}));
     // test read meta from C++
-    auto manifest_file_metas2 = ReadManifestFileMeta("orc", dir->Str(), file_meta.first, pool);
+    auto manifest_file_metas2 = ReadManifestFileMeta("avro", dir->Str(), file_meta.first, pool);
     ASSERT_EQ(manifest_file_metas2.size(), 1);
     ASSERT_EQ(manifest_file_metas2, expected_manifest_file_metas);
 }

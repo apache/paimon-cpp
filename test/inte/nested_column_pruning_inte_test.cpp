@@ -145,7 +145,6 @@ TEST_P(NestedColumnPruningInteTest, PruneStructSubFields) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -202,7 +201,6 @@ TEST_P(NestedColumnPruningInteTest, ProjectStructColumnAsEmptyStructReturnsNullC
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -259,7 +257,6 @@ TEST_P(NestedColumnPruningInteTest, PruneSameNestedFieldNameFromDifferentStructC
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -314,7 +311,6 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsAllNonExistent) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -376,7 +372,6 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsWithNonExistentField) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -439,7 +434,6 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsWithTypeMismatchShouldFa
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -523,7 +517,6 @@ TEST_P(NestedColumnPruningInteTest,
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -615,7 +608,6 @@ TEST_P(NestedColumnPruningInteTest, PruneEntireStructField) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -670,7 +662,6 @@ TEST_P(NestedColumnPruningInteTest, PruneDeepNestedStruct) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -731,7 +722,6 @@ TEST_P(NestedColumnPruningInteTest, PruneNestedStructWithSpecialFields) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -819,7 +809,6 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeys) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -874,7 +863,6 @@ TEST_P(NestedColumnPruningInteTest, NestedMapSelectedKeysInStruct) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -930,7 +918,6 @@ TEST_P(NestedColumnPruningInteTest, PruneStructSubFieldsWithNestedMapSelectedKey
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -988,7 +975,6 @@ TEST_P(NestedColumnPruningInteTest, PruneStructSubFieldsWithNestedMapSelectedKey
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -1045,7 +1031,6 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysEmptyStringKey) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -1096,7 +1081,6 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysPreserveOrder) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -1160,13 +1144,12 @@ TEST_P(NestedColumnPruningInteTest, NestedStructMapSelectedKeysWithPredicate) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1048576"},
         {Options::BUCKET, "-1"},
         {Options::WRITE_BATCH_SIZE, "1"},
         {"parquet.page.size", "1"},
-        {"parquet.enable-dictionary", "false"},
+        {"parquet.enable.dictionary", "false"},
         {"parquet.write.enable-page-index", "true"},
         {"parquet.write.max-row-group-length", "1"},
         {"parquet.read.enable-page-index-filter", "true"},
@@ -1264,7 +1247,6 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysWithOrcDictionaryEncodedMap) 
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -1367,7 +1349,6 @@ TEST_P(NestedColumnPruningInteTest, PruneDeeperNestedStruct) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},
@@ -1428,7 +1409,6 @@ TEST_P(NestedColumnPruningInteTest, PruneListStructSubFields) {
     auto table_schema = arrow::schema(table_fields);
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "AVRO"},
         {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
         {Options::TARGET_FILE_SIZE, "1024"},
         {Options::BUCKET, "-1"},

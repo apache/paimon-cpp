@@ -19,49 +19,6 @@
 #include "paimon/common/io/cache/cache_key.h"
 
 namespace paimon {
-namespace {
-
-class SnapshotLiveManifestEntriesCacheKey : public CacheKey {
- public:
-    SnapshotLiveManifestEntriesCacheKey(const std::string& table_path, const std::string& branch,
-                                        int32_t bucket)
-        : CacheKey(CacheKind::SNAPSHOT_LIVE_MANIFEST),
-          table_path_(table_path),
-          branch_(branch),
-          bucket_(bucket) {}
-
-    bool IsIndex() const override {
-        return false;
-    }
-
-    bool Equals(const CacheKey& other) const override {
-        const auto* rhs = dynamic_cast<const SnapshotLiveManifestEntriesCacheKey*>(&other);
-        if (!rhs) {
-            return false;
-        }
-        return table_path_ == rhs->table_path_ && branch_ == rhs->branch_ &&
-               bucket_ == rhs->bucket_ && GetKind() == rhs->GetKind();
-    }
-
-    size_t HashCode() const override {
-        size_t seed = 0;
-        seed ^= std::hash<std::string>{}(table_path_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
-        seed ^= std::hash<std::string>{}(branch_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
-        seed ^= std::hash<int32_t>{}(bucket_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
-        seed ^= std::hash<int32_t>{}(static_cast<int32_t>(GetKind())) + HASH_CONSTANT +
-                (seed << 6) + (seed >> 2);
-        return seed;
-    }
-
- private:
-    static constexpr uint64_t HASH_CONSTANT = 0x9e3779b97f4a7c15ULL;
-
-    const std::string table_path_;
-    const std::string branch_;
-    const int32_t bucket_;
-};
-
-}  // namespace
 
 std::shared_ptr<CacheKey> CacheKey::ForPosition(const std::string& file_path, int64_t position,
                                                 int32_t length, bool is_index) {
@@ -76,10 +33,17 @@ std::shared_ptr<CacheKey> CacheKey::ForKind(const std::string& file_path, int64_
     return key;
 }
 
-std::shared_ptr<CacheKey> CacheKey::ForSnapshotLiveManifestEntries(const std::string& table_path,
-                                                                   const std::string& branch,
-                                                                   int32_t bucket) {
-    return std::make_shared<SnapshotLiveManifestEntriesCacheKey>(table_path, branch, bucket);
+std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey::ForExplicit(
+    const std::string& table_path, const std::string& branch, int32_t bucket) {
+    return std::shared_ptr<CacheKey>(new SnapshotLiveManifestEntriesCacheKey(
+        table_path, branch, bucket, Mode::kExplicit, std::nullopt, std::nullopt));
+}
+
+std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey::ForInferred(
+    const std::string& table_path, const std::string& branch, int32_t bucket, int32_t total_buckets,
+    int64_t schema_id) {
+    return std::shared_ptr<CacheKey>(new SnapshotLiveManifestEntriesCacheKey(
+        table_path, branch, bucket, Mode::kInferred, total_buckets, schema_id));
 }
 
 bool PositionCacheKey::IsIndex() const {

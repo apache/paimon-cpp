@@ -34,6 +34,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/index/index_path_factory.h"
+#include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/file_entry.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
@@ -158,6 +159,7 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
     // Since the data file deletion information for each snapshot is recorded in the delta part of
     // the next snapshot, it is necessary to check the next snapshot. Otherwise, its data files will
     // not be deleted in this round.
+    DataFilePathFactoryCache data_file_path_factory_cache;
     for (int64_t id = begin_inclusive_id + 1; id <= end_exclusive_id; id++) {
         PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(id));
         if (!exist) {
@@ -192,8 +194,8 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
         }
         const std::set<std::string>& retained_data_files =
             tagged_data_files ? tagged_data_files.value() : no_retained_data_files;
-        PAIMON_RETURN_NOT_OK(
-            CleanUnusedDataFiles(snapshot.DeltaManifestList(), retained_data_files));
+        PAIMON_RETURN_NOT_OK(CleanUnusedDataFiles(snapshot.DeltaManifestList(), retained_data_files,
+                                                  &data_file_path_factory_cache));
     }
     // TODO(jinli.zjw): support delete changelog files
 
@@ -394,8 +396,9 @@ Status ExpireSnapshots::CleanUnusedIndexManifest(const std::optional<std::string
     return Status::OK();
 }
 
-Status ExpireSnapshots::CleanUnusedDataFiles(const std::string& manifest_list_name,
-                                             const std::set<std::string>& retained_data_files) {
+Status ExpireSnapshots::CleanUnusedDataFiles(
+    const std::string& manifest_list_name, const std::set<std::string>& retained_data_files,
+    DataFilePathFactoryCache* data_file_path_factory_cache) {
     std::vector<ManifestFileMeta> manifest_file_metas;
     auto status = manifest_list_->Read(manifest_list_name, nullptr, &manifest_file_metas);
     if (status.ok()) {
@@ -419,13 +422,28 @@ Status ExpireSnapshots::CleanUnusedDataFiles(const std::string& manifest_list_na
 
         std::vector<std::future<void>> futures;
         ScopeGuard guard([&futures]() { Wait(futures); });
-        for (const auto& [data_file_to_delete, entry] : data_files_to_delete) {
-            auto delete_file_path = data_file_to_delete;
-            futures.push_back(Via(executor_.get(), [this, delete_file_path]() {
-                auto status = fs_->Delete(delete_file_path);
-                // delete quietly will ignore any status error
-                (void)status;
-            }));
+        for (const auto& [_, entry] : data_files_to_delete) {
+            std::unordered_map<int32_t, std::shared_ptr<DataFilePathFactory>>& bucket_factories =
+                (*data_file_path_factory_cache)[entry.Partition()];
+            auto factory_iter = bucket_factories.find(entry.Bucket());
+            if (factory_iter == bucket_factories.end()) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<DataFilePathFactory> data_file_path_factory,
+                    path_factory_->CreateDataFilePathFactory(entry.Partition(), entry.Bucket()));
+                factory_iter =
+                    bucket_factories.emplace(entry.Bucket(), std::move(data_file_path_factory))
+                        .first;
+            }
+            const std::shared_ptr<DataFilePathFactory>& data_file_path_factory =
+                factory_iter->second;
+            for (const std::string& delete_file_path :
+                 data_file_path_factory->CollectFiles(entry.File())) {
+                futures.push_back(Via(executor_.get(), [this, delete_file_path]() {
+                    auto status = fs_->Delete(delete_file_path);
+                    // delete quietly will ignore any status error
+                    (void)status;
+                }));
+            }
             deletion_buckets_[entry.Partition()].insert(entry.Bucket());
         }
     }
@@ -442,7 +460,6 @@ Status ExpireSnapshots::GetDataFilesToDelete(
         if (entry.Kind() == FileKind::Add()) {
             data_files_to_delete->erase(data_file_path);
         } else if (entry.Kind() == FileKind::Delete()) {
-            // TODO(jinli.zjw): do not support extra files
             data_files_to_delete->insert({data_file_path, entry});
         } else {
             return Status::Invalid(

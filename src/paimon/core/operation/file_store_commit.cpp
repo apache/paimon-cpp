@@ -20,6 +20,7 @@
 #include "paimon/file_store_commit.h"
 
 #include <cassert>
+#include <optional>
 #include <utility>
 
 #include "paimon/commit_context.h"
@@ -37,12 +38,16 @@
 #include "paimon/core/operation/key_value_file_store_scan.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/format/format_table_file_store_commit.h"
+#include "paimon/core/table/format/format_table_loader.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
+#include "paimon/table/format/format_table.h"
 
 namespace arrow {
 class Schema;
@@ -92,6 +97,30 @@ CommitScanner::ScanSupplier CreatePkScanSupplier(
     };
 }
 
+/// Maps a `CommitContext` onto `FormatTableFileStoreCommit`, refusing by name what a format table
+/// cannot honour rather than silently dropping it. Each of the three is refused only when set away
+/// from its default, so an ordinary commit is unaffected.
+Result<std::unique_ptr<FileStoreCommit>> NewFormatTableCommit(
+    const std::shared_ptr<FormatTable>& table, const CommitContext& ctx) {
+    if (!ctx.IgnoreEmptyCommit()) {
+        return Status::NotImplemented(
+            "a format table cannot record an empty commit: keeping one means writing a "
+            "snapshot that adds no files, and there are no snapshots here");
+    }
+    if (ctx.UseRESTCatalogCommit()) {
+        return Status::NotImplemented(
+            "a format table commits by renaming files into place, not by sending a snapshot "
+            "to a rest catalog");
+    }
+    if (ctx.AppendCommitCheckConflict()) {
+        return Status::NotImplemented(
+            "a format table has no manifests to check a concurrent commit against");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FormatTableFileStoreCommit> format_commit,
+                           FormatTableFileStoreCommit::Create(table));
+    return std::unique_ptr<FileStoreCommit>(std::move(format_commit));
+}
+
 }  // namespace
 
 Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
@@ -106,16 +135,36 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         return Status::Invalid("executor is null pointer");
     }
 
+    // A table the caller already loaded says what it is, so nothing is read to find out.
+    if (ctx->GetFormatTable() != nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> given_table,
+                               FormatTable::Copy(ctx->GetFormatTable(), ctx->GetOptions()));
+        return NewFormatTableCommit(given_table, *ctx);
+    }
+
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(ctx->GetOptions(), ctx->GetSpecificFileSystem()));
     const std::string& root_path = ctx->GetRootPath();
+    // A format table commits by renaming files into place, so it never reaches the snapshot path
+    // below. The managed path here reads the main branch, so this reads the same one: the two
+    // must not dispatch on different schemas.
     auto schema_manager = std::make_shared<SchemaManager>(tmp_options.GetFileSystem(), root_path);
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                           schema_manager->Latest());
-    if (table_schema == std::nullopt) {
+    std::shared_ptr<TableSchema> latest_schema;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FormatTable> format_table,
+        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), root_path,
+                                   BranchManager::DEFAULT_MAIN_BRANCH, ctx->GetOptions(),
+                                   /*specific_table_schema=*/std::nullopt, schema_manager.get(),
+                                   &latest_schema));
+    if (format_table != nullptr) {
+        return NewFormatTableCommit(format_table, *ctx);
+    }
+    // The schema the dispatch above already read through `schema_manager`, rather than a second
+    // read of the same file.
+    if (latest_schema == nullptr) {
         return Status::Invalid("not found latest schema");
     }
-    const auto& schema = table_schema.value();
+    const std::shared_ptr<TableSchema>& schema = latest_schema;
     auto opts = schema->Options();
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
@@ -127,18 +176,17 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     assert(options.GetFileSystem());
     assert(options.GetFileFormat());
     PAIMON_RETURN_NOT_OK(FileStoreCommitImpl::ValidateCommitOptions(options));
-
     PAIMON_ASSIGN_OR_RAISE(bool is_object_store, FileSystem::IsObjectStore(root_path));
     if (is_object_store && !ctx->UseRESTCatalogCommit() &&
         opts.find("enable-object-store-commit-in-inte-test") == opts.end()) {
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
-        BinaryRowPartitionComputer::Create(
-            table_schema.value()->PartitionKeys(), arrow_schema, options.GetPartitionDefaultName(),
-            options.LegacyPartitionNameEnabled(), ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
+                           BinaryRowPartitionComputer::Create(schema->PartitionKeys(), arrow_schema,
+                                                              options.GetPartitionDefaultName(),
+                                                              options.LegacyPartitionNameEnabled(),
+                                                              ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
                            options.CreateGlobalIndexExternalPath());
@@ -146,10 +194,10 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
-            root_path, arrow_schema, table_schema.value()->PartitionKeys(),
-            options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
-            options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-            global_index_external_path, options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
+            root_path, arrow_schema, schema->PartitionKeys(), options.GetPartitionDefaultName(),
+            options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
+            options.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
+            options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
 
     auto snapshot_manager = std::make_shared<SnapshotManager>(options.GetFileSystem(), root_path);
     PAIMON_ASSIGN_OR_RAISE(
@@ -158,9 +206,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
                              options.GetManifestCompression(), path_factory, options.GetCache(),
                              ctx->GetMemoryPool()));
 
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<arrow::Schema> partition_schema,
-        FieldMapping::GetPartitionSchema(arrow_schema, table_schema.value()->PartitionKeys()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
+                           FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestFile> manifest_file,
         ManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
@@ -179,22 +226,22 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         ctx->GetExecutor());
 
     CommitScanner::ScanSupplier scan_supplier;
-    if (table_schema.value()->PrimaryKeys().empty()) {
+    if (schema->PrimaryKeys().empty()) {
         scan_supplier = CreateAppendScanSupplier(snapshot_manager, schema_manager, manifest_list,
-                                                 manifest_file, table_schema.value(), arrow_schema,
-                                                 options, ctx->GetExecutor(), ctx->GetMemoryPool());
+                                                 manifest_file, schema, arrow_schema, options,
+                                                 ctx->GetExecutor(), ctx->GetMemoryPool());
     } else {
         scan_supplier = CreatePkScanSupplier(snapshot_manager, schema_manager, manifest_list,
-                                             manifest_file, table_schema.value(), arrow_schema,
-                                             options, ctx->GetExecutor(), ctx->GetMemoryPool());
+                                             manifest_file, schema, arrow_schema, options,
+                                             ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 
     return std::make_unique<FileStoreCommitImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, root_path, ctx->GetCommitUser(),
         options, path_factory, std::move(partition_computer), snapshot_manager,
         ctx->IgnoreEmptyCommit(), ctx->UseRESTCatalogCommit(), ctx->AppendCommitCheckConflict(),
-        table_schema.value(), manifest_file, manifest_list, index_manifest_file, expire_snapshots,
-        schema_manager, std::move(scan_supplier));
+        schema, manifest_file, manifest_list, index_manifest_file, expire_snapshots, schema_manager,
+        std::move(scan_supplier));
 }
 
 }  // namespace paimon

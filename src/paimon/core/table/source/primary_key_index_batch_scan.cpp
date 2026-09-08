@@ -86,7 +86,11 @@ Result<std::shared_ptr<Plan>> PrimaryKeyIndexBatchScan::CreatePlan() {
     int64_t snapshot_id = data_plan->SnapshotId().value();
     const std::shared_ptr<SnapshotManager>& snapshot_manager =
         snapshot_reader_->GetSnapshotManager();
-    Result<Snapshot> snapshot_result = snapshot_manager->LoadSnapshot(snapshot_id);
+    // The data scan already loaded this snapshot. Reuse it for index planning.
+    const std::optional<Snapshot>& planned_snapshot = snapshot_reader_->GetSpecifiedSnapshot();
+    Result<Snapshot> snapshot_result = planned_snapshot && planned_snapshot->Id() == snapshot_id
+                                           ? Result<Snapshot>(planned_snapshot.value())
+                                           : snapshot_manager->LoadSnapshot(snapshot_id);
     if (!snapshot_result.ok()) {
         static auto logger = Logger::GetLogger("PrimaryKeyIndexBatchScan");
         PAIMON_LOG_WARN(logger,

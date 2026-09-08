@@ -21,6 +21,8 @@
 
 #include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +36,41 @@
 #include "paimon/status.h"
 
 namespace paimon {
+namespace {
+
+/// Escapes the control characters of `name`, so that a rejected name cannot inject a line into
+/// the log the error is written to nor truncate the C string it is copied into. Bytes of a
+/// multi-byte sequence are left alone, since none of them is a control character.
+std::string EscapeControlCharacters(const std::string& name) {
+    std::string escaped;
+    escaped.reserve(name.size());
+    for (char c : name) {
+        switch (c) {
+            case '\\':
+                escaped += "\\\\";
+                break;
+            case '\n':
+                escaped += "\\n";
+                break;
+            case '\r':
+                escaped += "\\r";
+                break;
+            case '\t':
+                escaped += "\\t";
+                break;
+            default:
+                if (std::iscntrl(static_cast<unsigned char>(c)) != 0) {
+                    escaped += fmt::format("\\x{{{:02x}}}", static_cast<unsigned char>(c));
+                } else {
+                    escaped += c;
+                }
+        }
+    }
+    return escaped;
+}
+
+}  // namespace
+
 std::string Path::ToString() const {
     std::string ret;
     if (!scheme.empty()) {
@@ -167,6 +204,26 @@ Result<std::string> PathUtil::CreateTempPath(const std::string& path) noexcept {
         return Status::Invalid("generate uuid failed");
     }
     return JoinPath(GetParentDirPath(path), fmt::format(".{}.{}.tmp", GetName(path), uuid));
+}
+
+Status PathUtil::CheckSinglePathComponent(const std::string& kind, const std::string& name) {
+    const char* reason = nullptr;
+    if (StringUtils::IsNullOrWhitespaceOnly(name)) {
+        reason = "cannot be empty or whitespace";
+    } else if (name == "." || name == "..") {
+        reason = "cannot be '.' or '..'";
+    } else if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) {
+        reason = "cannot contain path separators";
+    } else if (std::any_of(name.begin(), name.end(), [](char c) {
+                   return std::iscntrl(static_cast<unsigned char>(c)) != 0;
+               })) {
+        reason = "cannot contain control characters";
+    }
+    if (reason != nullptr) {
+        return Status::Invalid(
+            fmt::format("{} name {}: '{}'", kind, reason, EscapeControlCharacters(name)));
+    }
+    return Status::OK();
 }
 
 }  // namespace paimon

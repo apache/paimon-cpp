@@ -31,7 +31,6 @@
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/object_utils.h"
-#include "paimon/core/bucket/bucket_select_converter.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/options/merge_engine.h"
@@ -76,7 +75,7 @@ Result<std::unique_ptr<KeyValueFileStoreScan>> KeyValueFileStoreScan::Create(
 }
 
 Result<bool> KeyValueFileStoreScan::FilterByStats(const ManifestEntry& entry) const {
-    PAIMON_ASSIGN_OR_RAISE(bool value_filter_enabled, IsValueFilterEnabled());
+    PAIMON_ASSIGN_OR_RAISE(bool value_filter_enabled, IsValueFilterEnabled(entry.Level()));
     if (value_filter_enabled) {
         PAIMON_ASSIGN_OR_RAISE(bool filtered, FilterByValueFilter(entry));
         if (!filtered) {
@@ -121,26 +120,6 @@ Status KeyValueFileStoreScan::SplitAndSetKeyValueFilter(
             return Status::Invalid("invalid key predicate, cannot cast to PredicateFilter");
         }
         WithKeyFilter(key_filter);
-
-        // Bucket select conversion: derive target bucket from EQUAL predicates on bucket keys
-        const auto& bucket_keys = table_schema_->BucketKeys();
-        int32_t num_buckets = core_options_.GetBucket();
-        if (num_buckets > 0 && !bucket_keys.empty()) {
-            std::vector<std::shared_ptr<arrow::DataType>> bucket_key_arrow_types;
-            bucket_key_arrow_types.reserve(bucket_keys.size());
-            for (const auto& key : bucket_keys) {
-                PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema_->GetField(key));
-                bucket_key_arrow_types.push_back(field.Type());
-            }
-            PAIMON_ASSIGN_OR_RAISE(
-                std::optional<int32_t> selected_bucket,
-                BucketSelectConverter::Convert(key_predicate, bucket_keys, bucket_key_arrow_types,
-                                               core_options_.GetBucketFunctionType(), num_buckets,
-                                               pool_.get()));
-            if (selected_bucket.has_value()) {
-                SetBucketFilterIfAbsent(selected_bucket.value());
-            }
-        }
     }
 
     // Only set value filtering when there are predicates on non-primary-key fields.
@@ -168,13 +147,14 @@ Status KeyValueFileStoreScan::SplitAndSetKeyValueFilter(
     return Status::OK();
 }
 
-Result<bool> KeyValueFileStoreScan::IsValueFilterEnabled() const {
+Result<bool> KeyValueFileStoreScan::IsValueFilterEnabled(int32_t level) const {
     if (value_filter_ == nullptr) {
         return false;
     }
     switch (scan_mode_) {
         case ScanMode::ALL:
-            return value_filter_force_enabled_;
+            return value_filter_force_enabled_ &&
+                   (value_filter_level_filter_ == nullptr || value_filter_level_filter_(level));
         case ScanMode::DELTA:
             return false;
         case ScanMode::CHANGELOG: {

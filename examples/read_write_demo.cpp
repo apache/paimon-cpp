@@ -56,8 +56,7 @@ arrow::Result<std::shared_ptr<arrow::StructArray>> PrepareData(const arrow::Fiel
 
 paimon::Status Run(const std::string& root_path, const std::string& db_name,
                    const std::string& table_name) {
-    std::map<std::string, std::string> options = {{paimon::Options::MANIFEST_FORMAT, "orc"},
-                                                  {paimon::Options::FILE_FORMAT, "parquet"},
+    std::map<std::string, std::string> options = {{paimon::Options::FILE_FORMAT, "parquet"},
                                                   {paimon::Options::FILE_SYSTEM, "local"}};
 
     // create table

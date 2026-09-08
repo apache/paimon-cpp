@@ -27,10 +27,11 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/data/decimal.h"
+#include "paimon/defs.h"
 #include "paimon/predicate/literal.h"
 
 namespace paimon {
-class CastingUtils {
+class PAIMON_EXPORT CastingUtils {
  public:
     CastingUtils() = delete;
     ~CastingUtils() = delete;

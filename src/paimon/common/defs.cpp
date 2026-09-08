@@ -36,7 +36,13 @@ const char Options::SEQUENCE_GROUP[] = "sequence-group";
 
 const char Options::BUCKET[] = "bucket";
 const char Options::BUCKET_KEY[] = "bucket-key";
+const char Options::TYPE[] = "type";
 const char Options::FILE_FORMAT[] = "file.format";
+const char Options::FORMAT_TABLE_FILE_COMPRESSION[] = "format-table.file.compression";
+const char Options::FORMAT_TABLE_PARTITION_PATH_ONLY_VALUE[] =
+    "format-table.partition-path-only-value";
+const char Options::METASTORE_PARTITIONED_TABLE[] = "metastore.partitioned-table";
+const char Options::FILE_SUFFIX_INCLUDE_COMPRESSION[] = "file.suffix.include.compression";
 const char Options::FILE_SYSTEM[] = "file-system";
 const char Options::TARGET_FILE_SIZE[] = "target-file-size";
 const char Options::TARGET_FILE_ROW_NUM[] = "target-file-row-num";
@@ -48,7 +54,6 @@ const char Options::FILE_COMPRESSION[] = "file.compression";
 const char Options::FILE_COMPRESSION_ZSTD_LEVEL[] = "file.compression.zstd-level";
 const char Options::FILE_BLOCK_SIZE[] = "file.block-size";
 const char Options::MANIFEST_TARGET_FILE_SIZE[] = "manifest.target-file-size";
-const char Options::MANIFEST_FORMAT[] = "manifest.format";
 const char Options::MANIFEST_COMPRESSION[] = "manifest.compression";
 const char Options::MANIFEST_MERGE_MIN_COUNT[] = "manifest.merge-min-count";
 const char Options::MANIFEST_FULL_COMPACTION_FILE_SIZE[] =

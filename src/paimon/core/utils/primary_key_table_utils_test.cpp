@@ -58,7 +58,9 @@ std::shared_ptr<TableSchema> PkSchema(
 }  // namespace
 
 TEST(PrimaryKeyTableUtilsTest, TestSupportedRealtimeOptions) {
-    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({{Options::BUCKET, "1"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::BUCKET, "1"},
+                                               {Options::DELETION_VECTORS_ENABLED, "true"}}));
     ASSERT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema()));
 }
 
@@ -114,8 +116,6 @@ TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificLookupErrors) {
     const std::vector<std::pair<std::map<std::string, std::string>, std::string>> cases = {
         {{{Options::BUCKET, "1"}, {Options::FORCE_LOOKUP, "true"}},
          "PK realtime does not support lookup"},
-        {{{Options::BUCKET, "1"}, {Options::DELETION_VECTORS_ENABLED, "true"}},
-         "PK realtime does not support deletion vectors"},
         {{{Options::BUCKET, "1"}, {Options::CHANGELOG_PRODUCER, "input"}},
          "PK realtime supports only the NONE changelog producer"},
         {{{Options::BUCKET, "1"}, {Options::CHANGELOG_PRODUCER, "lookup"}},

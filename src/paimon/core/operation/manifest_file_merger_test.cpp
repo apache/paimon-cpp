@@ -128,9 +128,8 @@ class ManifestFileMergerTest : public testing::Test {
  private:
     void CreateManifestFile(const std::string& path_str) {
         file_system_ = std::make_shared<LocalFileSystem>();
-        ASSERT_OK_AND_ASSIGN(
-            std::shared_ptr<FileFormat> file_format,
-            FileFormatFactory::Get("parquet", std::map<std::string, std::string>()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
+                             FileFormatFactory::Get("avro", std::map<std::string, std::string>()));
         auto schema = arrow::schema(arrow::FieldVector({arrow::field("f0", partition_type_)}));
         ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
         ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,

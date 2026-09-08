@@ -170,7 +170,7 @@ TEST(ArrowSchemaValidatorTest, TestInvalidDataType) {
     }
 }
 
-TEST(ArrowSchemaValidatorTest, TestBlobFieldMustBeTopLevel) {
+TEST(ArrowSchemaValidatorTest, TestBlobFieldPlacement) {
     {
         auto arrow_schema =
             arrow::schema(arrow::FieldVector({BlobUtils::ToArrowField("blob", true)}));
@@ -186,14 +186,26 @@ TEST(ArrowSchemaValidatorTest, TestBlobFieldMustBeTopLevel) {
             arrow::field("nested", arrow::struct_({BlobUtils::ToArrowField("blob", true)}));
         auto arrow_schema = arrow::schema(arrow::FieldVector({nested_blob_field}));
         ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow_schema),
-                            "Blob field must be a top-level field.");
+                            "BLOB field must be a top-level field or the direct value of a "
+                            "top-level MAP field.");
     }
     {
         auto array_blob_field =
             arrow::field("array_blob", arrow::list(BlobUtils::ToArrowField("item", true)));
         auto arrow_schema = arrow::schema(arrow::FieldVector({array_blob_field}));
         ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow_schema),
-                            "Blob field must be a top-level field.");
+                            "BLOB field must be a top-level field or the direct value of a "
+                            "top-level MAP field.");
+    }
+    {
+        auto map_blob_field = arrow::field(
+            "map_blob", arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", true)));
+        auto arrow_schema = arrow::schema(arrow::FieldVector({map_blob_field}));
+        ASSERT_OK(ArrowSchemaValidator::ValidateSchema(*arrow_schema));
+
+        std::vector<DataField> fields = {DataField(0, map_blob_field)};
+        arrow_schema = DataField::ConvertDataFieldsToArrowSchema(fields);
+        ASSERT_OK(ArrowSchemaValidator::ValidateSchemaWithFieldId(*arrow_schema));
     }
     {
         auto map_blob_field = arrow::field(
@@ -201,7 +213,18 @@ TEST(ArrowSchemaValidatorTest, TestBlobFieldMustBeTopLevel) {
             arrow::map(arrow::utf8(), arrow::struct_({BlobUtils::ToArrowField("blob", true)})));
         auto arrow_schema = arrow::schema(arrow::FieldVector({map_blob_field}));
         ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow_schema),
-                            "Blob field must be a top-level field.");
+                            "BLOB field must be a top-level field or the direct value of a "
+                            "top-level MAP field.");
+    }
+    {
+        auto nested_map_blob_field = arrow::field(
+            "nested_map_blob",
+            arrow::map(arrow::utf8(),
+                       arrow::map(arrow::utf8(), BlobUtils::ToArrowField("value", true))));
+        auto arrow_schema = arrow::schema(arrow::FieldVector({nested_map_blob_field}));
+        ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchema(*arrow_schema),
+                            "BLOB field must be a top-level field or the direct value of a "
+                            "top-level MAP field.");
     }
     {
         std::vector<DataField> nested_fields = {
@@ -211,7 +234,8 @@ TEST(ArrowSchemaValidatorTest, TestBlobFieldMustBeTopLevel) {
             arrow::field("nested", DataField::ConvertDataFieldsToArrowStructType(nested_fields)))};
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(fields);
         ASSERT_NOK_WITH_MSG(ArrowSchemaValidator::ValidateSchemaWithFieldId(*arrow_schema),
-                            "Blob field must be a top-level field.");
+                            "BLOB field must be a top-level field or the direct value of a "
+                            "top-level MAP field.");
     }
 }
 

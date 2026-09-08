@@ -24,7 +24,7 @@
   "options" : {
     "bucket" : "2",
     "bucket-key" : "f2",
-    "manifest.format" : "orc",
+    "manifest.format" : "avro",
     "file.format" : "parquet"
   },
   "timeMillis" : 1755758260435

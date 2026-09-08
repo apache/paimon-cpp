@@ -18,6 +18,7 @@
 
 #include "paimon/core/realtime/realtime_primary_key_writer.h"
 
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -37,6 +38,7 @@
 #include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
 #include "paimon/core/mergetree/merge_tree_writer.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_primary_key_reader.h"
 #include "paimon/core/utils/commit_increment.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
@@ -46,45 +48,33 @@ namespace paimon {
 
 namespace {
 
-Result<std::shared_ptr<arrow::StructArray>> CreateRealtimePrimaryKeyTransportBatch(
-    std::unique_ptr<RecordBatch>&& batch, const std::shared_ptr<arrow::Schema>& write_schema,
-    const std::shared_ptr<arrow::Schema>& transport_schema,
+Result<RealtimeOffsetUtils::ValidatedBatch> CreateRealtimePrimaryKeyStoreBatch(
+    RealtimeOffsetUtils::ValidatedBatch&& validated,
+    const std::vector<RecordBatch::RowKind>& row_kinds,
+    const std::shared_ptr<arrow::Schema>& store_write_schema,
     const std::vector<std::string>& trimmed_primary_keys, int64_t first_sequence_number,
-    int64_t first_offset, arrow::MemoryPool* arrow_pool) {
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-        std::shared_ptr<arrow::Array> input,
-        arrow::ImportArray(batch->GetData(), arrow::struct_(write_schema->fields())));
-    if (!input || input->type_id() != arrow::Type::STRUCT) {
-        return Status::Invalid("PK real-time write data is not a StructArray");
-    }
-    std::shared_ptr<arrow::StructArray> values = checked_pointer_cast<arrow::StructArray>(input);
+    arrow::MemoryPool* arrow_pool) {
+    std::shared_ptr<arrow::StructArray> values = std::move(validated.data);
     const int64_t count = values->length();
     arrow::Int8Builder kinds(arrow_pool);
     arrow::Int64Builder sequences(arrow_pool);
-    arrow::Int64Builder offsets(arrow_pool);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(kinds.Reserve(count));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(sequences.Reserve(count));
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(offsets.Reserve(count));
-    const std::vector<RecordBatch::RowKind>& row_kinds = batch->GetRowKind();
     for (int64_t row = 0; row < count; ++row) {
         const RecordBatch::RowKind kind =
             row_kinds.empty() ? RecordBatch::RowKind::INSERT : row_kinds[row];
         kinds.UnsafeAppend(static_cast<int8_t>(kind));
         sequences.UnsafeAppend(first_sequence_number + row);
-        offsets.UnsafeAppend(first_offset + row);
     }
     std::shared_ptr<arrow::Array> kind_array;
     std::shared_ptr<arrow::Array> sequence_array;
-    std::shared_ptr<arrow::Array> offset_array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(kinds.Finish(&kind_array));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(sequences.Finish(&sequence_array));
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(offsets.Finish(&offset_array));
-    arrow::ArrayVector columns = {std::move(kind_array), std::move(sequence_array),
-                                  std::move(offset_array)};
+    arrow::ArrayVector columns = {std::move(sequence_array), std::move(kind_array)};
     columns.insert(columns.end(), values->fields().begin(), values->fields().end());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-        std::shared_ptr<arrow::StructArray> transport,
-        arrow::StructArray::Make(std::move(columns), transport_schema->fields()));
+        std::shared_ptr<arrow::StructArray> store_batch,
+        arrow::StructArray::Make(std::move(columns), store_write_schema->fields()));
 
     std::vector<arrow::compute::SortKey> sort_keys;
     sort_keys.reserve(trimmed_primary_keys.size() + 1);
@@ -97,20 +87,20 @@ Result<std::shared_ptr<arrow::StructArray>> CreateRealtimePrimaryKeyTransportBat
     arrow::compute::SortOptions options(sort_keys, arrow::compute::NullPlacement::AtStart);
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         arrow::Datum indices,
-        arrow::compute::SortIndices(arrow::Datum(transport), options, &context));
+        arrow::compute::SortIndices(arrow::Datum(store_batch), options, &context));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         arrow::Datum sorted,
-        arrow::compute::Take(arrow::Datum(transport), indices,
+        arrow::compute::Take(arrow::Datum(store_batch), indices,
                              arrow::compute::TakeOptions::NoBoundsCheck(), &context));
-    return checked_pointer_cast<arrow::StructArray>(sorted.make_array());
+    validated.data = checked_pointer_cast<arrow::StructArray>(sorted.make_array());
+    return validated;
 }
 
 }  // namespace
 
 Result<std::shared_ptr<RealtimePrimaryKeyWriter>> RealtimePrimaryKeyWriter::Create(
     const std::map<std::string, std::string>& partition, int32_t bucket,
-    const std::shared_ptr<arrow::Schema>& write_schema,
-    const std::shared_ptr<arrow::Schema>& transport_schema,
+    const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
     const std::vector<std::string>& trimmed_primary_keys,
     const std::shared_ptr<FieldsComparator>& key_comparator, const CoreOptions& options,
     const std::shared_ptr<RealtimeContextImpl>& realtime_context,
@@ -124,11 +114,13 @@ Result<std::shared_ptr<RealtimePrimaryKeyWriter>> RealtimePrimaryKeyWriter::Crea
     if (options.GetMergeEngine() != MergeEngine::DEDUPLICATE) {
         return Status::NotImplemented("PK realtime supports only the DEDUPLICATE merge engine");
     }
-    PAIMON_RETURN_NOT_OK(RealtimePrimaryKeyLayout::ValidateSchema(transport_schema));
+    if (!schema_layout) {
+        return Status::Invalid("PK realtime schema layout is null");
+    }
     arrow::FieldVector key_fields;
     key_fields.reserve(trimmed_primary_keys.size());
     for (const std::string& key : trimmed_primary_keys) {
-        std::shared_ptr<arrow::Field> field = write_schema->GetFieldByName(key);
+        std::shared_ptr<arrow::Field> field = schema_layout->UserSchema()->GetFieldByName(key);
         if (!field) {
             return Status::Invalid("PK field is missing from write schema: ", key);
         }
@@ -139,10 +131,9 @@ Result<std::shared_ptr<RealtimePrimaryKeyWriter>> RealtimePrimaryKeyWriter::Crea
                            realtime_context->AdvanceMaterializedMaxSequenceNumber(
                                partition_bucket, restored_max_sequence_number));
     return std::shared_ptr<RealtimePrimaryKeyWriter>(new RealtimePrimaryKeyWriter(
-        store_state.store, merge_tree_writer, realtime_context, partition_bucket, write_schema,
-        transport_schema, arrow::schema(std::move(key_fields)), trimmed_primary_keys,
-        key_comparator, options, store_state.initial_offset, initial_max_sequence_number,
-        memory_pool));
+        store_state.store, merge_tree_writer, realtime_context, partition_bucket, schema_layout,
+        arrow::schema(std::move(key_fields)), trimmed_primary_keys, key_comparator, options,
+        store_state.initial_offset, initial_max_sequence_number, memory_pool));
 }
 
 RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
@@ -150,8 +141,7 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
     const std::shared_ptr<MergeTreeWriter>& merge_tree_writer,
     const std::shared_ptr<RealtimeContextImpl>& realtime_context,
     const RealtimePartitionBucket& partition_bucket,
-    const std::shared_ptr<arrow::Schema>& write_schema,
-    const std::shared_ptr<arrow::Schema>& transport_schema,
+    const std::shared_ptr<RealtimeSchemaLayout>& schema_layout,
     const std::shared_ptr<arrow::Schema>& key_schema,
     const std::vector<std::string>& trimmed_primary_keys,
     const std::shared_ptr<FieldsComparator>& key_comparator, const CoreOptions& options,
@@ -163,8 +153,7 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
       merge_tree_writer_(merge_tree_writer),
       realtime_context_(realtime_context),
       partition_bucket_(partition_bucket),
-      write_schema_(write_schema),
-      transport_schema_(transport_schema),
+      schema_layout_(schema_layout),
       key_schema_(key_schema),
       trimmed_primary_keys_(trimmed_primary_keys),
       key_comparator_(key_comparator),
@@ -190,77 +179,88 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
         static_cast<void>(validated);
     }
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    if (count > std::numeric_limits<int64_t>::max() - next_offset_) {
-        return Status::Invalid("real-time offset range exceeds INT64_MAX");
-    }
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetUtils::ValidatedBatch validated,
+                           RealtimeOffsetUtils::ValidateBatch(
+                               batch.get(), schema_layout_->InputSchema(), next_offset_));
     // Reserve INT64_MAX as the exhausted sequence-number sentinel.
     if (last_sequence_number_ >= std::numeric_limits<int64_t>::max() - count) {
         return Status::Invalid("PK sequence range exceeds INT64_MAX");
     }
     const int64_t first_sequence = last_sequence_number_ + 1;
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<arrow::StructArray> transport,
-        CreateRealtimePrimaryKeyTransportBatch(std::move(batch), write_schema_, transport_schema_,
-                                               trimmed_primary_keys_, first_sequence, next_offset_,
-                                               arrow_pool_.get()));
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetUtils::ValidatedBatch store_batch,
+                           CreateRealtimePrimaryKeyStoreBatch(
+                               std::move(validated), row_kinds, schema_layout_->StoreWriteSchema(),
+                               trimmed_primary_keys_, first_sequence, arrow_pool_.get()));
     auto output = std::make_unique<ArrowArray>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*transport, output.get()));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*store_batch.data, output.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(output.get(), /*schema=*/nullptr, arrow_pool_));
     RecordBatchBuilder builder(output.get());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> transport_batch, builder.Finish());
-    PAIMON_RETURN_NOT_OK(realtime_store_->Write(RealtimeWriteBatch{
-        std::move(transport_batch), OffsetRange(next_offset_, next_offset_ + count)}));
-    next_offset_ += count;
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> store_record_batch, builder.Finish());
+    PAIMON_RETURN_NOT_OK(realtime_store_->Write(
+        RealtimeWriteBatch{std::move(store_record_batch), store_batch.offset_range}));
+    next_offset_ = store_batch.offset_range.end;
     last_sequence_number_ += count;
+    has_building_data_ = true;
     PAIMON_RETURN_NOT_OK(realtime_context_->AdvanceMaterializedMaxSequenceNumber(
         partition_bucket_, last_sequence_number_));
     return Status::OK();
 }
 
+Status RealtimePrimaryKeyWriter::SealCurrentSegment() {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                           realtime_store_->SealForCommit());
+    if (segment) {
+        if (!segment.value()) {
+            return Status::Invalid("PK real-time store sealed a null segment");
+        }
+        sealed_segments_.push_back(std::move(segment.value()));
+        has_building_data_ = false;
+    }
+    return Status::OK();
+}
+
+Status RealtimePrimaryKeyWriter::Seal() {
+    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
+    return SealCurrentSegment();
+}
+
 Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compaction) {
     std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-    std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment;
+    std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
     {
         std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> sealed,
-                               realtime_store_->SealForCommit());
-        segment = std::move(sealed);
+        PAIMON_RETURN_NOT_OK(SealCurrentSegment());
+        segments.swap(sealed_segments_);
     }
-    if (segment && !segment.value()) {
-        return Status::Invalid("PK real-time store sealed a null segment");
-    }
-    std::optional<OffsetRange> sealed_range;
-    if (segment) {
-        sealed_range = segment.value()->GetOffsetRange();
-        if (sealed_range->begin < 0 || sealed_range->end < sealed_range->begin) {
-            return Status::Invalid("PK real-time store returned an invalid sealed offset range");
-        }
-        PAIMON_RETURN_NOT_OK(FlushSegment(segment.value(), sealed_range.value()));
+    for (const std::shared_ptr<RealtimeSegmentHandle>& segment : segments) {
+        PAIMON_RETURN_NOT_OK(FlushSegment(segment));
     }
     PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
                            merge_tree_writer_->PrepareCommit(wait_compaction));
-    if (segment) {
-        increment.SetRealtimeOffsetRange(sealed_range.value());
+    if (!segments.empty()) {
+        increment.SetRealtimeOffsetRange(OffsetRange(segments.front()->GetOffsetRange().begin,
+                                                     segments.back()->GetOffsetRange().end));
     }
     return increment;
 }
 
-Status RealtimePrimaryKeyWriter::FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment,
-                                              const OffsetRange& sealed_offsets) {
+Status RealtimePrimaryKeyWriter::FlushSegment(
+    const std::shared_ptr<RealtimeSegmentHandle>& segment) {
+    // TODO(xinyu.lxy): Validate row count from commit readers.
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                            realtime_store_->CreateCommitReaders(segment));
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::unique_ptr<KeyValueRecordReader>> realtime_primary_key_readers,
-        RealtimePrimaryKeyReaderFactory::CreateForCommit(std::move(readers), transport_schema_,
-                                                         sealed_offsets, key_schema_, write_schema_,
-                                                         memory_pool_));
+        RealtimePrimaryKeyReaderFactory::CreateForCommit(
+            std::move(readers), key_schema_, schema_layout_->UserSchema(), memory_pool_));
     std::vector<std::unique_ptr<KeyValueRecordReader>> sorted_readers;
     sorted_readers.reserve(realtime_primary_key_readers.size());
     for (std::unique_ptr<KeyValueRecordReader>& realtime_primary_key_reader :
          realtime_primary_key_readers) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<MergeFunction> merge_function,
-                               PrimaryKeyTableUtils::CreateMergeFunction(
-                                   write_schema_, trimmed_primary_keys_, options_, memory_pool_));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<MergeFunction> merge_function,
+            PrimaryKeyTableUtils::CreateMergeFunction(
+                schema_layout_->UserSchema(), trimmed_primary_keys_, options_, memory_pool_));
         sorted_readers.push_back(std::make_unique<MergedKeyValueRecordReader>(
             std::move(realtime_primary_key_reader), key_comparator_,
             std::make_shared<ReducerMergeFunctionWrapper>(std::move(merge_function))));
@@ -285,6 +285,10 @@ Status RealtimePrimaryKeyWriter::Sync() {
 }
 Status RealtimePrimaryKeyWriter::Close() {
     return merge_tree_writer_->Close();
+}
+bool RealtimePrimaryKeyWriter::HasUnpreparedRealtimeData() const {
+    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
+    return has_building_data_ || !sealed_segments_.empty();
 }
 std::shared_ptr<Metrics> RealtimePrimaryKeyWriter::GetMetrics() const {
     return merge_tree_writer_->GetMetrics();

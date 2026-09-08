@@ -45,6 +45,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/restore_files.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -267,7 +268,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestWriteWithInvalidBatch) {
     }
 }
 
-TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange) {
+TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange) {
     std::map<std::string, std::string> options = {
         {"file.format", "parquet"},
         {"write-only", "true"},
@@ -277,6 +278,10 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange)
     };
     auto logical_schema =
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("name", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+        RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, logical_schema));
+    const std::shared_ptr<arrow::Schema>& realtime_schema = schema_layout->InputSchema();
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     CreateTable(dir->Str(), logical_schema, options);
@@ -302,19 +307,37 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange)
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
 
-    ASSERT_OK(file_store_write->Write(MakeBatch(logical_schema, R"([
-        [1, "a"],
-        [2, "b"]
+    ASSERT_OK(file_store_write->Write(MakeBatch(realtime_schema, R"([
+        [10, 1, "a"],
+        [20, 2, "b"]
     ])")));
+    std::shared_ptr<Metrics> building_metrics = file_store_write->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double building_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(double sealed_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(double total_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(2, building_rows);
+    ASSERT_EQ(0, sealed_rows);
+    ASSERT_EQ(2, total_rows);
     ASSERT_NOK_WITH_MSG(
         file_store_write->PrepareCommit(/*wait_compaction=*/false, /*commit_identifier=*/0),
         "real-time writer must use PrepareCommitWithProgress");
     ASSERT_OK_AND_ASSIGN(auto first_prepared,
                          file_store_write->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    std::shared_ptr<Metrics> sealed_metrics = file_store_write->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(building_rows,
+                         sealed_metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(sealed_rows, sealed_metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(total_rows, sealed_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(0, building_rows);
+    ASSERT_EQ(2, sealed_rows);
+    ASSERT_EQ(2, total_rows);
     ASSERT_EQ(1, first_prepared.size());
     ASSERT_TRUE(first_prepared[0].partition_bucket.partition.empty());
     ASSERT_EQ(0, first_prepared[0].partition_bucket.bucket);
-    ASSERT_EQ(OffsetRange(0, 2), first_prepared[0].offset_range);
+    ASSERT_EQ(OffsetRange(10, 21), first_prepared[0].offset_range);
     std::shared_ptr<DataFileMeta> first_file = OnlyNewFile({first_prepared[0].commit_message});
     ASSERT_FALSE(first_file->write_cols.has_value());
     std::shared_ptr<arrow::Schema> first_schema =
@@ -332,15 +355,15 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksInternalOffsetRange)
             .ValueOrDie();
     ASSERT_TRUE(first_array->Equals(*expected_first_array)) << first_array->ToString();
 
-    ASSERT_OK(file_store_write->Write(MakeBatch(logical_schema, R"([
-        [3, "c"]
+    ASSERT_OK(file_store_write->Write(MakeBatch(realtime_schema, R"([
+        [30, 3, "c"]
     ])")));
     ASSERT_OK_AND_ASSIGN(auto second_prepared,
                          file_store_write->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, second_prepared.size());
     ASSERT_TRUE(second_prepared[0].partition_bucket.partition.empty());
     ASSERT_EQ(0, second_prepared[0].partition_bucket.bucket);
-    ASSERT_EQ(OffsetRange(2, 3), second_prepared[0].offset_range);
+    ASSERT_EQ(OffsetRange(30, 31), second_prepared[0].offset_range);
     std::shared_ptr<DataFileMeta> second_file = OnlyNewFile({second_prepared[0].commit_message});
     std::shared_ptr<arrow::StructArray> second_array =
         ReadDataFileArray(table_path, second_file, options);

@@ -26,6 +26,7 @@
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -79,8 +80,7 @@ class DataEvolutionTableTest : public ::testing::Test,
     }
 
     void CreateTable(const std::vector<std::string>& partition_keys) const {
-        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                      {Options::FILE_FORMAT, FileFormat()},
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, FileFormat()},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
                                                       {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -160,8 +160,7 @@ class DataEvolutionTableTest : public ::testing::Test,
     std::map<std::string, std::string> CreateDataEvolutionTable(
         bool deletion_vectors_enabled,
         const std::map<std::string, std::string>& extra_options = {}) const {
-        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                      {Options::FILE_FORMAT, FileFormat()},
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, FileFormat()},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
                                                       {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -861,7 +860,6 @@ TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) 
         arrow::field("map2", map_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1190,7 +1188,6 @@ TEST_P(DataEvolutionTableTest, TestMoreData) {
 
 TEST_P(DataEvolutionTableTest, TestOnlyRowTrackingEnabled) {
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1234,7 +1231,6 @@ TEST_P(DataEvolutionTableTest, TestExternalPath) {
     std::string external_test_dir = external_dir->Str();
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1485,10 +1481,11 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
         return;
     }
     std::vector<std::string> partition_keys = {"f1"};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, FileFormat()},
-        {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"}, {"parquet.write.max-row-group-length", "1"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, FileFormat()},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {"parquet.write.max-row-group-length", "1"}};
     if (file_format == "mosaic") {
         options.emplace(mosaic::MOSAIC_STATS_COLUMNS, "f0");
     }
@@ -1652,6 +1649,251 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
         ASSERT_OK(ScanAndRead(table_path, schema->field_names(), /*expected_array=*/nullptr,
                               /*predicate=*/equal,
                               /*row_ranges=*/row_ranges));
+    }
+}
+
+TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+    }
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type),
+                                 arrow::field("tag", arrow::utf8())};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::READ_BATCH_SIZE, "2"},
+    };
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto field_names = arrow::schema(fields)->field_names();
+    auto initial_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, [1, 2, 3], "a"],
+            [2, null, "b"],
+            [3, [7, 8, 9], "c"],
+            [4, [10, 11, 12], "d"],
+            [5, null, "e"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_msgs,
+                         WriteArray(table_path, field_names, initial_array));
+    ASSERT_OK(Commit(table_path, initial_msgs));
+    ASSERT_OK(ScanAndRead(table_path, field_names, initial_array));
+
+    auto appended_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [6, [16, 17, 18], "f"], [7, null, "g"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> appended_msgs,
+                         WriteArray(table_path, field_names, appended_array));
+    ASSERT_OK(Commit(table_path, appended_msgs));
+
+    // Replace only the first row range, including transitions to and from NULL VECTOR values.
+    auto updated_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([
+            [null], [[4, 5, 6]], [[70, 80, 90]], [null], [[13, 14, 15]]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> update_msgs,
+                         WriteArray(table_path, {"embedding"}, updated_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, update_msgs);
+    ASSERT_OK(Commit(table_path, update_msgs));
+    auto expected_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, null, "a"],
+            [2, [4, 5, 6], "b"],
+            [3, [70, 80, 90], "c"],
+            [4, null, "d"],
+            [5, [13, 14, 15], "e"],
+            [6, [16, 17, 18], "f"],
+            [7, null, "g"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, field_names, expected_array));
+
+    auto projected_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([
+            [[4, 5, 6]], [[70, 80, 90]], [null]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"embedding"}, projected_array, /*predicate=*/nullptr,
+                          /*row_ranges=*/{Range(1, 3)}));
+
+    auto null_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([
+            [null], [null], [null], [null], [null]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> null_msgs,
+                         WriteArray(table_path, {"embedding"}, null_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, null_msgs);
+    ASSERT_OK(Commit(table_path, null_msgs));
+    auto expected_null_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, null, "a"], [2, null, "b"], [3, null, "c"], [4, null, "d"],
+            [5, null, "e"], [6, [16, 17, 18], "f"], [7, null, "g"]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, field_names, expected_null_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestNestedVectorReadWrite) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+    }
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("id", arrow::int32()),
+        arrow::field("payload", arrow::struct_({arrow::field("embedding", vector_type),
+                                                arrow::field("tag", arrow::utf8())})),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::READ_BATCH_SIZE, "2"},
+    };
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto initial_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, [[1, 2, 3], "a"]], [2, [null, "b"]], [3, null]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_msgs,
+                         WriteArray(table_path, {"id", "payload"}, initial_array));
+    ASSERT_OK(Commit(table_path, initial_msgs));
+    ASSERT_OK(ScanAndRead(table_path, {"id", "payload"}, initial_array));
+
+    auto updated_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([
+            [null], [[[4, 5, 6], "updated"]], [[null, "c"]]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> update_msgs,
+                         WriteArray(table_path, {"payload"}, updated_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, update_msgs);
+    ASSERT_OK(Commit(table_path, update_msgs));
+    auto expected_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, null], [2, [[4, 5, 6], "updated"]], [3, [null, "c"]]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, {"id", "payload"}, expected_array));
+}
+
+TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolution) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+    }
+    auto retained_vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto dropped_vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::int64(), /*nullable=*/false), 2);
+    auto added_vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float64(), /*nullable=*/false), 2);
+    arrow::FieldVector fields_v0 = {
+        arrow::field("id", arrow::int32()),
+        arrow::field("retained_embedding", retained_vector_type),
+        arrow::field("dropped_embedding", dropped_vector_type),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::READ_BATCH_SIZE, "1"},
+    };
+    CreateTable(fields_v0, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto initial_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_v0), R"([
+            [1, [1, 2, 3], [10, 11]], [2, null, [20, 21]]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::shared_ptr<CommitMessage>> initial_msgs,
+        WriteArray(table_path, arrow::schema(fields_v0)->field_names(), initial_array));
+    ASSERT_OK(Commit(table_path, initial_msgs));
+
+    arrow::FieldVector fields_v1 = {fields_v0[0], fields_v0[1],
+                                    arrow::field("added_embedding", added_vector_type)};
+    ASSERT_OK(TestHelper::WriteNextSchema(
+        dir_->GetFileSystem(), table_path,
+        {DataField(0, fields_v1[0]), DataField(1, fields_v1[1]), DataField(3, fields_v1[2])},
+        /*highest_field_id=*/3, options));
+    auto expected_after_evolution = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_v1), R"([
+            [1, [1, 2, 3], null], [2, null, null]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(
+        ScanAndRead(table_path, arrow::schema(fields_v1)->field_names(), expected_after_evolution));
+
+    auto added_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields_v1[2]}), R"([
+            [[100, 101]], [null]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> added_msgs,
+                         WriteArray(table_path, {"added_embedding"}, added_array));
+    SetFirstRowId(/*reset_first_row_id=*/0, added_msgs);
+    ASSERT_OK(Commit(table_path, added_msgs));
+    auto expected_after_partial_write = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_v1), R"([
+            [1, [1, 2, 3], [100, 101]], [2, null, null]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK(ScanAndRead(table_path, arrow::schema(fields_v1)->field_names(),
+                          expected_after_partial_write));
+}
+
+TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolutionRejectsTypeChange) {
+    if (FileFormat() != "parquet") {
+        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+    }
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("embedding", vector_type)};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+    };
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto initial_array = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+            [1, [1, 2, 3]], [2, null]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> initial_msgs,
+                         WriteArray(table_path, {"id", "embedding"}, initial_array));
+    ASSERT_OK(Commit(table_path, initial_msgs));
+
+    for (const auto& incompatible_type : {arrow::fixed_size_list(arrow::float32(), 5),
+                                          arrow::fixed_size_list(arrow::float64(), 3)}) {
+        SCOPED_TRACE(incompatible_type->ToString());
+        ASSERT_OK(TestHelper::WriteNextSchema(
+            dir_->GetFileSystem(), table_path,
+            {DataField(0, fields[0]), DataField(1, arrow::field("embedding", incompatible_type))},
+            /*highest_field_id=*/1, options));
+        ASSERT_NOK_WITH_MSG(ScanAndRead(table_path, {"id", "embedding"}, initial_array),
+                            "VECTOR type mismatch during schema evolution");
     }
 }
 
@@ -2048,8 +2290,8 @@ TEST_P(DataEvolutionTableTest, TestDataEvolutionPredicatePushDownBoundaries) {
     }
     {
         // System fields are completed after reading and cannot be pushed into data files.
-        auto predicate = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"_ROW_ID",
-                                                 FieldType::BIGINT, Literal(99l));
+        auto predicate = PredicateBuilder::Equal(
+            /*field_index=*/1, /*field_name=*/"_ROW_ID", FieldType::BIGINT, Literal(int64_t{99}));
         auto read_type =
             arrow::struct_({arrow::field("f2", arrow::int32()), SpecialFields::RowId().field_});
         auto expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
@@ -2072,7 +2314,7 @@ TEST_P(DataEvolutionTableTest, TestDataEvolutionPredicatePushDownBoundaries) {
         auto data_predicate = PredicateBuilder::Equal(
             /*field_index=*/0, /*field_name=*/"f2", FieldType::INT, Literal(103));
         auto system_predicate = PredicateBuilder::Equal(
-            /*field_index=*/1, /*field_name=*/"_ROW_ID", FieldType::BIGINT, Literal(0l));
+            /*field_index=*/1, /*field_name=*/"_ROW_ID", FieldType::BIGINT, Literal(int64_t{0}));
         ASSERT_OK_AND_ASSIGN(auto predicate,
                              PredicateBuilder::And({data_predicate, system_predicate}));
         ASSERT_OK(ScanAndRead(table_path, {"f2", "_ROW_ID"}, /*expected_array=*/nullptr, predicate,
@@ -2134,7 +2376,7 @@ TEST_P(DataEvolutionTableTest, TestFormatPredicatePushDownWithoutFileIndex) {
     std::map<std::string, std::string> options = {{Options::FILE_INDEX_READ_ENABLED, "false"},
                                                   {Options::WRITE_BATCH_SIZE, "1"},
                                                   {"parquet.page.size", "1"},
-                                                  {"parquet.enable-dictionary", "false"},
+                                                  {"parquet.enable.dictionary", "false"},
                                                   {"parquet.write.enable-page-index", "true"},
                                                   {"parquet.read.enable-page-index-filter", "true"},
                                                   {"orc.stripe.size", "1"},
@@ -2185,8 +2427,7 @@ TEST_P(DataEvolutionTableTest, TestPredicate) {
         return;
     }
     if (FileFormat() == "mosaic") {
-        CreateTable(/*partition_keys=*/{}, {{Options::MANIFEST_FORMAT, "orc"},
-                                            {Options::FILE_FORMAT, FileFormat()},
+        CreateTable(/*partition_keys=*/{}, {{Options::FILE_FORMAT, FileFormat()},
                                             {Options::FILE_SYSTEM, "local"},
                                             {Options::ROW_TRACKING_ENABLED, "true"},
                                             {Options::DATA_EVOLUTION_ENABLED, "true"},
@@ -2329,8 +2570,7 @@ TEST_P(DataEvolutionTableTest, TestIOException) {
 }
 
 TEST_P(DataEvolutionTableTest, TestWithRowIds) {
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, FileFormat()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, FileFormat()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};

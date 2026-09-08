@@ -134,6 +134,25 @@ encoded; ``BM_ParquetWrite_Dictionary*`` vary whether the *input array* already
 is, which is what decides whether Arrow can pass indices through to Parquet or
 has to materialize them first.
 
+Three of those cases form one comparison, at the same cardinality and over the
+same logical column: ``BM_ParquetWrite_String`` writes it flat,
+``BM_ParquetWrite_DictionaryStringIntoStringSchema`` writes it as one dictionary
+forwarded through the whole file, and
+``BM_ParquetWrite_ChangingDictionaryStringIntoStringSchema`` gives every batch
+its own dictionary - a rotation of the same values, with the indices shifted the
+other way, so the data is unchanged and only the dictionary object differs. A
+Parquet column chunk holds one dictionary, so the third case makes the writer
+fall back to plain encoding partway through the row group. Reading the second
+against the first is what forwarding an encoding buys; the third against the
+second is what that fallback costs in time; the third against the first is the
+output size a rewrite that materialized and rebuilt would have produced.
+
+These are format-writer microbenchmarks: they measure ``AddBatch`` against a
+Parquet file, not a compaction. The compaction time, CPU and peak memory of
+``parquet.read.enable-dictionary-passthrough`` on a real table have to be
+measured on that table - see the "Dictionary Passthrough" section of
+:doc:`../user_guide/compaction`.
+
 Reader cases (``BM_ParquetRead_*``) cover full scan, single-column projection,
 predicate-filtered reads at varying selectivity with page-index filtering on and
 off, skip-heavy reads driven by a strided selection bitmap, null density,

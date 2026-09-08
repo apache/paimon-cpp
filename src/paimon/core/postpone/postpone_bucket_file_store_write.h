@@ -110,7 +110,8 @@ class PostponeBucketFileStoreWrite : public AbstractFileStoreWrite {
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
         : AbstractFileStoreWrite(file_store_path_factory, snapshot_manager, schema_manager,
                                  commit_user, root_path, table_schema, schema,
-                                 /*write_schema=*/schema, partition_schema, dv_maintainer_factory,
+                                 /*write_schema=*/schema, /*realtime_schema_layout=*/nullptr,
+                                 partition_schema, dv_maintainer_factory,
                                  /*primary_key_index_maintainer_factory=*/nullptr, io_manager,
                                  options, ignore_previous_files, is_streaming_mode,
                                  ignore_num_bucket_check, executor, pool) {}

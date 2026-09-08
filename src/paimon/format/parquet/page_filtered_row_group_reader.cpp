@@ -33,6 +33,7 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/saturating_cast.h"
 #include "parquet/arrow/reader.h"
 #include "parquet/arrow/reader_internal.h"
 #include "parquet/arrow/schema.h"
@@ -42,6 +43,12 @@
 namespace paimon::parquet {
 
 namespace {
+
+/// Ceiling on the value bytes a leaf may reserve up front from column chunk metadata alone.
+/// The estimate it caps is a heuristic over footer fields, which are attacker-controlled and
+/// need not describe the pages this read touches, so it must not turn into an unbounded eager
+/// allocation. Past this size the builder's doubling is already amortized against a large read.
+constexpr int64_t kMaxMetadataValueBytesReservation = int64_t{16} * 1024 * 1024;
 
 struct DataPageLayout {
     int64_t column_chunk_offset;
@@ -234,9 +241,10 @@ std::pair<RowRanges, int64_t> PageFilteredRowGroupReader::ComputeCompressedRowRa
 }
 
 Status PageFilteredRowGroupReader::ExecuteSkipReadPattern(
-    int col_idx, const RowRanges& ranges, int64_t total,
-    ::parquet::arrow::ColumnReader* column_reader) {
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(column_reader->ResetLeaf(col_idx, total));
+    int col_idx, const RowRanges& ranges, int64_t total, int64_t reserve_values,
+    int64_t reserve_value_bytes, ::parquet::arrow::ColumnReader* column_reader) {
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        column_reader->ResetLeaf(col_idx, total, reserve_values, reserve_value_bytes));
     int64_t current = 0;
     for (const auto& range : ranges.GetRanges()) {
         int64_t skip = range.from > current ? range.from - current : 0;
@@ -341,14 +349,15 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
     for (int col_idx : column_reader->LeafColumnIndices()) {
         RowRanges effective_ranges = row_ranges;
         int64_t effective_total = row_ranges.IsEmpty() ? 0 : row_group_row_count;
-        if (!row_ranges.IsEmpty() && rg_page_index_reader) {
-            auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
-            if (offset_index) {
-                auto row_group_metadata =
-                    arrow_file_reader->parquet_reader()->metadata()->RowGroup(row_group_index);
-                auto column_chunk = row_group_metadata->ColumnChunk(col_idx);
-                if (MakeDataPageReadPlan(row_ranges, offset_index, *column_chunk,
-                                         row_group_row_count)) {
+        std::unique_ptr<::parquet::ColumnChunkMetaData> column_chunk;
+        if (!row_ranges.IsEmpty()) {
+            auto row_group_metadata =
+                arrow_file_reader->parquet_reader()->metadata()->RowGroup(row_group_index);
+            column_chunk = row_group_metadata->ColumnChunk(col_idx);
+            if (rg_page_index_reader) {
+                auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
+                if (offset_index && MakeDataPageReadPlan(row_ranges, offset_index, *column_chunk,
+                                                         row_group_row_count)) {
                     auto [compressed, total] =
                         ComputeCompressedRowRanges(row_ranges, offset_index, row_group_row_count);
                     effective_ranges = std::move(compressed);
@@ -357,7 +366,32 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
             }
         }
 
+        // Rows that will actually be appended, as opposed to effective_total, which is the
+        // compressed space SkipRecords walks: a highly selective predicate reads a handful of
+        // rows out of a row group, and reserving for the whole group would allocate tens of MiB
+        // of offsets nobody writes.
+        const int64_t reserve_values = effective_ranges.RowCount();
+        int64_t reserve_value_bytes = 0;
+        const int64_t chunk_bytes = column_chunk ? column_chunk->total_uncompressed_size() : 0;
+        const int64_t chunk_values = column_chunk ? column_chunk->num_values() : 0;
+        if (chunk_bytes > 0 && chunk_values > 0 && reserve_values > 0) {
+            // A heuristic, not a bound. total_uncompressed_size is uncompressed but still
+            // ENCODED: a dictionary page stores each value once and its data pages only
+            // indices, DELTA_BYTE_ARRAY only prefix deltas, so both can decode into more Arrow
+            // payload than they occupy, while page headers, levels and BYTE_ARRAY length
+            // prefixes pull the other way. The average is also taken over the whole chunk,
+            // including the pages this selection skips, so it misleads when wide values sit in
+            // skipped pages. Either direction only costs performance — the reservation is a
+            // hint the builder grows past when short — but they are why the result is capped
+            // instead of trusted. Fixed-width leaves ignore the byte count entirely.
+            const double avg = static_cast<double>(chunk_bytes) / static_cast<double>(chunk_values);
+            reserve_value_bytes = std::min(
+                {SaturatingDoubleToInteger<int64_t>(avg * static_cast<double>(reserve_values)),
+                 chunk_bytes, kMaxMetadataValueBytesReservation});
+        }
+
         PAIMON_RETURN_NOT_OK(ExecuteSkipReadPattern(col_idx, effective_ranges, effective_total,
+                                                    reserve_values, reserve_value_bytes,
                                                     column_reader.get()));
     }
 

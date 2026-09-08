@@ -20,6 +20,7 @@
 #include "paimon/core/utils/field_mapping.h"
 
 #include <algorithm>
+#include <cstdint>
 
 #include "arrow/type_fwd.h"
 #include "gtest/gtest.h"
@@ -444,7 +445,7 @@ TEST_F(FieldMappingTest, TestSchemaEvolutionWithPredicate) {
     auto greater_or_equal = PredicateBuilder::GreaterOrEqual(
         /*field_index=*/0, /*field_name=*/"key0", FieldType::INT, Literal(4));
     auto equal = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"key1",
-                                         FieldType::BIGINT, Literal(3l));
+                                         FieldType::BIGINT, Literal(int64_t{3}));
     auto less_or_equal = PredicateBuilder::LessOrEqual(/*field_index=*/2, /*field_name=*/"k",
                                                        FieldType::INT, Literal(10));
     // greater_than will not be pushed down, as with casting, only integer predicates can be pushed
@@ -455,7 +456,7 @@ TEST_F(FieldMappingTest, TestSchemaEvolutionWithPredicate) {
                                                 FieldType::INT, Literal(40));
     // in can be pushed down
     auto in = PredicateBuilder::In(/*field_index=*/5, /*field_name=*/"a", FieldType::BIGINT,
-                                   {Literal(100l)});
+                                   {Literal(int64_t{100})});
     auto not_in =
         PredicateBuilder::In(/*field_index=*/6, /*field_name=*/"e", FieldType::INT, {Literal(50)});
 
@@ -545,7 +546,7 @@ TEST_F(FieldMappingTest, TestSchemaEvolutionWithPredicate2) {
     auto greater_or_equal = PredicateBuilder::GreaterOrEqual(
         /*field_index=*/6, /*field_name=*/"key0", FieldType::INT, Literal(4));
     auto equal = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"key1",
-                                         FieldType::BIGINT, Literal(3l));
+                                         FieldType::BIGINT, Literal(int64_t{3}));
     auto less_or_equal = PredicateBuilder::LessOrEqual(/*field_index=*/4, /*field_name=*/"k",
                                                        FieldType::INT, Literal(10));
     // greater_than will not be pushed down, as with casting, only integer predicates can be pushed
@@ -556,7 +557,7 @@ TEST_F(FieldMappingTest, TestSchemaEvolutionWithPredicate2) {
                                                 FieldType::INT, Literal(40));
     // in will not be pushed down, as with casting, literal from BIGINT to INT is overflow
     auto in = PredicateBuilder::In(/*field_index=*/2, /*field_name=*/"a", FieldType::BIGINT,
-                                   {Literal(9223372036854775807l)});
+                                   {Literal(int64_t{9223372036854775807LL})});
     auto not_in =
         PredicateBuilder::In(/*field_index=*/3, /*field_name=*/"e", FieldType::INT, {Literal(50)});
 
@@ -577,7 +578,7 @@ TEST_F(FieldMappingTest, TestSchemaEvolutionWithPredicate2) {
     auto greater_or_equal_new = PredicateBuilder::GreaterOrEqual(
         /*field_index=*/0, /*field_name=*/"key0", FieldType::INT, Literal(4));
     auto equal_new = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"key1",
-                                             FieldType::BIGINT, Literal(3l));
+                                             FieldType::BIGINT, Literal(int64_t{3}));
     expected_part_info.partition_filter =
         PredicateBuilder::And({greater_or_equal_new, equal_new}).value_or(nullptr);
     CheckPartitionInfo(mapping->partition_info.value(), expected_part_info);
@@ -623,7 +624,7 @@ TEST_F(FieldMappingTest, TestCompoundPredicateWithoutPushDown) {
     auto equal = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT,
                                          Literal(55));
     auto greater_than = PredicateBuilder::GreaterThan(/*field_index=*/2, /*field_name=*/"f2",
-                                                      FieldType::BIGINT, Literal(30l));
+                                                      FieldType::BIGINT, Literal(int64_t{30}));
     auto less_than = PredicateBuilder::LessThan(/*field_index=*/3, /*field_name=*/"f3",
                                                 FieldType::INT, Literal(55));
     ASSERT_OK_AND_ASSIGN(auto or_predicate, PredicateBuilder::Or({greater_than, less_than}));
