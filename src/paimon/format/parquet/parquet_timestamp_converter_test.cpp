@@ -23,6 +23,7 @@
 #include "arrow/api.h"
 #include "arrow/ipc/api.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/memory/memory_pool.h"
@@ -88,6 +89,24 @@ TEST(ParquetTimestampConverterTest, TestNeedCastArrayForTimestamp) {
                                  arrow::struct_(fields), arrow::struct_(target_fields)));
         ASSERT_TRUE(need_cast);
     }
+}
+
+TEST(ParquetTimestampConverterTest, TestAlreadyLogicalBlobCompatibility) {
+    std::shared_ptr<arrow::Field> restored_blob = arrow::field("blob", arrow::large_binary());
+    std::shared_ptr<arrow::Field> expected_physical_blob =
+        BlobUtils::ToArrowField("blob")->WithType(arrow::binary());
+
+    ASSERT_OK_AND_ASSIGN(bool need_cast, ParquetTimestampConverter::NeedCastArrayForTimestamp(
+                                             arrow::struct_({restored_blob}),
+                                             arrow::struct_({expected_physical_blob})));
+    ASSERT_FALSE(need_cast);
+
+    // Only a binary field carrying Paimon BLOB metadata is compatible with a large_binary field
+    // already restored from ARROW:schema. A plain binary field must still be rejected.
+    ASSERT_NOK_WITH_MSG(ParquetTimestampConverter::NeedCastArrayForTimestamp(
+                            arrow::struct_({restored_blob}),
+                            arrow::struct_({arrow::field("blob", arrow::binary())})),
+                        "src type large_binary and target type binary mismatch");
 }
 
 TEST(ParquetTimestampConverterTest, TestCastArrayForTimestamp) {

@@ -805,6 +805,52 @@ TEST_F(FieldMappingReaderTest, TestReadInlineBlobAsBinaryDataFile) {
                 /*partition_keys=*/{}, BinaryRow::EmptyRow(), expected);
 }
 
+TEST_F(FieldMappingReaderTest, TestReadInlineBlobAlreadyRestoredAsLargeBinary) {
+    // The data schema declares the inline BLOB's physical type as binary, while the mock reader
+    // simulates Parquet restoring the actual array to logical large_binary from ARROW:schema.
+    std::vector<DataField> data_fields = {
+        DataField(0, arrow::field("descriptor", arrow::binary(), /*nullable=*/true)),
+    };
+    std::shared_ptr<arrow::Schema> data_schema =
+        DataField::ConvertDataFieldsToArrowSchema(data_fields);
+
+    std::vector<DataField> read_fields = {
+        DataField(0, BlobUtils::ToArrowField("descriptor", /*nullable=*/true)),
+    };
+    std::shared_ptr<arrow::Schema> read_schema =
+        DataField::ConvertDataFieldsToArrowSchema(read_fields);
+    std::shared_ptr<arrow::Array> restored_array =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({arrow::field("descriptor", arrow::large_binary())}),
+            R"([
+        ["descriptor-1"],
+        [null],
+        ["descriptor-2"]
+    ])")
+            .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMappingBuilder> mapping_builder,
+                         FieldMappingBuilder::Create(read_schema, /*partition_keys=*/{},
+                                                     /*predicate=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMapping> mapping,
+                         mapping_builder->CreateFieldMapping(data_fields));
+    std::unique_ptr<FileBatchReader> mock = std::make_unique<MockFileBatchReader>(
+        restored_array, arrow::struct_(data_schema->fields()), /*read_batch_size=*/8);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldMappingReader> reader,
+                         FieldMappingReader::Create(read_schema->num_fields(), std::move(mock),
+                                                    BinaryRow::EmptyRow(), std::move(mapping),
+                                                    /*skip_map_selected_keys_filter_field_ids=*/{},
+                                                    GetArrowPool(pool_)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+
+    std::shared_ptr<arrow::ChunkedArray> expected =
+        std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector({restored_array}));
+    ASSERT_TRUE(result->type()->Equals(expected->type()))
+        << result->type()->ToString() << " vs " << expected->type()->ToString();
+    ASSERT_TRUE(result->Equals(expected)) << result->ToString() << " vs " << expected->ToString();
+}
+
 TEST_F(FieldMappingReaderTest, TestReadWithSchemaEvolutionRenameCombinedCast) {
     // Test all 4 combinations of rename × cast:
     //   f0: no rename, no cast   (utf8 → utf8, name unchanged)

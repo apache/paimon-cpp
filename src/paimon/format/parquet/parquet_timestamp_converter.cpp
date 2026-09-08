@@ -24,12 +24,26 @@
 
 #include "arrow/type.h"
 #include "fmt/format.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/casting/timestamp_to_timestamp_cast_executor.h"
 
 namespace paimon::parquet {
+namespace {
+
+bool IsAlreadyLogicalBlob(const std::shared_ptr<arrow::Field>& src_field,
+                          const std::shared_ptr<arrow::Field>& target_field) {
+    // ARROW:schema may restore an inline BLOB's physical binary column to its logical
+    // large_binary representation before this compatibility check runs.
+    return src_field->type()->id() == arrow::Type::LARGE_BINARY &&
+           target_field->type()->id() == arrow::Type::BINARY &&
+           BlobUtils::IsBlobMetadata(target_field->metadata());
+}
+
+}  // namespace
+
 Result<std::shared_ptr<arrow::DataType>> ParquetTimestampConverter::AdjustTimezone(
     const std::shared_ptr<arrow::DataType>& src_data_type) {
     arrow::Type::type type = src_data_type->id();
@@ -91,9 +105,14 @@ Result<bool> ParquetTimestampConverter::NeedCastArrayForTimestamp(
                                 src_data_type->ToString(), target_data_type->ToString()));
             }
             for (int32_t i = 0; i < src_struct_type->num_fields(); ++i) {
-                PAIMON_ASSIGN_OR_RAISE(bool need_cast, NeedCastArrayForTimestamp(
-                                                           src_struct_type->field(i)->type(),
-                                                           target_struct_type->field(i)->type()));
+                const std::shared_ptr<arrow::Field>& src_field = src_struct_type->field(i);
+                const std::shared_ptr<arrow::Field>& target_field = target_struct_type->field(i);
+                if (IsAlreadyLogicalBlob(src_field, target_field)) {
+                    continue;
+                }
+                PAIMON_ASSIGN_OR_RAISE(
+                    bool need_cast,
+                    NeedCastArrayForTimestamp(src_field->type(), target_field->type()));
                 if (need_cast) {
                     return true;
                 }

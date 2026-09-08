@@ -1,0 +1,74 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT NOT NULL"
+  }, {
+    "id" : 1,
+    "name" : "f_vector_boolean",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "BOOLEAN",
+      "length" : 3
+    }
+  }, {
+    "id" : 2,
+    "name" : "f_vector_tinyint",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "TINYINT",
+      "length" : 3
+    }
+  }, {
+    "id" : 3,
+    "name" : "f_vector_smallint",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "SMALLINT",
+      "length" : 3
+    }
+  }, {
+    "id" : 4,
+    "name" : "f_vector_int",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "INT",
+      "length" : 3
+    }
+  }, {
+    "id" : 5,
+    "name" : "f_vector_bigint",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "BIGINT",
+      "length" : 3
+    }
+  }, {
+    "id" : 6,
+    "name" : "f_vector_float",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "FLOAT",
+      "length" : 3
+    }
+  }, {
+    "id" : 7,
+    "name" : "f_vector_double",
+    "type" : {
+      "type" : "VECTOR",
+      "element" : "DOUBLE",
+      "length" : 3
+    }
+  } ],
+  "highestFieldId" : 7,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "manifest.format" : "avro",
+    "file.format" : "parquet"
+  },
+  "timeMillis" : 1788853436194
+}
