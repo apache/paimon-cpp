@@ -140,6 +140,25 @@ class ReadTrackingInputStream : public InputStream {
     std::atomic<bool> fail_reads_{false};
 };
 
+class FailingPreBufferInputStream : public ArrowInputStreamAdapter {
+ public:
+    FailingPreBufferInputStream(const std::shared_ptr<paimon::InputStream>& input,
+                                int64_t file_length, const std::shared_ptr<arrow::MemoryPool>& pool,
+                                std::shared_ptr<std::atomic<bool>> fail_will_need)
+        : ArrowInputStreamAdapter(input, file_length, pool),
+          fail_will_need_(std::move(fail_will_need)) {}
+
+    arrow::Status WillNeed(const std::vector<arrow::io::ReadRange>& ranges) override {
+        if (fail_will_need_ && fail_will_need_->exchange(false)) {
+            return arrow::Status::IOError("injected pre-buffer initialization failure");
+        }
+        return ArrowInputStreamAdapter::WillNeed(ranges);
+    }
+
+ private:
+    std::shared_ptr<std::atomic<bool>> fail_will_need_;
+};
+
 class FileReaderWrapperTest : public ::testing::Test {
  public:
     void SetUp() override {
@@ -214,10 +233,11 @@ class FileReaderWrapperTest : public ::testing::Test {
 
     Result<std::unique_ptr<FileReaderWrapper>> PrepareReaderWrapperOnStream(
         std::shared_ptr<InputStream> in, int64_t wrapper_batch_size = 0,
-        bool paimon_managed_pre_buffer = false, bool enable_pre_buffer = true) {
+        bool paimon_managed_pre_buffer = false, bool enable_pre_buffer = true,
+        std::shared_ptr<std::atomic<bool>> fail_will_need = nullptr) {
         PAIMON_ASSIGN_OR_RAISE(int64_t file_length, in->Length());
-        auto input_stream =
-            std::make_unique<ArrowInputStreamAdapter>(std::move(in), file_length, arrow_pool_);
+        auto input_stream = std::make_unique<FailingPreBufferInputStream>(
+            in, file_length, arrow_pool_, std::move(fail_will_need));
         ::parquet::arrow::FileReaderBuilder file_reader_builder;
         ::parquet::ReaderProperties reader_properties;
         reader_properties.enable_buffered_stream();
@@ -234,7 +254,8 @@ class FileReaderWrapperTest : public ::testing::Test {
                                             ->properties(arrow_reader_props)
                                             ->Build(&file_reader));
         return FileReaderWrapper::Create(std::move(file_reader), wrapper_batch_size, arrow_pool_,
-                                         enable_pre_buffer && paimon_managed_pre_buffer);
+                                         enable_pre_buffer && paimon_managed_pre_buffer,
+                                         file_length);
     }
 
     void PrepareParquetFile(const std::string& file_path, int32_t row_count,
@@ -441,15 +462,48 @@ TEST_F(FileReaderWrapperTest, ManagedPreBufferBackwardSeekRefreshesCacheCoverage
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> batch, reader->Next());
     ASSERT_TRUE(batch);
     ASSERT_EQ(2000, reader->GetPreviousBatchFirstRowNumber().value());
-    ASSERT_FALSE(reader->prebuffered_ranges_.empty());
-    const int64_t initial_min_offset = reader->prebuffered_ranges_.front().offset;
 
     ASSERT_OK(reader->SeekToRow(0));
-    ASSERT_FALSE(reader->prebuffered_ranges_.empty());
-    ASSERT_LT(reader->prebuffered_ranges_.front().offset, initial_min_offset);
-    ASSERT_OK_AND_ASSIGN(batch, reader->Next());
-    ASSERT_TRUE(batch);
-    ASSERT_EQ(0, reader->GetPreviousBatchFirstRowNumber().value());
+    ASSERT_EQ(2000, reader->GetPreviousBatchFirstRowNumber().value());
+    const auto [schema, struct_type] = PrepareArrowSchema();
+    int64_t rows = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(batch, reader->Next());
+        if (!batch) {
+            break;
+        }
+        ASSERT_OK_AND_ASSIGN(uint64_t first_row, reader->GetPreviousBatchFirstRowNumber());
+        const uint64_t expected_first_row = rows < 1000 ? rows : rows + 1000;
+        ASSERT_EQ(expected_first_row, first_row);
+        auto expected_array = PrepareArray(struct_type, batch->num_rows(), first_row);
+        auto expected_batch = arrow::RecordBatch::FromStructArray(expected_array);
+        ASSERT_TRUE(expected_batch.ok());
+        ASSERT_TRUE(batch->Equals(*expected_batch.ValueOrDie()));
+        rows += batch->num_rows();
+    }
+    ASSERT_EQ(2100, rows);
+}
+
+TEST_F(FileReaderWrapperTest, ManagedPreBufferRejectsInvalidIndicesBeforeReading) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "invalid_indices.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/1000);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
+    auto tracking = std::make_shared<ReadTrackingInputStream>(std::move(in));
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         PrepareReaderWrapperOnStream(tracking, /*wrapper_batch_size=*/512,
+                                                      /*paimon_managed_pre_buffer=*/true));
+    const int64_t baseline = tracking->GetPositionalReadCount();
+    for (int32_t column : {-1, 3}) {
+        ASSERT_NOK_WITH_MSG(
+            reader->PrepareForReading({TargetRowGroup(0, false, RowRanges())}, {column}),
+            "column index");
+    }
+    for (int32_t row_group : {-1, 1}) {
+        ASSERT_NOK_WITH_MSG(
+            reader->PrepareForReading({TargetRowGroup(row_group, false, RowRanges())}, {0}),
+            "row group index");
+    }
+    ASSERT_EQ(baseline, tracking->GetPositionalReadCount());
 }
 
 TEST_F(FileReaderWrapperTest, ManagedPreBufferUsesSingleCacheForMixedRowGroups) {
@@ -533,6 +587,43 @@ TEST_F(FileReaderWrapperTest, ManagedPreBufferUsesSingleCacheForMixedRowGroups) 
     assert_equal_batches(arrow_all_partial, paimon_all_partial);
     ASSERT_EQ(arrow_all_partial.bytes, paimon_all_partial.bytes);
     ASSERT_EQ(arrow_all_partial.calls, paimon_all_partial.calls);
+}
+
+TEST_F(FileReaderWrapperTest, ManagedPreBufferRecoversFromInitializationFailure) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "prebuffer_fallback.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
+    auto fail_will_need = std::make_shared<std::atomic<bool>>(false);
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         PrepareReaderWrapperOnStream(in, /*wrapper_batch_size=*/512,
+                                                      /*paimon_managed_pre_buffer=*/true,
+                                                      /*enable_pre_buffer=*/true, fail_will_need));
+    ASSERT_OK(reader->PrepareForReadingLazy(
+        {TargetRowGroup(0, false, RowRanges()),
+         TargetRowGroup(1, true, RowRanges({RowRanges::Range(0, 99)}))},
+        {0, 1, 2}));
+    for (bool seek : {false, true}) {
+        SCOPED_TRACE(seek);
+        fail_will_need->store(true);
+        if (seek) {
+            ASSERT_OK(reader->SeekToRow(0));
+        }
+        const auto schema_pair = PrepareArrowSchema();
+        int64_t rows = 0;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(auto batch, reader->Next());
+            if (!batch) {
+                break;
+            }
+            auto expected = arrow::RecordBatch::FromStructArray(
+                PrepareArray(schema_pair.second, batch->num_rows(), rows));
+            ASSERT_TRUE(expected.ok());
+            ASSERT_TRUE(batch->Equals(*expected.ValueOrDie()));
+            rows += batch->num_rows();
+        }
+        ASSERT_FALSE(fail_will_need->load());
+        ASSERT_EQ(1100, rows);
+    }
 }
 
 TEST_F(FileReaderWrapperTest, ManagedPreBufferPropagatesReadErrors) {
@@ -1110,6 +1201,74 @@ TEST_F(FileReaderWrapperTest, GetPreBufferRangesRejectsNegativeMetadataOffset) {
                         /*ranges=*/RowRanges())},
         /*column_indices=*/{0, 1, 2}));
     ASSERT_NOK_WITH_MSG(reader_wrapper->GetPreBufferRanges(), "pre-buffer range offset");
+}
+
+TEST_F(FileReaderWrapperTest, ManagedMixedPreBufferRejectsCorruptMetadataBeforeReading) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "valid.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/true);
+    std::ifstream file(file_path, std::ios::binary);
+    const std::string original((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+    struct Corruption {
+        int16_t field;
+        int64_t value;
+        const char* error;
+    };
+    for (const auto& corruption :
+         {Corruption{9, -1, "pre-buffer range offset"},
+          Corruption{7, -1, "pre-buffer range length"},
+          Corruption{7, std::numeric_limits<int64_t>::max(), "pre-buffer range overflows"},
+          Corruption{7, static_cast<int64_t>(original.size()), "exceeds file size"}}) {
+        SCOPED_TRACE(corruption.error);
+        std::string content = original;
+        const size_t tail = content.size();
+        uint32_t footer_length = static_cast<uint8_t>(content[tail - 8]) |
+                                 (static_cast<uint8_t>(content[tail - 7]) << 8) |
+                                 (static_cast<uint8_t>(content[tail - 6]) << 16) |
+                                 (static_cast<uint8_t>(content[tail - 5]) << 24);
+        CompactThriftFooter footer(&content, tail - 8 - footer_length);
+        ASSERT_TRUE(footer.SeekField(4, CompactThriftFooter::kList));
+        ASSERT_TRUE(footer.EnterFirstListElement());
+        ASSERT_TRUE(footer.SeekField(1, CompactThriftFooter::kList));
+        ASSERT_TRUE(footer.EnterFirstListElement());
+        ASSERT_TRUE(footer.SeekField(3, CompactThriftFooter::kStruct));
+        ASSERT_TRUE(footer.SeekField(corruption.field, CompactThriftFooter::kI64));
+        const size_t start = footer.pos();
+        size_t end = start;
+        while (static_cast<uint8_t>(content[end++]) & 0x80) {
+        }
+        uint64_t encoded = (static_cast<uint64_t>(corruption.value) << 1) ^
+                           (corruption.value < 0 ? std::numeric_limits<uint64_t>::max() : 0);
+        std::string replacement;
+        do {
+            uint8_t byte = encoded & 0x7f;
+            encoded >>= 7;
+            replacement.push_back(static_cast<char>(byte | (encoded ? 0x80 : 0)));
+        } while (encoded);
+        content.replace(start, end - start, replacement);
+        footer_length = footer_length - (end - start) + replacement.size();
+        for (uint32_t i = 0; i < 4; ++i) {
+            content[content.size() - 8 + i] = static_cast<char>((footer_length >> (8 * i)) & 0xff);
+        }
+        const std::string corrupt_path = PathUtil::JoinPath(dir_->Str(), "corrupt_mixed.parquet");
+        std::ofstream out(corrupt_path, std::ios::binary);
+        out.write(content.data(), static_cast<std::streamsize>(content.size()));
+        out.close();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(corrupt_path));
+        auto tracking = std::make_shared<ReadTrackingInputStream>(std::move(in));
+        ASSERT_OK_AND_ASSIGN(auto reader,
+                             PrepareReaderWrapperOnStream(tracking, /*wrapper_batch_size=*/512,
+                                                          /*paimon_managed_pre_buffer=*/true));
+        const std::vector<TargetRowGroup> mixed = {
+            TargetRowGroup(0, false, RowRanges()),
+            TargetRowGroup(1, true, RowRanges({RowRanges::Range(0, 99)}))};
+        ASSERT_OK(reader->PrepareForReadingLazy(mixed, {0, 1, 2}));
+        // The failed range query still loads the page indexes, separating metadata I/O from data.
+        ASSERT_NOK_WITH_MSG(reader->GetPreBufferRanges(), corruption.error);
+        const int64_t baseline = tracking->GetPositionalReadCount();
+        ASSERT_NOK_WITH_MSG(reader->PrepareForReading(mixed, {0, 1, 2}), corruption.error);
+        ASSERT_EQ(baseline, tracking->GetPositionalReadCount());
+    }
 }
 
 }  // namespace paimon::parquet::test

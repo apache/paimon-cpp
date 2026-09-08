@@ -2939,9 +2939,9 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilter) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
-/// Reproduces the prefetch + parquet page-index filter failure: the predicate keeps only the last
-/// page of RG1, RG2 and RG3, so the prefetch reader ends up seeking to a row in the middle of a row
-/// group, which FileReaderWrapper::SeekToRow rejects.
+/// Exercise both partial-only and mixed row groups with and without prefetch. The partial
+/// groups start reading inside the row group, reproducing the need for row-group-aligned seeks
+/// when parallel prefetch dispatches them to different sub-readers.
 TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     auto [file_format, file_system] = GetParam();
     if (file_format != "parquet" || file_system != "local") {
@@ -2984,49 +2984,63 @@ TEST_P(WriteAndReadInteTest, TestAppendWithParquetPageIndexFilterAndPrefetch) {
     ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
                                      /*expected_commit_messages=*/std::nullopt));
 
-    // Keep only the last row of RG1, RG2 and RG3, so each row group is partially matched and its
-    // first selected row is 3 rows behind the row group start.
-    auto predicate = PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f0", FieldType::INT,
-                                          {Literal(7), Literal(11), Literal(15)});
-    ASSERT_TRUE(predicate);
+    for (bool mixed : {false, true}) {
+        SCOPED_TRACE(mixed);
+        // Preserve the partial-only regression and also cover a full RG1 followed by
+        // partial RG2 and RG3. Both plans exclude RG0.
+        std::vector<Literal> selected_values =
+            mixed ? std::vector<Literal>{Literal(4), Literal(5),  Literal(6),
+                                         Literal(7), Literal(11), Literal(15)}
+                  : std::vector<Literal>{Literal(7), Literal(11), Literal(15)};
+        auto predicate = PredicateBuilder::In(
+            /*field_index=*/0, /*field_name=*/"f0", FieldType::INT, selected_values);
+        ASSERT_TRUE(predicate);
 
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.SetOptions(options)
-        .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString())
-        .SetPredicate(predicate);
-    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
-    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
-    ASSERT_FALSE(result_plan->Splits().empty());
+        ScanContextBuilder scan_context_builder(table_path);
+        scan_context_builder.SetOptions(options)
+            .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString())
+            .SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+        ASSERT_FALSE(result_plan->Splits().empty());
 
-    // The row group aligned read ranges still cover RG0 although the predicate pruned that row
-    // group, and 2 sub readers take the ranges round robin. The reader0 owning RG0's range
-    // therefore finds no data for it and skips ahead into the next row group it owns, whose first
-    // selected row sits in the middle of that row group. Row level filtering stays off: the
-    // expected rows below are exactly what page-index filtering selects.
-    ReadContextBuilder read_context_builder(table_path);
-    read_context_builder.SetOptions(options)
-        .SetPredicate(predicate)
-        .EnablePrefetch(true)
-        .SetPrefetchMaxParallelNum(2)
-        .SetPrefetchBatchCount(3)
-        .AddOption("test.enable-adaptive-prefetch-strategy", "false");
-    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
-    ASSERT_OK_AND_ASSIGN(auto read_result,
-                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+        // The row group aligned read ranges still cover RG0 although the predicate pruned that row
+        // group, and 2 sub readers take the ranges round robin. The reader0 owning RG0's range
+        // therefore finds no data for it and skips ahead into the next row group it owns, whose
+        // first selected row sits in the middle of that row group. Row level filtering stays off:
+        // the expected rows below are exactly what page-index filtering selects.
+        for (bool prefetch : {false, true}) {
+            SCOPED_TRACE(prefetch);
+            ReadContextBuilder read_context_builder(table_path);
+            read_context_builder.SetOptions(options)
+                .SetPredicate(predicate)
+                .EnablePrefetch(prefetch)
+                .SetPrefetchMaxParallelNum(2)
+                .SetPrefetchBatchCount(3)
+                .AddOption("test.enable-adaptive-prefetch-strategy", "false");
+            ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(auto batch_reader,
+                                 table_read->CreateReader(result_plan->Splits()));
+            ASSERT_OK_AND_ASSIGN(auto read_result,
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
 
-    arrow::FieldVector fields_with_row_kind = fields;
-    fields_with_row_kind.insert(fields_with_row_kind.begin(),
-                                arrow::field("_VALUE_KIND", arrow::int8()));
-    auto expected_data_type = arrow::struct_(fields_with_row_kind);
-    auto expected = std::make_shared<arrow::ChunkedArray>(
-        arrow::ipc::internal::json::ArrayFromJSON(expected_data_type, R"([
-[0, 7, "v7"], [0, 11, "v11"], [0, 15, "v15"]
-])")
-            .ValueOrDie());
-    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+            arrow::FieldVector fields_with_row_kind = fields;
+            fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                        arrow::field("_VALUE_KIND", arrow::int8()));
+            auto expected_data_type = arrow::struct_(fields_with_row_kind);
+            std::string expected_json = mixed ? R"([
+[0, 4, "v4"], [0, 5, "v5"], [0, 6, "v6"], [0, 7, "v7"],
+[0, 11, "v11"], [0, 15, "v15"]
+])"
+                                              : R"([[0, 7, "v7"], [0, 11, "v11"], [0, 15, "v15"]])";
+            auto expected = std::make_shared<arrow::ChunkedArray>(
+                arrow::ipc::internal::json::ArrayFromJSON(expected_data_type, expected_json)
+                    .ValueOrDie());
+            ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+        }
+    }
 }
 
 TEST_P(WriteAndReadInteTest, TestAppendWithParquetMetadataCache) {

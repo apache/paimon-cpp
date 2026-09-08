@@ -45,6 +45,19 @@ namespace paimon::parquet {
 
 namespace {
 
+Status ValidatePreBufferRange(const ::arrow::io::ReadRange& range, int64_t file_size) {
+    PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(range.offset, "pre-buffer range offset"));
+    PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(range.length, "pre-buffer range length"));
+    if (range.offset > std::numeric_limits<int64_t>::max() - range.length) {
+        return Status::Invalid(fmt::format("pre-buffer range overflows: offset={}, length={}",
+                                           range.offset, range.length));
+    }
+    if (file_size >= 0 && (range.offset > file_size || range.length > file_size - range.offset)) {
+        return Status::Invalid("pre-buffer range exceeds file size");
+    }
+    return Status::OK();
+}
+
 // Merge overlapping or adjacent ReadRanges into a minimal set of non-overlapping ranges.
 // PreBufferRanges requires non-overlapping ranges, so this is necessary when combining
 // ranges from multiple sources (page-level ranges, column chunk ranges, etc.).
@@ -87,10 +100,13 @@ std::vector<::arrow::io::ReadRange> MergeOverlappingRanges(
 
 Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
     std::unique_ptr<::parquet::arrow::FileReader>&& file_reader, int64_t batch_size,
-    std::shared_ptr<::arrow::MemoryPool> pool, bool pre_buffer_enabled) {
+    std::shared_ptr<::arrow::MemoryPool> pool, bool pre_buffer_enabled, int64_t file_size) {
     try {
         if (file_reader == nullptr) {
             return Status::Invalid("file reader wrapper create failed. file reader is nullptr");
+        }
+        if (pre_buffer_enabled && file_size < 0) {
+            return Status::Invalid("managed pre-buffering requires a non-negative file size");
         }
         std::vector<std::pair<uint64_t, uint64_t>> all_row_group_ranges;
         auto meta_data = file_reader->parquet_reader()->metadata();
@@ -111,7 +127,7 @@ Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
             arrow::internal::Iota(file_reader->parquet_reader()->metadata()->num_columns());
         auto file_reader_wrapper = std::unique_ptr<FileReaderWrapper>(
             new FileReaderWrapper(std::move(file_reader), all_row_group_ranges, num_rows,
-                                  batch_size, pool, pre_buffer_enabled));
+                                  batch_size, pool, pre_buffer_enabled, file_size));
         std::vector<TargetRowGroup> all_target_row_groups;
         for (int32_t i = 0; i < file_reader_wrapper->GetNumberOfRowGroups(); i++) {
             all_target_row_groups.emplace_back(/*rg_index=*/i, /*is_partially_matched=*/false,
@@ -150,12 +166,14 @@ Status FileReaderWrapper::Close() {
 FileReaderWrapper::FileReaderWrapper(
     std::unique_ptr<::parquet::arrow::FileReader>&& file_reader,
     const std::vector<std::pair<uint64_t, uint64_t>>& all_row_group_ranges, uint64_t num_rows,
-    int64_t batch_size, std::shared_ptr<::arrow::MemoryPool> pool, bool pre_buffer_enabled)
+    int64_t batch_size, std::shared_ptr<::arrow::MemoryPool> pool, bool pre_buffer_enabled,
+    int64_t file_size)
     : file_reader_(std::move(file_reader)),
       all_row_group_ranges_(all_row_group_ranges),
       pool_(std::move(pool)),
       batch_size_(batch_size),
       pre_buffer_enabled_(pre_buffer_enabled),
+      file_size_(file_size),
       num_rows_(num_rows) {}
 
 void FileReaderWrapper::WaitForPendingPreBuffer() {
@@ -219,47 +237,12 @@ Status FileReaderWrapper::SeekToRow(uint64_t row_number) {
                     return Status::OK();
                 }
 
-                // Rebuild batch_reader_ for non-page-filtered RGs at/after seek position.
-                std::vector<int32_t> fully_matched_indices;
-                bool has_partially_matched = false;
-                for (uint64_t j = i; j < target_row_groups_.size(); j++) {
-                    if (!target_row_groups_[j].IsExcludedByReadRange() &&
-                        target_row_groups_[j].IsPartiallyMatched()) {
-                        has_partially_matched = true;
-                    }
-                    if (!target_row_groups_[j].IsExcludedByReadRange() &&
-                        !target_row_groups_[j].IsPartiallyMatched()) {
-                        fully_matched_indices.push_back(target_row_groups_[j].GetRowGroupIndex());
-                    }
-                }
-                if (pre_buffer_enabled_) {
-                    WaitForPendingPreBuffer();
-                    if (!has_partially_matched) {
-                        // Keep Arrow's standard column-chunk range handling for full-only plans.
-                        file_reader_->parquet_reader()->PreBuffer(
-                            fully_matched_indices, target_column_indices_,
-                            file_reader_->properties().io_context(),
-                            file_reader_->properties().cache_options());
-                    } else {
-                        PAIMON_ASSIGN_OR_RAISE(
-                            std::vector<::arrow::io::ReadRange> ranges,
-                            CollectPreBufferRanges(target_column_indices_, /*start_idx=*/i));
-                        Status pre_buffer_status = DispatchPreBuffer(std::move(ranges));
-                        if (!pre_buffer_status.ok() && !fully_matched_indices.empty()) {
-                            ::arrow::io::IOContext io_ctx(pool_.get());
-                            file_reader_->parquet_reader()->PreBuffer(
-                                fully_matched_indices, target_column_indices_, io_ctx,
-                                file_reader_->properties().cache_options());
-                        }
-                    }
-                }
-                if (!fully_matched_indices.empty()) {
-                    PAIMON_RETURN_NOT_OK_FROM_ARROW(file_reader_->GetRecordBatchReader(
-                        fully_matched_indices, target_column_indices_, &batch_reader_));
-                } else {
-                    batch_reader_.reset();
-                }
-                return Status::OK();
+                // Reuse initialization so seeks refresh the same cache and fallback paths.
+                pending_start_idx_ = i;
+                const uint64_t previous_first_row = previous_first_row_;
+                Status status = PrepareForReading(target_row_groups_, target_column_indices_);
+                previous_first_row_ = previous_first_row;
+                return status;
             }
         }
         next_row_to_read_ = num_rows_;
@@ -422,6 +405,20 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetRowGrou
 Status FileReaderWrapper::PrepareForReadingLazy(
     const std::vector<TargetRowGroup>& target_row_groups,
     const std::vector<int32_t>& column_indices) {
+    const auto& metadata = file_reader_->parquet_reader()->metadata();
+    for (int32_t column_index : column_indices) {
+        if (column_index < 0 || column_index >= metadata->num_columns()) {
+            return Status::Invalid(fmt::format("column index {} is out of bound {}", column_index,
+                                               metadata->num_columns()));
+        }
+    }
+    for (const auto& row_group : target_row_groups) {
+        int32_t index = row_group.GetRowGroupIndex();
+        if (index < 0 || index >= metadata->num_row_groups()) {
+            return Status::Invalid(fmt::format("row group index {} is out of bound {}", index,
+                                               metadata->num_row_groups()));
+        }
+    }
     target_row_groups_ = target_row_groups;
     target_column_indices_ = column_indices;
     reader_initialized_ = false;
@@ -470,6 +467,10 @@ Result<std::vector<::arrow::io::ReadRange>> FileReaderWrapper::DoCollectPreBuffe
                 }
             }
         }
+        // Validate metadata before either signed range merging or unsigned conversion.
+        for (const auto& range : ranges) {
+            PAIMON_RETURN_NOT_OK(ValidatePreBufferRange(range, file_size_));
+        }
         return ranges;
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::DoCollectPreBufferRanges")
@@ -483,15 +484,6 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBuff
     std::vector<std::pair<uint64_t, uint64_t>> pre_buffer_ranges;
     pre_buffer_ranges.reserve(ranges.size());
     for (const auto& range : ranges) {
-        // Ranges come from signed parquet metadata; a corrupt footer may hold negative or
-        // overflowing values. Validate before converting to uint64_t, since downstream
-        // range coalescing does unchecked offset + length arithmetic on them.
-        PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(range.offset, "pre-buffer range offset"));
-        PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(range.length, "pre-buffer range length"));
-        if (range.offset > std::numeric_limits<int64_t>::max() - range.length) {
-            return Status::Invalid(fmt::format("pre-buffer range overflows: offset={}, length={}",
-                                               range.offset, range.length));
-        }
         pre_buffer_ranges.emplace_back(static_cast<uint64_t>(range.offset),
                                        static_cast<uint64_t>(range.length));
     }
@@ -499,6 +491,9 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBuff
 }
 
 Status FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges) {
+    for (const auto& range : ranges) {
+        PAIMON_RETURN_NOT_OK(ValidatePreBufferRange(range, file_size_));
+    }
     const auto& cache_opts = file_reader_->properties().cache_options();
     ::arrow::io::IOContext io_ctx(pool_.get());
     auto merged_ranges = MergeOverlappingRanges(std::move(ranges));
@@ -507,7 +502,10 @@ Status FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> 
         prebuffered_ranges_ = std::move(merged_ranges);
         return Status::OK();
     } catch (const std::exception& e) {
-        prebuffered_ranges_.clear();
+        // Cache initialization can fail after asynchronous reads have been submitted.
+        // Drain them before a fallback replaces the cache.
+        prebuffered_ranges_ = std::move(merged_ranges);
+        WaitForPendingPreBuffer();
         return Status::IOError("Parquet pre-buffer failed: ", e.what());
     }
 }
@@ -515,8 +513,9 @@ Status FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> 
 Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& target_row_groups,
                                             const std::vector<int32_t>& column_indices) {
     try {
-        target_row_groups_ = target_row_groups;
-        target_column_indices_ = column_indices;
+        const auto pending_start_idx = pending_start_idx_;
+        PAIMON_RETURN_NOT_OK(PrepareForReadingLazy(target_row_groups, column_indices));
+        pending_start_idx_ = pending_start_idx;
 
         // Find the first row group to read: skip read-range-excluded ones, and honor a
         // seek issued while the reader was still uninitialized (SeekToRow defers reader

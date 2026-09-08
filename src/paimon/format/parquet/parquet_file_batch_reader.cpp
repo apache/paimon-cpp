@@ -325,10 +325,11 @@ Result<std::unique_ptr<ParquetFileBatchReader>> ParquetFileBatchReader::Create(
         PAIMON_RETURN_NOT_OK_FROM_ARROW(file_reader_builder.memory_pool(pool.get())
                                             ->properties(arrow_reader_properties)
                                             ->Build(&file_reader));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(int64_t file_size, input_stream->GetSize());
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileReaderWrapper> reader,
             FileReaderWrapper::Create(std::move(file_reader), static_cast<int64_t>(batch_size),
-                                      pool, pre_buffer_enabled));
+                                      pool, pre_buffer_enabled, file_size));
         // Arrow silently ignores set_read_dictionary for leaves it cannot read as dictionaries,
         // so take the columns it really emits that way from the schema it just derived.
         std::set<std::string> dictionary_fields;
