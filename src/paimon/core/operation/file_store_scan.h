@@ -265,7 +265,7 @@ class FileStoreScan {
                                         int32_t bucket,
                                         std::vector<ManifestEntry>* manifest_entries,
                                         bool* cache_hit) const;
-    std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const;
+    std::shared_ptr<CacheKey> CreateSnapshotLiveManifestEntriesCacheKey(int32_t bucket) const;
     Result<SnapshotLiveManifestEntries> LoadSnapshotLiveManifestEntries(int32_t bucket) const;
     Status StoreSnapshotLiveManifestEntries(int32_t bucket,
                                             const SnapshotLiveManifestEntries& entries) const;

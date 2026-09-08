@@ -33,12 +33,6 @@ std::shared_ptr<CacheKey> CacheKey::ForKind(const std::string& file_path, int64_
     return key;
 }
 
-std::shared_ptr<CacheKey> CacheKey::ForSnapshotLiveManifestEntries(const std::string& table_path,
-                                                                   const std::string& branch,
-                                                                   int32_t bucket) {
-    return SnapshotLiveManifestEntriesCacheKey::ForExplicit(table_path, branch, bucket);
-}
-
 std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey::ForExplicit(
     const std::string& table_path, const std::string& branch, int32_t bucket) {
     return std::shared_ptr<CacheKey>(new SnapshotLiveManifestEntriesCacheKey(

@@ -374,13 +374,14 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
     return Status::OK();
 }
 
-std::shared_ptr<CacheKey> FileStoreScan::SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const {
+std::shared_ptr<CacheKey> FileStoreScan::CreateSnapshotLiveManifestEntriesCacheKey(
+    int32_t bucket) const {
     if (!bucket_filter_ && bucket_selector_) {
-        return paimon::SnapshotLiveManifestEntriesCacheKey::ForInferred(
+        return SnapshotLiveManifestEntriesCacheKey::ForInferred(
             table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket,
             core_options_.GetBucket(), table_schema_->Id());
     }
-    return CacheKey::ForSnapshotLiveManifestEntries(
+    return SnapshotLiveManifestEntriesCacheKey::ForExplicit(
         table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket);
 }
 
@@ -389,7 +390,7 @@ Result<SnapshotLiveManifestEntries> FileStoreScan::LoadSnapshotLiveManifestEntri
     auto supplier = [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
         return std::shared_ptr<CacheValue>();
     };
-    std::shared_ptr<CacheKey> cache_key = SnapshotLiveManifestEntriesCacheKey(bucket);
+    std::shared_ptr<CacheKey> cache_key = CreateSnapshotLiveManifestEntriesCacheKey(bucket);
     const auto max_snapshots = core_options_.GetScanManifestEntryCacheMaxSnapshots();
     Result<std::shared_ptr<CacheValue>> cache_result =
         core_options_.GetCache()->Get(cache_key, supplier);
@@ -412,8 +413,8 @@ Status FileStoreScan::StoreSnapshotLiveManifestEntries(
     }
     auto cache_value =
         std::make_shared<CacheValue>(MemorySegment::Wrap(bytes_result.value()), CacheCallback());
-    Status status =
-        core_options_.GetCache()->Put(SnapshotLiveManifestEntriesCacheKey(bucket), cache_value);
+    Status status = core_options_.GetCache()->Put(CreateSnapshotLiveManifestEntriesCacheKey(bucket),
+                                                  cache_value);
     return status.ok() ? status : Status::OK();
 }
 
