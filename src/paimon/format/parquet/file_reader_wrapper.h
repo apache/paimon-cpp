@@ -58,9 +58,11 @@ class FileReaderWrapper {
  public:
     ~FileReaderWrapper();
 
+    // When pre_buffer_enabled is true, the wrapper manages the cache for full and partial
+    // row groups together; the supplied Arrow reader must have automatic pre-buffering disabled.
     static Result<std::unique_ptr<FileReaderWrapper>> Create(
         std::unique_ptr<::parquet::arrow::FileReader>&& reader, int64_t batch_size,
-        std::shared_ptr<arrow::MemoryPool> pool);
+        std::shared_ptr<arrow::MemoryPool> pool, bool pre_buffer_enabled = false);
 
     /// Seek to the specified row number.
     /// @param row_number The row to seek to (must be at a row group boundary).
@@ -162,7 +164,7 @@ class FileReaderWrapper {
     FileReaderWrapper(std::unique_ptr<::parquet::arrow::FileReader>&& file_reader,
                       const std::vector<std::pair<uint64_t, uint64_t>>& all_row_group_ranges,
                       uint64_t num_rows, int64_t batch_size,
-                      std::shared_ptr<::arrow::MemoryPool> pool);
+                      std::shared_ptr<::arrow::MemoryPool> pool, bool pre_buffer_enabled);
 
     /// Wait for all pending PreBuffer operations to complete.
     void WaitForPendingPreBuffer();
@@ -193,7 +195,7 @@ class FileReaderWrapper {
         uint64_t start_idx);
 
     /// Dispatch a single PreBufferRanges call with merged ranges.
-    void DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges);
+    Status DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges);
 
     std::unique_ptr<::parquet::arrow::FileReader> file_reader_;
     std::unique_ptr<arrow::RecordBatchReader> batch_reader_;
@@ -203,6 +205,7 @@ class FileReaderWrapper {
 
     std::shared_ptr<::arrow::MemoryPool> pool_;
     int64_t batch_size_;  // 0 means no limit
+    bool pre_buffer_enabled_;
 
     const uint64_t num_rows_;
     uint64_t next_row_to_read_ = std::numeric_limits<uint64_t>::max();

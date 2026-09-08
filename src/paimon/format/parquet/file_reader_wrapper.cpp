@@ -87,7 +87,7 @@ std::vector<::arrow::io::ReadRange> MergeOverlappingRanges(
 
 Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
     std::unique_ptr<::parquet::arrow::FileReader>&& file_reader, int64_t batch_size,
-    std::shared_ptr<::arrow::MemoryPool> pool) {
+    std::shared_ptr<::arrow::MemoryPool> pool, bool pre_buffer_enabled) {
     try {
         if (file_reader == nullptr) {
             return Status::Invalid("file reader wrapper create failed. file reader is nullptr");
@@ -109,8 +109,9 @@ Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
         }
         std::vector<int32_t> columns_indices =
             arrow::internal::Iota(file_reader->parquet_reader()->metadata()->num_columns());
-        auto file_reader_wrapper = std::unique_ptr<FileReaderWrapper>(new FileReaderWrapper(
-            std::move(file_reader), all_row_group_ranges, num_rows, batch_size, pool));
+        auto file_reader_wrapper = std::unique_ptr<FileReaderWrapper>(
+            new FileReaderWrapper(std::move(file_reader), all_row_group_ranges, num_rows,
+                                  batch_size, pool, pre_buffer_enabled));
         std::vector<TargetRowGroup> all_target_row_groups;
         for (int32_t i = 0; i < file_reader_wrapper->GetNumberOfRowGroups(); i++) {
             all_target_row_groups.emplace_back(/*rg_index=*/i, /*is_partially_matched=*/false,
@@ -149,11 +150,12 @@ Status FileReaderWrapper::Close() {
 FileReaderWrapper::FileReaderWrapper(
     std::unique_ptr<::parquet::arrow::FileReader>&& file_reader,
     const std::vector<std::pair<uint64_t, uint64_t>>& all_row_group_ranges, uint64_t num_rows,
-    int64_t batch_size, std::shared_ptr<::arrow::MemoryPool> pool)
+    int64_t batch_size, std::shared_ptr<::arrow::MemoryPool> pool, bool pre_buffer_enabled)
     : file_reader_(std::move(file_reader)),
       all_row_group_ranges_(all_row_group_ranges),
       pool_(std::move(pool)),
       batch_size_(batch_size),
+      pre_buffer_enabled_(pre_buffer_enabled),
       num_rows_(num_rows) {}
 
 void FileReaderWrapper::WaitForPendingPreBuffer() {
@@ -219,10 +221,36 @@ Status FileReaderWrapper::SeekToRow(uint64_t row_number) {
 
                 // Rebuild batch_reader_ for non-page-filtered RGs at/after seek position.
                 std::vector<int32_t> fully_matched_indices;
+                bool has_partially_matched = false;
                 for (uint64_t j = i; j < target_row_groups_.size(); j++) {
+                    if (!target_row_groups_[j].IsExcludedByReadRange() &&
+                        target_row_groups_[j].IsPartiallyMatched()) {
+                        has_partially_matched = true;
+                    }
                     if (!target_row_groups_[j].IsExcludedByReadRange() &&
                         !target_row_groups_[j].IsPartiallyMatched()) {
                         fully_matched_indices.push_back(target_row_groups_[j].GetRowGroupIndex());
+                    }
+                }
+                if (pre_buffer_enabled_) {
+                    WaitForPendingPreBuffer();
+                    if (!has_partially_matched) {
+                        // Keep Arrow's standard column-chunk range handling for full-only plans.
+                        file_reader_->parquet_reader()->PreBuffer(
+                            fully_matched_indices, target_column_indices_,
+                            file_reader_->properties().io_context(),
+                            file_reader_->properties().cache_options());
+                    } else {
+                        PAIMON_ASSIGN_OR_RAISE(
+                            std::vector<::arrow::io::ReadRange> ranges,
+                            CollectPreBufferRanges(target_column_indices_, /*start_idx=*/i));
+                        Status pre_buffer_status = DispatchPreBuffer(std::move(ranges));
+                        if (!pre_buffer_status.ok() && !fully_matched_indices.empty()) {
+                            ::arrow::io::IOContext io_ctx(pool_.get());
+                            file_reader_->parquet_reader()->PreBuffer(
+                                fully_matched_indices, target_column_indices_, io_ctx,
+                                file_reader_->properties().cache_options());
+                        }
                     }
                 }
                 if (!fully_matched_indices.empty()) {
@@ -470,15 +498,17 @@ Result<std::vector<std::pair<uint64_t, uint64_t>>> FileReaderWrapper::GetPreBuff
     return pre_buffer_ranges;
 }
 
-void FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges) {
+Status FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ranges) {
     const auto& cache_opts = file_reader_->properties().cache_options();
     ::arrow::io::IOContext io_ctx(pool_.get());
     auto merged_ranges = MergeOverlappingRanges(std::move(ranges));
     try {
         file_reader_->parquet_reader()->PreBufferRanges(merged_ranges, io_ctx, cache_opts);
         prebuffered_ranges_ = std::move(merged_ranges);
-    } catch (const std::exception&) {
+        return Status::OK();
+    } catch (const std::exception& e) {
         prebuffered_ranges_.clear();
+        return Status::IOError("Parquet pre-buffer failed: ", e.what());
     }
 }
 
@@ -514,15 +544,40 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
                 fully_matched_row_groups.push_back(trg.GetRowGroupIndex());
             }
         }
-
-        bool has_partially_matched = fully_matched_row_groups.size() != active_count;
+        const bool has_partially_matched = fully_matched_row_groups.size() != active_count;
 
         WaitForPendingPreBuffer();
 
-        // TODO(Yonghao Fang): Neither Paimon nor Arrow manage the size and lifecycle of prebuffered
-        // caches. So when a lot of row is needed, there is possibility of OOM due to too much
-        // prebuffering. Also, DispatchPreBuffer will drop previous prebuffered ranges by
-        // GetRecordBatchReader, which cause IO wastes.
+        // TODO(Yonghao Fang): Neither Paimon nor Arrow manage the size and lifecycle of
+        // pre-buffered caches, so reading many rows may consume too much memory.
+        // Dispatch one cache for both full and page-filtered row groups before constructing the
+        // standard reader. Arrow's automatic pre-buffer is disabled when this flag is set, so
+        // GetRecordBatchReader cannot replace this cache with a full-row-group-only cache.
+        bool managed_pre_buffer_succeeded = false;
+        if (pre_buffer_enabled_) {
+            if (!has_partially_matched) {
+                // Preserve Arrow's range validation and legacy file handling for full-only plans.
+                file_reader_->parquet_reader()->PreBuffer(
+                    fully_matched_row_groups, column_indices,
+                    file_reader_->properties().io_context(),
+                    file_reader_->properties().cache_options());
+                managed_pre_buffer_succeeded = true;
+            } else {
+                PAIMON_ASSIGN_OR_RAISE(std::vector<::arrow::io::ReadRange> all_ranges,
+                                       CollectPreBufferRanges(column_indices, first_active_idx));
+                Status pre_buffer_status = DispatchPreBuffer(std::move(all_ranges));
+                managed_pre_buffer_succeeded = pre_buffer_status.ok();
+                if (!managed_pre_buffer_succeeded && !fully_matched_row_groups.empty()) {
+                    // Preserve Arrow's original error and fallback behavior if range pre-buffering
+                    // cannot be initialized: full row groups still use the standard cache, while
+                    // page-filtered row groups retain their existing best-effort path below.
+                    ::arrow::io::IOContext io_ctx(pool_.get());
+                    file_reader_->parquet_reader()->PreBuffer(
+                        fully_matched_row_groups, column_indices, io_ctx,
+                        file_reader_->properties().cache_options());
+                }
+            }
+        }
 
         // Create standard reader for fully-matched row groups.
         if (!fully_matched_row_groups.empty()) {
@@ -532,12 +587,14 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
             batch_reader_.reset();
         }
 
-        // When page-filtered RGs exist, issue a single PreBuffer covering both kinds.
-        // Otherwise GetRecordBatchReader already issued PreBuffer internally.
-        if (has_partially_matched) {
+        // Preserve the legacy page-filtered path for callers that leave Arrow in charge of
+        // pre-buffering. This includes page-range caching when automatic pre-buffering is off;
+        // PageFilteredRowGroupReader retains its full-chunk fallback if this best-effort call
+        // fails.
+        if ((!pre_buffer_enabled_ || !managed_pre_buffer_succeeded) && has_partially_matched) {
             PAIMON_ASSIGN_OR_RAISE(std::vector<::arrow::io::ReadRange> all_ranges,
                                    CollectPreBufferRanges(column_indices, first_active_idx));
-            DispatchPreBuffer(std::move(all_ranges));
+            (void)DispatchPreBuffer(std::move(all_ranges));
         }
 
         // Reset read state to the first row group that will be read.
