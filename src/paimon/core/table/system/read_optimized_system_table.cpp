@@ -90,7 +90,7 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     return TableScan::Create(std::move(base_context));
 }
 
-Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
+Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadContext(
     const std::shared_ptr<ReadContext>& context) const {
     auto options = options_;
     std::string branch = context->GetBranch();
@@ -115,6 +115,7 @@ Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
+        .SetWarmupMode(context->GetWarmupMode())
         .WithCache(context->GetCache())
         .SetReadFieldNames(context->GetReadFieldNames())
         .SetReadFieldIds(context->GetReadFieldIds());
@@ -128,7 +129,13 @@ Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
     if (context->GetSpecificTableSchema().has_value()) {
         builder.SetTableSchema(context->GetSpecificTableSchema().value());
     }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context, builder.Finish());
+    return builder.Finish();
+}
+
+Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
+    const std::shared_ptr<ReadContext>& context) const {
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context,
+                           CreateDataReadContext(context));
     return TableRead::Create(std::move(base_context));
 }
 

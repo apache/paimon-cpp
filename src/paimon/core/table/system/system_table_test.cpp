@@ -40,6 +40,7 @@
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -229,6 +230,51 @@ TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
     ASSERT_TRUE(parsed->branch.has_value());
     ASSERT_EQ(parsed->branch.value(), "audit");
     ASSERT_EQ(parsed->system_table_name, ReadOptimizedSystemTable::kName);
+}
+
+// A system table reads through the data table underneath it, so it builds a fresh ReadContext for
+// that table. The builder starts from the defaults, which makes any setting that is not copied
+// across silently revert to its default: a caller that asked for WarmupMode::NONE or CACHE_ONLY
+// would get FULL back, restarting the background decode loop and re-committing its memory and
+// remote I/O, with nothing reported at either end. `$ro` has its own builder chain and `$audit_log`
+// and `$binlog` share one, so all three are pinned here.
+TEST(SystemTableTest, TestNewReadPropagatesWarmupMode) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
+
+    for (WarmupMode mode : {WarmupMode::NONE, WarmupMode::CACHE_ONLY, WarmupMode::FULL}) {
+        ReadContextBuilder builder("/tmp/table");
+        builder.SetOptions(options).SetWarmupMode(mode);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> caller_unique_context, builder.Finish());
+        std::shared_ptr<ReadContext> caller_context(std::move(caller_unique_context));
+        ASSERT_EQ(mode, caller_context->GetWarmupMode());
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ro_context,
+                             read_optimized.CreateDataReadContext(caller_context));
+        EXPECT_EQ(mode, ro_context->GetWarmupMode()) << "$ro dropped the caller's WarmupMode";
+
+        // The changelog chain is checked where the context is built rather than on the read: the
+        // ChangelogTableRead that wraps it is local to audit_log_system_table.cpp, so a test cannot
+        // name the type to reach the read underneath it. EXPECT rather than ASSERT, because the
+        // three chains are independent and one broken chain must not hide another.
+        ASSERT_OK_AND_ASSIGN(auto audit_log_options, audit_log.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context,
+                             audit_log.CreateDataReadContext(caller_context, audit_log_options));
+        EXPECT_EQ(mode, audit_log_context->GetWarmupMode())
+            << "$audit_log dropped the caller's WarmupMode";
+
+        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context,
+                             binlog.CreateDataReadContext(caller_context, binlog_options));
+        EXPECT_EQ(mode, binlog_context->GetWarmupMode())
+            << "$binlog dropped the caller's WarmupMode";
+    }
 }
 
 TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) {

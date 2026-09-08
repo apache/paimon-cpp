@@ -425,11 +425,31 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
         return Status::NotImplemented(Name(), " system table predicate pushdown is not supported");
     }
 
-    ReadContextBuilder builder(table_path_);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema, BaseReadSchema());
     using StringMap = std::map<std::string, std::string>;
     PAIMON_ASSIGN_OR_RAISE(StringMap read_options, ReadOptions());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> data_context,
+                           CreateDataReadContext(context, read_options));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
+                           TableRead::Create(std::move(data_context)));
+    auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
+    if (!key_value_read) {
+        return Status::Invalid("audit_log system table requires key-value table read");
+    }
+    key_value_read->ForceKeepDelete(true);
+    bool include_sequence_number = core_options.TableReadSequenceNumberEnabled();
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> output_schema, ArrowSchema());
+    return std::make_unique<ChangelogTableRead>(std::move(data_read), std::move(output_schema),
+                                                include_sequence_number, std::move(converter),
+                                                context->GetMemoryPool());
+}
+
+Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
+    const std::shared_ptr<ReadContext>& context,
+    const std::map<std::string, std::string>& read_options) const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema, BaseReadSchema());
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
+    ReadContextBuilder builder(table_path_);
     builder.SetOptions(read_options)
         .SetReadFieldNames(base_read_schema->field_names())
         .WithBranch(core_options.GetBranch())
@@ -444,21 +464,9 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
+        .SetWarmupMode(context->GetWarmupMode())
         .WithCache(context->GetCache());
-
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> data_context, builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
-                           TableRead::Create(std::move(data_context)));
-    auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
-    if (!key_value_read) {
-        return Status::Invalid("audit_log system table requires key-value table read");
-    }
-    key_value_read->ForceKeepDelete(true);
-    bool include_sequence_number = core_options.TableReadSequenceNumberEnabled();
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> output_schema, ArrowSchema());
-    return std::make_unique<ChangelogTableRead>(std::move(data_read), std::move(output_schema),
-                                                include_sequence_number, std::move(converter),
-                                                context->GetMemoryPool());
+    return builder.Finish();
 }
 
 Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::BaseReadSchema() const {

@@ -120,7 +120,7 @@ class PAIMON_EXPORT CacheConfig {
 /// hide more latency, but commit more memory and background I/O to files that a query may end up
 /// never reading (for example when a LIMIT stops the scan early). Callers can trade latency against
 /// memory by picking a mode.
-enum class WarmupMode {
+enum class PAIMON_EXPORT WarmupMode {
     /// Do not warm up. The next file's I/O starts only when it is actually read. This is the
     /// behavior from before warmup existed and uses no extra memory or background threads.
     NONE,
