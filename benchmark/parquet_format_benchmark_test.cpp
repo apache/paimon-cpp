@@ -283,7 +283,7 @@ TEST_F(ParquetFormatBenchmarkTest, RegisteredCodecsWrite) {
     ASSERT_TRUE(builder.Finish(&ids).ok());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> batch, Wrap(schema, {ids}));
 
-    for (const std::string& codec :
+    for (const std::string codec :
          {"none", "snappy", "gzip", "brotli", "zstd", "lz4_raw", "lz4_hadoop"}) {
         const std::string path = PathOf("codec_" + codec + ".parquet");
         ASSERT_OK(Write(path, schema, batch, codec)) << "codec " << codec;
@@ -518,7 +518,7 @@ TEST_F(ParquetFormatBenchmarkTest, NestedRoundTrip) {
 
     // Each nested column also has to be readable on its own, which is what the projected nested
     // cases do.
-    for (const std::string& column : {"tags", "attrs"}) {
+    for (const std::string column : {"tags", "attrs"}) {
         std::shared_ptr<arrow::Schema> projected = arrow::schema({schema->GetFieldByName(column)});
         ASSERT_OK_AND_ASSIGN(ReadResult projected_result, Read(path, projected));
         EXPECT_EQ(kRows, projected_result.rows) << "column " << column;
