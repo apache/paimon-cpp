@@ -33,6 +33,11 @@ class LeafFunction;
 /// A `NullFalseLeafBinaryFunction` to eval equal.
 class Equal : public NullFalseLeafBinaryFunction {
  public:
+    using NullFalseLeafBinaryFunction::Test;
+
+    Result<std::vector<char>> Test(const arrow::Array& array, const std::vector<Literal>& literals,
+                                   arrow::MemoryPool* pool) const override;
+
     static const Equal& Instance() {
         static const Equal instance = Equal();
         return instance;

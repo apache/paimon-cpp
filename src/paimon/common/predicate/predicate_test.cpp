@@ -56,17 +56,78 @@ class Array;
 
 namespace paimon::test {
 namespace {
+// Retain the Literal-based batch path as an independent reference for typed equality.
+class LiteralBatchEqual : public NullFalseLeafBinaryFunction {
+ public:
+    using NullFalseLeafBinaryFunction::Test;
+    Result<bool> Test(const Literal& value, const Literal& literal) const override {
+        return Equal::Instance().Test(value, literal);
+    }
+    Result<bool> Test(int64_t rows, const Literal& min, const Literal& max,
+                      const std::optional<int64_t>& nulls, const Literal& literal) const override {
+        return Equal::Instance().Test(rows, min, max, nulls, literal);
+    }
+    Type GetType() const override {
+        return Type::EQUAL;
+    }
+    std::string ToString() const override {
+        return "LiteralBatchEqual";
+    }
+    const LeafFunction* Negate() const override {
+        return Equal::Instance().Negate();
+    }
+};
+
+void CheckEqualBatch(const std::shared_ptr<arrow::Array>& array,
+                     const std::vector<Literal>& literals) {
+    const LiteralBatchEqual reference;
+    const LeafFunction& candidate = Equal::Instance();
+    for (int64_t offset = 0; offset <= array->length(); ++offset) {
+        for (int64_t length = 0; length <= array->length() - offset; ++length) {
+            const auto slice = array->Slice(offset, length);
+            auto expected = reference.Test(*slice, literals, arrow::default_memory_pool());
+            auto actual = candidate.Test(*slice, literals, arrow::default_memory_pool());
+            ASSERT_EQ(actual.ok(), expected.ok());
+            if (expected.ok()) {
+                ASSERT_EQ(actual.value(), expected.value());
+            } else {
+                ASSERT_EQ(actual.status().ToString(), expected.status().ToString());
+            }
+        }
+    }
+}
+
 // Reference implementation of the eager batch evaluation used before candidate selection.
 Result<std::vector<char>> TestEager(const std::shared_ptr<Predicate>& predicate,
-                                    const arrow::Array& array, arrow::MemoryPool* pool) {
+                                    const arrow::Array& array, arrow::MemoryPool* pool,
+                                    bool literal_equal = false, bool box_all_fields = false) {
     auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate);
     if (!compound) {
+        if (literal_equal || box_all_fields) {
+            auto leaf = std::dynamic_pointer_cast<LeafPredicateImpl>(predicate);
+            if (!leaf || leaf->GetFunction().GetType() != Function::Type::EQUAL) {
+                return Status::Invalid("benchmark reference requires equality leaves");
+            }
+            const auto& batch = checked_cast<const arrow::StructArray&>(array);
+            const int32_t field_count =
+                box_all_fields ? static_cast<int32_t>(batch.fields().size()) : batch.num_fields();
+            if (leaf->FieldIndex() >= field_count) {
+                return Status::Invalid("benchmark field index out of bounds");
+            }
+            const auto& field = batch.field(leaf->FieldIndex());
+            const LiteralBatchEqual reference;
+            const LeafFunction& legacy = reference;
+            const LeafFunction& typed = Equal::Instance();
+            const LeafFunction& function = literal_equal ? legacy : typed;
+            return function.Test(*field, leaf->Literals(), pool);
+        }
         return std::dynamic_pointer_cast<PredicateFilter>(predicate)->Test(array, pool);
     }
     const bool is_and = predicate->GetFunction().GetType() == Function::Type::AND;
     std::vector<char> result(array.length(), is_and);
     for (const auto& child : compound->Children()) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<char> matches, TestEager(child, array, pool));
+        PAIMON_ASSIGN_OR_RAISE(std::vector<char> matches,
+                               TestEager(child, array, pool, literal_equal, box_all_fields));
         for (size_t i = 0; i < result.size(); ++i) {
             result[i] = is_and ? (result[i] & matches[i]) : (result[i] | matches[i]);
         }
@@ -1270,17 +1331,25 @@ TEST_F(PredicateTest, TestEmptyCandidatesStillValidateFields) {
     }
 }
 
-TEST_F(PredicateTest, TestEmptyCandidatesStillValidateLiteralsAndTypes) {
+TEST_F(PredicateTest, TestCandidateSelectionPreservesEvaluationErrors) {
     auto keys = arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[1,2]").ValueOrDie();
     auto unsupported =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::uint64(), "[1,2]").ValueOrDie();
-    auto batch = arrow::StructArray::Make({keys, unsupported},
-                                          std::vector<std::string>{"key", "unsupported"})
+    auto strings =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a","b"])").ValueOrDie();
+    auto batch = arrow::StructArray::Make({keys, unsupported, strings},
+                                          std::vector<std::string>{"key", "unsupported", "text"})
                      .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> invalid_like,
+        PredicateBuilder::Like(2, "text", FieldType::STRING, Literal(FieldType::STRING, "\\q", 2)));
     std::vector<std::shared_ptr<Predicate>> invalid_predicates = {
         std::make_shared<LeafPredicateImpl>(Equal::Instance(), 0, "key", FieldType::BIGINT,
                                             std::vector<Literal>{}),
-        PredicateBuilder::Equal(1, "unsupported", FieldType::BIGINT, Literal(int64_t{1}))};
+        PredicateBuilder::Equal(1, "unsupported", FieldType::BIGINT, Literal(int64_t{1})),
+        PredicateBuilder::Equal(0, "key", FieldType::BIGINT,
+                                Literal(FieldType::STRING, "wrong-type", 10)),
+        invalid_like};
     for (const auto& invalid : invalid_predicates) {
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<Predicate> conjunction,
@@ -1291,7 +1360,12 @@ TEST_F(PredicateTest, TestEmptyCandidatesStillValidateLiteralsAndTypes) {
             std::shared_ptr<Predicate> disjunction,
             PredicateBuilder::Or(
                 {PredicateBuilder::IsNotNull(0, "key", FieldType::BIGINT), invalid}));
-        for (const auto& predicate : {conjunction, disjunction}) {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> partial,
+            PredicateBuilder::And(
+                {PredicateBuilder::Equal(0, "key", FieldType::BIGINT, Literal(int64_t{2})),
+                 invalid}));
+        for (const auto& predicate : {conjunction, disjunction, partial}) {
             auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
             auto expected = TestEager(predicate, *batch, arrow::default_memory_pool());
             auto actual = filter->Test(*batch, arrow::default_memory_pool());
@@ -1356,9 +1430,10 @@ TEST_F(PredicateTest, TestCandidateSelectionMatchesEagerEvaluation) {
     }
 }
 
-// Opt-in microbenchmark: no timing thresholds in CI. The reference and candidate paths use
-// identical predicates, data and allocator, alternating execution order between rounds.
-TEST_F(PredicateTest, DISABLED_BenchmarkCandidateSelection) {
+// Opt-in microbenchmark: no timing thresholds in CI. Compare the original eager Literal path,
+// bounds checks alone, bounds checks plus typed equality, and all three optimizations together.
+// These are incremental variants, not additive or independently attributable speedups.
+TEST_F(PredicateTest, DISABLED_BenchmarkBatchEvaluation) {
     constexpr int64_t kRows = 8192;
     constexpr int32_t kIterations = 10;
     for (int64_t key_period : {int64_t{8192}, int64_t{16}, int64_t{1}}) {
@@ -1390,22 +1465,25 @@ TEST_F(PredicateTest, DISABLED_BenchmarkCandidateSelection) {
         ASSERT_OK_AND_ASSIGN(std::vector<char> expected,
                              TestEager(predicate, *batch, arrow::default_memory_pool()));
         for (int32_t round = 0; round < 6; ++round) {
-            for (int32_t pass = 0; pass < 2; ++pass) {
-                const bool eager = (round + pass) % 2 == 0;
+            for (int32_t pass = 0; pass < 4; ++pass) {
+                const int32_t variant = round % 2 == 0 ? pass : 3 - pass;
                 const auto start = std::chrono::steady_clock::now();
                 for (int32_t i = 0; i < kIterations; ++i) {
                     ASSERT_OK_AND_ASSIGN(
                         std::vector<char> actual,
-                        eager ? TestEager(predicate, *batch, arrow::default_memory_pool())
-                              : filter->Test(*batch, arrow::default_memory_pool()));
+                        variant < 3 ? TestEager(predicate, *batch, arrow::default_memory_pool(),
+                                                /*literal_equal=*/variant < 2,
+                                                /*box_all_fields=*/variant == 0)
+                                    : filter->Test(*batch, arrow::default_memory_pool()));
                     ASSERT_EQ(actual, expected);
                 }
                 const double elapsed = std::chrono::duration<double, std::milli>(
                                            std::chrono::steady_clock::now() - start)
                                            .count() /
                                        kIterations;
-                std::cout << "candidate_benchmark period=" << key_period << " round=" << round
-                          << " eager=" << eager << " ms=" << elapsed << std::endl;
+                std::cout << "batch_evaluation_benchmark period=" << key_period
+                          << " round=" << round << " variant=" << variant << " ms=" << elapsed
+                          << std::endl;
             }
         }
     }
@@ -2117,6 +2195,71 @@ TEST_F(PredicateTest, TestPredicateToString) {
                                                           FieldType::BIGINT, Literal(5l))}));
         ASSERT_EQ(predicate->ToString(), "Or([Equal(f0, 3), Equal(f1, 5)])");
     }
+}
+
+TEST_F(PredicateTest, TestTypedEqualBatchMatchesLiteralEvaluation) {
+    const std::vector<std::pair<std::shared_ptr<arrow::DataType>, std::string>> cases = {
+        {arrow::boolean(), "[true, null, false, true]"},
+        {arrow::int8(), "[-128, null, 0, 127]"},
+        {arrow::int16(), "[-32768, null, 0, 32767]"},
+        {arrow::int32(), "[-2147483648, null, 0, 2147483647]"},
+        {arrow::int64(), "[-9223372036854775808, null, 0, 9223372036854775807]"},
+        {arrow::date32(), "[-100, null, 0, 100]"},
+        {arrow::utf8(), R"(["", null, "a\u0000b", "a\u0000c", "é"])"},
+        {arrow::binary(), R"(["", null, "a\u0000b", "a\u0000c", "é"])"},
+        {arrow::float64(), "[-0.0, null, 0.0, 1.5]"},
+        {arrow::timestamp(arrow::TimeUnit::MICRO), "[-1, null, 0, 1001]"},
+        {arrow::decimal128(10, 2), R"(["-1.25", null, "0.00", "1.25"])"}};
+    for (const auto& [type, json] : cases) {
+        auto array = arrow::ipc::internal::json::ArrayFromJSON(type, json).ValueOrDie();
+        ASSERT_OK_AND_ASSIGN(auto values,
+                             LiteralConverter::ConvertLiteralsFromArray(*array, false));
+        CheckEqualBatch(array, {});
+        for (const Literal& value : values) {
+            CheckEqualBatch(array, {value});
+            // The binary function has historically used only the first literal.
+            CheckEqualBatch(array, {value, Literal(int64_t{999})});
+        }
+        CheckEqualBatch(array, {Literal(FieldType::STRING, "mismatch", 8)});
+        CheckEqualBatch(array, {Literal(int32_t{123})});
+    }
+}
+
+TEST_F(PredicateTest, TestTypedEqualFallback) {
+    arrow::DoubleBuilder builder;
+    ASSERT_TRUE(builder
+                    .AppendValues({std::numeric_limits<double>::quiet_NaN(),
+                                   std::numeric_limits<double>::infinity(), -0.0, 0.0})
+                    .ok());
+    auto doubles = builder.Finish().ValueOrDie();
+    CheckEqualBatch(doubles, {Literal(std::numeric_limits<double>::quiet_NaN())});
+    CheckEqualBatch(doubles, {Literal(-0.0)});
+    auto indices = arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, null, 2, 0]")
+                       .ValueOrDie();
+    auto dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b", null])")
+            .ValueOrDie();
+    auto encoded = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie();
+    CheckEqualBatch(encoded, {Literal(FieldType::STRING, "a", 1)});
+    auto unsupported =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::uint32(), "[1, null, 2]").ValueOrDie();
+    CheckEqualBatch(unsupported, {Literal(int32_t{1})});
+    CheckEqualBatch(unsupported, {Literal(FieldType::INT)});
+}
+
+TEST_F(PredicateTest, TestTypedEqualBinaryAndBitmapOffsets) {
+    arrow::BinaryBuilder builder;
+    const std::string bytes("\x00\x80\xff", 3);
+    for (int32_t i = 0; i < 19; ++i) {
+        if (i % 3 == 0) {
+            ASSERT_TRUE(builder.AppendNull().ok());
+        } else {
+            ASSERT_TRUE(builder.Append(i % 2 == 0 ? bytes : std::string()).ok());
+        }
+    }
+    auto array = builder.Finish().ValueOrDie();
+    CheckEqualBatch(array, {Literal(FieldType::BINARY, bytes.data(), bytes.size())});
+    CheckEqualBatch(array, {Literal(FieldType::BINARY, "", 0)});
 }
 
 TEST_F(PredicateTest, TestBuildAndOr) {
