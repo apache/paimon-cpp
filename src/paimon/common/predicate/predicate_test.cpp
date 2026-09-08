@@ -18,8 +18,10 @@
 
 #include "paimon/predicate/predicate.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -35,10 +37,12 @@
 #include "paimon/common/data/binary_array.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
+#include "paimon/common/predicate/equal.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/defs.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -51,6 +55,42 @@ class Array;
 }  // namespace arrow
 
 namespace paimon::test {
+namespace {
+// Reference implementation of the eager batch evaluation used before candidate selection.
+Result<std::vector<char>> TestEager(const std::shared_ptr<Predicate>& predicate,
+                                    const arrow::Array& array, arrow::MemoryPool* pool) {
+    auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate);
+    if (!compound) {
+        return std::dynamic_pointer_cast<PredicateFilter>(predicate)->Test(array, pool);
+    }
+    const bool is_and = predicate->GetFunction().GetType() == Function::Type::AND;
+    std::vector<char> result(array.length(), is_and);
+    for (const auto& child : compound->Children()) {
+        PAIMON_ASSIGN_OR_RAISE(std::vector<char> matches, TestEager(child, array, pool));
+        for (size_t i = 0; i < result.size(); ++i) {
+            result[i] = is_and ? (result[i] & matches[i]) : (result[i] | matches[i]);
+        }
+    }
+    return result;
+}
+
+class RecordingEqualPredicate : public LeafPredicateImpl {
+ public:
+    RecordingEqualPredicate(int32_t index, const std::string& name, FieldType type,
+                            const Literal& literal)
+        : LeafPredicateImpl(Equal::Instance(), index, name, type, {literal}) {}
+
+    Result<std::vector<char>> TestSelected(const arrow::Array& array,
+                                           const std::vector<int64_t>& selection,
+                                           arrow::MemoryPool* pool) const override {
+        selections.push_back(selection);
+        return LeafPredicateImpl::TestSelected(array, selection, pool);
+    }
+
+    mutable std::vector<std::vector<int64_t>> selections;
+};
+}  // namespace
+
 class PredicateTest : public ::testing::Test {
  public:
     void SetUp() override {}
@@ -1147,6 +1187,204 @@ TEST_F(PredicateTest, TestOr) {
         StatsCheck(*predicate, 3ll, {FieldStats(3ll, 6ll, 0ll), FieldStats(6ll, 8ll, 0ll)}));
     ASSERT_FALSE(
         StatsCheck(*predicate, 3ll, {FieldStats(6ll, 7ll, 0ll), FieldStats(8ll, 10ll, 0ll)}));
+}
+
+TEST_F(PredicateTest, TestNestedCandidateSelectionWithSliceAndNulls) {
+    for (const auto& type : {arrow::utf8(), arrow::binary()}) {
+        const FieldType field_type =
+            type->id() == arrow::Type::STRING ? FieldType::STRING : FieldType::BINARY;
+        auto keys = arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[9,1,0,1,1,null,9]")
+                        .ValueOrDie();
+        auto values =
+            arrow::ipc::internal::json::ArrayFromJSON(type, R"(["pad","a","b","b",null,"a","pad"])")
+                .ValueOrDie();
+        auto batch =
+            arrow::StructArray::Make({keys, values}, std::vector<std::string>{"key", "value"})
+                .ValueOrDie();
+        auto sliced = batch->Slice(1, 5);
+        auto key = std::make_shared<RecordingEqualPredicate>(0, "key", FieldType::BIGINT,
+                                                             Literal(int64_t{1}));
+        auto a = std::make_shared<RecordingEqualPredicate>(1, "value", field_type,
+                                                           Literal(field_type, "a", 1));
+        auto b = std::make_shared<RecordingEqualPredicate>(1, "value", field_type,
+                                                           Literal(field_type, "b", 1));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> alternatives, PredicateBuilder::Or({a, b}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({key, alternatives}));
+        auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+        arrow::ProxyMemoryPool pool(arrow::default_memory_pool());
+        ASSERT_OK_AND_ASSIGN(std::vector<char> actual, filter->Test(*sliced, &pool));
+        ASSERT_EQ(actual, std::vector<char>({1, 0, 1, 0, 0}));
+        ASSERT_EQ(key->selections, std::vector<std::vector<int64_t>>({{0, 1, 2, 3, 4}}));
+        ASSERT_EQ(a->selections, std::vector<std::vector<int64_t>>({{0, 2, 3}}));
+        ASSERT_EQ(b->selections, std::vector<std::vector<int64_t>>({{2, 3}}));
+        ASSERT_GT(pool.max_memory(), 0);
+        ASSERT_EQ(pool.bytes_allocated(), 0);
+
+        ASSERT_OK_AND_ASSIGN(std::vector<char> selected,
+                             filter->TestSelected(*sliced, {2, 4}, &pool));
+        ASSERT_EQ(selected, std::vector<char>({1, 0}));
+        ASSERT_OK_AND_ASSIGN(std::vector<char> empty, filter->Test(*sliced->Slice(0, 0), &pool));
+        ASSERT_TRUE(empty.empty());
+    }
+}
+
+TEST_F(PredicateTest, TestEmptyCandidatesStillValidateFields) {
+    auto keys = arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[1,2]").ValueOrDie();
+    auto batch = arrow::StructArray::Make({keys}, std::vector<std::string>{"key"}).ValueOrDie();
+    auto invalid = PredicateBuilder::Equal(1, "missing", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> conjunction,
+        PredicateBuilder::And(
+            {PredicateBuilder::Equal(0, "key", FieldType::BIGINT, Literal(int64_t{9})), invalid}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> disjunction,
+        PredicateBuilder::Or({PredicateBuilder::IsNotNull(0, "key", FieldType::BIGINT), invalid}));
+    for (const auto& predicate : {conjunction, disjunction}) {
+        auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+        ASSERT_NOK_WITH_MSG(filter->Test(*batch, arrow::default_memory_pool()), "field index");
+    }
+}
+
+TEST_F(PredicateTest, TestEmptyCandidatesStillValidateLiteralsAndTypes) {
+    auto keys = arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[1,2]").ValueOrDie();
+    auto unsupported =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::uint64(), "[1,2]").ValueOrDie();
+    auto batch = arrow::StructArray::Make({keys, unsupported},
+                                          std::vector<std::string>{"key", "unsupported"})
+                     .ValueOrDie();
+    std::vector<std::shared_ptr<Predicate>> invalid_predicates = {
+        std::make_shared<LeafPredicateImpl>(Equal::Instance(), 0, "key", FieldType::BIGINT,
+                                            std::vector<Literal>{}),
+        PredicateBuilder::Equal(1, "unsupported", FieldType::BIGINT, Literal(int64_t{1}))};
+    for (const auto& invalid : invalid_predicates) {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> conjunction,
+            PredicateBuilder::And(
+                {PredicateBuilder::Equal(0, "key", FieldType::BIGINT, Literal(int64_t{9})),
+                 invalid}));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> disjunction,
+            PredicateBuilder::Or(
+                {PredicateBuilder::IsNotNull(0, "key", FieldType::BIGINT), invalid}));
+        for (const auto& predicate : {conjunction, disjunction}) {
+            auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+            auto expected = TestEager(predicate, *batch, arrow::default_memory_pool());
+            auto actual = filter->Test(*batch, arrow::default_memory_pool());
+            ASSERT_FALSE(expected.ok());
+            ASSERT_FALSE(actual.ok());
+            ASSERT_EQ(actual.status().ToString(), expected.status().ToString());
+        }
+    }
+}
+
+TEST_F(PredicateTest, TestCandidateSelectionDictionaryColumn) {
+    auto indices =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0,1,null,0,1]").ValueOrDie();
+    auto dictionary =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a","b"])").ValueOrDie();
+    auto values = arrow::DictionaryArray::FromArrays(indices, dictionary).ValueOrDie();
+    auto batch = arrow::StructArray::Make({values}, std::vector<std::string>{"value"}).ValueOrDie();
+    auto a = std::make_shared<RecordingEqualPredicate>(0, "value", FieldType::STRING,
+                                                       Literal(FieldType::STRING, "a", 1));
+    auto b = std::make_shared<RecordingEqualPredicate>(0, "value", FieldType::STRING,
+                                                       Literal(FieldType::STRING, "b", 1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate, PredicateBuilder::Or({a, b}));
+    auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+    ASSERT_OK_AND_ASSIGN(std::vector<char> actual,
+                         filter->Test(*batch, arrow::default_memory_pool()));
+    ASSERT_EQ(actual, std::vector<char>({1, 1, 0, 1, 1}));
+    ASSERT_EQ(b->selections, std::vector<std::vector<int64_t>>({{1, 2, 4}}));
+}
+
+TEST_F(PredicateTest, TestCandidateSelectionMatchesEagerEvaluation) {
+    auto keys = arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[1,2,null,1,2,1,3,null]")
+                    .ValueOrDie();
+    auto values = arrow::ipc::internal::json::ArrayFromJSON(
+                      arrow::utf8(), R"(["a","b",null,"b","c",null,"a","c"])")
+                      .ValueOrDie();
+    auto batch = arrow::StructArray::Make({keys, values}, std::vector<std::string>{"key", "value"})
+                     .ValueOrDie();
+    for (int64_t key = 0; key <= 3; ++key) {
+        auto key_pred = PredicateBuilder::Equal(0, "key", FieldType::BIGINT, Literal(key));
+        auto a = PredicateBuilder::Equal(1, "value", FieldType::STRING,
+                                         Literal(FieldType::STRING, "a", 1));
+        auto b = PredicateBuilder::Equal(1, "value", FieldType::STRING,
+                                         Literal(FieldType::STRING, "b", 1));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> inner_or, PredicateBuilder::Or({a, b}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> inner_and,
+                             PredicateBuilder::And({key_pred, a}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> root_and,
+                             PredicateBuilder::And({key_pred, inner_or}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> root_or,
+                             PredicateBuilder::Or({inner_and, b}));
+        for (const auto& predicate : {root_and, root_or}) {
+            auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+            for (int64_t offset = 0; offset <= batch->length(); ++offset) {
+                auto slice = batch->Slice(offset);
+                ASSERT_OK_AND_ASSIGN(std::vector<char> expected,
+                                     TestEager(predicate, *slice, arrow::default_memory_pool()));
+                ASSERT_OK_AND_ASSIGN(std::vector<char> actual,
+                                     filter->Test(*slice, arrow::default_memory_pool()));
+                ASSERT_EQ(actual, expected);
+            }
+        }
+    }
+}
+
+// Opt-in microbenchmark: no timing thresholds in CI. The reference and candidate paths use
+// identical predicates, data and allocator, alternating execution order between rounds.
+TEST_F(PredicateTest, DISABLED_BenchmarkCandidateSelection) {
+    constexpr int64_t kRows = 8192;
+    constexpr int32_t kIterations = 10;
+    for (int64_t key_period : {int64_t{8192}, int64_t{16}, int64_t{1}}) {
+        arrow::Int64Builder key_builder;
+        arrow::StringBuilder value_builder;
+        for (int64_t i = 0; i < kRows; ++i) {
+            ASSERT_TRUE(key_builder.Append(i % key_period).ok());
+            ASSERT_TRUE(value_builder.Append("q15").ok());
+        }
+        auto keys = key_builder.Finish().ValueOrDie();
+        auto values = value_builder.Finish().ValueOrDie();
+        auto batch =
+            arrow::StructArray::Make({keys, values}, std::vector<std::string>{"key", "value"})
+                .ValueOrDie();
+        std::vector<std::shared_ptr<Predicate>> alternatives;
+        for (int32_t i = 0; i < 16; ++i) {
+            const std::string value = fmt::format("q{}", i);
+            alternatives.push_back(
+                PredicateBuilder::Equal(1, "value", FieldType::STRING,
+                                        Literal(FieldType::STRING, value.data(), value.size())));
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> inner, PredicateBuilder::Or(alternatives));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> predicate,
+            PredicateBuilder::And(
+                {PredicateBuilder::Equal(0, "key", FieldType::BIGINT, Literal(int64_t{0})),
+                 inner}));
+        auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+        ASSERT_OK_AND_ASSIGN(std::vector<char> expected,
+                             TestEager(predicate, *batch, arrow::default_memory_pool()));
+        for (int32_t round = 0; round < 6; ++round) {
+            for (int32_t pass = 0; pass < 2; ++pass) {
+                const bool eager = (round + pass) % 2 == 0;
+                const auto start = std::chrono::steady_clock::now();
+                for (int32_t i = 0; i < kIterations; ++i) {
+                    ASSERT_OK_AND_ASSIGN(
+                        std::vector<char> actual,
+                        eager ? TestEager(predicate, *batch, arrow::default_memory_pool())
+                              : filter->Test(*batch, arrow::default_memory_pool()));
+                    ASSERT_EQ(actual, expected);
+                }
+                const double elapsed = std::chrono::duration<double, std::milli>(
+                                           std::chrono::steady_clock::now() - start)
+                                           .count() /
+                                       kIterations;
+                std::cout << "candidate_benchmark period=" << key_period << " round=" << round
+                          << " eager=" << eager << " ms=" << elapsed << std::endl;
+            }
+        }
+    }
 }
 
 TEST_F(PredicateTest, TestBetween) {

@@ -37,6 +37,12 @@ class CompoundPredicateImpl : public CompoundPredicate, public PredicateFilter {
         return compound_function_.Test(array, children_, pool);
     }
 
+    Result<std::vector<char>> TestSelected(const arrow::Array& array,
+                                           const std::vector<int64_t>& selection,
+                                           arrow::MemoryPool* pool) const override {
+        return compound_function_.TestSelected(array, children_, selection, pool);
+    }
+
     Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema,
                       const InternalRow& row) const override {
         return compound_function_.Test(schema, row, children_);

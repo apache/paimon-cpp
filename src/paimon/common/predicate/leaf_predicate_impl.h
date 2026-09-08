@@ -28,6 +28,7 @@
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/field_type_utils.h"
 #include "paimon/predicate/leaf_predicate.h"
 namespace paimon {
 class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
@@ -51,6 +52,40 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
         }
         const auto& field_array = struct_array.field(field_index_);
         return leaf_function_.Test(*field_array, literals_, pool);
+    }
+
+    Result<std::vector<char>> TestSelected(const arrow::Array& array,
+                                           const std::vector<int64_t>& selection,
+                                           arrow::MemoryPool* pool) const override {
+        const auto& struct_array = checked_cast<const arrow::StructArray&>(array);
+        if (field_index_ >= static_cast<int32_t>(struct_array.fields().size())) {
+            return Status::Invalid(
+                fmt::format("field index {} exceed field count {} in struct array", field_index_,
+                            struct_array.fields().size()));
+        }
+        const auto& field_array = struct_array.field(field_index_);
+        // Preserve eager conversion/comparison errors, even when the offending row is not
+        // selected. Dictionary and unsupported physical types also retain the original path.
+        // LIKE validates escapes while examining values; temporal/decimal conversions may fail
+        // on rows outside the candidate set as well.
+        if (leaf_function_.GetType() == Function::Type::LIKE ||
+            field_array->type_id() == arrow::Type::TIMESTAMP ||
+            field_array->type_id() == arrow::Type::DECIMAL128) {
+            return PredicateFilter::TestSelected(array, selection, pool);
+        }
+        auto field_type = FieldTypeUtils::ConvertToFieldType(field_array->type_id());
+        if (!field_type.ok()) {
+            return PredicateFilter::TestSelected(array, selection, pool);
+        }
+        for (const auto& literal : literals_) {
+            if (!literal.IsNull() && literal.GetType() != field_type.value()) {
+                return PredicateFilter::TestSelected(array, selection, pool);
+            }
+        }
+        // Gather only the predicate column, not unrelated payload columns.
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> selected,
+                               SelectRows(*field_array, selection, pool));
+        return leaf_function_.Test(*selected, literals_, pool);
     }
 
     Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema,

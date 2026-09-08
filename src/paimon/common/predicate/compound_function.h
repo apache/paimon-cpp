@@ -18,13 +18,17 @@
 
 #pragma once
 
+#include <algorithm>
 #include <memory>
+#include <numeric>
 #include <vector>
 
 #include "arrow/array/array_base.h"
 #include "arrow/type_fwd.h"
+#include "fmt/format.h"
 #include "paimon/common/data/internal_array.h"
 #include "paimon/common/data/internal_row.h"
+#include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
@@ -46,6 +50,57 @@ class CompoundFunction : public Function {
                               const InternalArray& null_counts,
                               const std::vector<std::shared_ptr<Predicate>>& children) const = 0;
 
+    virtual Result<std::vector<char>> TestSelected(
+        const arrow::Array& array, const std::vector<std::shared_ptr<Predicate>>& children,
+        const std::vector<int64_t>& selection, arrow::MemoryPool* pool) const = 0;
+
     virtual const CompoundFunction& Negate() const = 0;
+
+ protected:
+    static Result<std::vector<char>> TestWithSelection(
+        const arrow::Array& array, const std::vector<std::shared_ptr<Predicate>>& children,
+        arrow::MemoryPool* pool, bool is_and,
+        const std::vector<int64_t>* input_selection = nullptr) {
+        std::vector<int64_t> selection;
+        if (input_selection) {
+            selection = *input_selection;
+        } else {
+            selection.resize(array.length());
+            std::iota(selection.begin(), selection.end(), int64_t{0});
+        }
+        std::vector<char> results(selection.size(), is_and);
+        std::vector<size_t> positions(selection.size());
+        std::iota(positions.begin(), positions.end(), size_t{0});
+        for (const auto& child : children) {
+            auto filter = std::dynamic_pointer_cast<PredicateFilter>(child);
+            if (!filter) {
+                return Status::Invalid(
+                    fmt::format("child filter {} does not support Test", child->ToString()));
+            }
+            PAIMON_ASSIGN_OR_RAISE(std::vector<char> child_results,
+                                   filter->TestSelected(array, selection, pool));
+            if (child_results.size() != selection.size()) {
+                return Status::Invalid("predicate result size does not match selection size");
+            }
+            // Avoid rewriting indices and results when every candidate needs the next child.
+            if (std::all_of(child_results.begin(), child_results.end(),
+                            [is_and](char matched) { return (matched != 0) == is_and; })) {
+                continue;
+            }
+            size_t remaining = 0;
+            for (size_t i = 0; i < selection.size(); ++i) {
+                const int64_t row = selection[i];
+                const bool matched = child_results[i] != 0;
+                results[positions[i]] = matched;
+                // AND continues only on matches; OR continues only on non-matches.
+                if (matched == is_and) {
+                    positions[remaining] = positions[i];
+                    selection[remaining++] = row;
+                }
+            }
+            selection.resize(remaining);
+        }
+        return results;
+    }
 };
 }  // namespace paimon
