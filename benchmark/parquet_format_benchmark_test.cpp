@@ -19,8 +19,8 @@
 
 // Smoke test for the assumptions parquet_format_benchmark.cpp is built on.
 //
-// The benchmark is only compiled under PAIMON_BUILD_BENCHMARKS, which CI does not set, so nothing
-// there runs in CI. Every assumption it makes about the format layer - that a codec name is
+// The benchmark itself is only compiled under PAIMON_BUILD_BENCHMARKS, which CI does not set, so no
+// benchmark runs there. Every assumption it makes about the format layer - that a codec name is
 // accepted, that a dictionary-encoded input array can be written, that a nested or high-precision
 // column survives a round trip, that a predicate and a selection bitmap return the rows the
 // benchmark asserts on, that the reader metrics it reports exist - is checked here instead, at a
@@ -42,6 +42,7 @@
 #include "arrow/c/helpers.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
@@ -62,6 +63,7 @@
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
+#include "parquet/types.h"
 
 namespace paimon::parquet {
 namespace {
@@ -291,9 +293,14 @@ TEST_F(ParquetFormatBenchmarkTest, RegisteredCodecsWrite) {
         EXPECT_TRUE(result.data->Equals(*batch)) << "codec " << codec;
     }
 
-    // The name the benchmark deliberately does not register still has to be rejected; if arrow
-    // ever starts accepting it, the comment explaining its absence is stale.
-    EXPECT_FALSE(Write(PathOf("codec_lz4.parquet"), schema, batch, "lz4").ok());
+    // The name the benchmark deliberately does not register still has to be one Parquet rejects; if
+    // arrow ever starts accepting it, the comment explaining its absence is stale. Checked at the
+    // name-resolution layer, not by writing a file: an actual LZ4_FRAME write reaches parquet's
+    // Thrift conversion, whose default branch is a DCHECK, so it aborts a Debug build instead of
+    // returning an error.
+    ASSERT_OK_AND_ASSIGN(arrow::Compression::type lz4, ArrowUtils::GetCompressionType("lz4"));
+    EXPECT_EQ(arrow::Compression::LZ4_FRAME, lz4);
+    EXPECT_FALSE(::parquet::IsCodecSupported(lz4));
 }
 
 // A dictionary-encoded input array must reach the writer intact. VARCHAR takes arrow's direct
