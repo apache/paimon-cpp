@@ -384,15 +384,21 @@ TEST_F(LruCacheTest, TestForKindSetsKeyKind) {
 }
 
 TEST_F(LruCacheTest, InferredManifestCacheKeysIncludeBucketCountAndSchema) {
-    auto key = CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 4, 0);
-    auto same = CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 4, 0);
+    auto key = SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 4, 0);
+    auto same = SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 4, 0);
     ASSERT_TRUE(key->Equals(*same));
     ASSERT_EQ(key->HashCode(), same->HashCode());
-    ASSERT_FALSE(key->Equals(*CacheKey::ForSnapshotLiveManifestEntries("table", "main", 1)));
+    auto explicit_key = SnapshotLiveManifestEntriesCacheKey::ForExplicit("table", "main", 1);
+    auto public_key = CacheKey::ForSnapshotLiveManifestEntries("table", "main", 1);
+    ASSERT_TRUE(explicit_key->Equals(*public_key));
+    ASSERT_EQ(explicit_key->HashCode(), public_key->HashCode());
+    // Schema zero is real inferred metadata, not an explicit-mode placeholder.
+    ASSERT_FALSE(key->Equals(*explicit_key));
+    ASSERT_FALSE(explicit_key->Equals(*key));
     ASSERT_FALSE(
-        key->Equals(*CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 8, 0)));
+        key->Equals(*SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 8, 0)));
     ASSERT_FALSE(
-        key->Equals(*CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 4, 1)));
+        key->Equals(*SnapshotLiveManifestEntriesCacheKey::ForInferred("table", "main", 1, 4, 1)));
 }
 
 TEST_F(LruCacheTest, TestForSnapshotLiveManifestEntries) {

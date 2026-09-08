@@ -376,7 +376,7 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
 
 std::shared_ptr<CacheKey> FileStoreScan::SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const {
     if (!bucket_filter_ && bucket_selector_) {
-        return CreateInferredSnapshotLiveManifestEntriesCacheKey(
+        return paimon::SnapshotLiveManifestEntriesCacheKey::ForInferred(
             table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket,
             core_options_.GetBucket(), table_schema_->Id());
     }

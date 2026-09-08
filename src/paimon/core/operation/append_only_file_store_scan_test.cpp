@@ -208,8 +208,8 @@ TEST_F(AppendBucketPruningTest, PreservesCrossScaleDecimalMatch) {
 
 TEST_F(AppendBucketPruningTest, PreservesDifferentNaNPayloadMatch) {
     rowkey_type_ = arrow::float64();
-    double query_value = FloatingPointFromBits<double>(uint64_t{0x7ff8000000000000ULL});
-    double stored_value = FloatingPointFromBits<double>(uint64_t{0x7ff8000000000001ULL});
+    auto query_value = FloatingPointFromBits<double>(uint64_t{0x7ff8000000000000ULL});
+    auto stored_value = FloatingPointFromBits<double>(uint64_t{0x7ff8000000000001ULL});
     CheckMatchingValue(FieldType::DOUBLE, query_value, stored_value);
 }
 
