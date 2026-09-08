@@ -108,6 +108,10 @@ class FileStoreScan {
         return this;
     }
 
+    const std::optional<Snapshot>& GetSpecifiedSnapshot() const {
+        return specified_snapshot_;
+    }
+
     FileStoreScan* WithLevelFilter(const std::function<bool(int32_t)>& level_filter) {
         level_filter_ = level_filter;
         return this;
