@@ -384,13 +384,15 @@ TEST_F(LruCacheTest, TestForKindSetsKeyKind) {
 }
 
 TEST_F(LruCacheTest, InferredManifestCacheKeysIncludeBucketCountAndSchema) {
-    auto key = CacheKey::ForSnapshotLiveManifestEntries("table", "main", 1, 4, 0);
-    auto same = CacheKey::ForSnapshotLiveManifestEntries("table", "main", 1, 4, 0);
+    auto key = CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 4, 0);
+    auto same = CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 4, 0);
     ASSERT_TRUE(key->Equals(*same));
     ASSERT_EQ(key->HashCode(), same->HashCode());
     ASSERT_FALSE(key->Equals(*CacheKey::ForSnapshotLiveManifestEntries("table", "main", 1)));
-    ASSERT_FALSE(key->Equals(*CacheKey::ForSnapshotLiveManifestEntries("table", "main", 1, 8, 0)));
-    ASSERT_FALSE(key->Equals(*CacheKey::ForSnapshotLiveManifestEntries("table", "main", 1, 4, 1)));
+    ASSERT_FALSE(
+        key->Equals(*CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 8, 0)));
+    ASSERT_FALSE(
+        key->Equals(*CreateInferredSnapshotLiveManifestEntriesCacheKey("table", "main", 1, 4, 1)));
 }
 
 TEST_F(LruCacheTest, TestForSnapshotLiveManifestEntries) {

@@ -33,6 +33,7 @@
 #include "paimon/common/data/binary_array.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/executor/future.h"
+#include "paimon/common/io/cache/cache_key.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/field_type_utils.h"
@@ -375,7 +376,7 @@ Status FileStoreScan::ReadManifestEntriesWithCache(
 
 std::shared_ptr<CacheKey> FileStoreScan::SnapshotLiveManifestEntriesCacheKey(int32_t bucket) const {
     if (!bucket_filter_ && bucket_selector_) {
-        return CacheKey::ForSnapshotLiveManifestEntries(
+        return CreateInferredSnapshotLiveManifestEntriesCacheKey(
             table_path_, BranchManager::NormalizeBranch(core_options_.GetBranch()), bucket,
             core_options_.GetBucket(), table_schema_->Id());
     }

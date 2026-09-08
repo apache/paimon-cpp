@@ -26,6 +26,11 @@
 
 namespace paimon {
 
+// Cache inferred candidates separately from explicit buckets and other bucket layouts.
+std::shared_ptr<CacheKey> CreateInferredSnapshotLiveManifestEntriesCacheKey(
+    const std::string& table_path, const std::string& branch, int32_t bucket, int32_t total_buckets,
+    int64_t schema_id);
+
 class PositionCacheKey : public CacheKey {
  public:
     PositionCacheKey(const std::string& file_path, int64_t position, int32_t length, bool is_index,

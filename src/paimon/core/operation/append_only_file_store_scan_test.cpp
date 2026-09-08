@@ -20,7 +20,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <optional>
 #include <string>
@@ -32,6 +31,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/io/cache/lru_cache.h"
+#include "paimon/common/utils/math.h"
 #include "paimon/core/bucket/default_bucket_function.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/partition_entry.h"
@@ -74,7 +74,7 @@ class AppendBucketPruningTest : public testing::Test {
             predicate, std::vector<std::map<std::string, std::string>>(), bucket);
         return AppendOnlyFileStoreScan::Create(nullptr, schema_manager_, nullptr, nullptr, schema,
                                                arrow_schema, filters, options,
-                                               GetGlobalDefaultExecutor(), pool_);
+                                               CreateDefaultExecutor(), pool_);
     }
 
     void CheckBuckets(const std::shared_ptr<Predicate>& predicate,
@@ -208,12 +208,8 @@ TEST_F(AppendBucketPruningTest, PreservesCrossScaleDecimalMatch) {
 
 TEST_F(AppendBucketPruningTest, PreservesDifferentNaNPayloadMatch) {
     rowkey_type_ = arrow::float64();
-    uint64_t query_bits = 0x7ff8000000000000ULL;
-    uint64_t stored_bits = 0x7ff8000000000001ULL;
-    double query_value;
-    double stored_value;
-    std::memcpy(&query_value, &query_bits, sizeof(query_value));
-    std::memcpy(&stored_value, &stored_bits, sizeof(stored_value));
+    double query_value = FloatingPointFromBits<double>(uint64_t{0x7ff8000000000000ULL});
+    double stored_value = FloatingPointFromBits<double>(uint64_t{0x7ff8000000000001ULL});
     CheckMatchingValue(FieldType::DOUBLE, query_value, stored_value);
 }
 

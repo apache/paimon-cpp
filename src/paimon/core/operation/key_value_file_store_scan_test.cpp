@@ -81,7 +81,7 @@ TEST(KeyValueBucketPruningTest, UsesEachEntriesBucketCount) {
         ASSERT_OK_AND_ASSIGN(
             auto scan,
             KeyValueFileStoreScan::Create(nullptr, manager, nullptr, nullptr, schema, arrow_schema,
-                                          filters, core_options, GetGlobalDefaultExecutor(), pool));
+                                          filters, core_options, CreateDefaultExecutor(), pool));
         SimpleStats stats = BinaryRowGenerator::GenerateStats({std::string("a")},
                                                               {std::string("z")}, {0}, pool.get());
         ASSERT_OK_AND_ASSIGN(

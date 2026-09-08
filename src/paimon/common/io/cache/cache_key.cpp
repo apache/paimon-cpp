@@ -24,8 +24,7 @@ namespace {
 class SnapshotLiveManifestEntriesCacheKey : public CacheKey {
  public:
     SnapshotLiveManifestEntriesCacheKey(const std::string& table_path, const std::string& branch,
-                                        int32_t bucket, int32_t total_buckets = 0,
-                                        int64_t schema_id = 0)
+                                        int32_t bucket, int32_t total_buckets, int64_t schema_id)
         : CacheKey(CacheKind::SNAPSHOT_LIVE_MANIFEST),
           table_path_(table_path),
           branch_(branch),
@@ -87,14 +86,14 @@ std::shared_ptr<CacheKey> CacheKey::ForKind(const std::string& file_path, int64_
 std::shared_ptr<CacheKey> CacheKey::ForSnapshotLiveManifestEntries(const std::string& table_path,
                                                                    const std::string& branch,
                                                                    int32_t bucket) {
-    return std::make_shared<SnapshotLiveManifestEntriesCacheKey>(table_path, branch, bucket);
+    return std::make_shared<SnapshotLiveManifestEntriesCacheKey>(table_path, branch, bucket,
+                                                                 /*total_buckets=*/0,
+                                                                 /*schema_id=*/0);
 }
 
-std::shared_ptr<CacheKey> CacheKey::ForSnapshotLiveManifestEntries(const std::string& table_path,
-                                                                   const std::string& branch,
-                                                                   int32_t bucket,
-                                                                   int32_t total_buckets,
-                                                                   int64_t schema_id) {
+std::shared_ptr<CacheKey> CreateInferredSnapshotLiveManifestEntriesCacheKey(
+    const std::string& table_path, const std::string& branch, int32_t bucket, int32_t total_buckets,
+    int64_t schema_id) {
     return std::make_shared<SnapshotLiveManifestEntriesCacheKey>(table_path, branch, bucket,
                                                                  total_buckets, schema_id);
 }
