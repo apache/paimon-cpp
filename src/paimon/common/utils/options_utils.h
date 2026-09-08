@@ -50,28 +50,18 @@ class OptionsUtils {
     template <typename T>
     static Result<T> GetValueFromMap(const std::map<std::string, std::string>& key_value_map,
                                      const std::string& key, const T& default_value) {
-        auto value = GetValueFromMap<T>(key_value_map, key);
-        if (value.ok()) {
-            return value.value();
-        } else if (value.status().IsNotExist()) {
-            return default_value;
-        }
-        return value.status();
+        PAIMON_ASSIGN_OR_RAISE(std::optional<T> value,
+                               GetOptionalValueFromMap<T>(key_value_map, key));
+        return value.value_or(default_value);
     }
 
     template <typename T>
     static Result<T> GetValueFromMap(const std::map<std::string, std::string>& key_value_map,
                                      const std::string& key) {
-        static_assert(is_supported_type<T>::value, "T must be trivially copyable or string");
-        auto iter = key_value_map.find(key);
-        if (iter == key_value_map.end()) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<T> value,
+                               GetOptionalValueFromMap<T>(key_value_map, key));
+        if (!value) {
             return Status::NotExist(fmt::format("key {} does not exist in map", key));
-        }
-        const auto& value_str = iter->second;
-        std::optional<T> value = StringUtils::StringToValue<T>(value_str);
-        if (value == std::nullopt) {
-            return Status::Invalid(fmt::format("convert key {}, value {} to {} failed", key,
-                                               value_str, GetTypeName<T>()));
         }
         return value.value();
     }
@@ -79,14 +69,18 @@ class OptionsUtils {
     template <typename T>
     static Result<std::optional<T>> GetOptionalValueFromMap(
         const std::map<std::string, std::string>& key_value_map, const std::string& key) {
-        Result<T> value = GetValueFromMap<T>(key_value_map, key);
-        if (value.ok()) {
-            return std::optional<T>(value.value());
-        }
-        if (value.status().IsNotExist()) {
+        static_assert(is_supported_type<T>::value, "T must be trivially copyable or string");
+        auto iter = key_value_map.find(key);
+        if (iter == key_value_map.end()) {
             return std::optional<T>();
         }
-        return value.status();
+        const auto& value_str = iter->second;
+        std::optional<T> value = StringUtils::StringToValue<T>(value_str);
+        if (value == std::nullopt) {
+            return Status::Invalid(fmt::format("convert key {}, value {} to {} failed", key,
+                                               value_str, GetTypeName<T>()));
+        }
+        return value;
     }
 
     static Result<std::string> GetNonEmptyValueFromMap(
