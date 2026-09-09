@@ -18,10 +18,8 @@
 
 #include "paimon/predicate/predicate.h"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -99,41 +97,34 @@ void CheckEqualBatch(const std::shared_ptr<arrow::Array>& array,
 
 // Reference implementation of the eager batch evaluation used before candidate selection.
 Result<std::vector<char>> TestEager(const std::shared_ptr<Predicate>& predicate,
-                                    const arrow::Array& array, arrow::MemoryPool* pool,
-                                    bool literal_equal = false, bool box_all_fields = false) {
+                                    const arrow::Array& array, arrow::MemoryPool* pool) {
     auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate);
     if (!compound) {
-        if (literal_equal || box_all_fields) {
-            auto leaf = std::dynamic_pointer_cast<LeafPredicateImpl>(predicate);
-            if (!leaf || leaf->GetFunction().GetType() != Function::Type::EQUAL) {
-                return Status::Invalid("benchmark reference requires equality leaves");
-            }
-            const auto& batch = checked_cast<const arrow::StructArray&>(array);
-            const int32_t field_count =
-                box_all_fields ? static_cast<int32_t>(batch.fields().size()) : batch.num_fields();
-            if (leaf->FieldIndex() >= field_count) {
-                return Status::Invalid("benchmark field index out of bounds");
-            }
-            const auto& field = batch.field(leaf->FieldIndex());
-            const LiteralBatchEqual reference;
-            const LeafFunction& legacy = reference;
-            const LeafFunction& typed = Equal::Instance();
-            const LeafFunction& function = literal_equal ? legacy : typed;
-            return function.Test(*field, leaf->Literals(), pool);
-        }
         return std::dynamic_pointer_cast<PredicateFilter>(predicate)->Test(array, pool);
     }
     const bool is_and = predicate->GetFunction().GetType() == Function::Type::AND;
     std::vector<char> result(array.length(), is_and);
     for (const auto& child : compound->Children()) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<char> matches,
-                               TestEager(child, array, pool, literal_equal, box_all_fields));
+        PAIMON_ASSIGN_OR_RAISE(std::vector<char> matches, TestEager(child, array, pool));
         for (size_t i = 0; i < result.size(); ++i) {
             result[i] = is_and ? (result[i] & matches[i]) : (result[i] | matches[i]);
         }
     }
     return result;
 }
+
+class RecordingBatchEqual : public LiteralBatchEqual {
+ public:
+    using LiteralBatchEqual::Test;
+
+    Result<std::vector<char>> Test(const arrow::Array& array, const std::vector<Literal>& literals,
+                                   arrow::MemoryPool* pool) const override {
+        batch_lengths.push_back(array.length());
+        return LiteralBatchEqual::Test(array, literals, pool);
+    }
+
+    mutable std::vector<int64_t> batch_lengths;
+};
 
 class RecordingEqualPredicate : public LeafPredicateImpl {
  public:
@@ -1430,60 +1421,74 @@ TEST_F(PredicateTest, TestCandidateSelectionMatchesEagerEvaluation) {
     }
 }
 
-// Opt-in microbenchmark: no timing thresholds in CI. Compare the original eager Literal path,
-// bounds checks alone, bounds checks plus typed equality, and all three optimizations together.
-// These are incremental variants, not additive or independently attributable speedups.
-TEST_F(PredicateTest, DISABLED_BenchmarkBatchEvaluation) {
-    constexpr int64_t kRows = 8192;
-    constexpr int32_t kIterations = 10;
-    for (int64_t key_period : {int64_t{8192}, int64_t{16}, int64_t{1}}) {
-        arrow::Int64Builder key_builder;
-        arrow::StringBuilder value_builder;
-        for (int64_t i = 0; i < kRows; ++i) {
-            ASSERT_TRUE(key_builder.Append(i % key_period).ok());
-            ASSERT_TRUE(value_builder.Append("q15").ok());
-        }
-        auto keys = key_builder.Finish().ValueOrDie();
-        auto values = value_builder.Finish().ValueOrDie();
+TEST_F(PredicateTest, TestTemporalAndDecimalCandidateSelection) {
+    const std::vector<std::pair<std::shared_ptr<arrow::DataType>, std::string>> cases = {
+        {arrow::timestamp(arrow::TimeUnit::SECOND), "[-1001,null,0,1001,2002]"},
+        {arrow::timestamp(arrow::TimeUnit::MILLI), "[-1001,null,0,1001,2002]"},
+        {arrow::timestamp(arrow::TimeUnit::MICRO), "[-1001,null,0,1001,2002]"},
+        {arrow::timestamp(arrow::TimeUnit::NANO), "[-1001,null,0,1001,2002]"},
+        {arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), "[-1001,null,0,1001,2002]"},
+        {arrow::decimal128(10, 2), R"(["-1.25",null,"0.00","1.25","2.50"])"},
+        {arrow::decimal128(15, 5), R"(["-1.25001",null,"0.00000","1.25001","2.50002"])"}};
+    auto pool = arrow::default_memory_pool();
+    for (const auto& [type, json] : cases) {
+        SCOPED_TRACE(type->ToString());
+        auto values = arrow::ipc::internal::json::ArrayFromJSON(type, json).ValueOrDie();
+        auto keys =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[1,0,1,0,1]").ValueOrDie();
         auto batch =
             arrow::StructArray::Make({keys, values}, std::vector<std::string>{"key", "value"})
                 .ValueOrDie();
-        std::vector<std::shared_ptr<Predicate>> alternatives;
-        for (int32_t i = 0; i < 16; ++i) {
-            const std::string value = fmt::format("q{}", i);
-            alternatives.push_back(
-                PredicateBuilder::Equal(1, "value", FieldType::STRING,
-                                        Literal(FieldType::STRING, value.data(), value.size())));
-        }
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> inner, PredicateBuilder::Or(alternatives));
-        ASSERT_OK_AND_ASSIGN(
-            std::shared_ptr<Predicate> predicate,
-            PredicateBuilder::And(
-                {PredicateBuilder::Equal(0, "key", FieldType::BIGINT, Literal(int64_t{0})),
-                 inner}));
-        auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
-        ASSERT_OK_AND_ASSIGN(std::vector<char> expected,
-                             TestEager(predicate, *batch, arrow::default_memory_pool()));
-        for (int32_t round = 0; round < 6; ++round) {
-            for (int32_t pass = 0; pass < 4; ++pass) {
-                const int32_t variant = round % 2 == 0 ? pass : 3 - pass;
-                const auto start = std::chrono::steady_clock::now();
-                for (int32_t i = 0; i < kIterations; ++i) {
-                    ASSERT_OK_AND_ASSIGN(
-                        std::vector<char> actual,
-                        variant < 3 ? TestEager(predicate, *batch, arrow::default_memory_pool(),
-                                                /*literal_equal=*/variant < 2,
-                                                /*box_all_fields=*/variant == 0)
-                                    : filter->Test(*batch, arrow::default_memory_pool()));
-                    ASSERT_EQ(actual, expected);
+        ASSERT_OK_AND_ASSIGN(auto literals,
+                             LiteralConverter::ConvertLiteralsFromArray(*values, false));
+        const FieldType field_type = literals[0].GetType();
+        // Observe the batch received by the leaf function: equal results alone would also
+        // pass with the old eager fallback and would not protect candidate-only evaluation.
+        RecordingBatchEqual recording;
+        LeafPredicateImpl recorded(recording, 1, "value", field_type, {literals[3]});
+        auto slice = batch->Slice(1, 4);
+        ASSERT_OK_AND_ASSIGN(auto selected, recorded.TestSelected(*slice, {0, 2}, pool));
+        ASSERT_EQ(selected, std::vector<char>({0, 1}));
+        ASSERT_OK_AND_ASSIGN(auto empty, recorded.TestSelected(*slice, {}, pool));
+        ASSERT_TRUE(empty.empty());
+        ASSERT_EQ(recording.batch_lengths, std::vector<int64_t>({2, 0}));
+
+        // Include a literal whose timestamp precision or decimal scale differs from the column.
+        literals.push_back(field_type == FieldType::TIMESTAMP ? Literal(Timestamp(1, 123456))
+                                                              : Literal(Decimal(12, 3, 1251)));
+        for (const Literal& literal : literals) {
+            const std::vector<std::shared_ptr<Predicate>> leaves = {
+                PredicateBuilder::Equal(1, "value", field_type, literal),
+                PredicateBuilder::LessThan(1, "value", field_type, literal),
+                PredicateBuilder::In(1, "value", field_type, {literal, literals[3]}),
+                PredicateBuilder::NotIn(1, "value", field_type, {literal, literals[3]})};
+            for (const auto& leaf : leaves) {
+                SCOPED_TRACE(leaf->ToString());
+                auto key =
+                    PredicateBuilder::Equal(0, "key", FieldType::BIGINT, Literal(int64_t{1}));
+                ASSERT_OK_AND_ASSIGN(auto conjunction, PredicateBuilder::And({key, leaf}));
+                ASSERT_OK_AND_ASSIGN(auto disjunction, PredicateBuilder::Or({key, leaf}));
+                for (const auto& predicate : {conjunction, disjunction}) {
+                    auto filter = std::dynamic_pointer_cast<PredicateFilter>(predicate);
+                    for (int64_t offset = 0; offset <= batch->length(); ++offset) {
+                        auto input = batch->Slice(offset);
+                        ASSERT_OK_AND_ASSIGN(auto expected, TestEager(predicate, *input, pool));
+                        ASSERT_OK_AND_ASSIGN(auto actual, filter->Test(*input, pool));
+                        ASSERT_EQ(actual, expected);
+                        for (const std::vector<int64_t>& selection :
+                             {std::vector<int64_t>{}, input->length() > 1
+                                                          ? std::vector<int64_t>{1}
+                                                          : std::vector<int64_t>{}}) {
+                            ASSERT_OK_AND_ASSIGN(auto subset,
+                                                 filter->TestSelected(*input, selection, pool));
+                            std::vector<char> expected_subset;
+                            for (int64_t row : selection) {
+                                expected_subset.push_back(expected[row]);
+                            }
+                            ASSERT_EQ(subset, expected_subset);
+                        }
+                    }
                 }
-                const double elapsed = std::chrono::duration<double, std::milli>(
-                                           std::chrono::steady_clock::now() - start)
-                                           .count() /
-                                       kIterations;
-                std::cout << "batch_evaluation_benchmark period=" << key_period
-                          << " round=" << round << " variant=" << variant << " ms=" << elapsed
-                          << std::endl;
             }
         }
     }

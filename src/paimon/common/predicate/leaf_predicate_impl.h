@@ -66,11 +66,8 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
         const auto& field_array = struct_array.field(field_index_);
         // Preserve eager conversion/comparison errors, even when the offending row is not
         // selected. Dictionary and unsupported physical types also retain the original path.
-        // LIKE validates escapes while examining values; temporal/decimal conversions may fail
-        // on rows outside the candidate set as well.
-        if (leaf_function_.GetType() == Function::Type::LIKE ||
-            field_array->type_id() == arrow::Type::TIMESTAMP ||
-            field_array->type_id() == arrow::Type::DECIMAL128) {
+        // LIKE validates escapes while examining values, including unselected rows.
+        if (leaf_function_.GetType() == Function::Type::LIKE) {
             return PredicateFilter::TestSelected(array, selection, pool);
         }
         auto field_type = FieldTypeUtils::ConvertToFieldType(field_array->type_id());

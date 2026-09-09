@@ -64,6 +64,14 @@ if(PAIMON_BUILD_BENCHMARKS)
                          EXTRA_INCLUDES
                          ${CMAKE_SOURCE_DIR})
 
+    add_paimon_benchmark(predicate_batch_benchmark
+                         SOURCES
+                         predicate_batch_benchmark.cpp
+                         STATIC_LINK_LIBS
+                         paimon_shared
+                         test_utils_static
+                         ${PAIMON_BENCHMARK_LINK_TOOLCHAIN})
+
     add_paimon_benchmark(parquet_format_benchmark
                          SOURCES
                          parquet_format_benchmark.cpp
