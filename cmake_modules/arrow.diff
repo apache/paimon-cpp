@@ -12,17 +12,18 @@ index e7523add27..e079a1ad41 100644
        )
      endif()
 diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
-index 8cb3ec83f5..0765df8fa8 100644
+index 8cb3ec83f5..9aad83ac95 100644
 --- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
 +++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
-@@ -814,5 +814,6 @@ if(DEFINED ENV{ARROW_THRIFT_URL})
+@@ -814,6 +814,7 @@ if(DEFINED ENV{ARROW_THRIFT_URL})
    set(THRIFT_SOURCE_URL "$ENV{ARROW_THRIFT_URL}")
  else()
    set_urls(THRIFT_SOURCE_URL
 +           "https://archive.apache.org/dist/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
             "https://www.apache.org/dyn/closer.cgi?action=download&filename=/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
             "https://downloads.apache.org/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
-@@ -983,6 +983,11 @@ if(CMAKE_TOOLCHAIN_FILE)
+            "https://apache.claz.org/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
+@@ -983,6 +984,11 @@ if(CMAKE_TOOLCHAIN_FILE)
    list(APPEND EP_COMMON_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
  endif()
 
@@ -34,7 +35,7 @@ index 8cb3ec83f5..0765df8fa8 100644
  # and crosscompiling emulator (for try_run() )
  if(CMAKE_CROSSCOMPILING_EMULATOR)
    string(REPLACE ";" ${EP_LIST_SEPARATOR} EP_CMAKE_CROSSCOMPILING_EMULATOR
-@@ -1716,6 +1721,7 @@ macro(build_thrift)
+@@ -1716,6 +1722,7 @@ macro(build_thrift)
        -DWITH_JAVASCRIPT=OFF
        -DWITH_LIBEVENT=OFF
        -DWITH_NODEJS=OFF
@@ -56,7 +57,7 @@ index b36c38c6d4..f974a33073 100644
    /// \brief Return zero-copy string_view to upcoming bytes.
    ///
 diff --git a/cpp/src/arrow/util/bit_run_reader.h b/cpp/src/arrow/util/bit_run_reader.h
-index a436a503a0..27d483978c 100644
+index a436a50b86..27d483978c 100644
 --- a/cpp/src/arrow/util/bit_run_reader.h
 +++ b/cpp/src/arrow/util/bit_run_reader.h
 @@ -168,6 +168,26 @@ class ARROW_EXPORT BitRunReader {
@@ -87,7 +88,7 @@ index a436a503a0..27d483978c 100644
    int64_t position;
    int64_t length;
 diff --git a/cpp/src/parquet/arrow/reader.cc b/cpp/src/parquet/arrow/reader.cc
-index 285e2a5973..52f42cf5b3 100644
+index 285e2a5973..40bddef195 100644
 --- a/cpp/src/parquet/arrow/reader.cc
 +++ b/cpp/src/parquet/arrow/reader.cc
 @@ -19,12 +19,14 @@
@@ -120,7 +121,7 @@ index 285e2a5973..52f42cf5b3 100644
  #include "arrow/util/tracing_internal.h"
  #include "parquet/arrow/reader_internal.h"
  #include "parquet/column_reader.h"
-@@ -254,6 +254,11 @@ class FileReaderImpl : public FileReader {
+@@ -254,6 +258,11 @@ class FileReaderImpl : public FileReader {
      return GetColumn(i, AllRowGroupsFactory(), out);
    }
 
@@ -132,7 +133,7 @@ index 285e2a5973..52f42cf5b3 100644
    Status GetSchema(std::shared_ptr<::arrow::Schema>* out) override {
      return FromParquetSchema(reader_->metadata()->schema(), reader_properties_,
                               reader_->metadata()->key_value_metadata(), out);
-@@ -493,10 +498,40 @@ class LeafReader : public ColumnReaderImpl {
+@@ -493,10 +502,43 @@ class LeafReader : public ColumnReaderImpl {
 
    ::arrow::Status BuildArray(int64_t length_upper_bound,
                               std::shared_ptr<::arrow::ChunkedArray>* out) final {
@@ -150,12 +151,15 @@ index 285e2a5973..52f42cf5b3 100644
 +    return {input_->column_index()};
 +  }
 +
-+  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve) final {
++  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve_records,
++                            int64_t reserve_values,
++                            int64_t reserve_value_bytes) final {
 +    if (col_idx != input_->column_index()) return Status::OK();
 +    BEGIN_PARQUET_CATCH_EXCEPTIONS
 +    out_ = nullptr;
 +    record_reader_->Reset();
-+    record_reader_->Reserve(reserve);
++    record_reader_->Reserve(reserve_records);
++    record_reader_->ReserveValueBytes(reserve_values, reserve_value_bytes);
 +    return Status::OK();
 +    END_PARQUET_CATCH_EXCEPTIONS
 +  }
@@ -173,7 +177,7 @@ index 285e2a5973..52f42cf5b3 100644
    const std::shared_ptr<Field> field() override { return field_; }
 
   private:
-@@ -532,6 +567,22 @@ class ExtensionReader : public ColumnReaderImpl {
+@@ -532,6 +574,25 @@ class ExtensionReader : public ColumnReaderImpl {
      return storage_reader_->LoadBatch(number_of_records);
    }
 
@@ -181,8 +185,11 @@ index 285e2a5973..52f42cf5b3 100644
 +    return storage_reader_->LeafColumnIndices();
 +  }
 +
-+  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve) final {
-+    return storage_reader_->ResetLeaf(col_idx, reserve);
++  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve_records,
++                            int64_t reserve_values,
++                            int64_t reserve_value_bytes) final {
++    return storage_reader_->ResetLeaf(col_idx, reserve_records, reserve_values,
++                                      reserve_value_bytes);
 +  }
 +
 +  int64_t SkipRecords(int col_idx, int64_t num_records) final {
@@ -196,7 +203,7 @@ index 285e2a5973..52f42cf5b3 100644
    Status BuildArray(int64_t length_upper_bound,
                      std::shared_ptr<ChunkedArray>* out) override {
      std::shared_ptr<ChunkedArray> storage;
-@@ -576,6 +627,22 @@ class ListReader : public ColumnReaderImpl {
+@@ -576,6 +637,25 @@ class ListReader : public ColumnReaderImpl {
      return item_reader_->LoadBatch(number_of_records);
    }
 
@@ -204,8 +211,11 @@ index 285e2a5973..52f42cf5b3 100644
 +    return item_reader_->LeafColumnIndices();
 +  }
 +
-+  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve) final {
-+    return item_reader_->ResetLeaf(col_idx, reserve);
++  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve_records,
++                            int64_t reserve_values,
++                            int64_t reserve_value_bytes) final {
++    return item_reader_->ResetLeaf(col_idx, reserve_records, reserve_values,
++                                   reserve_value_bytes);
 +  }
 +
 +  int64_t SkipRecords(int col_idx, int64_t num_records) final {
@@ -219,7 +229,7 @@ index 285e2a5973..52f42cf5b3 100644
    virtual ::arrow::Result<std::shared_ptr<ChunkedArray>> AssembleArray(
        std::shared_ptr<ArrayData> data) {
      if (field_->type()->id() == ::arrow::Type::MAP) {
-@@ -642,8 +713,10 @@ class ListReader : public ColumnReaderImpl {
+@@ -642,8 +722,10 @@ class ListReader : public ColumnReaderImpl {
 
    const std::shared_ptr<Field> field() override { return field_; }
 
@@ -231,7 +241,7 @@ index 285e2a5973..52f42cf5b3 100644
    std::shared_ptr<Field> field_;
    ::parquet::internal::LevelInfo level_info_;
    std::unique_ptr<ColumnReaderImpl> item_reader_;
-@@ -662,12 +735,62 @@ class PARQUET_NO_EXPORT FixedSizeListReader : public ListReader<int32_t> {
+@@ -662,12 +744,62 @@ class PARQUET_NO_EXPORT FixedSizeListReader : public ListReader<int32_t> {
      DCHECK_EQ(field()->type()->id(), ::arrow::Type::FIXED_SIZE_LIST);
      const auto& type = checked_cast<::arrow::FixedSizeListType&>(*field()->type());
      const int32_t* offsets = reinterpret_cast<const int32_t*>(data->buffers[1]->data());
@@ -299,7 +309,7 @@ index 285e2a5973..52f42cf5b3 100644
      }
      data->buffers.resize(1);
      std::shared_ptr<Array> result = ::arrow::MakeArray(data);
-@@ -709,6 +832,39 @@ class PARQUET_NO_EXPORT StructReader : public ColumnReaderImpl {
+@@ -709,6 +841,42 @@ class PARQUET_NO_EXPORT StructReader : public ColumnReaderImpl {
      }
      return Status::OK();
    }
@@ -313,9 +323,12 @@ index 285e2a5973..52f42cf5b3 100644
 +    return indices;
 +  }
 +
-+  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve) override {
++  ::arrow::Status ResetLeaf(int col_idx, int64_t reserve_records,
++                            int64_t reserve_values,
++                            int64_t reserve_value_bytes) override {
 +    for (const std::unique_ptr<ColumnReaderImpl>& reader : children_) {
-+      RETURN_NOT_OK(reader->ResetLeaf(col_idx, reserve));
++      RETURN_NOT_OK(reader->ResetLeaf(col_idx, reserve_records, reserve_values,
++                                      reserve_value_bytes));
 +    }
 +    return Status::OK();
 +  }
@@ -339,7 +352,7 @@ index 285e2a5973..52f42cf5b3 100644
    Status BuildArray(int64_t length_upper_bound,
                      std::shared_ptr<ChunkedArray>* out) override;
    Status GetDefLevels(const int16_t** data, int64_t* length) override;
-@@ -1013,25 +1169,32 @@ Status FileReaderImpl::GetRecordBatchReader(const std::vector<int>& row_groups,
+@@ -1013,25 +1181,32 @@ Status FileReaderImpl::GetRecordBatchReader(const std::vector<int>& row_groups,
      return Status::OK();
    }
 
@@ -378,7 +391,7 @@ index 285e2a5973..52f42cf5b3 100644
 
          RETURN_NOT_OK(::arrow::internal::OptionalParallelFor(
              reader_properties_.use_threads(), static_cast<int>(readers.size()),
-@@ -1224,6 +1387,23 @@ Status FileReaderImpl::GetColumn(int i, FileColumnIteratorFactory iterator_facto
+@@ -1224,6 +1399,23 @@ Status FileReaderImpl::GetColumn(int i, FileColumnIteratorFactory iterator_facto
    return Status::OK();
  }
 
@@ -403,7 +416,7 @@ index 285e2a5973..52f42cf5b3 100644
                                       const std::vector<int>& column_indices,
                                       std::shared_ptr<Table>* out) {
 diff --git a/cpp/src/parquet/arrow/reader.h b/cpp/src/parquet/arrow/reader.h
-index 6e46ca43f7..e86ff0ef52 100644
+index 6e46ca43f7..e202c6404e 100644
 --- a/cpp/src/parquet/arrow/reader.h
 +++ b/cpp/src/parquet/arrow/reader.h
 @@ -21,6 +21,7 @@
@@ -456,7 +469,7 @@ index 6e46ca43f7..e86ff0ef52 100644
    /// \brief Return arrow schema for all the columns.
    virtual ::arrow::Status GetSchema(std::shared_ptr<::arrow::Schema>* out) = 0;
 
-@@ -316,6 +342,43 @@ class PARQUET_EXPORT ColumnReader {
+@@ -316,6 +342,51 @@ class PARQUET_EXPORT ColumnReader {
    // the data available in the file.
    virtual ::arrow::Status NextBatch(int64_t batch_size,
                                      std::shared_ptr<::arrow::ChunkedArray>* out) = 0;
@@ -468,11 +481,19 @@ index 6e46ca43f7..e86ff0ef52 100644
 +  /// skip/read each leaf independently rather than in lockstep.
 +  virtual std::vector<int> LeafColumnIndices() const { return {}; }
 +
-+  /// \brief Reset the leaf identified by col_idx and reserve space for
-+  /// `reserve` records (in that leaf's post-page-filter compressed space).
-+  /// Must be called before SkipRecords()/ReadRecords() for that leaf, and
-+  /// followed by BuildArray() to get the result.
-+  virtual ::arrow::Status ResetLeaf(int col_idx, int64_t reserve) {
++  /// \brief Reset the leaf identified by col_idx and pre-allocate for the read
++  /// that follows. Must be called before SkipRecords()/ReadRecords() for that
++  /// leaf, and followed by BuildArray() to get the result.
++  ///
++  /// `reserve_records` is in that leaf's post-page-filter compressed space,
++  /// because SkipRecords walks the levels it bounds. `reserve_values` and
++  /// `reserve_value_bytes` describe what will actually be APPENDED, which on a
++  /// selective read is far less, and only the variable-width readers use the
++  /// byte count. Zero for the latter two means "no estimate" and reserves
++  /// nothing beyond `reserve_records`.
++  virtual ::arrow::Status ResetLeaf(int col_idx, int64_t reserve_records,
++                                    int64_t reserve_values,
++                                    int64_t reserve_value_bytes) {
 +    return ::arrow::Status::NotImplemented("ResetLeaf not implemented");
 +  }
 +
@@ -635,7 +656,7 @@ index 4a1a033a7b..0f13d05e44 100644
    virtual ::arrow::Status Close() = 0;
    virtual ~FileWriter();
 diff --git a/cpp/src/parquet/column_reader.cc b/cpp/src/parquet/column_reader.cc
-index ebf9515f27..0abc7d2320 100644
+index ebf9515f27..00b96797d9 100644
 --- a/cpp/src/parquet/column_reader.cc
 +++ b/cpp/src/parquet/column_reader.cc
 @@ -208,6 +208,39 @@ ReaderProperties default_reader_properties() {
@@ -789,8 +810,31 @@ index ebf9515f27..0abc7d2320 100644
        ++page_ordinal_;
        const format::DataPageHeaderV2& header = current_page_header_.data_page_header_v2;
 
+@@ -2156,6 +2242,22 @@ class ByteArrayChunkedRecordReader final : public TypedRecordReader<ByteArrayTyp
+     return result;
+   }
+
++  void ReserveValueBytes(int64_t num_values, int64_t num_bytes) override {
++    if (num_values > 0) {
++      PARQUET_THROW_NOT_OK(accumulator_.builder->Reserve(num_values));
++    }
++    if (num_bytes > 0) {
++      // Never reserve past the current chunk: ArrowBinaryHelper pushes a chunk
++      // when the builder's data would exceed kBinaryMemoryLimit, and
++      // ReserveData() would fail the overflow check on a request past it. The
++      // clamp mirrors the one in ArrowBinaryHelper::Prepare.
++      const int64_t room =
++          ::arrow::kBinaryMemoryLimit - accumulator_.builder->value_data_length();
++      PARQUET_THROW_NOT_OK(
++          accumulator_.builder->ReserveData(std::min<int64_t>(num_bytes, room)));
++    }
++  }
++
+   void ReadValuesDense(int64_t values_to_read) override {
+     int64_t num_decoded = this->current_decoder_->DecodeArrowNonNull(
+         static_cast<int>(values_to_read), &accumulator_);
 diff --git a/cpp/src/parquet/column_reader.h b/cpp/src/parquet/column_reader.h
-index 29e1b2a25e..386e574644 100644
+index 29e1b2a25e..a7e68b7dd6 100644
 --- a/cpp/src/parquet/column_reader.h
 +++ b/cpp/src/parquet/column_reader.h
 @@ -76,6 +76,18 @@ struct PARQUET_EXPORT DataPageStats {
@@ -846,6 +890,26 @@ index 29e1b2a25e..386e574644 100644
  };
 
  class PARQUET_EXPORT ColumnReader {
+@@ -341,6 +370,19 @@ class PARQUET_EXPORT RecordReader {
+   /// \brief Pre-allocate space for data. Results in better flat read performance
+   virtual void Reserve(int64_t num_values) = 0;
+
++  /// \brief Pre-allocate the variable-width value buffers for `num_values`
++  /// values totalling about `num_bytes` bytes.
++  ///
++  /// Fixed-width readers size their values buffer from Reserve() alone, so the
++  /// default is a no-op. The BYTE_ARRAY readers build into an
++  /// ::arrow::BinaryBuilder that Reserve() deliberately leaves alone
++  /// (uses_values_ is false for them), which is the only reason this second
++  /// hook exists: without it the builder's offsets and data buffers grow by
++  /// doubling once per decoded batch, and every doubling copies everything the
++  /// row group has accumulated so far. Both counts are additive, like
++  /// Reserve(); zero means "no estimate" and reserves nothing.
++  virtual void ReserveValueBytes(int64_t num_values, int64_t num_bytes) {}
++
+   /// \brief Clear consumed values and repetition/definition levels as the
+   /// result of calling ReadRecords
+   /// For FLBA and ByteArray types, call GetBuilderChunks() to reset them.
 diff --git a/cpp/src/parquet/file_reader.cc b/cpp/src/parquet/file_reader.cc
 index 3e9eeea6c6..671ebe4644 100644
 --- a/cpp/src/parquet/file_reader.cc

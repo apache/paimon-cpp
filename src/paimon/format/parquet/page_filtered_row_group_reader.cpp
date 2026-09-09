@@ -234,9 +234,10 @@ std::pair<RowRanges, int64_t> PageFilteredRowGroupReader::ComputeCompressedRowRa
 }
 
 Status PageFilteredRowGroupReader::ExecuteSkipReadPattern(
-    int col_idx, const RowRanges& ranges, int64_t total,
-    ::parquet::arrow::ColumnReader* column_reader) {
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(column_reader->ResetLeaf(col_idx, total));
+    int col_idx, const RowRanges& ranges, int64_t total, int64_t reserve_values,
+    int64_t reserve_value_bytes, ::parquet::arrow::ColumnReader* column_reader) {
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        column_reader->ResetLeaf(col_idx, total, reserve_values, reserve_value_bytes));
     int64_t current = 0;
     for (const auto& range : ranges.GetRanges()) {
         int64_t skip = range.from > current ? range.from - current : 0;
@@ -341,14 +342,15 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
     for (int col_idx : column_reader->LeafColumnIndices()) {
         RowRanges effective_ranges = row_ranges;
         int64_t effective_total = row_ranges.IsEmpty() ? 0 : row_group_row_count;
-        if (!row_ranges.IsEmpty() && rg_page_index_reader) {
-            auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
-            if (offset_index) {
-                auto row_group_metadata =
-                    arrow_file_reader->parquet_reader()->metadata()->RowGroup(row_group_index);
-                auto column_chunk = row_group_metadata->ColumnChunk(col_idx);
-                if (MakeDataPageReadPlan(row_ranges, offset_index, *column_chunk,
-                                         row_group_row_count)) {
+        std::unique_ptr<::parquet::ColumnChunkMetaData> column_chunk;
+        if (!row_ranges.IsEmpty()) {
+            auto row_group_metadata =
+                arrow_file_reader->parquet_reader()->metadata()->RowGroup(row_group_index);
+            column_chunk = row_group_metadata->ColumnChunk(col_idx);
+            if (rg_page_index_reader) {
+                auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
+                if (offset_index && MakeDataPageReadPlan(row_ranges, offset_index, *column_chunk,
+                                                         row_group_row_count)) {
                     auto [compressed, total] =
                         ComputeCompressedRowRanges(row_ranges, offset_index, row_group_row_count);
                     effective_ranges = std::move(compressed);
@@ -357,7 +359,27 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
             }
         }
 
+        // Rows that will actually be appended, as opposed to effective_total, which is the
+        // compressed space SkipRecords walks: a highly selective predicate reads a handful of
+        // rows out of a row group, and reserving for the whole group would allocate tens of MiB
+        // of offsets nobody writes.
+        const int64_t reserve_values = effective_ranges.RowCount();
+        int64_t reserve_value_bytes = 0;
+        if (column_chunk && column_chunk->num_values() > 0 && reserve_values > 0) {
+            // total_uncompressed_size covers page headers, levels and BYTE_ARRAY's 4-byte length
+            // prefixes on top of the payload, so the average width is an OVER-estimate — the safe
+            // direction: reserving more than needed costs one allocation, reserving less costs a
+            // doubling copy of everything read so far. Capped by the chunk, which no selection
+            // can exceed. Fixed-width leaves ignore the byte count entirely.
+            const double avg = static_cast<double>(column_chunk->total_uncompressed_size()) /
+                               static_cast<double>(column_chunk->num_values());
+            reserve_value_bytes = static_cast<int64_t>(
+                std::min<double>(avg * static_cast<double>(reserve_values),
+                                 static_cast<double>(column_chunk->total_uncompressed_size())));
+        }
+
         PAIMON_RETURN_NOT_OK(ExecuteSkipReadPattern(col_idx, effective_ranges, effective_total,
+                                                    reserve_values, reserve_value_bytes,
                                                     column_reader.get()));
     }
 
