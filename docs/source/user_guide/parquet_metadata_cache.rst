@@ -37,8 +37,9 @@ This optimization is useful when the same Parquet files are opened repeatedly
 in the same process, for example repeated ``get`` or ``scan`` requests over the
 same snapshot. On a cache hit, the read path avoids reading the Parquet footer
 bytes from the filesystem again. Paimon C++ still parses the cached footer bytes
-into ``parquet::FileMetaData`` for each reader open. Data pages, page indexes,
-and column chunks are still read from the file as usual.
+into ``parquet::FileMetaData`` for each reader open. ColumnIndex and OffsetIndex
+bytes also use ``CacheKind::DATA_FILE_FOOTER`` with their actual positions and
+lengths. Data ranges remain uncached unless explicitly enabled.
 
 Configuration
 -------------
@@ -99,6 +100,26 @@ Example:
 Passing ``nullptr`` or omitting ``WithCache()`` leaves Parquet metadata caching
 disabled. If a file URI cannot be obtained, Paimon C++ also bypasses the cache
 and opens the Parquet file normally.
+
+Data Range Cache
+----------------
+
+Set ``parquet.read.enable-data-cache=true`` and supply a bounded ``Cache`` through
+``ReadContextBuilder::WithCache()`` to reuse immutable Parquet data ranges across
+reader lifetimes. The option defaults to ``false``. Data ranges use
+``CacheKind::DEFAULT``; applications with kind-specific budgets should size that
+budget independently from ``DATA_FILE_FOOTER``.
+
+The key consists of the content-identifying URI, exact offset and length. This
+cache does not reuse subranges of a larger entry or prefetch whole files.
+Only successful complete reads are cached; failed and short reads are not
+published. Streams without a usable URI bypass caching. Synchronous and
+asynchronous reads share the cache; cached asynchronous reads use Arrow's IO
+executor. The application owns eviction and invalidation. File URIs must uniquely
+identify immutable content, as required by ``InputStream::GetUri()``; do not reuse
+a URI for overwritten content while retaining its cached entries. Buffers retain
+their allocator until eviction. ``parquet.read.storage-read-bytes`` excludes cache
+hits and can be compared between repeated reader instances.
 
 Future Optimizations
 --------------------

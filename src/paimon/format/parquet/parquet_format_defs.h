@@ -102,6 +102,10 @@ static inline const char PARQUET_READ_ENABLE_PAGE_INDEX_FILTER[] =
 // Default is true.
 static inline const char PARQUET_READ_ENABLE_PRE_BUFFER[] = "parquet.read.enable-pre-buffer";
 
+// Reuse immutable data ranges across readers through the caller-provided Cache.
+// Disabled by default; capacity and eviction remain owned by the caller.
+static inline const char PARQUET_READ_ENABLE_DATA_CACHE[] = "parquet.read.enable-data-cache";
+
 // Emit dictionary-encoded STRING columns as Arrow DictionaryArray instead of one copy of the
 // value per row. Which columns qualify, and why BINARY does not, is decided by
 // ParquetFileBatchReader::ResolveFullyDictionaryEncodedColumns().

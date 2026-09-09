@@ -459,6 +459,69 @@ TEST_F(ParquetFileBatchReaderTest, TestPointReadReusesFooterAndPageIndexes) {
     }
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestDataCacheSurvivesReaderCloseAndEviction) {
+    WriteArray(file_path_, struct_array_, schema_, 1, false, 3, 1);
+    auto cache = std::make_shared<LruCache>(128 * 1024 * 1024);
+    for (bool pre_buffer : {false, true}) {
+        cache->InvalidateAll();
+        std::shared_ptr<arrow::ChunkedArray> expected;
+        for (int32_t round = 0; round < 3; ++round) {
+            if (round == 2) {
+                cache->InvalidateAll();
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+            ParquetReaderBuilder builder(
+                {{PARQUET_READ_ENABLE_DATA_CACHE, "true"},
+                 {PARQUET_READ_ENABLE_PRE_BUFFER, pre_buffer ? "true" : "false"}},
+                10);
+            builder.WithCache(cache);
+            ASSERT_OK_AND_ASSIGN(auto reader, builder.Build(input));
+            ArrowSchema c_schema;
+            ASSERT_TRUE(arrow::ExportSchema(*schema_, &c_schema).ok());
+            ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, std::nullopt));
+            ASSERT_OK_AND_ASSIGN(auto result,
+                                 paimon::test::ReadResultCollector::CollectResult(reader.get()));
+            ASSERT_EQ(struct_array_->length(), result->length());
+            if (!expected) {
+                expected = result;
+            } else {
+                ASSERT_TRUE(result->Equals(expected));
+            }
+            auto metrics = reader->GetReaderMetrics();
+            ASSERT_OK_AND_ASSIGN(uint64_t bytes,
+                                 metrics->GetCounter(ParquetMetrics::READ_STORAGE_BYTES));
+            if (round == 1) {
+                ASSERT_EQ(0, bytes);
+            } else {
+                ASSERT_GT(bytes, 0);
+            }
+        }
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestDataCacheAsyncReadAndUriBypass) {
+    WriteArray(file_path_, struct_array_, schema_, 1, false, 3, 1);
+    auto cache = std::make_shared<LruCache>(1024 * 1024);
+    for (int32_t round = 0; round < 3; ++round) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+        ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
+        auto stream = std::make_shared<ParquetInputStream>(
+            input, length, pool_, GetDefaultPool(), cache, round == 2 ? "" : file_path_, true);
+        auto result = stream->ReadAsync(arrow::io::default_io_context(), 0, 4).result();
+        ASSERT_TRUE(result.ok()) << result.status().ToString();
+        ASSERT_EQ("PAR1", result.ValueOrDie()->ToString());
+        ASSERT_EQ(round == 1 ? 0 : 4, stream->StorageReadBytes()->load());
+        ASSERT_TRUE(stream->Close().ok());
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestDataCacheRejectsInvalidOption) {
+    WriteArray(file_path_, struct_array_, schema_, 1, false, 3, 1);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+    ParquetReaderBuilder builder({{PARQUET_READ_ENABLE_DATA_CACHE, "invalid"}}, 10);
+    ASSERT_NOK(builder.Build(input));
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestReadBinaryWrittenFromBinaryAndLargeBinary) {
     auto check_binary_read_result = [&](const std::shared_ptr<arrow::DataType>& write_type,
                                         const std::string& file_name) {

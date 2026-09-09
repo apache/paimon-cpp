@@ -55,14 +55,16 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
     ParquetInputStream(const std::shared_ptr<paimon::InputStream>& input, int64_t file_size,
                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                        const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Cache>& cache,
-                       const std::string& file_uri)
+                       const std::string& file_uri, bool cache_data = false)
         : ArrowInputStreamAdapter(input, file_size, arrow_pool),
           pool_(pool),
           cache_(cache),
-          file_uri_(file_uri) {}
+          file_uri_(file_uri),
+          file_size_(file_size),
+          cache_data_(cache_data) {}
 
     // Called before the stream is published to the file reader. Only index
-    // ranges described by its footer are eligible; data pages remain uncached.
+    // ranges described by its footer use the metadata cache budget.
     void SetPageIndexRanges(const ::parquet::FileMetaData& metadata) {
         for (int32_t rg = 0; rg < metadata.num_row_groups(); ++rg) {
             auto ranges = ::parquet::PageIndexReader::DeterminePageIndexRangesInRowGroup(
@@ -78,21 +80,22 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
     using ArrowInputStreamAdapter::ReadAt;
 
     arrow::Result<int64_t> ReadAt(int64_t position, int64_t nbytes, void* out) override {
-        if (!cache_ || file_uri_.empty() || nbytes <= 0 ||
-            nbytes > std::numeric_limits<int32_t>::max()) {
+        if (!cache_ || file_uri_.empty() || position < 0 || nbytes <= 0 || position > file_size_ ||
+            nbytes > file_size_ - position || nbytes > std::numeric_limits<int32_t>::max()) {
             return ArrowInputStreamAdapter::ReadAt(position, nbytes, out);
         }
+        bool is_index = false;
         auto range = index_ranges_.upper_bound(position);
-        if (range == index_ranges_.begin()) {
-            return ArrowInputStreamAdapter::ReadAt(position, nbytes, out);
+        if (range != index_ranges_.begin()) {
+            --range;
+            const int64_t offset = position - range->first;
+            is_index = offset <= range->second && nbytes <= range->second - offset;
         }
-        --range;
-        if (position - range->first > range->second ||
-            nbytes > range->second - (position - range->first)) {
+        if (!is_index && !cache_data_) {
             return ArrowInputStreamAdapter::ReadAt(position, nbytes, out);
         }
         auto key = CacheKey::ForKind(file_uri_, position, static_cast<int32_t>(nbytes),
-                                     CacheKind::DATA_FILE_FOOTER);
+                                     is_index ? CacheKind::DATA_FILE_FOOTER : CacheKind::DEFAULT);
         auto value = cache_->Get(
             key,
             [this, position,
@@ -103,7 +106,7 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
                     int64_t size,
                     ArrowInputStreamAdapter::ReadAt(position, nbytes, segment.MutableData()));
                 if (size != nbytes) {
-                    return Status::IOError("Short read of Parquet page index");
+                    return Status::IOError("Short read of Parquet cached range");
                 }
                 return std::make_shared<CacheValue>(segment, CacheCallback());
             });
@@ -111,16 +114,28 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
             return ToArrowStatus(value.status());
         }
         if (!value.value() || value.value()->GetSegment().Size() != nbytes) {
-            return arrow::Status::IOError("Invalid Parquet page-index cache value");
+            return arrow::Status::IOError("Invalid Parquet cached range value");
         }
         std::memcpy(out, value.value()->GetSegment().Data(), nbytes);
         return nbytes;
+    }
+
+    arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext& io_context,
+                                                            int64_t position,
+                                                            int64_t nbytes) override {
+        if (!cache_data_ || !cache_ || file_uri_.empty()) {
+            return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes);
+        }
+        // Arrow retains this stream and invokes the cached ReadAt on its IO executor.
+        return arrow::io::RandomAccessFile::ReadAsync(io_context, position, nbytes);
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<Cache> cache_;
     std::string file_uri_;
+    int64_t file_size_;
+    bool cache_data_;
     std::map<int64_t, int64_t> index_ranges_;
 };
 
