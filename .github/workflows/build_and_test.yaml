@@ -49,6 +49,9 @@ jobs:
       - name: Run asan_symbolize tests
         shell: bash
         run: ci/scripts/test_asan_symbolize.sh
+      - name: Run core dump handling tests
+        shell: bash
+        run: ci/scripts/test_coredump_handling.sh
 
   build-and-test:
     name: ${{ matrix.name }}

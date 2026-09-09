@@ -78,16 +78,17 @@ function setup_sanitizers() {
   TSAN_OPTIONS="$TSAN_OPTIONS detect_deadlocks=0"
   TSAN_OPTIONS="$TSAN_OPTIONS suppressions=$ROOT/build_support/tsan-suppressions.txt"
   TSAN_OPTIONS="$TSAN_OPTIONS history_size=7"
+  TSAN_OPTIONS="$TSAN_OPTIONS disable_coredump=0"
+  TSAN_OPTIONS="$TSAN_OPTIONS abort_on_error=1"
   export TSAN_OPTIONS
 
   UBSAN_OPTIONS="$UBSAN_OPTIONS print_stacktrace=1"
   UBSAN_OPTIONS="$UBSAN_OPTIONS suppressions=$ROOT/build_support/ubsan-suppressions.txt"
   export UBSAN_OPTIONS
 
-  # Enable leak detection even under LLVM 3.4, where it was disabled by default.
-  # This flag only takes effect when running an ASAN build.
-  # ASAN_OPTIONS="$ASAN_OPTIONS detect_leaks=1"
-  # export ASAN_OPTIONS
+  ASAN_OPTIONS="$ASAN_OPTIONS disable_coredump=0"
+  ASAN_OPTIONS="$ASAN_OPTIONS abort_on_error=1"
+  export ASAN_OPTIONS
 
   # Set up suppressions for LeakSanitizer
   LSAN_OPTIONS="$LSAN_OPTIONS suppressions=$ROOT/build_support/lsan-suppressions.txt"
@@ -145,11 +146,30 @@ function print_coredumps() {
 
   COREFILES=$(ls | grep $PATTERN)
   if [ -n "$COREFILES" ]; then
+    # Successful death tests can leave expected core files. Let the test work
+    # directory cleanup remove those instead of treating them as failures.
+    if [ "$STATUS" -eq "0" ]; then
+      return
+    fi
+
     echo "Found core dump, printing backtrace:"
 
-    # Preserve the exact executable that produced the core so the dump can be
-    # inspected offline with matching symbols.
-    cp "${TEST_EXECUTABLE}" "${TEST_DEBUGDIR}/${TEST_FILENAME}"
+    # Keep each test's files separate because tests run in parallel and often
+    # depend on shared libraries with the same names.
+    TEST_ARTIFACT_DIR="${TEST_DEBUGDIR}/${TEST_NAME}"
+    mkdir -p "${TEST_ARTIFACT_DIR}"
+    cp "${TEST_EXECUTABLE}" "${TEST_ARTIFACT_DIR}/${TEST_FILENAME}"
+
+    # Preserve build-tree shared libraries so downloaded cores can be
+    # symbolized with `set solib-search-path <artifact-dir>/lib`.
+    if [ "$(uname)" != "Darwin" ] && command -v ldd >/dev/null; then
+      mkdir -p "${TEST_ARTIFACT_DIR}/lib"
+      while IFS= read -r LIB; do
+        cp -L "${LIB}" "${TEST_ARTIFACT_DIR}/lib/$(basename "${LIB}")"
+      done < <(ldd "${TEST_EXECUTABLE}" | awk -v output_root="${OUTPUT_ROOT}/" \
+        '$3 ~ /^\// && index($3, output_root) == 1 { print $3; next }
+         $1 ~ /^\// && index($1, output_root) == 1 { print $1 }')
+    fi
 
     for COREFILE in $COREFILES; do
       # Print backtrace
@@ -159,7 +179,7 @@ function print_coredumps() {
         gdb -c "${COREFILE}" $TEST_EXECUTABLE -ex "thread apply all bt" -ex "set pagination 0" -batch
       fi
       # Move the coredump out of the test work directory so CI can upload it.
-      mv "${COREFILE}" "${TEST_DEBUGDIR}/${TEST_NAME}.${COREFILE}"
+      mv "${COREFILE}" "${TEST_ARTIFACT_DIR}/${TEST_NAME}.${COREFILE}"
     done
   fi
 }
