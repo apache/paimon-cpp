@@ -22,6 +22,7 @@
 
 #include "fmt/format.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/fs/file_system.h"
@@ -43,6 +44,12 @@ Result<std::shared_ptr<Table>> Table::Create(const std::shared_ptr<FileSystem>& 
         return Status::NotExist(
             fmt::format("load table schema for {} failed", identifier.ToString()));
     }
+
+    // Only a managed table is a `Table`; describing another type as one would hand back snapshots
+    // and manifests it never had. Checked here because this is the one place every `Table` built
+    // from a table directory passes through, catalogs included.
+    PAIMON_RETURN_NOT_OK(
+        CatalogUtils::CheckManagedTableType(identifier, *latest_schema, "Table::Create"));
 
     auto schema = checked_pointer_cast<Schema>(*latest_schema);
     return std::make_shared<Table>(schema, identifier.GetDatabaseName(), identifier.GetTableName());

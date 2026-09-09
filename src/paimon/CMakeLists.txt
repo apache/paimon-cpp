@@ -136,6 +136,7 @@ set(PAIMON_COMMON_SRCS
     common/reader/batch_reader.cpp
     common/reader/concat_batch_reader.cpp
     common/reader/late_materializing_file_batch_reader.cpp
+    common/reader/data_file_reader_factory.cpp
     common/reader/predicate_batch_reader.cpp
     common/reader/prefetch_file_batch_reader_impl.cpp
     common/reader/reader_utils.cpp
@@ -409,6 +410,18 @@ set(PAIMON_CORE_SRCS
     core/stats/simple_stats_evolution.cpp
     core/table/table.cpp
     core/table/bucket_mode.cpp
+    core/table/format/format_file_listing.cpp
+    core/table/format/format_file_naming.cpp
+    core/table/format/format_path_validation.cpp
+    core/table/format/format_table.cpp
+    core/table/format/format_table_commit.cpp
+    core/table/format/format_table_file_store_commit.cpp
+    core/table/format/format_table_file_store_write.cpp
+    core/table/format/format_table_loader.cpp
+    core/table/format/format_table_read.cpp
+    core/table/format/format_table_scan.cpp
+    core/table/format/format_table_write.cpp
+    core/table/format/lazy_concat_batch_reader.cpp
     core/table/sink/commit_message.cpp
     core/table/sink/commit_message_impl.cpp
     core/table/sink/commit_message_serializer.cpp
@@ -634,6 +647,7 @@ if(PAIMON_BUILD_TESTS)
                     common/types/row_kind_test.cpp
                     common/types/data_type_test.cpp
                     common/utils/file_type_test.cpp
+                    common/utils/hadoop_compression_test.cpp
                     common/utils/row_range_index_test.cpp
                     common/utils/var_length_int_utils_test.cpp
                     common/utils/arrow/arrow_utils_test.cpp
@@ -750,6 +764,7 @@ if(PAIMON_BUILD_TESTS)
                     core/compact/noop_compact_manager_test.cpp
                     core/core_options_test.cpp
                     core/options/lookup_strategy_test.cpp
+                    core/options/table_type_test.cpp
                     core/deletionvectors/apply_deletion_vector_batch_reader_test.cpp
                     core/deletionvectors/bitmap_deletion_vector_test.cpp
                     core/deletionvectors/bucketed_dv_maintainer_test.cpp
@@ -909,6 +924,10 @@ if(PAIMON_BUILD_TESTS)
                     core/stats/simple_stats_test.cpp
                     core/table/table_test.cpp
                     core/table/bucket_mode_test.cpp
+                    core/table/format/format_file_listing_test.cpp
+                    core/table/format/format_file_naming_test.cpp
+                    core/table/format/format_table_test.cpp
+                    core/table/format/lazy_concat_batch_reader_test.cpp
                     core/table/sink/commit_message_test.cpp
                     core/table/sink/commit_message_impl_test.cpp
                     core/table/source/fallback_data_split_test.cpp

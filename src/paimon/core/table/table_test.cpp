@@ -18,6 +18,11 @@
 
 #include "paimon/catalog/table.h"
 
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -59,6 +64,35 @@ TEST(TableTest, TestCreateWithUnknownDatabase) {
     EXPECT_EQ(data_schema->Id(), 0);
     EXPECT_EQ(data_schema->PartitionKeys(), partition_keys);
     EXPECT_EQ(data_schema->PrimaryKeys(), primary_keys);
+}
+
+TEST(TableTest, TestCreateRejectsATableTypeThatIsNotAManagedTable) {
+    // A `Table` describes a managed paimon table. Handing back another type as one would promise
+    // snapshots and manifests it never had, so the failure belongs at the call that opens the
+    // table rather than at the first read. This is the one place every `Table` built from a table
+    // directory passes through, catalogs included.
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), /*nullable=*/false),
+                                 arrow::field("dt", arrow::utf8())});
+
+    SchemaManager format_schema_manager(dir->GetFileSystem(), dir->Str() + "/format");
+    ASSERT_OK_AND_ASSIGN(
+        [[maybe_unused]] std::unique_ptr<TableSchema> format_schema,
+        format_schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"},
+                                          /*primary_keys=*/{},
+                                          {{"type", "format-table"}, {"file.format", "parquet"}}));
+    ASSERT_NOK_WITH_MSG(
+        Table::Create(dir->GetFileSystem(), dir->Str() + "/format", Identifier("db", "fmt")),
+        "Cannot open format table");
+
+    // A managed table with no `type` option at all is what a `Table` is for, and still opens.
+    SchemaManager managed_schema_manager(dir->GetFileSystem(), dir->Str() + "/managed");
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableSchema> managed_schema,
+                         managed_schema_manager.CreateTable(schema, /*partition_keys=*/{"dt"},
+                                                            /*primary_keys=*/{}, {}));
+    ASSERT_OK(
+        Table::Create(dir->GetFileSystem(), dir->Str() + "/managed", Identifier("db", "managed")));
 }
 
 TEST(TableTest, TestCreateFailedWithNonExistSchema) {

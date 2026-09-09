@@ -101,7 +101,9 @@ class PAIMON_EXPORT StringUtils {
     /// Character.isWhitespace.
     static bool IsBlank(std::string_view str);
 
-    static bool IsNullOrWhitespaceOnly(const std::string& str);
+    /// Whether `str` is empty or holds nothing but whitespace. Takes a view so that a caller
+    /// checking one row of a column at a time does not allocate.
+    static bool IsNullOrWhitespaceOnly(std::string_view str);
 
     /// Returns true if Java String::trim would produce an empty string.
     static bool IsEmptyAfterTrim(std::string_view str);

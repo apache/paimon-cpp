@@ -137,7 +137,7 @@ bool StringUtils::IsBlank(std::string_view str) {
     return true;
 }
 
-bool StringUtils::IsNullOrWhitespaceOnly(const std::string& str) {
+bool StringUtils::IsNullOrWhitespaceOnly(std::string_view str) {
     return IsBlank(str);
 }
 

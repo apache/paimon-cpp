@@ -151,6 +151,12 @@ Status OrcFormatWriter::AddBatch(ArrowArray* batch) {
 }
 
 Status OrcFormatWriter::Flush() {
+    // Released by `Finish()` before the file's footer is written, so once it is gone there is
+    // nothing left to add: a cleanup path that flushes after a failed finish would otherwise
+    // reach through what that finish already freed.
+    if (orc_batch_ == nullptr) {
+        return Status::OK();
+    }
     try {
         if (orc_batch_->numElements > 0) {
             writer_->add(*orc_batch_);
@@ -170,6 +176,11 @@ Status OrcFormatWriter::Flush() {
 
 Status OrcFormatWriter::Finish() {
     PAIMON_RETURN_NOT_OK(Flush());
+    // Already finished, so there is nothing left to close. A finish that failed leaves the writer
+    // behind and is retried here, which fails again rather than crashing.
+    if (writer_ == nullptr) {
+        return Status::OK();
+    }
     try {
         metrics_ = GetWriterMetrics();
         orc_batch_.reset();
