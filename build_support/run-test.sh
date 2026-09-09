@@ -147,6 +147,10 @@ function print_coredumps() {
   if [ -n "$COREFILES" ]; then
     echo "Found core dump, printing backtrace:"
 
+    # Preserve the exact executable that produced the core so the dump can be
+    # inspected offline with matching symbols.
+    cp "${TEST_EXECUTABLE}" "${TEST_DEBUGDIR}/${TEST_FILENAME}"
+
     for COREFILE in $COREFILES; do
       # Print backtrace
       if [ "$(uname)" == "Darwin" ]; then
@@ -154,8 +158,8 @@ function print_coredumps() {
       else
         gdb -c "${COREFILE}" $TEST_EXECUTABLE -ex "thread apply all bt" -ex "set pagination 0" -batch
       fi
-      # Remove the coredump, regenerate it via running the test case directly
-      rm "${COREFILE}"
+      # Move the coredump out of the test work directory so CI can upload it.
+      mv "${COREFILE}" "${TEST_DEBUGDIR}/${TEST_NAME}.${COREFILE}"
     done
   fi
 }
