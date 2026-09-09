@@ -31,12 +31,10 @@
 #include "arrow/scalar.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
-#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/core/casting/binary_to_blob_cast_executor.h"
 #include "paimon/core/casting/cast_executor.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -144,22 +142,11 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::CastNonPartitionArrayI
                     CastingUtils::Cast(dict_array, /*target_type=*/arrow::utf8(),
                                        arrow::compute::CastOptions::Safe(), arrow_pool_.get()));
             }
-            const DataField& read_field = non_partition_info_.non_partition_read_schema[i];
-            // The Parquet reader may already have restored an inline BLOB through ARROW:schema.
-            // Only bypass the physical binary-to-BLOB cast when both the configured executor and
-            // the logical field metadata confirm that this is a BLOB conversion.
-            const bool is_already_logical_blob =
-                std::dynamic_pointer_cast<BinaryToBlobCastExecutor>(
-                    non_partition_info_.cast_executors[i]) != nullptr &&
-                single_column_array->type_id() == arrow::Type::LARGE_BINARY &&
-                BlobUtils::IsBlobField(read_field.ArrowField());
-            if (is_already_logical_blob) {
-                column = single_column_array;
-            } else {
-                PAIMON_ASSIGN_OR_RAISE(
-                    column, non_partition_info_.cast_executors[i]->Cast(
-                                single_column_array, read_field.Type(), arrow_pool_.get()));
-            }
+            PAIMON_ASSIGN_OR_RAISE(
+                column,
+                non_partition_info_.cast_executors[i]->Cast(
+                    single_column_array, non_partition_info_.non_partition_read_schema[i].Type(),
+                    arrow_pool_.get()));
         } else {
             // read and data type may both be string type, but after adapter transform, type may be
             // dictionary, need reconstruct struct type
@@ -169,8 +156,7 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::CastNonPartitionArrayI
         // read types differ -- the reader may hand back a dictionary-encoded array
         // for an unchanged type, which is not a reshape target.
         if (!non_partition_info_.non_partition_data_schema[i].Type()->Equals(
-                *non_partition_info_.non_partition_read_schema[i].Type()) &&
-            !column->type()->Equals(*non_partition_info_.non_partition_read_schema[i].Type())) {
+                *non_partition_info_.non_partition_read_schema[i].Type())) {
             PAIMON_ASSIGN_OR_RAISE(
                 column, NestedProjectionUtils::AlignArrayToReadType(
                             column, non_partition_info_.non_partition_read_schema[i].Type(),

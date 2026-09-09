@@ -45,11 +45,6 @@
 namespace paimon::test {
 namespace {
 
-const std::map<std::string, std::string> kBlobDescriptorReadOptions = {
-    {Options::FILE_SYSTEM, "local"},
-    {Options::BLOB_AS_DESCRIPTOR, "true"},
-    {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"},
-};
 const char kDatabaseName[] = "append_types_compatibility";
 
 std::vector<std::string> WriterPrefixes() {
@@ -145,7 +140,7 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
     const std::string& writer_prefix = GetParam();
     TimezoneGuard timezone_guard("Asia/Shanghai");
 
-    // Project every field from the main compatibility table in schema order.
+    // Project every non-BLOB field from the main compatibility table in schema order.
     std::vector<std::string> fields = {
         // Basic numeric types.
         "id",
@@ -163,9 +158,6 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
         "f_binary",
         "f_varbinary",
         "f_bytes",
-        // BLOB values stored as external or inline descriptors.
-        "f_blob",
-        "f_blob_descriptor",
         // DECIMAL values across physical precision boundaries.
         "f_decimal_1_0",
         "f_decimal_9_2",
@@ -198,7 +190,7 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
         "f_map_variant",
     };
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadTable(writer_prefix + "_types", fields, kBlobDescriptorReadOptions));
+                         ReadTable(writer_prefix + "_types", fields));
     std::shared_ptr<arrow::StructArray> rows = GetOnlyStructChunk(result);
     ASSERT_TRUE(rows);
     ASSERT_EQ(rows->length(), 3);
@@ -223,54 +215,6 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
     AssertFieldEqualsJson(rows, "f_varbinary", arrow::binary(),
                           R"(["varbinary\u0000value", null, ""])");
     AssertFieldEqualsJson(rows, "f_bytes", arrow::binary(), R"(["bytes\u0000value", null, ""])");
-
-    // External BLOB descriptors, including a non-empty and an empty blob range.
-    std::shared_ptr<arrow::LargeBinaryArray> blobs =
-        std::dynamic_pointer_cast<arrow::LargeBinaryArray>(rows->GetFieldByName("f_blob"));
-    ASSERT_TRUE(blobs);
-    ASSERT_EQ(blobs->length(), 3);
-    ASSERT_TRUE(blobs->IsNull(1));
-    std::string_view first = blobs->GetView(0);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobDescriptor> first_descriptor,
-                         BlobDescriptor::Deserialize(first.data(), first.size()));
-    ASSERT_EQ(first_descriptor->Version(), 2);
-    ASSERT_EQ(first_descriptor->Offset(), 4);
-    ASSERT_EQ(first_descriptor->Length(), 41);
-    ASSERT_EQ(first_descriptor->Uri().substr(first_descriptor->Uri().size() - 5), ".blob");
-    std::string_view empty = blobs->GetView(2);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobDescriptor> empty_descriptor,
-                         BlobDescriptor::Deserialize(empty.data(), empty.size()));
-    ASSERT_EQ(empty_descriptor->Offset(), 61);
-    ASSERT_EQ(empty_descriptor->Length(), 0);
-
-    // Resolve the external BLOB and validate its payload instead of its descriptor.
-    std::map<std::string, std::string> blob_value_options = {
-        {Options::FILE_SYSTEM, "local"},
-        {Options::BLOB_AS_DESCRIPTOR, "false"},
-    };
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> blob_value_result,
-                         ReadTable(writer_prefix + "_types", {"f_blob"}, blob_value_options));
-    std::shared_ptr<arrow::StructArray> blob_value_rows = GetOnlyStructChunk(blob_value_result);
-    ASSERT_TRUE(blob_value_rows);
-    AssertFieldEqualsJson(blob_value_rows, "f_blob", arrow::large_binary(),
-                          R"(["ordinary blob payload from pypaimon 2.0.0", null, ""])");
-
-    // Inline BLOB descriptors exercise compatible binary types restored from ARROW:schema.
-    std::shared_ptr<arrow::LargeBinaryArray> inline_blobs =
-        std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
-            rows->GetFieldByName("f_blob_descriptor"));
-    ASSERT_TRUE(inline_blobs);
-    ASSERT_EQ(inline_blobs->length(), 3);
-    ASSERT_FALSE(inline_blobs->IsNull(0));
-    ASSERT_TRUE(inline_blobs->IsNull(1));
-    ASSERT_TRUE(inline_blobs->IsNull(2));
-    std::string_view inline_blob = inline_blobs->GetView(0);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobDescriptor> inline_descriptor,
-                         BlobDescriptor::Deserialize(inline_blob.data(), inline_blob.size()));
-    ASSERT_EQ(inline_descriptor->Version(), 2);
-    ASSERT_EQ(inline_descriptor->Uri(), "file:///nonexistent/pypaimon-all-types-external-blob.bin");
-    ASSERT_EQ(inline_descriptor->Offset(), 7);
-    ASSERT_EQ(inline_descriptor->Length(), 11);
 
     // DECIMAL values around the int32, int64, and fixed-byte-array precision boundaries.
     AssertFieldEqualsJson(rows, "f_decimal_1_0", arrow::decimal128(1, 0), R"(["9", null, null])");
@@ -413,9 +357,74 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
     ASSERT_TRUE(map_variant_values);
     AssertVariantJsonAt(map_variant_values, 0, object_variant_json);
     AssertVariantJsonAt(map_variant_values, 1, array_variant_json);
+}
 
-    // VECTOR values are stored separately because VECTOR and BLOB require incompatible
-    // table options. Validate every supported VECTOR element type here.
+TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
+    const std::string& writer_prefix = GetParam();
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadTable(writer_prefix + "_types", {"f_blob", "f_blob_descriptor"},
+                                   {{Options::FILE_SYSTEM, "local"},
+                                    {Options::BLOB_AS_DESCRIPTOR, "true"},
+                                    {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}}));
+    std::shared_ptr<arrow::StructArray> rows = GetOnlyStructChunk(result);
+    ASSERT_TRUE(rows);
+    ASSERT_EQ(rows->length(), 3);
+    ASSERT_EQ(rows->num_fields(), 3);
+
+    // External BLOB descriptors, including a non-empty and an empty blob range.
+    std::shared_ptr<arrow::LargeBinaryArray> blobs =
+        std::dynamic_pointer_cast<arrow::LargeBinaryArray>(rows->GetFieldByName("f_blob"));
+    ASSERT_TRUE(blobs);
+    ASSERT_EQ(blobs->length(), 3);
+    ASSERT_TRUE(blobs->IsNull(1));
+    std::string_view first = blobs->GetView(0);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobDescriptor> first_descriptor,
+                         BlobDescriptor::Deserialize(first.data(), first.size()));
+    ASSERT_EQ(first_descriptor->Version(), 2);
+    ASSERT_EQ(first_descriptor->Offset(), 4);
+    ASSERT_EQ(first_descriptor->Length(), 41);
+    ASSERT_EQ(first_descriptor->Uri().substr(first_descriptor->Uri().size() - 5), ".blob");
+    std::string_view empty = blobs->GetView(2);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobDescriptor> empty_descriptor,
+                         BlobDescriptor::Deserialize(empty.data(), empty.size()));
+    ASSERT_EQ(empty_descriptor->Offset(), 61);
+    ASSERT_EQ(empty_descriptor->Length(), 0);
+
+    // Resolve the external BLOB and validate its payload instead of its descriptor.
+    std::map<std::string, std::string> blob_value_options = {
+        {Options::FILE_SYSTEM, "local"},
+        {Options::BLOB_AS_DESCRIPTOR, "false"},
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> blob_value_result,
+                         ReadTable(writer_prefix + "_types", {"f_blob"}, blob_value_options));
+    std::shared_ptr<arrow::StructArray> blob_value_rows = GetOnlyStructChunk(blob_value_result);
+    ASSERT_TRUE(blob_value_rows);
+    AssertFieldEqualsJson(blob_value_rows, "f_blob", arrow::large_binary(),
+                          R"(["ordinary blob payload from pypaimon 2.0.0", null, ""])");
+
+    // Inline BLOB descriptors exercise compatible binary types restored from ARROW:schema.
+    std::shared_ptr<arrow::LargeBinaryArray> inline_blobs =
+        std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+            rows->GetFieldByName("f_blob_descriptor"));
+    ASSERT_TRUE(inline_blobs);
+    ASSERT_EQ(inline_blobs->length(), 3);
+    ASSERT_FALSE(inline_blobs->IsNull(0));
+    ASSERT_TRUE(inline_blobs->IsNull(1));
+    ASSERT_TRUE(inline_blobs->IsNull(2));
+    std::string_view inline_blob = inline_blobs->GetView(0);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BlobDescriptor> inline_descriptor,
+                         BlobDescriptor::Deserialize(inline_blob.data(), inline_blob.size()));
+    ASSERT_EQ(inline_descriptor->Version(), 2);
+    ASSERT_EQ(inline_descriptor->Uri(), "file:///nonexistent/pypaimon-all-types-external-blob.bin");
+    ASSERT_EQ(inline_descriptor->Offset(), 7);
+    ASSERT_EQ(inline_descriptor->Length(), 11);
+}
+
+TEST_P(PaimonReadCompatInteTest, ReadsVectorValues) {
+    const std::string& writer_prefix = GetParam();
+
+    // Validate every supported VECTOR element type.
     std::vector<std::string> vector_fields = {
         "id",           "f_vector_boolean", "f_vector_tinyint", "f_vector_smallint",
         "f_vector_int", "f_vector_bigint",  "f_vector_float",   "f_vector_double",
