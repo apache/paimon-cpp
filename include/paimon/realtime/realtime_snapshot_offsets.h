@@ -43,10 +43,10 @@ class PAIMON_EXPORT RealtimeSnapshotOffsets {
     /// An empty branch selects the main branch. A non-null `file_system` takes precedence;
     /// otherwise it is resolved by `CoreOptions` from `options`. A snapshot without real-time
     /// progress returns an empty map.
-    static Result<RealtimeOffsetMap> ReadAll(const std::string& table_path,
-                                             const std::string& branch, int64_t snapshot_id,
-                                             const std::map<std::string, std::string>& options,
-                                             const std::shared_ptr<FileSystem>& file_system);
+    static Result<RealtimeOffsetMap> ReadAllOffsets(
+        const std::string& table_path, const std::string& branch, int64_t snapshot_id,
+        const std::map<std::string, std::string>& options,
+        const std::shared_ptr<FileSystem>& file_system);
 
     /// Loads the exclusive durable recovery offset for one partition-bucket.
     ///

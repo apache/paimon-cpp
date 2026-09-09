@@ -34,7 +34,7 @@
 
 namespace paimon {
 
-Result<RealtimeOffsetMap> RealtimeSnapshotOffsets::ReadAll(
+Result<RealtimeOffsetMap> RealtimeSnapshotOffsets::ReadAllOffsets(
     const std::string& table_path, const std::string& branch, int64_t snapshot_id,
     const std::map<std::string, std::string>& options_map,
     const std::shared_ptr<FileSystem>& file_system) {
@@ -62,8 +62,9 @@ Result<int64_t> RealtimeSnapshotOffsets::ReadOffset(
     if (partition_bucket.bucket < 0) {
         return Status::Invalid("real-time recovery bucket must not be negative");
     }
-    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap offsets,
-                           ReadAll(table_path, branch, snapshot_id, options_map, file_system));
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeOffsetMap offsets,
+        ReadAllOffsets(table_path, branch, snapshot_id, options_map, file_system));
     auto iter = offsets.find(partition_bucket);
     return iter == offsets.end() ? -1 : iter->second;
 }

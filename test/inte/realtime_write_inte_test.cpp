@@ -1150,6 +1150,23 @@ TEST_F(RealtimeWriteInteTest, TestSparseExternalOffsetsCommitAndRecover) {
     ASSERT_OK(writer->Close());
 }
 
+TEST_F(RealtimeWriteInteTest, TestExplicitSnapshotIdRequiresExistingSnapshot) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch({{1, "memory", "p0"}}, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+
+    options_[Options::SCAN_SNAPSHOT_ID] = "1";
+    ASSERT_NOK_WITH_MSG(CreatePlan(realtime_context, /*predicate=*/nullptr),
+                        "There is currently no snapshot.");
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
 TEST_F(RealtimeWriteInteTest, TestExplicitSnapshotIdWithSparseTailAndReclaimBoundary) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
@@ -1304,7 +1321,7 @@ TEST_F(RealtimeWriteInteTest, TestPkVector) {
                                R"([[0, 1, [1.0, 1.0, 1.0]],
                                    [0, 2, [3.0, 3.0, 3.0]],
                                    [0, 3, null]])");
-    ASSERT_OK(writer->Close());
+    ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
 TEST_F(RealtimeWriteInteTest, TestPkRealtimeReadOptimizedScanUnsupported) {
@@ -4492,8 +4509,8 @@ TEST_F(RealtimeWriteInteTest, TestReadRealtimeOffsetsFromExactSnapshot) {
     const RealtimePartitionBucket p1_bucket0({{"pt", "p1"}}, /*bucket=*/0);
     ASSERT_OK_AND_ASSIGN(
         RealtimeOffsetMap first_offsets,
-        RealtimeSnapshotOffsets::ReadAll(table_path_, /*branch=*/"", first_snapshot_id, options_,
-                                         /*file_system=*/nullptr));
+        RealtimeSnapshotOffsets::ReadAllOffsets(table_path_, /*branch=*/"", first_snapshot_id,
+                                                options_, /*file_system=*/nullptr));
     ASSERT_EQ(3, first_offsets.size());
     ASSERT_EQ(2, first_offsets.at(p0_bucket0));
     ASSERT_EQ(3, first_offsets.at(p0_bucket1));
