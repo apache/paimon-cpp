@@ -337,6 +337,7 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
                                        identifier.GetTableName());
     }
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(identifier));
+    // `Table::Create` reads the same schema file and rejects a format table there.
     return Table::Create(fs_, table_path, identifier);
 }
 
@@ -538,6 +539,12 @@ Result<std::vector<SnapshotInfo>> FileSystemCatalog::ListSnapshots(
         result.push_back(snap.ToSnapshotInfo());
     }
     return result;
+}
+
+Result<std::shared_ptr<FormatTable>> FileSystemCatalog::LoadFormatTable(
+    const Identifier& identifier) const {
+    return CatalogUtils::LoadFormatTableInTwoRequests(*this, identifier,
+                                                      /*location_carries_paimon_metadata=*/true);
 }
 
 }  // namespace paimon

@@ -19,6 +19,7 @@
 
 #include "paimon/core/schema/schema_manager.h"
 
+#include <future>
 #include <set>
 #include <utility>
 
@@ -29,6 +30,22 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+TEST(SchemaManagerTest, ConcurrentHistoricalSchemaReads) {
+    SchemaManager manager(
+        std::make_shared<LocalFileSystem>(),
+        GetDataDir() + "/orc/pk_table_with_alter_table.db/pk_table_with_alter_table/");
+    std::vector<std::future<Result<std::shared_ptr<TableSchema>>>> reads;
+    for (int32_t i = 0; i < 16; ++i) {
+        reads.push_back(
+            std::async(std::launch::async, [&manager, i]() { return manager.ReadSchema(i % 2); }));
+    }
+    for (int32_t i = 0; i < 16; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto schema, reads[i].get());
+        ASSERT_EQ(schema->Id(), i % 2);
+    }
+    ASSERT_EQ(manager.schema_cache_.Size(), 2);
+}
 
 TEST(SchemaManagerTest, TestSimple) {
     auto fs = std::make_shared<LocalFileSystem>();
@@ -91,7 +108,7 @@ TEST(SchemaManagerTest, TestSimple) {
     })";
     ASSERT_OK_AND_ASSIGN(auto expected_schema, TableSchema::CreateFromJson(schema_json));
     ASSERT_EQ(*ret, *expected_schema);
-    ASSERT_FALSE(manager.schema_cache_.empty());
+    ASSERT_GT(manager.schema_cache_.Size(), 0);
     ASSERT_EQ(*manager.ReadSchema(/*schema_id=*/1).value(), *expected_schema);
     ASSERT_EQ(*(manager.Latest().value().value()), *expected_schema);
 }

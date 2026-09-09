@@ -33,6 +33,7 @@ User Guide
    user_guide/data_types
    user_guide/primary_key_table
    user_guide/append_only_table
+   user_guide/format_table
    user_guide/system_tables
    user_guide/write
    user_guide/commit

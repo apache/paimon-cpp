@@ -55,6 +55,17 @@ class BinaryRowPartitionComputer {
         bool legacy_partition_name_enabled, const std::shared_ptr<MemoryPool>& memory_pool);
 
     Result<BinaryRow> ToBinaryRow(const std::map<std::string, std::string>& partition) const;
+
+    /// Converts a partial `partition` into a `BinaryRow`: a key it names is read into that
+    /// column's type, a key it leaves out is null, and a value equal to the default partition name
+    /// is the null partition.
+    ///
+    /// Nothing is rendered back out, unlike `NormalizePartitionSpec()`, so two values a partition
+    /// directory's name cannot tell apart - a blank one and the null partition - stay distinct.
+    /// This is how a partition is compared by what its column holds, which is what Java tests a
+    /// `PartitionPredicate` against.
+    Result<BinaryRow> ToPartialBinaryRow(const std::map<std::string, std::string>& partition) const;
+
     Result<std::map<std::string, std::string>> NormalizePartitionSpec(
         const std::map<std::string, std::string>& partition) const;
     Result<std::vector<std::pair<std::string, std::string>>> GeneratePartitionVector(
@@ -78,6 +89,10 @@ class BinaryRowPartitionComputer {
     /// A non-null `included_fields` enables partial partitions and records present fields.
     Result<BinaryRow> ConvertToBinaryRow(const std::map<std::string, std::string>& partition,
                                          std::vector<bool>* included_fields) const;
+
+    /// Rejects a key that is no partition key of this table, so a typo matches nothing rather than
+    /// being ignored.
+    Status CheckPartitionKeys(const std::map<std::string, std::string>& partition) const;
 
     static Result<arrow::Type::type> GetTypeFromArrowSchema(
         const std::shared_ptr<arrow::Schema>& schema, const std::string& field_name);

@@ -22,10 +22,12 @@
 #include <algorithm>
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_utils.h"
+#include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/status.h"
 
@@ -69,16 +71,16 @@ Result<std::optional<std::shared_ptr<TableSchema>>> SchemaManager::Latest() cons
 }
 
 Result<std::shared_ptr<TableSchema>> SchemaManager::ReadSchema(int64_t schema_id) const {
-    auto iter = schema_cache_.find(schema_id);
-    if (iter != schema_cache_.end()) {
-        return iter->second;
+    auto cached = schema_cache_.Find(schema_id);
+    if (cached) {
+        return cached.value();
     }
     auto path = ToSchemaPath(schema_id);
     std::string content;
     PAIMON_RETURN_NOT_OK(file_system_->ReadFile(path, &content));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
                            TableSchema::CreateFromJson(content));
-    schema_cache_[schema_id] = schema;
+    schema_cache_.Insert(schema_id, schema);
     return schema;
 }
 
@@ -110,7 +112,8 @@ Result<std::unique_ptr<TableSchema>> SchemaManager::CreateTable(
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<TableSchema> table_schema,
             TableSchema::Create(/*schema_id=*/0, schema, partition_keys, primary_keys, options));
-        PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+        // Shared with every other catalog, so a schema this one persists is one they all open.
+        PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateNewTableSchema(*table_schema, file_system_));
         std::string schema_path = ToSchemaPath(0);
         PAIMON_ASSIGN_OR_RAISE(std::string content, table_schema->ToJsonString());
         auto status = file_system_->AtomicStore(schema_path, content);
