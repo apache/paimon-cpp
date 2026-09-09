@@ -475,8 +475,7 @@ TEST_P(PaimonUnsupportedTypeInteTest, ReportsExpectedError) {
 
 std::vector<UnsupportedReadParam> UnsupportedReadParams() {
     const std::vector<UnsupportedReadCase> read_cases = {
-        {"ArrayBlob", "nested_blob_types", "f_array_blob", "Blob field must be a top-level field"},
-        {"MapBlob", "nested_blob_types", "f_map_blob", "Blob field must be a top-level field"},
+        {"NestedBlob", "nested_blob_types", "f_array_blob", "Blob field must be a top-level field"},
         {"TimePrecision0", "time_types", "f_time_0", "Unsupported type: TIME"},
         {"TimePrecision3", "time_types", "f_time_3", "Unsupported type: TIME"},
         {"TimePrecision6", "time_types", "f_time_6", "Unsupported type: TIME"},

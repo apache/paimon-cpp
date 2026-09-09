@@ -33,7 +33,7 @@ Each writer prefix has four tables with the same schema and logical values:
 
 - `<writer>_types`: 43 columns and 3 rows covering integral and floating types, BOOLEAN, CHAR/VARCHAR/STRING, BINARY/VARBINARY/BYTES, BLOB, DATE, TIMESTAMP and TIMESTAMP_LTZ at precision 0/3/6/9, multiple DECIMAL precisions, VARIANT, ARRAY, MAP, ROW, and deeply nested combinations. Row 2 is null in every nullable column and row 3 exercises empty values.
 - `<writer>_vector_types`: VECTOR length 3 for BOOLEAN, TINYINT, SMALLINT, INT, BIGINT, FLOAT, and DOUBLE.
-- `<writer>_nested_blob_types`: ARRAY&lt;BLOB&gt; and MAP&lt;STRING, BLOB&gt;. Paimon C++ currently rejects these because it only permits BLOB as a top-level field.
+- `<writer>_nested_blob_types`: ARRAY&lt;BLOB&gt; and MAP&lt;STRING, BLOB&gt;. Paimon C++ rejects the table schema because ARRAY&lt;BLOB&gt; is unsupported. Schema validation happens before column projection, so the compatibility test explicitly checks this error instead of reading either field.
 - `<writer>_time_types`: TIME declarations at precision 0/3/6/9. Paimon C++ currently rejects `TIME` while parsing the table schema.
 
 The tables are separated because Paimon C++ does not allow VECTOR in a data-evolution table, BLOB requires data evolution, and a schema-level incompatibility must not prevent compatible columns from being tested.
