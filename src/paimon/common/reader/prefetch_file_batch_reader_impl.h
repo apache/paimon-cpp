@@ -69,7 +69,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         bool enable_adaptive_prefetch_strategy, const std::shared_ptr<Executor>& executor,
         bool initialize_read_ranges, bool read_ahead_cache_enabled, const CacheConfig& cache_config,
         bool enable_io_metrics, const std::shared_ptr<MemoryPool>& pool,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupMode warmup_mode);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupLevel warmup_level);
 
     ~PrefetchFileBatchReaderImpl() override;
 
@@ -125,7 +125,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
         const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupMode warmup_mode);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupLevel warmup_level);
 
     Status CleanUp();
     void Workloop();
@@ -133,8 +133,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     /// itself; Warmup() is the same call made earlier, so the two must not diverge.
     void EnsureBackgroundThread();
     /// Initializes and warms the read-ahead cache at most once per read-range generation, using the
-    /// first reader's PreBufferRange(). Shared by Workloop() (FULL) and Warmup() (CACHE_ONLY), so
-    /// the two never Init the cache twice. A no-op when there is no cache. Errors are recorded via
+    /// first reader's PreBufferRange(). Shared by Workloop() (DECODED) and Warmup() (RAW), so the
+    /// two never Init the cache twice. A no-op when there is no cache. Errors are recorded via
     /// SetReadStatus() rather than returned: a warmup hint for a file that may never be read must
     /// not fail an in-flight read.
     void WarmCacheOnce();
@@ -195,7 +195,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     std::atomic<bool> cache_warmed_{false};
     const uint32_t prefetch_queue_capacity_;
     const bool enable_adaptive_prefetch_strategy_;
-    const WarmupMode warmup_mode_;
+    const WarmupLevel warmup_level_;
     int32_t parallel_num_;
     std::shared_ptr<PrefetchMetricsState> prefetch_metrics_;
     std::shared_ptr<PrefetchIoMetricsState> io_metrics_;

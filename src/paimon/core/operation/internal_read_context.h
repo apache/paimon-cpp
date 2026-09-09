@@ -111,8 +111,8 @@ class InternalReadContext {
         return read_context_->GetCacheConfig();
     }
 
-    WarmupMode GetWarmupMode() const {
-        return read_context_->GetWarmupMode();
+    WarmupLevel GetWarmupLevel() const {
+        return read_context_->GetWarmupLevel();
     }
 
     /// Create a new InternalReadContext with a different read schema.

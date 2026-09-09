@@ -234,11 +234,11 @@ TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
 
 // A system table reads through the data table underneath it, so it builds a fresh ReadContext for
 // that table. The builder starts from the defaults, which makes any setting that is not copied
-// across silently revert to its default: a caller that asked for WarmupMode::NONE or CACHE_ONLY
-// would get FULL back, restarting the background decode loop and re-committing its memory and
+// across silently revert to its default: a caller that asked for WarmupLevel::NONE or RAW
+// would get DECODED back, restarting the background decode loop and re-committing its memory and
 // remote I/O, with nothing reported at either end. `$ro` has its own builder chain and `$audit_log`
 // and `$binlog` share one, so all three are pinned here.
-TEST(SystemTableTest, TestNewReadPropagatesWarmupMode) {
+TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
@@ -248,16 +248,16 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupMode) {
     BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
     ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
 
-    for (WarmupMode mode : {WarmupMode::NONE, WarmupMode::CACHE_ONLY, WarmupMode::FULL}) {
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");
-        builder.SetOptions(options).SetWarmupMode(mode);
+        builder.SetOptions(options).SetWarmupLevel(level);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> caller_unique_context, builder.Finish());
         std::shared_ptr<ReadContext> caller_context(std::move(caller_unique_context));
-        ASSERT_EQ(mode, caller_context->GetWarmupMode());
+        ASSERT_EQ(level, caller_context->GetWarmupLevel());
 
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ro_context,
                              read_optimized.CreateDataReadContext(caller_context));
-        EXPECT_EQ(mode, ro_context->GetWarmupMode()) << "$ro dropped the caller's WarmupMode";
+        EXPECT_EQ(level, ro_context->GetWarmupLevel()) << "$ro dropped the caller's WarmupLevel";
 
         // The changelog chain is checked where the context is built rather than on the read: the
         // ChangelogTableRead that wraps it is local to audit_log_system_table.cpp, so a test cannot
@@ -266,14 +266,14 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupMode) {
         ASSERT_OK_AND_ASSIGN(auto audit_log_options, audit_log.ReadOptions());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context,
                              audit_log.CreateDataReadContext(caller_context, audit_log_options));
-        EXPECT_EQ(mode, audit_log_context->GetWarmupMode())
-            << "$audit_log dropped the caller's WarmupMode";
+        EXPECT_EQ(level, audit_log_context->GetWarmupLevel())
+            << "$audit_log dropped the caller's WarmupLevel";
 
         ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context,
                              binlog.CreateDataReadContext(caller_context, binlog_options));
-        EXPECT_EQ(mode, binlog_context->GetWarmupMode())
-            << "$binlog dropped the caller's WarmupMode";
+        EXPECT_EQ(level, binlog_context->GetWarmupLevel())
+            << "$binlog dropped the caller's WarmupLevel";
     }
 }
 

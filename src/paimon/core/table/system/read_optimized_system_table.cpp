@@ -115,7 +115,7 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         .WithFileSystemSchemeToIdentifierMap(context->GetFileSystemSchemeToIdentifierMap())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
-        .SetWarmupMode(context->GetWarmupMode())
+        .SetWarmupLevel(context->GetWarmupLevel())
         .WithCache(context->GetCache())
         .SetReadFieldNames(context->GetReadFieldNames())
         .SetReadFieldIds(context->GetReadFieldIds());

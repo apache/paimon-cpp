@@ -100,7 +100,8 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
                         /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                        /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
+                        /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_),
+                        WarmupLevel::DECODED));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);

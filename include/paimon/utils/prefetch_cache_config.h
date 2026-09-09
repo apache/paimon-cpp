@@ -114,24 +114,25 @@ class PAIMON_EXPORT CacheConfig {
     uint64_t block_cache_limit_ = 1024 * 1024;
 };
 
-/// Controls how aggressively a reader warms up the next file before that file is actually read.
+/// Controls how far a reader prepares the next file before that file is actually read.
 ///
-/// Warmup overlaps remote-storage latency with the read of the current file. More aggressive modes
-/// hide more latency, but commit more memory and background I/O to files that a query may end up
-/// never reading (for example when a LIMIT stops the scan early). Callers can trade latency against
-/// memory by picking a mode.
-enum class PAIMON_EXPORT WarmupMode {
+/// Warmup overlaps remote-storage latency with the read of the current file. Each level takes the
+/// next file one step further along the read pipeline: `RAW` covers the remote fetch, `DECODED`
+/// adds the decode on top of it. Higher levels hide more latency, but commit more memory and
+/// background I/O to files that a query may end up never reading (for example when a LIMIT stops
+/// the scan early). Callers can trade latency against memory by picking a level.
+enum class PAIMON_EXPORT WarmupLevel {
     /// Do not warm up. The next file's I/O starts only when it is actually read. This is the
     /// behavior from before warmup existed and uses no extra memory or background threads.
     NONE,
-    /// Warm only the read-ahead cache: prefetch the next file's raw (still compressed) bytes into
-    /// memory without starting the decoder. Overlaps the remote fetch while keeping memory lower
-    /// than FULL, because no decoded batches are materialized ahead of the read.
-    CACHE_ONLY,
-    /// Full warmup: prefetch the raw bytes and start the background decode loop, so decoded
-    /// batches are ready before the file is read. Hides the most latency but uses the most memory.
-    /// This is the default.
-    FULL,
+    /// Fetch only the next file's raw, still-compressed bytes into memory, and leave the decoder
+    /// alone. Overlaps the remote fetch while keeping memory lower than `DECODED`, because no
+    /// decoded batches are materialized ahead of the read.
+    RAW,
+    /// Fetch the raw bytes and start the background decode loop as well, so decoded batches are
+    /// ready before the file is read. Hides the most latency but uses the most memory. This is the
+    /// default.
+    DECODED,
 };
 
 }  // namespace paimon

@@ -62,7 +62,7 @@ class PAIMON_EXPORT ReadContext {
                 const std::shared_ptr<RealtimeContext>& realtime_context,
                 const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
                 const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table, WarmupMode warmup_mode);
+                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level);
 
     ~ReadContext();
 
@@ -151,8 +151,8 @@ class PAIMON_EXPORT ReadContext {
         return format_table_;
     }
 
-    WarmupMode GetWarmupMode() const {
-        return warmup_mode_;
+    WarmupLevel GetWarmupLevel() const {
+        return warmup_level_;
     }
 
     /// Whether a read schema (C ArrowSchema) for nested column pruning was provided.
@@ -195,7 +195,7 @@ class PAIMON_EXPORT ReadContext {
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
-    WarmupMode warmup_mode_;
+    WarmupLevel warmup_level_;
     // Owns schema resources and releases ArrowSchema::release in destructor.
     std::unique_ptr<ArrowSchema> read_schema_;
 };
@@ -357,15 +357,15 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& WithCacheConfig(const CacheConfig& config);
 
-    /// Set how aggressively the reader warms up the next file before it is read.
+    /// Set how far the reader prepares the next file before it is read.
     ///
-    /// Warmup overlaps remote-storage latency with the read of the current file. More aggressive
-    /// modes hide more latency but use more memory, and may warm files that a query never reads
-    /// (for example when a LIMIT stops the scan early).
-    /// @param mode The warmup aggressiveness to use (default: WarmupMode::FULL).
+    /// Warmup overlaps remote-storage latency with the read of the current file. Higher levels hide
+    /// more latency but use more memory, and may warm files that a query never reads (for example
+    /// when a LIMIT stops the scan early).
+    /// @param level The warmup level to use (default: WarmupLevel::DECODED).
     /// @return Reference to this builder for method chaining.
-    /// @see WarmupMode
-    ReadContextBuilder& SetWarmupMode(WarmupMode mode);
+    /// @see WarmupLevel
+    ReadContextBuilder& SetWarmupLevel(WarmupLevel level);
 
     /// Set the total number of batches to prefetch across all files.
     ///

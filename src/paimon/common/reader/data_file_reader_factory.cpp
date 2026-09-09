@@ -86,7 +86,7 @@ Result<std::unique_ptr<FileBatchReader>> DataFileReaderFactory::Open(
                 executor,
                 /*initialize_read_ranges=*/false, read_options.read_ahead_cache_enabled,
                 read_options.cache_config, read_options.prefetch_io_metrics_enabled, pool,
-                arrow_pool, read_options.warmup_mode));
+                arrow_pool, read_options.warmup_level));
         return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,

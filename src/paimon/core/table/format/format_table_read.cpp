@@ -337,7 +337,7 @@ Result<std::unique_ptr<FormatTableRead>> FormatTableRead::Create(
     read_options.prefetch_batch_count = read_context->GetPrefetchBatchCount();
     read_options.read_ahead_cache_enabled = read_context->ReadAheadCacheEnabled();
     read_options.cache_config = read_context->GetCacheConfig();
-    read_options.warmup_mode = read_context->GetWarmupMode();
+    read_options.warmup_level = read_context->GetWarmupLevel();
 
     return CreateInternal(table, projection, read_context->GetMemoryPool(),
                           read_context->GetPredicate(), read_context->EnablePredicateFilter(),

@@ -464,7 +464,7 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
-        .SetWarmupMode(context->GetWarmupMode())
+        .SetWarmupLevel(context->GetWarmupLevel())
         .WithCache(context->GetCache());
     return builder.Finish();
 }
