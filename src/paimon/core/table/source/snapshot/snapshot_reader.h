@@ -92,6 +92,10 @@ class SnapshotReader {
         return scan_->GetSnapshotManager();
     }
 
+    const std::optional<Snapshot>& GetSpecifiedSnapshot() const {
+        return scan_->GetSpecifiedSnapshot();
+    }
+
     const std::unique_ptr<IndexFileHandler>& GetIndexFileHandler() const {
         return index_file_handler_;
     }

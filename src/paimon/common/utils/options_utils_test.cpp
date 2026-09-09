@@ -61,6 +61,16 @@ TEST(OptionsUtilsTest, TestGetValueFromMap) {
     ASSERT_OK_AND_ASSIGN(auto empty,
                          OptionsUtils::GetValueFromMap<int32_t>(key_value_map, "", 999));
     ASSERT_EQ(999, empty);
+
+    ASSERT_OK_AND_ASSIGN(auto present,
+                         OptionsUtils::GetValueFromMap<int32_t>(key_value_map, "key_int", 233));
+    ASSERT_EQ(10, present);
+    ASSERT_TRUE(
+        OptionsUtils::GetValueFromMap<int32_t>(key_value_map, "missing").status().IsNotExist());
+    key_value_map["empty_string"] = "";
+    ASSERT_OK_AND_ASSIGN(std::string empty_string, OptionsUtils::GetValueFromMap<std::string>(
+                                                       key_value_map, "empty_string", "default"));
+    ASSERT_TRUE(empty_string.empty());
 }
 
 TEST(OptionsUtilsTest, TestGetOptionalValueFromMap) {
