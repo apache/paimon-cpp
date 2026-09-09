@@ -24,6 +24,8 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/array/util.h"
 #include "arrow/buffer.h"
+#include "arrow/c/abi.h"
+#include "arrow/compute/cast.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/bit_util.h"
 #include "arrow/util/bitmap_ops.h"
@@ -33,10 +35,60 @@
 #include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/casting/casting_utils.h"
 
 namespace paimon {
 
 namespace {
+
+// Whether `type` is a dictionary this can carry across the C data interface unchanged. The index
+// width is part of the test because nothing in a layout reveals it; see
+// ArrowUtils::IsDictionaryLayoutRecoverableValueType().
+bool IsDictionaryLayoutRecoverable(const arrow::DataType& type) {
+    if (type.id() != arrow::Type::DICTIONARY) {
+        return false;
+    }
+    const auto& dictionary_type = checked_cast<const arrow::DictionaryType&>(type);
+    return dictionary_type.index_type()->id() == arrow::Type::INT32 &&
+           ArrowUtils::IsDictionaryLayoutRecoverableValueType(*dictionary_type.value_type());
+}
+
+// Whether `type` is or contains a dictionary at any depth.
+bool HasDictionary(const arrow::DataType& type) {
+    if (type.id() == arrow::Type::DICTIONARY) {
+        return true;
+    }
+    for (const std::shared_ptr<arrow::Field>& field : type.fields()) {
+        if (HasDictionary(*field->type())) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether any descendant of `array` carries a dictionary that `type` does not declare. `array`
+// itself is not examined; its caller has already handled the top level.
+bool HasUndeclaredDictionaryChild(const std::shared_ptr<arrow::DataType>& type,
+                                  const ::ArrowArray* array) {
+    if (array == nullptr || array->n_children != type->num_fields()) {
+        return false;
+    }
+    for (int64_t i = 0; i < array->n_children; ++i) {
+        const ::ArrowArray* child = array->children[i];
+        if (child == nullptr) {
+            continue;
+        }
+        const std::shared_ptr<arrow::DataType>& child_type =
+            type->field(static_cast<int>(i))->type();
+        if (child->dictionary != nullptr && child_type->id() != arrow::Type::DICTIONARY) {
+            return true;
+        }
+        if (HasUndeclaredDictionaryChild(child_type, child)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 bool NeedsNormalization(const std::shared_ptr<arrow::ArrayData>& data) {
     if (data->offset != 0) {
@@ -498,6 +550,121 @@ Result<arrow::Compression::type> ArrowUtils::GetCompressionType(const std::strin
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(arrow::Compression::type compression_type,
                                       arrow::util::Codec::GetCompressionType(normalized));
     return compression_type;
+}
+
+// `is_binary_like()` is BINARY and STRING and nothing else. `LARGE_STRING` is left out even though
+// it is binary-like: the ORC reader widens strings to `dictionary(int64(), large_utf8())` under
+// lazy decoding, and a layout reports neither index nor offset width, so reading that back as
+// `int32` indices over `int32` offsets would silently reinterpret both buffers instead of failing.
+//
+// This narrows what may be carried; it cannot verify what was. See
+// ResolveDictionaryStructTypeFromLayout() for where the index width becomes a caller contract.
+bool ArrowUtils::IsDictionaryLayoutRecoverableValueType(const arrow::DataType& type) {
+    return arrow::is_binary_like(type.id());
+}
+
+// Why the header calls the `int32` index width a contract rather than a check: the value-type
+// check rejects `dictionary(int64(), large_utf8())`, the shape the ORC reader produces, but
+// nothing here can tell `dictionary(int32(), utf8())` apart from `dictionary(int64(), utf8())`,
+// and the second would be read as the first.
+//
+// So the contract binds the producer, not the callers: `ParquetFormatWriter::ResolveBatchSchema`
+// and `DataFileWriterBase::AddFileIndexBatch` see only the layout.
+// `AppendOnlyFileStoreWrite::CompactRewrite` is today's only production path that can hand over a
+// batch whose dictionaries the schema does not declare, and it honours the contract by running
+// FlattenUnresolvableDictionaries() first. Closing the hole instead of narrowing it needs the real
+// `ArrowSchema` to reach the writer, which `FormatWriter::AddBatch(ArrowArray*)` drops.
+Result<std::shared_ptr<arrow::DataType>> ArrowUtils::ResolveDictionaryStructTypeFromLayout(
+    const std::shared_ptr<arrow::DataType>& logical_type, const ::ArrowArray* batch) {
+    if (batch == nullptr || logical_type->id() != arrow::Type::STRUCT ||
+        batch->n_children != logical_type->num_fields()) {
+        // Leave the mismatch to the import, which reports it with its own diagnostics.
+        return logical_type;
+    }
+    arrow::FieldVector fields;
+    bool has_dictionary = false;
+    for (int32_t i = 0; i < logical_type->num_fields(); ++i) {
+        const std::shared_ptr<arrow::Field>& field = logical_type->field(i);
+        const ::ArrowArray* child = batch->children[i];
+        if (child == nullptr || child->dictionary == nullptr) {
+            if (HasUndeclaredDictionaryChild(field->type(), child)) {
+                return Status::NotImplemented(fmt::format(
+                    "column '{}' is dictionary-encoded below its top level, which the Arrow "
+                    "import cannot describe without the producer's schema",
+                    field->name()));
+            }
+            fields.push_back(field);
+            continue;
+        }
+        if (field->type()->id() == arrow::Type::DICTIONARY) {
+            // The caller already declares the column as a dictionary, so its type describes the
+            // batch and nothing has to be recovered from the layout.
+            fields.push_back(field);
+            continue;
+        }
+        if (!IsDictionaryLayoutRecoverableValueType(*field->type())) {
+            return Status::NotImplemented(fmt::format(
+                "dictionary-encoded column '{}' of type {} cannot be resolved from the layout of "
+                "an ArrowArray, which pins down neither the index nor the offset width",
+                field->name(), field->type()->ToString()));
+        }
+        has_dictionary = true;
+        fields.push_back(field->WithType(arrow::dictionary(arrow::int32(), field->type())));
+    }
+    if (!has_dictionary) {
+        return logical_type;
+    }
+    return arrow::struct_(fields);
+}
+
+Result<std::shared_ptr<arrow::StructArray>> ArrowUtils::FlattenUnresolvableDictionaries(
+    const std::shared_ptr<arrow::StructArray>& batch,
+    const std::shared_ptr<arrow::DataType>& logical_type, arrow::MemoryPool* pool,
+    bool preserve_layout_recoverable_dictionaries) {
+    const std::shared_ptr<arrow::DataType>& batch_type = batch->type();
+    if (logical_type->id() != arrow::Type::STRUCT || !HasDictionary(*batch_type)) {
+        return batch;
+    }
+    const auto& logical_struct_type = checked_cast<const arrow::StructType&>(*logical_type);
+    std::shared_ptr<arrow::ArrayData> data;
+    arrow::FieldVector fields = batch_type->fields();
+    for (int32_t i = 0; i < batch_type->num_fields(); ++i) {
+        std::shared_ptr<arrow::Field> field = fields[i];
+        if (!HasDictionary(*field->type())) {
+            continue;
+        }
+        // Surviving the export is not enough when the destination imports against the logical
+        // type: an undeclared dictionary child of any shape then fails on the buffer count.
+        if (preserve_layout_recoverable_dictionaries &&
+            IsDictionaryLayoutRecoverable(*field->type())) {
+            continue;
+        }
+        std::shared_ptr<arrow::Field> logical_field =
+            logical_struct_type.GetFieldByName(field->name());
+        if (logical_field == nullptr) {
+            // Nothing says what this column should decode to, so leave it for the import to
+            // report against its own schema.
+            continue;
+        }
+        if (data == nullptr) {
+            // Copy once, on the first column that has to be decoded: the parent keeps its offset,
+            // length and validity, and only the child data is swapped underneath it.
+            data = batch->data()->Copy();
+        }
+        // Decode the whole child rather than the slice the parent exposes, so the replacement
+        // lines up with the offset and length the parent still carries.
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<arrow::Array> decoded,
+            CastingUtils::Cast(arrow::MakeArray(data->child_data[i]), logical_field->type(),
+                               arrow::compute::CastOptions::Safe(), pool));
+        data->child_data[i] = decoded->data();
+        fields[i] = field->WithType(logical_field->type());
+    }
+    if (data == nullptr) {
+        return batch;
+    }
+    data->type = arrow::struct_(fields);
+    return checked_pointer_cast<arrow::StructArray>(arrow::MakeArray(data));
 }
 
 }  // namespace paimon

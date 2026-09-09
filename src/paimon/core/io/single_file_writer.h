@@ -133,6 +133,14 @@ class SingleFileWriter : public FileWriter<T, R> {
     }
 
  protected:
+    /// Returns an error if this writer has already been closed.
+    Status CheckNotClosed() const {
+        if (PAIMON_UNLIKELY(closed_)) {
+            return Status::Invalid("Writer has already closed!");
+        }
+        return Status::OK();
+    }
+
     /// Hook called after Flush() and before Finish() during Close().
     /// Subclasses can override to update per-field metadata before the file is finalized.
     virtual Status BeforeFinish() {
@@ -196,9 +204,7 @@ Status SingleFileWriter<T, R>::Init(const std::shared_ptr<FileSystem>& fs, const
 
 template <typename T, typename R>
 Status SingleFileWriter<T, R>::Write(T record) {
-    if (PAIMON_UNLIKELY(closed_)) {
-        return Status::Invalid("Writer has already closed!");
-    }
+    PAIMON_RETURN_NOT_OK(CheckNotClosed());
     ScopeGuard guard([this]() -> void { this->Abort(); });
     int64_t record_count = 0;
     if (!converter_) {

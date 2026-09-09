@@ -30,8 +30,8 @@
 namespace paimon {
 class LeafUnaryFunction : public LeafFunction {
  public:
-    Result<std::vector<char>> Test(const arrow::Array& array,
-                                   const std::vector<Literal>& literals) const override {
+    Result<std::vector<char>> Test(const arrow::Array& array, const std::vector<Literal>& literals,
+                                   arrow::MemoryPool* pool) const override {
         std::vector<char> is_valid(array.length(), false);
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<Literal> array_values,

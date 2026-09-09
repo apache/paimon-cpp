@@ -30,12 +30,16 @@
 #include "gtest/gtest.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/core/realtime/realtime_offset_utils.h"
+#include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/realtime/offset_range.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/utils/key_value_checker.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon::test {
 
@@ -49,59 +53,53 @@ std::shared_ptr<arrow::Field> MakeField(const std::string& name,
 }
 
 std::shared_ptr<arrow::Schema> MakeTransportSchema(const arrow::FieldVector& value_fields) {
-    return RealtimePrimaryKeyLayout::CreateSchema(value_fields);
+    std::shared_ptr<arrow::Schema> realtime_input_schema =
+        RealtimeOffsetUtils::CreateInputSchema(arrow::schema(value_fields));
+    return RealtimePrimaryKeyLayout::CreateSchema(realtime_input_schema->fields());
+}
+
+Result<std::vector<std::unique_ptr<KeyValueRecordReader>>>
+CreateRealtimePrimaryKeyQueryReadersForTest(std::vector<std::unique_ptr<BatchReader>>&& readers,
+                                            const OffsetRange& visible_offsets,
+                                            const std::shared_ptr<arrow::Schema>& key_schema,
+                                            const std::shared_ptr<arrow::Schema>& value_schema,
+                                            const std::shared_ptr<MemoryPool>& memory_pool) {
+    std::shared_ptr<arrow::Schema> write_schema = MakeTransportSchema(value_schema->fields());
+    std::shared_ptr<arrow::Schema> logical_schema =
+        RealtimePrimaryKeyLayout::CreateSchema(value_schema->fields());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
+        RealtimeStoreReadPipeline::Create(logical_schema, write_schema, memory_pool,
+                                          GetArrowPool(memory_pool)));
+    return RealtimePrimaryKeyReaderFactory::CreateForQuery(
+        std::move(readers), visible_offsets, key_schema, value_schema, memory_pool, *pipeline);
 }
 
 Result<std::unique_ptr<KeyValueRecordReader>> CreateRealtimePrimaryKeyQueryReaderForTest(
-    std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<arrow::Schema>& transport_schema,
-    const OffsetRange& visible_offsets, const std::shared_ptr<arrow::Schema>& key_schema,
+    std::unique_ptr<BatchReader>&& reader, const OffsetRange& visible_offsets,
+    const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema,
     const std::shared_ptr<MemoryPool>& memory_pool) {
     std::vector<std::unique_ptr<BatchReader>> readers;
     readers.push_back(std::move(reader));
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<KeyValueRecordReader>> adapted_readers,
-                           RealtimePrimaryKeyReaderFactory::CreateForQuery(
-                               std::move(readers), transport_schema, visible_offsets, key_schema,
-                               value_schema, memory_pool));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<std::unique_ptr<KeyValueRecordReader>> adapted_readers,
+        CreateRealtimePrimaryKeyQueryReadersForTest(std::move(readers), visible_offsets, key_schema,
+                                                    value_schema, memory_pool));
     return std::move(adapted_readers[0]);
 }
 
 Result<std::unique_ptr<KeyValueRecordReader>> CreateRealtimePrimaryKeyCommitReaderForTest(
-    std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<arrow::Schema>& transport_schema,
-    const OffsetRange& sealed_offsets, const std::shared_ptr<arrow::Schema>& key_schema,
+    std::unique_ptr<BatchReader>&& reader, const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema,
     const std::shared_ptr<MemoryPool>& memory_pool) {
     std::vector<std::unique_ptr<BatchReader>> readers;
     readers.push_back(std::move(reader));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<KeyValueRecordReader>> adapted_readers,
                            RealtimePrimaryKeyReaderFactory::CreateForCommit(
-                               std::move(readers), transport_schema, sealed_offsets, key_schema,
-                               value_schema, memory_pool));
+                               std::move(readers), key_schema, value_schema, memory_pool));
     return std::move(adapted_readers[0]);
 }
-
-class TrackingBatchReader : public BatchReader {
- public:
-    TrackingBatchReader(std::unique_ptr<BatchReader>&& delegate, int32_t* close_count)
-        : delegate_(std::move(delegate)), close_count_(close_count) {}
-
-    Result<ReadBatch> NextBatch() override {
-        return delegate_->NextBatch();
-    }
-
-    std::shared_ptr<Metrics> GetReaderMetrics() const override {
-        return delegate_->GetReaderMetrics();
-    }
-
-    void Close() override {
-        ++(*close_count_);
-        delegate_->Close();
-    }
-
- private:
-    std::unique_ptr<BatchReader> delegate_;
-    int32_t* close_count_;
-};
 
 class MalformedBitmapBatchReader : public BatchReader {
  public:
@@ -140,15 +138,11 @@ class RealtimePrimaryKeyReaderTest : public testing::Test {
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
 };
 
-TEST_F(RealtimePrimaryKeyReaderTest, TestTransportSchemaLayout) {
+TEST_F(RealtimePrimaryKeyReaderTest, TestPrimaryKeySchemaLayouts) {
     arrow::FieldVector value_fields = {arrow::field("key", arrow::int64(), false),
                                        arrow::field("value", arrow::utf8())};
     std::shared_ptr<arrow::Schema> schema = MakeTransportSchema(value_fields);
 
-    ASSERT_EQ(RealtimePrimaryKeyLayout::kValueKindIndex, 0);
-    ASSERT_EQ(RealtimePrimaryKeyLayout::kSequenceNumberIndex, 1);
-    ASSERT_EQ(RealtimePrimaryKeyLayout::kRealtimeOffsetIndex, 2);
-    ASSERT_EQ(RealtimePrimaryKeyLayout::kValueStartIndex, 3);
     ASSERT_EQ(schema->field(0)->name(), "_VALUE_KIND");
     ASSERT_EQ(schema->field(1)->name(), "_SEQUENCE_NUMBER");
     ASSERT_EQ(schema->field(2)->name(), "_REALTIME_OFFSET");
@@ -159,33 +153,13 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestTransportSchemaLayout) {
     ASSERT_EQ(schema->field(2)->nullable(), SpecialFields::RealtimeOffset().Nullable());
     ASSERT_FALSE(schema->field(3)->nullable());
     ASSERT_TRUE(schema->field(4)->nullable());
-}
 
-TEST_F(RealtimePrimaryKeyReaderTest, TestTransportSchemaValidation) {
-    const std::shared_ptr<arrow::Schema> valid = MakeTransportSchema({});
-    std::vector<arrow::FieldVector> invalid_fields;
-
-    arrow::FieldVector wrong_type = valid->fields();
-    wrong_type[0] = DataField::ConvertDataFieldToArrowField(
-                        DataField(SpecialFields::ValueKind().Id(),
-                                  arrow::field("_VALUE_KIND", arrow::int32(), false)))
-                        ->WithNullable(false);
-    invalid_fields.push_back(std::move(wrong_type));
-
-    arrow::FieldVector nullable_sequence = valid->fields();
-    nullable_sequence[1] = nullable_sequence[1]->WithNullable(true);
-    invalid_fields.push_back(std::move(nullable_sequence));
-
-    arrow::FieldVector wrong_offset_id = valid->fields();
-    wrong_offset_id[2] = DataField::ConvertDataFieldToArrowField(
-                             DataField(99, arrow::field("_REALTIME_OFFSET", arrow::int64(), false)))
-                             ->WithNullable(false);
-    invalid_fields.push_back(std::move(wrong_offset_id));
-
-    for (const arrow::FieldVector& fields : invalid_fields) {
-        ASSERT_NOK_WITH_MSG(RealtimePrimaryKeyLayout::ValidateSchema(arrow::schema(fields)),
-                            "transport schema field");
-    }
+    std::shared_ptr<arrow::Schema> logical_schema =
+        RealtimePrimaryKeyLayout::CreateSchema(value_fields);
+    ASSERT_EQ(logical_schema->field(0)->name(), "_VALUE_KIND");
+    ASSERT_EQ(logical_schema->field(1)->name(), "_SEQUENCE_NUMBER");
+    ASSERT_EQ(logical_schema->field(2)->name(), "key");
+    ASSERT_EQ(logical_schema->field(3)->name(), "value");
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestQueryAllowsCommittedPrefix) {
@@ -208,10 +182,10 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryAllowsCommittedPrefix) {
     std::vector<std::unique_ptr<BatchReader>> batch_readers;
     batch_readers.push_back(
         std::make_unique<MockFileBatchReader>(transport_array, transport_type, 2));
-    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
-                         RealtimePrimaryKeyReaderFactory::CreateForQuery(
-                             std::move(batch_readers), transport_schema, OffsetRange(2, 4),
-                             key_schema, value_schema, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
+        CreateRealtimePrimaryKeyQueryReadersForTest(std::move(batch_readers), OffsetRange(2, 4),
+                                                    key_schema, value_schema, pool_));
     ASSERT_EQ(1, readers.size());
     ASSERT_OK_AND_ASSIGN(
         std::vector<KeyValue> results,
@@ -224,24 +198,6 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryAllowsCommittedPrefix) {
     std::vector<KeyValue> expected = KeyValueChecker::GenerateKeyValues(
         row_kinds, {102, 103}, levels, {{4}, {6}}, {{4, 40}, {6, 60}}, pool_);
     KeyValueChecker::CheckResult(expected, results, 1, 2);
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsNegativeOffset) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    std::shared_ptr<arrow::Array> transport_array =
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type, R"([[0, 10, -1, 1]])")
-            .ValueOrDie();
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<KeyValueRecordReader> reader,
-        CreateRealtimePrimaryKeyQueryReaderForTest(
-            std::make_unique<MockFileBatchReader>(transport_array, transport_type,
-                                                  /*read_batch_size=*/1),
-            transport_schema, OffsetRange(1, 2), value_schema, value_schema, pool_));
-
-    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "reader offset must be non-negative");
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestQueryOffsetCoverageAcrossReadersAndBatches) {
@@ -263,10 +219,10 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryOffsetCoverageAcrossReadersAndBatc
     batch_readers.push_back(
         std::make_unique<MockFileBatchReader>(second_array, transport_type, /*read_batch_size=*/1));
 
-    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
-                         RealtimePrimaryKeyReaderFactory::CreateForQuery(
-                             std::move(batch_readers), transport_schema, OffsetRange(0, 4),
-                             value_schema, value_schema, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
+        CreateRealtimePrimaryKeyQueryReadersForTest(std::move(batch_readers), OffsetRange(0, 4),
+                                                    value_schema, value_schema, pool_));
     int64_t row_count = 0;
     for (const std::unique_ptr<KeyValueRecordReader>& reader : readers) {
         ASSERT_OK_AND_ASSIGN(
@@ -278,100 +234,15 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryOffsetCoverageAcrossReadersAndBatc
     ASSERT_EQ(4, row_count);
 }
 
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsMissingVisibleOffset) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    std::shared_ptr<arrow::Array> transport_array =
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type,
-                                                  R"([[0, 10, 0, 1], [0, 11, 2, 2]])")
-            .ValueOrDie();
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<KeyValueRecordReader> reader,
-        CreateRealtimePrimaryKeyQueryReaderForTest(
-            std::make_unique<MockFileBatchReader>(transport_array, transport_type,
-                                                  /*read_batch_size=*/1),
-            transport_schema, OffsetRange(0, 3), value_schema, value_schema, pool_));
-
-    ASSERT_NOK_WITH_MSG(
-        (ReadResultCollector::CollectKeyValueResult<KeyValueRecordReader,
-                                                    KeyValueRecordReader::Iterator>(reader.get())),
-        "query readers did not cover the visible range");
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsDuplicateVisibleOffset) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    std::shared_ptr<arrow::Array> first_array =
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type, R"([[0, 10, 0, 1]])")
-            .ValueOrDie();
-    std::shared_ptr<arrow::Array> second_array =
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type,
-                                                  R"([[0, 11, 1, 2], [0, 12, 1, 3]])")
-            .ValueOrDie();
-    std::vector<std::unique_ptr<BatchReader>> batch_readers;
-    batch_readers.push_back(
-        std::make_unique<MockFileBatchReader>(first_array, transport_type, /*read_batch_size=*/1));
-    batch_readers.push_back(
-        std::make_unique<MockFileBatchReader>(second_array, transport_type, /*read_batch_size=*/1));
-    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
-                         RealtimePrimaryKeyReaderFactory::CreateForQuery(
-                             std::move(batch_readers), transport_schema, OffsetRange(0, 2),
-                             value_schema, value_schema, pool_));
-    ASSERT_OK_AND_ASSIGN(
-        std::vector<KeyValue> first_rows,
-        (ReadResultCollector::CollectKeyValueResult<
-            KeyValueRecordReader, KeyValueRecordReader::Iterator>(readers[0].get())));
-    ASSERT_EQ(1, first_rows.size());
-    ASSERT_NOK_WITH_MSG((ReadResultCollector::CollectKeyValueResult<KeyValueRecordReader,
-                                                                    KeyValueRecordReader::Iterator>(
-                            readers[1].get())),
-                        "query readers did not cover the visible range");
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsEmptyEofForVisibleRange) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    std::shared_ptr<arrow::Array> transport_array =
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type, R"([])").ValueOrDie();
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<KeyValueRecordReader> reader,
-        CreateRealtimePrimaryKeyQueryReaderForTest(
-            std::make_unique<MockFileBatchReader>(transport_array, transport_type,
-                                                  /*read_batch_size=*/1),
-            transport_schema, OffsetRange(0, 1), value_schema, value_schema, pool_));
-
-    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "query readers did not cover the visible range");
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsEmptyReadersForVisibleRange) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::vector<std::unique_ptr<BatchReader>> batch_readers;
-
-    ASSERT_NOK_WITH_MSG(
-        RealtimePrimaryKeyReaderFactory::CreateForQuery(std::move(batch_readers), transport_schema,
-                                                        OffsetRange(0, 1), value_schema,
-                                                        value_schema, pool_),
-        "PK real-time store returned no query readers for a non-empty visible range");
-}
-
 TEST_F(RealtimePrimaryKeyReaderTest, TestQueryAllowsEmptyReadersForEmptyVisibleRange) {
     std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
     std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
     std::vector<std::unique_ptr<BatchReader>> batch_readers;
 
-    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
-                         RealtimePrimaryKeyReaderFactory::CreateForQuery(
-                             std::move(batch_readers), transport_schema, OffsetRange(1, 1),
-                             value_schema, value_schema, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
+        CreateRealtimePrimaryKeyQueryReadersForTest(std::move(batch_readers), OffsetRange(1, 1),
+                                                    value_schema, value_schema, pool_));
     ASSERT_TRUE(readers.empty());
 }
 
@@ -387,17 +258,16 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryBitmapBounds) {
         std::make_unique<MockFileBatchReader>(transport_array, transport_type, /*batch_size=*/1),
         /*row_id=*/1);
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader> reader,
-                         CreateRealtimePrimaryKeyQueryReaderForTest(
-                             std::move(batch_reader), transport_schema, OffsetRange(0, 1),
-                             value_schema, value_schema, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<KeyValueRecordReader> reader,
+        CreateRealtimePrimaryKeyQueryReaderForTest(std::move(batch_reader), OffsetRange(0, 1),
+                                                   value_schema, value_schema, pool_));
     Result<std::vector<KeyValue>> result =
         ReadResultCollector::CollectKeyValueResult<KeyValueRecordReader,
                                                    KeyValueRecordReader::Iterator>(reader.get());
     ASSERT_TRUE(result.status().IsInvalid());
     ASSERT_NOK_WITH_MSG(result,
-                        "selected row id 1 is out of bounds for realtime primary-key transport "
-                        "batch length 1");
+                        "selected row id 1 is out of bounds for realtime query batch length 1");
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsPartialBitmap) {
@@ -414,62 +284,15 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestQueryRejectsPartialBitmap) {
     auto batch_reader = std::make_unique<MockFileBatchReader>(
         transport_array, transport_type, partial_bitmap, /*read_batch_size=*/2);
     batch_reader->EnableRandomizeBatchSize(false);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader> reader,
-                         CreateRealtimePrimaryKeyQueryReaderForTest(
-                             std::move(batch_reader), transport_schema, OffsetRange(0, 2),
-                             value_schema, value_schema, pool_));
 
-    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "must cover every raw transport row");
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestCommitRejectsPartialBitmap) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    std::shared_ptr<arrow::Array> transport_array =
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type,
-                                                  R"([[0, 10, 0, 1], [0, 11, 1, 2]])")
-            .ValueOrDie();
-    RoaringBitmap32 partial_bitmap;
-    partial_bitmap.Add(0);
-    auto batch_reader = std::make_unique<MockFileBatchReader>(
-        transport_array, transport_type, partial_bitmap, /*read_batch_size=*/2);
-    batch_reader->EnableRandomizeBatchSize(false);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader> reader,
-                         CreateRealtimePrimaryKeyCommitReaderForTest(
-                             std::move(batch_reader), transport_schema, OffsetRange(0, 2),
-                             value_schema, value_schema, pool_));
-
-    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "must cover every raw transport row");
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestQueryProjection) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Field> extra = MakeField("extra", arrow::int32(), 1);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key, extra});
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    auto transport_array = std::dynamic_pointer_cast<arrow::StructArray>(
-        arrow::ipc::internal::json::ArrayFromJSON(transport_type, R"([[0, 10, 0, 1, 2]])")
-            .ValueOrDie());
-
-    auto query_batch_reader =
-        std::make_unique<MockFileBatchReader>(transport_array, transport_type, 1);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader> query_reader,
-                         CreateRealtimePrimaryKeyQueryReaderForTest(
-                             std::move(query_batch_reader), transport_schema, OffsetRange(0, 1),
-                             value_schema, value_schema, pool_));
     ASSERT_OK_AND_ASSIGN(
-        std::vector<KeyValue> query_results,
-        (ReadResultCollector::CollectKeyValueResult<
-            KeyValueRecordReader, KeyValueRecordReader::Iterator>(query_reader.get())));
-    ASSERT_EQ(query_results.size(), 1);
-    ASSERT_EQ(query_results[0].value->GetFieldCount(), 1);
-    ASSERT_EQ(query_results[0].value->GetInt(0), 1);
+        std::unique_ptr<KeyValueRecordReader> reader,
+        CreateRealtimePrimaryKeyQueryReaderForTest(std::move(batch_reader), OffsetRange(0, 2),
+                                                   value_schema, value_schema, pool_));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "must cover every raw transport row");
 }
 
-TEST_F(RealtimePrimaryKeyReaderTest, TestCommitOffsetCoverage) {
+TEST_F(RealtimePrimaryKeyReaderTest, TestCommitCoverageAcrossReadersAndBatches) {
     std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
     std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
     std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
@@ -490,8 +313,7 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestCommitOffsetCoverage) {
 
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
                          RealtimePrimaryKeyReaderFactory::CreateForCommit(
-                             std::move(batch_readers), transport_schema, OffsetRange(0, 4),
-                             value_schema, value_schema, pool_));
+                             std::move(batch_readers), value_schema, value_schema, pool_));
     int64_t row_count = 0;
     for (const std::unique_ptr<KeyValueRecordReader>& reader : readers) {
         ASSERT_OK_AND_ASSIGN(
@@ -503,46 +325,10 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestCommitOffsetCoverage) {
     ASSERT_EQ(4, row_count);
 }
 
-TEST_F(RealtimePrimaryKeyReaderTest, TestCommitRejectsEmptyReaders) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::vector<std::unique_ptr<BatchReader>> batch_readers;
-
-    ASSERT_NOK_WITH_MSG(RealtimePrimaryKeyReaderFactory::CreateForCommit(
-                            std::move(batch_readers), transport_schema, OffsetRange(0, 1),
-                            value_schema, value_schema, pool_),
-                        "PK real-time store returned no commit readers for a sealed segment");
-}
-
-TEST_F(RealtimePrimaryKeyReaderTest, TestRejectsDuplicateCommitOffset) {
-    std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
-    std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key});
-    std::shared_ptr<arrow::DataType> transport_type = arrow::struct_(transport_schema->fields());
-    std::shared_ptr<arrow::Array> transport_array =
-        arrow::ipc::internal::json::ArrayFromJSON(
-            transport_type, R"([[0, 10, 0, 1], [0, 11, 0, 2], [0, 12, 2, 3]])")
-            .ValueOrDie();
-    std::vector<std::unique_ptr<BatchReader>> batch_readers;
-    batch_readers.push_back(std::make_unique<MockFileBatchReader>(transport_array, transport_type,
-                                                                  /*read_batch_size=*/1));
-
-    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
-                         RealtimePrimaryKeyReaderFactory::CreateForCommit(
-                             std::move(batch_readers), transport_schema, OffsetRange(0, 3),
-                             value_schema, value_schema, pool_));
-    ASSERT_NOK_WITH_MSG((ReadResultCollector::CollectKeyValueResult<KeyValueRecordReader,
-                                                                    KeyValueRecordReader::Iterator>(
-                            readers[0].get())),
-                        "did not cover the sealed range");
-}
-
 TEST_F(RealtimePrimaryKeyReaderTest, TestBadCommitBatch) {
     std::shared_ptr<arrow::Field> key = MakeField("key", arrow::int32(), 0);
     std::shared_ptr<arrow::Field> value = MakeField("value", arrow::int32(), 1);
     std::shared_ptr<arrow::Schema> value_schema = arrow::schema({key, value});
-    std::shared_ptr<arrow::Schema> transport_schema = MakeTransportSchema({key, value});
     std::shared_ptr<arrow::Schema> actual_schema = MakeTransportSchema({key});
     std::shared_ptr<arrow::DataType> actual_type = arrow::struct_(actual_schema->fields());
     std::shared_ptr<arrow::Array> actual =
@@ -551,9 +337,8 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestBadCommitBatch) {
     auto batch_reader = std::make_unique<MockFileBatchReader>(actual, actual_type, 1);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader> reader,
                          CreateRealtimePrimaryKeyCommitReaderForTest(
-                             std::move(batch_reader), transport_schema, OffsetRange(0, 1),
-                             arrow::schema({key}), value_schema, pool_));
-    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "field count");
+                             std::move(batch_reader), arrow::schema({key}), value_schema, pool_));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "cannot find field value in data batch");
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestSafeDecode) {
@@ -569,14 +354,14 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestSafeDecode) {
         arrow::ipc::internal::json::ArrayFromJSON(invalid_type, R"([[0, 10, 0, 1]])").ValueOrDie());
 
     auto batch_reader = std::make_unique<MockFileBatchReader>(invalid_array, invalid_type, 1);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader> reader,
-                         CreateRealtimePrimaryKeyQueryReaderForTest(
-                             std::move(batch_reader), transport_schema, OffsetRange(0, 1),
-                             value_schema, value_schema, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<KeyValueRecordReader> reader,
+        CreateRealtimePrimaryKeyQueryReaderForTest(std::move(batch_reader), OffsetRange(0, 1),
+                                                   value_schema, value_schema, pool_));
     ASSERT_NOK_WITH_MSG(
         (ReadResultCollector::CollectKeyValueResult<KeyValueRecordReader,
                                                     KeyValueRecordReader::Iterator>(reader.get())),
-        "transport batch field");
+        "cannot cast VALUE_KIND column");
 }
 
 TEST_F(RealtimePrimaryKeyReaderTest, TestNestedValues) {
@@ -609,10 +394,10 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestNestedValues) {
             .ValueOrDie();
 
     auto batch_reader = std::make_unique<MockFileBatchReader>(transport_array, transport_type, 1);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader> reader,
-                         CreateRealtimePrimaryKeyQueryReaderForTest(
-                             std::move(batch_reader), transport_schema, OffsetRange(0, 1),
-                             key_schema, query_value_schema, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<KeyValueRecordReader> reader,
+        CreateRealtimePrimaryKeyQueryReaderForTest(std::move(batch_reader), OffsetRange(0, 1),
+                                                   key_schema, query_value_schema, pool_));
     ASSERT_OK_AND_ASSIGN(
         std::vector<KeyValue> results,
         (ReadResultCollector::CollectKeyValueResult<KeyValueRecordReader,
@@ -658,7 +443,7 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestNestedValues) {
     ASSERT_EQ(keyed_value_map->ValueArray()->GetInt(1), 23);
 }
 
-TEST_F(RealtimePrimaryKeyReaderTest, TestFactoryFailureClosesReaders) {
+TEST_F(RealtimePrimaryKeyReaderTest, TestFactoryRejectsNullReader) {
     std::vector<DataField> value_fields = {DataField(0, arrow::field("k0", arrow::int32())),
                                            DataField(1, arrow::field("v0", arrow::int32()))};
     std::shared_ptr<arrow::Schema> value_schema =
@@ -672,17 +457,13 @@ TEST_F(RealtimePrimaryKeyReaderTest, TestFactoryFailureClosesReaders) {
     ])")
             .ValueOrDie());
 
-    int32_t factory_failure_close_count = 0;
     std::vector<std::unique_ptr<BatchReader>> batch_readers;
-    batch_readers.push_back(std::make_unique<TrackingBatchReader>(
-        std::make_unique<MockFileBatchReader>(transport_array, transport_type, 1),
-        &factory_failure_close_count));
+    batch_readers.push_back(
+        std::make_unique<MockFileBatchReader>(transport_array, transport_type, 1));
     batch_readers.push_back(nullptr);
-    ASSERT_NOK_WITH_MSG(RealtimePrimaryKeyReaderFactory::CreateForQuery(
-                            std::move(batch_readers), transport_schema, OffsetRange(0, 1),
-                            key_schema, value_schema, pool_),
-                        "PK real-time store returned a null query reader");
-    ASSERT_EQ(factory_failure_close_count, 1);
+    ASSERT_NOK_WITH_MSG(RealtimePrimaryKeyReaderFactory::CreateForCommit(
+                            std::move(batch_readers), key_schema, value_schema, pool_),
+                        "real-time store returned a null reader");
 }
 
 }  // namespace paimon::test

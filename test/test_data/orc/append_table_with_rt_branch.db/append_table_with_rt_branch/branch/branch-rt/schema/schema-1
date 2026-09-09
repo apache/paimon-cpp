@@ -19,7 +19,7 @@
   "primaryKeys" : [ "dt", "name" ],
   "options" : {
     "bucket" : "2",
-    "manifest.format" : "orc",
+    "manifest.format" : "avro",
     "file.format" : "orc"
   },
   "timeMillis" : 1744885904631

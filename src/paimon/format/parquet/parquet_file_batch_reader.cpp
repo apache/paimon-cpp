@@ -21,7 +21,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+#include <set>
+#include <string>
 #include <unordered_map>
+#include <utility>
 
 #include "arrow/acero/options.h"
 #include "arrow/array/array_nested.h"
@@ -40,6 +43,7 @@
 #include "arrow/util/thread_pool.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -56,7 +60,10 @@
 #include "paimon/reader/batch_reader.h"
 #include "paimon/utils/roaring_bitmap32.h"
 #include "parquet/arrow/reader.h"
+#include "parquet/metadata.h"
 #include "parquet/properties.h"
+#include "parquet/schema.h"
+#include "parquet/types.h"
 
 namespace arrow {
 class MemoryPool;
@@ -133,6 +140,37 @@ bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_t
     }
 }
 
+// Whether every data page of `chunk` is dictionary-encoded, which is what makes reading the
+// column as an Arrow DictionaryArray free. Writers that predate encoding statistics report none,
+// and a chunk that fell back to PLAIN mid-way still carries the dictionary page it had already
+// emitted, so an absent or mixed report means "not a passthrough candidate".
+bool IsChunkFullyDictionaryEncoded(const ::parquet::ColumnChunkMetaData& chunk) {
+    if (!chunk.has_dictionary_page()) {
+        return false;
+    }
+    const std::vector<::parquet::PageEncodingStats>& encoding_stats = chunk.encoding_stats();
+    if (encoding_stats.empty()) {
+        return false;
+    }
+    bool has_data_page = false;
+    for (const ::parquet::PageEncodingStats& stats : encoding_stats) {
+        if (stats.page_type != ::parquet::PageType::DATA_PAGE &&
+            stats.page_type != ::parquet::PageType::DATA_PAGE_V2) {
+            continue;
+        }
+        if (stats.count <= 0) {
+            continue;
+        }
+        has_data_page = true;
+        // PLAIN_DICTIONARY is how a v1 writer spells dictionary indices; RLE_DICTIONARY is v2.
+        if (stats.encoding != ::parquet::Encoding::RLE_DICTIONARY &&
+            stats.encoding != ::parquet::Encoding::PLAIN_DICTIONARY) {
+            return false;
+        }
+    }
+    return has_data_page;
+}
+
 // Resolve whether parquet-level pre-buffering should be enabled. When the framework
 // provides runtime hints, they describe the authoritative state of this read: once the
 // shared read-ahead cache takes over prefetching, disable parquet's own pre-buffering so
@@ -150,15 +188,106 @@ ParquetFileBatchReader::ParquetFileBatchReader(
     std::shared_ptr<arrow::io::RandomAccessFile>&& input_stream,
     std::unique_ptr<FileReaderWrapper>&& reader, const std::map<std::string, std::string>& options,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-    std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes)
+    std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes,
+    std::set<std::string> dictionary_fields)
     : options_(options),
       arrow_pool_(arrow_pool),
       input_stream_(std::move(input_stream)),
       reader_(std::move(reader)),
+      dictionary_fields_(std::move(dictionary_fields)),
       read_ranges_(reader_->GetAllRowGroupRanges()),
       metrics_(std::make_shared<MetricsImpl>()),
       storage_read_bytes_(std::move(storage_read_bytes)),
       logger_(Logger::GetLogger("ParquetFileBatchReader")) {}
+
+std::set<int32_t> ParquetFileBatchReader::ResolveFullyDictionaryEncodedColumns(
+    const ::parquet::FileMetaData& metadata) {
+    std::set<int32_t> columns;
+    if (metadata.num_row_groups() == 0) {
+        return columns;
+    }
+    const ::parquet::SchemaDescriptor* schema = metadata.schema();
+    for (int32_t i = 0; i < schema->num_columns(); ++i) {
+        // Arrow only reads BYTE_ARRAY leaves as dictionaries, and only a top-level column can be
+        // forwarded to the writer without rebuilding the nesting around it.
+        //
+        // `is_string()` narrows that further to STRING, leaving out the other BYTE_ARRAY leaf,
+        // BINARY. This is the reader's restriction, not the format's: the writer takes
+        // `dictionary(int32, binary)` and ArrowUtils::IsDictionaryLayoutRecoverableValueType()
+        // accepts it, but the option applies to every read of the table and the value accessors
+        // cannot read one. ColumnarUtils::GetView() asserts on a dictionary whose values are
+        // neither STRING nor LARGE_STRING and returns an empty view in a release build, and
+        // LiteralConverter rejects it. Every consumer here understands a STRING dictionary because
+        // the ORC reader has always produced one under lazy decoding; none was ever handed a
+        // BINARY one. Widening this needs those consumers first, not just the gate.
+        if (schema->Column(i)->physical_type() == ::parquet::Type::BYTE_ARRAY &&
+            schema->Column(i)->logical_type()->is_string() &&
+            schema->GetColumnRoot(i)->is_primitive()) {
+            columns.insert(i);
+        }
+    }
+    // Drop every candidate whose chunks are not dictionary-encoded end to end. A dictionary page
+    // alone does not say that: once the dictionary outgrows its page limit the writer emits the
+    // page it has and falls back to PLAIN for the rest, so a high-cardinality column keeps a
+    // dictionary page it no longer uses. Reading that as a dictionary would hash the PLAIN values
+    // back into a large in-memory dictionary, which is the work passthrough exists to avoid.
+    // Row groups are the outer loop so their metadata is materialized once each.
+    for (int32_t row_group = 0; row_group < metadata.num_row_groups() && !columns.empty();
+         ++row_group) {
+        std::unique_ptr<::parquet::RowGroupMetaData> row_group_metadata =
+            metadata.RowGroup(row_group);
+        for (auto it = columns.begin(); it != columns.end();) {
+            if (IsChunkFullyDictionaryEncoded(*row_group_metadata->ColumnChunk(*it))) {
+                ++it;
+            } else {
+                it = columns.erase(it);
+            }
+        }
+    }
+    return columns;
+}
+
+Result<std::shared_ptr<arrow::Schema>> ParquetFileBatchReader::GetLogicalFileSchema() const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema, reader_->GetSchema());
+    if (dictionary_fields_.empty()) {
+        return file_schema;
+    }
+    arrow::FieldVector fields;
+    fields.reserve(file_schema->num_fields());
+    for (const auto& field : file_schema->fields()) {
+        if (field->type()->id() == arrow::Type::DICTIONARY) {
+            const auto& dictionary_type =
+                checked_cast<const arrow::DictionaryType&>(*field->type());
+            fields.push_back(field->WithType(dictionary_type.value_type()));
+        } else {
+            fields.push_back(field);
+        }
+    }
+    return arrow::schema(fields, file_schema->metadata());
+}
+
+std::shared_ptr<arrow::DataType> ParquetFileBatchReader::ApplyDictionaryReadTypes(
+    const std::shared_ptr<arrow::Schema>& read_schema) const {
+    if (dictionary_fields_.empty()) {
+        return arrow::struct_(read_schema->fields());
+    }
+    arrow::FieldVector fields;
+    fields.reserve(read_schema->num_fields());
+    for (const auto& field : read_schema->fields()) {
+        // A passthrough column is always read at its file type, since this reader only ever casts
+        // timestamps, so checking the read type is the same as checking the file type. The
+        // predicate is the one the writer applies on the other side of the C data interface: both
+        // ends have to agree on which encodings survive the round trip, or a column this hands on
+        // encoded is one the writer refuses.
+        if (dictionary_fields_.count(field->name()) > 0 &&
+            ArrowUtils::IsDictionaryLayoutRecoverableValueType(*field->type())) {
+            fields.push_back(field->WithType(arrow::dictionary(arrow::int32(), field->type())));
+        } else {
+            fields.push_back(field);
+        }
+    }
+    return arrow::struct_(fields);
+}
 
 Result<std::unique_ptr<ParquetFileBatchReader>> ParquetFileBatchReader::Create(
     std::shared_ptr<arrow::io::RandomAccessFile>&& input_stream,
@@ -178,6 +307,17 @@ Result<std::unique_ptr<ParquetFileBatchReader>> ParquetFileBatchReader::Create(
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
             file_reader_builder.Open(input_stream, reader_properties, std::move(file_metadata)));
 
+        PAIMON_ASSIGN_OR_RAISE(bool enable_dictionary_passthrough,
+                               OptionsUtils::GetValueFromMap<bool>(
+                                   options, PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH,
+                                   DEFAULT_PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH));
+        if (enable_dictionary_passthrough) {
+            for (int32_t column_index : ResolveFullyDictionaryEncodedColumns(
+                     *file_reader_builder.raw_reader()->metadata())) {
+                arrow_reader_properties.set_read_dictionary(column_index, /*read_dict=*/true);
+            }
+        }
+
         std::unique_ptr<::parquet::arrow::FileReader> file_reader;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(file_reader_builder.memory_pool(pool.get())
                                             ->properties(arrow_reader_properties)
@@ -185,9 +325,22 @@ Result<std::unique_ptr<ParquetFileBatchReader>> ParquetFileBatchReader::Create(
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileReaderWrapper> reader,
                                FileReaderWrapper::Create(std::move(file_reader),
                                                          static_cast<int64_t>(batch_size), pool));
-        auto parquet_file_batch_reader = std::unique_ptr<ParquetFileBatchReader>(
-            new ParquetFileBatchReader(std::move(input_stream), std::move(reader), options, pool,
-                                       std::move(storage_read_bytes)));
+        // Arrow silently ignores set_read_dictionary for leaves it cannot read as dictionaries,
+        // so take the columns it really emits that way from the schema it just derived.
+        std::set<std::string> dictionary_fields;
+        if (enable_dictionary_passthrough) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> reader_schema,
+                                   reader->GetSchema());
+            for (const auto& field : reader_schema->fields()) {
+                if (field->type()->id() == arrow::Type::DICTIONARY) {
+                    dictionary_fields.insert(field->name());
+                }
+            }
+        }
+        auto parquet_file_batch_reader =
+            std::unique_ptr<ParquetFileBatchReader>(new ParquetFileBatchReader(
+                std::move(input_stream), std::move(reader), options, pool,
+                std::move(storage_read_bytes), std::move(dictionary_fields)));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> file_schema,
                                parquet_file_batch_reader->GetFileSchema());
         PAIMON_RETURN_NOT_OK(parquet_file_batch_reader->SetReadSchema(
@@ -199,7 +352,7 @@ Result<std::unique_ptr<ParquetFileBatchReader>> ParquetFileBatchReader::Create(
 
 Result<std::unique_ptr<::ArrowSchema>> ParquetFileBatchReader::GetFileSchema() const {
     try {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema, reader_->GetSchema());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema, GetLogicalFileSchema());
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> new_schema,
                                ParquetFieldIdConverter::GetPaimonIdsFromParquetIds(file_schema));
         PAIMON_ASSIGN_OR_RAISE(
@@ -223,7 +376,7 @@ Status ParquetFileBatchReader::SetReadSchema(
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> read_schema,
                                           arrow::ImportSchema(schema));
 
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema, reader_->GetSchema());
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema, GetLogicalFileSchema());
 
         // Recursively match read_schema against file_schema by field names.
         // STRUCT supports sub-field projection; LIST/MAP require exact type match.
@@ -302,7 +455,7 @@ Status ParquetFileBatchReader::SetReadSchema(
             }
         }
 
-        read_data_type_ = arrow::struct_(read_schema->fields());
+        read_data_type_ = ApplyDictionaryReadTypes(read_schema);
 
         metrics_->SetCounter(ParquetMetrics::READ_ROW_GROUPS_TOTAL,
                              reader_->GetNumberOfRowGroups());

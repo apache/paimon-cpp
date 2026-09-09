@@ -37,7 +37,7 @@ namespace paimon {
 class MergeTreeCompactRewriter : public CompactRewriter {
  public:
     using MergeFunctionWrapperFactory =
-        std::function<Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>>(int32_t)>;
+        std::function<Result<std::shared_ptr<MergeFunctionWrapper<KeyValue>>>()>;
 
     static Result<std::unique_ptr<MergeTreeCompactRewriter>> Create(
         int32_t bucket, const BinaryRow& partition,
@@ -95,8 +95,7 @@ class MergeTreeCompactRewriter : public CompactRewriter {
 
     Result<KeyValueConsumerCreator> GenerateKeyValueConsumer() const;
 
-    Status MergeReadAndWrite(int32_t output_level, bool drop_delete,
-                             const std::vector<SortedRun>& section,
+    Status MergeReadAndWrite(bool drop_delete, const std::vector<SortedRun>& section,
                              const KeyValueConsumerCreator& create_consumer,
                              KeyValueRollingFileWriter* rolling_writer);
 

@@ -25,6 +25,7 @@
 #include "paimon/core/mergetree/compact/aggregate/aggregate_merge_function.h"
 #include "paimon/core/mergetree/compact/early_full_compaction.h"
 #include "paimon/core/mergetree/compact/force_up_level0_compaction.h"
+#include "paimon/core/mergetree/compact/full_changelog_merge_tree_compact_rewriter.h"
 #include "paimon/core/mergetree/compact/internal_row_equalizer.h"
 #include "paimon/core/mergetree/compact/lookup_merge_tree_compact_rewriter.h"
 #include "paimon/core/mergetree/compact/merge_tree_compact_manager.h"
@@ -165,7 +166,14 @@ Result<std::shared_ptr<CompactRewriter>> MergeTreeCompactManagerFactory::CreateR
     auto path_factory_cache =
         std::make_shared<FileStorePathFactoryCache>(root_path_, table_schema_, options_, pool_);
     if (options_.GetChangelogProducer() == ChangelogProducer::FULL_COMPACTION) {
-        return Status::NotImplemented("not support full changelog merge tree compact rewriter");
+        int32_t max_level = options_.GetNumLevels() - 1;
+        auto dv_factory = DeletionVector::CreateFactory(dv_maintainer);
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FullChangelogMergeTreeCompactRewriter> rewriter,
+            FullChangelogMergeTreeCompactRewriter::Create(
+                max_level, bucket, partition, table_schema_, std::move(dv_factory),
+                path_factory_cache, options_, cancellation_controller, pool_));
+        return std::shared_ptr<CompactRewriter>(std::move(rewriter));
     }
     if (options_.NeedLookup()) {
         // Lazily create the global lookup file cache

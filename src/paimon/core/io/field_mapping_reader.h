@@ -111,13 +111,6 @@ class FieldMappingReader : public FileBatchReader {
                          arrow::ArrayVector* target_array,
                          std::vector<std::string>* target_field_names);
 
-    Result<bool> HasMapSelectedKeysRecursively(
-        const std::shared_ptr<arrow::Field>& read_field) const;
-
-    Result<std::shared_ptr<arrow::Array>> FilterMapSelectedKeysRecursively(
-        const std::shared_ptr<arrow::Array>& array,
-        const std::shared_ptr<arrow::Field>& read_field) const;
-
  private:
     bool need_mapping_ = false;
     bool need_casting_ = false;

@@ -51,6 +51,7 @@
 #include "arrow/c/helpers.h"
 #include "arrow/util/bit_util.h"
 #include "benchmark/benchmark.h"
+#include "fmt/format.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -104,6 +105,10 @@ constexpr int32_t kWriteBatchSize = 1024;
 constexpr int64_t kPageSizeBytes = 64 * 1024;
 // Four row groups per read fixture, so row-group pruning and page pruning are both in play.
 constexpr int64_t kRowGroupLength = 25'000;
+// Only StringFixture lowers this from arrow's 1MB default: at 1MB a 25K-row row group of distinct
+// `value_<n>` entries still fits, so no cardinality this file writes would ever make the writer
+// fall back to plain and the passthrough gate would have nothing to decline.
+constexpr int64_t kDictionaryPageSizeBytes = 64 * 1024;
 constexpr int64_t kStringCardinality = 1'000;
 // Few enough distinct values that arrow keeps the column dictionary-encoded for the whole file,
 // which is the shape the wide-schema case wants: per-column work small, per-batch cost visible.
@@ -158,6 +163,11 @@ std::shared_ptr<arrow::Schema> FlatSchema() {
 
 std::shared_ptr<arrow::Schema> DecimalSchema(int32_t precision) {
     return arrow::schema({MakeField("amount", arrow::decimal128(precision, 4), 0)});
+}
+
+// One STRING column, so a dictionary case measures one encoder and nothing else.
+std::shared_ptr<arrow::Schema> StringSchema() {
+    return arrow::schema({MakeField("name", arrow::utf8(), 0)});
 }
 
 std::shared_ptr<arrow::Schema> DoubleSchema() {
@@ -265,12 +275,36 @@ Result<std::shared_ptr<arrow::Array>> MakeDictionaryColumn(
     return array;
 }
 
-// STRING values: binary-like, so arrow can write the indices directly.
+// STRING values: binary-like, so arrow can write the indices directly. Every batch is built over
+// the same alphabet, the shape a single input file produces.
 Result<std::shared_ptr<arrow::Array>> MakeDictionaryStringColumn(int64_t num_rows, int64_t offset,
                                                                  int64_t cardinality) {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> values,
                            MakeStringColumn(cardinality, /*offset=*/0, cardinality));
     return MakeDictionaryColumn(values, num_rows, offset);
+}
+
+// The same, except every batch carries its own dictionary - the shape a compaction rewrite
+// produces, where each input file supplies one. A Parquet column chunk holds a single dictionary,
+// so arrow keeps the first and falls back to plain encoding for the rest of the row group
+// (column_writer.cc, `dictionary->Equals(*preserved_dictionary_)`).
+//
+// The decoded column is byte for byte what MakeDictionaryStringColumn produces: same values, same
+// order, same widths, same cardinality. Only the dictionary object differs, so the delta between
+// the two benchmarks is the cost of the fallback and nothing else. Generating a fresh alphabet per
+// batch instead would change the data as well - different strings, different widths, a different
+// global cardinality - and the comparison would measure all of that at once.
+Result<std::shared_ptr<arrow::Array>> MakeChangingDictionaryStringColumn(int64_t num_rows,
+                                                                         int64_t offset,
+                                                                         int64_t cardinality) {
+    // The alphabet is rotated by one position per batch and the indices are shifted the other way,
+    // which cancels: index `(offset + cardinality - rotation + i) % cardinality` into an alphabet
+    // whose entry `j` is `value_<(j + rotation) % cardinality>` is `value_<(offset + i) %
+    // cardinality>` either way. `+ cardinality` keeps the shifted offset non-negative.
+    const int64_t rotation = num_rows > 0 ? (offset / num_rows) % cardinality : 0;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> values,
+                           MakeStringColumn(cardinality, rotation, cardinality));
+    return MakeDictionaryColumn(values, num_rows, offset + cardinality - rotation);
 }
 
 // INT32 values: is_base_binary_like excludes them, so arrow densifies before writing. The
@@ -419,6 +453,18 @@ BatchFactory SingleColumnBatch(const ColumnFactory& make_column) {
                          int64_t rows) -> Result<std::shared_ptr<arrow::Array>> {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> column, make_column(rows, offset));
         return MakeStructArray(schema->fields(), {column});
+    };
+}
+
+// The same, but the batch is typed by the column rather than by the schema, so it can carry an
+// encoding the schema does not declare. That is the shape a compaction rewrite produces: the file
+// writer is built from the table's logical schema while the reader forwards whatever encoding the
+// input file already had, leaving the writer to recover it from the batch.
+BatchFactory SingleEncodedColumnBatch(const ColumnFactory& make_column) {
+    return [make_column](const std::shared_ptr<arrow::Schema>& schema, int64_t offset,
+                         int64_t rows) -> Result<std::shared_ptr<arrow::Array>> {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> column, make_column(rows, offset));
+        return MakeStructArray({schema->field(0)->WithType(column->type())}, {column});
     };
 }
 
@@ -766,6 +812,27 @@ const ReadFixture& DoubleFixture() {
     return ColumnFixture("double", DoubleSchema(), &MakeDoubleColumn);
 }
 
+// A one-column STRING file at a chosen cardinality, written with a reduced dictionary page limit
+// so both regimes the passthrough gate distinguishes are reachable within a 100K-row file. Under
+// the limit every data page stays dictionary-encoded and the gate lets the column through; over
+// it the writer emits the dictionary page it has and encodes the rest as plain, which is the case
+// the gate has to decline. At kDictionaryPageSizeBytes a row group holds roughly 4K distinct
+// `value_<n>` entries before overflowing, so cardinality alone picks the regime.
+const ReadFixture& StringFixture(int64_t cardinality) {
+    const std::string key = fmt::format("string_{}", cardinality);
+    return GetFixture(key, [key, cardinality] {
+        std::map<std::string, std::string> options;
+        options[paimon::parquet::PARQUET_DICTIONARY_PAGE_SIZE] =
+            std::to_string(kDictionaryPageSizeBytes);
+        return std::make_unique<ReadFixture>(
+            key + ".parquet", StringSchema(),
+            SingleColumnBatch([cardinality](int64_t rows, int64_t offset) {
+                return MakeStringColumn(rows, offset, cardinality);
+            }),
+            options);
+    });
+}
+
 // The same data with dictionary encoding off, giving the read side a plain baseline.
 const ReadFixture& PlainFlatFixture() {
     return GetFixture("flat_plain", [] {
@@ -928,6 +995,43 @@ void BM_ParquetWrite_DictionaryString(::benchmark::State& state) {
                                 return MakeDictionaryStringColumn(rows, offset, cardinality);
                             },
                             kRowsPerBatch, /*options=*/{});
+}
+
+// arg: dictionary cardinality. The shape the append compaction rewrite actually produces, and the
+// one BM_ParquetWrite_DictionaryString does not cover: there the schema itself is a DictionaryType,
+// here the writer is built from a plain STRING schema - as a rewrite builds it, from the table's
+// logical schema - and the batch arrives dictionary-encoded anyway. The delta against
+// BM_ParquetWrite_String at the same cardinality is what the passthrough buys on the write side,
+// including the per-batch schema fixup that recovers the encoding from the batch layout.
+//
+// One alphabet for the whole file, so the writer keeps writing indices: the favourable half of the
+// passthrough. BM_ParquetWrite_ChangingDictionaryStringIntoStringSchema is the other half, and a
+// rewrite of several input files lands between the two.
+void BM_ParquetWrite_DictionaryStringIntoStringSchema(::benchmark::State& state) {
+    const int64_t cardinality = state.range(0);
+    RunWriteBenchmark(state, StringSchema(),
+                      SingleEncodedColumnBatch([cardinality](int64_t rows, int64_t offset) {
+                          return MakeDictionaryStringColumn(rows, offset, cardinality);
+                      }),
+                      kRowsPerBatch, /*options=*/{}, kDefaultCompression);
+}
+
+// arg: dictionary cardinality. The same write, except every batch brings its own dictionary, as
+// the input files of a compaction do, which is the cost of forwarding an encoding the writer
+// cannot reuse. All three of BM_ParquetWrite_String,
+// BM_ParquetWrite_DictionaryStringIntoStringSchema and this one write the same logical column at
+// the same cardinality, so the triple reads directly: the middle one against the first is what the
+// passthrough buys, this one against the middle is what the fallback costs in time, and this one
+// against the first is the output size a rewrite that materialized and rebuilt would have produced.
+// Row groups here are cut the way they are in production - by size and by the writer's memory
+// limit, not at batch boundaries.
+void BM_ParquetWrite_ChangingDictionaryStringIntoStringSchema(::benchmark::State& state) {
+    const int64_t cardinality = state.range(0);
+    RunWriteBenchmark(state, StringSchema(),
+                      SingleEncodedColumnBatch([cardinality](int64_t rows, int64_t offset) {
+                          return MakeChangingDictionaryStringColumn(rows, offset, cardinality);
+                      }),
+                      kRowsPerBatch, /*options=*/{}, kDefaultCompression);
 }
 
 // The same axis on an INTEGER dictionary, which arrow cannot direct-write - is_base_binary_like
@@ -1197,6 +1301,22 @@ void BM_ParquetRead_Encoding(::benchmark::State& state, bool enable_dictionary) 
                      /*selection_bitmap=*/std::nullopt, /*options=*/{}, kReadBatchSize);
 }
 
+// args: string cardinality, and whether the parquet dictionary passthrough is on. With it on, a
+// column the file stores dictionary-encoded end to end is handed back as a DictionaryArray instead
+// of one materialized value per row, so the pair at a fixed cardinality is what the read half of
+// the compaction rewrite saves. At a cardinality high enough that the writer fell back to plain,
+// the gate declines and the two runs measure the same work - a divergence there means the gate
+// stopped looking at the data page encodings and started trusting the dictionary page.
+void BM_ParquetRead_DictionaryPassthrough(::benchmark::State& state) {
+    const int64_t cardinality = state.range(0);
+    const bool enable_passthrough = state.range(1) != 0;
+    std::map<std::string, std::string> options;
+    options[paimon::parquet::PARQUET_READ_ENABLE_DICTIONARY_PASSTHROUGH] =
+        enable_passthrough ? "true" : "false";
+    RunReadBenchmark(state, StringFixture(cardinality), StringSchema(), /*predicate=*/nullptr,
+                     /*selection_bitmap=*/std::nullopt, options, kReadBatchSize);
+}
+
 // arg: decimal precision, the read side of BM_ParquetWrite_Decimal. Precision picks the physical
 // type - INT32, INT64 or FIXED_LEN_BYTE_ARRAY, since ParquetWriterBuilder enables
 // store_decimal_as_integer - and the three take different paths back to Decimal128Array.
@@ -1270,6 +1390,24 @@ BENCHMARK(BM_ParquetWrite_DictionaryString)
     ->Arg(100)
     ->Arg(1000)
     ->Arg(10000)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
+// Same cardinality axis as BM_ParquetWrite_String and BM_ParquetWrite_StringNoDictionary, which
+// are its baselines: the three have to line up point for point or the low/medium/high comparison
+// cannot be made.
+BENCHMARK(BM_ParquetWrite_DictionaryStringIntoStringSchema)
+    ->ArgName("cardinality")
+    ->Arg(10)
+    ->Arg(1000)
+    ->Arg(kRowsPerFile)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
+// Same axis again, so the three points can be read against the run above them.
+BENCHMARK(BM_ParquetWrite_ChangingDictionaryStringIntoStringSchema)
+    ->ArgName("cardinality")
+    ->Arg(10)
+    ->Arg(1000)
+    ->Arg(kRowsPerFile)
     ->Unit(benchmark::kMillisecond)
     ->UseRealTime();
 BENCHMARK(BM_ParquetWrite_DictionaryInt32)
@@ -1400,6 +1538,19 @@ BENCHMARK_CAPTURE(BM_ParquetRead_Encoding, dictionary, true)
     ->Unit(benchmark::kMillisecond)
     ->UseRealTime();
 BENCHMARK_CAPTURE(BM_ParquetRead_Encoding, plain, false)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
+// The same cardinality axis the write cases use, so the read and write halves of a rewrite can be
+// added up at each point. At kRowsPerFile every value is distinct, which overflows
+// kDictionaryPageSizeBytes and is the point where the gate has to decline.
+BENCHMARK(BM_ParquetRead_DictionaryPassthrough)
+    ->ArgNames({"cardinality", "passthrough"})
+    ->Args({10, 0})
+    ->Args({10, 1})
+    ->Args({1000, 0})
+    ->Args({1000, 1})
+    ->Args({kRowsPerFile, 0})
+    ->Args({kRowsPerFile, 1})
     ->Unit(benchmark::kMillisecond)
     ->UseRealTime();
 BENCHMARK(BM_ParquetRead_Decimal)

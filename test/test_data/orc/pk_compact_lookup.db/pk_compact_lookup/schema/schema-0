@@ -32,7 +32,7 @@
     "fields.default-aggregate-function" : "min",
     "lookup.remote-file.level-threshold" : "1",
     "merge-engine" : "aggregation",
-    "manifest.format" : "orc",
+    "manifest.format" : "avro",
     "file.format" : "orc",
     "deletion-vectors.enabled" : "true"
   },

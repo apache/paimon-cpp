@@ -190,7 +190,6 @@ class AppendOnlyWriterTest : public testing::Test {
         std::map<std::string, std::string> raw_options = {
             {Options::FILE_SYSTEM, "local"},
             {Options::FILE_FORMAT, "mock_format"},
-            {Options::MANIFEST_FORMAT, "mock_format"},
         };
         for (const auto& [key, value] : overrides) {
             raw_options[key] = value;
@@ -334,7 +333,6 @@ TEST_F(AppendOnlyWriterTest, TestEmptyCommits) {
     std::map<std::string, std::string> raw_options;
     raw_options[Options::FILE_FORMAT] = "mock_format";
     raw_options[Options::FILE_SYSTEM] = "local";
-    raw_options[Options::MANIFEST_FORMAT] = "mock_format";
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
 
     arrow::FieldVector fields = {
@@ -364,7 +362,6 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndPrepareCommit) {
     std::map<std::string, std::string> raw_options;
     raw_options[Options::FILE_FORMAT] = "mock_format";
     raw_options[Options::FILE_SYSTEM] = "local";
-    raw_options[Options::MANIFEST_FORMAT] = "mock_format";
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
 
     arrow::FieldVector fields = {
@@ -446,7 +443,9 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndClose) {
     std::map<std::string, std::string> raw_options;
     raw_options[Options::FILE_FORMAT] = "orc";
     raw_options[Options::FILE_SYSTEM] = "local";
-    raw_options[Options::MANIFEST_FORMAT] = "orc";
+    raw_options[Options::TARGET_FILE_ROW_NUM] = "1";
+    raw_options["file-index.bitmap.columns"] = "f0";
+    raw_options[Options::FILE_INDEX_IN_MANIFEST_THRESHOLD] = "1B";
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
 
     arrow::FieldVector fields = {arrow::field("f0", arrow::utf8())};
@@ -479,10 +478,14 @@ TEST_F(AppendOnlyWriterTest, TestWriteAndClose) {
     ASSERT_OK_AND_ASSIGN(auto record_batch, batch_builder.Finish());
     ASSERT_OK(writer->Write(std::move(record_batch)));
     ASSERT_TRUE(ArrowArrayIsReleased(&arrow_array));
-    ASSERT_OK(writer->Close());
 
     auto file_system = std::make_shared<LocalFileSystem>();
     std::vector<BasicFileStatus> file_status_list;
+    ASSERT_OK(file_system->ListDir(dir->Str(), &file_status_list));
+    ASSERT_EQ(2, file_status_list.size());
+
+    ASSERT_OK(writer->Close());
+    file_status_list.clear();
     ASSERT_OK(file_system->ListDir(dir->Str(), &file_status_list));
     ASSERT_TRUE(file_status_list.empty());
 }
@@ -491,7 +494,6 @@ TEST_F(AppendOnlyWriterTest, TestInvalidRowKind) {
     std::map<std::string, std::string> raw_options;
     raw_options[Options::FILE_FORMAT] = "orc";
     raw_options[Options::FILE_SYSTEM] = "local";
-    raw_options[Options::MANIFEST_FORMAT] = "orc";
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(raw_options));
 
     arrow::FieldVector fields = {arrow::field("f0", arrow::utf8())};
@@ -632,16 +634,19 @@ TEST_F(AppendOnlyWriterTest,
 }
 
 TEST_F(AppendOnlyWriterTest, TestCloseDeletesCompactAfterFiles) {
-    auto options =
-        CreateOptions({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}});
+    auto options = CreateOptions({{Options::FILE_FORMAT, "orc"}});
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto path_factory = CreatePathFactory(dir->Str(), "orc", options);
     auto compact_manager = std::make_shared<FakeCompactManager>();
 
     auto compact_after = NewAppendFile("compact-after.orc", 1, 0, 0);
+    compact_after->extra_files = {"compact-after.orc.index"};
     auto compact_after_path = path_factory->ToPath(compact_after->file_name);
+    auto compact_after_index_path = path_factory->ToPath(compact_after->extra_files[0].value());
     ASSERT_OK_AND_ASSIGN(auto output, options.GetFileSystem()->Create(compact_after_path, true));
+    ASSERT_OK(output->Close());
+    ASSERT_OK_AND_ASSIGN(output, options.GetFileSystem()->Create(compact_after_index_path, true));
     ASSERT_OK(output->Close());
 
     auto result =
@@ -659,8 +664,10 @@ TEST_F(AppendOnlyWriterTest, TestCloseDeletesCompactAfterFiles) {
 
     ASSERT_OK(writer->Sync());
     ASSERT_TRUE(options.GetFileSystem()->Exists(compact_after_path).value());
+    ASSERT_TRUE(options.GetFileSystem()->Exists(compact_after_index_path).value());
     ASSERT_OK(writer->Close());
     ASSERT_FALSE(options.GetFileSystem()->Exists(compact_after_path).value());
+    ASSERT_FALSE(options.GetFileSystem()->Exists(compact_after_index_path).value());
     ASSERT_TRUE(compact_manager->request_cancel_called);
     ASSERT_TRUE(compact_manager->wait_called);
     ASSERT_TRUE(compact_manager->close_called);
@@ -740,9 +747,8 @@ TEST_F(AppendOnlyWriterTest, TestCompactPassesFullCompactionFlag) {
 }
 
 TEST_F(AppendOnlyWriterTest, TestWriteWithSingleBlobField) {
-    auto options = CreateOptions({{Options::FILE_FORMAT, "orc"},
-                                  {Options::MANIFEST_FORMAT, "orc"},
-                                  {Options::TARGET_FILE_ROW_NUM, "1"}});
+    auto options =
+        CreateOptions({{Options::FILE_FORMAT, "orc"}, {Options::TARGET_FILE_ROW_NUM, "1"}});
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto path_factory = CreatePathFactory(dir->Str(), "orc", options);
@@ -780,8 +786,7 @@ TEST_F(AppendOnlyWriterTest, TestWriteWithSingleBlobField) {
 }
 
 TEST_F(AppendOnlyWriterTest, TestWriteWithOnlyBlobField) {
-    auto options =
-        CreateOptions({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}});
+    auto options = CreateOptions({{Options::FILE_FORMAT, "orc"}});
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto path_factory = CreatePathFactory(dir->Str(), "orc", options);
@@ -828,8 +833,7 @@ TEST_F(AppendOnlyWriterTest, TestWriteWithOnlyBlobField) {
 }
 
 TEST_F(AppendOnlyWriterTest, TestWriteWithMultipleBlobFields) {
-    auto options =
-        CreateOptions({{Options::FILE_FORMAT, "orc"}, {Options::MANIFEST_FORMAT, "orc"}});
+    auto options = CreateOptions({{Options::FILE_FORMAT, "orc"}});
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto path_factory = CreatePathFactory(dir->Str(), "orc", options);
@@ -896,9 +900,8 @@ TEST_F(AppendOnlyWriterTest, TestMultiplePrepareCommitSequenceContinuity) {
 }
 
 TEST_F(AppendOnlyWriterTest, TestWriteValidBlobViewField) {
-    auto options = CreateOptions({{Options::FILE_FORMAT, "orc"},
-                                  {Options::MANIFEST_FORMAT, "orc"},
-                                  {Options::BLOB_VIEW_FIELD, "view"}});
+    auto options =
+        CreateOptions({{Options::FILE_FORMAT, "orc"}, {Options::BLOB_VIEW_FIELD, "view"}});
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto path_factory = CreatePathFactory(dir->Str(), "orc", options);
@@ -933,9 +936,8 @@ TEST_F(AppendOnlyWriterTest, TestWriteValidBlobViewField) {
 }
 
 TEST_F(AppendOnlyWriterTest, TestWriteInvalidBlobViewFieldRejected) {
-    auto options = CreateOptions({{Options::FILE_FORMAT, "orc"},
-                                  {Options::MANIFEST_FORMAT, "orc"},
-                                  {Options::BLOB_VIEW_FIELD, "view"}});
+    auto options =
+        CreateOptions({{Options::FILE_FORMAT, "orc"}, {Options::BLOB_VIEW_FIELD, "view"}});
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto path_factory = CreatePathFactory(dir->Str(), "orc", options);
@@ -977,7 +979,7 @@ INSTANTIATE_TEST_SUITE_P(FileFormats, AppendOnlyWriterShreddingTest,
 TEST_F(AppendOnlyWriterTest, TestSharedShreddingMapRejectsAvroFormatOnCommit) {
     auto options = CreateOptions({
         {Options::FILE_FORMAT, "avro"},
-        {Options::MANIFEST_FORMAT, "avro"},
+
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "3"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
@@ -1013,7 +1015,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestWriteSharedShreddingMapFieldContent) {
     // Configure with shared-shredding map on "tags" field, K=3.
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {Options::TARGET_FILE_ROW_NUM, "2"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "3"},
@@ -1087,7 +1088,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestSharedShreddingMapAllEmptyFirstFile) {
     std::string format = GetFormat();
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "3"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
@@ -1145,7 +1145,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestSharedShreddingMapAllNullThenAllEmptyF
     std::string format = GetFormat();
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {Options::TARGET_FILE_ROW_NUM, "2"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "3"},
@@ -1258,7 +1257,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestWriteSharedShreddingMapWithOverflow) {
     // K=2, write rows with 3+ keys to trigger overflow.
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "2"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
@@ -1330,7 +1328,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestWriteSharedShreddingMapWithLruPlacemen
     std::string format = GetFormat();
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "3"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "lru"},
@@ -1397,7 +1394,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestSharedShreddingMapKAdaptationAcrossRol
     std::string format = GetFormat();
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {Options::TARGET_FILE_ROW_NUM, "1"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "10"},
@@ -1504,7 +1500,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestSharedShreddingMapFirstFileUsesConfigu
     std::string format = GetFormat();
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "10"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
@@ -1563,7 +1558,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestMultipleSharedShreddingMapFieldsAdaptA
     // Two shared-shredding MAP fields with different initial K: tags(K=8), attrs(K=4).
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {Options::TARGET_FILE_ROW_NUM, "1"},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "8"},
@@ -1682,7 +1676,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestSharedShreddingMapDataFileMetaInfo) {
     // Verify PrepareCommit returns correct DataFileMeta for shared-shredding map files.
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "3"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},
@@ -1762,7 +1755,6 @@ TEST_P(AppendOnlyWriterShreddingTest, TestSharedShreddingMapWithBlobSeparation) 
     // This tests that blob separation + shredding works correctly together.
     auto options = CreateOptions({
         {Options::FILE_FORMAT, format},
-        {Options::MANIFEST_FORMAT, format},
         {"fields.tags.map.storage-layout", "shared-shredding"},
         {"fields.tags.map.shared-shredding.max-columns", "3"},
         {"fields.tags.map.shared-shredding.column-placement-policy", "plain"},

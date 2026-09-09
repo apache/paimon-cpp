@@ -211,7 +211,6 @@ Result<AggregatedFileStats> AggregateFileStats(const std::shared_ptr<FileSystem>
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
             external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
             pool));
-
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ManifestList> manifest_list,
                            ManifestList::Create(fs, core_options.GetManifestFormat(),
                                                 core_options.GetManifestCompression(), path_factory,

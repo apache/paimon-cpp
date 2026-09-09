@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "arrow/array/array_base.h"
+#include "arrow/type_fwd.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/status.h"
@@ -28,8 +29,10 @@ namespace paimon {
 class LeafFunction : public Function {
  public:
     // input array is the exact single field array
+    // `pool` is where any arrow buffer the evaluation allocates comes from, it must not be null.
     virtual Result<std::vector<char>> Test(const arrow::Array& array,
-                                           const std::vector<Literal>& literals) const = 0;
+                                           const std::vector<Literal>& literals,
+                                           arrow::MemoryPool* pool) const = 0;
 
     virtual Result<bool> Test(const Literal& value, const std::vector<Literal>& literals) const = 0;
 

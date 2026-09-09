@@ -230,8 +230,9 @@ Status FileStoreCommitImpl::Abort(
         append_data_files(compact_increment.ChangelogFiles());
         for (const auto& file : data_files_to_delete) {
             // Best-effort cleanup: ignore delete failures, aligning with Java deleteQuietly.
-            [[maybe_unused]] Status status =
-                fs_->Delete(data_file_path_factory->ToPath(file), /*recursive=*/false);
+            for (const std::string& path : data_file_path_factory->CollectFiles(file)) {
+                [[maybe_unused]] Status status = fs_->Delete(path, /*recursive=*/false);
+            }
         }
 
         std::vector<std::shared_ptr<IndexFileMeta>> index_files_to_delete;
@@ -923,10 +924,9 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
             realtime_ranges.emplace(realtime_commit.partition_bucket, realtime_commit.offset_range);
         if (!inserted) {
             const OffsetRange& previous_range = range_iter->second;
-            if (realtime_commit.offset_range.begin != previous_range.end) {
-                return Status::Invalid(
-                    fmt::format("real-time commit offsets for bucket {} are not contiguous",
-                                realtime_commit.partition_bucket.bucket));
+            if (realtime_commit.offset_range.begin < previous_range.end) {
+                return Status::Invalid(fmt::format("real-time commit offsets for bucket {} overlap",
+                                                   realtime_commit.partition_bucket.bucket));
             }
             range_iter->second =
                 OffsetRange(previous_range.begin, realtime_commit.offset_range.end);

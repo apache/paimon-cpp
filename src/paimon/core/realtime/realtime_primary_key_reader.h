@@ -18,7 +18,6 @@
 
 #pragma once
 
-#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -30,22 +29,17 @@
 namespace paimon {
 class BatchReader;
 class MemoryPool;
+class RealtimeStoreReadPipeline;
 
-/// Defines the Arrow field layout for PK realtime transport batches.
+/// Creates the Arrow schema used for PK realtime transport batches.
 class RealtimePrimaryKeyLayout {
  public:
     RealtimePrimaryKeyLayout() = delete;
     ~RealtimePrimaryKeyLayout() = delete;
 
-    static constexpr int32_t kValueKindIndex = 0;
-    static constexpr int32_t kSequenceNumberIndex = 1;
-    static constexpr int32_t kRealtimeOffsetIndex = 2;
-    static constexpr int32_t kValueStartIndex = 3;
-
+    /// Creates `_VALUE_KIND`, `_SEQUENCE_NUMBER`, then value fields.
     static std::shared_ptr<arrow::Schema> CreateSchema(
         const std::vector<std::shared_ptr<arrow::Field>>& value_fields);
-
-    static Status ValidateSchema(const std::shared_ptr<arrow::Schema>& transport_schema);
 };
 
 class RealtimePrimaryKeyReaderFactory {
@@ -53,19 +47,17 @@ class RealtimePrimaryKeyReaderFactory {
     RealtimePrimaryKeyReaderFactory() = delete;
     ~RealtimePrimaryKeyReaderFactory() = delete;
 
-    static Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateForQuery(
+    static Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateForCommit(
         std::vector<std::unique_ptr<BatchReader>>&& readers,
-        const std::shared_ptr<arrow::Schema>& transport_schema, const OffsetRange& visible_offsets,
         const std::shared_ptr<arrow::Schema>& key_schema,
         const std::shared_ptr<arrow::Schema>& value_schema,
         const std::shared_ptr<MemoryPool>& memory_pool);
 
-    static Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateForCommit(
-        std::vector<std::unique_ptr<BatchReader>>&& readers,
-        const std::shared_ptr<arrow::Schema>& transport_schema, const OffsetRange& sealed_offsets,
+    static Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateForQuery(
+        std::vector<std::unique_ptr<BatchReader>>&& readers, const OffsetRange& visible_offsets,
         const std::shared_ptr<arrow::Schema>& key_schema,
         const std::shared_ptr<arrow::Schema>& value_schema,
-        const std::shared_ptr<MemoryPool>& memory_pool);
+        const std::shared_ptr<MemoryPool>& memory_pool, const RealtimeStoreReadPipeline& pipeline);
 };
 
 }  // namespace paimon

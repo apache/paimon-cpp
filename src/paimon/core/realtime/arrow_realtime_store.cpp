@@ -20,7 +20,7 @@
 #include "paimon/core/realtime/arrow_realtime_store.h"
 
 #include <algorithm>
-#include <limits>
+#include <optional>
 #include <utility>
 
 #include "arrow/api.h"
@@ -31,6 +31,7 @@
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
+#include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -70,10 +71,18 @@ bool SupportsMinMax(const std::shared_ptr<arrow::DataType>& type) {
 class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
  public:
     Segment(const OffsetRange& offset_range, std::vector<StoredBatch>&& batches)
-        : offset_range_(offset_range), batches_(std::move(batches)) {}
+        : offset_range_(offset_range), batches_(std::move(batches)) {
+        for (const StoredBatch& batch : batches_) {
+            row_count_ += batch.data->length();
+        }
+    }
 
     OffsetRange GetOffsetRange() const override {
         return offset_range_;
+    }
+
+    int64_t GetRowCount() const override {
+        return row_count_;
     }
 
     const std::vector<StoredBatch>& GetBatches() const {
@@ -91,6 +100,7 @@ class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
  private:
     OffsetRange offset_range_;
     std::vector<StoredBatch> batches_;
+    int64_t row_count_ = 0;
 };
 
 class ArrowRealtimeStore::ReadView : public RealtimeReadView {
@@ -176,14 +186,12 @@ class ArrowRealtimeStore::CommitBatchReader : public BatchReader {
 
 class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
  public:
-    QueryBatchReader(const ReadView* view, int64_t offset_begin,
-                     const std::shared_ptr<arrow::Schema>& read_schema,
+    QueryBatchReader(const ReadView* view, const std::shared_ptr<arrow::Schema>& read_schema,
                      const std::shared_ptr<PredicateFilter>& predicate_filter,
                      std::vector<int32_t>&& statistics_mapping,
                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                      const std::shared_ptr<MemoryPool>& memory_pool)
         : view_(view),
-          offset_begin_(offset_begin),
           read_schema_(read_schema),
           arrow_pool_(arrow_pool),
           memory_pool_(memory_pool),
@@ -200,30 +208,20 @@ class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
         // TODO(xinyu.lxy): Memory query reads return complete stored write batches and
         // intentionally ignore the configured read batch size.
-        if (offset_begin_ == std::numeric_limits<int64_t>::max()) {
-            return MakeEofBatchWithBitmap();
-        }
         while (view_ && next_batch_ < view_->GetBatches().size()) {
             const StoredBatch& stored = view_->GetBatches()[next_batch_++];
-            if (stored.offset_range.end <= offset_begin_) {
-                continue;
-            }
             PAIMON_ASSIGN_OR_RAISE(bool may_match, MayMatch(stored));
             if (!may_match) {
                 continue;
             }
-            int64_t begin = std::max<int64_t>(0, offset_begin_ - stored.offset_range.begin);
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> output, BuildOutput(stored));
-            RoaringBitmap32 candidate_rows;
-            candidate_rows.AddRange(static_cast<int32_t>(begin),
-                                    static_cast<int32_t>(stored.data->length()));
             auto c_array = std::make_unique<ArrowArray>();
             auto c_schema = std::make_unique<ArrowSchema>();
             PAIMON_RETURN_NOT_OK_FROM_ARROW(
                 arrow::ExportArray(*output, c_array.get(), c_schema.get()));
             PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
-            return ReadBatchWithBitmap(ReadBatch(std::move(c_array), std::move(c_schema)),
-                                       std::move(candidate_rows));
+            return ReaderUtils::AddAllValidBitmap(
+                ReadBatch(std::move(c_array), std::move(c_schema)));
         }
         return MakeEofBatchWithBitmap();
     }
@@ -271,7 +269,6 @@ class ArrowRealtimeStore::QueryBatchReader : public BatchReader {
 
  private:
     const ReadView* view_;
-    int64_t offset_begin_;
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<MemoryPool> memory_pool_;
@@ -355,11 +352,9 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
         return Status::Invalid("real-time write batch is null");
     }
     int64_t row_count = write_batch.batch->GetData()->length;
-    if (write_batch.offset_range.begin < 0 || write_batch.offset_range.Empty()) {
+    if (write_batch.offset_range.begin < 0 ||
+        write_batch.offset_range.begin >= write_batch.offset_range.end) {
         return Status::Invalid("real-time offset range is invalid");
-    }
-    if (write_batch.offset_range.Count() != row_count) {
-        return Status::Invalid("real-time offset range does not match batch row count");
     }
     if (!write_batch.batch->GetRowKind().empty() &&
         static_cast<int64_t>(write_batch.batch->GetRowKind().size()) != row_count) {
@@ -378,8 +373,8 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
                            CollectStatistics(struct_array));
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (building_range_ && write_batch.offset_range.begin != building_range_->end) {
-        return Status::Invalid("real-time offset ranges must be contiguous");
+    if (building_range_ && write_batch.offset_range.begin < building_range_->end) {
+        return Status::Invalid("real-time offset ranges must be ordered and non-overlapping");
     }
     uint64_t memory_usage = ArrowUtils::GetArrayMemoryUsage(struct_array->data());
     if (statistics) {
@@ -435,8 +430,7 @@ Result<std::shared_ptr<RealtimeReadView>> ArrowRealtimeStore::AcquireReadView() 
 }
 
 Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQueryReaders(
-    const std::shared_ptr<RealtimeReadView>& view, int64_t offset_begin,
-    const RealtimeQueryContext& context) {
+    const std::shared_ptr<RealtimeReadView>& view, const RealtimeQueryContext& context) {
     std::shared_ptr<ReadView> arrow_view = std::dynamic_pointer_cast<ReadView>(view);
     if (!arrow_view) {
         return Status::Invalid("read view was not created by the Arrow real-time store");
@@ -447,7 +441,7 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> read_schema,
                                       arrow::ImportSchema(context.read_schema));
     std::shared_ptr<PredicateFilter> predicate_filter;
-    if (context.enable_predicate_pushdown && context.predicate) {
+    if (context.predicate) {
         predicate_filter = std::dynamic_pointer_cast<PredicateFilter>(context.predicate);
     }
     std::vector<int32_t> statistics_mapping;
@@ -456,10 +450,10 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
         statistics_mapping.push_back(write_schema_->GetFieldIndex(field->name()));
     }
     std::vector<std::unique_ptr<BatchReader>> readers;
-    if (arrow_view->GetOffsetRange() && arrow_view->GetOffsetRange()->end > offset_begin) {
+    if (arrow_view->GetOffsetRange()) {
         std::unique_ptr<BatchReader> reader = std::make_unique<QueryBatchReader>(
-            arrow_view.get(), offset_begin, read_schema, predicate_filter,
-            std::move(statistics_mapping), arrow_pool_, memory_pool_);
+            arrow_view.get(), read_schema, predicate_filter, std::move(statistics_mapping),
+            arrow_pool_, memory_pool_);
         reader = std::make_unique<CompleteRowKindBatchReader>(std::move(reader), arrow_pool_);
         readers.push_back(std::move(reader));
     }

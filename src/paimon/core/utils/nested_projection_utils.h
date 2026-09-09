@@ -109,6 +109,18 @@ class PAIMON_EXPORT NestedProjectionUtils {
         const std::shared_ptr<arrow::Array>& map_array,
         const std::vector<std::string>& selected_keys, arrow::MemoryPool* pool);
 
+    /// @return true when `read_field` or a nested STRUCT child requests selected MAP keys.
+    /// Selected-key STRUCT access fields are included and validated as well.
+    static Result<bool> HasMapSelectedKeysRecursively(
+        const std::shared_ptr<arrow::Field>& read_field);
+
+    /// Applies selected-key MAP filtering recursively through STRUCT children. A selected-key
+    /// STRUCT access field is returned unchanged because its read plan has already materialized
+    /// the requested keys.
+    static Result<std::shared_ptr<arrow::Array>> FilterMapArrayBySelectedKeysRecursively(
+        const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::Field>& read_field,
+        arrow::MemoryPool* pool);
+
     /// Reshape `array` to `read_type`, null-filling nested fields added by schema
     /// evolution. No-op when types match. STRUCT matches children by paimon field id;
     /// LIST/MAP recurse into items, preserving offsets and validity.

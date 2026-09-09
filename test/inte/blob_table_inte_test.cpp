@@ -124,8 +124,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
     }
 
     void CreateTable(const std::vector<std::string>& partition_keys) const {
-        std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                      {Options::FILE_FORMAT, GetParam()},
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                       {Options::FILE_SYSTEM, "local"},
                                                       {Options::ROW_TRACKING_ENABLED, "true"},
                                                       {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -207,7 +206,6 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
         arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                      BlobUtils::ToArrowField("view", true)};
         std::map<std::string, std::string> options = {
-            {Options::MANIFEST_FORMAT, "orc"},
             {Options::FILE_FORMAT, GetParam()},
             {Options::BUCKET, "-1"},
             {Options::ROW_TRACKING_ENABLED, "true"},
@@ -537,6 +535,50 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
             });
     }
 
+    Result<std::shared_ptr<arrow::MapArray>> NormalizeMapBlobValues(
+        const std::shared_ptr<arrow::MapArray>& map_array, bool blob_as_descriptor) const {
+        const auto& values = checked_cast<const arrow::LargeBinaryArray&>(*map_array->items());
+        auto fs = std::make_shared<LocalFileSystem>();
+        arrow::LargeBinaryBuilder builder;
+        for (int64_t i = 0; i < values.length(); ++i) {
+            if (values.IsNull(i)) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
+                continue;
+            }
+            std::string_view stored = values.GetView(i);
+            if (!blob_as_descriptor) {
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(stored));
+                continue;
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<Blob> blob,
+                Blob::FromDescriptor(stored.data(), static_cast<int64_t>(stored.size())));
+            PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> data, blob->ToData(fs, pool_));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(data->data(), data->size()));
+        }
+        std::shared_ptr<arrow::Array> normalized_values;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&normalized_values));
+        return std::make_shared<arrow::MapArray>(map_array->type(), map_array->length(),
+                                                 map_array->value_offsets(), map_array->keys(),
+                                                 normalized_values, map_array->null_bitmap(),
+                                                 map_array->null_count(), map_array->offset());
+    }
+
+    void CheckMapBlobColumn(const std::shared_ptr<arrow::StructArray>& rows,
+                            const std::string& field_name, const std::string& expected_json,
+                            bool blob_as_descriptor) const {
+        auto map_array =
+            std::dynamic_pointer_cast<arrow::MapArray>(rows->GetFieldByName(field_name));
+        ASSERT_TRUE(map_array) << field_name;
+        ASSERT_OK_AND_ASSIGN(auto normalized,
+                             NormalizeMapBlobValues(map_array, blob_as_descriptor));
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(map_array->type(), expected_json)
+                            .ValueOrDie();
+        ASSERT_TRUE(expected->Equals(normalized))
+            << field_name << " expected: " << expected->ToString()
+            << " actual: " << normalized->ToString();
+    }
+
     /// Verify DataFileMeta properties from a scan plan.
     /// Each vector element corresponds to one expected DataFileMeta (ordered by file index).
     static void VerifyDataFileMetas(
@@ -603,11 +645,13 @@ TEST_P(BlobTableInteTest, TestAppendTableWriteWithBlobAsDescriptorTrue) {
                                  arrow::field("f1", arrow::int32()),
                                  BlobUtils::ToArrowField("blob", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},       {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},      {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_AS_DESCRIPTOR, "true"},   {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_AS_DESCRIPTOR, "true"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -644,11 +688,13 @@ TEST_P(BlobTableInteTest, TestAppendTableWriteWithBlobAsDescriptorFalse) {
                                  arrow::field("f1", arrow::int32()),
                                  BlobUtils::ToArrowField("blob", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},       {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},      {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_AS_DESCRIPTOR, "false"},  {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_AS_DESCRIPTOR, "false"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -679,10 +725,13 @@ TEST_P(BlobTableInteTest, TestWriteNullOnMissingFile) {
                                  BlobUtils::ToArrowField("blob", true)};
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},       {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},      {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_AS_DESCRIPTOR, "true"},   {Options::BLOB_WRITE_NULL_ON_MISSING_FILE, "true"},
+        {Options::FILE_FORMAT, GetParam()},
+        {Options::TARGET_FILE_SIZE, "700"},
+        {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},
+        {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_AS_DESCRIPTOR, "true"},
+        {Options::BLOB_WRITE_NULL_ON_MISSING_FILE, "true"},
         {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -739,11 +788,13 @@ TEST_P(BlobTableInteTest, TestMissingFileFailsWriteWhenWriteNullDisabled) {
                                  arrow::field("f1", arrow::int32()),
                                  BlobUtils::ToArrowField("blob", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},       {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},      {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_AS_DESCRIPTOR, "true"},   {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_AS_DESCRIPTOR, "true"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -771,7 +822,6 @@ TEST_P(BlobTableInteTest, TestWriteNullOnFetchFailure) {
                                  BlobUtils::ToArrowField("blob", true)};
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, GetParam()},
         {Options::TARGET_FILE_SIZE, "700"},
         {Options::BUCKET, "-1"},
@@ -838,7 +888,6 @@ TEST_P(BlobTableInteTest, TestWriteNullOnFetchFailureCoversMissingFile) {
                                  BlobUtils::ToArrowField("blob", true)};
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, GetParam()},
         {Options::TARGET_FILE_SIZE, "700"},
         {Options::BUCKET, "-1"},
@@ -940,8 +989,7 @@ TEST_P(BlobTableInteTest, TestBasic) {
 }
 
 TEST_P(BlobTableInteTest, TestBlobFilesAcrossSchemaIds) {
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1116,8 +1164,7 @@ TEST_P(BlobTableInteTest, TestMultipleAppends) {
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobOnlyWriteWithFirstRowId) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1198,8 +1245,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateFallback) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()),
                                  BlobUtils::ToArrowField("b0", /*nullable=*/true)};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1282,8 +1328,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateFallback) {
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateMultipleLayers) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1353,10 +1398,11 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateMultipleLayers) {
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateWithDeletionVectors) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
-        {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::DELETION_VECTORS_ENABLED, "true"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields);
@@ -1437,8 +1483,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateWithDeletionVectors)
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateCompactedLayers) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1504,8 +1549,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateCompactedLayers) {
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateWithRowRanges) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1564,8 +1608,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateWithRowRanges) {
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateRowTrackingWithSubrangeLayer) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("b0", /*nullable=*/true)};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1650,8 +1693,7 @@ TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateRowTrackingWithSubra
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateAllPlaceholderRowTracking) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("b0", /*nullable=*/true)};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1706,8 +1748,7 @@ TEST_P(BlobTableInteTest, TestBlobValueEqualToPlaceholderSentinelBytes) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()),
                                  BlobUtils::ToArrowField("b0", /*nullable=*/true)};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1773,8 +1814,7 @@ TEST_P(BlobTableInteTest, TestBlobSentinelValueInBaseLayerDegradesToNull) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()),
                                  BlobUtils::ToArrowField("b0", /*nullable=*/true)};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -1817,13 +1857,10 @@ TEST_P(BlobTableInteTest, TestUserSuppliedInternalPlaceholderOptionsIgnored) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()),
                                  BlobUtils::ToArrowField("b0", /*nullable=*/true)};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::ROW_TRACKING_ENABLED, "true"},
-                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
-                                                  {BlobDefs::kWritePlaceholderKey, "true"},
-                                                  {BlobDefs::kEmitPlaceholderSentinelKey, "true"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, GetParam()},       {Options::FILE_SYSTEM, "local"},
+        {Options::ROW_TRACKING_ENABLED, "true"},  {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {BlobDefs::kWritePlaceholderKey, "true"}, {BlobDefs::kEmitPlaceholderSentinelKey, "true"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields);
@@ -1844,8 +1881,7 @@ TEST_P(BlobTableInteTest, TestUserSuppliedInternalPlaceholderOptionsIgnored) {
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobOnlyFirstCommitFailsWithoutFirstRowId) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::utf8()), BlobUtils::ToArrowField("b0")};
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
                                                   {Options::DATA_EVOLUTION_ENABLED, "true"}};
@@ -2002,10 +2038,9 @@ TEST_P(BlobTableInteTest, TestMoreDataWithDataEvolution) {
 
 TEST_P(BlobTableInteTest, TestBlobWriteMultiRound) {
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},        {Options::FILE_FORMAT, GetParam()},
-        {Options::FILE_SYSTEM, "local"},          {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::BLOB_TARGET_FILE_SIZE, "1000"}, {Options::TARGET_FILE_SIZE, "100"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"}};
+        {Options::FILE_FORMAT, GetParam()},      {Options::FILE_SYSTEM, "local"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::BLOB_TARGET_FILE_SIZE, "1000"},
+        {Options::TARGET_FILE_SIZE, "100"},      {Options::DATA_EVOLUTION_ENABLED, "true"}};
     CreateTable(/*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -2045,7 +2080,6 @@ TEST_P(BlobTableInteTest, TestExternalPath) {
     std::string external_test_dir = external_dir->Str();
 
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, GetParam()},
         {Options::FILE_SYSTEM, "local"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -2106,10 +2140,11 @@ TEST_P(BlobTableInteTest, TestExternalPath) {
 TEST_P(BlobTableInteTest, TestPartitionWithPredicate) {
     auto file_format = GetParam();
     std::vector<std::string> partition_keys = {"f0"};
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
-        {Options::FILE_SYSTEM, "local"},           {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"}, {"parquet.write.max-row-group-length", "1"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::FILE_SYSTEM, "local"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {"parquet.write.max-row-group-length", "1"}};
 
     CreateTable(partition_keys, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -2226,8 +2261,7 @@ TEST_P(BlobTableInteTest, TestPredicate) {
         return;
     }
     if (GetParam() == "mosaic") {
-        CreateTable(/*partition_keys=*/{}, {{Options::MANIFEST_FORMAT, "orc"},
-                                            {Options::FILE_FORMAT, GetParam()},
+        CreateTable(/*partition_keys=*/{}, {{Options::FILE_FORMAT, GetParam()},
                                             {Options::FILE_SYSTEM, "local"},
                                             {Options::ROW_TRACKING_ENABLED, "true"},
                                             {Options::DATA_EVOLUTION_ENABLED, "true"},
@@ -2566,14 +2600,11 @@ TEST_P(BlobTableInteTest, TestWithRowIdsSimple) {
 
 TEST_P(BlobTableInteTest, TestWithRowIdsForMultipleBlobFiles) {
     auto file_format = GetParam();
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, file_format},
-                                                  {Options::TARGET_FILE_SIZE, "1000"},
-                                                  {Options::BLOB_TARGET_FILE_SIZE, "80"},
-                                                  {Options::BUCKET, "-1"},
-                                                  {Options::ROW_TRACKING_ENABLED, "true"},
-                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
-                                                  {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},     {Options::TARGET_FILE_SIZE, "1000"},
+        {Options::BLOB_TARGET_FILE_SIZE, "80"},  {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::FILE_SYSTEM, "local"}};
     CreateTable(/*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields_);
@@ -2676,11 +2707,12 @@ TEST_P(BlobTableInteTest, TestAppendTableWriteWithMultipleBlobFields) {
         arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
         BlobUtils::ToArrowField("blob1", true), BlobUtils::ToArrowField("blob2", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},       {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},      {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -2703,8 +2735,7 @@ TEST_P(BlobTableInteTest, TestAppendWriteWithNullBlob) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("blob", true)};
 
-    std::map<std::string, std::string> options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                  {Options::FILE_FORMAT, GetParam()},
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
                                                   {Options::BUCKET, "-1"},
                                                   {Options::FILE_SYSTEM, "local"},
                                                   {Options::ROW_TRACKING_ENABLED, "true"},
@@ -2810,11 +2841,13 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorField) {
                                  BlobUtils::ToArrowField("b0", true),
                                  BlobUtils::ToArrowField("b1", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},   {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"}, {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -2868,11 +2901,13 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorFieldPartialInline) {
         BlobUtils::ToArrowField("b1", true), BlobUtils::ToArrowField("b2", true),
         BlobUtils::ToArrowField("b3", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},   {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"}, {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -2931,11 +2966,13 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorMultiCommitAndShuffledReadSchema) {
         BlobUtils::ToArrowField("b1", true), BlobUtils::ToArrowField("b2", true),
         BlobUtils::ToArrowField("b3", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},   {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"}, {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
     auto schema = arrow::schema(fields);
@@ -3060,7 +3097,6 @@ TEST_P(BlobTableInteTest, TestSharedShreddingWithBlobDataEvolution) {
         BlobUtils::ToArrowField("payload"),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, GetParam()},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -3120,7 +3156,6 @@ TEST_P(BlobTableInteTest, TestMultipleSharedShreddingMapsWithBlobDataEvolution) 
         BlobUtils::ToArrowField("payload"),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, GetParam()},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -3181,7 +3216,6 @@ TEST_P(BlobTableInteTest, TestSharedShreddingMapOverrideWithBlobDataEvolution) {
         BlobUtils::ToArrowField("payload"),
     };
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, GetParam()},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -3240,7 +3274,6 @@ TEST_P(BlobTableInteTest, TestOrcMapStorageLayoutEvolutionWithBlobDataEvolution)
         BlobUtils::ToArrowField("payload"),
     };
     std::map<std::string, std::string> options_v0 = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, "orc"},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -3311,11 +3344,13 @@ TEST_P(BlobTableInteTest, TestDataEvolutionWithBlobDescriptorField) {
         BlobUtils::ToArrowField("b1", true), BlobUtils::ToArrowField("b2", true),
         BlobUtils::ToArrowField("b3", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},   {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"}, {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -3428,11 +3463,13 @@ TEST_P(BlobTableInteTest, TestBlobDescriptorFieldWriteRawBytesDirectly) {
                                  BlobUtils::ToArrowField("b0", true),
                                  BlobUtils::ToArrowField("b1", true)};
 
-    std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},         {Options::FILE_FORMAT, GetParam()},
-        {Options::TARGET_FILE_SIZE, "700"},        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},   {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"}, {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::TARGET_FILE_SIZE, "700"},
+                                                  {Options::BUCKET, "-1"},
+                                                  {Options::ROW_TRACKING_ENABLED, "true"},
+                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
+                                                  {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"},
+                                                  {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -3467,7 +3504,6 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamTable) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, file_format},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -3636,13 +3672,10 @@ TEST_P(BlobTableInteTest, TestForwardBlobViewReference) {
     // dynamically disabled can succeed on it.
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
-    std::map<std::string, std::string> source_options = {{Options::MANIFEST_FORMAT, "orc"},
-                                                         {Options::FILE_FORMAT, file_format},
-                                                         {Options::BUCKET, "-1"},
-                                                         {Options::ROW_TRACKING_ENABLED, "true"},
-                                                         {Options::DATA_EVOLUTION_ENABLED, "true"},
-                                                         {Options::BLOB_VIEW_FIELD, "view"},
-                                                         {Options::FILE_SYSTEM, "local"}};
+    std::map<std::string, std::string> source_options = {
+        {Options::FILE_FORMAT, file_format},     {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_VIEW_FIELD, "view"},      {Options::FILE_SYSTEM, "local"}};
     CreateTable(fields, /*partition_keys=*/{}, source_options);
     std::string source_table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
@@ -3787,13 +3820,9 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
                                           BlobUtils::ToArrowField("b1", true)};
     auto upstream_schema = arrow::schema(upstream_fields);
     std::map<std::string, std::string> upstream_options = {
-        {Options::MANIFEST_FORMAT, "orc"},
-        {Options::FILE_FORMAT, file_format},
-        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"},
-        {Options::FILE_SYSTEM, "local"}};
+        {Options::FILE_FORMAT, file_format},       {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"},   {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_DESCRIPTOR_FIELD, "b0,b1"}, {Options::FILE_SYSTEM, "local"}};
 
     ::ArrowSchema upstream_c_schema;
     ASSERT_TRUE(arrow::ExportSchema(*upstream_schema, &upstream_c_schema).ok());
@@ -3829,7 +3858,6 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithUpstreamDescriptorBlob) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, file_format},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -3935,7 +3963,6 @@ TEST_P(BlobTableInteTest, TestBlobViewFieldWithMultipleUpstreamTables) {
                                  BlobUtils::ToArrowField("view1", true),
                                  BlobUtils::ToArrowField("view2", true)};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, file_format},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -4213,13 +4240,9 @@ TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
                                           BlobUtils::ToArrowField("blob", true)};
     auto upstream_schema = arrow::schema(upstream_fields);
     std::map<std::string, std::string> upstream_options = {
-        {Options::MANIFEST_FORMAT, "orc"},
-        {Options::FILE_FORMAT, file_format},
-        {Options::BUCKET, "-1"},
-        {Options::ROW_TRACKING_ENABLED, "true"},
-        {Options::DATA_EVOLUTION_ENABLED, "true"},
-        {Options::BLOB_AS_DESCRIPTOR, "true"},
-        {Options::FILE_SYSTEM, "local"}};
+        {Options::FILE_FORMAT, file_format},     {Options::BUCKET, "-1"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::BLOB_AS_DESCRIPTOR, "true"},   {Options::FILE_SYSTEM, "local"}};
 
     // Create the upstream table at the fallback path: <warehouse>/db/table (no .db).
     auto upstream_dir = UniqueTestDirectory::Create("local");
@@ -4260,7 +4283,6 @@ TEST_P(BlobTableInteTest, TestBlobViewWithFallbackPath) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  BlobUtils::ToArrowField("view", true)};
     std::map<std::string, std::string> options = {
-        {Options::MANIFEST_FORMAT, "orc"},
         {Options::FILE_FORMAT, file_format},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -4353,6 +4375,113 @@ TEST_P(BlobTableInteTest, TestReadBlobDescriptorFieldFromJava) {
                          ConvertDescriptorToRawBlob(read_struct, {"b0", "b1"}, rewrite));
     ASSERT_OK_AND_ASSIGN(auto expected_with_rk, PrependRowKindColumn(raw_array));
     ASSERT_TRUE(resolved->Equals(expected_with_rk));
+}
+
+TEST_P(BlobTableInteTest, TestReadMapBlobTableFromJava) {
+    if (GetParam() != "parquet") {
+        GTEST_SKIP() << "the Java fixture uses Parquet";
+    }
+    const std::string table_path = GetDataDir() + "/parquet/map_blob_java.db/map_blob_java";
+    const std::vector<std::string> read_fields = {"id",
+                                                  "string_payloads",
+                                                  "boolean_payloads",
+                                                  "tinyint_payloads",
+                                                  "smallint_payloads",
+                                                  "int_payloads",
+                                                  "bigint_payloads",
+                                                  "date_payloads",
+                                                  "binary_payloads",
+                                                  "compact_decimal_payloads",
+                                                  "large_decimal_payloads"};
+
+    for (int64_t snapshot_id : {1, 3}) {
+        ScanContextBuilder scan_builder(table_path);
+        scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id));
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
+
+        size_t string_layer_count = 0;
+        for (const auto& split : plan->Splits()) {
+            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            ASSERT_TRUE(data_split);
+            for (const auto& file : data_split->DataFiles()) {
+                if (file->write_cols ==
+                    std::optional<std::vector<std::string>>({"string_payloads"})) {
+                    ++string_layer_count;
+                }
+            }
+        }
+        ASSERT_EQ(snapshot_id == 1 ? 1 : 3, string_layer_count);
+
+        for (bool blob_as_descriptor : {false, true}) {
+            std::map<std::string, std::string> read_options = {
+                {Options::BLOB_AS_DESCRIPTOR, blob_as_descriptor ? "true" : "false"}};
+            ASSERT_OK_AND_ASSIGN(auto result, ReadTable(table_path, read_fields, plan,
+                                                        /*predicate=*/nullptr, read_options));
+            ASSERT_TRUE(result);
+            auto combined = arrow::Concatenate(result->chunks()).ValueOrDie();
+            auto rows = std::dynamic_pointer_cast<arrow::StructArray>(combined);
+            ASSERT_TRUE(rows);
+            ASSERT_EQ(4, rows->length());
+            const auto& ids = checked_cast<const arrow::Int32Array&>(*rows->GetFieldByName("id"));
+            for (int64_t i = 0; i < ids.length(); ++i) {
+                ASSERT_EQ(i + 1, ids.Value(i));
+            }
+
+            CheckMapBlobColumn(
+                rows, "string_payloads",
+                R"json([[["", "string-empty"], ["alpha", "string-alpha"]], [], null, [["omega", "string-omega"]]])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "boolean_payloads",
+                R"json([[[false, "bool-false"], [true, "bool-true"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "tinyint_payloads",
+                R"json([[[-128, "tiny-min"], [-1, "tiny-negative"], [127, "tiny-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "smallint_payloads",
+                R"json([[[-32768, "small-min"], [-1, "small-negative"], [32767, "small-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "int_payloads",
+                R"json([[[-2147483648, "int-min"], [-1, "int-negative"], [2147483647, "int-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "bigint_payloads",
+                R"json([[[-9223372036854775808, "big-min"], [-1, "big-negative"], [9223372036854775807, "big-max"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "date_payloads",
+                R"json([[[-1, "date-negative"], [0, "date-epoch"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "compact_decimal_payloads",
+                R"json([[["-99999999.99", "compact-negative"], ["99999999.99", "compact-positive"]], null, null, null])json",
+                blob_as_descriptor);
+            CheckMapBlobColumn(
+                rows, "large_decimal_payloads",
+                R"json([[["-999999999999999999.99", "large-negative"], ["999999999999999999.99", "large-positive"]], null, null, null])json",
+                blob_as_descriptor);
+
+            auto binary_map =
+                std::dynamic_pointer_cast<arrow::MapArray>(rows->GetFieldByName("binary_payloads"));
+            ASSERT_TRUE(binary_map);
+            ASSERT_OK_AND_ASSIGN(auto normalized_binary,
+                                 NormalizeMapBlobValues(binary_map, blob_as_descriptor));
+            const auto& binary_keys =
+                checked_cast<const arrow::BinaryArray&>(*normalized_binary->keys());
+            const auto& binary_values =
+                checked_cast<const arrow::LargeBinaryArray&>(*normalized_binary->items());
+            ASSERT_EQ(2, normalized_binary->value_length(0));
+            ASSERT_EQ("", binary_keys.GetString(0));
+            ASSERT_EQ(std::string("\0\xff\1\2", 4), binary_keys.GetString(1));
+            ASSERT_EQ("binary-empty", binary_values.GetString(0));
+            ASSERT_EQ("binary-bytes", binary_values.GetString(1));
+        }
+    }
 }
 
 }  // namespace paimon::test

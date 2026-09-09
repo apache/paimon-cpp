@@ -1266,7 +1266,9 @@ TEST_P(MergeTreeWriterTest, TestCloseBeforePrepareCommit) {
 
 TEST_P(MergeTreeWriterTest, TestCloseDeletesUncommittedFiles) {
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
-                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"},
+                                               {"file-index.bitmap.columns", "f1"},
+                                               {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1B"}}));
 
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -1291,10 +1293,13 @@ TEST_P(MergeTreeWriterTest, TestCloseDeletesUncommittedFiles) {
     ASSERT_OK(merge_writer->Compact(/*full_compaction=*/false));
 
     std::string expected_data_file_path = dir->Str() + "/data-" + uuid + "-0.orc";
+    std::string expected_index_file_path = expected_data_file_path + ".index";
     ASSERT_TRUE(options.GetFileSystem()->Exists(expected_data_file_path).value());
+    ASSERT_TRUE(options.GetFileSystem()->Exists(expected_index_file_path).value());
 
     ASSERT_OK(merge_writer->Close());
     ASSERT_FALSE(options.GetFileSystem()->Exists(expected_data_file_path).value());
+    ASSERT_FALSE(options.GetFileSystem()->Exists(expected_index_file_path).value());
 }
 
 TEST_P(MergeTreeWriterTest, TestAutoFlush) {
@@ -1580,6 +1585,15 @@ TEST_P(MergeTreeWriterTest, TestUpdateCompactResultDeleteIntermediateFile) {
     auto file_a = CreateMeta("file_a", /*level=*/0);
     auto file_x = CreateMeta("file_x", /*level=*/0);
     auto file_y = CreateMeta("file_y", /*level=*/1);
+    file_x->extra_files = {"file_x.index"};
+
+    std::vector<std::string> file_x_paths = path_factory->CollectFiles(file_x);
+    ASSERT_EQ(2, file_x_paths.size());
+    for (const std::string& path : file_x_paths) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output,
+                             options.GetFileSystem()->Create(path, /*overwrite=*/true));
+        ASSERT_OK(output->Close());
+    }
 
     merge_writer->compact_before_ = {file_a};
     merge_writer->compact_after_ = {file_x};
@@ -1590,6 +1604,9 @@ TEST_P(MergeTreeWriterTest, TestUpdateCompactResultDeleteIntermediateFile) {
     ASSERT_OK(merge_writer->UpdateCompactResult(compact_result));
     ASSERT_EQ(merge_writer->compact_before_, std::vector<std::shared_ptr<DataFileMeta>>({file_a}));
     ASSERT_EQ(merge_writer->compact_after_, std::vector<std::shared_ptr<DataFileMeta>>({file_y}));
+    for (const std::string& path : file_x_paths) {
+        ASSERT_FALSE(options.GetFileSystem()->Exists(path).value()) << path;
+    }
 }
 
 TEST_P(MergeTreeWriterTest, TestUpdateCompactResultPropagatesChangelog) {
@@ -1706,20 +1723,25 @@ TEST_P(MergeTreeWriterTest, TestCloseSkipsDeleteForUpgradedFilesInCompactAfter) 
     std::string intermediate_file_name = "data-intermediate-0.orc";
     std::string upgraded_file_path = dir->Str() + "/" + upgraded_file_name;
     std::string intermediate_file_path = dir->Str() + "/" + intermediate_file_name;
+    std::string upgraded_index_path = upgraded_file_path + ".index";
+    std::string intermediate_index_path = intermediate_file_path + ".index";
 
     // Create placeholder files on disk
-    ASSERT_OK_AND_ASSIGN(auto out1,
-                         options.GetFileSystem()->Create(upgraded_file_path, /*overwrite=*/true));
-    ASSERT_OK(out1->Close());
-    ASSERT_OK_AND_ASSIGN(auto out2, options.GetFileSystem()->Create(intermediate_file_path,
-                                                                    /*overwrite=*/true));
-    ASSERT_OK(out2->Close());
+    const std::vector<std::string> placeholder_paths = {
+        upgraded_file_path, intermediate_file_path, upgraded_index_path, intermediate_index_path};
+    for (const std::string& path : placeholder_paths) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output,
+                             options.GetFileSystem()->Create(path, /*overwrite=*/true));
+        ASSERT_OK(output->Close());
+    }
 
     ASSERT_TRUE(options.GetFileSystem()->Exists(upgraded_file_path).value());
     ASSERT_TRUE(options.GetFileSystem()->Exists(intermediate_file_path).value());
 
     auto upgraded_file = CreateMeta(upgraded_file_name, /*level=*/1);
     auto intermediate_file = CreateMeta(intermediate_file_name, /*level=*/1);
+    upgraded_file->extra_files = {upgraded_file_name + ".index"};
+    intermediate_file->extra_files = {intermediate_file_name + ".index"};
 
     // Setup: upgraded_file appears in both compact_before_ and compact_after_
     // (simulating an upgrade operation where the file is promoted to a higher level).
@@ -1732,10 +1754,14 @@ TEST_P(MergeTreeWriterTest, TestCloseSkipsDeleteForUpgradedFilesInCompactAfter) 
     // upgraded_file should NOT be deleted (it's in compact_before_)
     ASSERT_TRUE(options.GetFileSystem()->Exists(upgraded_file_path).value())
         << "Upgraded file should be preserved because it exists in compact_before_";
+    ASSERT_TRUE(options.GetFileSystem()->Exists(upgraded_index_path).value())
+        << "Upgraded file index should be preserved with its data file";
 
     // intermediate_file SHOULD be deleted (it's only in compact_after_)
     ASSERT_FALSE(options.GetFileSystem()->Exists(intermediate_file_path).value())
         << "Intermediate file should be deleted because it's not in compact_before_";
+    ASSERT_FALSE(options.GetFileSystem()->Exists(intermediate_index_path).value())
+        << "Intermediate file index should be deleted with its data file";
 }
 
 TEST_F(MergeTreeWriterTest, TestSpillWithSameKeyDeduplicate) {

@@ -251,20 +251,27 @@ TEST(BinaryRowPartitionComputerTest, TestNullOrWhitespaceOnlyStr) {
         arrow::field("f0", arrow::utf8()),
         arrow::field("f1", arrow::utf8()),
         arrow::field("f2", arrow::utf8()),
+        arrow::field("f3", arrow::utf8()),
     };
 
     auto schema = arrow::schema(fields);
-    std::vector<std::string> partition_keys = {"f0", "f1", "f2"};
+    std::vector<std::string> partition_keys = {"f0", "f1", "f2", "f3"};
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<BinaryRowPartitionComputer> computer,
         BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
                                            /*legacy_partition_name_enabled=*/true, pool));
 
-    ASSERT_OK_AND_ASSIGN(auto partition_key_values,
-                         computer->GeneratePartitionVector(BinaryRowGenerator::GenerateRow(
-                             {std::string(" "), std::string(""), std::string("ab ")}, pool.get())));
+    ASSERT_OK_AND_ASSIGN(
+        auto partition_key_values,
+        computer->GeneratePartitionVector(BinaryRowGenerator::GenerateRow(
+            {std::string(" "), std::string(""), std::string("ab "), std::string(u8"\u3000\u2000")},
+            pool.get())));
     std::vector<std::pair<std::string, std::string>> expected = {
-        {"f0", "__DEFAULT_PARTITION__"}, {"f1", "__DEFAULT_PARTITION__"}, {"f2", "ab "}};
+        {"f0", "__DEFAULT_PARTITION__"},
+        {"f1", "__DEFAULT_PARTITION__"},
+        {"f2", "ab "},
+        {"f3", "__DEFAULT_PARTITION__"},
+    };
     ASSERT_EQ(partition_key_values, expected);
 }
 
@@ -296,6 +303,44 @@ TEST(BinaryRowPartitionComputerTest, TestNormalizePartialPartitionSpec) {
 
     ASSERT_NOK_WITH_MSG(non_legacy_computer->NormalizePartitionSpec({{"unknown", "value"}}),
                         "field unknown does not exist in partition keys");
+}
+
+TEST(BinaryRowPartitionComputerTest, TestToPartialBinaryRow) {
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    std::shared_ptr<arrow::Schema> schema =
+        arrow::schema({arrow::field("pt", arrow::int32()), arrow::field("region", arrow::utf8())});
+    std::vector<std::string> partition_keys = {"pt", "region"};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<BinaryRowPartitionComputer> computer,
+        BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
+                                           /*legacy_partition_name_enabled=*/true, pool));
+
+    // A key the spec leaves out is null, and two spellings of the same value give the same row,
+    // which is what makes the row comparable.
+    ASSERT_OK_AND_ASSIGN(BinaryRow one, computer->ToPartialBinaryRow({{"pt", "1"}}));
+    ASSERT_OK_AND_ASSIGN(BinaryRow padded_one, computer->ToPartialBinaryRow({{"pt", "01"}}));
+    ASSERT_EQ(one, padded_one);
+    ASSERT_FALSE(one.IsNullAt(0));
+    ASSERT_TRUE(one.IsNullAt(1));
+
+    // The default partition name is the null partition; a blank value is not, unlike what
+    // `NormalizePartitionSpec()` renders back out.
+    ASSERT_OK_AND_ASSIGN(BinaryRow null_region,
+                         computer->ToPartialBinaryRow({{"region", "__DEFAULT_PARTITION__"}}));
+    ASSERT_OK_AND_ASSIGN(BinaryRow blank_region, computer->ToPartialBinaryRow({{"region", " "}}));
+    ASSERT_TRUE(null_region.IsNullAt(1));
+    ASSERT_FALSE(blank_region.IsNullAt(1));
+    ASSERT_FALSE(null_region == blank_region);
+    using PartitionSpec = std::map<std::string, std::string>;
+    ASSERT_OK_AND_ASSIGN(PartitionSpec null_normalized,
+                         computer->NormalizePartitionSpec({{"region", "__DEFAULT_PARTITION__"}}));
+    ASSERT_OK_AND_ASSIGN(PartitionSpec blank_normalized,
+                         computer->NormalizePartitionSpec({{"region", " "}}));
+    ASSERT_EQ(null_normalized, blank_normalized);
+
+    ASSERT_NOK_WITH_MSG(computer->ToPartialBinaryRow({{"unknown", "value"}}),
+                        "field unknown does not exist in partition keys");
+    ASSERT_NOK(computer->ToPartialBinaryRow({{"pt", "abc"}}));
 }
 
 TEST(BinaryRowPartitionComputerTest, TestPartToSimpleString) {

@@ -124,8 +124,7 @@ Status MergeTreeWriter::DoClose() {
         }
     }
     for (const auto& file : delete_files) {
-        // Keep Java parity: temporary file cleanup is quiet.
-        [[maybe_unused]] auto s = options_.GetFileSystem()->Delete(path_factory_->ToPath(file));
+        DeleteFileQuietly(file);
     }
 
     write_buffer_->Clear();
@@ -266,8 +265,7 @@ Status MergeTreeWriter::UpdateCompactResult(const std::shared_ptr<CompactResult>
             // 2. This file is not the input of upgraded.
             if (!in_compact_before(file->file_name) &&
                 after_files.find(file->file_name) == after_files.end()) {
-                auto fs = options_.GetFileSystem();
-                [[maybe_unused]] auto s = fs->Delete(path_factory_->ToPath(file));
+                DeleteFileQuietly(file);
             }
         } else {
             compact_before_.push_back(file);
@@ -280,6 +278,14 @@ Status MergeTreeWriter::UpdateCompactResult(const std::shared_ptr<CompactResult>
                                     compact_result->Changelog().begin(),
                                     compact_result->Changelog().end());
     return UpdateCompactDeletionFile(compact_result->DeletionFile());
+}
+
+void MergeTreeWriter::DeleteFileQuietly(const std::shared_ptr<DataFileMeta>& file) const {
+    std::shared_ptr<FileSystem> fs = options_.GetFileSystem();
+    for (const std::string& path : path_factory_->CollectFiles(file)) {
+        // Keep Java parity: temporary and intermediate file cleanup is quiet.
+        [[maybe_unused]] Status status = fs->Delete(path);
+    }
 }
 
 Status MergeTreeWriter::UpdateCompactDeletionFile(

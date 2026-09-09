@@ -77,6 +77,17 @@ class LiteralConverterTest : public ::testing::Test {
             ASSERT_EQ(result, expected[i]);
         }
     }
+
+    void CheckLiteralsToArray(const FieldType& type, const std::vector<Literal>& literals,
+                              const std::shared_ptr<arrow::Array>& expected) const {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::Array> array,
+            LiteralConverter::ConvertLiteralsToArray(type, literals, arrow::default_memory_pool()));
+        ASSERT_TRUE(array->Equals(*expected))
+            << "actual: " << array->ToString() << ", expected: " << expected->ToString();
+        // the array reads back as the literals it was built from, the null ones included
+        CheckResult(array, literals);
+    }
 };
 
 TEST_F(LiteralConverterTest, TestBooleanLiteral) {
@@ -436,6 +447,152 @@ TEST_F(LiteralConverterTest, TestDictType) {
                     {Literal(FieldType::STRING, "bar", 3), Literal(FieldType::STRING, "baz", 3),
                      Literal(FieldType::STRING, "foo", 3), Literal(FieldType::STRING, "baz", 3),
                      Literal(FieldType::STRING, "foo", 3), Literal(FieldType::STRING)}));
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArray) {
+    // Every writable field type converts to an array and back, the null literal included, so each
+    // case asserts `ConvertLiteralsToArray` and `ConvertLiteralsFromArray` agree on every type.
+    CheckLiteralsToArray(
+        FieldType::BOOLEAN, {Literal(true), Literal(FieldType::BOOLEAN), Literal(false)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::boolean(), R"([true, null, false])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::TINYINT,
+        {Literal(static_cast<int8_t>(4)), Literal(FieldType::TINYINT),
+         Literal(static_cast<int8_t>(-5))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int8(), R"([4, null, -5])").ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::SMALLINT,
+        {Literal(static_cast<int16_t>(45)), Literal(FieldType::SMALLINT),
+         Literal(static_cast<int16_t>(-55))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int16(), R"([45, null, -55])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::INT, {Literal(456), Literal(FieldType::INT), Literal(-567)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([456, null, -567])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::BIGINT, {Literal(4l), Literal(FieldType::BIGINT), Literal(-5l)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), R"([4, null, -5])").ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::FLOAT, {Literal(4.5f), Literal(FieldType::FLOAT), Literal(-5.25f)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::float32(), R"([4.5, null, -5.25])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::DOUBLE, {Literal(4.5), Literal(FieldType::DOUBLE), Literal(-5.25)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::float64(), R"([4.5, null, -5.25])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::DATE,
+        {Literal(FieldType::DATE, 0), Literal(FieldType::DATE), Literal(FieldType::DATE, -5)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::date32(), R"([0, null, -5])")
+            .ValueOrDie());
+    std::string str = "苹果";
+    CheckLiteralsToArray(
+        FieldType::STRING,
+        {Literal(FieldType::STRING, "apple", 5), Literal(FieldType::STRING),
+         Literal(FieldType::STRING, str.data(), str.size())},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["apple", null, "苹果"])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::BINARY,
+        {Literal(FieldType::BINARY, "apple", 5), Literal(FieldType::BINARY),
+         Literal(FieldType::BINARY, str.data(), str.size())},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::binary(), R"(["apple", null, "苹果"])")
+            .ValueOrDie());
+    // a decimal is written with the precision and the scale its literals carry
+    CheckLiteralsToArray(
+        FieldType::DECIMAL,
+        {Literal(Decimal(21, 3, DecimalUtils::StrToInt128("-123456789987654321234").value())),
+         Literal(FieldType::DECIMAL), Literal(Decimal(21, 3, 123456))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::decimal128(21, 3),
+                                                  R"(["-123456789987654321.234", null, "123.456"])")
+            .ValueOrDie());
+    // a timestamp is written with the finest time unit that keeps the values, one per case, and
+    // the JSON reader takes a raw integer in the unit of the type it is given
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp::FromEpochMillis(123000l)), Literal(FieldType::TIMESTAMP),
+         Literal(Timestamp::FromEpochMillis(-456000l))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MILLI),
+                                                  R"([123000, null, -456000])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp(123000l, 1000)), Literal(FieldType::TIMESTAMP),
+         Literal(Timestamp(-456000l, 2000))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::MICRO),
+                                                  R"([123000001, null, -455999998])")
+            .ValueOrDie());
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp(123000l, 456789)), Literal(FieldType::TIMESTAMP),
+         Literal(Timestamp(-456000l, 1))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::NANO),
+                                                  R"([123000456789, null, -455999999999])")
+            .ValueOrDie());
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {
+    // no literal at all still gives an array typed after the field type
+    CheckLiteralsToArray(
+        FieldType::INT, {},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([])").ValueOrDie());
+    // and a field type is all a null literal needs to be written
+    CheckLiteralsToArray(
+        FieldType::STRING, {Literal(FieldType::STRING), Literal(FieldType::STRING)},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"([null, null])").ValueOrDie());
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArrayUnsupportedType) {
+    // a timestamp takes its arrow type from a literal, so it needs one that is not null
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::TIMESTAMP, {},
+                                                                 arrow::default_memory_pool()),
+                        "without a non null literal");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::TIMESTAMP, {Literal(FieldType::TIMESTAMP)}, arrow::default_memory_pool()),
+        "without a non null literal");
+    // a decimal takes its arrow type from a literal, so it needs one that is not null
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {},
+                                                                 arrow::default_memory_pool()),
+                        "without a non null literal");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(FieldType::DECIMAL)},
+                                                 arrow::default_memory_pool()),
+        "without a non null literal");
+    // and every non null literal has to carry the same precision and scale
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(21, 5, 123456))},
+            arrow::default_memory_pool()),
+        "do not share one precision and scale");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::DECIMAL, {Literal(Decimal(21, 3, 123456)), Literal(Decimal(20, 3, 123456))},
+            arrow::default_memory_pool()),
+        "do not share one precision and scale");
+    // a precision arrow rejects is reported instead of checked fatally
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::DECIMAL, {Literal(Decimal(0, 0, 1))},
+                                                 arrow::default_memory_pool()),
+        "Decimal precision out of range");
+    // the field types no caller asks for yet
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::BLOB, {}, arrow::default_memory_pool()),
+        "Not support converting literals of BLOB type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::ARRAY, {},
+                                                                 arrow::default_memory_pool()),
+                        "Not support converting literals of ARRAY type to an arrow array");
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(FieldType::MAP, {}, arrow::default_memory_pool()),
+        "Not support converting literals of MAP type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::STRUCT, {},
+                                                                 arrow::default_memory_pool()),
+                        "Not support converting literals of STRUCT type to an arrow array");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(FieldType::UNKNOWN, {},
+                                                                 arrow::default_memory_pool()),
+                        "Not support converting literals of UNKNOWN");
 }
 
 }  // namespace paimon::test

@@ -35,6 +35,7 @@ namespace paimon {
 class ScanContextBuilder;
 class ScanFilter;
 class Executor;
+class FormatTable;
 class MemoryPool;
 class Predicate;
 
@@ -54,7 +55,8 @@ class PAIMON_EXPORT ScanContext {
                 const std::shared_ptr<FileSystem>& specific_file_system,
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
-                const std::shared_ptr<Cache>& cache);
+                const std::shared_ptr<Cache>& cache,
+                const std::shared_ptr<FormatTable>& format_table);
 
     ~ScanContext();
 
@@ -105,6 +107,12 @@ class PAIMON_EXPORT ScanContext {
         return cache_;
     }
 
+    /// The format table this context was built from, or null when it names a table path and the
+    /// schema under that path says what kind of table it is.
+    const std::shared_ptr<FormatTable>& GetFormatTable() const {
+        return format_table_;
+    }
+
  private:
     std::string path_;
     bool is_streaming_mode_;
@@ -118,6 +126,7 @@ class PAIMON_EXPORT ScanContext {
     std::optional<std::string> table_schema_;
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
+    std::shared_ptr<FormatTable> format_table_;
 };
 
 /// Filter configuration for table scan operations
@@ -152,6 +161,15 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// Constructs a `ScanContextBuilder` with required parameters.
     /// @param path The root path of the table.
     explicit ScanContextBuilder(const std::string& path);
+
+    /// Constructs a `ScanContextBuilder` for a format table that is already loaded: the only way
+    /// to scan one whose schema lives in a metastore rather than under its location, such as a
+    /// table a REST catalog serves. The table carries what such a location does not say, so
+    /// `SetTableSchema()` and `WithFileSystem()` are refused here rather than ignored.
+    ///
+    /// @param table The format table to scan, as `Catalog::GetFormatTable()` hands it back.
+    explicit ScanContextBuilder(const std::shared_ptr<FormatTable>& table);
+
     ~ScanContextBuilder();
     /// If limit is not set, it defaults to unlimited.
     ScanContextBuilder& SetLimit(int32_t limit);

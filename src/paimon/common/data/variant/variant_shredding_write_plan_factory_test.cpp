@@ -47,8 +47,6 @@ class VariantShreddingWritePlanFactoryTest : public ::testing::Test {
     }
 
     Result<CoreOptions> MakeOptions(std::map<std::string, std::string> options) const {
-        // Keep the manifest format resolvable in test binaries without the avro plugin.
-        options.emplace("manifest.format", "parquet");
         return CoreOptions::FromMap(options);
     }
 

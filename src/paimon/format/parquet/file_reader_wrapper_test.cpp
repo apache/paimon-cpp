@@ -46,9 +46,14 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/record_batch.h"
 #include "paimon/testing/utils/testharness.h"
 #include "parquet/arrow/reader.h"
+#include "parquet/file_reader.h"
+#include "parquet/metadata.h"
+#include "parquet/page_index.h"
 #include "parquet/properties.h"
 
 namespace arrow {
@@ -271,6 +276,39 @@ TEST_F(FileReaderWrapperTest, NullFileReader) {
                                                   /*batch_size=*/0,
                                                   /*pool=*/arrow_pool_),
                         "file reader wrapper create failed. file reader is nullptr");
+}
+
+TEST_F(FileReaderWrapperTest, PredicateReadsOnlyItsPageIndexesAndKeepsPayloadReadable) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "predicate-index.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/1000, /*enable_page_index=*/true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path));
+    auto tracking_input = std::make_shared<ReadTrackingInputStream>(input);
+    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapperOnStream(tracking_input));
+    auto metadata = reader->GetFileReader()->parquet_reader()->metadata();
+    auto index_ranges =
+        ::parquet::PageIndexReader::DeterminePageIndexRangesInRowGroup(*metadata->RowGroup(0), {1});
+    ASSERT_TRUE(index_ranges.column_index.has_value());
+    ASSERT_TRUE(index_ranges.offset_index.has_value());
+    int64_t bytes_before = tracking_input->GetPositionalReadBytes();
+    auto predicate = PredicateBuilder::Equal(1, "col2", FieldType::INT, Literal(25));
+    ASSERT_OK_AND_ASSIGN(auto ranges, reader->CalculateFilteredRowRanges(
+                                          0, predicate, {{"col1", 0}, {"col2", 1}, {"col3", 2}}));
+    ASSERT_EQ(10, ranges.RowCount());
+    ASSERT_EQ(index_ranges.column_index->length + index_ranges.offset_index->length,
+              tracking_input->GetPositionalReadBytes() - bytes_before);
+
+    // The predicate's read hint must not restrict subsequent payload offset-index reads.
+    ASSERT_OK(reader->PrepareForReading(
+        {TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, ranges)}, {0, 1, 2}));
+    ASSERT_OK_AND_ASSIGN(auto batch, reader->Next());
+    ASSERT_TRUE(batch);
+    auto expected = PrepareArray(PrepareArrowSchema().second, /*record_batch_size=*/10,
+                                 /*offset=*/20);
+    auto expected_batch = arrow::RecordBatch::FromStructArray(expected);
+    ASSERT_TRUE(expected_batch.ok());
+    ASSERT_TRUE(batch->Equals(*expected_batch.ValueOrDie()));
+    ASSERT_OK_AND_ASSIGN(auto end, reader->Next());
+    ASSERT_FALSE(end);
 }
 
 TEST_F(FileReaderWrapperTest, Simple) {

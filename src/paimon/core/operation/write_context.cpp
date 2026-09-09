@@ -28,6 +28,7 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 
@@ -42,7 +43,8 @@ WriteContext::WriteContext(const std::string& root_path, const std::string& comm
                            const std::shared_ptr<FileSystem>& specific_file_system,
                            const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                            const std::shared_ptr<RealtimeContext>& realtime_context,
-                           const std::map<std::string, std::string>& options)
+                           const std::map<std::string, std::string>& options,
+                           const std::shared_ptr<FormatTable>& format_table)
     : root_path_(root_path),
       commit_user_(commit_user),
       branch_(branch),
@@ -58,7 +60,8 @@ WriteContext::WriteContext(const std::string& root_path, const std::string& comm
       specific_file_system_(specific_file_system),
       fs_scheme_to_identifier_map_(fs_scheme_to_identifier_map),
       realtime_context_(realtime_context),
-      options_(options) {}
+      options_(options),
+      format_table_(format_table) {}
 
 WriteContext::~WriteContext() = default;
 
@@ -85,6 +88,10 @@ class WriteContextBuilder::Impl {
 
  private:
     std::string root_path_;
+    /// Kept across `Reset()`, as `root_path_` is: both name the table this builder builds for,
+    /// rather than a setting of one write to it.
+    std::shared_ptr<FormatTable> format_table_;
+    bool built_from_format_table_ = false;
     std::string commit_user_;
     std::string branch_ = BranchManager::DEFAULT_MAIN_BRANCH;
     std::optional<int32_t> write_id_;
@@ -107,6 +114,15 @@ WriteContextBuilder::WriteContextBuilder(const std::string& root_path,
     : impl_(std::make_unique<Impl>()) {
     impl_->root_path_ = root_path;
     impl_->commit_user_ = commit_user;
+}
+
+WriteContextBuilder::WriteContextBuilder(const std::shared_ptr<FormatTable>& table)
+    : impl_(std::make_unique<Impl>()) {
+    impl_->format_table_ = table;
+    impl_->built_from_format_table_ = true;
+    if (table != nullptr) {
+        impl_->root_path_ = table->Location();
+    }
 }
 
 WriteContextBuilder::~WriteContextBuilder() = default;
@@ -194,10 +210,29 @@ WriteContextBuilder& WriteContextBuilder::WithRealtimeContext(
 }
 
 Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
+    if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
+        return Status::Invalid("cannot write with null format table");
+    }
+    if (impl_->format_table_ != nullptr) {
+        // The table already answers each of these, and from a source this cannot see behind, so a
+        // second answer is refused rather than silently dropped.
+        if (impl_->specific_file_system_ != nullptr ||
+            !impl_->fs_scheme_to_identifier_map_.empty()) {
+            return Status::Invalid(
+                "a format table carries the file system it was loaded through, so WithFileSystem() "
+                "and WithFileSystemSchemeToIdentifierMap() cannot be used with one");
+        }
+        if (impl_->branch_ != BranchManager::DEFAULT_MAIN_BRANCH) {
+            return Status::Invalid(
+                "a format table has no branches, so WithBranch() cannot be used with one");
+        }
+    }
     PAIMON_ASSIGN_OR_RAISE(impl_->root_path_, PathUtil::NormalizePath(impl_->root_path_));
     if (impl_->root_path_.empty()) {
         return Status::Invalid("root path is empty");
     }
+    // The branch names a directory under the root path, so it must stay a single path component.
+    PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(impl_->branch_));
     bool enable_multi_thread_spill = impl_->spill_thread_number_ > 0;
     if (enable_multi_thread_spill) {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -208,7 +243,8 @@ Result<std::unique_ptr<WriteContext>> WriteContextBuilder::Finish() {
         impl_->ignore_num_bucket_check_, impl_->ignore_previous_files_, enable_multi_thread_spill,
         impl_->write_id_, impl_->branch_, impl_->write_schema_, impl_->memory_pool_,
         impl_->executor_, impl_->temp_directory_, impl_->specific_file_system_,
-        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_);
+        impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, impl_->options_,
+        impl_->format_table_);
     impl_->Reset();
     return ctx;
 }

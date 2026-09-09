@@ -31,6 +31,7 @@
 
 namespace arrow {
 class Field;
+class MemoryPool;
 class Schema;
 class StructArray;
 }  // namespace arrow
@@ -88,6 +89,13 @@ class DataFileIndexWriter {
     Result<std::shared_ptr<Bytes>> SerializeContainer();
     Status WriteExternal(const std::string& path, const std::shared_ptr<Bytes>& bytes);
 
+    /// Decodes the dictionary-encoded columns the parquet passthrough forwards, and nothing else.
+    /// Built on first use, since most batches decode nothing.
+    ///
+    /// Declared before `writers_` on purpose: buffers allocated through the adaptor keep a raw
+    /// pointer to it, so it has to be destroyed last, after anything an index writer may still
+    /// hold. See ArrowMemPoolAdaptor in common/utils/arrow/mem_utils.cpp.
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::vector<IndexWriterEntry> writers_;
     int64_t in_manifest_threshold_;
     std::shared_ptr<FileSystem> file_system_;

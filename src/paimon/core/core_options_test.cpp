@@ -37,7 +37,8 @@ namespace paimon::test {
 
 TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
-    ASSERT_EQ(core_options.GetManifestFormat()->Identifier(), "avro");
+    std::shared_ptr<FileFormat> manifest_format = core_options.GetManifestFormat();
+    ASSERT_EQ(manifest_format->Identifier(), "avro");
     ASSERT_EQ(core_options.GetFileFormat()->Identifier(), "parquet");
     ASSERT_EQ(nullptr, core_options.GetChangelogFileFormat());
     ASSERT_EQ(core_options.GetWriteFileFormat(0)->Identifier(), "parquet");
@@ -198,7 +199,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::FILE_SYSTEM, "Local"},
         {Options::FILE_FORMAT, "ORC"},
         {Options::CHANGELOG_FILE_FORMAT, "avro"},
-        {Options::MANIFEST_FORMAT, "avRo"},
+        {"manifest.format", "ORC"},
         {Options::BUCKET, "3"},
         {Options::PAGE_SIZE, "128 kb"},
         {Options::TARGET_FILE_SIZE, "512MB"},
@@ -339,8 +340,8 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(core_options.GetWriteFileFormat(1)->Identifier(), "orc");
     ASSERT_EQ(core_options.GetWriteFileFormat(3)->Identifier(), "parquet");
 
-    auto manifest_format = core_options.GetManifestFormat();
-    ASSERT_EQ(manifest_format->Identifier(), "avro");
+    std::shared_ptr<FileFormat> manifest_format = core_options.GetManifestFormat();
+    ASSERT_EQ(manifest_format->Identifier(), "orc");
 
     ASSERT_EQ(3, core_options.GetBucket());
     ASSERT_EQ(128 * 1024L, core_options.GetPageSize());
@@ -545,6 +546,23 @@ TEST(CoreOptionsTest, TestInvalidCase) {
                         "must not be negative");
 }
 
+TEST(CoreOptionsTest, TestRejectBranchLeavingTableRoot) {
+    // Both branch options name a directory under the table root, so a value that is not a single
+    // path component is rejected before it can be joined into a path.
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BRANCH, "rt/../../../../../outside"}}),
+                        "branch name cannot contain path separators");
+    ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::BRANCH, ".."}}),
+                        "branch name cannot be '.' or '..'");
+    ASSERT_NOK_WITH_MSG(
+        CoreOptions::FromMap({{Options::SCAN_FALLBACK_BRANCH, "rt/../../../../../outside"}}),
+        "branch name cannot contain path separators");
+
+    // An empty branch selects the main branch and stays accepted.
+    ASSERT_OK(CoreOptions::FromMap({{Options::BRANCH, ""}}));
+    ASSERT_OK(CoreOptions::FromMap({{Options::BRANCH, "rt"}}));
+    ASSERT_OK(CoreOptions::FromMap({{Options::SCAN_FALLBACK_BRANCH, "rt"}}));
+}
+
 TEST(CoreOptionsTest, TestNestedKeyNullStrategyIsCaseInsensitive) {
     const std::vector<std::pair<std::string, CoreOptions::NestedKeyNullStrategy>> cases = {
         {"MERGE", CoreOptions::NestedKeyNullStrategy::MERGE},
@@ -585,6 +603,63 @@ TEST(CoreOptionsTest, TestLookupCompactMaxIntervalComputedValue) {
     };
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
     ASSERT_EQ(13, core_options.GetLookupCompactMaxInterval());
+}
+
+TEST(CoreOptionsTest, TestFormatTableOptions) {
+    // A format table reads these through `CoreOptions` like every other option, so their defaults
+    // are asserted here rather than a second time in the format table tests.
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
+        ASSERT_FALSE(core_options.FileSuffixIncludeCompression());
+        ASSERT_FALSE(core_options.FormatTablePartitionOnlyValueInPath());
+        ASSERT_FALSE(core_options.MetastorePartitionedTable());
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions core_options,
+            CoreOptions::FromMap({{Options::FILE_SUFFIX_INCLUDE_COMPRESSION, "true"},
+                                  {Options::FORMAT_TABLE_PARTITION_PATH_ONLY_VALUE, "true"},
+                                  {Options::METASTORE_PARTITIONED_TABLE, "true"}}));
+        ASSERT_TRUE(core_options.FileSuffixIncludeCompression());
+        ASSERT_TRUE(core_options.FormatTablePartitionOnlyValueInPath());
+        ASSERT_TRUE(core_options.MetastorePartitionedTable());
+    }
+}
+
+TEST(CoreOptionsTest, TestFormatTableFileCompression) {
+    // One chain, in the order the rest of the paimon ecosystem resolves it: `file.compression`,
+    // then `format-table.file.compression`, then the bare `compression` key an engine's own
+    // writer reads, then what the format itself writes.
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{Options::FILE_COMPRESSION, "lz4"},
+                                                   {Options::FORMAT_TABLE_FILE_COMPRESSION, "none"},
+                                                   {"compression", "zstd"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "lz4");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{Options::FORMAT_TABLE_FILE_COMPRESSION, "lz4"},
+                                                   {"compression", "zstd"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "lz4");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{"compression", "lz4"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "lz4");
+    }
+    // Left to the format: parquet writes snappy, orc zstd. This differs from
+    // `GetFileCompression()`, a managed table's `file.compression`, which defaults to zstd.
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "snappy");
+        ASSERT_EQ(core_options.GetFileCompression(), "zstd");
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                             CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+        ASSERT_EQ(core_options.FormatTableFileCompression(), "zstd");
+    }
 }
 
 TEST(CoreOptionsTest, TestDynamicPartitionOverwriteOption) {

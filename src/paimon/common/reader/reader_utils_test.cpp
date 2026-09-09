@@ -28,9 +28,11 @@
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
 #include "arrow/c/abi.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
@@ -144,6 +146,52 @@ TEST(ReaderUtilsTest, TestApplyBitmapToReadBatch) {
     check_result("[10, 11, 12, 13, 14]", {}, "[]",
                  "NextBatchWithBitmap should always return the result with at least one valid row "
                  "except eof");
+}
+
+TEST(ReaderUtilsTest, TestApplyBitmapToReadBatchKeepsDictionaryEncoding) {
+    // A deletion vector on an append table routes the Parquet dictionary passthrough through here:
+    // ParquetFileBatchReader reports SupportPreciseBitmapSelection() == false, so RawFileSplitRead
+    // wraps it and the surviving rows are cut out by slicing and concatenating. The encoding
+    // survives that only because every slice shares one dictionary and arrow::Concatenate has a
+    // fast path for it; if it ever unified or densified instead, a compaction with deletion
+    // vectors would quietly stop forwarding the encoding the rewrite asked for.
+    auto dictionary_type = arrow::dictionary(arrow::int32(), arrow::utf8());
+    auto make_encoded = [&dictionary_type](const std::string& indices_json) {
+        return arrow::DictionaryArray::FromArrays(
+                   dictionary_type,
+                   arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), indices_json)
+                       .ValueOrDie(),
+                   arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["a", "b"])")
+                       .ValueOrDie())
+            .ValueOrDie();
+    };
+    std::shared_ptr<arrow::Array> ids =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 2, 3, 4]").ValueOrDie();
+    auto src_array = arrow::StructArray::Make({make_encoded("[0, 1, 0, 1, 0]"), ids},
+                                              std::vector<std::string>{"s", "id"})
+                         .ValueOrDie();
+
+    ASSERT_OK_AND_ASSIGN(auto src_batch, ReadResultCollector::GetReadBatch(src_array));
+    // Two disjoint runs, so the filter has to concatenate rather than hand back a single slice.
+    auto batch_with_bitmap =
+        std::make_pair(std::move(src_batch), RoaringBitmap32::From(std::vector<int32_t>{0, 1, 4}));
+    std::shared_ptr<arrow::MemoryPool> arrow_pool(arrow::default_memory_pool(),
+                                                  [](arrow::MemoryPool*) {});
+    ASSERT_OK_AND_ASSIGN(auto result_batch, ReaderUtils::ApplyBitmapToReadBatch(
+                                                std::move(batch_with_bitmap), arrow_pool));
+    // Imported directly rather than through ReadResultCollector::GetArray, which decodes
+    // dictionaries on the way out and would hide the very thing being asserted.
+    auto& [c_array, c_schema] = result_batch;
+    std::shared_ptr<arrow::Array> result =
+        arrow::ImportArray(c_array.get(), c_schema.get()).ValueOrDie();
+    ASSERT_EQ(3, result->length());
+    auto result_struct = checked_pointer_cast<arrow::StructArray>(result);
+    ASSERT_EQ(arrow::Type::DICTIONARY, result_struct->field(0)->type()->id());
+    ASSERT_TRUE(result_struct->field(0)->Equals(*make_encoded("[0, 1, 0]")))
+        << "actual=" << result_struct->field(0)->ToString();
+    std::shared_ptr<arrow::Array> expected_ids =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[0, 1, 4]").ValueOrDie();
+    ASSERT_TRUE(result_struct->field(1)->Equals(*expected_ids));
 }
 
 }  // namespace paimon::test

@@ -119,7 +119,7 @@ class CommitScannerTest : public testing::Test {
 
     Result<std::shared_ptr<IndexManifestFile>> CreateIndexManifestFile() const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> file_format,
-                               FileFormatFactory::Get("orc", {}));
+                               FileFormatFactory::Get("avro", {}));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
             FileStorePathFactory::Create(

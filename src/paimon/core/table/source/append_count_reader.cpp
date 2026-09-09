@@ -21,7 +21,6 @@
 
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/table/source/data_split_impl.h"
-#include "paimon/core/table/source/realtime_split.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -36,16 +35,6 @@ Result<int64_t> AppendCountReader::CountRows() {
 }
 
 Result<int64_t> AppendCountReader::CountSingleSplit(const std::shared_ptr<Split>& split) const {
-    std::shared_ptr<RealtimeSplit> realtime_split = std::dynamic_pointer_cast<RealtimeSplit>(split);
-    if (realtime_split) {
-        int64_t total = realtime_split->MemoryEndOffset() - realtime_split->CommittedEndOffset();
-        for (const std::shared_ptr<Split>& disk_split : realtime_split->DiskSplits()) {
-            PAIMON_ASSIGN_OR_RAISE(int64_t disk_count, CountSingleSplit(disk_split));
-            total += disk_count;
-        }
-        return total;
-    }
-
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
     if (!data_split) {
         return Status::Invalid("split cannot be cast to DataSplitImpl");

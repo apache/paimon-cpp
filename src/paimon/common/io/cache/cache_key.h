@@ -20,11 +20,76 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "paimon/cache/cache.h"
 
 namespace paimon {
+
+class SnapshotLiveManifestEntriesCacheKey : public CacheKey {
+ public:
+    static std::shared_ptr<CacheKey> ForExplicit(const std::string& table_path,
+                                                 const std::string& branch, int32_t bucket);
+    static std::shared_ptr<CacheKey> ForInferred(const std::string& table_path,
+                                                 const std::string& branch, int32_t bucket,
+                                                 int32_t total_buckets, int64_t schema_id);
+
+    bool IsIndex() const override {
+        return false;
+    }
+
+    bool Equals(const CacheKey& other) const override {
+        const auto* rhs = dynamic_cast<const SnapshotLiveManifestEntriesCacheKey*>(&other);
+        if (!rhs) {
+            return false;
+        }
+        return table_path_ == rhs->table_path_ && branch_ == rhs->branch_ &&
+               bucket_ == rhs->bucket_ && mode_ == rhs->mode_ &&
+               total_buckets_ == rhs->total_buckets_ && schema_id_ == rhs->schema_id_ &&
+               GetKind() == rhs->GetKind();
+    }
+
+    size_t HashCode() const override {
+        size_t seed = 0;
+        seed ^= std::hash<std::string>{}(table_path_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<std::string>{}(branch_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int32_t>{}(bucket_) + HASH_CONSTANT + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int32_t>{}(static_cast<int32_t>(GetKind())) + HASH_CONSTANT +
+                (seed << 6) + (seed >> 2);
+        seed ^= std::hash<std::optional<int32_t>>{}(total_buckets_) + HASH_CONSTANT + (seed << 6) +
+                (seed >> 2);
+        seed ^= std::hash<std::optional<int64_t>>{}(schema_id_) + HASH_CONSTANT + (seed << 6) +
+                (seed >> 2);
+        seed ^= std::hash<int32_t>{}(static_cast<int32_t>(mode_)) + HASH_CONSTANT + (seed << 6) +
+                (seed >> 2);
+        return seed;
+    }
+
+ private:
+    enum class Mode { kExplicit, kInferred };
+
+    SnapshotLiveManifestEntriesCacheKey(const std::string& table_path, const std::string& branch,
+                                        int32_t bucket, Mode mode,
+                                        std::optional<int32_t> total_buckets,
+                                        std::optional<int64_t> schema_id)
+        : CacheKey(CacheKind::SNAPSHOT_LIVE_MANIFEST),
+          table_path_(table_path),
+          branch_(branch),
+          bucket_(bucket),
+          mode_(mode),
+          total_buckets_(total_buckets),
+          schema_id_(schema_id) {}
+
+    static constexpr uint64_t HASH_CONSTANT = 0x9e3779b97f4a7c15ULL;
+
+    const std::string table_path_;
+    const std::string branch_;
+    const int32_t bucket_;
+    const Mode mode_;
+    const std::optional<int32_t> total_buckets_;
+    const std::optional<int64_t> schema_id_;
+};
 
 class PositionCacheKey : public CacheKey {
  public:

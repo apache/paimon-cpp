@@ -29,10 +29,12 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/math.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/format/parquet/column_index_filter.h"
 #include "paimon/format/parquet/page_filtered_row_group_reader.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/macros.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "parquet/arrow/reader.h"
 #include "parquet/arrow/schema.h"
 #include "parquet/file_reader.h"
@@ -602,8 +604,35 @@ Result<RowRanges> FileReaderWrapper::CalculateFilteredRowRanges(
             return RowRanges::CreateSingle(row_count);
         }
 
+        auto page_index_reader = GetPageIndexReader();
+        if (!page_index_reader) {
+            return RowRanges::CreateSingle(row_count);
+        }
+        std::set<std::string> field_names;
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &field_names));
+        std::vector<int32_t> predicate_columns;
+        for (const auto& name : field_names) {
+            auto it = column_name_to_index.find(name);
+            if (it == column_name_to_index.end()) {
+                return Status::Invalid(
+                    fmt::format("column '{}' not found in column_name_to_index", name));
+            }
+            predicate_columns.push_back(it->second);
+        }
+        if (predicate_columns.empty()) {
+            return RowRanges::CreateSingle(row_count);
+        }
+
+        // Arrow otherwise reads the column-index envelope of every column, including
+        // potentially large min/max values in payload columns not used by the predicate.
+        const std::vector<int32_t> row_groups = {row_group_index};
+        ScopeGuard clear_hint([&]() { page_index_reader->WillNotNeed(row_groups); });
+        page_index_reader->WillNeed(row_groups, predicate_columns,
+                                    {/*column_index=*/true, /*offset_index=*/true});
+        // Keep this restricted reader separate: projected payload columns still need
+        // their offset indexes when the data reader is initialized later.
         return ColumnIndexFilter::CalculateRowRanges(predicate,
-                                                     GetRowGroupPageIndexReader(row_group_index),
+                                                     page_index_reader->RowGroup(row_group_index),
                                                      column_name_to_index, row_count);
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::CalculateFilteredRowRanges")

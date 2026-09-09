@@ -211,11 +211,6 @@ Result<bool> RealtimeCommitProperties::AreRangesCommitted(
                 "real-time commit offset range partially overlaps committed offset for bucket {}",
                 partition_bucket.bucket));
         }
-        if (!range_committed && offset_range.begin != committed_end_offset) {
-            return Status::Invalid(
-                fmt::format("real-time commit offsets for bucket {} are not contiguous",
-                            partition_bucket.bucket));
-        }
         if (all_committed && all_committed.value() != range_committed) {
             return Status::Invalid(
                 "real-time commit ranges are only partially covered by committed offsets");
@@ -285,9 +280,9 @@ Result<std::map<std::string, std::string>> RealtimeCommitProperties::Build(
         }
         auto offset_iter = merged_offsets.find(partition_bucket);
         int64_t previous_end_offset = offset_iter == merged_offsets.end() ? 0 : offset_iter->second;
-        if (offset_range.begin != previous_end_offset) {
+        if (offset_range.begin < previous_end_offset) {
             return Status::Invalid(
-                fmt::format("real-time commit offsets for bucket {} are not contiguous",
+                fmt::format("real-time commit offsets for bucket {} overlap committed progress",
                             partition_bucket.bucket));
         }
         merged_offsets[partition_bucket] = offset_range.end;

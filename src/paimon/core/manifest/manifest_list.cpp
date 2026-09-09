@@ -41,11 +41,13 @@ class MemoryPool;
 ManifestList::ManifestList(const std::shared_ptr<FileSystem>& file_system,
                            const std::shared_ptr<ReaderBuilder>& reader_builder,
                            const std::shared_ptr<WriterBuilder>& writer_builder,
+                           const std::string& file_format_identifier,
                            const std::string& compression,
                            const std::shared_ptr<PathFactory>& path_factory,
                            const std::shared_ptr<Cache>& cache,
                            const std::shared_ptr<MemoryPool>& pool)
     : ObjectsFile<ManifestFileMeta>(file_system, reader_builder, writer_builder,
+                                    file_format_identifier,
                                     std::make_unique<ManifestFileMetaSerializer>(pool), compression,
                                     std::move(path_factory), cache, pool) {}
 
@@ -71,8 +73,9 @@ Result<std::unique_ptr<ManifestList>> ManifestList::Create(
     // create manifest list
     std::shared_ptr<PathFactory> manifest_list_path_factory =
         path_factory->CreateManifestListFactory();
-    return std::unique_ptr<ManifestList>(new ManifestList(
-        fs, reader_builder, writer_builder, compression, manifest_list_path_factory, cache, pool));
+    return std::unique_ptr<ManifestList>(new ManifestList(fs, reader_builder, writer_builder,
+                                                          file_format->Identifier(), compression,
+                                                          manifest_list_path_factory, cache, pool));
 }
 
 Result<std::pair<std::string, int64_t>> ManifestList::Write(

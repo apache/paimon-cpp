@@ -26,6 +26,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/type.h"
 #include "fmt/format.h"
@@ -42,6 +43,7 @@
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/predicate/predicate_utils.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
 
 namespace paimon {
