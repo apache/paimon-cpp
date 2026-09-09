@@ -35,18 +35,27 @@
 
 namespace paimon {
 
-/// A cache of fixed-size blocks of one file, serving the reads that no
-/// prefetched range covers: a parquet reader reads the footer and the page index
-/// before any range can be registered, and every reader of the file reads the
-/// same bytes.
+/// A cache of fixed-size blocks of one file, the fallback below the prefetched
+/// ranges: a read that no registered range covers is served here at block
+/// granularity instead of being left to the caller, which would read it from the
+/// underlying stream uncached and pay for it again on the next reader. It is a
+/// general mechanism over the whole file - any reader, any offset, any round of
+/// registered ranges - not a cache of one particular kind of read.
 ///
 /// Blocks are aligned to the END of the file: block 0 is
-/// [file_size - block_size, file_size). The metadata of a parquet/orc file lives
-/// in its tail and arrow reads exactly the last 64 KiB as the footer, so an
-/// end-aligned block matches that read instead of straddling two blocks. It also
-/// keeps every block inside the file, as long as the given file size is the size
-/// of the file: a block fetch failing because the file is shorter than that only
-/// costs the caching of that block, see Read().
+/// [file_size - block_size, file_size). The reads served here concentrate at the
+/// tail of a file: a reader reads the metadata of its file before it knows which
+/// ranges to register, and every reader of the file reads the same bytes. End
+/// alignment gives that region whole blocks - a read of the last block_size bytes
+/// of a file is one block whatever the file size - and leaves the only partial
+/// block at the head of the file. It also keeps every block inside the file, as
+/// long as the given file size is the size of the file: a block fetch failing
+/// because the file is shorter than that only costs the caching of that block,
+/// see Read().
+///
+/// One block serves one read: a read longer than a block, or straddling two, is
+/// declined and left to the caller instead of being fetched in pieces, so a
+/// served read stays one block, one fetch and one copy.
 ///
 /// A block is published before its fetch is dispatched, so concurrent readers of
 /// the same block wait for that one fetch instead of issuing their own.

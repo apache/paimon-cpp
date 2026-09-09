@@ -40,7 +40,10 @@ namespace paimon::test {
 class CacheInputStreamTest : public ::testing::Test {
  public:
     void SetUp() override {
-        pool_ = GetDefaultPool();
+        // A pool of its own, so that a cache buffer outliving the pool it was
+        // allocated from shows up instead of being covered by the global pool,
+        // which never goes away.
+        pool_ = std::shared_ptr<MemoryPool>(GetMemoryPool());
         test_dir_ = UniqueTestDirectory::Create();
         ASSERT_TRUE(test_dir_);
         content_ = "abcdefghijklmnopqrstuvwxyz0123456789";

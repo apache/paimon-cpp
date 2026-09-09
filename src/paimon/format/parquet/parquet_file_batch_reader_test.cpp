@@ -1679,17 +1679,22 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
     WriteArray(file_path_, src_array, arrow_schema, /*write_batch_size=*/10,
                /*enable_dictionary=*/true, /*max_row_group_length=*/10);
 
+    // A pool of its own, so that a buffer outliving the pool it was allocated
+    // from shows up instead of being covered by the global pool, which never
+    // goes away. Declared first, so that it outlives the cache and the reader.
+    std::shared_ptr<MemoryPool> pool(GetMemoryPool());
+
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> cache_stream, fs_->Open(file_path_));
     // The file size is left unknown so the block cache stays off: this test is
     // about the pre-buffered ranges feeding the cache.
-    auto cache = std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), /*file_size=*/0,
-                                                  GetDefaultPool());
+    auto cache =
+        std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), /*file_size=*/0, pool);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> reader_stream, fs_->Open(file_path_));
     auto cache_input_stream = std::make_shared<CacheInputStream>(std::move(reader_stream), cache);
 
     std::map<std::string, std::string> options;
     ParquetReaderBuilder builder(options, batch_size_);
-    builder.WithMemoryPool(GetDefaultPool());
+    builder.WithMemoryPool(pool);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> base_reader,
                          builder.Build(cache_input_stream));
     auto parquet_batch_reader = dynamic_cast<ParquetFileBatchReader*>(base_reader.get());
@@ -2111,17 +2116,22 @@ TEST_F(ParquetFileBatchReaderTest, TestBlockCacheSharesTailReadsAcrossReaders) {
     const int64_t tail_begin = file_length - static_cast<int64_t>(CacheConfig().GetBlockSize());
     ASSERT_GT(tail_begin, 0);
 
+    // A pool of its own, so that a buffer outliving the pool it was allocated
+    // from shows up instead of being covered by the global pool, which never
+    // goes away. Declared first, so that it outlives the cache and the readers.
+    std::shared_ptr<MemoryPool> pool(GetMemoryPool());
+
     auto tail_read_count = std::make_shared<std::atomic<int32_t>>(0);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> cache_stream, fs_->Open(file_path_));
     auto counting_cache_stream = std::make_shared<TailReadCountingInputStream>(
         std::move(cache_stream), tail_begin, tail_read_count);
-    auto cache = std::make_shared<ReadAheadCache>(
-        counting_cache_stream, CacheConfig(), static_cast<uint64_t>(file_length), GetDefaultPool());
+    auto cache = std::make_shared<ReadAheadCache>(counting_cache_stream, CacheConfig(),
+                                                  static_cast<uint64_t>(file_length), pool);
 
     std::map<std::string, std::string> options;
     options[PARQUET_READ_ENABLE_PAGE_INDEX_FILTER] = "true";
     ParquetReaderBuilder builder(options, batch_size_);
-    builder.WithMemoryPool(GetDefaultPool());
+    builder.WithMemoryPool(pool);
 
     constexpr int32_t kReaderCount = 3;
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;

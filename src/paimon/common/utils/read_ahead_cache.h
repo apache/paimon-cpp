@@ -64,12 +64,15 @@ class PAIMON_EXPORT ReadAheadCacheMetrics {
     /// the block granularity added on top of the requested ones.
     static inline const char BLOCK_FETCHES[] = "read-ahead-cache.block.fetches";
     static inline const char BLOCK_FETCH_BYTES[] = "read-ahead-cache.block.fetch-bytes";
-    /// Number of prefetch IO requests actually issued to the underlying stream.
-    /// These are the same requests that the `io.async.*` metrics of the prefetch
-    /// reader observe one layer below, counted here per cache rather than per
-    /// stream, so the two are expected to agree instead of adding up.
+    /// Number of IO requests the cache itself issued to the underlying stream:
+    /// the prefetch fetches plus the block fetches. The `io.async.*` metrics of
+    /// the prefetch reader count those same requests one layer below, but they
+    /// also count the async reads a sub-reader falls back to after this cache
+    /// declined them, so `io.async.requests >= io.count` rather than the two
+    /// agreeing.
     static inline const char IO_COUNT[] = "read-ahead-cache.io.count";
-    /// Total bytes requested by the prefetch IOs issued to the underlying stream.
+    /// Total bytes requested by the IOs the cache itself issued to the
+    /// underlying stream.
     static inline const char IO_BYTES[] = "read-ahead-cache.io.bytes";
 };
 
@@ -105,10 +108,10 @@ struct PAIMON_EXPORT ByteRange {
 /// ReleaseBuffers() or Reset(). It is meant to hold the prefetched ranges of
 /// a single data file, whose size is bounded by the reader's scan scope.
 ///
-/// Reads that the prefetched ranges do not cover (the footer and the page index
-/// of a parquet file are read before any range is registered) are served by a
-/// FileBlockCache instead of being left to the caller. That block cache is owned
-/// by this one and shares its lifetime: it is configured from `block_size` and
+/// Reads that the prefetched ranges do not cover - a reader reads the metadata
+/// of its file before any range is registered - are served by a FileBlockCache
+/// instead of being left to the caller. That block cache is owned by this one
+/// and shares its lifetime: it is configured from `block_size` and
 /// `block_cache_limit`, it survives Reset() - the blocks belong to the file
 /// rather than to a registration round - and it is released by ReleaseBuffers().
 class PAIMON_EXPORT ReadAheadCache {
@@ -150,11 +153,11 @@ class PAIMON_EXPORT ReadAheadCache {
     /// when the first Read() arrives, racing the caller's own miss fetch.
     void Warmup();
 
-    /// Collect hit/miss counters of Read() calls and the prefetch IO
-    /// counters into the given metrics as counters named after
+    /// Collect the counters of the Read() calls, of the block cache and of the
+    /// IOs into the given metrics as counters named after
     /// `ReadAheadCacheMetrics`. Only reads issued through Read() are counted
-    /// as hits/misses; prefetch fetches dispatched by the cache itself are
-    /// counted in the fetch counters instead.
+    /// as hits, block hits or misses; the fetches the cache dispatches itself
+    /// are counted in the io counters instead.
     /// @param metrics The metrics to write the counters into. A null
     /// pointer or a null shared pointer is a no-op.
     void CollectMetrics(std::shared_ptr<Metrics>* metrics) const;

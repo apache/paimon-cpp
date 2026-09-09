@@ -104,9 +104,10 @@ class PAIMON_EXPORT CacheConfig {
     uint64_t hole_size_limit_ = 8 * 1024;
     uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
     // Blocks are aligned to the END of the file, so a block never reaches past
-    // EOF. 64 KiB matches the footer read of the parquet reader (arrow's
-    // kDefaultFooterReadSize), which then covers exactly one block instead of
-    // straddling two.
+    // EOF. 64 KiB is the granularity the reads no prefetched range covers are
+    // shared at: small enough that a metadata read at the tail of a file is
+    // served by one block instead of straddling two, large enough that a block
+    // fetch does not pull in much more than the reads ask for.
     uint64_t block_size_ = 64 * 1024;
     // One block is enough for the metadata tail of a file; the limit only
     // bounds the pathological case, as blocks are never evicted.
