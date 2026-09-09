@@ -129,12 +129,14 @@ pushd "${build_dir}"
 
 ENABLE_LUMINA="ON"
 ENABLE_TANTIVY="ON"
+ENABLE_LANCE="ON"
 if [[ "${CC:-}" == *"gcc-8"* ]] || [[ "${CXX:-}" == *"g++-8"* ]]; then
     ENABLE_LUMINA="OFF"
     ENABLE_TANTIVY="OFF" # tantivy-fts (Rust FFI) is not built on the gcc-8 image.
 fi
 if [[ "${enable_tsan}" == "true" ]]; then
     ENABLE_TANTIVY="OFF" # Tantivy's Rust library is not TSAN-instrumented.
+    ENABLE_LANCE="OFF"   # Lance's Rust library is not TSAN-instrumented.
 fi
 # CI always builds natively, so the host architecture is the target architecture.
 host_arch=$(uname -m)
@@ -148,7 +150,7 @@ CMAKE_ARGS=(
     "-DCMAKE_BUILD_TYPE=${build_type}"
     "-DPAIMON_BUILD_TESTS=ON"
     "-DPAIMON_ENABLE_MOSAIC=ON"
-    "-DPAIMON_ENABLE_LANCE=ON"
+    "-DPAIMON_ENABLE_LANCE=${ENABLE_LANCE}"
     "-DPAIMON_ENABLE_JINDO=ON"
     "-DPAIMON_ENABLE_OSS=ON"
     "-DPAIMON_ENABLE_S3=ON"
