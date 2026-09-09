@@ -33,6 +33,7 @@
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/saturating_cast.h"
 #include "parquet/arrow/reader.h"
 #include "parquet/arrow/reader_internal.h"
 #include "parquet/arrow/schema.h"
@@ -42,6 +43,12 @@
 namespace paimon::parquet {
 
 namespace {
+
+/// Ceiling on the value bytes a leaf may reserve up front from column chunk metadata alone.
+/// The estimate it caps is a heuristic over footer fields, which are attacker-controlled and
+/// need not describe the pages this read touches, so it must not turn into an unbounded eager
+/// allocation. Past this size the builder's doubling is already amortized against a large read.
+constexpr int64_t kMaxMetadataValueBytesReservation = int64_t{16} * 1024 * 1024;
 
 struct DataPageLayout {
     int64_t column_chunk_offset;
@@ -365,17 +372,22 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
         // of offsets nobody writes.
         const int64_t reserve_values = effective_ranges.RowCount();
         int64_t reserve_value_bytes = 0;
-        if (column_chunk && column_chunk->num_values() > 0 && reserve_values > 0) {
-            // total_uncompressed_size covers page headers, levels and BYTE_ARRAY's 4-byte length
-            // prefixes on top of the payload, so the average width is an OVER-estimate — the safe
-            // direction: reserving more than needed costs one allocation, reserving less costs a
-            // doubling copy of everything read so far. Capped by the chunk, which no selection
-            // can exceed. Fixed-width leaves ignore the byte count entirely.
-            const double avg = static_cast<double>(column_chunk->total_uncompressed_size()) /
-                               static_cast<double>(column_chunk->num_values());
-            reserve_value_bytes = static_cast<int64_t>(
-                std::min<double>(avg * static_cast<double>(reserve_values),
-                                 static_cast<double>(column_chunk->total_uncompressed_size())));
+        const int64_t chunk_bytes = column_chunk ? column_chunk->total_uncompressed_size() : 0;
+        const int64_t chunk_values = column_chunk ? column_chunk->num_values() : 0;
+        if (chunk_bytes > 0 && chunk_values > 0 && reserve_values > 0) {
+            // A heuristic, not a bound. total_uncompressed_size is uncompressed but still
+            // ENCODED: a dictionary page stores each value once and its data pages only
+            // indices, DELTA_BYTE_ARRAY only prefix deltas, so both can decode into more Arrow
+            // payload than they occupy, while page headers, levels and BYTE_ARRAY length
+            // prefixes pull the other way. The average is also taken over the whole chunk,
+            // including the pages this selection skips, so it misleads when wide values sit in
+            // skipped pages. Either direction only costs performance — the reservation is a
+            // hint the builder grows past when short — but they are why the result is capped
+            // instead of trusted. Fixed-width leaves ignore the byte count entirely.
+            const double avg = static_cast<double>(chunk_bytes) / static_cast<double>(chunk_values);
+            reserve_value_bytes = std::min(
+                {SaturatingDoubleToInteger<int64_t>(avg * static_cast<double>(reserve_values)),
+                 chunk_bytes, kMaxMetadataValueBytesReservation});
         }
 
         PAIMON_RETURN_NOT_OK(ExecuteSkipReadPattern(col_idx, effective_ranges, effective_total,
