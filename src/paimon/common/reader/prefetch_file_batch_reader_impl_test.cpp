@@ -255,7 +255,7 @@ class PrefetchFileBatchReaderImplTest : public ::testing::Test,
         const std::shared_ptr<Predicate>& predicate,
         const std::optional<RoaringBitmap32>& selection_bitmap, int32_t batch_size,
         int32_t prefetch_max_parallel_num, bool read_ahead_cache_enabled,
-        WarmupMode warmup_mode = WarmupMode::FULL) const {
+        WarmupMode warmup_mode) const {
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<FileFormat> file_format,
                              FileFormatFactory::Get(file_format_str, {}));
         EXPECT_OK_AND_ASSIGN(auto reader_builder, file_format->CreateReaderBuilder(batch_size));
@@ -373,7 +373,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestSimple) {
                 prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
                 /*enable_adaptive_prefetch_strategy=*/false, executor_,
                 /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+                /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
         if (prefetch_max_parallel_num == 1) {
             ASSERT_NOK(
                 reader->GetReaderMetrics()->GetCounter(PrefetchIoMetrics::READ_LATENCY_COUNT));
@@ -401,7 +401,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestReadWithLimits) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/true, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/true, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     // simulate read limits, only read 8 batches
     for (int32_t i = 0; i < 8; i++) {
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
@@ -455,7 +455,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestReadWithoutInitializeReadRanges) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     // simulate read limits, only read 8 batches
     ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(),
                         "prefetch reader read ranges are not initialized");
@@ -473,7 +473,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestFailedIoMetrics) {
             /*prefetch_max_parallel_num=*/1, /*batch_size=*/10,
             /*prefetch_batch_count=*/2, /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/false, CacheConfig(),
-            /*enable_io_metrics=*/true, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/true, pool_, GetArrowPool(pool_), WarmupMode::FULL));
 
     ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "injected synchronous read failure");
     std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
@@ -562,7 +562,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, RefreshReadRanges) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     ASSERT_OK(prefetch_reader->RefreshReadRanges());
     std::vector<std::pair<uint64_t, uint64_t>> read_ranges_0 = {{0, 30}, {90, 101}};
@@ -593,7 +593,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, RefreshReadRangesDisablePrefetchByAdapti
             /*prefetch_batch_count=*/2,
             /*enable_adaptive_prefetch_strategy=*/true, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
 
     ASSERT_FALSE(reader->NeedPrefetch());
     std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
@@ -680,7 +680,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, SetReadRanges) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     ASSERT_FALSE(prefetch_reader->need_prefetch_);
     prefetch_reader->need_prefetch_ = true;
@@ -724,7 +724,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, SetReadRangesReturnErrorWhenPushDownFail
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
 
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     prefetch_reader->need_prefetch_ = true;
@@ -744,14 +744,14 @@ TEST_F(PrefetchFileBatchReaderImplTest, WorkloopSetReadStatusWhenCacheInitFailed
     invalid_cache_config.SetHoleSizeLimit(8 * 1024);
     invalid_cache_config.SetPreBufferLimit(128 * 1024);
 
-    ASSERT_OK_AND_ASSIGN(
-        auto reader,
-        PrefetchFileBatchReaderImpl::Create(
-            /*data_file_path=*/"", /*data_file_size=*/0, &reader_builder, mock_fs_,
-            prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
-            /*enable_adaptive_prefetch_strategy=*/false, executor_,
-            /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true,
-            invalid_cache_config, /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         PrefetchFileBatchReaderImpl::Create(
+                             /*data_file_path=*/"", /*data_file_size=*/0, &reader_builder, mock_fs_,
+                             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
+                             /*enable_adaptive_prefetch_strategy=*/false, executor_,
+                             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true,
+                             invalid_cache_config, /*enable_io_metrics=*/false, pool_,
+                             GetArrowPool(pool_), WarmupMode::FULL));
 
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     prefetch_reader->Workloop();
@@ -772,7 +772,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, DoReadBatchReturnOkWhenShutdown) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
 
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     prefetch_reader->is_shutdown_ = true;
@@ -791,7 +791,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, DoReadBatchReturnOkWhenNoCurrentReadRang
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/false, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
 
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     prefetch_reader->read_ranges_in_group_ = {{}};
@@ -810,7 +810,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestReadWithLargeBatchSize) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
     ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
     auto row_ids = array_and_row_ids.second;
@@ -831,7 +831,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestPartialReaderSuccessRead) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     for (int32_t i = 0; i < prefetch_max_parallel_num; i++) {
         dynamic_cast<MockFileBatchReader*>(prefetch_reader->readers_[i].get())
@@ -877,7 +877,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestAllReaderFailedWithIOError) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
 
     auto prefetch_reader = dynamic_cast<PrefetchFileBatchReaderImpl*>(reader.get());
     for (int32_t i = 0; i < prefetch_max_parallel_num; i++) {
@@ -916,7 +916,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestPrefetchWithEmptyData) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
     ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
     auto row_ids = array_and_row_ids.second;
@@ -936,7 +936,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestCallNextBatchAfterReadingEof) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
     ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
     auto row_ids = array_and_row_ids.second;
@@ -980,7 +980,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestCreateReaderWithoutNextBatch) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
 }
 
 TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
@@ -995,7 +995,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
             /*prefetch_max_parallel_num=*/0, batch_size, 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     }
     {
         ASSERT_NOK(PrefetchFileBatchReaderImpl::Create(
@@ -1003,7 +1003,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
             prefetch_max_parallel_num, /*batch_size=*/-1, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     }
     {
         ASSERT_NOK_WITH_MSG(
@@ -1022,7 +1022,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
             /*enable_adaptive_prefetch_strategy=*/false,
             /*executor=*/nullptr, /*initialize_read_ranges=*/true,
             /*read_ahead_cache_enabled=*/true, CacheConfig(), /*enable_io_metrics=*/false, pool_,
-            GetArrowPool(pool_)));
+            GetArrowPool(pool_), WarmupMode::FULL));
     }
     {
         ASSERT_NOK(PrefetchFileBatchReaderImpl::Create(
@@ -1030,7 +1030,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
             prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     }
     {
         ASSERT_NOK(PrefetchFileBatchReaderImpl::Create(
@@ -1038,7 +1038,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
             /*fs=*/nullptr, prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
             /*enable_adaptive_prefetch_strategy=*/false, executor_,
             /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+            /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
     }
     {
         ASSERT_OK_AND_ASSIGN(
@@ -1048,7 +1048,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
                 prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
                 /*enable_adaptive_prefetch_strategy=*/false, executor_,
                 /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+                /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_), WarmupMode::FULL));
         ASSERT_NOK_WITH_MSG(reader->SeekToRow(/*row_number=*/101),
                             "not support seek to row for prefetch reader");
     }
@@ -1074,7 +1074,7 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestPrefetchWithPredicatePushdownWithCom
     auto reader = PreparePrefetchReader(file_format, schema.get(), predicate,
                                         /*selection_bitmap=*/std::nullopt,
                                         /*batch_size=*/batch_size, /*prefetch_max_parallel_num=*/3,
-                                        read_ahead_cache_enabled);
+                                        read_ahead_cache_enabled, WarmupMode::FULL);
     ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
 
     arrow::ArrayVector expected_array_vector;
@@ -1120,7 +1120,7 @@ TEST_P(PrefetchFileBatchReaderImplTest,
     auto reader = PreparePrefetchReader(file_format, schema.get(), predicate,
                                         /*selection_bitmap=*/std::nullopt,
                                         /*batch_size=*/batch_size, /*prefetch_max_parallel_num=*/3,
-                                        read_ahead_cache_enabled);
+                                        read_ahead_cache_enabled, WarmupMode::FULL);
     ASSERT_OK(reader->RefreshReadRanges());
     ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
     ASSERT_OK_AND_ASSIGN(auto array_and_row_ids, CollectResultAndRowIds(reader.get()));
@@ -1152,7 +1152,8 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestPrefetchWithBitmap) {
                                           /*enable_adaptive_prefetch_strategy=*/false, executor_,
                                           /*initialize_read_ranges=*/true,
                                           /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                                          /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)));
+                                          /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_),
+                                          WarmupMode::FULL));
     ASSERT_OK_AND_ASSIGN(auto result_chunk_array,
                          ReadResultCollector::CollectResult(std::move(reader)));
 
@@ -1183,7 +1184,7 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestRowMapping) {
     auto reader = PreparePrefetchReader(file_format, schema.get(), predicate,
                                         /*selection_bitmap=*/std::nullopt,
                                         /*batch_size=*/10, /*prefetch_max_parallel_num=*/3,
-                                        read_ahead_cache_enabled);
+                                        read_ahead_cache_enabled, WarmupMode::FULL);
     ASSERT_NOK(reader->GetPreviousBatchFileRowId(0));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> batch,
                          paimon::test::ReadResultCollector::CollectResultOneBatch(reader.get()));

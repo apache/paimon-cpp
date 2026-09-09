@@ -54,6 +54,9 @@ struct DataFileReadOptions {
     CacheConfig cache_config;
     /// Whether the prefetching reader records what its I/O costs.
     bool prefetch_io_metrics_enabled = false;
+    /// How aggressively the prefetching reader warms up a file before it is read. It only matters
+    /// when prefetching, because that reader is the one that can start work ahead of the read.
+    WarmupMode warmup_mode = WarmupMode::FULL;
 };
 
 /// Opens one data file as a `FileBatchReader`.

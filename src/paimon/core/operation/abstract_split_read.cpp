@@ -138,6 +138,7 @@ DataFileReadOptions AbstractSplitRead::BuildDataFileReadOptions() const {
     read_options.read_ahead_cache_enabled = context_->ReadAheadCacheEnabled();
     read_options.cache_config = context_->GetCacheConfig();
     read_options.prefetch_io_metrics_enabled = options_.PrefetchIoMetricsEnabled();
+    read_options.warmup_mode = context_->GetWarmupMode();
     return read_options;
 }
 
