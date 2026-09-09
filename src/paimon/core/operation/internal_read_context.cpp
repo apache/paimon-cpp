@@ -276,8 +276,6 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     }
     // validate predicate
     if (context->GetPredicate()) {
-        PAIMON_RETURN_NOT_OK(
-            PredicateValidator::ValidatePredicateWithLiterals(context->GetPredicate()));
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *read_schema, context->GetPredicate(), /*validate_field_idx=*/true));
     }

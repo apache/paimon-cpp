@@ -309,8 +309,6 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(const std::shared_ptr<ScanCo
     // validate schema and scan filter
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
-        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithLiterals(
-            context->GetScanFilters()->GetPredicate()));
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *arrow_schema, context->GetScanFilters()->GetPredicate(),
             /*validate_field_idx=*/false));

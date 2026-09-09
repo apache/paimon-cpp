@@ -33,6 +33,18 @@ class Schema;
 namespace paimon::test {
 TEST(PredicateValidatorTest, TestValidateLiterals) {
     std::string str("apple");
+    std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({
+        arrow::field("f0", arrow::int64()),
+        arrow::field("f1", arrow::float32()),
+        arrow::field("f2", arrow::utf8()),
+        arrow::field("f3", arrow::boolean()),
+        arrow::field("f4", arrow::float64()),
+        arrow::field("f5", arrow::int8()),
+        arrow::field("f6", arrow::date32()),
+        arrow::field("f7", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f8", arrow::decimal128(23, 5)),
+        arrow::field("f9", arrow::binary()),
+    }));
     {
         ASSERT_OK_AND_ASSIGN(
             auto predicate,
@@ -59,7 +71,8 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                 PredicateBuilder::Equal(/*field_index=*/9, /*field_name=*/"f9", FieldType::BINARY,
                                         Literal(FieldType::BINARY, str.data(), str.size())),
             }));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithLiterals(predicate));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                                  /*validate_field_idx=*/true));
     }
     {
         // f1 field type is FLOAT, literal type is BIGINT
@@ -75,9 +88,10 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithLiterals(predicate),
-                            "field f1 has field type BIGINT in literal, mismatch "
-                            "field type FLOAT in predicate");
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "field f1 has field type BIGINT in literal, mismatch field type FLOAT in predicate");
     }
     {
         // f2 field type is STRING, literal type is BINARY
@@ -93,9 +107,10 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithLiterals(predicate),
-                            "field f2 has field type BINARY in literal, mismatch "
-                            "field type STRING in predicate");
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "field f2 has field type BINARY in literal, mismatch field type STRING in predicate");
     }
     {
         // f2 literal is null
@@ -111,8 +126,10 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithLiterals(predicate),
-                            "literal cannot be null in predicate, field name f2");
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                            /*validate_field_idx=*/true),
+            "literal cannot be null in predicate, field name f2");
     }
 }
 
@@ -178,7 +195,6 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithLiterals(predicate));
         ASSERT_NOK_WITH_MSG(
             PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
                                                             /*validate_field_idx=*/true),

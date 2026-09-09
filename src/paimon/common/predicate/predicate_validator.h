@@ -42,6 +42,14 @@ class PredicateValidator {
     PredicateValidator() = delete;
     ~PredicateValidator() = delete;
 
+    static Status ValidatePredicateWithSchema(const arrow::Schema& schema,
+                                              const std::shared_ptr<Predicate>& predicate,
+                                              bool validate_field_idx) {
+        PAIMON_RETURN_NOT_OK(ValidatePredicateWithLiterals(predicate));
+        return ValidatePredicateWithSchemaImpl(schema, predicate, validate_field_idx);
+    }
+
+ private:
     static Status ValidatePredicateWithLiterals(const std::shared_ptr<Predicate>& predicate) {
         if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
             const auto& field_name = leaf_predicate->FieldName();
@@ -71,9 +79,9 @@ class PredicateValidator {
         return Status::OK();
     }
 
-    static Status ValidatePredicateWithSchema(const arrow::Schema& schema,
-                                              const std::shared_ptr<Predicate>& predicate,
-                                              bool validate_field_idx) {
+    static Status ValidatePredicateWithSchemaImpl(const arrow::Schema& schema,
+                                                  const std::shared_ptr<Predicate>& predicate,
+                                                  bool validate_field_idx) {
         if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
             const auto& field_name = leaf_predicate->FieldName();
             // check field index
@@ -102,13 +110,12 @@ class PredicateValidator {
             const auto& children = compound_predicate->Children();
             for (const auto& child : children) {
                 PAIMON_RETURN_NOT_OK(
-                    ValidatePredicateWithSchema(schema, child, validate_field_idx));
+                    ValidatePredicateWithSchemaImpl(schema, child, validate_field_idx));
             }
         }
         return Status::OK();
     }
 
- private:
     static Status ValidateDecimalLiterals(const arrow::Decimal128Type& field_type,
                                           const LeafPredicate& predicate) {
         const std::string& field_name = predicate.FieldName();
