@@ -111,9 +111,10 @@ Status ValidateSharedShreddingFileFormat(const std::string& option_key,
 }
 
 Status ValidateVectorFileFormat(const std::string& option_key, const std::string& file_format) {
-    if (!StringUtils::EqualsIgnoreCase(file_format, "parquet")) {
+    if (!StringUtils::EqualsIgnoreCase(file_format, "parquet") &&
+        !StringUtils::EqualsIgnoreCase(file_format, "lance")) {
         return Status::Invalid(
-            fmt::format("VECTOR currently only supports parquet data files, but {} is {}.",
+            fmt::format("VECTOR currently only supports parquet/lance data files, but {} is {}.",
                         option_key, file_format));
     }
     return Status::OK();
@@ -339,6 +340,7 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateRowTracking(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateBlobFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMosaicDataFields(schema, options));
+    PAIMON_RETURN_NOT_OK(ValidateLanceDataFields(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateMapStorageLayout(schema, options));
     PAIMON_RETURN_NOT_OK(ValidateVectorFields(schema, options));
     return Status::OK();
@@ -798,6 +800,73 @@ Status SchemaValidation::ValidateMosaicDataFields(const TableSchema& schema,
             continue;
         }
         PAIMON_RETURN_NOT_OK(ValidateMosaicDataField(field.ArrowField()));
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Field>& field) {
+    if (VariantTypeUtils::IsVariantField(field)) {
+        return Status::Invalid("Lance file format does not support type VARIANT");
+    }
+    if (BlobUtils::IsBlobField(field)) {
+        return Status::Invalid("Lance file format does not support type BLOB");
+    }
+
+    const std::shared_ptr<arrow::DataType>& type = field->type();
+    switch (type->id()) {
+        case arrow::Type::BOOL:
+        case arrow::Type::INT8:
+        case arrow::Type::INT16:
+        case arrow::Type::INT32:
+        case arrow::Type::INT64:
+        case arrow::Type::FLOAT:
+        case arrow::Type::DOUBLE:
+        case arrow::Type::DATE32:
+        case arrow::Type::STRING:
+        case arrow::Type::BINARY:
+        case arrow::Type::TIME32:
+        case arrow::Type::DECIMAL128:
+        case arrow::Type::FIXED_SIZE_LIST:
+            return Status::OK();
+        case arrow::Type::TIMESTAMP: {
+            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*type);
+            if (!timestamp_type.timezone().empty()) {
+                return Status::Invalid(
+                    "Lance file format does not support type LOCAL_ZONED_TIMESTAMP");
+            }
+            return Status::OK();
+        }
+        case arrow::Type::LIST:
+            return ValidateLanceDataField(type->field(0));
+        case arrow::Type::STRUCT:
+            for (const std::shared_ptr<arrow::Field>& child : type->fields()) {
+                PAIMON_RETURN_NOT_OK(ValidateLanceDataField(child));
+            }
+            return Status::OK();
+        case arrow::Type::MAP:
+            return Status::Invalid("Lance file format does not support type MAP");
+        default:
+            break;
+    }
+    return Status::Invalid(
+        fmt::format("Lance file format does not support type {}", type->ToString()));
+}
+
+Status SchemaValidation::ValidateLanceDataFields(const TableSchema& schema,
+                                                 const CoreOptions& options) {
+    if (StringUtils::ToLowerCase(options.GetFileFormat()->Identifier()) != "lance") {
+        return Status::OK();
+    }
+
+    const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
+    const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
+                                                      inline_blob_fields.end());
+    for (const DataField& field : schema.Fields()) {
+        if (BlobUtils::IsBlobField(field.ArrowField()) &&
+            inline_blob_field_set.count(field.Name()) == 0) {
+            continue;
+        }
+        PAIMON_RETURN_NOT_OK(ValidateLanceDataField(field.ArrowField()));
     }
     return Status::OK();
 }

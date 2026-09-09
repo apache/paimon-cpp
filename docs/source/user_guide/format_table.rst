@@ -287,11 +287,13 @@ The layout, the option precedence and the read, write and overwrite semantics de
 follow Java Paimon's. What this implementation covers is nonetheless a subset of what Java's
 format table does; it does not yet support:
 
-* the ``csv``, ``json``, ``text`` and ``mosaic`` file formats, leaving ``parquet`` and ``orc``.
+* the ``csv``, ``json``, ``text``, ``lance`` and ``mosaic`` file formats, leaving ``parquet``
+  and ``orc``.
   The first three are line-delimited text in Java, which shares one line-reading layer between
   them; this library has no text file format at all, so the first of them to be added has to bring
-  that layer with it. ``mosaic`` is none of those: it has a reader and a writer of its own, which
-  this library builds under ``PAIMON_ENABLE_MOSAIC``, but a format table does not reach them yet;
+  that layer with it. ``lance`` and ``mosaic`` each have their own reader and writer, built under
+  ``PAIMON_ENABLE_LANCE`` and ``PAIMON_ENABLE_MOSAIC`` respectively, but a format table does not
+  reach them yet;
 * cutting one large data file into byte ranges so that several readers share it. Java does this
   for an uncompressed ``csv`` or ``json`` file written with the default line delimiter, and for no
   other format - not for ``text`` or ``mosaic`` either; ``parquet`` and ``orc`` each record where

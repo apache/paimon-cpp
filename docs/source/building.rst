@@ -177,6 +177,8 @@ boolean flags to ``cmake``.
 
 * ``-DPAIMON_ENABLE_ORC=ON``: Paimon integration with Apache ORC
 * ``-DPAIMON_ENABLE_AVRO=ON``: Apache Avro libraries and Paimon integration
+* ``-DPAIMON_ENABLE_LANCE=ON``: Lance 0.39 file format support through a Rust FFI; requires
+  Rust 1.88 or newer, cbindgen, and protoc 3.12 or newer
 * ``-DPAIMON_ENABLE_JINDO=ON``: Support for Alibaba Jindo filesystems
 * ``-DPAIMON_ENABLE_OSS=ON``: Support for Alibaba Cloud OSS through OSS SDK V2
 * ``-DPAIMON_ENABLE_S3=ON``: Support for Amazon S3-compatible filesystems
@@ -186,6 +188,10 @@ boolean flags to ``cmake``.
 * ``-DPAIMON_ENABLE_TANTIVY=ON``: Enable the experimental Tantivy full-text index Rust FFI.
 * ``-DPAIMON_ENABLE_REST=ON``: Support for the REST catalog
   (``metastore=rest``), requires the libcurl and OpenSSL development packages.
+
+Lance forwards the standard ``s3.*`` and ``fs.oss.*`` table options to its object-store client.
+An option named ``lance.storage.<key>`` is passed through as ``<key>`` and overrides the
+corresponding standard option.
 
 Third-party dependency source
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

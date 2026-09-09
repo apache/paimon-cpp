@@ -33,14 +33,11 @@ namespace paimon {
 
 namespace {
 
-/// Formats the prefetching reader cannot drive: `blob` is read whole rather than in batches and
-/// `avro` is row-oriented, so neither has the batch boundaries it reads ahead to. `mosaic` has
-/// never been tried under one.
-// TODO(xinyu.lxy): test mosaic under prefetch. A format table cannot hold mosaic files, so this
-// only concerns the managed table path.
+/// Formats the prefetching reader cannot drive: `blob` is read whole rather than in batches,
+/// `avro` is row-oriented, and the Rust-backed formats manage their own read-ahead.
 bool FormatSupportsPrefetch(const std::string& format_identifier) {
     return format_identifier != "blob" && format_identifier != "avro" &&
-           format_identifier != "mosaic";
+           format_identifier != "lance" && format_identifier != "mosaic";
 }
 
 }  // namespace

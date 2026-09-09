@@ -106,7 +106,7 @@ jobs:
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-${{ matrix.name }}
-      - name: Install Rust toolchain (Mosaic and tantivy-fts)
+      - name: Install Rust and protobuf tools
         shell: bash
         run: ci/scripts/setup_rust.sh
       - name: Install HTTP and TLS development dependencies

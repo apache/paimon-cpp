@@ -198,10 +198,10 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
 
     std::shared_ptr<DataFileMeta> ReconstructDataFileMeta(
         const std::shared_ptr<DataFileMeta>& file_meta) const {
-        if (GetParam() != "avro" && GetParam() != "mosaic") {
+        if (GetParam() != "avro" && GetParam() != "mosaic" && GetParam() != "lance") {
             return file_meta;
         }
-        // Avro and Mosaic without configured statistics have null statistics.
+        // Avro, Lance, and Mosaic without configured statistics have null statistics.
         auto new_meta = std::make_shared<DataFileMeta>(
             file_meta->file_name, file_meta->file_size, file_meta->row_count, file_meta->min_key,
             file_meta->max_key, file_meta->key_stats, file_meta->value_stats,
@@ -386,6 +386,9 @@ std::vector<std::string> GetTestValuesForWriteInteTest() {
     values.emplace_back("parquet");
 #ifdef PAIMON_ENABLE_MOSAIC
     values.emplace_back("mosaic");
+#endif
+#ifdef PAIMON_ENABLE_LANCE
+    values.emplace_back("lance");
 #endif
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
@@ -812,7 +815,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithPartitionAndMultiBuckets) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -1644,7 +1647,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
 }
 
 TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -2499,7 +2502,7 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
 
 TEST_P(WriteInteTest, TestWriteWithFieldId) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
     // prepare write schema and write data
@@ -3104,6 +3107,10 @@ TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
     if (GetParam() == "mosaic") {
         return;
     }
+    if (GetParam() == "lance") {
+        GTEST_SKIP()
+            << "Lance 0.39 default v2.0 files do not preserve nullable STRUCT parent validity";
+    }
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::struct_({arrow::field("v0", arrow::boolean()),
                                            arrow::field("v1", arrow::int64())}))};
@@ -3366,7 +3373,7 @@ TEST_P(WriteInteTest, TestWriteMemoryUse) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWithAllNull) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -4044,7 +4051,7 @@ TEST_P(WriteInteTest, TestNullabilityCheck) {
 
 TEST_P(WriteInteTest, TestPkSpillableMapSharedShreddingReadWrite) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
 
