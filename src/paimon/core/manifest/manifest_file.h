@@ -67,6 +67,8 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
                              std::vector<ManifestEntry>* entries) const;
 
  private:
+    Status PrepareBucketRead(FileBatchReader* reader, int32_t bucket) const;
+
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,
                  const std::shared_ptr<WriterBuilder>& writer_builder,

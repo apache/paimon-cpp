@@ -87,6 +87,9 @@ class AvroDirectDecoder {
     /// @param array_builder Builder to reserve.
     /// @return Status::OK if all reservations succeed.
     static Status ReserveBuilderCapacity(int64_t capacity, arrow::ArrayBuilder* array_builder);
+
+    /// Consume a value without constructing an Arrow value.
+    static Status SkipValue(const ::avro::NodePtr& node, ::avro::Decoder* decoder);
 };
 
 }  // namespace paimon::avro

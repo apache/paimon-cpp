@@ -458,6 +458,10 @@ Status DecodeFieldToBuilder(const ::avro::NodePtr& avro_node,
 
 }  // namespace
 
+Status AvroDirectDecoder::SkipValue(const ::avro::NodePtr& node, ::avro::Decoder* decoder) {
+    return SkipAvroValue(node, decoder);
+}
+
 Status AvroDirectDecoder::DecodeAvroToBuilder(const ::avro::NodePtr& avro_node,
                                               const std::optional<std::set<size_t>>& projection,
                                               ::avro::Decoder* decoder,

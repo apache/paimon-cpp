@@ -25,6 +25,7 @@
 #include <utility>
 
 #include "arrow/api.h"
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
@@ -32,6 +33,7 @@
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/manifest/manifest_entry.h"
+#include "paimon/core/manifest/manifest_entry_serializer.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/utils/file_store_path_factory.h"
@@ -40,6 +42,8 @@
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
+#include "paimon/format/format_writer.h"
+#include "paimon/format/writer_builder.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/binary_row_generator.h"
@@ -100,36 +104,50 @@ class CountingFileSystem : public FileSystem {
 
 class ManifestFileTest : public testing::Test {
  public:
-    std::vector<ManifestEntry> ReadManifestEntry(
+    Result<std::vector<ManifestEntry>> TryReadManifestEntry(
         const std::string& file_format_str, const std::string& root_path,
         const std::string& file_name, const std::shared_ptr<MemoryPool>& pool,
-        const std::optional<int32_t>& bucket = std::nullopt) const {
+        const std::optional<int32_t>& bucket = std::nullopt, bool cache_enabled = false) const {
         std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
-        EXPECT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
-                             FileFormatFactory::Get(file_format_str, {}));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> file_format,
+                               FileFormatFactory::Get(file_format_str, {}));
         auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-        EXPECT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
-                             FileStorePathFactory::Create(
-                                 root_path, unused_schema, /*partition_keys=*/{},
-                                 /*default_part_value=*/"", file_format->Identifier(),
-                                 /*data_file_prefix=*/"data-",
-                                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                 /*global_index_external_path=*/std::nullopt,
-                                 /*index_file_in_data_file_dir=*/false, pool));
-        EXPECT_OK_AND_ASSIGN(CoreOptions options,
-                             CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
-        EXPECT_OK_AND_ASSIGN(
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
+                               FileStorePathFactory::Create(
+                                   root_path, unused_schema, /*partition_keys=*/{},
+                                   /*default_part_value=*/"", file_format->Identifier(),
+                                   /*data_file_prefix=*/"data-",
+                                   /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                   /*global_index_external_path=*/std::nullopt,
+                                   /*index_file_in_data_file_dir=*/false, pool));
+        PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
+                               CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+        if (cache_enabled) {
+            options.WithCache(
+                std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 64 * 1024 * 1024));
+        }
+        PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<ManifestFile> manifest_file,
             ManifestFile::Create(file_system, file_format, "zstd", path_factory,
                                  /*target_file_size=*/1024, pool, options, unused_schema));
         std::vector<ManifestEntry> manifest_entries;
         if (bucket) {
-            EXPECT_OK(
+            PAIMON_RETURN_NOT_OK(
                 manifest_file->ReadBucketEntries(file_name, bucket.value(), &manifest_entries));
         } else {
-            EXPECT_OK(manifest_file->Read(file_name, /*filter=*/nullptr, &manifest_entries));
+            PAIMON_RETURN_NOT_OK(
+                manifest_file->Read(file_name, /*filter=*/nullptr, &manifest_entries));
         }
 
+        return manifest_entries;
+    }
+
+    std::vector<ManifestEntry> ReadManifestEntry(
+        const std::string& file_format_str, const std::string& root_path,
+        const std::string& file_name, const std::shared_ptr<MemoryPool>& pool,
+        const std::optional<int32_t>& bucket = std::nullopt) const {
+        EXPECT_OK_AND_ASSIGN(auto manifest_entries, TryReadManifestEntry(file_format_str, root_path,
+                                                                         file_name, pool, bucket));
         return manifest_entries;
     }
 };
@@ -373,45 +391,97 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
                           "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
     ASSERT_EQ(2, source_entries.size());
 
-    auto test_dir = UniqueTestDirectory::Create();
-    ASSERT_TRUE(test_dir);
-    std::shared_ptr<FileSystem> file_system = test_dir->GetFileSystem();
-    ASSERT_OK(file_system->Mkdirs(FileStorePathFactory::ManifestPath(test_dir->Str())));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
-                         FileFormatFactory::Get("avro", {}));
-    auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(test_dir->Str(), unused_schema, /*partition_keys=*/{},
-                                     /*default_part_value=*/"", file_format->Identifier(),
-                                     /*data_file_prefix=*/"data-",
-                                     /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, pool));
-    ASSERT_OK_AND_ASSIGN(CoreOptions options,
-                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(file_system, file_format, "zstd", path_factory,
-                             /*target_file_size=*/1024, pool, options, unused_schema));
+    for (bool cache_enabled : {false, true}) {
+        SCOPED_TRACE(cache_enabled);
+        const std::string format = "avro";
+        auto test_dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(test_dir);
+        std::shared_ptr<FileSystem> file_system = test_dir->GetFileSystem();
+        ASSERT_OK(file_system->Mkdirs(FileStorePathFactory::ManifestPath(test_dir->Str())));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
+                             FileFormatFactory::Get(format, {}));
+        auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
+                             FileStorePathFactory::Create(
+                                 test_dir->Str(), unused_schema, /*partition_keys=*/{},
+                                 /*default_part_value=*/"", file_format->Identifier(),
+                                 /*data_file_prefix=*/"data-",
+                                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                 /*global_index_external_path=*/std::nullopt,
+                                 /*index_file_in_data_file_dir=*/false, pool));
+        ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                             CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+        if (cache_enabled) {
+            options.WithCache(
+                std::make_shared<CountingRoutingCache>(CacheKind::MANIFEST, 64 * 1024 * 1024));
+        }
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<ManifestFile> manifest_file,
+            ManifestFile::Create(file_system, file_format, "null", path_factory,
+                                 /*target_file_size=*/1024, pool, options, unused_schema));
 
-    ManifestEntry invalid_other_bucket(FileKind(static_cast<int8_t>(2)),
-                                       source_entries[0].Partition(), /*bucket=*/1,
-                                       /*total_buckets=*/2, source_entries[0].File());
-    ManifestEntry valid_target_bucket(FileKind::Add(), source_entries[1].Partition(), /*bucket=*/0,
-                                      /*total_buckets=*/2, source_entries[1].File());
-    using WrittenFile = std::pair<std::string, int64_t>;
-    ASSERT_OK_AND_ASSIGN(
-        WrittenFile written_file,
-        manifest_file->WriteWithoutRolling({invalid_other_bucket, valid_target_bucket}));
+        ManifestEntry invalid_other_bucket(FileKind(static_cast<int8_t>(2)),
+                                           source_entries[0].Partition(), /*bucket=*/1,
+                                           /*total_buckets=*/2, source_entries[0].File());
+        ManifestEntry valid_target_bucket(FileKind::Add(), source_entries[1].Partition(),
+                                          /*bucket=*/0,
+                                          /*total_buckets=*/2, source_entries[1].File());
+        using WrittenFile = std::pair<std::string, int64_t>;
+        ASSERT_OK_AND_ASSIGN(
+            WrittenFile written_file,
+            manifest_file->WriteWithoutRolling({invalid_other_bucket, valid_target_bucket}));
 
-    std::vector<ManifestEntry> all_entries;
-    ASSERT_NOK_WITH_MSG(manifest_file->Read(written_file.first, /*filter=*/nullptr, &all_entries),
-                        "Unsupported byte value 2 for file kind.");
+        std::vector<ManifestEntry> all_entries;
+        ASSERT_NOK_WITH_MSG(
+            manifest_file->Read(written_file.first, /*filter=*/nullptr, &all_entries),
+            "Unsupported byte value 2 for file kind.");
 
-    std::vector<ManifestEntry> bucket_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0, &bucket_entries));
-    ASSERT_EQ(std::vector<ManifestEntry>({valid_target_bucket}), bucket_entries);
+        std::vector<ManifestEntry> bucket_entries;
+        ASSERT_OK(
+            manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0, &bucket_entries));
+        ASSERT_EQ(std::vector<ManifestEntry>({valid_target_bucket}), bucket_entries);
+    }
+}
+
+TEST_F(ManifestFileTest, TestBucketProbeValidatesVersionsOutsideSelectedBucket) {
+    auto pool = GetDefaultPool();
+    ManifestEntrySerializer serializer(pool);
+    auto type =
+        arrow::struct_({arrow::field(serializer.GetDataType()->field(0)->name(), arrow::int32()),
+                        arrow::field(serializer.GetDataType()->field(3)->name(), arrow::int32())});
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {R"([[999,1],[2,0]])", "Unsupported version: 999"},
+        {R"([[1,1],[2,0]])", "not compatible"},
+        {R"([[null,1],[2,0]])", "must not be null"},
+        {R"([[2,null],[2,0]])", "must not be null"}};
+    for (const auto& item : cases) {
+        SCOPED_TRACE(item.first);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto fs = dir->GetFileSystem();
+        const std::string manifest_dir = FileStorePathFactory::ManifestPath(dir->Str());
+        ASSERT_OK(fs->Mkdirs(manifest_dir));
+        const std::string file_name = "manifest-invalid-version";
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format,
+                             FileFormatFactory::Get("avro", {}));
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(type->fields()), &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<WriterBuilder> builder,
+                             format->CreateWriterBuilder(&c_schema, 2));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                             fs->Create(manifest_dir + "/" + file_name, false));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FormatWriter> writer, builder->Build(output, "null"));
+        auto array = arrow::ipc::internal::json::ArrayFromJSON(type, item.first).ValueOrDie();
+        ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+        ASSERT_OK(writer->AddBatch(&c_array));
+        ASSERT_OK(writer->Flush());
+        ASSERT_OK(writer->Finish());
+        ASSERT_OK(output->Close());
+        ASSERT_NOK_WITH_MSG(TryReadManifestEntry("avro", dir->Str(), file_name, pool, /*bucket=*/0,
+                                                 /*cache_enabled=*/true),
+                            item.second);
+    }
 }
 
 TEST_F(ManifestFileTest, TestLegacyManifestFormatIsReadOnly) {
