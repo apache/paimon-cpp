@@ -425,7 +425,6 @@ Result<std::unique_ptr<FormatTableRead>> FormatTableRead::CreateInternal(
         // index is not among them: everything downstream resolves a field by name.
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *impl->read_schema, predicate, /*validate_field_idx=*/false));
-        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithLiterals(predicate));
         if (enable_predicate_filter) {
             impl->filter_predicate = predicate;
         }
