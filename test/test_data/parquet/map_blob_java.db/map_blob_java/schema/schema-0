@@ -1,0 +1,99 @@
+{
+  "version" : 3,
+  "id" : 0,
+  "fields" : [ {
+    "id" : 0,
+    "name" : "id",
+    "type" : "INT"
+  }, {
+    "id" : 1,
+    "name" : "string_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "STRING",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 2,
+    "name" : "boolean_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "BOOLEAN",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 3,
+    "name" : "tinyint_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "TINYINT",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 4,
+    "name" : "smallint_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "SMALLINT",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 5,
+    "name" : "int_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "INT",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 6,
+    "name" : "bigint_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "BIGINT",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 7,
+    "name" : "date_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "DATE",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 8,
+    "name" : "binary_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "BINARY(4)",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 9,
+    "name" : "compact_decimal_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "DECIMAL(10, 2)",
+      "value" : "BLOB"
+    }
+  }, {
+    "id" : 10,
+    "name" : "large_decimal_payloads",
+    "type" : {
+      "type" : "MAP",
+      "key" : "DECIMAL(20, 2)",
+      "value" : "BLOB"
+    }
+  } ],
+  "highestFieldId" : 10,
+  "partitionKeys" : [ ],
+  "primaryKeys" : [ ],
+  "options" : {
+    "bucket" : "-1",
+    "data-evolution.enabled" : "true",
+    "file.format" : "parquet",
+    "row-tracking.enabled" : "true"
+  },
+  "timeMillis" : 1788529095182
+}

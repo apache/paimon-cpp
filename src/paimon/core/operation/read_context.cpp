@@ -27,6 +27,7 @@
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
+#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 class Predicate;
@@ -43,7 +44,8 @@ ReadContext::ReadContext(
     const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
     const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
-    const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache)
+    const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
+    const std::shared_ptr<FormatTable>& format_table)
     : path_(path),
       branch_(branch),
       read_field_names_(read_field_names),
@@ -65,7 +67,8 @@ ReadContext::ReadContext(
       options_(options),
       read_ahead_cache_enabled_(read_ahead_cache_enabled),
       cache_config_(cache_config),
-      cache_(cache) {}
+      cache_(cache),
+      format_table_(format_table) {}
 
 ReadContext::~ReadContext() {
     if (read_schema_ && read_schema_->release) {
@@ -115,6 +118,10 @@ class ReadContextBuilder::Impl {
 
  private:
     std::string path_;
+    /// Kept across `Reset()`, as `path_` is: both name the table this builder builds for, rather
+    /// than a setting of one read of it.
+    std::shared_ptr<FormatTable> format_table_;
+    bool built_from_format_table_ = false;
     std::string branch_ = BranchManager::DEFAULT_MAIN_BRANCH;
     std::vector<std::string> read_field_names_;
     std::vector<int32_t> read_field_ids_;
@@ -142,6 +149,15 @@ class ReadContextBuilder::Impl {
 ReadContextBuilder::ReadContextBuilder(const std::string& path)
     : impl_(std::make_unique<ReadContextBuilder::Impl>()) {
     impl_->path_ = path;
+}
+
+ReadContextBuilder::ReadContextBuilder(const std::shared_ptr<FormatTable>& table)
+    : impl_(std::make_unique<ReadContextBuilder::Impl>()) {
+    impl_->format_table_ = table;
+    impl_->built_from_format_table_ = true;
+    if (table != nullptr) {
+        impl_->path_ = table->Location();
+    }
 }
 
 ReadContextBuilder::~ReadContextBuilder() = default;
@@ -274,6 +290,28 @@ ReadContextBuilder& ReadContextBuilder::WithCache(const std::shared_ptr<Cache>& 
 }
 
 Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
+    if (impl_->built_from_format_table_ && impl_->format_table_ == nullptr) {
+        return Status::Invalid("cannot read with null format table");
+    }
+    if (impl_->format_table_ != nullptr) {
+        // The table already answers each of these, and from a source this cannot see behind, so a
+        // second answer is refused rather than silently dropped.
+        if (impl_->table_schema_) {
+            return Status::Invalid(
+                "a format table carries its own schema, so SetTableSchema() cannot be used with "
+                "one");
+        }
+        if (impl_->specific_file_system_ != nullptr ||
+            !impl_->fs_scheme_to_identifier_map_.empty()) {
+            return Status::Invalid(
+                "a format table carries the file system it was loaded through, so WithFileSystem() "
+                "and WithFileSystemSchemeToIdentifierMap() cannot be used with one");
+        }
+        if (impl_->branch_ != BranchManager::DEFAULT_MAIN_BRANCH) {
+            return Status::Invalid(
+                "a format table has no branches, so WithBranch() cannot be used with one");
+        }
+    }
     PAIMON_ASSIGN_OR_RAISE(impl_->path_, PathUtil::NormalizePath(impl_->path_));
     if (impl_->path_.empty()) {
         return Status::Invalid("cannot read with empty table path");
@@ -312,7 +350,7 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         impl_->row_to_batch_thread_number_, impl_->table_schema_, impl_->memory_pool_,
         impl_->executor_, impl_->specific_file_system_, impl_->fs_scheme_to_identifier_map_,
         impl_->realtime_context_, impl_->options_, impl_->read_ahead_cache_enabled_,
-        impl_->cache_config_, impl_->cache_);
+        impl_->cache_config_, impl_->cache_, impl_->format_table_);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

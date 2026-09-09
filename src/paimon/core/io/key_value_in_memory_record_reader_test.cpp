@@ -26,6 +26,7 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/data/internal_array.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/fields_comparator.h"
@@ -347,6 +348,68 @@ TEST_F(KeyValueInMemoryRecordReaderTest, TestStableSortWithDuplicateKeys) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<KeyValueRecordReader::Iterator> eof_iter,
                          record_reader->NextBatch());
     ASSERT_FALSE(eof_iter);
+}
+
+TEST_F(KeyValueInMemoryRecordReaderTest, TestSortWithVectorValues) {
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto src_type = arrow::struct_(
+        {arrow::field("pk", arrow::int32()), arrow::field("seq", arrow::int32()),
+         arrow::field("embedding", vector_type),
+         arrow::field("payload", arrow::struct_({arrow::field("embedding", vector_type)}))});
+    auto src_array = std::dynamic_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(src_type, R"([
+            [2, 20, [0, 1, 2], [[0, 1, 2]]],
+            [1, 20, null, null],
+            [2, 10, [2, 3, 4], [null]],
+            [1, null, [3, 4, 5], [[3, 4, 5]]],
+            [2, 20, [4, 5, 6], [[4, 5, 6]]]
+        ])")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FieldsComparator> key_comparator,
+        FieldsComparator::Create({DataField(0, arrow::field("pk", arrow::int32()))},
+                                 /*is_ascending_order=*/true));
+
+    auto check_sort = [&](const std::vector<std::string>& sequence_fields, bool ascending,
+                          const std::vector<int64_t>& expected_indices) {
+        KeyValueInMemoryRecordReader reader(
+            /*last_sequence_num=*/0, src_array, std::vector<RecordBatch::RowKind>{},
+            std::vector<std::string>{"pk"}, sequence_fields, ascending, key_comparator, pool_);
+        ASSERT_OK_AND_ASSIGN(
+            std::vector<KeyValue> results,
+            (ReadResultCollector::CollectKeyValueResult<KeyValueInMemoryRecordReader,
+                                                        KeyValueRecordReader::Iterator>(&reader)));
+        ASSERT_EQ(expected_indices.size(), results.size());
+        for (size_t i = 0; i < results.size(); ++i) {
+            const int64_t source_index = expected_indices[i];
+            SCOPED_TRACE(source_index);
+            ASSERT_EQ(source_index, results[i].sequence_number);
+            const auto& value = results[i].value;
+            ASSERT_EQ(source_index == 1 || source_index == 3 ? 1 : 2, results[i].key->GetInt(0));
+            ASSERT_EQ(source_index == 1, value->IsNullAt(2));
+            ASSERT_EQ(source_index == 1, value->IsNullAt(3));
+            if (source_index == 1) {
+                continue;
+            }
+            const std::vector<float> expected_vector = {static_cast<float>(source_index),
+                                                        static_cast<float>(source_index + 1),
+                                                        static_cast<float>(source_index + 2)};
+            ASSERT_OK_AND_ASSIGN(std::vector<float> vector, value->GetArray(2)->ToFloatArray());
+            ASSERT_EQ(expected_vector, vector);
+            auto payload = value->GetRow(3, 1);
+            ASSERT_EQ(source_index == 2, payload->IsNullAt(0));
+            if (source_index != 2) {
+                ASSERT_OK_AND_ASSIGN(std::vector<float> nested_vector,
+                                     payload->GetArray(0)->ToFloatArray());
+                ASSERT_EQ(expected_vector, nested_vector);
+            }
+        }
+    };
+    // Equal sort keys retain input order regardless of the non-sortable value columns.
+    check_sort({}, /*ascending=*/true, {1, 3, 0, 2, 4});
+    check_sort({"seq"}, /*ascending=*/true, {3, 1, 2, 0, 4});
+    check_sort({"seq"}, /*ascending=*/false, {3, 1, 0, 4, 2});
 }
 
 TEST_F(KeyValueInMemoryRecordReaderTest, TestVariantType) {

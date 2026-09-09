@@ -33,8 +33,10 @@
 #include "arrow/compute/cast.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
+#include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/casting/casting_utils.h"
@@ -164,6 +166,13 @@ Result<bool> EqualWithFieldIds(const std::shared_ptr<arrow::DataType>& a,
     if (a->id() != b->id() || a->num_fields() != b->num_fields()) {
         return false;
     }
+    if (a->id() == arrow::Type::FIXED_SIZE_LIST) {
+        const auto& vector_a = checked_cast<const arrow::FixedSizeListType&>(*a);
+        const auto& vector_b = checked_cast<const arrow::FixedSizeListType&>(*b);
+        if (vector_a.list_size() != vector_b.list_size()) {
+            return false;
+        }
+    }
     if (a->num_fields() == 0) {
         return a->Equals(*b);
     }
@@ -196,6 +205,7 @@ Result<bool> EqualWithFieldIds(const std::shared_ptr<arrow::DataType>& a,
 /// projections and nothing else changed (matching paimon field IDs).
 Result<bool> IsVariantAccessSubstitution(const std::shared_ptr<arrow::DataType>& read_type,
                                          const std::shared_ptr<arrow::DataType>& data_type) {
+    PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorEvolution(read_type, data_type));
     PAIMON_ASSIGN_OR_RAISE(bool equal, EqualWithFieldIds(read_type, data_type));
     if (equal) {
         return true;
@@ -238,6 +248,7 @@ Result<bool> IsVariantAccessSubstitution(const std::shared_ptr<arrow::DataType>&
 Result<std::shared_ptr<arrow::DataType>> PruneRepeatedItemType(
     const std::shared_ptr<arrow::DataType>& read_type,
     const std::shared_ptr<arrow::DataType>& data_type, const char* container) {
+    PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorEvolution(read_type, data_type));
     PAIMON_ASSIGN_OR_RAISE(bool same, EqualWithFieldIds(read_type, data_type));
     if (same) {
         return data_type;
@@ -315,6 +326,7 @@ Result<std::shared_ptr<arrow::DataType>> PruneRepeatedItemType(
 Result<std::optional<std::shared_ptr<arrow::DataType>>> NestedProjectionUtils::PruneDataType(
     const std::shared_ptr<arrow::DataType>& read_type,
     const std::shared_ptr<arrow::DataType>& data_type) {
+    PAIMON_RETURN_NOT_OK(VectorUtils::ValidateVectorEvolution(read_type, data_type));
     // Identical types (including paimon field IDs) need no pruning.
     PAIMON_ASSIGN_OR_RAISE(bool same, EqualWithFieldIds(read_type, data_type));
     if (same) {
@@ -433,6 +445,10 @@ Result<std::vector<std::string>> NestedProjectionUtils::GetMapSelectedKeys(
     auto get_result = field->metadata()->Get(DataField::MAP_SELECTED_KEYS);
     if (!get_result.ok()) {
         return result;
+    }
+    if (BlobUtils::IsMapBlobField(field)) {
+        return Status::NotImplemented(
+            "paimon.map.selected-keys is not supported for MAP<..., BLOB>");
     }
     auto tokens = StringUtils::Split(get_result.ValueUnsafe(), ",", /*ignore_empty=*/false);
     std::unordered_set<std::string> deduplicated;

@@ -20,6 +20,7 @@
 #include "paimon/common/utils/arrow/vector_utils.h"
 
 #include <memory>
+#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/ipc/json_simple.h"
@@ -56,6 +57,33 @@ TEST(VectorUtilsTest, TestContainsVector) {
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("v", vector_type)})));
     ASSERT_FALSE(VectorUtils::ContainsVector(arrow::schema({arrow::field("id", arrow::int32())})));
     ASSERT_FALSE(VectorUtils::ContainsVector(nullptr));
+}
+
+TEST(VectorUtilsTest, TestValidateVectorEvolution) {
+    auto vector_type = arrow::fixed_size_list(arrow::float32(), 3);
+    ASSERT_OK(VectorUtils::ValidateVectorEvolution(vector_type, vector_type));
+    auto read_type =
+        arrow::fixed_size_list(arrow::field("element", arrow::float32(), /*nullable=*/false), 3);
+    ASSERT_OK(VectorUtils::ValidateVectorEvolution(read_type, vector_type));
+    ASSERT_OK(VectorUtils::ValidateVectorEvolution(vector_type, read_type));
+    ASSERT_OK(VectorUtils::ValidateVectorEvolution(arrow::int64(), arrow::int32()));
+}
+
+TEST(VectorUtilsTest, TestValidateVectorEvolutionRejectsIncompatibleTypes) {
+    auto vector_type = arrow::fixed_size_list(arrow::float32(), 3);
+    std::vector<std::shared_ptr<arrow::DataType>> incompatible_types = {
+        arrow::fixed_size_list(arrow::float32(), 5),
+        arrow::fixed_size_list(arrow::float64(), 3),
+        arrow::list(arrow::float32()),
+        arrow::int32(),
+    };
+    for (const auto& incompatible_type : incompatible_types) {
+        SCOPED_TRACE(incompatible_type->ToString());
+        ASSERT_NOK_WITH_MSG(VectorUtils::ValidateVectorEvolution(incompatible_type, vector_type),
+                            "VECTOR type mismatch during schema evolution");
+        ASSERT_NOK_WITH_MSG(VectorUtils::ValidateVectorEvolution(vector_type, incompatible_type),
+                            "VECTOR type mismatch during schema evolution");
+    }
 }
 
 TEST(VectorUtilsTest, TestValidateVectorElements) {

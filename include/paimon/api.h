@@ -36,6 +36,7 @@
 #include "paimon/snapshot/snapshot_file_scan.h"  // IWYU pragma: export
 #include "paimon/statistics_mode.h"              // IWYU pragma: export
 #include "paimon/status.h"                       // IWYU pragma: export
+#include "paimon/table/format/format_table.h"    // IWYU pragma: export
 #include "paimon/table/source/table_read.h"      // IWYU pragma: export
 #include "paimon/table/source/table_scan.h"      // IWYU pragma: export
 #include "paimon/write_context.h"                // IWYU pragma: export

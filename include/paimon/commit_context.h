@@ -29,6 +29,7 @@
 
 namespace paimon {
 class Executor;
+class FormatTable;
 class MemoryPool;
 
 /// `CommitContext` is some configuration for commit operations.
@@ -43,7 +44,8 @@ class PAIMON_EXPORT CommitContext {
                   bool append_commit_check_conflict, const std::shared_ptr<MemoryPool>& memory_pool,
                   const std::shared_ptr<Executor>& executor,
                   const std::shared_ptr<FileSystem>& specific_file_system,
-                  const std::map<std::string, std::string>& options);
+                  const std::map<std::string, std::string>& options,
+                  const std::shared_ptr<FormatTable>& format_table);
     ~CommitContext();
 
     const std::string& GetRootPath() const {
@@ -82,6 +84,12 @@ class PAIMON_EXPORT CommitContext {
         return options_;
     }
 
+    /// The format table this context was built from, or null when it names a table path and the
+    /// schema under that path says what kind of table it is.
+    const std::shared_ptr<FormatTable>& GetFormatTable() const {
+        return format_table_;
+    }
+
  private:
     std::string root_path_;
     std::string commit_user_;
@@ -92,6 +100,7 @@ class PAIMON_EXPORT CommitContext {
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> specific_file_system_;
     std::map<std::string, std::string> options_;
+    std::shared_ptr<FormatTable> format_table_;
 };
 
 /// `CommitContextBuilder` used to build a `CommitContext`, has input validation.
@@ -101,6 +110,16 @@ class PAIMON_EXPORT CommitContextBuilder {
     /// @param root_path The root path of the Paimon table.
     /// @param commit_user The user identifier for the commit operation.
     CommitContextBuilder(const std::string& root_path, const std::string& commit_user);
+
+    /// Constructs a `CommitContextBuilder` for a format table that is already loaded: the only way
+    /// to commit to one whose schema lives in a metastore rather than under its location, such as
+    /// a table a REST catalog serves. The table carries what such a location does not say, so
+    /// `WithFileSystem()` is refused here rather than ignored.
+    ///
+    /// There is no commit user: a format table keeps no snapshot to record one in.
+    ///
+    /// @param table The format table to commit to, as `Catalog::GetFormatTable()` hands it back.
+    explicit CommitContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~CommitContextBuilder();
 

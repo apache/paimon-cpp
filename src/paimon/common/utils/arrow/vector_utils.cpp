@@ -112,6 +112,26 @@ bool VectorUtils::ContainsVector(const std::shared_ptr<arrow::Schema>& schema) {
     return false;
 }
 
+Status VectorUtils::ValidateVectorEvolution(const std::shared_ptr<arrow::DataType>& read_type,
+                                            const std::shared_ptr<arrow::DataType>& data_type) {
+    bool read_is_vector = read_type->id() == arrow::Type::FIXED_SIZE_LIST;
+    bool data_is_vector = data_type->id() == arrow::Type::FIXED_SIZE_LIST;
+    if (!read_is_vector && !data_is_vector) {
+        return Status::OK();
+    }
+    if (read_is_vector && data_is_vector) {
+        const auto& read_vector = checked_cast<const arrow::FixedSizeListType&>(*read_type);
+        const auto& data_vector = checked_cast<const arrow::FixedSizeListType&>(*data_type);
+        if (read_vector.list_size() == data_vector.list_size() &&
+            read_vector.value_type()->Equals(data_vector.value_type())) {
+            return Status::OK();
+        }
+    }
+    return Status::Invalid(
+        fmt::format("VECTOR type mismatch during schema evolution: data {} vs read {}",
+                    data_type->ToString(), read_type->ToString()));
+}
+
 Status VectorUtils::ValidateVectorElements(const arrow::Array& array) {
     switch (array.type_id()) {
         case arrow::Type::LIST:

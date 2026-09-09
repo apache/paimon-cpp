@@ -69,6 +69,7 @@
 #include "rapidjson/writer.h"
 
 namespace paimon::test {
+
 // This is a sdk end-to-end test demo that supports write, commit, scan, and read operations.
 class WriteAndReadInteTest
     : public ::testing::Test,
@@ -720,6 +721,189 @@ TEST_P(WriteAndReadInteTest, TestPKListAggPreservesResultsAcrossKeys) {
                          helper->ReadAndCheckResult(arrow::struct_(result_fields), data_splits,
                                                     R"([[0, "first", "alpha,beta"],
                                        [0, "second", "one,two"]])"));
+    ASSERT_TRUE(success);
+}
+
+TEST_P(WriteAndReadInteTest, TestPKVector) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::int64()),
+        arrow::field("embedding", vector_type),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> initial_batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([[1, [1.0, 2.0, 3.0]], [2, null]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> update_batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([[1, [4.0, 5.0, 6.0]], [3, [7.0, 8.0, 9.0]]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/2));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(
+        bool success, helper->ReadAndCheckResult(
+                          arrow::struct_(result_fields), data_splits,
+                          R"([[0, 1, [4.0, 5.0, 6.0]], [0, 2, null], [0, 3, [7.0, 8.0, 9.0]]])"));
+    ASSERT_TRUE(success);
+}
+
+TEST_P(WriteAndReadInteTest, TestPKNestedVector) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::int64()),
+        arrow::field("payload", arrow::struct_({arrow::field("embedding", vector_type),
+                                                arrow::field("tag", arrow::utf8())})),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> initial_batch,
+        TestHelper::MakeRecordBatch(
+            arrow::struct_(fields),
+            R"([[1, [[1.0, 2.0, 3.0], "initial"]], [2, [null, "null-vector"]], [3, null]])",
+            /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update_batch,
+                         TestHelper::MakeRecordBatch(
+                             arrow::struct_(fields),
+                             R"([[1, [[4.0, 5.0, 6.0], "updated"]], [2, [[7.0, 8.0, 9.0], null]]])",
+                             /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/2));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(result_fields), data_splits, R"([
+                             [0, 1, [[4.0, 5.0, 6.0], "updated"]],
+                             [0, 2, [[7.0, 8.0, 9.0], null]],
+                             [0, 3, null]
+                         ])"));
+    ASSERT_TRUE(success);
+}
+
+TEST_P(WriteAndReadInteTest, TestPKVectorWithListagg) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet") {
+        return;
+    }
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::int64()),
+        arrow::field("embedding", vector_type),
+        arrow::field("tags", arrow::utf8()),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {"fields.embedding.aggregate-function", "last_non_null_value"},
+        {"fields.tags.aggregate-function", "listagg"},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> initial_batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                    R"([[1, [1.0, 2.0, 3.0], "alpha"], [2, null, "one"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(initial_batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update_batch,
+                         TestHelper::MakeRecordBatch(
+                             arrow::struct_(fields),
+                             R"([[1, [4.0, 5.0, 6.0], "beta"], [2, [7.0, 8.0, 9.0], "two"]])",
+                             /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/1,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> null_vector_batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([[1, null, "gamma"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(null_vector_batch), /*commit_identifier=*/2,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/3));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(result_fields), data_splits, R"([
+                             [0, 1, [4.0, 5.0, 6.0], "alpha,beta,gamma"],
+                             [0, 2, [7.0, 8.0, 9.0], "one,two"]
+                         ])"));
     ASSERT_TRUE(success);
 }
 

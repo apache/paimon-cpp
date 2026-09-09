@@ -75,6 +75,11 @@ class TrackingLocalFileSystem : public LocalFileSystem {
         return index_paths;
     }
 
+    int64_t OpenCount(const std::string& path) const {
+        std::scoped_lock lock(mutex_);
+        return std::count(opened_paths_.begin(), opened_paths_.end(), path);
+    }
+
  private:
     mutable std::mutex mutex_;
     mutable std::vector<std::string> opened_paths_;
@@ -292,11 +297,15 @@ TEST_P(PrimaryKeySortedIndexInteTest, HistoricalSnapshotsMixedFilesAndDisabledIn
     std::shared_ptr<Predicate> predicate = ScoreEqual(/*partitioned=*/false, 0);
     const std::vector<int64_t> snapshot_ids = {2, 3, 5};
     for (int64_t snapshot_id : snapshot_ids) {
+        auto tracking_file_system = std::make_shared<TrackingLocalFileSystem>();
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<Plan> plan,
             Scan(/*partitioned=*/false, predicate, snapshot_id, /*index_enabled=*/true,
-                 /*partition_filters=*/{}, /*branch=*/"", /*file_system=*/nullptr));
+                 /*partition_filters=*/{}, /*branch=*/"", tracking_file_system));
         ASSERT_EQ(snapshot_id, plan->SnapshotId());
+        ASSERT_EQ(1, tracking_file_system->OpenCount(
+                         PathUtil::JoinPath(TablePath(/*partitioned=*/false),
+                                            fmt::format("snapshot/snapshot-{}", snapshot_id))));
         const auto [indexed_count, data_count] = CountSplitKinds(plan);
         ASSERT_GT(indexed_count, 0);
         if (snapshot_id == 3) {

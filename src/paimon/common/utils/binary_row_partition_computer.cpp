@@ -115,7 +115,7 @@ Result<BinaryRow> BinaryRowPartitionComputer::ConvertToBinaryRow(
     return binary_row;
 }
 
-Result<std::map<std::string, std::string>> BinaryRowPartitionComputer::NormalizePartitionSpec(
+Status BinaryRowPartitionComputer::CheckPartitionKeys(
     const std::map<std::string, std::string>& partition) const {
     for (const auto& [partition_key, _] : partition) {
         if (std::find(partition_keys_.begin(), partition_keys_.end(), partition_key) ==
@@ -124,6 +124,19 @@ Result<std::map<std::string, std::string>> BinaryRowPartitionComputer::Normalize
                 fmt::format("field {} does not exist in partition keys", partition_key));
         }
     }
+    return Status::OK();
+}
+
+Result<BinaryRow> BinaryRowPartitionComputer::ToPartialBinaryRow(
+    const std::map<std::string, std::string>& partition) const {
+    PAIMON_RETURN_NOT_OK(CheckPartitionKeys(partition));
+    std::vector<bool> included_fields;
+    return ConvertToBinaryRow(partition, &included_fields);
+}
+
+Result<std::map<std::string, std::string>> BinaryRowPartitionComputer::NormalizePartitionSpec(
+    const std::map<std::string, std::string>& partition) const {
+    PAIMON_RETURN_NOT_OK(CheckPartitionKeys(partition));
 
     std::vector<bool> included_fields;
     PAIMON_ASSIGN_OR_RAISE(BinaryRow binary_row, ConvertToBinaryRow(partition, &included_fields));

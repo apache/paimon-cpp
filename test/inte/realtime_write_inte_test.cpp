@@ -1278,6 +1278,35 @@ TEST_F(RealtimeWriteInteTest, TestPkRead) {
     read_array.reset();
 }
 
+TEST_F(RealtimeWriteInteTest, TestPkVector) {
+    options_[Options::FILE_FORMAT] = "parquet";
+    std::shared_ptr<arrow::DataType> vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    fields_ = {arrow::field("id", arrow::int64()), arrow::field("embedding", vector_type)};
+    schema_ = arrow::schema(fields_);
+    CreatePkTable();
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch, MakeUnpartitionedBatchFromJson(R"([
+                             [0, 2, [2.0, 2.0, 2.0]],
+                             [1, 3, null],
+                             [2, 1, [1.0, 1.0, 1.0]],
+                             [3, 2, [3.0, 3.0, 3.0]]
+                         ])"));
+    ASSERT_OK(writer->Write(std::move(batch)));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ReadPlanWithSchemaAndCheck(plan, realtime_context, schema_,
+                               R"([[0, 1, [1.0, 1.0, 1.0]],
+                                   [0, 2, [3.0, 3.0, 3.0]],
+                                   [0, 3, null]])");
+    ASSERT_OK(writer->Close());
+}
+
 TEST_F(RealtimeWriteInteTest, TestPkRealtimeReadOptimizedScanUnsupported) {
     CreatePkTable();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,

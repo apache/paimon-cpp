@@ -36,6 +36,7 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/snapshot/snapshot_info.h"
+#include "paimon/table/format/format_table.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -528,6 +529,50 @@ TEST(FileSystemCatalogTest, TestCreateTableWithBlob) {
                         "Identifier{database='db1', table='table_xaxa'} not exist");
 
     ArrowSchemaRelease(&schema);
+}
+
+TEST(FileSystemCatalogTest, TestGetTableRejectsFormatTable) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    options[Options::FILE_FORMAT] = "orc";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    FileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(catalog.CreateDatabase("db1", options, /*ignore_if_exists=*/false));
+
+    arrow::Schema typed_schema(
+        {arrow::field("id", arrow::int32()), arrow::field("name", arrow::utf8())});
+    ::ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(typed_schema, &schema).ok());
+    std::map<std::string, std::string> table_options = {{Options::TYPE, "format-table"},
+                                                        {Options::FILE_FORMAT, "parquet"}};
+    ASSERT_OK(catalog.CreateTable(Identifier("db1", "fmt"), &schema, /*partition_keys=*/{},
+                                  /*primary_keys=*/{}, table_options,
+                                  /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&schema);
+
+    // A format table has no snapshots and no manifests, so handing it back as a Table would
+    // describe it as something it is not.
+    ASSERT_NOK_WITH_MSG(catalog.GetTable(Identifier("db1", "fmt")), "Cannot open format table");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> format_table,
+                         catalog.GetFormatTable(Identifier("db1", "fmt")));
+    ASSERT_EQ(format_table->GetFormat(), FormatTable::Format::PARQUET);
+    ASSERT_EQ(format_table->FullName(), "db1.fmt");
+
+    // This catalog keeps a table's schema under the table's own path, so the `schema` and
+    // `branch` directories there are its metadata and a scan leaves them alone. A catalog that
+    // keeps schemas elsewhere says no, and then every directory below the location is data.
+    ASSERT_TRUE(format_table->LocationCarriesPaimonMetadata());
+
+    // A system table is refused by `Catalog::GetFormatTable()` itself, so every catalog answers
+    // alike. The database is checked before the table name is parsed, so a malformed name under
+    // "sys" is refused as a system table rather than surfacing a parse error.
+    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("db1", "fmt$snapshots")),
+                        "for system table");
+    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("sys", "all_table_options")),
+                        "for system table");
+    ASSERT_NOK_WITH_MSG(catalog.GetFormatTable(Identifier("sys", "a$b$c$d")), "for system table");
 }
 
 TEST(FileSystemCatalogTest, TestInvalidCreateTable) {

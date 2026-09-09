@@ -35,6 +35,7 @@
 
 namespace paimon {
 class Executor;
+class FormatTable;
 class MemoryPool;
 class Predicate;
 class FileSystem;
@@ -60,7 +61,8 @@ class PAIMON_EXPORT ReadContext {
                 const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                 const std::shared_ptr<RealtimeContext>& realtime_context,
                 const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
-                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache);
+                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
+                const std::shared_ptr<FormatTable>& format_table);
     ~ReadContext();
 
     const std::string& GetPath() const {
@@ -142,6 +144,12 @@ class PAIMON_EXPORT ReadContext {
         return cache_;
     }
 
+    /// The format table this context was built from, or null when it names a table path and the
+    /// schema under that path says what kind of table it is.
+    const std::shared_ptr<FormatTable>& GetFormatTable() const {
+        return format_table_;
+    }
+
     /// Whether a read schema (C ArrowSchema) for nested column pruning was provided.
     bool HasReadSchema() const {
         return read_schema_ != nullptr && read_schema_->release != nullptr;
@@ -181,6 +189,7 @@ class PAIMON_EXPORT ReadContext {
     bool read_ahead_cache_enabled_;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
+    std::shared_ptr<FormatTable> format_table_;
     // Owns schema resources and releases ArrowSchema::release in destructor.
     std::unique_ptr<ArrowSchema> read_schema_;
 };
@@ -191,6 +200,15 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Constructs a `ReadContextBuilder` with required parameters.
     /// @param path The root path of the table.
     explicit ReadContextBuilder(const std::string& path);
+
+    /// Constructs a `ReadContextBuilder` for a format table that is already loaded: the only way
+    /// to read one whose schema lives in a metastore rather than under its location, such as a
+    /// table a REST catalog serves. The table carries what such a location does not say, so
+    /// `SetTableSchema()`, `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()` and a
+    /// branch are refused here rather than ignored.
+    ///
+    /// @param table The format table to read, as `Catalog::GetFormatTable()` hands it back.
+    explicit ReadContextBuilder(const std::shared_ptr<FormatTable>& table);
 
     ~ReadContextBuilder();
 

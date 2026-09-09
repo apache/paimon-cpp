@@ -36,6 +36,11 @@
 #include "paimon/result.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
+namespace arrow {
+class ArrayBuilder;
+class LargeBinaryBuilder;
+}  // namespace arrow
+
 namespace paimon::blob {
 
 /// Binary Blob File Layout Specification
@@ -99,9 +104,8 @@ class BlobFileBatchReader : public FileBatchReader {
     /// `emit_placeholder_sentinel` controls how placeholder entries (bin_length ==
     /// BlobDefs::kPlaceholderBinLength) are read: when false they fail the read, as resolving
     /// them requires the data-evolution blob fallback path; when true they are returned as the
-    /// non-null BlobDefs::kPlaceholderSentinel bytes for that path to merge away. Stored values
-    /// are returned verbatim; see BlobDefs::kPlaceholderSentinel for the accepted collision
-    /// with a user value exactly equal to the sentinel.
+    /// non-null BlobDefs::kPlaceholderSentinel bytes for scalar BLOB, or a two-entry map with
+    /// duplicate keys for MAP<..., BLOB>. The fallback path removes these internal values.
     static Result<std::unique_ptr<BlobFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input_stream, int32_t batch_size,
         bool blob_as_descriptor, bool emit_placeholder_sentinel,
@@ -150,6 +154,13 @@ class BlobFileBatchReader : public FileBatchReader {
     }
 
  private:
+    struct MapBlobPayload {
+        std::vector<int64_t> key_lengths;
+        std::vector<int64_t> value_lengths;
+        int64_t data_offset;
+        int64_t key_data_length;
+    };
+
     static constexpr uint64_t kDefaultReadChunkSize = 1024 * 1024;
 
     static int32_t GetIndexLength(const int8_t* bytes, int32_t offset);
@@ -168,6 +179,13 @@ class BlobFileBatchReader : public FileBatchReader {
     /// Builds a null bitmap buffer for the given rows. Returns nullptr if no nulls.
     Result<std::shared_ptr<arrow::Buffer>> BuildNullBitmap(int32_t rows_to_read) const;
     Result<std::shared_ptr<arrow::Array>> BuildContentArray(int32_t rows_to_read) const;
+    Result<MapBlobPayload> ReadMapBlobPayload(size_t row_index, int32_t fixed_key_length) const;
+    Status AppendMapBlobKeys(const MapBlobPayload& payload,
+                             const std::shared_ptr<arrow::DataType>& key_type,
+                             arrow::ArrayBuilder* key_builder) const;
+    Status AppendMapBlobValues(const MapBlobPayload& payload,
+                               arrow::LargeBinaryBuilder* blob_builder) const;
+    Result<std::shared_ptr<arrow::Array>> BuildMapBlobArray(int32_t rows_to_read) const;
     Result<std::shared_ptr<arrow::Array>> BuildTargetArray(int32_t rows_to_read) const;
 
     /// Returns true if the blob at the given index is null (bin_length == kNullBinLength).

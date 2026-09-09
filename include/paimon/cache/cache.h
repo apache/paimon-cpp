@@ -44,9 +44,6 @@ class PAIMON_EXPORT CacheKey {
                                                  int32_t length, bool is_index);
     static std::shared_ptr<CacheKey> ForKind(const std::string& file_path, int64_t position,
                                              int32_t length, CacheKind kind);
-    static std::shared_ptr<CacheKey> ForSnapshotLiveManifestEntries(const std::string& table_path,
-                                                                    const std::string& branch,
-                                                                    int32_t bucket);
 
  public:
     virtual ~CacheKey() = default;

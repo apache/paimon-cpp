@@ -23,6 +23,7 @@
 #include <cassert>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -30,6 +31,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
@@ -38,22 +41,29 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/arrow/vector_utils.h"
+#include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
+#include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/preconditions.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/options/changelog_producer.h"
 #include "paimon/core/options/expire_config.h"
 #include "paimon/core/options/map_storage_layout.h"
 #include "paimon/core/options/merge_engine.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/format/file_format.h"
 #include "paimon/result.h"
+#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 namespace {
@@ -127,6 +137,16 @@ Status ValidatePerLevelOption(
     return Status::OK();
 }
 
+Status ValidateVectorComparatorField(const TableSchema& schema, const std::string& field_name,
+                                     const std::string& role) {
+    PAIMON_ASSIGN_OR_RAISE(DataField field, schema.GetField(field_name));
+    if (VectorUtils::ContainsVectorField(field.ArrowField())) {
+        return Status::Invalid(
+            fmt::format("VECTOR field '{}' cannot be used as {}.", field_name, role));
+    }
+    return Status::OK();
+}
+
 }  // namespace
 
 bool SchemaValidation::IsComplexType(const std::shared_ptr<arrow::Field>& field) {
@@ -135,27 +155,159 @@ bool SchemaValidation::IsComplexType(const std::shared_ptr<arrow::Field>& field)
             BlobUtils::IsBlobField(field));
 }
 
-Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
-    const auto& field_names = schema.FieldNames();
-    PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(schema.BucketKeys(), "bucket key"));
-    PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(schema.PrimaryKeys(), "primary key"));
-    PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(schema.PartitionKeys(), "partition key"));
-    PAIMON_RETURN_NOT_OK(
-        Preconditions::CheckState(ObjectUtils::ContainsAll(field_names, schema.PartitionKeys()),
-                                  "Table column {} should include all partition fields {}",
-                                  field_names, schema.PartitionKeys()));
-    PAIMON_RETURN_NOT_OK(
-        Preconditions::CheckState(ObjectUtils::ContainsAll(field_names, schema.PrimaryKeys()),
-                                  "Table column {} should include all primary key constraint {}",
-                                  field_names, schema.PrimaryKeys()));
-
-    PAIMON_RETURN_NOT_OK(
-        ValidateOnlyContainPrimitiveType(schema.Fields(), schema.PrimaryKeys(), "primary key"));
-    PAIMON_RETURN_NOT_OK(
-        ValidateOnlyContainPrimitiveType(schema.Fields(), schema.PartitionKeys(), "partition"));
+Status SchemaValidation::ValidateGenericSchema(const std::vector<DataField>& fields,
+                                               const std::vector<std::string>& bucket_keys,
+                                               const std::vector<std::string>& primary_keys,
+                                               const std::vector<std::string>& partition_keys) {
+    std::vector<std::string> field_names;
+    field_names.reserve(fields.size());
+    for (const DataField& field : fields) {
+        field_names.push_back(field.Name());
+    }
+    PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(bucket_keys, "bucket key"));
+    PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(primary_keys, "primary key"));
+    PAIMON_RETURN_NOT_OK(ValidateNoDuplicateField(partition_keys, "partition key"));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        ObjectUtils::ContainsAll(field_names, partition_keys),
+        "Table column {} should include all partition fields {}", field_names, partition_keys));
+    PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
+        ObjectUtils::ContainsAll(field_names, primary_keys),
+        "Table column {} should include all primary key constraint {}", field_names, primary_keys));
+    for (const auto& field_name : field_names) {
+        if (SpecialFields::IsSystemField(field_name)) {
+            return Status::Invalid(
+                fmt::format("field name '{}' in schema cannot be special field.", field_name));
+        }
+    }
+    PAIMON_RETURN_NOT_OK(ValidateOnlyContainPrimitiveType(fields, primary_keys, "primary key"));
+    PAIMON_RETURN_NOT_OK(ValidateOnlyContainPrimitiveType(fields, partition_keys, "partition"));
     // TODO(lisizhuo.lsz): C++ Paimon do not support timestamp & decimal & float & double type in
     // partition keys for now.
-    PAIMON_RETURN_NOT_OK(ValidateNotContainSpecificType(schema.Fields(), schema.PartitionKeys()));
+    PAIMON_RETURN_NOT_OK(ValidateNotContainSpecificType(fields, partition_keys));
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateNewTableSchema(const TableSchema& schema,
+                                                const std::shared_ptr<FileSystem>& file_system) {
+    const std::map<std::string, std::string>& options = schema.Options();
+    PAIMON_ASSIGN_OR_RAISE(TableType table_type, TableTypeDefine::FromOptions(options));
+    if (table_type != TableType::TABLE && table_type != TableType::MATERIALIZED_TABLE &&
+        table_type != TableType::FORMAT_TABLE) {
+        // Quoted back rather than re-rendered from `table_type`, so the message says what was
+        // actually asked for.
+        auto type_iter = options.find(Options::TYPE);
+        return Status::NotImplemented(fmt::format(
+            "Cannot create a table whose '{}' is '{}': paimon-cpp does not implement this table "
+            "type.",
+            Options::TYPE, type_iter == options.end() ? std::string() : type_iter->second));
+    }
+    if (table_type == TableType::FORMAT_TABLE) {
+        PAIMON_RETURN_NOT_OK(ValidateGenericTableSchema(schema));
+        // At creation the schema's own options are the only ones there are. The caller's file
+        // system is passed through rather than resolved again from them, so validation runs
+        // against the one the table is about to be created on.
+        return ValidateFormatTableSchema(schema, schema.Options(), file_system);
+    }
+    return ValidateTableSchema(schema);
+}
+
+Status SchemaValidation::ValidateGenericTableSchema(const TableSchema& schema) {
+    return ValidateGenericSchema(schema.Fields(), schema.BucketKeys(), schema.PrimaryKeys(),
+                                 schema.PartitionKeys());
+}
+
+Status SchemaValidation::ValidateGenericDataSchema(const DataSchema& schema) {
+    // A `DataSchema` names its field types through its arrow schema rather than through
+    // `DataField`s, so they are converted back and the same rules run on them.
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_schema, schema.GetArrowSchema());
+    ScopeGuard schema_guard([&c_schema]() { ArrowSchemaRelease(c_schema.get()); });
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
+                                      arrow::ImportSchema(c_schema.get()));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> fields,
+                           DataField::ConvertArrowSchemaToDataFields(arrow_schema));
+    return ValidateGenericSchema(fields, schema.BucketKeys(), schema.PrimaryKeys(),
+                                 schema.PartitionKeys());
+}
+
+Status SchemaValidation::ValidateFormatTableSchema(
+    const DataSchema& schema, const std::map<std::string, std::string>& effective_options,
+    const std::shared_ptr<FileSystem>& file_system) {
+    // Runs both when the table is created and when it is opened: creation alone would let a
+    // schema written elsewhere through, and opening alone would persist a table nothing can load.
+    if (!schema.PrimaryKeys().empty()) {
+        return Status::Invalid(
+            "Cannot define primary keys for a format table: a directory of data files records no "
+            "row identity to merge on.");
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(std::string file_format,
+                           OptionsUtils::GetValueFromMap<std::string>(
+                               effective_options, Options::FILE_FORMAT, "parquet"));
+    // Before `CoreOptions`, which resolves `file.format` through the format factories and would
+    // fail with a missing-factory error where this names the format. The parsed value is not
+    // kept; this only has to fail for a format nothing here can read.
+    PAIMON_RETURN_NOT_OK(FormatTable::ParseFormat(file_format));
+
+    // The remaining options are read through `CoreOptions`, so a default only ever changes in one
+    // place. `target-file-row-num` is validated there, so it needs no check of its own here.
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                           CoreOptions::FromMap(effective_options, file_system));
+
+    // A format table has no branches: its data is the files under its one location, which is
+    // where a read or a write would go whatever this named. Refused wherever the option comes
+    // from - the schema, a catalog that parsed `tbl$branch_dev`, or one call's options - rather
+    // than quietly ignored, which is the answer `WithBranch()` already gives.
+    // Normalized first, since an empty value names the main branch rather than a branch of its own.
+    const std::string branch = BranchManager::NormalizeBranch(core_options.GetBranch());
+    if (branch != BranchManager::DEFAULT_MAIN_BRANCH) {
+        return Status::Invalid(fmt::format("a format table has no branches, so '{}' cannot be '{}'",
+                                           Options::BRANCH, branch));
+    }
+
+    if (core_options.FormatTablePartitionOnlyValueInPath() && schema.PartitionKeys().empty()) {
+        return Status::Invalid(
+            "Cannot set 'format-table.partition-path-only-value' on a table with no partition "
+            "keys: the layout names a directory by its partition value alone.");
+    }
+
+    // A table of nothing but partition columns leaves a write nothing to write and a read no
+    // column to count rows by.
+    if (!schema.PartitionKeys().empty() &&
+        schema.PartitionKeys().size() == schema.FieldNames().size()) {
+        return Status::Invalid(
+            "A format table cannot be partitioned by every one of its columns: the data files "
+            "would hold nothing, since partition values live in the directory names.");
+    }
+
+    // A partition value makes the round trip through its column type on the way to a directory
+    // name and back, so a type that cannot leaves a table nothing can read or write. Checked by
+    // building the computer that does the round trip, not by listing the types it accepts, which
+    // would be a second list to keep in step.
+    if (!schema.PartitionKeys().empty()) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_schema, schema.GetArrowSchema());
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
+                                          arrow::ImportSchema(c_schema.get()));
+        Result<std::unique_ptr<BinaryRowPartitionComputer>> partition_computer =
+            BinaryRowPartitionComputer::Create(
+                schema.PartitionKeys(), arrow_schema, core_options.GetPartitionDefaultName(),
+                core_options.LegacyPartitionNameEnabled(), GetDefaultPool());
+        if (!partition_computer.ok()) {
+            return Status(partition_computer.status().code(),
+                          fmt::format("a format table cannot be partitioned by these columns: {}",
+                                      partition_computer.status().message()));
+        }
+    }
+
+    if (core_options.MetastorePartitionedTable()) {
+        return Status::NotImplemented(
+            "'metastore.partitioned-table' is not supported by paimon-cpp yet: its partitions "
+            "would come from the catalog rather than from the directories a scan here reads.");
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
+    PAIMON_RETURN_NOT_OK(ValidateGenericTableSchema(schema));
 
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(schema.Options()));
     PAIMON_RETURN_NOT_OK(ValidateBucket(schema, options));
@@ -177,12 +329,6 @@ Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
 
     // TODO(yonghao.fyh): check changelog num retain
     // TODO(yonghao.fyh): support file format validate data fields
-    for (const auto& field_name : field_names) {
-        if (SpecialFields::IsSystemField(field_name)) {
-            return Status::Invalid(
-                fmt::format("field name '{}' in schema cannot be special field.", field_name));
-        }
-    }
     // TODO(yonghao.fyh): check streaming read overwrite
     // TODO(yonghao.fyh): check 'partition.expiration-time'
     // TODO(yonghao.fyh): check 'rowkind.field'
@@ -378,6 +524,8 @@ Status SchemaValidation::ValidateSequenceGroup(const TableSchema& schema,
                     fmt::format("The sequence field group: {} can not be found in table schema.",
                                 sequence_field_name));
             }
+            PAIMON_RETURN_NOT_OK(ValidateVectorComparatorField(schema, sequence_field_name,
+                                                               "a sequence-group ordering field"));
         }
 
         for (const auto& field : StringUtils::Split(v, Options::FIELDS_SEPARATOR)) {
@@ -445,6 +593,7 @@ Status SchemaValidation::ValidateSequenceField(const TableSchema& schema,
             PAIMON_RETURN_NOT_OK(Preconditions::CheckState(
                 std::find(field_names.begin(), field_names.end(), field) != field_names.end(),
                 fmt::format("Sequence field: '{}' cannot be found in table schema.", field)));
+            PAIMON_RETURN_NOT_OK(ValidateVectorComparatorField(schema, field, "a sequence field"));
 
             PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> agg_func,
                                    options.GetFieldAggFunc(field));
@@ -775,14 +924,6 @@ Status SchemaValidation::ValidateVectorFields(const TableSchema& schema,
     }
     if (!has_vector) {
         return Status::OK();
-    }
-    if (!schema.PrimaryKeys().empty()) {
-        return Status::NotImplemented(
-            "VECTOR fields in primary-key tables are not implemented yet.");
-    }
-    if (options.DataEvolutionEnabled()) {
-        return Status::NotImplemented(
-            "VECTOR fields in data-evolution tables are not implemented yet.");
     }
     PAIMON_RETURN_NOT_OK(
         ValidateVectorFileFormat(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));

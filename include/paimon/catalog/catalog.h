@@ -40,6 +40,7 @@ namespace paimon {
 using Instant = std::variant<std::string, int64_t>;
 
 class Database;
+class FormatTable;
 class Table;
 class View;
 class Schema;
@@ -209,6 +210,33 @@ class PAIMON_EXPORT Catalog {
     ///         snapshot id ascending, or an error status.
     virtual Result<std::vector<SnapshotInfo>> ListSnapshots(
         const Identifier& identifier, const std::string& branch = "") const = 0;
+
+    /// Gets a format table: a directory of data files laid out like a standard Hive table.
+    ///
+    /// A format table carries no snapshots and no manifests, so it is loaded through its own
+    /// method rather than `GetTable()`. Reading and writing it go through the same `TableScan`,
+    /// `TableRead`, `FileStoreWrite` and `FileStoreCommit` entry points every other table uses:
+    /// hand the table back to `ScanContextBuilder`, `ReadContextBuilder`, `WriteContextBuilder` or
+    /// `CommitContextBuilder`, each of which takes one.
+    ///
+    /// @param identifier Identifier of the table to get.
+    /// @return A result containing the format table, or an error status if the table does not
+    /// exist or its `type` option is not `format-table`.
+    Result<std::shared_ptr<FormatTable>> GetFormatTable(const Identifier& identifier) const;
+
+ protected:
+    /// Loads `identifier` as a format table, which is what `GetFormatTable()` hands back.
+    ///
+    /// The default reads the location and the schema through the virtuals above - two requests
+    /// that can disagree - and treats every directory below the location as table content. An
+    /// override answers both questions directly: whether location and schema come back in one
+    /// round trip, and whether this catalog keeps the table's metadata under the table path.
+    ///
+    /// @param identifier Identifier of the table to load.
+    /// @return A result containing the format table, or an error status if the table does not
+    /// exist or its `type` option is not `format-table`.
+    virtual Result<std::shared_ptr<FormatTable>> LoadFormatTable(
+        const Identifier& identifier) const;
 };
 
 }  // namespace paimon
