@@ -29,7 +29,7 @@ RUSTUP_VERSION=${RUSTUP_VERSION:-1.29.0}
 # 1.88.0 is the minimum required by transitive crates (e.g. time 0.3.47).
 RUST_VERSION=${RUST_VERSION:-1.88.0}
 CBINDGEN_VERSION=${CBINDGEN_VERSION:-0.29.2}
-PROTOC_VERSION=${PROTOC_VERSION:-27.4}
+PROTOC_VERSION=27.4
 
 # Install rustup + default toolchain if cargo isn't on PATH yet.
 if ! command -v cargo >/dev/null 2>&1; then

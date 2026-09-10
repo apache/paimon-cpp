@@ -137,9 +137,7 @@ Result<BatchReader::ReadBatch> LanceFileBatchReader::AlignBatch(ReadBatch batch)
     }
     auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
     arrow::ArrayVector fields;
-    std::vector<std::string> names;
     fields.reserve(read_schema_->num_fields());
-    names.reserve(read_schema_->num_fields());
     for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
         std::shared_ptr<arrow::Array> child = struct_array->GetFieldByName(field->name());
         if (child == nullptr) {
@@ -156,13 +154,13 @@ Result<BatchReader::ReadBatch> LanceFileBatchReader::AlignBatch(ReadBatch batch)
                                               child, field->type(), arrow_pool_.get()));
         }
         fields.push_back(std::move(child));
-        names.push_back(field->name());
     }
     std::shared_ptr<arrow::Array> aligned;
     if (fields.empty()) {
         aligned = std::make_shared<arrow::StructArray>(arrow::struct_({}), array->length(), fields);
     } else {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(aligned, arrow::StructArray::Make(fields, names));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(aligned,
+                                          arrow::StructArray::Make(fields, read_schema_->fields()));
     }
     auto out_array = std::make_unique<::ArrowArray>();
     auto out_schema = std::make_unique<::ArrowSchema>();

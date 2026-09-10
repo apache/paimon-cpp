@@ -28,6 +28,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -229,26 +230,35 @@ TEST_F(LanceFileFormatTest, ProjectionSelectionAndFileRowIds) {
     ASSERT_OK(WriteFile(path, schema, data, /*batch_size=*/2));
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, OpenReader(path, 2));
-    std::shared_ptr<arrow::Schema> projected_schema = arrow::schema({fields[1]});
+    std::shared_ptr<arrow::Field> read_field =
+        arrow::field("name", arrow::utf8(), /*nullable=*/false,
+                     arrow::key_value_metadata({DataField::FIELD_ID}, {"1"}));
+    std::shared_ptr<arrow::Schema> projected_schema = arrow::schema({read_field});
     ::ArrowSchema ffi_schema = {};
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, &ffi_schema).ok());
     ASSERT_OK(reader->SetReadSchema(&ffi_schema, /*predicate=*/nullptr,
                                     RoaringBitmap32::From({1, 2, 4})));
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch first_batch, reader->NextBatch());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first,
-                         paimon::test::ReadResultCollector::GetArray(std::move(first_batch)));
-    ASSERT_TRUE(first->Equals(arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}),
-                                                                        R"([["one"],["two"]])")
+    arrow::Result<std::shared_ptr<arrow::Array>> first_result =
+        arrow::ImportArray(first_batch.first.get(), first_batch.second.get());
+    ASSERT_TRUE(first_result.ok()) << first_result.status().ToString();
+    std::shared_ptr<arrow::Array> first = std::move(first_result).MoveValueUnsafe();
+    auto first_type = std::static_pointer_cast<arrow::StructType>(first->type());
+    ASSERT_TRUE(first_type->field(0)->Equals(*read_field, /*check_metadata=*/true));
+    ASSERT_TRUE(first->Equals(arrow::ipc::internal::json::ArrayFromJSON(
+                                  arrow::struct_({read_field}), R"([["one"],["two"]])")
                                   .ValueOrDie()));
     ASSERT_EQ(reader->GetPreviousBatchFileRowId(0).value(), 1);
     ASSERT_EQ(reader->GetPreviousBatchFileRowId(1).value(), 2);
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch second_batch, reader->NextBatch());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> second,
-                         paimon::test::ReadResultCollector::GetArray(std::move(second_batch)));
+    arrow::Result<std::shared_ptr<arrow::Array>> second_result =
+        arrow::ImportArray(second_batch.first.get(), second_batch.second.get());
+    ASSERT_TRUE(second_result.ok()) << second_result.status().ToString();
+    std::shared_ptr<arrow::Array> second = std::move(second_result).MoveValueUnsafe();
     ASSERT_TRUE(second->Equals(
-        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}), R"([["four"]])")
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({read_field}), R"([["four"]])")
             .ValueOrDie()));
     ASSERT_EQ(reader->GetPreviousBatchFileRowId(0).value(), 4);
 }

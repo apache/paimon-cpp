@@ -359,7 +359,7 @@ TEST_P(WriteAndReadInteTest, TestAppendSimple) {
 
 TEST_P(WriteAndReadInteTest, TestAppendVector) {
     auto [file_format, file_system] = GetParam();
-    if (file_format != "parquet") {
+    if (file_format != "parquet" && file_format != "lance") {
         return;
     }
 
@@ -726,7 +726,7 @@ TEST_P(WriteAndReadInteTest, TestPKListAggPreservesResultsAcrossKeys) {
 
 TEST_P(WriteAndReadInteTest, TestPKVector) {
     auto [file_format, file_system] = GetParam();
-    if (file_format != "parquet") {
+    if (file_format != "parquet" && file_format != "lance") {
         return;
     }
 
@@ -841,7 +841,7 @@ TEST_P(WriteAndReadInteTest, TestPKNestedVector) {
 
 TEST_P(WriteAndReadInteTest, TestPKVectorWithListagg) {
     auto [file_format, file_system] = GetParam();
-    if (file_format != "parquet") {
+    if (file_format != "parquet" && file_format != "lance") {
         return;
     }
 

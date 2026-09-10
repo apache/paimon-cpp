@@ -1012,8 +1012,14 @@ Status SchemaValidation::ValidateVectorFields(const TableSchema& schema,
     }
     PAIMON_RETURN_NOT_OK(
         ValidateVectorFileFormat(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));
-    return ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL,
-                                  ValidateVectorFileFormat);
+    PAIMON_RETURN_NOT_OK(ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL,
+                                                ValidateVectorFileFormat));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(ValidateVectorFileFormat(Options::CHANGELOG_FILE_FORMAT,
+                                                      changelog_format->Identifier()));
+    }
+    return Status::OK();
 }
 
 }  // namespace paimon

@@ -80,6 +80,17 @@ TEST(SchemaValidationTest, TestVectorType) {
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                         "VECTOR currently only supports parquet/lance data files");
 
+    std::map<std::string, std::string> changelog_options = {
+        {Options::BUCKET, "1"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::CHANGELOG_FILE_FORMAT, "orc"},
+    };
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"id"}, changelog_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "changelog-file.format is orc");
+
     std::map<std::string, std::string> primary_key_options = {{Options::BUCKET, "1"}};
     ASSERT_OK_AND_ASSIGN(table_schema,
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
