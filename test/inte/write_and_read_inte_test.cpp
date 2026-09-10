@@ -357,6 +357,114 @@ TEST_P(WriteAndReadInteTest, TestAppendSimple) {
     ASSERT_TRUE(success);
 }
 
+TEST_P(WriteAndReadInteTest, TestAppendReadWithNestedPredicateAcrossBatches) {
+    auto [file_format, file_system] = GetParam();
+    arrow::FieldVector fields = {
+        arrow::field("id", arrow::int32()), arrow::field("key", arrow::int64()),
+        arrow::field("value", arrow::utf8()), arrow::field("payload", arrow::binary())};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::BUCKET, "-1"},
+        {Options::TARGET_FILE_SIZE, "1048576"},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(auto helper,
+                         TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                                            /*primary_keys=*/{}, options,
+                                            /*is_streaming_mode=*/false));
+    // For the read batch size of 4 configured below, consecutive groups of four
+    // input rows have 0, 2, 4, 0, 2, and 4 matches for the AND predicate.
+    // Input rows at positions 4 and 6 are identical and must both survive.
+    const std::string data_json = R"([
+        [0, 0, "a", "zero"], [1, null, "b", null],
+        [2, 0, null, "two"], [3, 0, "c", "three"],
+        [4, 1, "b", "keep"], [5, 0, "a", "drop"],
+        [4, 1, "b", "keep"], [7, 1, null, "null"],
+        [8, 1, "a", "eight"], [9, 1, "b", null],
+        [10, 1, "a", "ten"], [11, 1, "b", "eleven"],
+        [12, 0, "a", "twelve"], [13, 0, "b", "thirteen"],
+        [14, null, "a", "fourteen"], [15, 1, "c", "fifteen"],
+        [16, 1, "b", "sixteen"], [17, 0, "b", "seventeen"],
+        [18, 1, "a", "eighteen"], [19, 1, null, "nineteen"],
+        [20, 1, "a", "twenty"], [21, 1, "a", "twenty-one"],
+        [22, 1, "b", "twenty-two"], [23, 1, "b", "twenty-three"]
+    ])";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), data_json,
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt,
+                                         /*is_streaming=*/false));
+    ASSERT_FALSE(splits.empty());
+
+    // Predicate indices refer to the projected read schema: payload, value, id, key.
+    auto key = PredicateBuilder::Equal(3, "key", FieldType::BIGINT, Literal(int64_t{1}));
+    auto a =
+        PredicateBuilder::Equal(1, "value", FieldType::STRING, Literal(FieldType::STRING, "a", 1));
+    auto b =
+        PredicateBuilder::Equal(1, "value", FieldType::STRING, Literal(FieldType::STRING, "b", 1));
+    ASSERT_OK_AND_ASSIGN(auto alternatives, PredicateBuilder::Or({a, b}));
+    ASSERT_OK_AND_ASSIGN(auto conjunction, PredicateBuilder::And({key, alternatives}));
+    ASSERT_OK_AND_ASSIGN(auto both, PredicateBuilder::And({key, a}));
+    ASSERT_OK_AND_ASSIGN(auto disjunction, PredicateBuilder::Or({both, b}));
+    const std::vector<std::pair<std::shared_ptr<Predicate>, std::vector<int64_t>>> cases = {
+        {conjunction, {4, 6, 8, 9, 10, 11, 16, 18, 20, 21, 22, 23}},
+        {disjunction, {1, 4, 6, 8, 9, 10, 11, 13, 16, 17, 18, 20, 21, 22, 23}},
+    };
+
+    // Build the oracle from written rows and explicit expected positions, independently
+    // of predicate evaluation. Reordering both predicate columns also tests name binding.
+    auto input = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), data_json).ValueOrDie());
+    auto row_kinds = arrow::MakeArrayFromScalar(arrow::Int8Scalar(0), input->length()).ValueOrDie();
+    auto projected =
+        arrow::StructArray::Make(
+            {row_kinds, input->field(3), input->field(2), input->field(0), input->field(1)},
+            std::vector<std::string>{"_VALUE_KIND", "payload", "value", "id", "key"})
+            .ValueOrDie();
+    const auto unfiltered = std::make_shared<arrow::ChunkedArray>(projected);
+    const std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    for (const auto& [predicate, expected_positions] : cases) {
+        SCOPED_TRACE(predicate->ToString());
+        arrow::ArrayVector expected_rows;
+        for (int64_t position : expected_positions) {
+            expected_rows.push_back(projected->Slice(position, 1));
+        }
+        const auto filtered = std::make_shared<arrow::ChunkedArray>(expected_rows);
+        for (int32_t batch_size : {1, 4, 7}) {
+            SCOPED_TRACE(batch_size);
+            for (bool enable_filter : {false, true}) {
+                SCOPED_TRACE(enable_filter);
+                ReadContextBuilder builder(table_path);
+                builder.SetOptions(options)
+                    .SetReadFieldNames({"payload", "value", "id", "key"})
+                    .SetPredicate(predicate)
+                    .EnablePredicateFilter(enable_filter)
+                    .EnablePrefetch(false)
+                    .EnableLateMaterializing(false)
+                    .AddOption(Options::READ_BATCH_SIZE, std::to_string(batch_size));
+                ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+                ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(context)));
+                ASSERT_OK_AND_ASSIGN(auto reader, table_read->CreateReader(splits));
+                ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(reader.get()));
+                ASSERT_TRUE(actual);
+                // The same predicate without precise filtering must retain all input rows,
+                // proving that format pushdown did not remove the empty or partial batches.
+                const auto& expected = enable_filter ? filtered : unfiltered;
+                ASSERT_TRUE(expected->Equals(actual)) << actual->ToString();
+                ASSERT_OK_AND_ASSIGN(auto eof, reader->NextBatch());
+                ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+                reader->Close();
+            }
+        }
+    }
+}
+
 TEST_P(WriteAndReadInteTest, TestAppendVector) {
     auto [file_format, file_system] = GetParam();
     if (file_format != "parquet") {
