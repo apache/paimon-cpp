@@ -1013,7 +1013,7 @@ TEST_F(PrefetchFileBatchReaderImplTest, TestInvalidCase) {
                 prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
                 /*enable_adaptive_prefetch_strategy=*/false, executor_,
                 /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_)),
+                /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)),
             "data file size should not be negative");
     }
     {
