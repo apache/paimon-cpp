@@ -85,6 +85,10 @@ class TrackingKeyValueRecordReader : public KeyValueRecordReader {
         return inner_reader_->GetReaderMetrics();
     }
 
+    void Warmup() override {
+        inner_reader_->Warmup();
+    }
+
     void Close() override {
         if (closed_flag_ != nullptr) {
             *closed_flag_ = true;

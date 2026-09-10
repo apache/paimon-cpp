@@ -486,4 +486,18 @@ TEST_F(CompleteRowTrackingFieldsBatchReaderTest, TestOnlyReadRowTrackingFields) 
     CheckResult(src_array, /*first_row_id=*/100, /*snapshot_id=*/4, read_schema, target_array);
 }
 
+TEST_F(CompleteRowTrackingFieldsBatchReaderTest, TestWarmupForwardsToInnerReader) {
+    auto file_batch_reader = std::make_unique<MockFileBatchReader>(
+        /*data=*/nullptr, arrow::struct_({arrow::field("f0", arrow::int32())}),
+        /*read_batch_size=*/1);
+    auto* inner_reader = file_batch_reader.get();
+    auto reader = std::make_unique<CompleteRowTrackingFieldsBatchReader>(
+        std::move(file_batch_reader), /*first_row_id=*/10, /*snapshot_id=*/1,
+        /*file_field_names=*/std::nullopt, GetArrowPool(pool_));
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader->Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 }  // namespace paimon::test
