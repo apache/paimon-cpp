@@ -362,6 +362,115 @@ TEST_F(AvroFileBatchReaderTest, TestScalarStructProjectionAndReset) {
     ASSERT_TRUE(avro_reader->decode_context_.struct_projections.empty());
 }
 
+TEST_F(AvroFileBatchReaderTest, TestScalarStructProjectionWithDifferentTimestampUnit) {
+    auto file_type = arrow::struct_({arrow::field(
+        "r", arrow::struct_({arrow::field("t", arrow::timestamp(arrow::TimeUnit::MILLI)),
+                             arrow::field("unused", arrow::int32())}))});
+    auto source =
+        arrow::ipc::internal::json::ArrayFromJSON(file_type, R"([[[1000,42]]])").ValueOrDie();
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "projected_timestamp.avro");
+    ASSERT_NO_FATAL_FAILURE(WriteData(source, path, "null"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                         file_format_->CreateReaderBuilder(/*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+
+    for (auto unit : {arrow::TimeUnit::MILLI, arrow::TimeUnit::SECOND, arrow::TimeUnit::MICRO}) {
+        SCOPED_TRACE(unit);
+        auto read_type = arrow::struct_(
+            {arrow::field("r", arrow::struct_({arrow::field("t", arrow::timestamp(unit))}))});
+        ArrowSchema schema;
+        ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(read_type->fields()), &schema).ok());
+        Status status = reader->SetReadSchema(&schema, nullptr, std::nullopt);
+        if (unit == arrow::TimeUnit::MICRO && !status.ok()) {
+            // Unsupported conversions may be rejected, but must never silently change values.
+            ASSERT_TRUE(status.IsInvalid() || status.IsTypeError() || status.IsNotImplemented())
+                << status.ToString();
+            continue;
+        }
+        ASSERT_OK(status);
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+        const std::string expected_json =
+            unit == arrow::TimeUnit::SECOND
+                ? R"([[[1]]])"
+                : (unit == arrow::TimeUnit::MILLI ? R"([[[1000]]])" : R"([[[1000000]]])");
+        auto expected =
+            arrow::ipc::internal::json::ArrayFromJSON(read_type, expected_json).ValueOrDie();
+        ASSERT_TRUE(imported.ValueOrDie()->Equals(expected))
+            << "actual: " << imported.ValueOrDie()->ToString()
+            << " expected: " << expected->ToString();
+    }
+}
+
+TEST_F(AvroFileBatchReaderTest, TestScalarStructProjectionWithDifferentDecimalScale) {
+    auto file_type = arrow::struct_(
+        {arrow::field("r", arrow::struct_({arrow::field("d", arrow::decimal128(10, 2)),
+                                           arrow::field("unused", arrow::int32())}))});
+    auto source =
+        arrow::ipc::internal::json::ArrayFromJSON(file_type, R"([[["1.23",42]]])").ValueOrDie();
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "projected_decimal.avro");
+    ASSERT_NO_FATAL_FAILURE(WriteData(source, path, "null"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                         file_format_->CreateReaderBuilder(/*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+
+    for (int32_t scale : {2, 3}) {
+        SCOPED_TRACE(scale);
+        auto read_type = arrow::struct_(
+            {arrow::field("r", arrow::struct_({arrow::field("d", arrow::decimal128(10, scale))}))});
+        ArrowSchema schema;
+        ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(read_type->fields()), &schema).ok());
+        Status status = reader->SetReadSchema(&schema, nullptr, std::nullopt);
+        if (scale != 2 && !status.ok()) {
+            // A successful projection must preserve the decimal's numerical value.
+            ASSERT_TRUE(status.IsInvalid() || status.IsTypeError() || status.IsNotImplemented())
+                << status.ToString();
+            continue;
+        }
+        ASSERT_OK(status);
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(
+                            read_type, scale == 2 ? R"([[["1.23"]]])" : R"([[["1.230"]]])")
+                            .ValueOrDie();
+        ASSERT_TRUE(imported.ValueOrDie()->Equals(expected))
+            << "actual: " << imported.ValueOrDie()->ToString()
+            << " expected: " << expected->ToString();
+    }
+}
+
+TEST_F(AvroFileBatchReaderTest, TestFullStructReadWithCustomListElementName) {
+    auto data_type = arrow::struct_(
+        {arrow::field("r", arrow::struct_({arrow::field(
+                               "values", arrow::list(arrow::field("element", arrow::int32())))}))});
+    auto source =
+        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([[[[1,2,3]]]])").ValueOrDie();
+    const std::string path = PathUtil::JoinPath(dir_->Str(), "struct_list_element_name.avro");
+    ASSERT_NO_FATAL_FAILURE(WriteData(source, path, "null"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReaderBuilder> builder,
+                         file_format_->CreateReaderBuilder(/*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder->Build(input));
+
+    // Avro normalizes the list element name to "item"; the original schema must remain readable.
+    ArrowSchema schema;
+    ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(data_type->fields()), &schema).ok());
+    ASSERT_OK(reader->SetReadSchema(&schema, nullptr, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    auto imported = arrow::ImportArray(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(imported.ok()) << imported.status().ToString();
+    ASSERT_TRUE(imported.ValueOrDie()->Equals(source)) << imported.ValueOrDie()->ToString();
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, reader->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+}
+
 TEST_F(AvroFileBatchReaderTest, TestStructSmallIntegerRead) {
     const std::string path = PathUtil::JoinPath(dir_->Str(), "struct_small_integer.avro");
     auto fields =

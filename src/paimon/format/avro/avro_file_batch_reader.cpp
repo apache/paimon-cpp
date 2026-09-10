@@ -40,18 +40,42 @@
 namespace paimon::avro {
 namespace {
 
-// Positional decoding requires matching field names, order and nesting. Leaf types
-// must use compatible builders: Avro int also supports Arrow int8 and int16.
+// Struct fields must retain their names and order; list/map child labels are not
+// encoded in Avro. Leaf types must match unless the decoder supports the conversion.
 bool SameReadLayout(const std::shared_ptr<arrow::DataType>& file_type,
                     const std::shared_ptr<arrow::DataType>& read_type) {
-    if (file_type->num_fields() == 0 && read_type->num_fields() == 0 &&
-        file_type->id() != arrow::Type::STRUCT && read_type->id() != arrow::Type::STRUCT) {
-        return file_type->id() == read_type->id() ||
-               (file_type->id() == arrow::Type::INT32 &&
-                (read_type->id() == arrow::Type::INT8 || read_type->id() == arrow::Type::INT16));
+    if (file_type->id() == arrow::Type::INT32 &&
+        (read_type->id() == arrow::Type::INT8 || read_type->id() == arrow::Type::INT16)) {
+        return true;
     }
     if (file_type->id() != read_type->id()) {
         return false;
+    }
+    switch (file_type->id()) {
+        case arrow::Type::TIMESTAMP: {
+            const auto& file_timestamp = checked_cast<const arrow::TimestampType&>(*file_type);
+            const auto& read_timestamp = checked_cast<const arrow::TimestampType&>(*read_type);
+            // Avro stores Arrow seconds as milliseconds, which the decoder converts back.
+            return file_timestamp.timezone() == read_timestamp.timezone() &&
+                   (file_timestamp.unit() == read_timestamp.unit() ||
+                    (file_timestamp.unit() == arrow::TimeUnit::MILLI &&
+                     read_timestamp.unit() == arrow::TimeUnit::SECOND));
+        }
+        case arrow::Type::LIST: {
+            const auto& file_list = checked_cast<const arrow::ListType&>(*file_type);
+            const auto& read_list = checked_cast<const arrow::ListType&>(*read_type);
+            return SameReadLayout(file_list.value_type(), read_list.value_type());
+        }
+        case arrow::Type::MAP: {
+            const auto& file_map = checked_cast<const arrow::MapType&>(*file_type);
+            const auto& read_map = checked_cast<const arrow::MapType&>(*read_type);
+            return SameReadLayout(file_map.key_type(), read_map.key_type()) &&
+                   SameReadLayout(file_map.item_type(), read_map.item_type());
+        }
+        case arrow::Type::STRUCT:
+            break;
+        default:
+            return file_type->Equals(read_type);
     }
     if (file_type->num_fields() != read_type->num_fields()) {
         return false;
