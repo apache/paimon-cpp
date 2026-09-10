@@ -205,8 +205,8 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     uint32_t prefetch_batch_count, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, bool initialize_read_ranges,
     bool read_ahead_cache_enabled, const CacheConfig& cache_config, bool enable_io_metrics,
-    const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-    WarmupLevel warmup_level) {
+    WarmupLevel warmup_level, const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (prefetch_max_parallel_num == 0) {
         return Status::Invalid("prefetch max parallel num should be greater than 0.");
     }
@@ -284,7 +284,7 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
 
     auto reader = std::unique_ptr<PrefetchFileBatchReaderImpl>(new PrefetchFileBatchReaderImpl(
         readers, batch_size, prefetch_queue_capacity, enable_adaptive_prefetch_strategy, executor,
-        cache, io_metrics, arrow_pool, warmup_level));
+        cache, io_metrics, warmup_level, arrow_pool));
     if (initialize_read_ranges) {
         // normally initialize read ranges should be false, as set read schema will refresh read
         // ranges, and set read schema will always be called before read.
@@ -297,8 +297,8 @@ PrefetchFileBatchReaderImpl::PrefetchFileBatchReaderImpl(
     const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
     uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
-    const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupLevel warmup_level)
+    const std::shared_ptr<PrefetchIoMetricsState>& io_metrics, WarmupLevel warmup_level,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : readers_(std::move(readers)),
       batch_size_(batch_size),
       executor_(executor),
@@ -730,8 +730,9 @@ void PrefetchFileBatchReaderImpl::WarmCacheOnce() {
         return;
     }
     // Init() is not idempotent (a second call returns Invalid), so at most one warmup may run per
-    // read-range generation. exchange() makes the guard correct whether the RAW Warmup() on
-    // the caller's thread and the Workloop() call on the background thread race or run in sequence.
+    // read-range generation. A RAW Warmup() and the Workloop() call are ordered by the reader's own
+    // thread, which warms first and only then starts the background thread, so the loser of this
+    // exchange never continues on a cache another thread is still initializing.
     if (cache_warmed_.exchange(true)) {
         return;
     }

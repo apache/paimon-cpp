@@ -90,7 +90,7 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
                         /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                        /*enable_io_metrics=*/false, pool, arrow_pool, WarmupLevel::DECODED));
+                        /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool, arrow_pool));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);
@@ -167,9 +167,6 @@ TEST_P(ApplyDeletionVectorBatchReaderTest, TestSimple2) {
     }
 }
 
-// Warmup() is only a hint, but it must reach the wrapped reader: this wrapper sits between the
-// split read and the file, and swallowing the hint here would leave the whole stack below it cold
-// no matter which layer asked for the warmup.
 TEST(ApplyDeletionVectorBatchReaderWarmupTest, WarmupForwardsToInnerReader) {
     auto target_type = arrow::struct_({arrow::field("f1", arrow::int32())});
     auto mock_reader =

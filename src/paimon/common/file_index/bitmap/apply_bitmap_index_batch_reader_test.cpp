@@ -100,8 +100,8 @@ class ApplyBitmapIndexBatchReaderTest : public ::testing::Test,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
                         /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                        /*enable_io_metrics=*/false, pool_, GetArrowPool(pool_),
-                        WarmupLevel::DECODED));
+                        /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_,
+                        GetArrowPool(pool_)));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);
@@ -195,9 +195,6 @@ TEST_P(ApplyBitmapIndexBatchReaderTest, TestBulkData) {
     CheckResult(data_str, bitmap_data, result_str, /*specified_batch_size=*/1024);
 }
 
-// Warmup() is only a hint, but it must reach the wrapped reader: this wrapper sits between the
-// split read and the file, and swallowing the hint here would leave the whole stack below it cold
-// no matter which layer asked for the warmup.
 TEST(ApplyBitmapIndexBatchReaderWarmupTest, WarmupForwardsToInnerReader) {
     auto target_type = arrow::struct_({arrow::field("f1", arrow::int32())});
     auto mock_reader =

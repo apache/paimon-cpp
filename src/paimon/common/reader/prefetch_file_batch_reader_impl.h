@@ -68,8 +68,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         uint32_t prefetch_max_parallel_num, int32_t batch_size, uint32_t prefetch_batch_count,
         bool enable_adaptive_prefetch_strategy, const std::shared_ptr<Executor>& executor,
         bool initialize_read_ranges, bool read_ahead_cache_enabled, const CacheConfig& cache_config,
-        bool enable_io_metrics, const std::shared_ptr<MemoryPool>& pool,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupLevel warmup_level);
+        bool enable_io_metrics, WarmupLevel warmup_level, const std::shared_ptr<MemoryPool>& pool,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~PrefetchFileBatchReaderImpl() override;
 
@@ -124,8 +124,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
-        const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, WarmupLevel warmup_level);
+        const std::shared_ptr<PrefetchIoMetricsState>& io_metrics, WarmupLevel warmup_level,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Status CleanUp();
     void Workloop();
@@ -134,7 +134,10 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     void EnsureBackgroundThread();
     /// Initializes and warms the read-ahead cache at most once per read-range generation, using the
     /// first reader's PreBufferRange(). Shared by Workloop() (DECODED) and Warmup() (RAW), so the
-    /// two never Init the cache twice. A no-op when there is no cache. Errors are recorded via
+    /// two never Init the cache twice. The flag only elects the caller that initializes, it does
+    /// not make a second caller wait: the two calls are ordered rather than concurrent, because a
+    /// RAW warmup runs on the reader's own thread before that same thread starts the background
+    /// thread that runs Workloop(). A no-op when there is no cache. Errors are recorded via
     /// SetReadStatus() rather than returned: a warmup hint for a file that may never be read must
     /// not fail an in-flight read.
     void WarmCacheOnce();

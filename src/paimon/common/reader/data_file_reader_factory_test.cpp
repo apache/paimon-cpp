@@ -36,11 +36,9 @@
 
 namespace paimon::test {
 
-/// `Open()` is the one place a production read builds the prefetching reader, and the warmup level
-/// reaches that reader only as an argument of this call. A level that is not forwarded does not
-/// fail anything: the reader just warms up however its own default says, whatever the caller asked
-/// for, and the only symptom is latency and memory a query never signed up for. Every level is
-/// pinned here so that dropping the forwarding breaks this test instead of a read.
+/// `Open()` is the one place a production read builds the prefetching reader, and a level that is
+/// not forwarded here fails nothing: the reader warms up however its own default says, and the only
+/// symptom is latency and memory a query never asked for.
 TEST(DataFileReaderFactoryTest, OpenForwardsWarmupLevelToPrefetchReader) {
     std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     auto mock_fs = std::make_shared<MockFileSystem>();

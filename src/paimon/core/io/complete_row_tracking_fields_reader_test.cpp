@@ -486,9 +486,6 @@ TEST_F(CompleteRowTrackingFieldsBatchReaderTest, TestOnlyReadRowTrackingFields) 
     CheckResult(src_array, /*first_row_id=*/100, /*snapshot_id=*/4, read_schema, target_array);
 }
 
-// Warmup() is only a hint, but it must reach the wrapped reader: this wrapper sits between the
-// split read and the file, and swallowing the hint here would leave the whole stack below it cold
-// no matter which layer asked for the warmup.
 TEST_F(CompleteRowTrackingFieldsBatchReaderTest, TestWarmupForwardsToInnerReader) {
     auto file_batch_reader = std::make_unique<MockFileBatchReader>(
         /*data=*/nullptr, arrow::struct_({arrow::field("f0", arrow::int32())}),

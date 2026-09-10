@@ -127,7 +127,8 @@ enum class PAIMON_EXPORT WarmupLevel {
     NONE,
     /// Fetch only the next file's raw, still-compressed bytes into memory, and leave the decoder
     /// alone. Overlaps the remote fetch while keeping memory lower than `DECODED`, because no
-    /// decoded batches are materialized ahead of the read.
+    /// decoded batches are materialized ahead of the read. It fetches through the read-ahead
+    /// cache, so it falls back to `NONE` when that cache is disabled.
     RAW,
     /// Fetch the raw bytes and start the background decode loop as well, so decoded batches are
     /// ready before the file is read. Hides the most latency but uses the most memory. This is the

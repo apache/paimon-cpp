@@ -456,8 +456,6 @@ TEST_F(KeyValueDataFileRecordReaderTest, TestKeyFieldAfterValueField) {
     }
 }
 
-// Warmup() is only a hint, but it must reach the wrapped file reader: this wrapper sits between the
-// merge and the file, and swallowing the hint here would leave the file's own prefetch cold.
 TEST_F(KeyValueDataFileRecordReaderTest, TestWarmupForwardsToInnerReader) {
     auto file_batch_reader = std::make_unique<MockFileBatchReader>(
         /*data=*/nullptr, arrow::struct_({arrow::field("_SEQUENCE_NUMBER", arrow::int64())}),

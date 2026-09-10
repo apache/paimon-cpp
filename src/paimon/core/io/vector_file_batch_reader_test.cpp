@@ -83,9 +83,6 @@ TEST(VectorFileBatchReaderTest, ConvertSchemaAndNextBatch) {
     ASSERT_TRUE(BatchReader::IsEofBatch(batch));
 }
 
-// Warmup() is only a hint, but it must reach the wrapped reader: this wrapper sits between the
-// split read and the file, and swallowing the hint here would leave the whole stack below it cold
-// no matter which layer asked for the warmup.
 TEST(VectorFileBatchReaderTest, WarmupForwardsToInnerReader) {
     auto physical_type = AsStructType(arrow::struct_({arrow::field("id", arrow::int32())}));
     auto mock_reader =

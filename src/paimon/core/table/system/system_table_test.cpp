@@ -232,12 +232,10 @@ TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
     ASSERT_EQ(parsed->system_table_name, ReadOptimizedSystemTable::kName);
 }
 
-// A system table reads through the data table underneath it, so it builds a fresh ReadContext for
-// that table. The builder starts from the defaults, which makes any setting that is not copied
-// across silently revert to its default: a caller that asked for WarmupLevel::NONE or RAW
-// would get DECODED back, restarting the background decode loop and re-committing its memory and
-// remote I/O, with nothing reported at either end. `$ro` has its own builder chain and `$audit_log`
-// and `$binlog` share one, so all three are pinned here.
+// A system table builds a fresh ReadContext for the data table underneath it, starting from the
+// defaults, so a setting that is not copied across silently reverts: a caller that asked for NONE
+// or RAW would get DECODED back. `$ro` has its own builder chain and `$audit_log` and `$binlog`
+// share one, so all three are pinned here.
 TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "orc"}};

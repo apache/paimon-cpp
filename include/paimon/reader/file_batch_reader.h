@@ -77,8 +77,11 @@ class PAIMON_EXPORT FileBatchReader : public BatchReader {
     /// and a hint about a file nobody reads must not fail the read in progress. An implementation
     /// that cannot start its work leaves it to be started by the first read, which reports the
     /// failure itself.
-    /// @warning The call starts background work owned by this reader, so it must be made from the
-    /// same thread that reads this reader, and not concurrently with any other call on it.
+    ///
+    /// What an implementation starts is up to the implementation - a reader that prefetches on a
+    /// background thread starts that thread, one that reads synchronously may do nothing at all.
+    /// @warning Whatever it starts, the call itself is not thread-safe: make it from the same
+    /// thread that reads this reader, and not concurrently with any other call on it.
     virtual void Warmup() {}
 };
 

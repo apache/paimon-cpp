@@ -364,6 +364,9 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// when a LIMIT stops the scan early).
     /// @param level The warmup level to use (default: WarmupLevel::DECODED).
     /// @return Reference to this builder for method chaining.
+    /// @note WarmupLevel::RAW warms the read-ahead cache, so it has no effect and behaves like
+    /// WarmupLevel::NONE when the cache is off (see SetReadAheadCacheEnabled()).
+    /// WarmupLevel::DECODED does not depend on the cache.
     /// @see WarmupLevel
     ReadContextBuilder& SetWarmupLevel(WarmupLevel level);
 

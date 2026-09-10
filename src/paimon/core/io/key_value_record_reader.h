@@ -41,10 +41,14 @@ class KeyValueRecordReader {
 
     /// Starts whatever background work this reader would otherwise start on its first read, so a
     /// caller that knows this reader is next can pay that startup while still consuming the
-    /// previous one. Optional and reporting no error, like `FileBatchReader::Warmup()`: a reader
-    /// with nothing to start does nothing, and a hint about a file nobody reads must not fail the
-    /// read in progress.
-    virtual void Warmup() {}
+    /// previous one. Reports no error, like `FileBatchReader::Warmup()`: a hint about a file
+    /// nobody reads must not fail the read in progress.
+    ///
+    /// Pure virtual although a reader with nothing to start has nothing to do here: a wrapping
+    /// reader that forgot to forward the call would silently leave the file readers below it cold,
+    /// which no test of the read result can catch, so every implementation is made to say whether
+    /// it forwards or is a no-op.
+    virtual void Warmup() = 0;
 
     virtual void Close() = 0;
 };

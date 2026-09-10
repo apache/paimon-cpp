@@ -917,8 +917,6 @@ TEST_F(FieldMappingReaderTest, TestCreateFailFastOnInvalidMapSelectedKeysMetadat
                         "Duplicate selected key 'a'");
 }
 
-// This is the outermost wrapper of every data file's reader stack, so swallowing the hint here
-// would leave the whole stack cold no matter which layer asked for the warmup.
 TEST_F(FieldMappingReaderTest, TestWarmupForwardsToInnerReader) {
     std::vector<DataField> data_fields = {DataField(0, arrow::field("a", arrow::int32()))};
     auto data_schema = DataField::ConvertDataFieldsToArrowSchema(data_fields);
