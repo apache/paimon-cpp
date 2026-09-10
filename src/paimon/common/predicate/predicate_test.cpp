@@ -172,6 +172,26 @@ class PredicateTest : public ::testing::Test {
     }
 };
 
+TEST_F(PredicateTest, TestLeafFieldBoundsOnWideSlicedBatch) {
+    auto values =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int64(), "[9,1,null,2,9]").ValueOrDie();
+    arrow::ArrayVector columns(64, values);
+    std::vector<std::string> names;
+    for (int32_t i = 0; i < 64; ++i) {
+        names.push_back(fmt::format("field_{}", i));
+    }
+    auto batch = arrow::StructArray::Make(columns, names).ValueOrDie();
+    auto sliced = batch->Slice(1, 3);
+    auto pool = arrow::default_memory_pool();
+    auto predicate = std::dynamic_pointer_cast<PredicateFilter>(
+        PredicateBuilder::Equal(63, "field_63", FieldType::BIGINT, Literal(int64_t{2})));
+    ASSERT_OK_AND_ASSIGN(auto full, predicate->Test(*sliced, pool));
+    ASSERT_EQ(full, std::vector<char>({0, 0, 1}));
+    auto invalid = std::dynamic_pointer_cast<PredicateFilter>(
+        PredicateBuilder::Equal(64, "missing", FieldType::BIGINT, Literal(int64_t{2})));
+    ASSERT_NOK_WITH_MSG(invalid->Test(*sliced, pool), "field index 64 exceed field count 64");
+}
+
 TEST_F(PredicateTest, TestInvalidFieldIndex) {
     auto bigint_type = arrow::int64();
     auto predicate_base = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f0",
