@@ -258,7 +258,8 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
         arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::MICRO)),
         arrow::field("decimal", arrow::decimal128(38, 2)),
         arrow::field("array", arrow::list(arrow::float32())),
-        arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())})),
+        arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())}),
+                     /*nullable=*/false),
         arrow::field("vector", arrow::fixed_size_list(arrow::float32(), 3)),
     };
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
@@ -270,9 +271,14 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
         arrow::field("map", arrow::map(arrow::int32(), arrow::utf8())),
         arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
         VariantTypeUtils::ToArrowField("variant"),
+        arrow::field("nullable_row", arrow::struct_({arrow::field("value", arrow::int32())})),
+        arrow::field("nested_nullable_row",
+                     arrow::struct_({arrow::field(
+                         "child", arrow::struct_({arrow::field("value", arrow::int32())}))}),
+                     /*nullable=*/false),
     };
-    std::vector<std::string> expected_errors = {"type MAP", "LOCAL_ZONED_TIMESTAMP",
-                                                "type VARIANT"};
+    std::vector<std::string> expected_errors = {"type MAP", "LOCAL_ZONED_TIMESTAMP", "type VARIANT",
+                                                "nullable ROW", "nullable ROW"};
     for (size_t i = 0; i < unsupported_fields.size(); ++i) {
         ASSERT_OK_AND_ASSIGN(
             table_schema,
@@ -280,6 +286,20 @@ TEST(SchemaValidationTest, TestLanceDataTypes) {
                                 /*partition_keys=*/{}, /*primary_keys=*/{}, options));
         ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                             expected_errors[i]);
+    }
+
+    for (const auto& [option_key, option_value] : std::vector<std::pair<std::string, std::string>>{
+             {Options::FILE_FORMAT_PER_LEVEL, "1:lance"},
+             {Options::CHANGELOG_FILE_FORMAT, "lance"}}) {
+        std::map<std::string, std::string> alternate_format_options = {
+            {Options::BUCKET, "-1"}, {Options::FILE_FORMAT, "parquet"}, {option_key, option_value}};
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(
+                /*schema_id=*/0,
+                arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::utf8()))}),
+                /*partition_keys=*/{}, /*primary_keys=*/{}, alternate_format_options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type MAP");
     }
 }
 #endif

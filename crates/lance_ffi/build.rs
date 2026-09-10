@@ -33,6 +33,6 @@ fn main() {
         .write_to_file(&header_path);
 
     println!("cargo:include={}", out_dir.display());
-    println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 }

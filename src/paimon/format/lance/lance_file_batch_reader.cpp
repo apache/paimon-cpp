@@ -23,6 +23,7 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -195,6 +196,8 @@ Result<BatchReader::ReadBatch> LanceFileBatchReader::NextBatch() {
     previous_batch_row_count_ = static_cast<uint64_t>(ffi_array->length);
     next_row_offset_ += previous_batch_row_count_;
     if (has_selection_ && next_row_offset_ > selection_row_ids_.size()) {
+        ArrowArrayRelease(ffi_array.get());
+        ArrowSchemaRelease(ffi_schema.get());
         return Status::Invalid("Lance reader returned more selected rows than requested");
     }
     return AlignBatch(std::make_pair(std::move(ffi_array), std::move(ffi_schema)));

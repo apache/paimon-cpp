@@ -839,6 +839,10 @@ Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Fie
         case arrow::Type::LIST:
             return ValidateLanceDataField(type->field(0));
         case arrow::Type::STRUCT:
+            if (field->nullable()) {
+                return Status::Invalid(fmt::format(
+                    "Lance file format does not support nullable ROW field '{}'", field->name()));
+            }
             for (const std::shared_ptr<arrow::Field>& child : type->fields()) {
                 PAIMON_RETURN_NOT_OK(ValidateLanceDataField(child));
             }
@@ -854,19 +858,31 @@ Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Fie
 
 Status SchemaValidation::ValidateLanceDataFields(const TableSchema& schema,
                                                  const CoreOptions& options) {
-    if (StringUtils::ToLowerCase(options.GetFileFormat()->Identifier()) != "lance") {
-        return Status::OK();
-    }
-
     const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
     const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
                                                       inline_blob_fields.end());
-    for (const DataField& field : schema.Fields()) {
-        if (BlobUtils::IsBlobField(field.ArrowField()) &&
-            inline_blob_field_set.count(field.Name()) == 0) {
-            continue;
+    auto validate_format = [&](const std::string&, const std::string& file_format) -> Status {
+        if (!StringUtils::EqualsIgnoreCase(file_format, "lance")) {
+            return Status::OK();
         }
-        PAIMON_RETURN_NOT_OK(ValidateLanceDataField(field.ArrowField()));
+        for (const DataField& field : schema.Fields()) {
+            if (BlobUtils::IsBlobField(field.ArrowField()) &&
+                inline_blob_field_set.count(field.Name()) == 0) {
+                continue;
+            }
+            PAIMON_RETURN_NOT_OK(ValidateLanceDataField(field.ArrowField()));
+        }
+        return Status::OK();
+    };
+
+    PAIMON_RETURN_NOT_OK(
+        validate_format(Options::FILE_FORMAT, options.GetFileFormat()->Identifier()));
+    PAIMON_RETURN_NOT_OK(
+        ValidatePerLevelOption(options.ToMap(), Options::FILE_FORMAT_PER_LEVEL, validate_format));
+    std::shared_ptr<FileFormat> changelog_format = options.GetChangelogFileFormat();
+    if (changelog_format) {
+        PAIMON_RETURN_NOT_OK(
+            validate_format(Options::CHANGELOG_FILE_FORMAT, changelog_format->Identifier()));
     }
     return Status::OK();
 }
