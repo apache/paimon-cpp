@@ -47,14 +47,14 @@ std::vector<char> TestEqualValues(const arrow::Array& array, Matches matches) {
 template <typename ArrayType, typename ValueType>
 std::vector<char> TestEqualPrimitive(const arrow::Array& array, const Literal& literal) {
     const auto& values = checked_cast<const ArrayType&>(array);
-    const ValueType expected = literal.GetValue<ValueType>();
+    const auto expected = literal.GetValue<ValueType>();
     return TestEqualValues(array, [&](int64_t i) { return values.Value(i) == expected; });
 }
 
 template <typename ArrayType>
 std::vector<char> TestEqualBinary(const arrow::Array& array, const Literal& literal) {
     const auto& values = checked_cast<const ArrayType&>(array);
-    const std::string expected = literal.GetValue<std::string>();
+    const auto expected = literal.GetValue<std::string>();
     return TestEqualValues(array, [&](int64_t i) {
         const auto value = values.GetView(i);
         return std::string_view(value.data(), value.size()) == expected;
