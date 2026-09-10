@@ -30,9 +30,14 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/identifier.h"
+#include "paimon/common/data/generic_row.h"
+#include "paimon/core/catalog/file_system_catalog.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/system/audit_log_system_table.h"
 #include "paimon/core/table/system/binlog_system_table.h"
+#include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/read_optimized_system_table.h"
 #include "paimon/core/table/system/system_table_scan.h"
 #include "paimon/defs.h"
@@ -236,6 +241,76 @@ TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) 
     std::shared_ptr<FileSystem> shared_fs(std::move(fs));
     ASSERT_NOK_WITH_MSG(SystemTableLoader::LoadFromPath(shared_fs, "/tmp/warehouse/sys/tables", {}),
                         "global system table requires catalog context: tables");
+}
+
+namespace {
+
+/// A catalog that serves the files of every table through `GetTableFileSystem`, like one
+/// issuing temporary credentials per table does, and records what was asked of it.
+class PerTableFileSystemCatalog : public FileSystemCatalog {
+ public:
+    PerTableFileSystemCatalog(const std::shared_ptr<FileSystem>& fs, const std::string& warehouse,
+                              const std::map<std::string, std::string>& options)
+        : FileSystemCatalog(fs, warehouse, options) {}
+
+    Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
+        const Identifier& identifier) const override {
+        requested.push_back(identifier.GetFullName());
+        if (failure) {
+            return failure.value();
+        }
+        return GetFileSystem();
+    }
+
+    mutable std::vector<std::string> requested;
+    std::optional<Status> failure;
+};
+
+}  // namespace
+
+TEST(SystemTableTest, TestGlobalPartitionsUsesTheFileSystemOfEachTable) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+
+    PerTableFileSystemCatalog catalog(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(catalog.CreateDatabase("db1", options, /*ignore_if_exists=*/true));
+
+    arrow::Schema typed_schema(
+        {arrow::field("dt", arrow::utf8()), arrow::field("v", arrow::int32(), /*nullable=*/true)});
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(typed_schema, &c_schema).ok());
+    Status created = catalog.CreateTable(Identifier("db1", "t1"), &c_schema,
+                                         /*partition_keys=*/{"dt"}, /*primary_keys=*/{}, options,
+                                         /*ignore_if_exists=*/false);
+    ArrowSchemaRelease(&c_schema);
+    ASSERT_OK(created);
+
+    GlobalSystemTableContext context;
+    context.catalog = &catalog;
+    context.fs = core_options.GetFileSystem();
+    context.warehouse = dir->Str();
+    context.catalog_options = options;
+    PartitionsSystemTable partitions(context);
+
+    // The table holds no data, so it contributes no partition, but its credentials are
+    // still the ones asked for before its files are listed.
+    ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> rows, partitions.BuildRows());
+    ASSERT_TRUE(rows.empty());
+    ASSERT_EQ((std::vector<std::string>{"db1.t1"}), catalog.requested);
+
+    // A table whose credentials cannot be issued fails the query, so that a partial result
+    // is never mistaken for the whole one.
+    catalog.failure = Status::Invalid("no credentials for the table");
+    ASSERT_NOK_WITH_MSG(partitions.BuildRows(), "no credentials for the table");
+
+    // A table that went away between being listed and being read is skipped instead, like
+    // one whose location has already been removed.
+    catalog.failure = Status::NotExist("table dropped");
+    ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> skipped, partitions.BuildRows());
+    ASSERT_TRUE(skipped.empty());
 }
 
 TEST(SystemTableTest, TestScanMetricsAreSnapshots) {

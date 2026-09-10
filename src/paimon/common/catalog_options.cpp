@@ -33,6 +33,8 @@ const char CatalogOptions::DLF_TOKEN_LOADER[] = "dlf.token-loader";
 const char CatalogOptions::DLF_TOKEN_ECS_METADATA_URL[] = "dlf.token-ecs-metadata-url";
 const char CatalogOptions::DLF_TOKEN_ECS_ROLE_NAME[] = "dlf.token-ecs-role-name";
 const char CatalogOptions::DLF_SIGNING_ALGORITHM[] = "dlf.signing-algorithm";
+const char CatalogOptions::DLF_OSS_ENDPOINT[] = "dlf.oss-endpoint";
+const char CatalogOptions::DATA_TOKEN_ENABLED[] = "data-token.enabled";
 const char CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX[] = "table-default.";
 
 }  // namespace paimon

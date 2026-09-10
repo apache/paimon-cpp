@@ -31,12 +31,15 @@ TEST(ResourcePathsTest, WithPrefix) {
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1", paths.Table("db", "t1"));
     ASSERT_EQ("/v1/my+prefix/tables/rename", paths.RenameTable());
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/snapshots", paths.Snapshots("db", "t1"));
+    ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/token", paths.TableToken("db", "t1"));
+    ASSERT_EQ("/v1/my+prefix/databases/db%231/tables/t+1/token", paths.TableToken("db#1", "t 1"));
 }
 
 TEST(ResourcePathsTest, WithoutPrefix) {
     ResourcePaths paths("");
     ASSERT_EQ("/v1/databases", paths.Databases());
     ASSERT_EQ("/v1/tables/rename", paths.RenameTable());
+    ASSERT_EQ("/v1/databases/db/tables/t1/token", paths.TableToken("db", "t1"));
 }
 
 }  // namespace paimon::test
