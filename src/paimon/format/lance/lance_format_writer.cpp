@@ -75,7 +75,7 @@ Status LanceFormatWriter::AddBatch(::ArrowArray* batch) {
     if (finished_) {
         return Status::Invalid("cannot add a batch after Lance writer is finished");
     }
-    uint64_t row_count = static_cast<uint64_t>(batch->length);
+    auto row_count = static_cast<uint64_t>(batch->length);
     ::ArrowSchema import_schema = {};
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &import_schema));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,

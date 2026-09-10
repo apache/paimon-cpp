@@ -24,12 +24,12 @@
 #include <memory>
 #include <string>
 
+#include "arrow/memory_pool.h"
 #include "paimon/format/format_writer.h"
 #include "paimon/format/lance/lance_ffi.h"
 #include "paimon/format/lance/lance_utils.h"
 
 namespace arrow {
-class MemoryPool;
 class Schema;
 }  // namespace arrow
 
