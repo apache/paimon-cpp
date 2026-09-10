@@ -17,12 +17,14 @@
  * under the License.
  */
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -48,6 +50,7 @@
 #include "paimon/core/table/source/deletion_file.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/defs.h"
+#include "paimon/executor.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
@@ -64,6 +67,7 @@
 #include "paimon/table/source/startup_mode.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
@@ -424,6 +428,222 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot3) {
             .ValueOrDie());
     ASSERT_TRUE(expected);
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
+}
+
+TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
+    // Scale the many-partition/many-bucket point-lookup workload down for CI.
+    constexpr int32_t kPartitions = 4;
+    constexpr int32_t kBuckets = 32;
+    constexpr int32_t kCandidateKeys = 1024;
+    const std::string payload(16 * 1024, 'x');
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_TRUE(dir);
+    arrow::FieldVector fields = {arrow::field("p", arrow::int32()),
+                                 arrow::field("rowkey", arrow::utf8()),
+                                 arrow::field("payload", arrow::utf8())};
+    auto schema = arrow::schema(fields);
+    auto data_type = arrow::struct_(fields);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
+                                                  {Options::BUCKET, fmt::format("{}", kBuckets)},
+                                                  {Options::BUCKET_KEY, "rowkey"},
+                                                  {Options::MANIFEST_COMPRESSION, "zstd"},
+                                                  {Options::MANIFEST_TARGET_FILE_SIZE, "64 mb"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), schema, {"p"}, {}, options, false));
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+
+    std::vector<std::string> candidate_rows;
+    for (int32_t i = 0; i < kCandidateKeys; ++i) {
+        candidate_rows.push_back(fmt::format(R"(["key{:04}"])", i));
+    }
+    auto key_array =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields[1]}), fmt::format("[{}]", fmt::join(candidate_rows, ",")))
+            .ValueOrDie();
+    ArrowArray c_keys;
+    ArrowSchema c_key_schema;
+    ASSERT_TRUE(arrow::ExportArray(*key_array, &c_keys, &c_key_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BucketIdCalculator> calculator,
+                         BucketIdCalculator::Create(false, kBuckets, GetDefaultPool()));
+    std::vector<int32_t> bucket_ids(kCandidateKeys);
+    ASSERT_OK(calculator->CalculateBucketIds(&c_keys, &c_key_schema, bucket_ids.data()));
+    std::vector<std::string> keys(kBuckets);
+    for (int32_t i = 0; i < kCandidateKeys; ++i) {
+        if (keys[bucket_ids[i]].empty()) {
+            keys[bucket_ids[i]] = fmt::format("key{:04}", i);
+        }
+    }
+    std::vector<std::unique_ptr<RecordBatch>> batches;
+    for (int32_t p = 0; p < kPartitions; ++p) {
+        for (int32_t bucket = 0; bucket < kBuckets; ++bucket) {
+            ASSERT_FALSE(keys[bucket].empty());
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<RecordBatch> batch,
+                TestHelper::MakeRecordBatch(
+                    data_type, fmt::format(R"([[{},"{}","{}"]])", p, keys[bucket], payload),
+                    {{"p", fmt::format("{}", p)}}, bucket, {}));
+            batches.push_back(std::move(batch));
+        }
+    }
+    ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
+    const std::string& lookup_key = keys.back();
+    auto predicate =
+        PredicateBuilder::Equal(1, "rowkey", FieldType::STRING,
+                                Literal(FieldType::STRING, lookup_key.data(), lookup_key.size()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(1));
+    // Plans and cache values can outlive a scan and reference its allocator.
+    // Keep every measured pool alive until all plans and caches have been destroyed.
+    std::vector<std::shared_ptr<MemoryPool>> scan_pools;
+
+    struct ScanResult {
+        std::shared_ptr<Plan> plan;
+        uint64_t cache_enabled;
+        uint64_t cache_hit;
+        int64_t peak_bytes;
+        int64_t elapsed_us;
+    };
+    auto scan = [&](bool lazy_decode, const std::shared_ptr<Cache>& cache,
+                    bool entry_cache) -> Result<ScanResult> {
+        std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+        scan_pools.push_back(pool);
+        ScanContextBuilder builder(table_path);
+        builder.WithMemoryPool(pool)
+            .WithExecutor(executor)
+            .WithCache(cache)
+            .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, entry_cache ? "3" : "0")
+            .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
+                       lazy_decode ? "true" : "false")
+            .AddOption(Options::READ_BATCH_SIZE, "128");
+        if (entry_cache) {
+            // No explicit bucket or partition filter: the predicate must select the bucket.
+            builder.SetPredicate(predicate);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
+                               TableScan::Create(std::move(context)));
+        const auto start = std::chrono::steady_clock::now();
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+        const int64_t elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - start)
+                                       .count();
+        PAIMON_ASSIGN_OR_RAISE(uint64_t enabled, table_scan->GetMetrics()->GetCounter(
+                                                     ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
+        PAIMON_ASSIGN_OR_RAISE(uint64_t hit, table_scan->GetMetrics()->GetCounter(
+                                                 ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+        return ScanResult{plan, enabled, hit, pool->MaxMemoryUsage(), elapsed_us};
+    };
+    auto check_read = [&](const ScanResult& result, int32_t partition_count, bool historical) {
+        ASSERT_EQ(result.cache_enabled, 1);
+        ASSERT_EQ(result.plan->Splits().size(), partition_count);
+        for (const auto& split : result.plan->Splits()) {
+            auto data_split = std::dynamic_pointer_cast<DataSplit>(split);
+            ASSERT_TRUE(data_split);
+            ASSERT_TRUE(data_split->Bucket() == kBuckets - 1 ||
+                        (historical && data_split->Bucket() == kBuckets / 2 - 1));
+            ASSERT_EQ(data_split->GetFileList().size(), 1);
+        }
+        ReadContextBuilder builder(table_path);
+        builder.SetPredicate(predicate).EnablePredicateFilter(true);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             read->CreateReader(result.plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> rows,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(rows);
+        ASSERT_EQ(rows->length(), partition_count);
+        std::set<int32_t> partitions;
+        for (const auto& chunk : rows->chunks()) {
+            auto values = std::dynamic_pointer_cast<arrow::StructArray>(chunk);
+            ASSERT_TRUE(values);
+            auto p = std::dynamic_pointer_cast<arrow::Int32Array>(values->GetFieldByName("p"));
+            auto key =
+                std::dynamic_pointer_cast<arrow::StringArray>(values->GetFieldByName("rowkey"));
+            auto data =
+                std::dynamic_pointer_cast<arrow::StringArray>(values->GetFieldByName("payload"));
+            ASSERT_TRUE(p && key && data);
+            for (int64_t i = 0; i < values->length(); ++i) {
+                ASSERT_TRUE(partitions.insert(p->Value(i)).second);
+                ASSERT_EQ(key->GetString(i), lookup_key);
+                ASSERT_EQ(data->GetString(i), payload);
+            }
+        }
+        for (int32_t p = 0; p < partition_count; ++p) {
+            ASSERT_EQ(partitions.count(p), 1);
+        }
+    };
+
+    std::vector<std::shared_ptr<CountingRoutingCache>> caches;
+    std::vector<int64_t> peaks;
+    for (bool lazy_decode : {false, true}) {
+        auto cache = std::make_shared<CountingRoutingCache>(
+            std::map<CacheKind, int64_t>{{CacheKind::MANIFEST, 64 * 1024 * 1024},
+                                         {CacheKind::SNAPSHOT_LIVE_MANIFEST, 64 * 1024 * 1024}});
+        caches.push_back(cache);
+        // Warm only raw manifest bytes, with a separate pool, before measuring either mode.
+        ASSERT_OK_AND_ASSIGN(ScanResult warm, scan(false, cache, false));
+        ASSERT_EQ(warm.cache_enabled, 0);
+        size_t file_count = 0;
+        for (const auto& split : warm.plan->Splits()) {
+            auto data_split = std::dynamic_pointer_cast<DataSplit>(split);
+            ASSERT_TRUE(data_split);
+            file_count += data_split->GetFileList().size();
+        }
+        ASSERT_EQ(file_count, kPartitions * kBuckets);
+        const int64_t supplier_calls = cache->SupplierCallCount(CacheKind::MANIFEST);
+        ASSERT_GT(supplier_calls, 0);
+        ASSERT_OK_AND_ASSIGN(ScanResult measured, scan(lazy_decode, cache, true));
+        ASSERT_EQ(measured.cache_hit, 0);
+        ASSERT_NO_FATAL_FAILURE(check_read(measured, kPartitions, false));
+        ASSERT_EQ(cache->SupplierCallCount(CacheKind::MANIFEST), supplier_calls);
+        peaks.push_back(measured.peak_bytes);
+        RecordProperty(lazy_decode ? "selective_peak_bytes" : "baseline_peak_bytes",
+                       fmt::format("{}", measured.peak_bytes));
+        RecordProperty(lazy_decode ? "selective_plan_us" : "baseline_plan_us",
+                       fmt::format("{}", measured.elapsed_us));
+        ASSERT_OK_AND_ASSIGN(ScanResult hit, scan(lazy_decode, cache, true));
+        ASSERT_EQ(hit.cache_hit, 1);
+        ASSERT_NO_FATAL_FAILURE(check_read(hit, kPartitions, false));
+        // Manifest lists are still consulted, but their bytes must also come from the cache.
+        ASSERT_EQ(cache->SupplierCallCount(CacheKind::MANIFEST), supplier_calls);
+    }
+    // Rejecting raw-manifest caching keeps object filtering but disables the two-pass Arrow probe.
+    auto fallback_cache =
+        std::make_shared<CountingRoutingCache>(CacheKind::SNAPSHOT_LIVE_MANIFEST, 64 * 1024 * 1024);
+    ASSERT_OK_AND_ASSIGN(ScanResult fallback, scan(true, fallback_cache, true));
+    ASSERT_EQ(fallback.cache_hit, 0);
+    ASSERT_NO_FATAL_FAILURE(check_read(fallback, kPartitions, false));
+    ASSERT_GT(fallback_cache->GetCount(CacheKind::MANIFEST), 0);
+    ASSERT_EQ(fallback_cache->SupplierCallCount(CacheKind::MANIFEST), 0);
+    RecordProperty("fallback_peak_bytes", fmt::format("{}", fallback.peak_bytes));
+    // Wide, real column statistics make full Arrow materialization observable without timing gates.
+    ASSERT_LT(peaks[1], peaks[0] / 2);
+    ASSERT_LT(peaks[1], fallback.peak_bytes / 2);
+
+    // Change both schema ID and bucket count, then append the same key in a new partition.
+    // Old files must still be read from bucket 31 while the new file belongs to bucket 15.
+    helper.reset();
+    options[Options::BUCKET] = fmt::format("{}", kBuckets / 2);
+    ASSERT_OK(TestHelper::WriteNextSchema(
+        dir->GetFileSystem(), table_path,
+        {DataField(0, fields[0]), DataField(1, fields[1]), DataField(2, fields[2])}, 2, options));
+    ASSERT_OK_AND_ASSIGN(helper, TestHelper::Create(table_path, options, false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> next_batch,
+        TestHelper::MakeRecordBatch(
+            data_type, fmt::format(R"([[{},"{}","{}"]])", kPartitions, lookup_key, payload),
+            {{"p", fmt::format("{}", kPartitions)}}, kBuckets / 2 - 1, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(next_batch), 1, std::nullopt));
+    for (size_t i = 0; i < caches.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(ScanResult next, scan(i != 0, caches[i], true));
+        ASSERT_EQ(next.cache_hit, 0);
+        ASSERT_EQ(next.plan->SnapshotId(), 2);
+        ASSERT_NO_FATAL_FAILURE(check_read(next, kPartitions + 1, true));
+        ASSERT_OK_AND_ASSIGN(ScanResult hit, scan(i != 0, caches[i], true));
+        ASSERT_EQ(hit.cache_hit, 1);
+        ASSERT_NO_FATAL_FAILURE(check_read(hit, kPartitions + 1, true));
+    }
 }
 
 TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {

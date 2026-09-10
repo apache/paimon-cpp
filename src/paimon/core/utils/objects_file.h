@@ -92,10 +92,11 @@ class ObjectsFile {
         return Status::OK();
     }
 
+    // Optional preparation may reread the file, so only run it for retained in-memory bytes.
     Status ReadArrowBatches(
         const std::string& file_name,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        std::optional<int64_t> file_size) const;
+        const std::function<Status(FileBatchReader*)>& prepare_reader = nullptr) const;
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
@@ -184,7 +185,7 @@ template <typename T>
 Status ObjectsFile<T>::ReadArrowBatches(
     const std::string& file_name,
     const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-    std::optional<int64_t> file_size) const {
+    const std::function<Status(FileBatchReader*)>& prepare_reader) const {
     std::string file_path = path_factory_->ToPath(file_name);
     std::shared_ptr<InputStream> file_input_stream;
     std::shared_ptr<Bytes> cached_bytes;
@@ -215,6 +216,9 @@ Status ObjectsFile<T>::ReadArrowBatches(
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> batch_reader,
                            reader_builder_->Build(file_input_stream));
+    if (prepare_reader && cached_bytes) {
+        PAIMON_RETURN_NOT_OK(prepare_reader(batch_reader.get()));
+    }
     auto reader = std::make_unique<ManifestMetaReader>(std::move(batch_reader),
                                                        serializer_->GetDataType(), arrow_pool_);
     while (true) {
