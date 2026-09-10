@@ -114,8 +114,13 @@ The key consists of the content-identifying URI, exact offset and length. This
 cache does not reuse subranges of a larger entry or prefetch whole files.
 Only successful complete reads are cached; failed and short reads are not
 published. Streams without a usable URI bypass caching. Synchronous and
-asynchronous reads share the cache; cached asynchronous reads use Arrow's IO
-executor. The application owns eviction and invalidation. File URIs must uniquely
+asynchronous reads share the cache. Asynchronous hits return completed futures
+whose buffers retain their cached bytes, even after eviction. Misses use the
+underlying stream's asynchronous API instead of running blocking reads on Arrow's
+IO executor, and populate the cache only after successful completion. A rejected
+cache insertion does not fail an otherwise successful read. Streams are retained
+until asynchronous completion; the underlying stream must report short reads as
+errors. The application owns eviction and invalidation. File URIs must uniquely
 identify immutable content, as required by ``InputStream::GetUri()``; do not reuse
 a URI for overwritten content while retaining its cached entries. Buffers retain
 their allocator until eviction. ``parquet.read.storage-read-bytes`` excludes cache

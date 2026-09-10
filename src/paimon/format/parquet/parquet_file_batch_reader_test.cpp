@@ -515,6 +515,129 @@ TEST_F(ParquetFileBatchReaderTest, TestDataCacheAsyncReadAndUriBypass) {
     }
 }
 
+class DeferredCacheTestInput : public InputStream {
+ public:
+    Status Seek(int64_t, SeekOrigin) override {
+        return Status::OK();
+    }
+    Result<int64_t> GetPos() const override {
+        return 0;
+    }
+    Result<int64_t> Length() const override {
+        return 4;
+    }
+    Result<std::string> GetUri() const override {
+        return std::string("immutable-test-file");
+    }
+    Status Close() override {
+        return Status::OK();
+    }
+    Result<int64_t> Read(char*, int64_t) override {
+        return Status::IOError("unexpected synchronous read");
+    }
+    Result<int64_t> Read(char*, int64_t, int64_t) override {
+        return Status::IOError("unexpected synchronous read");
+    }
+    void ReadAsync(char* buffer, int64_t size, int64_t,
+                   std::function<void(Status)>&& callback) override {
+        ++async_reads;
+        pending = [buffer, size, callback = std::move(callback)](Status status) {
+            if (status.ok()) {
+                std::memcpy(buffer, "PAR1", size);
+            }
+            callback(status);
+        };
+    }
+    int32_t async_reads = 0;
+    std::function<void(Status)> pending;
+};
+
+TEST_F(ParquetFileBatchReaderTest, TestDataCacheUsesNativeAsyncAndRetainsBuffers) {
+    auto input = std::make_shared<DeferredCacheTestInput>();
+    auto cache = std::make_shared<LruCache>(1024);
+    std::shared_ptr<MemoryPool> query_pool = GetMemoryPool();
+    std::weak_ptr<MemoryPool> weak_pool = query_pool;
+    auto stream = std::make_shared<ParquetInputStream>(input, 4, pool_, query_pool, cache,
+                                                       "immutable-test-file", true);
+    auto cold = stream->ReadAsync(arrow::io::default_io_context(), 0, 4);
+    ASSERT_EQ(1, input->async_reads);
+    ASSERT_FALSE(cold.is_finished());
+    input->pending(Status::OK());
+    input->pending = {};
+    ASSERT_TRUE(cold.result().ok());
+    ASSERT_EQ("PAR1", cold.result().ValueOrDie()->ToString());
+    ASSERT_EQ(4, stream->StorageReadBytes()->load());
+    auto hot = stream->ReadAsync(arrow::io::default_io_context(), 0, 4);
+    ASSERT_TRUE(hot.is_finished());
+    ASSERT_TRUE(hot.result().ok());
+    ASSERT_EQ(1, input->async_reads);
+    stream.reset();
+    query_pool.reset();
+    cache->InvalidateAll();
+    ASSERT_FALSE(weak_pool.expired());
+    ASSERT_EQ("PAR1", hot.result().ValueOrDie()->ToString());
+    hot = {};
+    cold = {};
+    ASSERT_TRUE(weak_pool.expired());
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestAsyncCacheFailureAndReaderDestruction) {
+    auto input = std::make_shared<DeferredCacheTestInput>();
+    auto cache = std::make_shared<LruCache>(1024);
+    auto stream = std::make_shared<ParquetInputStream>(input, 4, pool_, GetDefaultPool(), cache,
+                                                       "immutable-test-file", true);
+    auto failed = stream->ReadAsync(arrow::io::default_io_context(), 0, 4);
+    ASSERT_EQ(1, input->async_reads);
+    input->pending(Status::IOError("injected read failure"));
+    input->pending = {};
+    ASSERT_FALSE(failed.result().ok());
+    ASSERT_EQ(0, cache->Size());
+    ASSERT_EQ(0, stream->StorageReadBytes()->load());
+    auto retry = stream->ReadAsync(arrow::io::default_io_context(), 0, 4);
+    ASSERT_EQ(2, input->async_reads);
+    std::weak_ptr<ParquetInputStream> weak_stream = stream;
+    stream.reset();
+    ASSERT_FALSE(weak_stream.expired());
+    input->pending(Status::OK());
+    input->pending = {};
+    ASSERT_TRUE(retry.result().ok());
+    ASSERT_EQ("PAR1", retry.result().ValueOrDie()->ToString());
+    ASSERT_EQ(1, cache->Size());
+    ASSERT_TRUE(weak_stream.expired());
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestAsyncReadSucceedsWhenCacheBudgetTooSmall) {
+    auto input = std::make_shared<DeferredCacheTestInput>();
+    auto cache = std::make_shared<LruCache>(1);
+    auto stream = std::make_shared<ParquetInputStream>(input, 4, pool_, GetDefaultPool(), cache,
+                                                       "immutable-test-file", true);
+    for (int32_t round = 0; round < 2; ++round) {
+        auto result = stream->ReadAsync(arrow::io::default_io_context(), 0, 4);
+        ASSERT_EQ(round + 1, input->async_reads);
+        input->pending(Status::OK());
+        input->pending = {};
+        ASSERT_TRUE(result.result().ok());
+        ASSERT_EQ("PAR1", result.result().ValueOrDie()->ToString());
+        ASSERT_EQ(0, cache->Size());
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestAsyncCacheRejectsLocalShortRead) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output, fs_->Create(file_path_, true));
+    ASSERT_OK_AND_ASSIGN(int64_t written, output->Write("PAR1", 4));
+    ASSERT_EQ(4, written);
+    ASSERT_OK(output->Close());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));
+    auto cache = std::make_shared<LruCache>(1024);
+    // The manifest length is stale; the actual file contains only four bytes.
+    auto stream = std::make_shared<ParquetInputStream>(input, 8, pool_, GetDefaultPool(), cache,
+                                                       file_path_, true);
+    auto result = stream->ReadAsync(arrow::io::default_io_context(), 0, 8).result();
+    ASSERT_FALSE(result.ok());
+    ASSERT_EQ(0, cache->Size());
+    ASSERT_EQ(0, stream->StorageReadBytes()->load());
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestDataCacheRejectsInvalidOption) {
     WriteArray(file_path_, struct_array_, schema_, 1, false, 3, 1);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_path_));

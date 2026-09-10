@@ -123,11 +123,64 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
     arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext& io_context,
                                                             int64_t position,
                                                             int64_t nbytes) override {
-        if (!cache_data_ || !cache_ || file_uri_.empty()) {
+        if (!cache_data_ || !cache_ || file_uri_.empty() || position < 0 || nbytes <= 0 ||
+            position > file_size_ || nbytes > file_size_ - position ||
+            nbytes > std::numeric_limits<int32_t>::max()) {
             return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes);
         }
-        // Arrow retains this stream and invokes the cached ReadAt on its IO executor.
-        return arrow::io::RandomAccessFile::ReadAsync(io_context, position, nbytes);
+        bool is_index = false;
+        auto range = index_ranges_.upper_bound(position);
+        if (range != index_ranges_.begin()) {
+            --range;
+            const int64_t offset = position - range->first;
+            is_index = offset <= range->second && nbytes <= range->second - offset;
+        }
+        auto key = CacheKey::ForKind(file_uri_, position, static_cast<int32_t>(nbytes),
+                                     is_index ? CacheKind::DATA_FILE_FOOTER : CacheKind::DEFAULT);
+        // A failed supplier leaves a miss unpublished. Do not occupy Arrow's
+        // bounded IO executor with blocking storage reads on cache misses.
+        bool missed = false;
+        auto cached = cache_->Get(
+            key,
+            [&missed](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+                missed = true;
+                return Status::Invalid("Parquet async cache miss");
+            });
+        if (!missed) {
+            if (!cached.ok()) {
+                return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(
+                    ToArrowStatus(cached.status()));
+            }
+            if (!cached.value() || cached.value()->GetSegment().Size() != nbytes) {
+                return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(
+                    arrow::Status::IOError("Invalid Parquet cached range value"));
+            }
+            struct CachedBuffer {
+                explicit CachedBuffer(std::shared_ptr<CacheValue> value)
+                    : owner(std::move(value)),
+                      buffer(reinterpret_cast<const uint8_t*>(owner->GetSegment().Data()),
+                             owner->GetSegment().Size()) {}
+                std::shared_ptr<CacheValue> owner;
+                arrow::Buffer buffer;
+            };
+            auto owner = std::make_shared<CachedBuffer>(cached.value());
+            auto* buffer = &owner->buffer;
+            return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(
+                std::shared_ptr<arrow::Buffer>(std::move(owner), buffer));
+        }
+        return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes)
+            .Then([stream = shared_from_this(), cache = cache_, pool = pool_, key,
+                   nbytes](const std::shared_ptr<arrow::Buffer>& buffer)
+                      -> arrow::Result<std::shared_ptr<arrow::Buffer>> {
+                // InputStream reports short reads as errors before this continuation.
+                MemorySegment segment =
+                    AllocateParquetCacheSegment(static_cast<int32_t>(nbytes), pool);
+                std::memcpy(segment.MutableData(), buffer->data(), nbytes);
+                // Cache admission must not fail a successful storage read.
+                [[maybe_unused]] auto status =
+                    cache->Put(key, std::make_shared<CacheValue>(segment, CacheCallback()));
+                return buffer;
+            });
     }
 
  private:
