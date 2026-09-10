@@ -375,8 +375,9 @@ TEST_P(WriteAndReadInteTest, TestAppendReadWithNestedPredicateAcrossBatches) {
                          TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
                                             /*primary_keys=*/{}, options,
                                             /*is_streaming_mode=*/false));
-    // With four rows per batch, the AND predicate sees empty, partial, full, empty,
-    // partial, and full matches. Rows 4 and 6 are identical and must both survive.
+    // For the read batch size of 4 configured below, consecutive groups of four
+    // input rows have 0, 2, 4, 0, 2, and 4 matches for the AND predicate.
+    // Input rows at positions 4 and 6 are identical and must both survive.
     const std::string data_json = R"([
         [0, 0, "a", "zero"], [1, null, "b", null],
         [2, 0, null, "two"], [3, 0, "c", "three"],
