@@ -311,6 +311,37 @@ TEST_F(FileReaderWrapperTest, PredicateReadsOnlyItsPageIndexesAndKeepsPayloadRea
     ASSERT_FALSE(end);
 }
 
+TEST_F(FileReaderWrapperTest, ReusesParsedIndexesWithinFileReader) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "parsed-index.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/true);
+    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapper(file_path));
+    std::weak_ptr<::parquet::OffsetIndex> released_index;
+    {
+        auto first = reader->GetRowGroupPageIndexReader(0);
+        auto second = reader->GetRowGroupPageIndexReader(1);
+        ASSERT_TRUE(first);
+        ASSERT_TRUE(second);
+        ASSERT_NE(first, second);
+        for (int32_t col = 0; col < 3; ++col) {
+            auto offset = first->GetOffsetIndex(col);
+            auto column = first->GetColumnIndex(col);
+            ASSERT_TRUE(offset);
+            ASSERT_TRUE(column);
+            ASSERT_EQ(offset, first->GetOffsetIndex(col));
+            ASSERT_EQ(column, first->GetColumnIndex(col));
+            ASSERT_NE(offset, second->GetOffsetIndex(col));
+            ASSERT_NE(column, second->GetColumnIndex(col));
+            released_index = offset;
+        }
+        EXPECT_THROW(first->GetOffsetIndex(-1), ::parquet::ParquetException);
+        EXPECT_THROW(first->GetColumnIndex(100), ::parquet::ParquetException);
+        ASSERT_TRUE(first->GetOffsetIndex(0));
+    }
+    ASSERT_FALSE(released_index.expired());
+    reader.reset();
+    ASSERT_TRUE(released_index.expired());
+}
+
 TEST_F(FileReaderWrapperTest, Simple) {
     std::string file_path = PathUtil::JoinPath(dir_->Str(), "test.parquet");
     PrepareParquetFile(file_path, /*row_count=*/5500);
