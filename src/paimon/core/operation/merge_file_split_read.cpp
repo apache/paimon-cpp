@@ -116,6 +116,10 @@ class SortMergeKeyValueRecordReader : public KeyValueRecordReader {
         reader_->Close();
     }
 
+    /// A no-op: SortMergeReader has no warmup verb to forward to, so a section is warmed from
+    /// inside its own merge (LoserTree warms its leaves) and not from the section before it.
+    void Warmup() override {}
+
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
         return reader_->GetReaderMetrics();
     }
