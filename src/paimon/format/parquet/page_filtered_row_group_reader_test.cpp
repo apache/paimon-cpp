@@ -1346,6 +1346,44 @@ TEST_F(PageFilteredRowGroupReaderTest, BitmapAllPagesSomeRowGroups) {
 /// The bitmap selects rows from page 1 and page 8. Synchronous positional reads issued while
 /// consuming the row group must not cover any unselected page header. Before direct page jumps,
 /// SerializedPageReader sequentially Peeked every page header and this assertion failed.
+TEST_F(PageFilteredRowGroupReaderTest, SparsePageSelectionMatchesLinearReference) {
+    std::string file_name = dir_->Str() + "/sparse_page_selection.parquet";
+    WriteTestFile(file_name, MakeSequentialIntData(10000), 10, 10000);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
+    auto input = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+    auto reader = ::parquet::ParquetFileReader::Open(input);
+    auto indexes = reader->GetPageIndexReader()->RowGroup(0);
+    auto offset_index = indexes->GetOffsetIndex(0);
+    const auto& pages = offset_index->page_locations();
+    ASSERT_EQ(1000, pages.size());
+    for (int32_t seed = 0; seed < 32; ++seed) {
+        RowRanges rows;
+        rows.Add({0, 0});
+        rows.Add({2, 2});
+        rows.Add({9, 10});
+        rows.Add({9999, 9999});
+        for (int32_t i = 0; i < seed; ++i) {
+            int64_t start = (i * 7919 + seed * 13) % 10000;
+            rows.Add({start, std::min<int64_t>(9999, start + seed)});
+        }
+        auto actual = PageFilteredRowGroupReader::ComputePageRanges(TargetRowGroup(0, true, rows),
+                                                                    {0}, indexes, reader.get());
+        std::vector<::arrow::io::ReadRange> expected;
+        for (size_t i = 0; i < pages.size(); ++i) {
+            int64_t end = i + 1 == pages.size() ? 9999 : pages[i + 1].first_row_index - 1;
+            if (rows.IsOverlapping(pages[i].first_row_index, end)) {
+                expected.push_back({pages[i].offset, pages[i].compressed_page_size});
+            }
+        }
+        ASSERT_EQ(expected.size(), actual.size());
+        for (size_t i = 0; i < expected.size(); ++i) {
+            ASSERT_EQ(expected[i].offset, actual[i].offset);
+            ASSERT_EQ(expected[i].length, actual[i].length);
+        }
+    }
+}
+
 TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpDoesNotReadUnselectedPageHeaders) {
     std::string file_name = dir_->Str() + "/direct_offset_index_jump.parquet";
     auto data = MakeSequentialIntData(100);

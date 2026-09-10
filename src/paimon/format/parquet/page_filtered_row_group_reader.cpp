@@ -100,6 +100,29 @@ std::optional<DataPageLayout> GetDataPageLayout(
     return DataPageLayout{column_chunk_offset, first_data_page_offset};
 }
 
+// Call only after GetDataPageLayout has validated the ordered page row offsets.
+template <typename Visitor>
+void VisitSelectedPages(const RowRanges& row_ranges,
+                        const std::vector<::parquet::PageLocation>& pages, int64_t row_count,
+                        Visitor&& visit) {
+    size_t next_page = 0;
+    for (const auto& range : row_ranges.GetRanges()) {
+        if (range.to < 0 || range.from >= row_count) {
+            continue;
+        }
+        auto end = std::upper_bound(pages.begin(), pages.end(), range.from,
+                                    [](int64_t row, const ::parquet::PageLocation& page) {
+                                        return row < page.first_row_index;
+                                    });
+        size_t first = end == pages.begin() ? 0 : static_cast<size_t>(end - pages.begin() - 1);
+        first = std::max(first, next_page);
+        for (; first < pages.size() && pages[first].first_row_index <= range.to; ++first) {
+            visit(static_cast<int32_t>(first));
+        }
+        next_page = first;
+    }
+}
+
 /// Wraps an arrow::Table + TableBatchReader as a RecordBatchReader so the caller can
 /// stream batches while ensuring every returned array offset is zero. The Table is held
 /// to keep its ChunkedArrays alive for the inner TableBatchReader.
@@ -189,18 +212,12 @@ PageFilteredRowGroupReader::MakeDataPageReadPlan(
     }
 
     const auto& page_locations = offset_index->page_locations();
-    auto num_pages = static_cast<int32_t>(page_locations.size());
     std::vector<::parquet::DataPageReadPlanEntry> data_pages;
-    data_pages.reserve(page_locations.size());
-
-    for (int32_t page_idx = 0; page_idx < num_pages; ++page_idx) {
-        auto [first_row, last_row] = GetPageRowRange(page_locations, page_idx, row_group_row_count);
-        if (row_ranges.IsOverlapping(first_row, last_row)) {
-            const auto& page = page_locations[page_idx];
-            data_pages.push_back(
-                {page_idx, page.offset - layout->column_chunk_offset, page.compressed_page_size});
-        }
-    }
+    VisitSelectedPages(row_ranges, page_locations, row_group_row_count, [&](int32_t page_idx) {
+        const auto& page = page_locations[page_idx];
+        data_pages.push_back(
+            {page_idx, page.offset - layout->column_chunk_offset, page.compressed_page_size});
+    });
 
     return DataPageReadPlan{layout->first_data_page_offset - layout->column_chunk_offset,
                             std::move(data_pages)};
@@ -297,10 +314,10 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
     int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader) {
     // Factory: set a direct data page read plan on every leaf (per-leaf OffsetIndex).
     // The plan lets Arrow jump over unselected page headers as well as page bodies.
-    auto factory =
-        [row_group_index, &rg_page_index_reader, &row_ranges, row_group_row_count](
-            int col_idx,
-            ::parquet::ParquetFileReader* reader) -> ::parquet::arrow::FileColumnIterator* {
+    std::unordered_set<int> direct_read_columns;
+    auto factory = [row_group_index, &rg_page_index_reader, &row_ranges, row_group_row_count,
+                    &direct_read_columns](int col_idx, ::parquet::ParquetFileReader* reader)
+        -> ::parquet::arrow::FileColumnIterator* {
         bool has_data_page_read_plan = false;
         int64_t first_data_page_offset = 0;
         std::vector<::parquet::DataPageReadPlanEntry> data_pages;
@@ -315,6 +332,7 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
                     first_data_page_offset = plan->first_data_page_offset;
                     data_pages = std::move(plan->data_pages);
                     has_data_page_read_plan = true;
+                    direct_read_columns.insert(col_idx);
                 }
             }
         }
@@ -354,15 +372,12 @@ Result<std::shared_ptr<arrow::ChunkedArray>> PageFilteredRowGroupReader::ReadFil
             auto row_group_metadata =
                 arrow_file_reader->parquet_reader()->metadata()->RowGroup(row_group_index);
             column_chunk = row_group_metadata->ColumnChunk(col_idx);
-            if (rg_page_index_reader) {
+            if (direct_read_columns.count(col_idx)) {
                 auto offset_index = rg_page_index_reader->GetOffsetIndex(col_idx);
-                if (offset_index && MakeDataPageReadPlan(row_ranges, offset_index, *column_chunk,
-                                                         row_group_row_count)) {
-                    auto [compressed, total] =
-                        ComputeCompressedRowRanges(row_ranges, offset_index, row_group_row_count);
-                    effective_ranges = std::move(compressed);
-                    effective_total = total;
-                }
+                auto [compressed, total] =
+                    ComputeCompressedRowRanges(row_ranges, offset_index, row_group_row_count);
+                effective_ranges = std::move(compressed);
+                effective_total = total;
             }
         }
 
@@ -517,19 +532,10 @@ std::vector<::arrow::io::ReadRange> PageFilteredRowGroupReader::ComputePageRange
         }
 
         const auto& page_locations = offset_index->page_locations();
-        auto num_pages = static_cast<int32_t>(page_locations.size());
-
-        for (int32_t page_idx = 0; page_idx < num_pages; ++page_idx) {
-            auto [first_row, last_row] =
-                GetPageRowRange(page_locations, page_idx, row_group_row_count);
-
-            if (!row_ranges.IsOverlapping(first_row, last_row)) {
-                continue;
-            }
-
+        VisitSelectedPages(row_ranges, page_locations, row_group_row_count, [&](int32_t page_idx) {
             const auto& page = page_locations[page_idx];
             ranges.push_back({page.offset, page.compressed_page_size});
-        }
+        });
     }
 
     return ranges;
