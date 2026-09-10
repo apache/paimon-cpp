@@ -470,9 +470,9 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
     ASSERT_NOK(writer->Write(MakeBatch(realtime_schema, R"([[null, 3, "null-offset"]])")));
     std::shared_ptr<Metrics> building_metrics = writer->GetMetrics();
     ASSERT_OK_AND_ASSIGN(double building_rows,
-                         building_metrics->GetGauge(RealtimeMetrics::BUILDING_ROW_COUNT));
+                         building_metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
     ASSERT_OK_AND_ASSIGN(double total_rows,
-                         building_metrics->GetGauge(RealtimeMetrics::TOTAL_ROW_COUNT));
+                         building_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
     // The real-time gauges count physical versions, including the delete record.
     ASSERT_EQ(3, building_rows);
     ASSERT_EQ(3, total_rows);
@@ -484,8 +484,8 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
                          writer->PrepareCommitWithProgress(0));
     std::shared_ptr<Metrics> sealed_metrics = writer->GetMetrics();
     ASSERT_OK_AND_ASSIGN(double sealed_rows,
-                         sealed_metrics->GetGauge(RealtimeMetrics::SEALED_ROW_COUNT));
-    ASSERT_OK_AND_ASSIGN(total_rows, sealed_metrics->GetGauge(RealtimeMetrics::TOTAL_ROW_COUNT));
+                         sealed_metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(total_rows, sealed_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
     ASSERT_EQ(3, sealed_rows);
     ASSERT_EQ(3, total_rows);
     ASSERT_EQ(1, progresses.size());

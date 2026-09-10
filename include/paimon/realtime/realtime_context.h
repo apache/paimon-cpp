@@ -69,12 +69,15 @@ using RealtimeOffsetMap = std::map<RealtimePartitionBucket, int64_t>;
 /// Gauge names exposed by `RealtimeContext::GetMetrics` and real-time file-store writers.
 class PAIMON_EXPORT RealtimeMetrics {
  public:
-    static constexpr char BUILDING_MEMORY_BYTES[] = "realtimeBuildingMemoryBytes";
-    static constexpr char SEALED_MEMORY_BYTES[] = "realtimeSealedMemoryBytes";
-    static constexpr char TOTAL_MEMORY_BYTES[] = "realtimeTotalMemoryBytes";
-    static constexpr char BUILDING_ROW_COUNT[] = "realtimeBuildingRowCount";
-    static constexpr char SEALED_ROW_COUNT[] = "realtimeSealedRowCount";
-    static constexpr char TOTAL_ROW_COUNT[] = "realtimeTotalRowCount";
+    RealtimeMetrics() = delete;
+    ~RealtimeMetrics() = delete;
+
+    static constexpr char kBuildingMemoryBytes[] = "realtimeBuildingMemoryBytes";
+    static constexpr char kSealedMemoryBytes[] = "realtimeSealedMemoryBytes";
+    static constexpr char kTotalMemoryBytes[] = "realtimeTotalMemoryBytes";
+    static constexpr char kBuildingRowCount[] = "realtimeBuildingRowCount";
+    static constexpr char kSealedRowCount[] = "realtimeSealedRowCount";
+    static constexpr char kTotalRowCount[] = "realtimeTotalRowCount";
 };
 
 /// Framework-managed context that owns the `RealtimeStore` instances used by real-time operations.

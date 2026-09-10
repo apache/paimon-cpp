@@ -131,19 +131,19 @@ std::shared_ptr<Metrics> RealtimeContextImpl::GetMetrics() const {
     }
 
     auto metrics = std::make_shared<MetricsImpl>();
-    metrics->SetGauge(RealtimeMetrics::BUILDING_MEMORY_BYTES,
+    metrics->SetGauge(RealtimeMetrics::kBuildingMemoryBytes,
                       static_cast<double>(total_usage.building_memory_bytes));
-    metrics->SetGauge(RealtimeMetrics::SEALED_MEMORY_BYTES,
+    metrics->SetGauge(RealtimeMetrics::kSealedMemoryBytes,
                       static_cast<double>(total_usage.sealed_memory_bytes));
     metrics->SetGauge(
-        RealtimeMetrics::TOTAL_MEMORY_BYTES,
+        RealtimeMetrics::kTotalMemoryBytes,
         static_cast<double>(total_usage.building_memory_bytes + total_usage.sealed_memory_bytes));
-    metrics->SetGauge(RealtimeMetrics::BUILDING_ROW_COUNT,
+    metrics->SetGauge(RealtimeMetrics::kBuildingRowCount,
                       static_cast<double>(total_usage.building_row_count));
-    metrics->SetGauge(RealtimeMetrics::SEALED_ROW_COUNT,
+    metrics->SetGauge(RealtimeMetrics::kSealedRowCount,
                       static_cast<double>(total_usage.sealed_row_count));
     metrics->SetGauge(
-        RealtimeMetrics::TOTAL_ROW_COUNT,
+        RealtimeMetrics::kTotalRowCount,
         static_cast<double>(total_usage.building_row_count + total_usage.sealed_row_count));
     return metrics;
 }

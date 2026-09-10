@@ -192,15 +192,15 @@ TEST(RealtimeContextTest, TestMetricsAggregateAllStores) {
 
     std::shared_ptr<Metrics> metrics = context->GetMetrics();
     ASSERT_OK_AND_ASSIGN(double building_memory,
-                         metrics->GetGauge(RealtimeMetrics::BUILDING_MEMORY_BYTES));
+                         metrics->GetGauge(RealtimeMetrics::kBuildingMemoryBytes));
     ASSERT_OK_AND_ASSIGN(double sealed_memory,
-                         metrics->GetGauge(RealtimeMetrics::SEALED_MEMORY_BYTES));
+                         metrics->GetGauge(RealtimeMetrics::kSealedMemoryBytes));
     ASSERT_OK_AND_ASSIGN(double total_memory,
-                         metrics->GetGauge(RealtimeMetrics::TOTAL_MEMORY_BYTES));
+                         metrics->GetGauge(RealtimeMetrics::kTotalMemoryBytes));
     ASSERT_OK_AND_ASSIGN(double building_rows,
-                         metrics->GetGauge(RealtimeMetrics::BUILDING_ROW_COUNT));
-    ASSERT_OK_AND_ASSIGN(double sealed_rows, metrics->GetGauge(RealtimeMetrics::SEALED_ROW_COUNT));
-    ASSERT_OK_AND_ASSIGN(double total_rows, metrics->GetGauge(RealtimeMetrics::TOTAL_ROW_COUNT));
+                         metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(double sealed_rows, metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(double total_rows, metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
     ASSERT_EQ(40, building_memory);
     ASSERT_EQ(60, sealed_memory);
     ASSERT_EQ(100, total_memory);

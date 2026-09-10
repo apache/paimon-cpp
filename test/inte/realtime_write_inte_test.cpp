@@ -955,17 +955,17 @@ class RealtimeWriteInteTest : public ::testing::Test {
         }
         RealtimeMetricValues result;
         PAIMON_ASSIGN_OR_RAISE(result.building_memory,
-                               metrics->GetGauge(RealtimeMetrics::BUILDING_MEMORY_BYTES));
+                               metrics->GetGauge(RealtimeMetrics::kBuildingMemoryBytes));
         PAIMON_ASSIGN_OR_RAISE(result.sealed_memory,
-                               metrics->GetGauge(RealtimeMetrics::SEALED_MEMORY_BYTES));
+                               metrics->GetGauge(RealtimeMetrics::kSealedMemoryBytes));
         PAIMON_ASSIGN_OR_RAISE(result.total_memory,
-                               metrics->GetGauge(RealtimeMetrics::TOTAL_MEMORY_BYTES));
+                               metrics->GetGauge(RealtimeMetrics::kTotalMemoryBytes));
         PAIMON_ASSIGN_OR_RAISE(result.building_rows,
-                               metrics->GetGauge(RealtimeMetrics::BUILDING_ROW_COUNT));
+                               metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
         PAIMON_ASSIGN_OR_RAISE(result.sealed_rows,
-                               metrics->GetGauge(RealtimeMetrics::SEALED_ROW_COUNT));
+                               metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
         PAIMON_ASSIGN_OR_RAISE(result.total_rows,
-                               metrics->GetGauge(RealtimeMetrics::TOTAL_ROW_COUNT));
+                               metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
         return result;
     }
 
