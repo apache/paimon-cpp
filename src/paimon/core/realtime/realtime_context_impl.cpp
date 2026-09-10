@@ -39,6 +39,7 @@
 #include "arrow/c/helpers.h"
 #include "fmt/format.h"
 #include "paimon/arrow/abi.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/uuid.h"
@@ -108,6 +109,43 @@ Status RealtimeContextImpl::CheckUsable() const {
             "input from the durable recovery offset persisted in the snapshot");
     }
     return Status::OK();
+}
+
+std::shared_ptr<Metrics> RealtimeContextImpl::GetMetrics() const {
+    std::vector<std::shared_ptr<RealtimeStore>> stores;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stores.reserve(stores_.size());
+        for (const auto& [_, entry] : stores_) {
+            stores.push_back(entry.store);
+        }
+    }
+
+    RealtimeStoreDataUsage total_usage;
+    for (const std::shared_ptr<RealtimeStore>& store : stores) {
+        const RealtimeStoreDataUsage usage = store->GetDataUsage();
+        total_usage.building_memory_bytes += usage.building_memory_bytes;
+        total_usage.sealed_memory_bytes += usage.sealed_memory_bytes;
+        total_usage.building_row_count += usage.building_row_count;
+        total_usage.sealed_row_count += usage.sealed_row_count;
+    }
+
+    auto metrics = std::make_shared<MetricsImpl>();
+    metrics->SetGauge(RealtimeMetrics::BUILDING_MEMORY_BYTES,
+                      static_cast<double>(total_usage.building_memory_bytes));
+    metrics->SetGauge(RealtimeMetrics::SEALED_MEMORY_BYTES,
+                      static_cast<double>(total_usage.sealed_memory_bytes));
+    metrics->SetGauge(
+        RealtimeMetrics::TOTAL_MEMORY_BYTES,
+        static_cast<double>(total_usage.building_memory_bytes + total_usage.sealed_memory_bytes));
+    metrics->SetGauge(RealtimeMetrics::BUILDING_ROW_COUNT,
+                      static_cast<double>(total_usage.building_row_count));
+    metrics->SetGauge(RealtimeMetrics::SEALED_ROW_COUNT,
+                      static_cast<double>(total_usage.sealed_row_count));
+    metrics->SetGauge(
+        RealtimeMetrics::TOTAL_ROW_COUNT,
+        static_cast<double>(total_usage.building_row_count + total_usage.sealed_row_count));
+    return metrics;
 }
 
 Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(

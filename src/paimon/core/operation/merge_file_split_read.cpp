@@ -258,7 +258,7 @@ class MergeFileSplitRead::RealtimeReaderBuilder {
                                                    partition, owner_->context_->GetPredicate(),
                                                    data_file_path_factory, readers));
         return CollectRawDiskReaders(level0_files, level0_deletion_files, partition,
-                                     /*predicate=*/nullptr, data_file_path_factory, readers);
+                                     owner_->predicate_for_keys_, data_file_path_factory, readers);
     }
 
     Status CollectRawDiskReaders(const std::vector<std::shared_ptr<DataFileMeta>>& data_files,

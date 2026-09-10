@@ -25,6 +25,7 @@
 #include <string>
 #include <utility>
 
+#include "paimon/metrics.h"
 #include "paimon/result.h"
 #include "paimon/visibility.h"
 
@@ -65,6 +66,17 @@ struct PAIMON_EXPORT RealtimePartitionBucket {
 /// Exclusive committed end offset for each partition-bucket.
 using RealtimeOffsetMap = std::map<RealtimePartitionBucket, int64_t>;
 
+/// Gauge names exposed by `RealtimeContext::GetMetrics` and real-time file-store writers.
+class PAIMON_EXPORT RealtimeMetrics {
+ public:
+    static constexpr char BUILDING_MEMORY_BYTES[] = "realtimeBuildingMemoryBytes";
+    static constexpr char SEALED_MEMORY_BYTES[] = "realtimeSealedMemoryBytes";
+    static constexpr char TOTAL_MEMORY_BYTES[] = "realtimeTotalMemoryBytes";
+    static constexpr char BUILDING_ROW_COUNT[] = "realtimeBuildingRowCount";
+    static constexpr char SEALED_ROW_COUNT[] = "realtimeSealedRowCount";
+    static constexpr char TOTAL_ROW_COUNT[] = "realtimeTotalRowCount";
+};
+
 /// Framework-managed context that owns the `RealtimeStore` instances used by real-time operations.
 ///
 /// Applications share one context between `WriteContext`, `ScanContext`, and `ReadContext`. The
@@ -88,6 +100,9 @@ class PAIMON_EXPORT RealtimeContext {
     /// @param factory Non-null factory used to create stores on demand.
     static Result<std::shared_ptr<RealtimeContext>> Create(
         const std::shared_ptr<RealtimeStoreFactory>& factory);
+
+    /// Returns current memory and physical row-count gauges aggregated over all stores.
+    virtual std::shared_ptr<Metrics> GetMetrics() const = 0;
 
     virtual ~RealtimeContext();
 
