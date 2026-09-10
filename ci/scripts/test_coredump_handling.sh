@@ -29,25 +29,10 @@ output_root="${work_dir}/output"
 binary_dir="${output_root}/debug"
 mkdir -p "${binary_dir}" "${work_dir}/test/test_data" "${work_dir}/bin"
 
-cat > "${work_dir}/sample.c" <<'EOF'
-int sample_value(void) {
-    return 42;
-}
-EOF
-
-cat > "${work_dir}/absolute.c" <<'EOF'
-int absolute_value(void) {
-    return 24;
-}
-EOF
-
 cat > "${work_dir}/core_test.c" <<'EOF'
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-int sample_value(void);
-int absolute_value(void);
 
 int main(int argc, char** argv) {
     const char* executable = strrchr(argv[0], '/');
@@ -64,61 +49,52 @@ int main(int argc, char** argv) {
 
     const char* asan_options = getenv("ASAN_OPTIONS");
     const char* tsan_options = getenv("TSAN_OPTIONS");
-    if (sample_value() != 42 || absolute_value() != 24 || asan_options == NULL ||
-        tsan_options == NULL || strstr(asan_options, "disable_coredump=0") == NULL ||
+    if (asan_options == NULL || tsan_options == NULL ||
+        strstr(asan_options, "disable_coredump=0") == NULL ||
         strstr(asan_options, "abort_on_error=1") == NULL ||
         strstr(tsan_options, "disable_coredump=0") == NULL ||
         strstr(tsan_options, "abort_on_error=1") == NULL) {
         return 3;
     }
 
-    return argc > 1 && strcmp(argv[1], "success") == 0 ? 0 : 1;
+    return 1;
 }
 EOF
 
-"${cc}" -fPIC -shared "${work_dir}/sample.c" -o "${binary_dir}/libsample.so"
-"${cc}" -fPIC -shared "${work_dir}/absolute.c" -o "${binary_dir}/libabsolute.so"
-"${cc}" "${work_dir}/core_test.c" -L"${binary_dir}" -lsample \
-    "${binary_dir}/libabsolute.so" -Wl,-rpath,'$ORIGIN' -o "${binary_dir}/failing-test"
-cp "${binary_dir}/failing-test" "${binary_dir}/success-test"
+"${cc}" "${work_dir}/core_test.c" -o "${binary_dir}/failing-test"
 
-# The fake core is sufficient to exercise collection. Avoid depending on GDB
+# The fake core is sufficient to exercise backtrace logging. Avoid depending on GDB
 # being installed or asking it to parse deliberately invalid input.
 cat > "${work_dir}/bin/gdb" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" > "${GDB_LOG}"
 exit 0
 EOF
 chmod +x "${work_dir}/bin/gdb"
 
+export GDB_LOG="${work_dir}/gdb.log"
+run_output="${work_dir}/run-test.log"
 if PATH="${work_dir}/bin:${PATH}" \
-    "${run_test}" "${output_root}" test "${binary_dir}/failing-test"; then
+    "${run_test}" "${output_root}" test "${binary_dir}/failing-test" \
+    > "${run_output}" 2>&1; then
     echo "run-test.sh unexpectedly reported that the failing test passed"
     exit 1
 fi
 
-artifact_dir="${output_root}/build/test-debug/failing-test"
-expected_files=(
-    "${artifact_dir}/failing-test"
-    "${artifact_dir}/failing-test.core.failing-test.123"
-    "${artifact_dir}/lib/libabsolute.so"
-    "${artifact_dir}/lib/libsample.so"
-)
-for expected_file in "${expected_files[@]}"; do
-    if [[ ! -f "${expected_file}" ]]; then
-        echo "Missing core dump artifact: ${expected_file}"
-        exit 1
-    fi
-done
-
-PATH="${work_dir}/bin:${PATH}" \
-    "${run_test}" "${output_root}" test "${binary_dir}/success-test" success
-
-if [[ -e "${output_root}/build/test-debug/success-test" ]]; then
-    echo "A successful test preserved an expected core dump"
+if ! grep -q "Found core dump, printing backtrace" "${run_output}"; then
+    echo "run-test.sh did not report the core dump"
     exit 1
 fi
-if [[ -e "${output_root}/build/test-work/success-test" ]]; then
-    echo "The successful test work directory was not cleaned"
+if ! grep -q -- "-ex thread apply all bt" "${GDB_LOG}"; then
+    echo "run-test.sh did not ask GDB to print all thread backtraces"
+    exit 1
+fi
+if find "${output_root}/build" -name 'core.*' -print -quit | grep -q .; then
+    echo "run-test.sh preserved a core dump"
+    exit 1
+fi
+if find "${output_root}/build/test-debug" -type f -print -quit | grep -q .; then
+    echo "run-test.sh preserved a binary artifact"
     exit 1
 fi
 
