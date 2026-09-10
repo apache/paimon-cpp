@@ -49,9 +49,16 @@ jobs:
       - name: Run asan_symbolize tests
         shell: bash
         run: ci/scripts/test_asan_symbolize.sh
+      - name: Install GDB
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
       - name: Run core dump handling tests
         shell: bash
-        run: ci/scripts/test_coredump_handling.sh
+        run: |
+          sudo sysctl -w kernel.core_pattern='core.%e.%p'
+          ulimit -c unlimited
+          ci/scripts/test_coredump_handling.sh
 
   build-and-test:
     name: ${{ matrix.name }}

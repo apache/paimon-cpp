@@ -27,26 +27,13 @@ trap 'rm -rf "${work_dir}"' EXIT
 
 output_root="${work_dir}/output"
 binary_dir="${output_root}/debug"
-mkdir -p "${binary_dir}" "${work_dir}/test/test_data" "${work_dir}/bin"
+mkdir -p "${binary_dir}" "${work_dir}/test/test_data"
 
 cat > "${work_dir}/core_test.c" <<'EOF'
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-int main(int argc, char** argv) {
-    const char* executable = strrchr(argv[0], '/');
-    executable = executable == NULL ? argv[0] : executable + 1;
-
-    char core_file[256];
-    snprintf(core_file, sizeof(core_file), "core.%s.123", executable);
-    FILE* file = fopen(core_file, "w");
-    if (file == NULL) {
-        return 2;
-    }
-    fputs("fake core", file);
-    fclose(file);
-
+int main(void) {
     const char* asan_options = getenv("ASAN_OPTIONS");
     const char* tsan_options = getenv("TSAN_OPTIONS");
     if (asan_options == NULL || tsan_options == NULL ||
@@ -57,36 +44,30 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    return 1;
+    abort();
 }
 EOF
 
-"${cc}" "${work_dir}/core_test.c" -o "${binary_dir}/failing-test"
+"${cc}" -g -O0 "${work_dir}/core_test.c" -o "${binary_dir}/failing-test"
 
-# The fake core is sufficient to exercise backtrace logging. Avoid depending on GDB
-# being installed or asking it to parse deliberately invalid input.
-cat > "${work_dir}/bin/gdb" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" > "${GDB_LOG}"
-exit 0
-EOF
-chmod +x "${work_dir}/bin/gdb"
-
-export GDB_LOG="${work_dir}/gdb.log"
 run_output="${work_dir}/run-test.log"
-if PATH="${work_dir}/bin:${PATH}" \
-    "${run_test}" "${output_root}" test "${binary_dir}/failing-test" \
+if "${run_test}" "${output_root}" test "${binary_dir}/failing-test" \
     > "${run_output}" 2>&1; then
     echo "run-test.sh unexpectedly reported that the failing test passed"
     exit 1
 fi
+cat "${run_output}"
 
 if ! grep -q "Found core dump, printing backtrace" "${run_output}"; then
     echo "run-test.sh did not report the core dump"
     exit 1
 fi
-if ! grep -q -- "-ex thread apply all bt" "${GDB_LOG}"; then
-    echo "run-test.sh did not ask GDB to print all thread backtraces"
+if ! grep -q "Program terminated with signal SIGABRT" "${run_output}"; then
+    echo "GDB did not report the abort signal"
+    exit 1
+fi
+if ! grep -Eq '#[0-9]+[[:space:]]+.*main' "${run_output}"; then
+    echo "GDB did not print the crashing main frame"
     exit 1
 fi
 if find "${output_root}/build" -name 'core.*' -print -quit | grep -q .; then
