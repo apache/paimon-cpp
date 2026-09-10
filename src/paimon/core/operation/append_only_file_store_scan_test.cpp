@@ -19,6 +19,7 @@
 #include "paimon/core/operation/append_only_file_store_scan.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -34,14 +35,19 @@
 #include "paimon/common/utils/math.h"
 #include "paimon/core/bucket/default_bucket_function.h"
 #include "paimon/core/manifest/manifest_entry.h"
+#include "paimon/core/manifest/manifest_entry_serializer.h"
+#include "paimon/core/manifest/manifest_file.h"
+#include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/partition_entry.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
 #include "paimon/core/table/source/abstract_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
+#include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
+#include "paimon/format/file_format_factory.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
@@ -140,6 +146,137 @@ class AppendBucketPruningTest : public testing::Test {
     std::map<std::string, std::string> options_ = {{Options::BUCKET, "4"},
                                                    {Options::BUCKET_KEY, "rowkey"}};
 };
+
+namespace {
+
+class CountingManifestEntrySerializer : public ManifestEntrySerializer {
+ public:
+    explicit CountingManifestEntrySerializer(const std::shared_ptr<MemoryPool>& pool)
+        : ManifestEntrySerializer(pool) {}
+
+    Result<ManifestEntry> ConvertFrom(int32_t version, const InternalRow& row) const override {
+        ++decoded_entries;
+        return ManifestEntrySerializer::ConvertFrom(version, row);
+    }
+
+    mutable std::atomic<int64_t> decoded_entries{0};
+};
+
+}  // namespace
+
+TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
+    for (bool compatible_schema : {false, true}) {
+        SCOPED_TRACE(compatible_schema);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto fs = dir->GetFileSystem();
+        schema_manager_ = std::make_shared<SchemaManager>(fs, dir->Str());
+        schema_id_ = 0;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> initial_scan,
+                             CreateScan(nullptr));
+        auto historical_options = options_;
+        if (!compatible_schema) {
+            historical_options[Options::BUCKET_KEY] = "value";
+        }
+        ASSERT_OK(schema_manager_->CreateTable(initial_scan->schema_, {}, {}, historical_options));
+        schema_id_ = 1;
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> inferred_scan,
+                             CreateScan(KeyEquals()));
+        ASSERT_FALSE(inferred_scan->bucket_filter_);
+        ASSERT_TRUE(inferred_scan->bucket_selector_);
+        const int32_t bucket = inferred_scan->bucket_selector_->Bucket(kNumBuckets);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format,
+                             FileFormatFactory::Get("avro", {}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> paths,
+                             FileStorePathFactory::Create(
+                                 dir->Str(), initial_scan->schema_, /*partition_keys=*/{},
+                                 /*default_part_value=*/"", "avro", /*data_file_prefix=*/"data-",
+                                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                 /*global_index_external_path=*/std::nullopt,
+                                 /*index_file_in_data_file_dir=*/false, pool_));
+        ASSERT_OK(fs->Mkdirs(FileStorePathFactory::ManifestPath(dir->Str())));
+        SimpleStats stats = BinaryRowGenerator::GenerateStats(
+            {std::string("a"), 0}, {std::string("z"), 100}, {0, 0}, pool_.get());
+        std::vector<ManifestEntry> entries;
+        for (const auto& layout : std::vector<std::pair<int32_t, int64_t>>{
+                 {kNumBuckets, schema_id_}, {8, schema_id_}, {kNumBuckets, 0}, {-1, schema_id_}}) {
+            for (int32_t id = 0; id < std::max(1, layout.first); ++id) {
+                ASSERT_OK_AND_ASSIGN(
+                    std::shared_ptr<DataFileMeta> file,
+                    DataFileMeta::ForAppend(fmt::format("data-{}.avro", entries.size()), 100, 10,
+                                            stats, 0, 9, layout.second, std::nullopt, std::nullopt,
+                                            std::nullopt, std::nullopt, std::nullopt));
+                entries.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), id, layout.first,
+                                     file);
+            }
+        }
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<DataFileMeta> deleted_file,
+            DataFileMeta::ForAppend("deleted.avro", 100, 10, stats, 0, 9, schema_id_, std::nullopt,
+                                    std::nullopt, std::nullopt, std::nullopt, std::nullopt));
+        entries.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), bucket, kNumBuckets,
+                             deleted_file);
+        ManifestEntry deletion(FileKind::Delete(), BinaryRow::EmptyRow(), bucket, kNumBuckets,
+                               deleted_file);
+        for (bool cache_enabled : {false, true}) {
+            SCOPED_TRACE(cache_enabled);
+            ASSERT_OK_AND_ASSIGN(CoreOptions manifest_options,
+                                 CoreOptions::FromMap({{Options::READ_BATCH_SIZE, "2"}}));
+            if (cache_enabled) {
+                manifest_options.WithCache(std::make_shared<LruCache>(16 * 1024 * 1024));
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ManifestFile> manifest,
+                                 ManifestFile::Create(fs, format, "null", paths, 1024 * 1024, pool_,
+                                                      manifest_options, arrow::schema({})));
+            auto serializer = std::make_unique<CountingManifestEntrySerializer>(pool_);
+            auto* counter = serializer.get();
+            manifest->serializer_ = std::move(serializer);
+            using WrittenFile = std::pair<std::string, int64_t>;
+            ASSERT_OK_AND_ASSIGN(WrittenFile additions, manifest->WriteWithoutRolling(entries));
+            ASSERT_OK_AND_ASSIGN(WrittenFile deletions, manifest->WriteWithoutRolling({deletion}));
+            std::vector<ManifestFileMeta> metas;
+            for (const auto& file : {additions, deletions}) {
+                metas.emplace_back(file.first, file.second, 0, 0, SimpleStats::EmptyStats(),
+                                   schema_id_, std::nullopt, std::nullopt, std::nullopt,
+                                   std::nullopt, std::nullopt, std::nullopt);
+            }
+            std::vector<ManifestEntry> baseline;
+            std::vector<std::string> baseline_files;
+            for (bool lazy_decode : {false, true}) {
+                SCOPED_TRACE(lazy_decode);
+                options_[Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED] =
+                    lazy_decode ? "true" : "false";
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> scan,
+                                     CreateScan(KeyEquals()));
+                scan->manifest_file_ = manifest;
+                counter->decoded_entries = 0;
+                std::vector<ManifestEntry> candidates;
+                ASSERT_OK(scan->ReadAndMergeBucketFileEntries(metas, bucket, &candidates));
+                // Only the three unrelated current-layout entries can be skipped. Historical
+                // layouts and both sides of the cross-manifest deletion must be decoded.
+                ASSERT_EQ(counter->decoded_entries.load(),
+                          entries.size() + 1 - (lazy_decode ? kNumBuckets - 1 : 0));
+                std::vector<std::string> files;
+                for (const auto& entry : candidates) {
+                    ASSERT_NE(entry.FileName(), "deleted.avro");
+                    ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterManifestEntry(entry));
+                    if (keep) {
+                        files.push_back(entry.FileName());
+                    }
+                }
+                std::sort(files.begin(), files.end());
+                ASSERT_EQ(files.size(), compatible_schema ? 4 : 7);
+                if (!lazy_decode) {
+                    baseline = candidates;
+                    baseline_files = files;
+                } else {
+                    ASSERT_EQ(candidates, baseline);
+                    ASSERT_EQ(files, baseline_files);
+                }
+            }
+        }
+    }
+}
 
 TEST_F(AppendBucketPruningTest, PrunesStringKeyLookup) {
     BinaryRow key = BinaryRowGenerator::GenerateRow({std::string("key")}, pool_.get());

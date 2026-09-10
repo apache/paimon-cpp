@@ -422,15 +422,28 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     const std::vector<ManifestFileMeta>& manifest_metas, int32_t bucket,
     std::vector<ManifestEntry>* merged_entries) const {
     const bool inferred_bucket = !bucket_filter_ && bucket_selector_ != nullptr;
-    // Explicit-bucket lazy decoding cannot retain entries with a different layout.
-    if (!inferred_bucket && core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+    if (core_options_.ScanManifestEntryLazyDecodeEnabled()) {
         std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
         futures.reserve(manifest_metas.size());
         for (const auto& meta : manifest_metas) {
-            auto read_meta_task = [this, meta, bucket]() -> Result<std::vector<ManifestEntry>> {
+            auto read_meta_task = [this, meta, bucket,
+                                   inferred_bucket]() -> Result<std::vector<ManifestEntry>> {
                 std::vector<ManifestEntry> bucket_entries;
-                PAIMON_RETURN_NOT_OK(
-                    manifest_file_->ReadBucketEntries(meta.FileName(), bucket, &bucket_entries));
+                if (inferred_bucket) {
+                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
+                        meta.FileName(), bucket, &bucket_entries,
+                        ManifestFile::InferredBucketLayout{core_options_.GetBucket(),
+                                                           table_schema_->Id()}));
+                } else if (meta.MinBucket() && meta.MaxBucket() &&
+                           meta.MinBucket().value() == bucket &&
+                           meta.MaxBucket().value() == bucket) {
+                    // Every entry belongs to this bucket; a projection pass cannot prune rows.
+                    PAIMON_RETURN_NOT_OK(
+                        manifest_file_->Read(meta.FileName(), /*filter=*/nullptr, &bucket_entries));
+                } else {
+                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(meta.FileName(), bucket,
+                                                                           &bucket_entries));
+                }
                 return bucket_entries;
             };
             futures.push_back(Via(executor_.get(), read_meta_task));

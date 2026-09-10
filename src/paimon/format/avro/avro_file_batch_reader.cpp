@@ -18,16 +18,19 @@
 
 #include "paimon/format/avro/avro_file_batch_reader.h"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <utility>
 
+#include "arrow/array/builder_nested.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/format/avro/avro_input_stream_impl.h"
@@ -35,6 +38,36 @@
 #include "paimon/reader/batch_reader.h"
 
 namespace paimon::avro {
+namespace {
+
+// Positional decoding requires matching field names, order and nesting. Leaf types
+// must use compatible builders: Avro int also supports Arrow int8 and int16.
+bool SameReadLayout(const std::shared_ptr<arrow::DataType>& file_type,
+                    const std::shared_ptr<arrow::DataType>& read_type) {
+    if (file_type->num_fields() == 0 && read_type->num_fields() == 0 &&
+        file_type->id() != arrow::Type::STRUCT && read_type->id() != arrow::Type::STRUCT) {
+        return file_type->id() == read_type->id() ||
+               (file_type->id() == arrow::Type::INT32 &&
+                (read_type->id() == arrow::Type::INT8 || read_type->id() == arrow::Type::INT16));
+    }
+    if (file_type->id() != read_type->id()) {
+        return false;
+    }
+    if (file_type->num_fields() != read_type->num_fields()) {
+        return false;
+    }
+    for (int32_t i = 0; i < file_type->num_fields(); ++i) {
+        const auto& file_field = file_type->field(i);
+        const auto& read_field = read_type->field(i);
+        if (file_field->name() != read_field->name() ||
+            !SameReadLayout(file_field->type(), read_field->type())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
 
 AvroFileBatchReader::AvroFileBatchReader(const std::shared_ptr<InputStream>& input_stream,
                                          const std::shared_ptr<::arrow::DataType>& file_data_type,
@@ -104,22 +137,75 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
     if (next_row_to_read_ == std::numeric_limits<uint64_t>::max()) {
         next_row_to_read_ = 0;
     }
+    previous_first_row_ = next_row_to_read_;
+    previous_row_ids_.clear();
+    previous_batch_row_count_ = 0;
+    if (selection_bitmap_ && selection_bitmap_->IsEmpty()) {
+        return BatchReader::MakeEofBatch();
+    }
     try {
         while (array_builder_->length() < batch_size_) {
+            if (selection_iterator_) {
+                if (*selection_iterator_ == *selection_end_) {
+                    break;
+                }
+                const uint64_t selected_row = static_cast<uint32_t>(**selection_iterator_);
+                if (selected_row >= total_rows_.value()) {
+                    break;
+                }
+                if (next_row_to_read_ < block_index_[selected_block_].first) {
+                    reader_->seek(block_index_[selected_block_].second);
+                    next_row_to_read_ = block_index_[selected_block_].first;
+                }
+            }
             if (!reader_->hasMore()) {
+                if (!selection_bitmap_ && !block_index_disabled_) {
+                    block_index_complete_ = true;
+                    total_rows_ = next_row_to_read_;
+                }
                 break;
+            }
+            if (!selection_bitmap_ && !block_index_complete_ && !block_index_disabled_) {
+                const int64_t block_position = reader_->previousSync();
+                if (block_index_.empty() || block_index_.back().second != block_position) {
+                    if (block_index_.size() == kMaxIndexedBlocks) {
+                        block_index_.clear();
+                        block_index_disabled_ = true;
+                    } else {
+                        block_index_.emplace_back(next_row_to_read_, block_position);
+                    }
+                }
+            }
+            reader_->decr();
+            const uint64_t file_row = next_row_to_read_++;
+            if (selection_bitmap_ &&
+                (file_row > std::numeric_limits<uint32_t>::max() ||
+                 !selection_bitmap_->Contains(static_cast<uint32_t>(file_row)))) {
+                PAIMON_RETURN_NOT_OK(AvroDirectDecoder::SkipValue(reader_->dataSchema().root(),
+                                                                  &reader_->decoder()));
+                continue;
             }
             if (array_builder_->length() == 0) {
                 PAIMON_RETURN_NOT_OK(
                     AvroDirectDecoder::ReserveBuilderCapacity(batch_size_, array_builder_.get()));
             }
-            reader_->decr();
             PAIMON_RETURN_NOT_OK(AvroDirectDecoder::DecodeAvroToBuilder(
                 reader_->dataSchema().root(), read_fields_projection_, &reader_->decoder(),
                 array_builder_.get(), &decode_context_));
+            if (selection_bitmap_) {
+                previous_row_ids_.push_back(file_row);
+            }
+            if (selection_iterator_) {
+                ++(*selection_iterator_);
+                if (*selection_iterator_ != *selection_end_) {
+                    const uint64_t selected_row = static_cast<uint32_t>(**selection_iterator_);
+                    auto block = std::upper_bound(
+                        block_index_.begin(), block_index_.end(), selected_row,
+                        [](uint64_t row, const auto& entry) { return row < entry.first; });
+                    selected_block_ = std::distance(block_index_.begin(), block) - 1;
+                }
+            }
         }
-        previous_first_row_ = next_row_to_read_;
-        next_row_to_read_ += array_builder_->length();
         if (array_builder_->length() == 0) {
             previous_batch_row_count_ = 0;
             return BatchReader::MakeEofBatch();
@@ -152,21 +238,51 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
         return Status::Invalid("SetReadSchema failed: read schema cannot be nullptr");
     }
     // TODO(menglingda.mld): support predicate
-    if (selection_bitmap) {
-        // TODO(menglingda.mld): support bitmap
-    }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_read_schema,
                                       arrow::ImportSchema(read_schema));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema,
                            ArrowUtils::DataTypeToSchema(file_data_type_));
-    PAIMON_ASSIGN_OR_RAISE(
-        bool has_nested_projection,
-        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, arrow_read_schema));
-    if (has_nested_projection) {
-        return Status::Invalid(
-            "SetReadSchema failed: avro reader does not support nested sub-field projection");
+    std::unordered_map<int32_t, std::set<size_t>> struct_projections;
+    for (int32_t i = 0; i < arrow_read_schema->num_fields(); ++i) {
+        const auto& field = arrow_read_schema->field(i);
+        auto file_field = file_schema->GetFieldByName(field->name());
+        if (!file_field) {
+            return Status::Invalid("Read field missing or ambiguous in Avro file schema: ",
+                                   field->name());
+        }
+        PAIMON_ASSIGN_OR_RAISE(bool has_nested_projection,
+                               NestedProjectionUtils::HasNestedSubfieldProjection(
+                                   arrow::schema({file_field}), arrow::schema({field})));
+        if (!has_nested_projection) {
+            if (field->type()->id() == arrow::Type::STRUCT &&
+                !SameReadLayout(file_field->type(), field->type())) {
+                return Status::Invalid(
+                    "Avro full struct read requires matching field names, "
+                    "order and types");
+            }
+            continue;
+        }
+        // Support a shallow scalar probe (e.g. manifest _FILE._SCHEMA_ID), not recursive
+        // projection through lists, maps or further structs.
+        if (field->type()->id() != arrow::Type::STRUCT) {
+            return Status::NotImplemented("Avro only supports direct scalar struct projection");
+        }
+        for (const auto& child : field->type()->fields()) {
+            auto file_child =
+                NestedProjectionUtils::FindFieldByName(file_field->type()->fields(), child->name());
+            if (!file_child || child->type()->num_fields() != 0 ||
+                file_child->type()->num_fields() != 0 ||
+                !SameReadLayout(file_child->type(), child->type())) {
+                return Status::NotImplemented("Avro only supports direct scalar struct projection");
+            }
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::set<size_t> child_projection,
+            CalculateReadFieldsProjection(arrow::schema(file_field->type()->fields()),
+                                          field->type()->fields()));
+        struct_projections.emplace(i, std::move(child_projection));
     }
-    PAIMON_ASSIGN_OR_RAISE(read_fields_projection_,
+    PAIMON_ASSIGN_OR_RAISE(std::set<size_t> read_fields_projection,
                            CalculateReadFieldsProjection(file_schema, arrow_read_schema->fields()));
     std::shared_ptr<::arrow::DataType> read_data_type = arrow::struct_(arrow_read_schema->fields());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::unique_ptr<arrow::ArrayBuilder> array_builder,
@@ -180,6 +296,30 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     reader_ = std::move(reader);
     array_builder_ = std::move(array_builder);
     decode_context_.ClearBuilderMetadata();
+    auto* struct_builder = checked_cast<arrow::StructBuilder*>(array_builder_.get());
+    for (auto& [index, projection] : struct_projections) {
+        decode_context_.struct_projections.emplace(struct_builder->field_builder(index),
+                                                   std::move(projection));
+    }
+    read_fields_projection_ = std::move(read_fields_projection);
+    selection_iterator_.reset();
+    selection_end_.reset();
+    selection_bitmap_ = selection_bitmap;
+    if (!block_index_complete_) {
+        block_index_.clear();
+        block_index_disabled_ = false;
+    }
+    if (selection_bitmap_ && !selection_bitmap_->IsEmpty() && block_index_complete_ &&
+        !block_index_.empty()) {
+        selection_iterator_ = selection_bitmap_->Begin();
+        selection_end_ = selection_bitmap_->End();
+        const uint64_t selected_row = static_cast<uint32_t>(**selection_iterator_);
+        auto block =
+            std::upper_bound(block_index_.begin(), block_index_.end(), selected_row,
+                             [](uint64_t row, const auto& entry) { return row < entry.first; });
+        selected_block_ = std::distance(block_index_.begin(), block) - 1;
+    }
+    previous_row_ids_.clear();
     previous_first_row_ = std::numeric_limits<uint64_t>::max();
     previous_batch_row_count_ = 0;
     next_row_to_read_ = std::numeric_limits<uint64_t>::max();

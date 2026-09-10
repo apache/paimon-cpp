@@ -56,7 +56,11 @@ class AvroDirectDecoder {
         /// Clears metadata before the builder tree is replaced or destroyed.
         void ClearBuilderMetadata() {
             builder_metadata_.clear();
+            struct_projections.clear();
         }
+
+        // Direct child projections for top-level struct builders, reset with builder metadata.
+        std::unordered_map<const arrow::ArrayBuilder*, std::set<size_t>> struct_projections;
 
         // Scratch buffer for string decoding (reused across rows)
         std::string string_scratch;
@@ -81,6 +85,9 @@ class AvroDirectDecoder {
                                       const std::optional<std::set<size_t>>& projection,
                                       ::avro::Decoder* decoder, arrow::ArrayBuilder* array_builder,
                                       DecodeContext* ctx);
+
+    /// Skip one value without materializing it in an Arrow builder.
+    static Status SkipValue(const ::avro::NodePtr& avro_node, ::avro::Decoder* decoder);
 
     /// Reserve slots for a builder and any struct children with the same cardinality.
     /// @param capacity Number of additional values to append.

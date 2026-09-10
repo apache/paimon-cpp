@@ -22,10 +22,12 @@
 #include <limits>
 #include <utility>
 
+#include "arrow/array/array_primitive.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
@@ -89,24 +91,166 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
         manifest_file_factory, target_file_size, pool, options, partition_type));
 }
 
-Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
-                                       std::vector<ManifestEntry>* entries) const {
+Status ManifestFile::ReadBucketEntries(
+    const std::string& file_name, int32_t bucket, std::vector<ManifestEntry>* entries,
+    const std::optional<InferredBucketLayout>& inferred_layout) const {
+    // Readers without an in-memory selective probe still filter aligned Arrow columns
+    // before constructing ManifestEntry and DataFileMeta objects.
     return ReadArrowBatches(
         file_name,
-        [this, bucket, entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
-            const arrow::ArrayVector& fields = batch->fields();
-            ColumnarRow row(fields, pool_, /*row_id=*/0);
-            for (int64_t i = 0; i < batch->length(); i++) {
+        [this, bucket, inferred_layout,
+         entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+            std::shared_ptr<arrow::StructArray> files;
+            std::shared_ptr<arrow::Int64Array> schema_ids;
+            if (inferred_layout) {
+                auto file_array = batch->GetFieldByName("_FILE");
+                if (!file_array || file_array->type_id() != arrow::Type::STRUCT) {
+                    return Status::Invalid("Manifest file metadata must be a struct array");
+                }
+                files = checked_pointer_cast<arrow::StructArray>(file_array);
+                auto schema_array = files->GetFieldByName("_SCHEMA_ID");
+                if (schema_array && schema_array->type_id() == arrow::Type::INT64) {
+                    schema_ids = checked_pointer_cast<arrow::Int64Array>(schema_array);
+                }
+            }
+            ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
+            for (int64_t i = 0; i < batch->length(); ++i) {
                 row.SetRowId(i);
                 PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(row.GetInt(0)));
-                if (ManifestEntrySerializer::GetBucket(row) != bucket) {
+                // Unknown or historical layouts must reach the existing compatibility checks.
+                const bool historical_layout =
+                    inferred_layout && (row.IsNullAt(3) || row.IsNullAt(4) ||
+                                        row.GetInt(4) != inferred_layout->total_buckets ||
+                                        files->IsNull(i) || !schema_ids || schema_ids->IsNull(i) ||
+                                        schema_ids->Value(i) != inferred_layout->schema_id);
+                if (!historical_layout && ManifestEntrySerializer::GetBucket(row) != bucket) {
                     continue;
                 }
                 PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
                 entries->push_back(std::move(entry));
             }
             return Status::OK();
+        },
+        [this, bucket, inferred_layout](FileBatchReader* reader) {
+            return PrepareBucketRead(reader, bucket, inferred_layout);
         });
+}
+
+Status ManifestFile::PrepareBucketRead(
+    FileBatchReader* reader, int32_t bucket,
+    const std::optional<InferredBucketLayout>& inferred_layout) const {
+    if (!reader->SupportPreciseBitmapSelection()) {
+        return Status::OK();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ArrowSchema> c_schema, reader->GetFileSchema());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_schema,
+                                      arrow::ImportSchema(c_schema.get()));
+    const auto& target_type = serializer_->GetDataType();
+    const std::string& version_name = target_type->field(0)->name();
+    const std::string& bucket_name = target_type->field(3)->name();
+    auto version_field = file_schema->GetFieldByName(version_name);
+    auto bucket_field = file_schema->GetFieldByName(bucket_name);
+    if (!version_field || !bucket_field || version_field->type()->id() != arrow::Type::INT32 ||
+        bucket_field->type()->id() != arrow::Type::INT32) {
+        return Status::OK();
+    }
+    std::shared_ptr<arrow::Field> projected_file;
+    if (inferred_layout) {
+        auto total_field = file_schema->GetFieldByName("_TOTAL_BUCKETS");
+        auto file_field = file_schema->GetFieldByName("_FILE");
+        if (!total_field || total_field->type()->id() != arrow::Type::INT32 || !file_field ||
+            file_field->type()->id() != arrow::Type::STRUCT) {
+            return Status::OK();
+        }
+        auto file_type = checked_pointer_cast<arrow::StructType>(file_field->type());
+        auto schema_field = file_type->GetFieldByName("_SCHEMA_ID");
+        if (!schema_field || schema_field->type()->id() != arrow::Type::INT64) {
+            return Status::OK();
+        }
+        projected_file = file_field->WithType(arrow::struct_({schema_field}));
+    }
+    arrow::FieldVector probe_fields;
+    for (const auto& field : file_schema->fields()) {
+        if (field->name() == version_name || field->name() == bucket_name) {
+            probe_fields.push_back(field);
+        } else if (inferred_layout && field->name() == "_TOTAL_BUCKETS") {
+            probe_fields.push_back(field);
+        } else if (inferred_layout && field->name() == "_FILE") {
+            probe_fields.push_back(projected_file);
+        }
+    }
+    auto probe_schema = arrow::schema(probe_fields);
+    ArrowSchema probe_c_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*probe_schema, &probe_c_schema));
+    PAIMON_RETURN_NOT_OK(
+        reader->SetReadSchema(&probe_c_schema, /*predicate=*/nullptr, std::nullopt));
+    RoaringBitmap32 selected;
+    bool row_ids_fit = true;
+    while (true) {
+        PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> array,
+            arrow::ImportArray(batch.first.get(), batch.second.get()));
+        if (!array || array->type_id() != arrow::Type::STRUCT) {
+            return Status::Invalid("Manifest bucket probe must return a struct array");
+        }
+        auto rows = checked_pointer_cast<arrow::StructArray>(array);
+        auto version_array = rows->GetFieldByName(version_name);
+        auto bucket_array = rows->GetFieldByName(bucket_name);
+        if (!version_array || !bucket_array || version_array->type_id() != arrow::Type::INT32 ||
+            bucket_array->type_id() != arrow::Type::INT32) {
+            return Status::Invalid("Manifest bucket probe must return int32 version and bucket");
+        }
+        auto versions = checked_pointer_cast<arrow::Int32Array>(version_array);
+        auto buckets = checked_pointer_cast<arrow::Int32Array>(bucket_array);
+        std::shared_ptr<arrow::Int32Array> totals;
+        std::shared_ptr<arrow::StructArray> files;
+        std::shared_ptr<arrow::Int64Array> schema_ids;
+        if (inferred_layout) {
+            auto total_array = rows->GetFieldByName("_TOTAL_BUCKETS");
+            auto file_array = rows->GetFieldByName("_FILE");
+            if (!total_array || total_array->type_id() != arrow::Type::INT32 || !file_array ||
+                file_array->type_id() != arrow::Type::STRUCT) {
+                return Status::Invalid("Manifest layout probe must return total buckets and file");
+            }
+            totals = checked_pointer_cast<arrow::Int32Array>(total_array);
+            files = checked_pointer_cast<arrow::StructArray>(file_array);
+            auto schema_array = files->GetFieldByName("_SCHEMA_ID");
+            if (!schema_array || schema_array->type_id() != arrow::Type::INT64) {
+                return Status::Invalid("Manifest layout probe must return int64 schema ID");
+            }
+            schema_ids = checked_pointer_cast<arrow::Int64Array>(schema_array);
+        }
+        for (int64_t i = 0; i < rows->length(); ++i) {
+            if (rows->IsNull(i) || versions->IsNull(i) || buckets->IsNull(i)) {
+                return Status::Invalid("Manifest version and bucket must not be null");
+            }
+            // Validate every entry, including buckets not selected by this scan.
+            PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(versions->Value(i)));
+            const bool historical_layout =
+                inferred_layout &&
+                (totals->IsNull(i) || totals->Value(i) != inferred_layout->total_buckets ||
+                 files->IsNull(i) || schema_ids->IsNull(i) ||
+                 schema_ids->Value(i) != inferred_layout->schema_id);
+            if (buckets->Value(i) == bucket || historical_layout) {
+                PAIMON_ASSIGN_OR_RAISE(uint64_t file_row, reader->GetPreviousBatchFileRowId(i));
+                if (file_row > std::numeric_limits<uint32_t>::max()) {
+                    row_ids_fit = false;
+                } else {
+                    selected.Add(static_cast<uint32_t>(file_row));
+                }
+            }
+        }
+    }
+    // Keep the on-disk schema; ManifestMetaReader still performs schema evolution afterwards.
+    ArrowSchema full_c_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*file_schema, &full_c_schema));
+    return reader->SetReadSchema(
+        &full_c_schema, /*predicate=*/nullptr,
+        row_ids_fit ? std::optional<RoaringBitmap32>(std::move(selected)) : std::nullopt);
 }
 
 Result<std::vector<ManifestFileMeta>> ManifestFile::Write(

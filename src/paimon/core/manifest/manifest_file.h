@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,11 +63,21 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// @note This method is atomic.
     Result<std::vector<ManifestFileMeta>> Write(const std::vector<ManifestEntry>& entries);
 
-    /// Read a manifest file and deserialize only entries for the specified bucket.
-    Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
-                             std::vector<ManifestEntry>* entries) const;
+    struct InferredBucketLayout {
+        int32_t total_buckets;
+        int64_t schema_id;
+    };
+
+    /// Read entries for a bucket. An inferred layout also retains historical or unknown
+    /// layouts for the existing compatibility checks.
+    Status ReadBucketEntries(
+        const std::string& file_name, int32_t bucket, std::vector<ManifestEntry>* entries,
+        const std::optional<InferredBucketLayout>& inferred_layout = std::nullopt) const;
 
  private:
+    Status PrepareBucketRead(FileBatchReader* reader, int32_t bucket,
+                             const std::optional<InferredBucketLayout>& inferred_layout) const;
+
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,
                  const std::shared_ptr<WriterBuilder>& writer_builder,
