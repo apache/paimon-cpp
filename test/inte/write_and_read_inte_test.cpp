@@ -680,6 +680,65 @@ TEST_P(WriteAndReadInteTest, TestPKSimple) {
     ASSERT_TRUE(success);
 }
 
+TEST_P(WriteAndReadInteTest, TestPKProductAggMergesAndSurvivesCompaction) {
+    arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                 arrow::field("qty", arrow::int32()),
+                                 arrow::field("rate", arrow::decimal128(10, 2))};
+    auto [file_format, file_system] = GetParam();
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::TARGET_FILE_SIZE, "1024"},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::MERGE_ENGINE, "aggregation"},
+        {"fields.qty.aggregate-function", "product"},
+        {"fields.rate.aggregate-function", "product"},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                           /*primary_keys=*/{"pk"}, options, /*is_streaming_mode=*/true));
+
+    // Every decimal product below is exact at scale 2, so the result does not depend on the order
+    // the files happen to be merged in.
+    const char* batches[] = {R"([["a", 2, "1.50"], ["b", 2, "2.00"]])",
+                             R"([["a", 3, "2.00"], ["b", 1, "0.50"]])",
+                             R"([["a", 5, "1.00"], ["b", 4, "1.00"]])"};
+    for (int64_t i = 0; i < 3; i++) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             TestHelper::MakeRecordBatch(arrow::struct_(fields), batches[i],
+                                                         /*partition_map=*/{}, /*bucket=*/0, {}));
+        ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/i,
+                                         /*expected_commit_messages=*/std::nullopt));
+    }
+
+    arrow::FieldVector result_fields = fields;
+    result_fields.insert(result_fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    // a: 2 * 3 * 5 = 30 and 1.50 * 2.00 * 1.00 = 3.00
+    // b: 2 * 1 * 4 = 8 and 2.00 * 0.50 * 1.00 = 1.00
+    const char* expected = R"([[0, "a", 30, "3.00"], [0, "b", 8, "1.00"]])";
+
+    // merge on read across the three level-0 files
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> data_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool success, helper->ReadAndCheckResult(arrow::struct_(result_fields),
+                                                                  data_splits, expected));
+    ASSERT_TRUE(success);
+
+    // the same aggregation performed by a full compaction
+    std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK(CompactAndCommit(table_path, options, /*commit_identifier=*/3));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> compacted_splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(
+        bool compacted_success,
+        helper->ReadAndCheckResult(arrow::struct_(result_fields), compacted_splits, expected));
+    ASSERT_TRUE(compacted_success);
+}
+
 TEST_P(WriteAndReadInteTest, TestPKListAggPreservesResultsAcrossKeys) {
     arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
                                  arrow::field("value", arrow::utf8())};

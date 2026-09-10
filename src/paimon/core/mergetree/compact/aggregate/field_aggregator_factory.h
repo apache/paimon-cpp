@@ -38,6 +38,7 @@
 #include "paimon/core/mergetree/compact/aggregate/field_min_agg.h"
 #include "paimon/core/mergetree/compact/aggregate/field_nested_update_agg.h"
 #include "paimon/core/mergetree/compact/aggregate/field_primary_key_agg.h"
+#include "paimon/core/mergetree/compact/aggregate/field_product_agg.h"
 #include "paimon/core/mergetree/compact/aggregate/field_sketch_agg.h"
 #include "paimon/core/mergetree/compact/aggregate/field_sum_agg.h"
 #include "paimon/result.h"
@@ -80,6 +81,8 @@ class FieldAggregatorFactory {
             field_aggregator = std::make_unique<FieldFirstValueAgg>(field_type, pool);
         } else if (str_agg == FieldSumAgg::NAME) {
             PAIMON_ASSIGN_OR_RAISE(field_aggregator, FieldSumAgg::Create(field_type, pool));
+        } else if (str_agg == FieldProductAgg::NAME) {
+            PAIMON_ASSIGN_OR_RAISE(field_aggregator, FieldProductAgg::Create(field_type, pool));
         } else if (str_agg == FieldMinAgg::NAME) {
             PAIMON_ASSIGN_OR_RAISE(field_aggregator, FieldMinAgg::Create(field_type, pool));
         } else if (str_agg == FieldMaxAgg::NAME) {
