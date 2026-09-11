@@ -104,21 +104,22 @@ class CountingFileSystem : public FileSystem {
 
 class ManifestFileTest : public testing::Test {
  public:
-    std::vector<ManifestEntry> ReadManifestEntry(
-        const std::string& file_format_str, const std::string& root_path,
-        const std::string& file_name, const std::shared_ptr<MemoryPool>& pool,
-        const std::optional<int32_t>& bucket = std::nullopt) const {
+    std::vector<ManifestEntry> ReadManifestEntry(const std::string& file_format_str,
+                                                 const std::string& root_path,
+                                                 const std::string& file_name,
+                                                 const std::shared_ptr<MemoryPool>& pool,
+                                                 const std::optional<int32_t>& bucket) const {
         EXPECT_OK_AND_ASSIGN(
             std::vector<ManifestEntry> entries,
-            TryReadManifestEntry(file_format_str, root_path, file_name, pool, bucket));
+            TryReadManifestEntry(file_format_str, root_path, file_name, pool, bucket,
+                                 /*cache_enabled=*/false, /*inferred_bucket=*/false));
         return entries;
     }
 
     Result<std::vector<ManifestEntry>> TryReadManifestEntry(
         const std::string& file_format_str, const std::string& root_path,
         const std::string& file_name, const std::shared_ptr<MemoryPool>& pool,
-        const std::optional<int32_t>& bucket = std::nullopt, bool cache_enabled = false,
-        bool inferred_bucket = false) const {
+        const std::optional<int32_t>& bucket, bool cache_enabled, bool inferred_bucket) const {
         std::shared_ptr<FileSystem> file_system = std::make_shared<LocalFileSystem>();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> file_format,
                                FileFormatFactory::Get(file_format_str, {}));
@@ -162,7 +163,7 @@ TEST_F(ManifestFileTest, TestSimple) {
     auto pool = GetDefaultPool();
     auto manifest_entries =
         ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
-                          "manifest-3ea5ee21-d399-4f1c-a749-2fc63dbf0852-1", pool);
+                          "manifest-3ea5ee21-d399-4f1c-a749-2fc63dbf0852-1", pool, std::nullopt);
     ASSERT_EQ(manifest_entries.size(), 5);
     auto file_meta1 = std::make_shared<DataFileMeta>(
         "data-4e30d6c0-f109-4300-a010-4ba03047dd9d-0.orc", /*file_size=*/575, /*row_count=*/3,
@@ -396,7 +397,7 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
     auto pool = GetDefaultPool();
     std::vector<ManifestEntry> source_entries =
         ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
-                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool, std::nullopt);
     ASSERT_EQ(2, source_entries.size());
 
     {
@@ -464,7 +465,7 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
     auto pool = GetDefaultPool();
     std::vector<ManifestEntry> source_entries =
         ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
-                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool, std::nullopt);
     ASSERT_EQ(2, source_entries.size());
 
     // A cache that rejects manifest keys must fall back to the single-pass reader.
@@ -565,7 +566,7 @@ TEST_F(ManifestFileTest, TestBucketProbeValidatesVersionsOutsideSelectedBucket) 
         ASSERT_OK(writer->Finish());
         ASSERT_OK(output->Close());
         ASSERT_NOK_WITH_MSG(TryReadManifestEntry("avro", dir->Str(), file_name, pool, /*bucket=*/0,
-                                                 /*cache_enabled=*/true),
+                                                 /*cache_enabled=*/true, false),
                             item.second);
         // The inferred path must also validate versions before discarding other buckets.
         ASSERT_NOK_WITH_MSG(TryReadManifestEntry("avro", dir->Str(), file_name, pool, /*bucket=*/0,
@@ -578,7 +579,7 @@ TEST_F(ManifestFileTest, TestLegacyManifestFormatIsReadOnly) {
     auto pool = GetDefaultPool();
     std::vector<ManifestEntry> entries =
         ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
-                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool, std::nullopt);
     ASSERT_FALSE(entries.empty());
 
     auto dir = UniqueTestDirectory::Create();
@@ -610,7 +611,7 @@ TEST_F(ManifestFileTest, TestWithNullCount) {
     auto pool = GetDefaultPool();
     auto manifest_entries =
         ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
-                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool, std::nullopt);
     ASSERT_EQ(manifest_entries.size(), 2);
     auto file_meta1 = std::make_shared<DataFileMeta>(
         "data-10b9eea8-241d-4e4b-8ab8-2a82d72d79a2-0.orc", /*file_size=*/589, /*row_count=*/3,
@@ -664,8 +665,8 @@ TEST_F(ManifestFileTest, TestWithNullCount) {
 
 TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon09) {
     auto pool = GetDefaultPool();
-    auto manifest_entries =
-        ReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro", "avro_manifest_09", pool);
+    auto manifest_entries = ReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro",
+                                              "avro_manifest_09", pool, std::nullopt);
     ASSERT_EQ(manifest_entries.size(), 1);
     auto file_meta = std::make_shared<DataFileMeta>(
         "data-dd28db13-0f8f-43a5-a0df-684e7dc93c55-0.avro", /*file_size=*/1625, /*row_count=*/3,
@@ -702,7 +703,7 @@ TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon09) {
     ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> cached_entries,
                          TryReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro",
                                               "avro_manifest_09", pool, /*bucket=*/0,
-                                              /*cache_enabled=*/true));
+                                              /*cache_enabled=*/true, false));
     ASSERT_EQ(expected_manifest_entries, cached_entries);
     ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> inferred_entries,
                          TryReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro",
@@ -713,8 +714,8 @@ TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon09) {
 
 TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon11) {
     auto pool = GetDefaultPool();
-    auto manifest_entries =
-        ReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro", "avro_manifest_11", pool);
+    auto manifest_entries = ReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro",
+                                              "avro_manifest_11", pool, std::nullopt);
     ASSERT_EQ(manifest_entries.size(), 1);
     auto file_meta = std::make_shared<DataFileMeta>(
         "data-0ff223ba-0d95-4c43-a25f-bcee3c051e58-0.avro", /*file_size=*/1615, /*row_count=*/3,
@@ -751,7 +752,7 @@ TEST_F(ManifestFileTest, TestManifestFileCompatibleWithJavaPaimon11) {
     ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> cached_entries,
                          TryReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro",
                                               "avro_manifest_11", pool, /*bucket=*/0,
-                                              /*cache_enabled=*/true));
+                                              /*cache_enabled=*/true, false));
     ASSERT_EQ(expected_manifest_entries, cached_entries);
     ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> inferred_entries,
                          TryReadManifestEntry("avro", paimon::test::GetDataDir() + "/avro",

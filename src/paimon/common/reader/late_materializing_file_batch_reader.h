@@ -55,7 +55,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
 
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
         std::unique_ptr<FileBatchReader> inner,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, ProbeValidation validation = {});
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, ProbeValidation validation);
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
 

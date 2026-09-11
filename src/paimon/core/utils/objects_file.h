@@ -92,8 +92,7 @@ class ObjectsFile {
     Status ReadArrowBatches(
         const std::string& file_name,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader =
-            nullptr) const;
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
@@ -168,7 +167,8 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
                 }
             }
             return Status::OK();
-        });
+        },
+        /*prepare_reader=*/nullptr);
 }
 
 template <typename T>

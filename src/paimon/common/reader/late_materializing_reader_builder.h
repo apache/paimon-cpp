@@ -55,9 +55,9 @@ class LateMaterializingReaderBuilder : public ReaderBuilder {
         const std::shared_ptr<InputStream>& stream) const override {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> format_reader,
                                inner_->Build(stream));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::unique_ptr<LateMaterializingFileBatchReader> reader,
-            LateMaterializingFileBatchReader::Create(std::move(format_reader), arrow_pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                               LateMaterializingFileBatchReader::Create(
+                                   std::move(format_reader), arrow_pool_, /*validation=*/{}));
         return std::unique_ptr<FileBatchReader>(std::move(reader));
     }
 

@@ -17,7 +17,6 @@
  * under the License.
  */
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -500,7 +499,6 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
         uint64_t cache_enabled;
         uint64_t cache_hit;
         int64_t peak_bytes;
-        int64_t elapsed_us;
     };
     auto scan = [&](bool lazy_decode, const std::shared_ptr<Cache>& cache,
                     bool entry_cache) -> Result<ScanResult> {
@@ -521,16 +519,12 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
                                TableScan::Create(std::move(context)));
-        const auto start = std::chrono::steady_clock::now();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
-        const int64_t elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                                       std::chrono::steady_clock::now() - start)
-                                       .count();
         PAIMON_ASSIGN_OR_RAISE(uint64_t enabled, table_scan->GetMetrics()->GetCounter(
                                                      ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
         PAIMON_ASSIGN_OR_RAISE(uint64_t hit, table_scan->GetMetrics()->GetCounter(
                                                  ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
-        return ScanResult{plan, enabled, hit, pool->MaxMemoryUsage(), elapsed_us};
+        return ScanResult{plan, enabled, hit, pool->MaxMemoryUsage()};
     };
     auto check_read = [&](const ScanResult& result, int32_t partition_count, bool historical) {
         ASSERT_EQ(result.cache_enabled, 1);
@@ -600,8 +594,6 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
         peaks.push_back(measured.peak_bytes);
         RecordProperty(lazy_decode ? "selective_peak_bytes" : "baseline_peak_bytes",
                        fmt::format("{}", measured.peak_bytes));
-        RecordProperty(lazy_decode ? "selective_plan_us" : "baseline_plan_us",
-                       fmt::format("{}", measured.elapsed_us));
         ASSERT_OK_AND_ASSIGN(ScanResult hit, scan(lazy_decode, cache, true));
         ASSERT_EQ(hit.cache_hit, 1);
         ASSERT_NO_FATAL_FAILURE(check_read(hit, kPartitions, false));

@@ -23,14 +23,12 @@
 #include <memory>
 #include <utility>
 
-#include "arrow/array/builder_nested.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/format/avro/avro_input_stream_impl.h"
@@ -38,60 +36,6 @@
 #include "paimon/reader/batch_reader.h"
 
 namespace paimon::avro {
-namespace {
-
-// Struct fields must retain their names and order; list/map child labels are not
-// encoded in Avro. Leaf types must match unless the decoder supports the conversion.
-bool SameReadLayout(const std::shared_ptr<arrow::DataType>& file_type,
-                    const std::shared_ptr<arrow::DataType>& read_type) {
-    if (file_type->id() == arrow::Type::INT32 &&
-        (read_type->id() == arrow::Type::INT8 || read_type->id() == arrow::Type::INT16)) {
-        return true;
-    }
-    if (file_type->id() != read_type->id()) {
-        return false;
-    }
-    switch (file_type->id()) {
-        case arrow::Type::TIMESTAMP: {
-            const auto& file_timestamp = checked_cast<const arrow::TimestampType&>(*file_type);
-            const auto& read_timestamp = checked_cast<const arrow::TimestampType&>(*read_type);
-            // Avro stores Arrow seconds as milliseconds, which the decoder converts back.
-            return file_timestamp.timezone() == read_timestamp.timezone() &&
-                   (file_timestamp.unit() == read_timestamp.unit() ||
-                    (file_timestamp.unit() == arrow::TimeUnit::MILLI &&
-                     read_timestamp.unit() == arrow::TimeUnit::SECOND));
-        }
-        case arrow::Type::LIST: {
-            const auto& file_list = checked_cast<const arrow::ListType&>(*file_type);
-            const auto& read_list = checked_cast<const arrow::ListType&>(*read_type);
-            return SameReadLayout(file_list.value_type(), read_list.value_type());
-        }
-        case arrow::Type::MAP: {
-            const auto& file_map = checked_cast<const arrow::MapType&>(*file_type);
-            const auto& read_map = checked_cast<const arrow::MapType&>(*read_type);
-            return SameReadLayout(file_map.key_type(), read_map.key_type()) &&
-                   SameReadLayout(file_map.item_type(), read_map.item_type());
-        }
-        case arrow::Type::STRUCT:
-            break;
-        default:
-            return file_type->Equals(read_type);
-    }
-    if (file_type->num_fields() != read_type->num_fields()) {
-        return false;
-    }
-    for (int32_t i = 0; i < file_type->num_fields(); ++i) {
-        const auto& file_field = file_type->field(i);
-        const auto& read_field = read_type->field(i);
-        if (file_field->name() != read_field->name() ||
-            !SameReadLayout(file_field->type(), read_field->type())) {
-            return false;
-        }
-    }
-    return true;
-}
-
-}  // namespace
 
 AvroFileBatchReader::AvroFileBatchReader(const std::shared_ptr<InputStream>& input_stream,
                                          const std::shared_ptr<::arrow::DataType>& file_data_type,
@@ -266,45 +210,12 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
                                       arrow::ImportSchema(read_schema));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema,
                            ArrowUtils::DataTypeToSchema(file_data_type_));
-    std::unordered_map<int32_t, std::set<size_t>> struct_projections;
-    for (int32_t i = 0; i < arrow_read_schema->num_fields(); ++i) {
-        const auto& field = arrow_read_schema->field(i);
-        auto file_field = file_schema->GetFieldByName(field->name());
-        if (!file_field) {
-            return Status::Invalid("Read field missing or ambiguous in Avro file schema: ",
-                                   field->name());
-        }
-        PAIMON_ASSIGN_OR_RAISE(bool has_nested_projection,
-                               NestedProjectionUtils::HasNestedSubfieldProjection(
-                                   arrow::schema({file_field}), arrow::schema({field})));
-        if (!has_nested_projection) {
-            if (field->type()->id() == arrow::Type::STRUCT &&
-                !SameReadLayout(file_field->type(), field->type())) {
-                return Status::Invalid(
-                    "Avro full struct read requires matching field names, "
-                    "order and types");
-            }
-            continue;
-        }
-        // Support a shallow scalar probe (e.g. manifest _FILE._SCHEMA_ID), not recursive
-        // projection through lists, maps or further structs.
-        if (field->type()->id() != arrow::Type::STRUCT) {
-            return Status::NotImplemented("Avro only supports direct scalar struct projection");
-        }
-        for (const auto& child : field->type()->fields()) {
-            auto file_child =
-                NestedProjectionUtils::FindFieldByName(file_field->type()->fields(), child->name());
-            if (!file_child || child->type()->num_fields() != 0 ||
-                file_child->type()->num_fields() != 0 ||
-                !SameReadLayout(file_child->type(), child->type())) {
-                return Status::NotImplemented("Avro only supports direct scalar struct projection");
-            }
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::set<size_t> child_projection,
-            CalculateReadFieldsProjection(arrow::schema(file_field->type()->fields()),
-                                          field->type()->fields()));
-        struct_projections.emplace(i, std::move(child_projection));
+    PAIMON_ASSIGN_OR_RAISE(
+        bool has_nested_projection,
+        NestedProjectionUtils::HasNestedSubfieldProjection(file_schema, arrow_read_schema));
+    if (has_nested_projection) {
+        return Status::Invalid(
+            "SetReadSchema failed: avro reader does not support nested sub-field projection");
     }
     PAIMON_ASSIGN_OR_RAISE(std::set<size_t> read_fields_projection,
                            CalculateReadFieldsProjection(file_schema, arrow_read_schema->fields()));
@@ -320,11 +231,6 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     reader_ = std::move(reader);
     array_builder_ = std::move(array_builder);
     decode_context_.ClearBuilderMetadata();
-    auto* struct_builder = checked_cast<arrow::StructBuilder*>(array_builder_.get());
-    for (auto& [index, projection] : struct_projections) {
-        decode_context_.struct_projections.emplace(struct_builder->field_builder(index),
-                                                   std::move(projection));
-    }
     read_fields_projection_ = std::move(read_fields_projection);
     selection_iterator_.reset();
     selection_end_.reset();

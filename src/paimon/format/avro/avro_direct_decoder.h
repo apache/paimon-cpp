@@ -56,11 +56,7 @@ class AvroDirectDecoder {
         /// Clears metadata before the builder tree is replaced or destroyed.
         void ClearBuilderMetadata() {
             builder_metadata_.clear();
-            struct_projections.clear();
         }
-
-        // Direct child projections for top-level struct builders, reset with builder metadata.
-        std::unordered_map<const arrow::ArrayBuilder*, std::set<size_t>> struct_projections;
 
         // Scratch buffer for string decoding (reused across rows)
         std::string string_scratch;
