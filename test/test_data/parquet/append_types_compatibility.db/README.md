@@ -19,7 +19,9 @@
 
 # Paimon writer compatibility fixtures
 
-The `append_types_compatibility.db` database contains equivalent append-only tables written by Python, Rust, and Java Paimon. Table names use the writer as a prefix and describe the group of types in that table; no individual table is claimed to contain every Paimon type.
+The `append_types_compatibility.db` database contains append-only compatibility tables written by
+Python, Rust, and Java Paimon. Table names use the writer as a prefix and describe the group of
+types in that table; no individual table is claimed to contain every Paimon type.
 
 The writers and Parquet implementations are:
 
@@ -29,11 +31,16 @@ The writers and Parquet implementations are:
 
 ## Table groups
 
-Each writer prefix has four tables with the same schema and logical values:
+Each writer prefix has five tables with the same declared schema and intended logical values:
 
 - `<writer>_types`: 43 columns and 3 rows covering integral and floating types, BOOLEAN, CHAR/VARCHAR/STRING, BINARY/VARBINARY/BYTES, BLOB, DATE, TIMESTAMP and TIMESTAMP_LTZ at precision 0/3/6/9, multiple DECIMAL precisions, VARIANT, ARRAY, MAP, ROW, and deeply nested combinations. Row 2 is null in every nullable column and row 3 exercises empty values.
 - `<writer>_vector_types`: VECTOR length 3 for BOOLEAN, TINYINT, SMALLINT, INT, BIGINT, FLOAT, and DOUBLE.
-- `<writer>_nested_blob_types`: ARRAY&lt;BLOB&gt; and MAP&lt;STRING, BLOB&gt;. Paimon C++ rejects the table schema because ARRAY&lt;BLOB&gt; is unsupported. Schema validation happens before column projection, so the compatibility test explicitly checks this error instead of reading either field.
+- `<writer>_array_blob_types`: Paimon C++ does not currently support ARRAY&lt;BLOB&gt;.
+- `<writer>_map_blob_types`: MAP&lt;STRING, BLOB&gt;, including non-null, null, and empty map
+  values. Python and Java store these values in standard separate BLOB files, which Paimon C++
+  can read. Rust stores the raw values inline as Parquet `binary`; this is not the Paimon BLOB
+  descriptor representation, cannot be read as BLOB by Java, and is intentionally rejected by
+  Paimon C++.
 - `<writer>_time_types`: TIME declarations at precision 0/3/6/9. Paimon C++ currently rejects `TIME` while parsing the table schema.
 
 The tables are separated because Paimon C++ does not allow VECTOR in a data-evolution table, BLOB requires data evolution, and a schema-level incompatibility must not prevent compatible columns from being tested.
@@ -42,4 +49,7 @@ The tables are separated because Paimon C++ does not allow VECTOR in a data-evol
 
 The `f_blob_descriptor` value intentionally points at a nonexistent external URI. Read it with `blob-as-descriptor=true`; it exercises the inline descriptor and Parquet `ARROW:schema` path rather than external blob fetching.
 
-Both PyArrow and parquet-rs persist the original Arrow type in `ARROW:schema`, but the stored types differ in these fixtures. The Python fixture records the physical Parquet `binary` column as Arrow `large_binary`, while the Rust fixture records it as Arrow `binary`. The compatibility test verifies that Paimon C++ can read both representations and preserve the descriptor value.
+Both PyArrow and parquet-rs persist the original Arrow type in `ARROW:schema`, but the stored types
+differ for `f_blob_descriptor`. The Python fixture records the physical Parquet `binary` column as
+Arrow `large_binary`, while the Rust fixture records it as Arrow `binary`. The compatibility test
+verifies that Paimon C++ can read both representations and preserve the descriptor value.
