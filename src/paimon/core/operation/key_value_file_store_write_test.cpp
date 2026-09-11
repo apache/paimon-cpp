@@ -468,12 +468,26 @@ TEST_F(KeyValueFileStoreWriteTest, TestRealtimeWrite) {
     ASSERT_NOK_WITH_MSG(writer->Write(MakeBatch(realtime_schema, R"([[30, 3, "backwards"]])")),
                         "offset moved backwards or was duplicated");
     ASSERT_NOK(writer->Write(MakeBatch(realtime_schema, R"([[null, 3, "null-offset"]])")));
+    std::shared_ptr<Metrics> building_metrics = writer->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double building_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(double total_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    // The real-time gauges count physical versions, including the delete record.
+    ASSERT_EQ(3, building_rows);
+    ASSERT_EQ(3, total_rows);
     ASSERT_OK_AND_ASSIGN(auto store_rows, ReadRealtimePrimaryKeyStoreRows(realtime_context));
     ASSERT_EQ(
         (decltype(store_rows){{0, 1, "old", 0, 10}, {2, 1, "new", 2, 30}, {3, 2, "two", 1, 20}}),
         store_rows);
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progresses,
                          writer->PrepareCommitWithProgress(0));
+    std::shared_ptr<Metrics> sealed_metrics = writer->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double sealed_rows,
+                         sealed_metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(total_rows, sealed_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(3, sealed_rows);
+    ASSERT_EQ(3, total_rows);
     ASSERT_EQ(1, progresses.size());
     ASSERT_EQ(OffsetRange(10, 31), progresses[0].offset_range);
     std::shared_ptr<CommitMessageImpl> commit_message =

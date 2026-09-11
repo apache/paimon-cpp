@@ -60,7 +60,7 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     std::shared_ptr<MemoryPool> memory_pool;
     /// Table mode implemented by the store.
     RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
-    /// Statistics collected by append-only stores.
+    /// Statistics collected by the store for query pruning.
     StatisticsMode statistics_mode = StatisticsMode::NONE;
 };
 
@@ -78,6 +78,18 @@ struct PAIMON_EXPORT RealtimeWriteBatch {
     std::unique_ptr<RecordBatch> batch;
     /// Left-closed, right-open offset envelope covered by `batch`.
     OffsetRange offset_range;
+};
+
+/// Current memory and row counts tracked by a `RealtimeStore`.
+///
+/// Row counts are physical stored rows. For primary-key stores they include old versions and
+/// delete records, rather than the rows visible after merge-on-read. A segment removed by
+/// `AdvanceCommittedOffset` is no longer included, even if an older read view still pins it.
+struct PAIMON_EXPORT RealtimeStoreDataUsage {
+    uint64_t building_memory_bytes = 0;
+    uint64_t sealed_memory_bytes = 0;
+    uint64_t building_row_count = 0;
+    uint64_t sealed_row_count = 0;
 };
 
 /// Opaque handle to an immutable segment returned by `RealtimeStore::SealForCommit`.
@@ -173,6 +185,9 @@ class PAIMON_EXPORT RealtimeStore {
     /// An implementation may reclaim covered segments immediately, defer destruction, spill them,
     /// or retain them. Existing read views continue to keep referenced resources alive.
     virtual Status AdvanceCommittedOffset(int64_t committed_end_offset) = 0;
+
+    /// Returns one consistent snapshot of current building and sealed data usage.
+    virtual RealtimeStoreDataUsage GetDataUsage() const = 0;
 
     /// Returns the number of bytes currently retained by building and sealed segments.
     virtual uint64_t GetMemoryUsage() const = 0;

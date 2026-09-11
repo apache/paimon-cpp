@@ -19,6 +19,8 @@
 
 #include "paimon/core/table/source/key_value_table_read.h"
 
+#include <map>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -46,6 +48,7 @@
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -104,7 +107,20 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
     auto c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_read_schema, c_schema.get()));
     ScopeGuard schema_guard([schema = c_schema.get()]() { ArrowSchemaRelease(schema); });
-    RealtimeQueryContext query_context{c_schema.get(), /*predicate=*/nullptr};
+    std::map<std::string, int32_t> primary_key_name_to_index;
+    for (const std::shared_ptr<arrow::Field>& key_field : key_schema->fields()) {
+        int32_t field_index = store_read_schema->GetFieldIndex(key_field->name());
+        if (field_index < 0) {
+            return Status::Invalid(
+                "primary key field is missing from real-time store read schema: ",
+                key_field->name());
+        }
+        primary_key_name_to_index.emplace(key_field->name(), field_index);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> primary_key_predicate,
+                           PredicateUtils::CreatePickedFieldFilter(context->GetPredicate(),
+                                                                   primary_key_name_to_index));
+    RealtimeQueryContext query_context{c_schema.get(), std::move(primary_key_predicate)};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> batch_readers,
                            memory.store->CreateQueryReaders(memory.read_view, query_context));
     PAIMON_ASSIGN_OR_RAISE(
