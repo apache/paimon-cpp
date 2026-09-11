@@ -20,6 +20,7 @@
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 
 #include <cassert>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -45,7 +46,8 @@
 namespace paimon {
 
 Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
-    std::unique_ptr<FileBatchReader> inner, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    std::unique_ptr<FileBatchReader> inner, const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+    ProbeValidation validation) {
     if (arrow_pool == nullptr) {
         return Status::Invalid("arrow pool could not be nullptr.");
     }
@@ -53,8 +55,9 @@ Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileB
         return Status::Invalid("inner could not be nullptr.");
     }
     auto* prefetch_inner = dynamic_cast<PrefetchFileBatchReader*>(inner.get());
-    auto reader = std::unique_ptr<LateMaterializingFileBatchReader>(
-        new LateMaterializingFileBatchReader(std::move(inner), prefetch_inner, arrow_pool));
+    auto reader =
+        std::unique_ptr<LateMaterializingFileBatchReader>(new LateMaterializingFileBatchReader(
+            std::move(inner), prefetch_inner, arrow_pool, std::move(validation)));
     return reader;
 }
 
@@ -62,11 +65,23 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch()
     if (state_ == kInit) {
         // SetReadSchema has not been called: read with the file schema, matching the
         // FileBatchReader contract for schema-less reads.
-        state_ = kNoLatMat;
+        if (validation_.validate) {
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ArrowSchema> schema, inner_->GetFileSchema());
+            PAIMON_RETURN_NOT_OK(SetReadSchema(schema.get(), nullptr, std::nullopt));
+        } else {
+            state_ = kNoLatMat;
+        }
     }
     if (state_ == kProbing) {
         PAIMON_RETURN_NOT_OK(ReadAndFilterProbeData());
-        if (matched_bitmap_.IsEmpty()) {
+        if (!row_ids_fit_) {
+            // File-level selection is limited to uint32_t. Reread full rows and filter each
+            // batch locally, preserving uint64_t physical row IDs without truncation.
+            matched_bitmap_ = RoaringBitmap32();
+            PAIMON_ASSIGN_OR_RAISE(full_filter_, BindFilter(full_schema_));
+            PAIMON_RETURN_NOT_OK(SetInnerReadSchema(full_schema_, nullptr, std::nullopt));
+            state_ = kFiltering;
+        } else if (matched_bitmap_.IsEmpty()) {
             state_ = kEOF;
         } else {
             // payload pass reads only the matched rows (matched_bitmap_ is non-empty here).
@@ -80,6 +95,8 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch()
         return inner_->NextBatch();
     } else if (state_ == kRunning) {
         return ReadPayloadBatch();
+    } else if (state_ == kFiltering) {
+        return ReadFilteredBatch();
     } else if (state_ == kEOF) {
         return MakeEofBatch();
     }
@@ -90,8 +107,12 @@ Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
     const std::shared_ptr<arrow::Array>& array,
     const std::shared_ptr<PredicateFilter>& bound_filter) {
     // TODO(zhouhonfeng.zhf): use arrow::compute::Filter instead of PredicateFilter
-    PAIMON_ASSIGN_OR_RAISE(std::vector<char> results,
-                           bound_filter->Test(*array, arrow_pool_.get()));
+    std::vector<char> results;
+    if (bound_filter) {
+        PAIMON_ASSIGN_OR_RAISE(results, bound_filter->Test(*array, arrow_pool_.get()));
+    } else {
+        results.assign(array->length(), 1);
+    }
     if (results.size() != static_cast<size_t>(array->length())) {
         return Status::Invalid(
             fmt::format("predicate result size {} does not match probe batch length {}",
@@ -106,11 +127,18 @@ Result<RoaringBitmap32> LateMaterializingFileBatchReader::FilterProbeBatch(
         // map batch offset to file row id
         PAIMON_ASSIGN_OR_RAISE(uint64_t file_row,
                                inner_->GetPreviousBatchFileRowId(static_cast<uint64_t>(i)));
-        if (selection_ && !selection_->Contains(static_cast<int32_t>(file_row))) {
+        const bool fits = file_row <= std::numeric_limits<uint32_t>::max();
+        if (selection_ && (!fits || !selection_->Contains(static_cast<uint32_t>(file_row)))) {
             continue;
         }
         batch_matched.Add(static_cast<uint32_t>(i));
-        matched_bitmap_.Add(file_row);
+        if (state_ == kProbing) {
+            if (fits) {
+                matched_bitmap_.Add(static_cast<uint32_t>(file_row));
+            } else {
+                row_ids_fit_ = false;
+            }
+        }
     }
     return batch_matched;
 }
@@ -127,8 +155,15 @@ Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
         auto& [c_array, c_schema] = batch;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           arrow::ImportArray(c_array.get(), c_schema.get()));
+        if (validation_.validate) {
+            PAIMON_RETURN_NOT_OK(validation_.validate(array));
+        }
         PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 batch_matched,
                                FilterProbeBatch(array, probe_filter_));
+        if (!row_ids_fit_) {
+            probe_arrays.clear();
+            continue;
+        }
         // Compact each probe batch down to its matched rows so probe_data_ aligns row-for-row
         // (ascending file order) with matched_bitmap_ and the later payload output.
         if (!batch_matched.IsEmpty()) {
@@ -139,6 +174,9 @@ Status LateMaterializingFileBatchReader::ReadAndFilterProbeData() {
         }
     }
 
+    if (!row_ids_fit_) {
+        return Status::OK();
+    }
     std::shared_ptr<arrow::Array> probe_array;
     if (probe_arrays.empty()) {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
@@ -179,7 +217,8 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
         for (auto it = bitmap.Begin(); it != bitmap.End(); ++it) {
             auto offset = static_cast<uint64_t>(*it);
             PAIMON_ASSIGN_OR_RAISE(uint64_t file_row, inner_->GetPreviousBatchFileRowId(offset));
-            if (!matched_bitmap_.Contains(file_row)) {
+            if (file_row > std::numeric_limits<uint32_t>::max() ||
+                !matched_bitmap_.Contains(static_cast<uint32_t>(file_row))) {
                 continue;
             }
             valid.Add(static_cast<uint32_t>(offset));
@@ -211,6 +250,56 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadPayload
                                AssembleFullBatch(payload_compacted, probe_selected));
         return assembled;
     }
+}
+
+Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::ReadFilteredBatch() {
+    row_mapping_.clear();
+    while (true) {
+        PAIMON_ASSIGN_OR_RAISE(FileBatchReader::ReadBatch batch, inner_->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            return MakeEofBatch();
+        }
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> array,
+            arrow::ImportArray(batch.first.get(), batch.second.get()));
+        if (validation_.validate) {
+            PAIMON_RETURN_NOT_OK(validation_.validate(array));
+        }
+        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 valid, FilterProbeBatch(array, full_filter_));
+        if (valid.IsEmpty()) {
+            continue;
+        }
+        for (auto it = valid.Begin(); it != valid.End(); ++it) {
+            PAIMON_ASSIGN_OR_RAISE(uint64_t file_row,
+                                   inner_->GetPreviousBatchFileRowId(static_cast<uint32_t>(*it)));
+            row_mapping_.push_back(file_row);
+        }
+        PAIMON_ASSIGN_OR_RAISE(arrow::ArrayVector slices,
+                               ReaderUtils::GenerateFilteredArrayVector(array, valid));
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> compacted,
+                                          arrow::Concatenate(slices, arrow_pool_.get()));
+        return AssembleFullBatch(compacted, compacted);
+    }
+}
+
+Result<std::shared_ptr<PredicateFilter>> LateMaterializingFileBatchReader::BindFilter(
+    const std::shared_ptr<arrow::Schema>& schema) const {
+    if (!predicate_) {
+        return std::shared_ptr<PredicateFilter>();
+    }
+    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+        *schema, predicate_, /*validate_field_idx=*/false));
+    std::map<std::string, int32_t> name_to_idx;
+    for (int32_t i = 0; i < schema->num_fields(); ++i) {
+        name_to_idx.emplace(schema->field(i)->name(), i);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> bound_predicate,
+                           PredicateUtils::CreatePickedFieldFilter(predicate_, name_to_idx));
+    auto filter = std::dynamic_pointer_cast<PredicateFilter>(bound_predicate);
+    if (!filter) {
+        return Status::Invalid("failed to bind predicate to read schema");
+    }
+    return filter;
 }
 
 Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::AssembleFullBatch(
@@ -258,9 +347,15 @@ Status LateMaterializingFileBatchReader::SetReadSchema(
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(full_schema_, arrow::ImportSchema(read_schema));
     predicate_ = predicate;
     selection_ = selection_bitmap;
+    for (const auto& name : validation_.field_names) {
+        if (!full_schema_->GetFieldByName(name)) {
+            return Status::Invalid("validation field missing or ambiguous in read schema: ", name);
+        }
+    }
     if (predicate_ != nullptr) {
         std::set<std::string> probe_names;
         PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate_, &probe_names));
+        probe_names.insert(validation_.field_names.begin(), validation_.field_names.end());
         arrow::FieldVector probe_fields;
         arrow::FieldVector payload_fields;
         for (const auto& field : full_schema_->fields()) {
@@ -274,27 +369,23 @@ Status LateMaterializingFileBatchReader::SetReadSchema(
         if (!probe_fields.empty() && !payload_fields.empty()) {
             probe_schema_ = arrow::schema(probe_fields, full_schema_->metadata());
             payload_schema_ = arrow::schema(payload_fields, full_schema_->metadata());
-            PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-                *probe_schema_, predicate_, /*validate_field_idx=*/false));
-            std::map<std::string, int32_t> name_to_idx;
-            for (int32_t i = 0; i < probe_schema_->num_fields(); ++i) {
-                name_to_idx.emplace(probe_schema_->field(i)->name(), i);
-            }
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<Predicate> bound_predicate,
-                PredicateUtils::CreatePickedFieldFilter(predicate_, name_to_idx));
-            probe_filter_ = std::dynamic_pointer_cast<PredicateFilter>(bound_predicate);
-            if (!probe_filter_) {
-                return Status::Invalid("failed to bind predicate to probe schema");
-            }
+            PAIMON_ASSIGN_OR_RAISE(probe_filter_, BindFilter(probe_schema_));
         }
     }
 
     if (predicate_ == nullptr || probe_schema_ == nullptr) {
-        PAIMON_RETURN_NOT_OK(SetInnerReadSchema(full_schema_, predicate_, selection_));
-        state_ = kNoLatMat;
+        if (validation_.validate) {
+            PAIMON_ASSIGN_OR_RAISE(full_filter_, BindFilter(full_schema_));
+            PAIMON_RETURN_NOT_OK(SetInnerReadSchema(full_schema_, nullptr, std::nullopt));
+            state_ = kFiltering;
+        } else {
+            PAIMON_RETURN_NOT_OK(SetInnerReadSchema(full_schema_, predicate_, selection_));
+            state_ = kNoLatMat;
+        }
     } else {
-        PAIMON_RETURN_NOT_OK(SetInnerReadSchema(probe_schema_, predicate_, selection_));
+        PAIMON_RETURN_NOT_OK(SetInnerReadSchema(probe_schema_,
+                                                validation_.validate ? nullptr : predicate_,
+                                                validation_.validate ? std::nullopt : selection_));
         state_ = kProbing;
     }
     return Status::OK();
@@ -358,6 +449,8 @@ void LateMaterializingFileBatchReader::Reset() {
     payload_schema_.reset();
     full_schema_.reset();
     probe_filter_.reset();
+    full_filter_.reset();
+    row_ids_fit_ = true;
     predicate_.reset();
     selection_.reset();
     probe_cursor_ = 0;

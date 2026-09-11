@@ -222,12 +222,186 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
     std::shared_ptr<arrow::DataType> full_type_;
 };
 
+namespace {
+
+class ProbeTestReader : public MockFileBatchReader {
+ public:
+    using MockFileBatchReader::MockFileBatchReader;
+
+    Status SetReadSchema(ArrowSchema* schema, const std::shared_ptr<Predicate>& predicate,
+                         const std::optional<RoaringBitmap32>& selection) override {
+        predicates.push_back(predicate != nullptr);
+        selections.push_back(selection.has_value());
+        return MockFileBatchReader::SetReadSchema(schema, predicate, selection);
+    }
+
+    Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override {
+        PAIMON_ASSIGN_OR_RAISE(uint64_t row,
+                               MockFileBatchReader::GetPreviousBatchFileRowId(batch_row_id));
+        return row + row_offset;
+    }
+
+    uint64_t row_offset = 0;
+    std::vector<bool> predicates;
+    std::vector<bool> selections;
+};
+
+}  // namespace
+
+TEST_F(LateMaterializingFileBatchReaderTest, ValidatesAdditionalFieldsBeforeFilteringAndOnReset) {
+    auto data = BuildMultiFieldData(6);
+    auto mock = std::make_unique<ProbeTestReader>(data, data->type(), 2);
+    auto* observed = mock.get();
+    bool reject = false;
+    std::vector<int64_t> validated;
+    LateMaterializingFileBatchReader::ProbeValidation validation;
+    validation.field_names = {"c"};
+    validation.validate = [&](const std::shared_ptr<arrow::Array>& array) -> Status {
+        auto rows = checked_pointer_cast<arrow::StructArray>(array);
+        auto values = rows->GetFieldByName("c");
+        if (!values || values->type_id() != arrow::Type::INT64) {
+            return Status::Invalid("missing validation column");
+        }
+        auto c = checked_pointer_cast<arrow::Int64Array>(values);
+        for (int64_t i = 0; i < c->length(); ++i) {
+            validated.push_back(c->Value(i));
+            if (reject && c->Value(i) == 0) {
+                return Status::Invalid("invalid unselected row");
+            }
+        }
+        return Status::OK();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                         LateMaterializingFileBatchReader::Create(
+                             std::move(mock), GetArrowPool(pool_), std::move(validation)));
+    auto schema = arrow::schema(data->type()->fields());
+    auto predicate = PredicateBuilder::Equal(0, "a", FieldType::BIGINT, Literal(int64_t{2}));
+    RoaringBitmap32 selection;
+    selection.Add(2);
+    ASSERT_OK(SetReadSchema(reader.get(), schema, predicate, selection));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> result, CollectStruct(reader.get()));
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->Equals(data->Slice(2, 1)));
+    ASSERT_EQ(validated, std::vector<int64_t>({0, 100, 200, 300, 400, 500}));
+    ASSERT_EQ(observed->predicates, std::vector<bool>({false, false}));
+    ASSERT_EQ(observed->selections, std::vector<bool>({false, true}));
+
+    reject = true;
+    ASSERT_OK(SetReadSchema(reader.get(), schema, predicate, selection));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "invalid unselected row");
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, ValidatesWithoutPayloadOrPredicate) {
+    auto data = BuildData({0, 1, 2, 3, 4});
+    for (bool with_predicate : {false, true}) {
+        SCOPED_TRACE(with_predicate);
+        int64_t validated = 0;
+        auto mock = std::make_unique<ProbeTestReader>(data, full_type_, 2);
+        auto* observed = mock.get();
+        LateMaterializingFileBatchReader::ProbeValidation validation;
+        validation.field_names = {"v"};
+        validation.validate = [&](const std::shared_ptr<arrow::Array>& array) -> Status {
+            validated += array->length();
+            return Status::OK();
+        };
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                             LateMaterializingFileBatchReader::Create(
+                                 std::move(mock), GetArrowPool(pool_), std::move(validation)));
+        auto predicate = with_predicate ? PredicateBuilder::GreaterThan(0, "k", FieldType::BIGINT,
+                                                                        Literal(int64_t{2}))
+                                        : nullptr;
+        RoaringBitmap32 selection;
+        selection.Add(3);
+        ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, selection));
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+        ASSERT_EQ(rows.size(), 1);
+        ASSERT_EQ(rows[0].k, 3);
+        ASSERT_EQ(rows[0].v, "v_3");
+        ASSERT_EQ(rows[0].file_row, 3);
+        ASSERT_EQ(validated, 5);
+        ASSERT_EQ(observed->predicates, std::vector<bool>({false}));
+        ASSERT_EQ(observed->selections, std::vector<bool>({false}));
+        ASSERT_NOK_WITH_MSG(
+            SetReadSchema(reader.get(), arrow::schema({k_field_}), predicate, std::nullopt),
+            "validation field missing");
+    }
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, ValidatesWithoutReadSchema) {
+    auto data = BuildData({0, 1, 2});
+    auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, 2);
+    int64_t validated = 0;
+    LateMaterializingFileBatchReader::ProbeValidation validation;
+    validation.field_names = {"v"};
+    validation.validate = [&](const std::shared_ptr<arrow::Array>& array) -> Status {
+        validated += array->length();
+        return Status::OK();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                         LateMaterializingFileBatchReader::Create(
+                             std::move(mock), GetArrowPool(pool_), std::move(validation)));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+    ASSERT_EQ(rows.size(), 3);
+    ASSERT_EQ(validated, 3);
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, ValidatesRemainingRowsAfterRowIdOverflow) {
+    auto data = BuildData({1, 0, 2});
+    auto mock = std::make_unique<ProbeTestReader>(data, full_type_, 1);
+    mock->row_offset = uint64_t{1} << 32;
+    LateMaterializingFileBatchReader::ProbeValidation validation;
+    validation.field_names = {"k"};
+    validation.validate = [](const std::shared_ptr<arrow::Array>& array) -> Status {
+        auto rows = checked_pointer_cast<arrow::StructArray>(array);
+        auto k = checked_pointer_cast<arrow::Int64Array>(rows->GetFieldByName("k"));
+        if (k->Value(0) == 2) {
+            return Status::Invalid("invalid row after overflow");
+        }
+        return Status::OK();
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                         LateMaterializingFileBatchReader::Create(
+                             std::move(mock), GetArrowPool(pool_), std::move(validation)));
+    auto predicate = PredicateBuilder::Equal(0, "k", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "invalid row after overflow");
+}
+
+TEST_F(LateMaterializingFileBatchReaderTest, FallsBackForLargePhysicalRowIds) {
+    auto data = BuildData({0, 1, 0, 1});
+    auto mock = std::make_unique<ProbeTestReader>(data, full_type_, 2);
+    const uint64_t boundary = std::numeric_limits<uint32_t>::max();
+    mock->row_offset = boundary - 1;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<LateMaterializingFileBatchReader> reader,
+                         LateMaterializingFileBatchReader::Create(
+                             std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
+    auto predicate = PredicateBuilder::Equal(0, "k", FieldType::BIGINT, Literal(int64_t{1}));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
+    for (int32_t pass = 0; pass < 2; ++pass) {
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+        ASSERT_EQ(rows.size(), 2);
+        ASSERT_EQ(rows[0].v, "v_1");
+        ASSERT_EQ(rows[0].file_row, boundary);
+        ASSERT_EQ(rows[1].v, "v_3");
+        ASSERT_EQ(rows[1].file_row, boundary + 2);
+        ASSERT_OK(reader->SeekToRow(0));
+    }
+    // Row 2^32 + 1 must not alias selected row 1, even when the payload is a superset.
+    RoaringBitmap32 selection;
+    selection.Add(1);
+    selection.Add(static_cast<uint32_t>(boundary));
+    ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, selection));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, Collect(reader.get()));
+    ASSERT_EQ(rows.size(), 1);
+    ASSERT_EQ(rows[0].file_row, boundary);
+}
+
 // No predicate: the reader must pass through the inner reader unchanged (all rows, all columns).
 TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenNoPredicate) {
     auto data = BuildData({0, 1, 2, 3, 4});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), /*predicate=*/nullptr,
                             std::nullopt));
 
@@ -246,7 +420,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, PassThroughWhenPayloadEmpty) {
     auto data = BuildData({0, 1, 2, 3, 4});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     // read schema is just {k}; the predicate on k covers all columns -> payload empty
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
                                                       FieldType::BIGINT, Literal(0l));
@@ -267,7 +441,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ContiguousSubsetAcrossBatches) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
                                                    FieldType::BIGINT, Literal(4l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
@@ -292,7 +466,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ScatteredAlternatingMatch) {
     auto data = BuildData(ks);
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k",
                                              FieldType::BIGINT, Literal(1l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
@@ -316,7 +490,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, MatchedIntersectsSelection) {
     auto data = BuildData(ks);
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/4);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k",
                                              FieldType::BIGINT, Literal(1l));
     // predicate hits {1,3,5,7,9,11}; selection keeps only {1,5,9}
@@ -342,7 +516,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, EmptyMatchReturnsEof) {
     auto data = BuildData({0, 1, 2, 3, 4});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
                                                    FieldType::BIGINT, Literal(100l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
@@ -356,7 +530,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, SeekToRowRealignsProbeCursor) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/4);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
                                                       FieldType::BIGINT, Literal(5l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
@@ -385,7 +559,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReadRangesForwardedAcrossPhases) {
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/4);
     auto* mock_ptr = mock.get();
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     auto predicate = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k",
                                                       FieldType::BIGINT, Literal(2l));
     ASSERT_OK(SetReadSchema(reader.get(), arrow::schema(full_fields_), predicate, std::nullopt));
@@ -414,7 +588,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ReentrantSetReadSchema) {
     auto data = BuildData({0, 1, 2, 3, 4, 5, 6, 7, 8, 9});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
 
     auto predicate1 = PredicateBuilder::GreaterThan(/*field_index=*/0, /*field_name=*/"k",
                                                     FieldType::BIGINT, Literal(7l));
@@ -445,7 +619,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, ForwardsRowCountAndFileSchema) {
     auto data = BuildData({0, 1, 2, 3});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
 
     ASSERT_OK_AND_ASSIGN(uint64_t num_rows, reader->GetNumberOfRows());
     EXPECT_EQ(num_rows, 4u);
@@ -462,7 +636,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, MultiFieldPreservesColumnOrder) {
     auto type = data->type();
     auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     // probe columns = {a (idx0), c (idx2)}; payload columns = {b, d, e}
     auto pred_a =
         PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "a", FieldType::BIGINT, Literal(3l));
@@ -506,7 +680,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, NestedPayloadColumn) {
     auto type = data->type();
     auto mock = std::make_unique<MockFileBatchReader>(data, type, /*batch_size=*/3);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     // probe = {k}; payload = {arr (list<int64>), tag}
     auto predicate =
         PredicateBuilder::GreaterOrEqual(/*field_index=*/0, "k", FieldType::BIGINT, Literal(5l));
@@ -675,7 +849,7 @@ TEST_F(LateMaterializingFileBatchReaderTest, FailsOnPredicateTypeMismatch) {
     auto data = BuildData({0, 1, 2, 3, 4});
     auto mock = std::make_unique<MockFileBatchReader>(data, full_type_, /*batch_size=*/2);
     ASSERT_OK_AND_ASSIGN(auto reader, LateMaterializingFileBatchReader::Create(
-                                          std::move(mock), GetArrowPool(pool_)));
+                                          std::move(mock), GetArrowPool(pool_), /*validation=*/{}));
     // k is int64 in the schema, but the predicate claims FieldType::INT (int32).
     auto predicate =
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k", FieldType::INT, Literal(10));

@@ -63,7 +63,8 @@ class AvroFileBatchReader : public FileBatchReader {
                 fmt::format("batch_row_id {} is out of range, last batch row count is {}",
                             batch_row_id, previous_batch_row_count_));
         }
-        return previous_first_row_ + batch_row_id;
+        return selection_bitmap_ ? previous_row_ids_[batch_row_id]
+                                 : previous_first_row_ + batch_row_id;
     }
 
     Result<uint64_t> GetNumberOfRows() const override;
@@ -77,10 +78,13 @@ class AvroFileBatchReader : public FileBatchReader {
     }
 
     bool SupportPreciseBitmapSelection() const override {
-        return false;
+        return true;
     }
 
  private:
+    // Fill one batch, applying bitmap selection and tracking physical row IDs and block boundaries.
+    Status ReadRowsIntoBuilder();
+
     void DoClose();
 
     static Result<std::unique_ptr<::avro::DataFileReaderBase>> CreateDataFileReader(
@@ -105,6 +109,17 @@ class AvroFileBatchReader : public FileBatchReader {
     std::unique_ptr<::avro::DataFileReaderBase> reader_;
     std::unique_ptr<arrow::ArrayBuilder> array_builder_;
     std::optional<std::set<size_t>> read_fields_projection_;
+    std::optional<RoaringBitmap32> selection_bitmap_;
+    // Reuse block boundaries discovered by a complete sequential pass over this reader's file.
+    // The index is local to the reader and bounded; oversized files retain sequential selection.
+    static constexpr size_t kMaxIndexedBlocks = 64 * 1024;
+    std::vector<std::pair<uint64_t, int64_t>> block_index_;
+    bool block_index_complete_ = false;
+    bool block_index_disabled_ = false;
+    std::optional<RoaringBitmap32::Iterator> selection_iterator_;
+    std::optional<RoaringBitmap32::Iterator> selection_end_;
+    size_t selected_block_ = 0;
+    std::vector<uint64_t> previous_row_ids_;
     uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
     uint64_t next_row_to_read_ = std::numeric_limits<uint64_t>::max();
     uint64_t previous_batch_row_count_ = 0;

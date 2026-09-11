@@ -22,10 +22,13 @@
 #include <limits>
 #include <utility>
 
+#include "arrow/array/array_primitive.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "paimon/common/data/columnar/columnar_row.h"
+#include "paimon/common/reader/late_materializing_file_batch_reader.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
@@ -38,6 +41,7 @@
 #include "paimon/format/file_format.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/format/writer_builder.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/status.h"
 
 namespace arrow {
@@ -90,23 +94,104 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
 }
 
 Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
-                                       std::vector<ManifestEntry>* entries) const {
+                                       std::vector<ManifestEntry>* entries,
+                                       const std::optional<int32_t>& expected_total_buckets) const {
+    // Readers without an in-memory selective probe still filter aligned Arrow columns
+    // before constructing ManifestEntry and DataFileMeta objects.
     return ReadArrowBatches(
         file_name,
-        [this, bucket, entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
-            const arrow::ArrayVector& fields = batch->fields();
-            ColumnarRow row(fields, pool_, /*row_id=*/0);
-            for (int64_t i = 0; i < batch->length(); i++) {
+        [this, bucket, expected_total_buckets,
+         entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+            ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
+            for (int64_t i = 0; i < batch->length(); ++i) {
                 row.SetRowId(i);
                 PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(row.GetInt(0)));
-                if (ManifestEntrySerializer::GetBucket(row) != bucket) {
+                // Different or unknown bucket counts must reach the compatibility checks.
+                const bool historical_layout =
+                    expected_total_buckets && (row.IsNullAt(3) || row.IsNullAt(4) ||
+                                               row.GetInt(4) != expected_total_buckets.value());
+                if (!historical_layout && ManifestEntrySerializer::GetBucket(row) != bucket) {
                     continue;
                 }
                 PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
                 entries->push_back(std::move(entry));
             }
             return Status::OK();
+        },
+        [this, bucket, expected_total_buckets](std::unique_ptr<FileBatchReader>* reader) {
+            return PrepareBucketRead(reader, bucket, expected_total_buckets);
         });
+}
+
+Status ManifestFile::PrepareBucketRead(std::unique_ptr<FileBatchReader>* reader, int32_t bucket,
+                                       const std::optional<int32_t>& expected_total_buckets) const {
+    if (!(*reader)->SupportPreciseBitmapSelection()) {
+        return Status::OK();
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ArrowSchema> c_schema, (*reader)->GetFileSchema());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_schema,
+                                      arrow::ImportSchema(c_schema.get()));
+    const auto& target_type = serializer_->GetDataType();
+    const std::string& version_name = target_type->field(0)->name();
+    const std::string& bucket_name = target_type->field(3)->name();
+    auto version_field = file_schema->GetFieldByName(version_name);
+    auto bucket_field = file_schema->GetFieldByName(bucket_name);
+    if (!version_field || !bucket_field || version_field->type()->id() != arrow::Type::INT32 ||
+        bucket_field->type()->id() != arrow::Type::INT32) {
+        return Status::OK();
+    }
+    if (expected_total_buckets) {
+        auto total_field = file_schema->GetFieldByName("_TOTAL_BUCKETS");
+        if (!total_field || total_field->type()->id() != arrow::Type::INT32) {
+            return Status::OK();
+        }
+    }
+    std::shared_ptr<Predicate> selector = PredicateBuilder::Equal(
+        file_schema->GetFieldIndex(bucket_name), bucket_name, FieldType::INT, Literal(bucket));
+    if (expected_total_buckets) {
+        const std::string total_name = "_TOTAL_BUCKETS";
+        const int32_t total_index = file_schema->GetFieldIndex(total_name);
+        PAIMON_ASSIGN_OR_RAISE(
+            selector,
+            PredicateBuilder::Or(
+                {selector, PredicateBuilder::IsNull(total_index, total_name, FieldType::INT),
+                 PredicateBuilder::NotEqual(total_index, total_name, FieldType::INT,
+                                            Literal(expected_total_buckets.value()))}));
+    }
+    LateMaterializingFileBatchReader::ProbeValidation validation;
+    validation.field_names = {version_name};
+    validation.validate = [version_name,
+                           bucket_name](const std::shared_ptr<arrow::Array>& array) -> Status {
+        if (!array || array->type_id() != arrow::Type::STRUCT) {
+            return Status::Invalid("Manifest bucket probe must return a struct array");
+        }
+        auto rows = checked_pointer_cast<arrow::StructArray>(array);
+        auto version_array = rows->GetFieldByName(version_name);
+        auto bucket_array = rows->GetFieldByName(bucket_name);
+        if (!version_array || !bucket_array || version_array->type_id() != arrow::Type::INT32 ||
+            bucket_array->type_id() != arrow::Type::INT32) {
+            return Status::Invalid("Manifest bucket probe must return int32 version and bucket");
+        }
+        auto versions = checked_pointer_cast<arrow::Int32Array>(version_array);
+        auto buckets = checked_pointer_cast<arrow::Int32Array>(bucket_array);
+        for (int64_t i = 0; i < rows->length(); ++i) {
+            if (rows->IsNull(i) || versions->IsNull(i) || buckets->IsNull(i)) {
+                return Status::Invalid("Manifest version and bucket must not be null");
+            }
+            // Validate every entry, including buckets not selected by this scan.
+            PAIMON_RETURN_NOT_OK(ManifestEntrySerializer::ValidateVersion(versions->Value(i)));
+        }
+        return Status::OK();
+    };
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<LateMaterializingFileBatchReader> selective_reader,
+                           LateMaterializingFileBatchReader::Create(std::move(*reader), arrow_pool_,
+                                                                    std::move(validation)));
+    // Keep the on-disk schema; ManifestMetaReader still performs schema evolution afterwards.
+    ArrowSchema full_c_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*file_schema, &full_c_schema));
+    PAIMON_RETURN_NOT_OK(selective_reader->SetReadSchema(&full_c_schema, selector, std::nullopt));
+    *reader = std::move(selective_reader);
+    return Status::OK();
 }
 
 Result<std::vector<ManifestFileMeta>> ManifestFile::Write(

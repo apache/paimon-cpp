@@ -23,7 +23,9 @@
 #include <arrow/c/abi.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -38,12 +40,22 @@ class PredicateFilter;
 // For convenience, we abbreviate `Later Materializing` as `LatMat`.
 // This reader is installed below the prefetch layer (see
 // AbstractSplitRead::CreateFileBatchReader) and performs probe/payload two-phase reads when a
-// predicate is pushed down through SetReadSchema; without a predicate it is a plain passthrough.
+// predicate is pushed down through SetReadSchema. Without a predicate or validation it is a
+// plain passthrough.
 class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
  public:
+    struct ProbeValidation {
+        // Additional top-level fields needed by validate, included in the probe projection.
+        std::vector<std::string> field_names;
+        // Runs before filtering. When set, the probe receives neither a pushed-down predicate
+        // nor a selection bitmap, so validation sees every row. May also receive full batches
+        // when reading without a payload projection or falling back from oversized row IDs.
+        std::function<Status(const std::shared_ptr<arrow::Array>&)> validate;
+    };
+
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
         std::unique_ptr<FileBatchReader> inner,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, ProbeValidation validation);
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
 
@@ -104,19 +116,22 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
  private:
     LateMaterializingFileBatchReader(std::unique_ptr<FileBatchReader> inner,
                                      PrefetchFileBatchReader* prefetch_inner,
-                                     std::shared_ptr<arrow::MemoryPool> arrow_pool)
+                                     std::shared_ptr<arrow::MemoryPool> arrow_pool,
+                                     ProbeValidation validation)
         : inner_(std::move(inner)),
           prefetch_inner_(prefetch_inner),
-          arrow_pool_(std::move(arrow_pool)) {}
+          arrow_pool_(std::move(arrow_pool)),
+          validation_(std::move(validation)) {}
 
     /// Reset the state of the late materializing reader, does not close inner reader.
     void Reset();
 
     enum LatMatState {
         kInit,
-        kProbing,   // schema is set, probing is in progress
-        kNoLatMat,  // no need to late materialization
-        kRunning,   // Lat-mat is enabled and the payload reader is reading data
+        kProbing,    // schema is set, probing is in progress
+        kNoLatMat,   // no need to late materialization
+        kRunning,    // Lat-mat is enabled and the payload reader is reading data
+        kFiltering,  // full-schema filtering without a file-level bitmap
         kEOF
     };
 
@@ -130,6 +145,11 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
 
     /// Read one payload batch with bitmap (matched rows only)
     Result<FileBatchReader::ReadBatch> ReadPayloadBatch();
+
+    Result<FileBatchReader::ReadBatch> ReadFilteredBatch();
+
+    Result<std::shared_ptr<PredicateFilter>> BindFilter(
+        const std::shared_ptr<arrow::Schema>& schema) const;
 
     /// Combine the compacted payload columns and the selected probe columns into a single struct
     /// array following full_schema_'s field order.
@@ -163,6 +183,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     /// inner_ is never reassigned, so the cast is resolved once in Create().
     PrefetchFileBatchReader* prefetch_inner_ = nullptr;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    const ProbeValidation validation_;
     LatMatState state_ = kInit;
     std::shared_ptr<arrow::Schema> full_schema_;
     // projection holding only the predicate fields; nullptr when probing is not applicable
@@ -172,10 +193,12 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     std::shared_ptr<Predicate> predicate_;
     // predicate bound to probe_schema_'s field indices; null when probing is not applicable
     std::shared_ptr<PredicateFilter> probe_filter_;
+    std::shared_ptr<PredicateFilter> full_filter_;
     std::optional<RoaringBitmap32> selection_;
     // the probe_data_ is sliced and compacted with the matched_bitmap_
     std::shared_ptr<arrow::StructArray> probe_data_;
     RoaringBitmap32 matched_bitmap_;
+    bool row_ids_fit_ = true;
     // read cursor into probe_data_ for the payload phase
     int64_t probe_cursor_ = 0;
     // to support GetPreviousBatchFileRowId
