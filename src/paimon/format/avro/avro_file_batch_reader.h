@@ -82,6 +82,9 @@ class AvroFileBatchReader : public FileBatchReader {
     }
 
  private:
+    // Fill one batch, applying bitmap selection and tracking physical row IDs and block boundaries.
+    Status ReadRowsIntoBuilder();
+
     void DoClose();
 
     static Result<std::unique_ptr<::avro::DataFileReaderBase>> CreateDataFileReader(
