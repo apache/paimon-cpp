@@ -191,8 +191,9 @@ Result<std::optional<uint64_t>> ReadAheadCache::Impl::AddRanges(std::vector<Byte
                                                                 uint64_t expected_round) {
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<ByteRange> new_ranges,
-        ByteRangeCombiner::CoalesceByteRanges(std::move(ranges), config_.GetHoleSizeLimit(),
-                                              config_.GetLateRangeSizeLimit()));
+        ByteRangeCombiner::CoalesceByteRangesAdaptive(
+            std::move(ranges), config_.GetHoleSizeLimit(), config_.GetLateRangeSizeLimit(),
+            config_.GetRangeSplitAlignment(), config_.GetRangeSplitConcurrency()));
     for (const auto& new_range : new_ranges) {
         PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(new_range.offset, "range offset"));
         PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(new_range.length, "range length"));

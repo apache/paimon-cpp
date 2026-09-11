@@ -59,7 +59,7 @@ class PAIMON_EXPORT CacheConfig {
     }
 
     /// Returns the maximum gap size (in bytes) considered mergeable between
-    /// adjacent ranges. Defaults to 8 KiB.
+    /// adjacent ranges. Defaults to 512 KiB.
     uint64_t GetHoleSizeLimit() const {
         return hole_size_limit_;
     }
@@ -103,6 +103,31 @@ class PAIMON_EXPORT CacheConfig {
         block_cache_limit_ = block_cache_limit;
     }
 
+    /// Returns the alignment (in bytes) the adaptive range size is rounded up to, which is also
+    /// the smallest size a range is cut to. Defaults to 4 MiB.
+    uint64_t GetRangeSplitAlignment() const {
+        return range_split_alignment_;
+    }
+
+    /// Sets the alignment the adaptive range size is rounded up to. Zero turns the adaptive
+    /// sizing off, so the ranges are cut at the configured size limit instead.
+    void SetRangeSplitAlignment(uint64_t range_split_alignment) {
+        range_split_alignment_ = range_split_alignment;
+    }
+
+    /// Returns the number of requests the adaptive range size aims to spread one round of
+    /// registered ranges over. Defaults to 10.
+    uint64_t GetRangeSplitConcurrency() const {
+        return range_split_concurrency_;
+    }
+
+    /// Sets the number of requests the adaptive range size aims to spread one round of ranges
+    /// over. Zero turns the adaptive sizing off, so the ranges are cut at the configured size
+    /// limit instead.
+    void SetRangeSplitConcurrency(uint64_t range_split_concurrency) {
+        range_split_concurrency_ = range_split_concurrency;
+    }
+
  private:
     // The defaults are aligned with the reader's request granularity and with
     // realistic data file sizes:
@@ -117,11 +142,29 @@ class PAIMON_EXPORT CacheConfig {
     //   at Init: those are fetched only just before they are read, and one range
     //   is one request, so they are cut smaller than range_size_limit to be
     //   fetched concurrently rather than in one long request. A read spanning
-    //   several of them is still served, as they are adjacent.
+    //   several of them is still served, as they are adjacent. It is an upper
+    //   bound only: the size such a round is actually cut at is derived from the
+    //   bytes it registers, see range_split_alignment below.
+    // - hole_size_limit trades bytes against requests: coalescing across a gap
+    //   reads the gap too, but saves a request, and on remote storage a request
+    //   costs a round trip whatever its size. The limit is therefore well above
+    //   the page-sized gaps a filtered read leaves between the pages it keeps,
+    //   which would otherwise each cost a request of their own.
     uint64_t range_size_limit_ = 32 * 1024 * 1024;
     uint64_t late_range_size_limit_ = 8 * 1024 * 1024;
-    uint64_t hole_size_limit_ = 8 * 1024;
+    uint64_t hole_size_limit_ = 512 * 1024;
     uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
+    // A fixed size limit cuts a small round into fewer requests than could be
+    // fetched at once, leaving the storage idle while each of them runs. So the
+    // size a round is cut at is derived from the round instead: its bytes are
+    // spread over range_split_concurrency requests, rounded up to
+    // range_split_alignment, and kept within the size limit above. A round
+    // smaller than alignment * concurrency is therefore cut finer than that
+    // limit and fetched in a single wave, while a larger one still stops at it.
+    // The alignment is also the floor, so the derivation never cuts a round into
+    // requests too small to amortize their own round trip.
+    uint64_t range_split_alignment_ = 4 * 1024 * 1024;
+    uint64_t range_split_concurrency_ = 10;
     // Blocks are aligned to the END of the file, so a block never reaches past
     // EOF. 64 KiB is the granularity the reads no prefetched range covers are
     // shared at: small enough that a metadata read at the tail of a file is

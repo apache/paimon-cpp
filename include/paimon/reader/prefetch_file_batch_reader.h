@@ -148,7 +148,7 @@ class PAIMON_EXPORT PrefetchFileBatchReader : public FileBatchReader {
     /// Installs the sink above, or clears it when `sink` is empty. By default a reader has no
     /// late byte ranges to report and ignores the sink.
     /// @param sink The sink to report late byte ranges to.
-    virtual void SetPreBufferSink(PreBufferSink /*sink*/) {}
+    virtual void SetPreBufferSink(PreBufferSink sink) {}
 };
 
 }  // namespace paimon
