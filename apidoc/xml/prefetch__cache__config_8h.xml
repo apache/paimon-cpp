@@ -1,0 +1,164 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="prefetch__cache__config_8h" kind="file" language="C++">
+    <compoundname>prefetch_cache_config.h</compoundname>
+    <includes local="no">cstdint</includes>
+    <includes refid="visibility_8h" local="yes">paimon/visibility.h</includes>
+    <includedby refid="read__context_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/read_context.h</includedby>
+    <incdepgraph>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h</label>
+        <link refid="prefetch__cache__config_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>paimon/visibility.h</label>
+        <link refid="visibility_8h"/>
+      </node>
+      <node id="2">
+        <label>cstdint</label>
+      </node>
+    </incdepgraph>
+    <invincdepgraph>
+      <node id="3">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/api.h</label>
+        <link refid="api_8h"/>
+      </node>
+      <node id="2">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/read_context.h</label>
+        <link refid="read__context_8h"/>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+      </node>
+      <node id="4">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/table_read.h</label>
+        <link refid="table__read_8h"/>
+        <childnode refid="3" relation="include">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h</label>
+        <link refid="prefetch__cache__config_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+      </node>
+    </invincdepgraph>
+    <innerclass refid="classpaimon_1_1_cache_config" prot="public">paimon::CacheConfig</innerclass>
+    <innernamespace refid="namespacepaimon">paimon</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="comment">/*</highlight></codeline>
+<codeline lineno="2"><highlight class="comment"><sp/>*<sp/>Licensed<sp/>to<sp/>the<sp/>Apache<sp/>Software<sp/>Foundation<sp/>(ASF)<sp/>under<sp/>one</highlight></codeline>
+<codeline lineno="3"><highlight class="comment"><sp/>*<sp/>or<sp/>more<sp/>contributor<sp/>license<sp/>agreements.<sp/><sp/>See<sp/>the<sp/>NOTICE<sp/>file</highlight></codeline>
+<codeline lineno="4"><highlight class="comment"><sp/>*<sp/>distributed<sp/>with<sp/>this<sp/>work<sp/>for<sp/>additional<sp/>information</highlight></codeline>
+<codeline lineno="5"><highlight class="comment"><sp/>*<sp/>regarding<sp/>copyright<sp/>ownership.<sp/><sp/>The<sp/>ASF<sp/>licenses<sp/>this<sp/>file</highlight></codeline>
+<codeline lineno="6"><highlight class="comment"><sp/>*<sp/>to<sp/>you<sp/>under<sp/>the<sp/>Apache<sp/>License,<sp/>Version<sp/>2.0<sp/>(the</highlight></codeline>
+<codeline lineno="7"><highlight class="comment"><sp/>*<sp/>&quot;License&quot;);<sp/>you<sp/>may<sp/>not<sp/>use<sp/>this<sp/>file<sp/>except<sp/>in<sp/>compliance</highlight></codeline>
+<codeline lineno="8"><highlight class="comment"><sp/>*<sp/>with<sp/>the<sp/>License.<sp/><sp/>You<sp/>may<sp/>obtain<sp/>a<sp/>copy<sp/>of<sp/>the<sp/>License<sp/>at</highlight></codeline>
+<codeline lineno="9"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="10"><highlight class="comment"><sp/>*<sp/><sp/><sp/>http://www.apache.org/licenses/LICENSE-2.0</highlight></codeline>
+<codeline lineno="11"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="12"><highlight class="comment"><sp/>*<sp/>Unless<sp/>required<sp/>by<sp/>applicable<sp/>law<sp/>or<sp/>agreed<sp/>to<sp/>in<sp/>writing,</highlight></codeline>
+<codeline lineno="13"><highlight class="comment"><sp/>*<sp/>software<sp/>distributed<sp/>under<sp/>the<sp/>License<sp/>is<sp/>distributed<sp/>on<sp/>an</highlight></codeline>
+<codeline lineno="14"><highlight class="comment"><sp/>*<sp/>&quot;AS<sp/>IS&quot;<sp/>BASIS,<sp/>WITHOUT<sp/>WARRANTIES<sp/>OR<sp/>CONDITIONS<sp/>OF<sp/>ANY</highlight></codeline>
+<codeline lineno="15"><highlight class="comment"><sp/>*<sp/>KIND,<sp/>either<sp/>express<sp/>or<sp/>implied.<sp/><sp/>See<sp/>the<sp/>License<sp/>for<sp/>the</highlight></codeline>
+<codeline lineno="16"><highlight class="comment"><sp/>*<sp/>specific<sp/>language<sp/>governing<sp/>permissions<sp/>and<sp/>limitations</highlight></codeline>
+<codeline lineno="17"><highlight class="comment"><sp/>*<sp/>under<sp/>the<sp/>License.</highlight></codeline>
+<codeline lineno="18"><highlight class="comment"><sp/>*/</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight><highlight class="comment">//<sp/>Adapted<sp/>from<sp/>Apache<sp/>ORC</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight><highlight class="comment">//<sp/>https://github.com/apache/orc/blob/main/c%2B%2B/src/io/Cache.hh</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="preprocessor">#pragma<sp/>once</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="24"><highlight class="normal"></highlight></codeline>
+<codeline lineno="25"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;cstdint&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="26"><highlight class="normal"></highlight></codeline>
+<codeline lineno="27"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="visibility_8h" kindref="compound">paimon/visibility.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="28"><highlight class="normal"></highlight></codeline>
+<codeline lineno="29"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon" kindref="compound">paimon</ref><sp/>{</highlight></codeline>
+<codeline lineno="30"><highlight class="normal"></highlight></codeline>
+<codeline lineno="35" refid="classpaimon_1_1_cache_config" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_cache_config" kindref="compound">CacheConfig</ref><sp/>{</highlight></codeline>
+<codeline lineno="36"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="39" refid="classpaimon_1_1_cache_config_1a6ac21b106189c1b2b1a88ebb43b0d69e" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="classpaimon_1_1_cache_config_1a6ac21b106189c1b2b1a88ebb43b0d69e" kindref="member">GetRangeSizeLimit</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="40"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>range_size_limit_;</highlight></codeline>
+<codeline lineno="41"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="42"><highlight class="normal"></highlight></codeline>
+<codeline lineno="44" refid="classpaimon_1_1_cache_config_1aa57751ee46af856b9d29a5c9b4419c18" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_cache_config_1aa57751ee46af856b9d29a5c9b4419c18" kindref="member">SetRangeSizeLimit</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">range_size_limit</ref>)<sp/>{</highlight></codeline>
+<codeline lineno="45"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>range_size_limit_<sp/>=<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">range_size_limit</ref>;</highlight></codeline>
+<codeline lineno="46"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="47"><highlight class="normal"></highlight></codeline>
+<codeline lineno="50" refid="classpaimon_1_1_cache_config_1a4b016a5a4f178c4d8ae4ac141d42f87d" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="classpaimon_1_1_cache_config_1a4b016a5a4f178c4d8ae4ac141d42f87d" kindref="member">GetHoleSizeLimit</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="51"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>hole_size_limit_;</highlight></codeline>
+<codeline lineno="52"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="53"><highlight class="normal"></highlight></codeline>
+<codeline lineno="55" refid="classpaimon_1_1_cache_config_1afeea0b4c1c87616cee91d80b4fa0cff2" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_cache_config_1afeea0b4c1c87616cee91d80b4fa0cff2" kindref="member">SetHoleSizeLimit</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">hole_size_limit</ref>)<sp/>{</highlight></codeline>
+<codeline lineno="56"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>hole_size_limit_<sp/>=<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">hole_size_limit</ref>;</highlight></codeline>
+<codeline lineno="57"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="58"><highlight class="normal"></highlight></codeline>
+<codeline lineno="61" refid="classpaimon_1_1_cache_config_1a6b505f42777a2c2369b27e6a7df98e9f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="classpaimon_1_1_cache_config_1a6b505f42777a2c2369b27e6a7df98e9f" kindref="member">GetPreBufferLimit</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="62"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>pre_buffer_limit_;</highlight></codeline>
+<codeline lineno="63"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="64"><highlight class="normal"></highlight></codeline>
+<codeline lineno="66" refid="classpaimon_1_1_cache_config_1a3588a14feec9cdf3473610687935e8ab" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_cache_config_1a3588a14feec9cdf3473610687935e8ab" kindref="member">SetPreBufferLimit</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">pre_buffer_limit</ref>)<sp/>{</highlight></codeline>
+<codeline lineno="67"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>pre_buffer_limit_<sp/>=<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">pre_buffer_limit</ref>;</highlight></codeline>
+<codeline lineno="68"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="69"><highlight class="normal"></highlight></codeline>
+<codeline lineno="72" refid="classpaimon_1_1_cache_config_1a3c5a86918ab69bf31c0a5564cc0ef6f6" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="classpaimon_1_1_cache_config_1a3c5a86918ab69bf31c0a5564cc0ef6f6" kindref="member">GetBlockSize</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="73"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>block_size_;</highlight></codeline>
+<codeline lineno="74"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="75"><highlight class="normal"></highlight></codeline>
+<codeline lineno="77" refid="classpaimon_1_1_cache_config_1a17f7e69f5b8c67ba558765819eef1fc2" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_cache_config_1a17f7e69f5b8c67ba558765819eef1fc2" kindref="member">SetBlockSize</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">block_size</ref>)<sp/>{</highlight></codeline>
+<codeline lineno="78"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>block_size_<sp/>=<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">block_size</ref>;</highlight></codeline>
+<codeline lineno="79"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="80"><highlight class="normal"></highlight></codeline>
+<codeline lineno="83" refid="classpaimon_1_1_cache_config_1a8f8d247d300cb66b7dba20365e55a082" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="classpaimon_1_1_cache_config_1a8f8d247d300cb66b7dba20365e55a082" kindref="member">GetBlockCacheLimit</ref>()</highlight><highlight class="keyword"><sp/>const<sp/></highlight><highlight class="normal">{</highlight></codeline>
+<codeline lineno="84"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keywordflow">return</highlight><highlight class="normal"><sp/>block_cache_limit_;</highlight></codeline>
+<codeline lineno="85"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="86"><highlight class="normal"></highlight></codeline>
+<codeline lineno="89" refid="classpaimon_1_1_cache_config_1aee271f72bd1099d00fd1bcf7d9f9bd4e" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keywordtype">void</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_cache_config_1aee271f72bd1099d00fd1bcf7d9f9bd4e" kindref="member">SetBlockCacheLimit</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">block_cache_limit</ref>)<sp/>{</highlight></codeline>
+<codeline lineno="90"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/>block_cache_limit_<sp/>=<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">block_cache_limit</ref>;</highlight></codeline>
+<codeline lineno="91"><highlight class="normal"><sp/><sp/><sp/><sp/>}</highlight></codeline>
+<codeline lineno="92"><highlight class="normal"></highlight></codeline>
+<codeline lineno="93"><highlight class="normal"><sp/></highlight><highlight class="keyword">private</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="94"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>The<sp/>defaults<sp/>are<sp/>aligned<sp/>with<sp/>the<sp/>reader&apos;s<sp/>request<sp/>granularity<sp/>and<sp/>with</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="95"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>realistic<sp/>data<sp/>file<sp/>sizes:</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="96"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>-<sp/>range_size_limit<sp/>matches<sp/>the<sp/>parquet<sp/>reader&apos;s<sp/>32<sp/>MiB<sp/>request<sp/>blocks</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="97"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/><sp/><sp/>(Arrow<sp/>ReadRangeCache&apos;s<sp/>own<sp/>range<sp/>limit);<sp/>a<sp/>smaller<sp/>limit<sp/>cuts<sp/>entries</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="98"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/><sp/><sp/>below<sp/>the<sp/>request<sp/>size,<sp/>so<sp/>a<sp/>request<sp/>can<sp/>never<sp/>be<sp/>served<sp/>from<sp/>one<sp/>piece.</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="99"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>-<sp/>pre_buffer_limit<sp/>must<sp/>exceed<sp/>the<sp/>LARGEST<sp/>single<sp/>read<sp/>a<sp/>reader<sp/>issues</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="100"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/><sp/><sp/>(coalesced<sp/>column-chunk<sp/>reads<sp/>of<sp/>~128<sp/>MiB<sp/>were<sp/>observed):<sp/>fetches<sp/>are</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="101"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/><sp/><sp/>only<sp/>dispatched<sp/>up<sp/>to<sp/>this<sp/>window,<sp/>so<sp/>a<sp/>request<sp/>reaching<sp/>past<sp/>it<sp/>can</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="102"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/><sp/><sp/>never<sp/>be<sp/>served<sp/>and<sp/>falls<sp/>back<sp/>to<sp/>a<sp/>second<sp/>fetch<sp/>of<sp/>the<sp/>same<sp/>bytes.</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="103" refid="classpaimon_1_1_cache_config_1a85f4a665f031038d447ae56aaea61543" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/>range_size_limit_<sp/>=<sp/>32<sp/>*<sp/>1024<sp/>*<sp/>1024;</highlight></codeline>
+<codeline lineno="104" refid="classpaimon_1_1_cache_config_1a66ed2830dc908c3088206e0382af287a" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/>hole_size_limit_<sp/>=<sp/>8<sp/>*<sp/>1024;</highlight></codeline>
+<codeline lineno="105" refid="classpaimon_1_1_cache_config_1a132adafe235d5334716266d8eb28f90a" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/>pre_buffer_limit_<sp/>=<sp/>256<sp/>*<sp/>1024<sp/>*<sp/>1024;</highlight></codeline>
+<codeline lineno="106"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>Blocks<sp/>are<sp/>aligned<sp/>to<sp/>the<sp/>END<sp/>of<sp/>the<sp/>file,<sp/>so<sp/>a<sp/>block<sp/>never<sp/>reaches<sp/>past</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="107"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>EOF.<sp/>64<sp/>KiB<sp/>is<sp/>the<sp/>granularity<sp/>the<sp/>reads<sp/>no<sp/>prefetched<sp/>range<sp/>covers<sp/>are</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="108"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>shared<sp/>at:<sp/>small<sp/>enough<sp/>that<sp/>a<sp/>metadata<sp/>read<sp/>at<sp/>the<sp/>tail<sp/>of<sp/>a<sp/>file<sp/>is</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="109"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>served<sp/>by<sp/>one<sp/>block<sp/>instead<sp/>of<sp/>straddling<sp/>two,<sp/>large<sp/>enough<sp/>that<sp/>a<sp/>block</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="110"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>fetch<sp/>does<sp/>not<sp/>pull<sp/>in<sp/>much<sp/>more<sp/>than<sp/>the<sp/>reads<sp/>ask<sp/>for.</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="111" refid="classpaimon_1_1_cache_config_1a6c40a88db59fcf9b3bddbb74e6256667" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/>block_size_<sp/>=<sp/>64<sp/>*<sp/>1024;</highlight></codeline>
+<codeline lineno="112"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>One<sp/>block<sp/>is<sp/>enough<sp/>for<sp/>the<sp/>metadata<sp/>tail<sp/>of<sp/>a<sp/>file;<sp/>the<sp/>limit<sp/>only</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="113"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>bounds<sp/>the<sp/>pathological<sp/>case,<sp/>as<sp/>blocks<sp/>are<sp/>never<sp/>evicted.</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="114" refid="classpaimon_1_1_cache_config_1a68b77707e7ece40937c222b75d7e46f4" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref><sp/>block_cache_limit_<sp/>=<sp/>1024<sp/>*<sp/>1024;</highlight></codeline>
+<codeline lineno="115"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="116"><highlight class="normal"></highlight></codeline>
+<codeline lineno="124" refid="namespacepaimon_1a6f8bc41b8fd4b74e6dc0657dd1378ca9" refkind="member"><highlight class="keyword">enum<sp/>class</highlight><highlight class="normal"><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="namespacepaimon_1a6f8bc41b8fd4b74e6dc0657dd1378ca9" kindref="member">WarmupLevel</ref><sp/>{</highlight></codeline>
+<codeline lineno="127"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="namespacepaimon_1a750e4ac50858580c665fc66c50ef8f59ab50339a10e1de285ac99d4c3990b8693" kindref="member">NONE</ref>,</highlight></codeline>
+<codeline lineno="132"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="namespacepaimon_1a6f8bc41b8fd4b74e6dc0657dd1378ca9a633d6abff0a3fc22404347728d195059" kindref="member">RAW</ref>,</highlight></codeline>
+<codeline lineno="136"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="namespacepaimon_1a6f8bc41b8fd4b74e6dc0657dd1378ca9a655771b2b50af09c330f6b3e88fbbbff" kindref="member">DECODED</ref>,</highlight></codeline>
+<codeline lineno="137"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="138"><highlight class="normal"></highlight></codeline>
+<codeline lineno="139"><highlight class="normal">}<sp/><sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>paimon</highlight><highlight class="normal"></highlight></codeline>
+    </programlisting>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h"/>
+  </compounddef>
+</doxygen>

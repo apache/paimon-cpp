@@ -1,0 +1,145 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_metrics" kind="class" language="C++" prot="public">
+    <compoundname>paimon::RealtimeMetrics</compoundname>
+    <includes refid="realtime__context_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h</includes>
+    <sectiondef kind="public-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_realtime_metrics_1a44bed03923a9f67b16900eb89350f701" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::RealtimeMetrics::kBuildingMemoryBytes[]</definition>
+        <argsstring>[]</argsstring>
+        <name>kBuildingMemoryBytes</name>
+        <qualifiedname>paimon::RealtimeMetrics::kBuildingMemoryBytes</qualifiedname>
+        <initializer>= &quot;realtimeBuildingMemoryBytes&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="75" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="75" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_realtime_metrics_1aaef56d033d58db83b5e79ba264ce239d" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::RealtimeMetrics::kSealedMemoryBytes[]</definition>
+        <argsstring>[]</argsstring>
+        <name>kSealedMemoryBytes</name>
+        <qualifiedname>paimon::RealtimeMetrics::kSealedMemoryBytes</qualifiedname>
+        <initializer>= &quot;realtimeSealedMemoryBytes&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="76" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="76" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_realtime_metrics_1a44ea89b38a554c3ff1217a8f91b3bccc" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::RealtimeMetrics::kTotalMemoryBytes[]</definition>
+        <argsstring>[]</argsstring>
+        <name>kTotalMemoryBytes</name>
+        <qualifiedname>paimon::RealtimeMetrics::kTotalMemoryBytes</qualifiedname>
+        <initializer>= &quot;realtimeTotalMemoryBytes&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="77" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="77" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_realtime_metrics_1a0f086cf2b38b96779e927976a5eb9016" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::RealtimeMetrics::kBuildingRowCount[]</definition>
+        <argsstring>[]</argsstring>
+        <name>kBuildingRowCount</name>
+        <qualifiedname>paimon::RealtimeMetrics::kBuildingRowCount</qualifiedname>
+        <initializer>= &quot;realtimeBuildingRowCount&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="78" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="78" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_realtime_metrics_1a8dffca3824a301e02bf0a6d7932d0244" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::RealtimeMetrics::kSealedRowCount[]</definition>
+        <argsstring>[]</argsstring>
+        <name>kSealedRowCount</name>
+        <qualifiedname>paimon::RealtimeMetrics::kSealedRowCount</qualifiedname>
+        <initializer>= &quot;realtimeSealedRowCount&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="79" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="79" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_realtime_metrics_1a12e52f426da3e32f4cf63b2027b3b68f" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::RealtimeMetrics::kTotalRowCount[]</definition>
+        <argsstring>[]</argsstring>
+        <name>kTotalRowCount</name>
+        <qualifiedname>paimon::RealtimeMetrics::kTotalRowCount</qualifiedname>
+        <initializer>= &quot;realtimeTotalRowCount&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="80" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="80" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_metrics_1ad623ebae5868d84a819a3e179c6c5e26" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeMetrics::RealtimeMetrics</definition>
+        <argsstring>()=delete</argsstring>
+        <name>RealtimeMetrics</name>
+        <qualifiedname>paimon::RealtimeMetrics::RealtimeMetrics</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="72" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_metrics_1ab9070fcac8763c5dade13454f92ac3aa" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeMetrics::~RealtimeMetrics</definition>
+        <argsstring>()=delete</argsstring>
+        <name>~RealtimeMetrics</name>
+        <qualifiedname>paimon::RealtimeMetrics::~RealtimeMetrics</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="73" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Gauge names exposed by <computeroutput><ref refid="classpaimon_1_1_realtime_context_1aa967b54cabfe781fefd98a08cc60a543" kindref="member">RealtimeContext::GetMetrics</ref></computeroutput> and real-time file-store writers. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" line="70" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_context.h" bodystart="70" bodyend="81"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_metrics_1a44bed03923a9f67b16900eb89350f701" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>kBuildingMemoryBytes</name></member>
+      <member refid="classpaimon_1_1_realtime_metrics_1a0f086cf2b38b96779e927976a5eb9016" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>kBuildingRowCount</name></member>
+      <member refid="classpaimon_1_1_realtime_metrics_1aaef56d033d58db83b5e79ba264ce239d" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>kSealedMemoryBytes</name></member>
+      <member refid="classpaimon_1_1_realtime_metrics_1a8dffca3824a301e02bf0a6d7932d0244" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>kSealedRowCount</name></member>
+      <member refid="classpaimon_1_1_realtime_metrics_1a44ea89b38a554c3ff1217a8f91b3bccc" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>kTotalMemoryBytes</name></member>
+      <member refid="classpaimon_1_1_realtime_metrics_1a12e52f426da3e32f4cf63b2027b3b68f" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>kTotalRowCount</name></member>
+      <member refid="classpaimon_1_1_realtime_metrics_1ad623ebae5868d84a819a3e179c6c5e26" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>RealtimeMetrics</name></member>
+      <member refid="classpaimon_1_1_realtime_metrics_1ab9070fcac8763c5dade13454f92ac3aa" prot="public" virt="non-virtual"><scope>paimon::RealtimeMetrics</scope><name>~RealtimeMetrics</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

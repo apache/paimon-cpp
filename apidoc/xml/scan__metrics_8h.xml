@@ -1,0 +1,100 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="scan__metrics_8h" kind="file" language="C++">
+    <compoundname>scan_metrics.h</compoundname>
+    <includes refid="visibility_8h" local="yes">paimon/visibility.h</includes>
+    <includedby refid="table__scan_8h" local="yes">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/table_scan.h</includedby>
+    <incdepgraph>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h</label>
+        <link refid="scan__metrics_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon/visibility.h</label>
+        <link refid="visibility_8h"/>
+      </node>
+    </incdepgraph>
+    <invincdepgraph>
+      <node id="3">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/api.h</label>
+        <link refid="api_8h"/>
+      </node>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h</label>
+        <link refid="scan__metrics_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/table_scan.h</label>
+        <link refid="table__scan_8h"/>
+        <childnode refid="3" relation="include">
+        </childnode>
+      </node>
+    </invincdepgraph>
+    <innerclass refid="classpaimon_1_1_scan_metrics" prot="public">paimon::ScanMetrics</innerclass>
+    <innernamespace refid="namespacepaimon">paimon</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="comment">/*</highlight></codeline>
+<codeline lineno="2"><highlight class="comment"><sp/>*<sp/>Licensed<sp/>to<sp/>the<sp/>Apache<sp/>Software<sp/>Foundation<sp/>(ASF)<sp/>under<sp/>one</highlight></codeline>
+<codeline lineno="3"><highlight class="comment"><sp/>*<sp/>or<sp/>more<sp/>contributor<sp/>license<sp/>agreements.<sp/><sp/>See<sp/>the<sp/>NOTICE<sp/>file</highlight></codeline>
+<codeline lineno="4"><highlight class="comment"><sp/>*<sp/>distributed<sp/>with<sp/>this<sp/>work<sp/>for<sp/>additional<sp/>information</highlight></codeline>
+<codeline lineno="5"><highlight class="comment"><sp/>*<sp/>regarding<sp/>copyright<sp/>ownership.<sp/><sp/>The<sp/>ASF<sp/>licenses<sp/>this<sp/>file</highlight></codeline>
+<codeline lineno="6"><highlight class="comment"><sp/>*<sp/>to<sp/>you<sp/>under<sp/>the<sp/>Apache<sp/>License,<sp/>Version<sp/>2.0<sp/>(the</highlight></codeline>
+<codeline lineno="7"><highlight class="comment"><sp/>*<sp/>&quot;License&quot;);<sp/>you<sp/>may<sp/>not<sp/>use<sp/>this<sp/>file<sp/>except<sp/>in<sp/>compliance</highlight></codeline>
+<codeline lineno="8"><highlight class="comment"><sp/>*<sp/>with<sp/>the<sp/>License.<sp/><sp/>You<sp/>may<sp/>obtain<sp/>a<sp/>copy<sp/>of<sp/>the<sp/>License<sp/>at</highlight></codeline>
+<codeline lineno="9"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="10"><highlight class="comment"><sp/>*<sp/><sp/><sp/><sp/><sp/>http://www.apache.org/licenses/LICENSE-2.0</highlight></codeline>
+<codeline lineno="11"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="12"><highlight class="comment"><sp/>*<sp/>Unless<sp/>required<sp/>by<sp/>applicable<sp/>law<sp/>or<sp/>agreed<sp/>to<sp/>in<sp/>writing,<sp/>software</highlight></codeline>
+<codeline lineno="13"><highlight class="comment"><sp/>*<sp/>distributed<sp/>under<sp/>the<sp/>License<sp/>is<sp/>distributed<sp/>on<sp/>an<sp/>&quot;AS<sp/>IS&quot;<sp/>BASIS,</highlight></codeline>
+<codeline lineno="14"><highlight class="comment"><sp/>*<sp/>WITHOUT<sp/>WARRANTIES<sp/>OR<sp/>CONDITIONS<sp/>OF<sp/>ANY<sp/>KIND,<sp/>either<sp/>express<sp/>or<sp/>implied.</highlight></codeline>
+<codeline lineno="15"><highlight class="comment"><sp/>*<sp/>See<sp/>the<sp/>License<sp/>for<sp/>the<sp/>specific<sp/>language<sp/>governing<sp/>permissions<sp/>and</highlight></codeline>
+<codeline lineno="16"><highlight class="comment"><sp/>*<sp/>limitations<sp/>under<sp/>the<sp/>License.</highlight></codeline>
+<codeline lineno="17"><highlight class="comment"><sp/>*/</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="18"><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight><highlight class="preprocessor">#pragma<sp/>once</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="visibility_8h" kindref="compound">paimon/visibility.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon" kindref="compound">paimon</ref><sp/>{</highlight></codeline>
+<codeline lineno="24"><highlight class="normal"></highlight></codeline>
+<codeline lineno="26" refid="classpaimon_1_1_scan_metrics" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_scan_metrics" kindref="compound">ScanMetrics</ref><sp/>{</highlight></codeline>
+<codeline lineno="27"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="28" refid="classpaimon_1_1_scan_metrics_1a39f3255bbd8f6ce819e60b94f42adbc4" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SCAN_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastScanDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="29"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>Histogram<sp/>metric<sp/>for<sp/>scan<sp/>plan<sp/>duration<sp/>(milliseconds).</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="30" refid="classpaimon_1_1_scan_metrics_1a52b042de94a3f8a723b1cc137f93cce2" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>SCAN_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;scanDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="31" refid="classpaimon_1_1_scan_metrics_1abaaaf04d2cc1bd7b504a340c9edebb98" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SCANNED_SNAPSHOT_ID[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastScannedSnapshotId&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="32" refid="classpaimon_1_1_scan_metrics_1a072f3f13f66ad7c72bfee741824fdc79" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SCANNED_MANIFESTS[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastScannedManifests&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="33" refid="classpaimon_1_1_scan_metrics_1a643ecc462dfe996f8492f83f0e9e9e86" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SCAN_SKIPPED_TABLE_FILES[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastScanSkippedTableFiles&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="34" refid="classpaimon_1_1_scan_metrics_1a29ce3aae64a5738da9189d1cf1c17ce0" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SCAN_RESULTED_TABLE_FILES[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastScanResultedTableFiles&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="35"><highlight class="normal"></highlight></codeline>
+<codeline lineno="36"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>The<sp/>metrics<sp/>below<sp/>are<sp/>C++-only<sp/>and<sp/>do<sp/>not<sp/>have<sp/>counterparts<sp/>in<sp/>Java<sp/>ScanMetrics.</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="37" refid="classpaimon_1_1_scan_metrics_1adb24961ab2f3fdea1dbe24e84d70c0f3" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_MANIFEST_READ_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastManifestReadDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="38"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>Histogram<sp/>metric<sp/>for<sp/>manifest-list<sp/>and<sp/>manifest-entry<sp/>read<sp/>duration<sp/>(milliseconds).</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="39" refid="classpaimon_1_1_scan_metrics_1a0b04affdc8e7bd995388096b03aa200f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>MANIFEST_READ_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;manifestReadDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="40" refid="classpaimon_1_1_scan_metrics_1ae86e7647c0490bb4eb44b33b8a282fb8" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SNAPSHOT_CACHE_ENABLED[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastSnapshotCacheEnabled&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="41" refid="classpaimon_1_1_scan_metrics_1a0a35cd5741766904632d0904b5ddead3" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SNAPSHOT_CACHE_HIT[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastSnapshotCacheHit&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="42" refid="classpaimon_1_1_scan_metrics_1a04e924b679d3523122e2172c0c926c20" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>SNAPSHOT_CACHE_HITS[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;snapshotCacheHits&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="43" refid="classpaimon_1_1_scan_metrics_1a7c9249df7e6c6cfa910141130942d2ab" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>SNAPSHOT_CACHE_MISSES[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;snapshotCacheMisses&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="44" refid="classpaimon_1_1_scan_metrics_1a6ed9f8d52e063581dd8204e60cf9f6bb" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SNAPSHOT_CACHE_LOAD_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastSnapshotCacheLoadDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="45" refid="classpaimon_1_1_scan_metrics_1aa32731273e3d505b9551dfff0c8ef85e" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>SNAPSHOT_CACHE_LOAD_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;snapshotCacheLoadDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="46" refid="classpaimon_1_1_scan_metrics_1ab352268a795d0c5c322825bce3d62aee" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_SNAPSHOT_CACHE_STORE_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastSnapshotCacheStoreDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="47" refid="classpaimon_1_1_scan_metrics_1abea6189c5cd557442b0707b145cb0484" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>SNAPSHOT_CACHE_STORE_DURATION[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;snapshotCacheStoreDuration&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="48"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>Candidate<sp/>manifest-entry<sp/>rows<sp/>inspected<sp/>by<sp/>lazy<sp/>scan<sp/>filtering.</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="49" refid="classpaimon_1_1_scan_metrics_1a24f31a14fd3d6aa97f9d32c3d1cdd629" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_LAZY_DECODE_SCANNED_ROWS[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastLazyDecodeScannedRows&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="50"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="comment">//<sp/>Full<sp/>manifest<sp/>entries<sp/>retained<sp/>after<sp/>lazy<sp/>scan<sp/>filtering.</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="51" refid="classpaimon_1_1_scan_metrics_1ae5641d69b32a3d0729e799d507f98399" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/></highlight><highlight class="keyword">constexpr</highlight><highlight class="normal"><sp/></highlight><highlight class="keywordtype">char</highlight><highlight class="normal"><sp/>LAST_LAZY_DECODE_MATERIALIZED_ROWS[]<sp/>=<sp/></highlight><highlight class="stringliteral">&quot;lastLazyDecodeMaterializedRows&quot;</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="52"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="53"><highlight class="normal"></highlight></codeline>
+<codeline lineno="54"><highlight class="normal">}<sp/><sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>paimon</highlight><highlight class="normal"></highlight></codeline>
+    </programlisting>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/scan_metrics.h"/>
+  </compounddef>
+</doxygen>

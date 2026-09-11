@@ -1,0 +1,864 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Format Table &#8212; Apache Paimon C++</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=cb8930eaaf36d9849b67" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=d7227091" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=cb8930eaaf36d9849b67"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=3bb21c8c"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user_guide/format_table';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="System Tables" href="system_tables.html" />
+    <link rel="prev" title="Append Only Table" href="append_only_table.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.4.0" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">Apache Paimon C++</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../user_guide.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api.html">
+    API Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/paimon-cpp" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../user_guide.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../examples/index.html">
+    Examples
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api.html">
+    API Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/paimon-cpp" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i><span class="visually-hidden">GitHub</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
+  </svg>
+  <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
+  <span class="pst-expand-sidebar-label">Expand Sidebar</span>
+</button></div>
+        <div class="sidebar-primary-item">
+
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="catalog.html">Catalog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="schema.html">Schema</a></li>
+<li class="toctree-l1"><a class="reference internal" href="snapshot.html">Snapshot</a></li>
+<li class="toctree-l1"><a class="reference internal" href="manifest.html">Manifest</a></li>
+<li class="toctree-l1"><a class="reference internal" href="manifest_cache.html">Manifest Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="manifest_entry_cache.html">Manifest Entry Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="parquet_metadata_cache.html">Parquet Metadata Cache</a></li>
+<li class="toctree-l1"><a class="reference internal" href="data_types.html">Data Types</a></li>
+<li class="toctree-l1"><a class="reference internal" href="primary_key_table.html">Primary Key Table</a></li>
+<li class="toctree-l1"><a class="reference internal" href="append_only_table.html">Append Only Table</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Format Table</a></li>
+<li class="toctree-l1"><a class="reference internal" href="system_tables.html">System Tables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="write.html">Write</a></li>
+<li class="toctree-l1"><a class="reference internal" href="commit.html">Commit</a></li>
+<li class="toctree-l1"><a class="reference internal" href="compaction.html">Compaction</a></li>
+<li class="toctree-l1"><a class="reference internal" href="read.html">Read</a></li>
+<li class="toctree-l1"><a class="reference internal" href="metrics.html">Metrics reference</a></li>
+<li class="toctree-l1"><a class="reference internal" href="clean.html">Data Cleanup</a></li>
+<li class="toctree-l1"><a class="reference internal" href="prefetch.html">Prefetch</a></li>
+
+
+
+<li class="toctree-l1"><a class="reference internal" href="arrow.html">Memory Format</a></li>
+<li class="toctree-l1"><a class="reference internal" href="global_index.html">Global Index</a></li>
+<li class="toctree-l1"><a class="reference internal" href="primary_key_global_index.html">Primary Key Global Index</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../user_guide.html" class="nav-link">User Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Format Table</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="format-table">
+<h1>Format Table<a class="headerlink" href="#format-table" title="Link to this heading">#</a></h1>
+<p>A format table is a directory that holds multiple files of the same format. It carries no
+snapshots and no manifests: the files in the directory are the table, so reading it lists
+directories and writing to it adds files. A table is a format table when its <code class="docutils literal notranslate"><span class="pre">type</span></code> option is
+<code class="docutils literal notranslate"><span class="pre">format-table</span></code>; <code class="docutils literal notranslate"><span class="pre">file.format</span></code> then names the format of every file in it, which here is
+<code class="docutils literal notranslate"><span class="pre">parquet</span></code> or <code class="docutils literal notranslate"><span class="pre">orc</span></code>.</p>
+<p>A partitioned format table uses the standard Hive directory layout, and its partitions are
+discovered from that layout rather than from metadata. By default a partition directory is named
+<code class="docutils literal notranslate"><span class="pre">key=value</span></code>; setting <code class="docutils literal notranslate"><span class="pre">format-table.partition-path-only-value</span></code> names it by the value alone.</p>
+<p>Because a directory of plain files records no row identity, a format table only accepts inserts.
+Reads still carry the leading <code class="docutils literal notranslate"><span class="pre">_VALUE_KIND</span></code> field every <code class="docutils literal notranslate"><span class="pre">BatchReader</span></code> promises, so an engine
+that reads a batch by field index sees the same layout it does for a managed table; every row of a
+format table is an insert.</p>
+<section id="reading-and-writing">
+<h2>Reading and writing<a class="headerlink" href="#reading-and-writing" title="Link to this heading">#</a></h2>
+<p>A format table is not served through <code class="xref cpp cpp-func docutils literal notranslate"><span class="pre">Catalog::GetTable()</span></code>, which describes a managed
+table; use <code class="xref cpp cpp-func docutils literal notranslate"><span class="pre">Catalog::GetFormatTable()</span></code> instead.</p>
+<p>Reading and writing go through the entry points every other table uses: <code class="docutils literal notranslate"><span class="pre">TableScan::Create</span></code>,
+<code class="docutils literal notranslate"><span class="pre">TableRead::Create</span></code>, <code class="docutils literal notranslate"><span class="pre">FileStoreWrite::Create</span></code> and <code class="docutils literal notranslate"><span class="pre">FileStoreCommit::Create</span></code>, each from its
+usual context builder. Each reads the table’s schema - from under the table path, or from the one
+the context carries - and dispatches to a format table when its <code class="docutils literal notranslate"><span class="pre">type</span></code> says so.</p>
+<p>That path needs a schema under the table’s own location, which is what every table a file system
+catalog serves has. A table loaded from a catalog that keeps the schema elsewhere, such as the
+REST catalog, has none: nothing under the location says that it is a format table, nor that
+<code class="docutils literal notranslate"><span class="pre">schema</span></code> and <code class="docutils literal notranslate"><span class="pre">branch</span></code> below it are data rather than metadata. Such a table is read and written
+by handing the loaded <code class="docutils literal notranslate"><span class="pre">FormatTable</span></code> to the context instead of a path - every context builder has
+a constructor taking one - which is what Java does through <code class="docutils literal notranslate"><span class="pre">FormatTable.newReadBuilder()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">newBatchWriteBuilder()</span></code>:</p>
+<div class="highlight-cpp notranslate"><div class="highlight"><pre><span></span><span class="n">PAIMON_ASSIGN_OR_RAISE</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">shared_ptr</span><span class="o">&lt;</span><span class="n">paimon</span><span class="o">::</span><span class="n">FormatTable</span><span class="o">&gt;</span><span class="w"> </span><span class="n">table</span><span class="p">,</span>
+<span class="w">                       </span><span class="n">catalog</span><span class="o">-&gt;</span><span class="n">GetFormatTable</span><span class="p">(</span><span class="n">paimon</span><span class="o">::</span><span class="n">Identifier</span><span class="p">(</span><span class="s">"db"</span><span class="p">,</span><span class="w"> </span><span class="s">"tbl"</span><span class="p">)));</span>
+<span class="n">paimon</span><span class="o">::</span><span class="n">ScanContextBuilder</span><span class="w"> </span><span class="nf">scan_builder</span><span class="p">(</span><span class="n">table</span><span class="p">);</span>
+<span class="n">PAIMON_ASSIGN_OR_RAISE</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">unique_ptr</span><span class="o">&lt;</span><span class="n">paimon</span><span class="o">::</span><span class="n">ScanContext</span><span class="o">&gt;</span><span class="w"> </span><span class="n">scan_context</span><span class="p">,</span>
+<span class="w">                       </span><span class="n">scan_builder</span><span class="p">.</span><span class="n">Finish</span><span class="p">());</span>
+<span class="n">PAIMON_ASSIGN_OR_RAISE</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">unique_ptr</span><span class="o">&lt;</span><span class="n">paimon</span><span class="o">::</span><span class="n">TableScan</span><span class="o">&gt;</span><span class="w"> </span><span class="n">scan</span><span class="p">,</span>
+<span class="w">                       </span><span class="n">paimon</span><span class="o">::</span><span class="n">TableScan</span><span class="o">::</span><span class="n">Create</span><span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="n">move</span><span class="p">(</span><span class="n">scan_context</span><span class="p">)));</span>
+</pre></div>
+</div>
+<p>The table already carries its schema and the file system it was loaded through, so a context built
+from one refuses <code class="docutils literal notranslate"><span class="pre">SetTableSchema()</span></code>, <code class="docutils literal notranslate"><span class="pre">WithFileSystem()</span></code>,
+<code class="docutils literal notranslate"><span class="pre">WithFileSystemSchemeToIdentifierMap()</span></code> and a branch rather than quietly ignoring them. Options
+given at the call still win over the ones the schema stored, as they do everywhere else.</p>
+<p>A batch comes back in the table’s column order, or the projection’s when the read names one,
+behind the <code class="docutils literal notranslate"><span class="pre">_VALUE_KIND</span></code> field every <code class="docutils literal notranslate"><span class="pre">BatchReader</span></code> carries. Which columns a <em>file</em> is asked for
+and in what order is its own business: they are matched to the table’s by name, as Java matches
+them through <code class="docutils literal notranslate"><span class="pre">ParquetReaderFactory</span></code> and orc’s schema evolution, so a file that stores them in
+another order is read in the order it stores them, and one holding columns the table does not name
+is read past. A column the file does not hold is filled with nulls, which is how a file written
+before a column was added is still read - unless the table declares that column <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">NULL</span></code>, when
+the file is refused instead, as Java’s <code class="docutils literal notranslate"><span class="pre">VectorizedParquetRecordReader</span></code> refuses it. Only the
+columns a read actually asks a file for are held to the table’s schema: a partition column is
+rebuilt from the directory name whether or not the file stores one of its own, and a column
+outside the projection is never read, which is how Java scopes the same checks.</p>
+<p><code class="docutils literal notranslate"><span class="pre">FormatTable</span></code> is the only format-table type in the public API. The classes behind it -
+<code class="docutils literal notranslate"><span class="pre">FormatTableScan</span></code>, <code class="docutils literal notranslate"><span class="pre">FormatTableRead</span></code>, <code class="docutils literal notranslate"><span class="pre">FormatTableWrite</span></code>, <code class="docutils literal notranslate"><span class="pre">FormatTableCommit</span></code>,
+<code class="docutils literal notranslate"><span class="pre">FormatDataSplit</span></code> and <code class="docutils literal notranslate"><span class="pre">FormatCommitMessage</span></code> - are implementation details under <code class="docutils literal notranslate"><span class="pre">src</span></code> and are
+named here only to describe what happens. A caller never needs them: a plan comes back as
+<code class="docutils literal notranslate"><span class="pre">Plan</span></code>, a split as <code class="docutils literal notranslate"><span class="pre">Split</span></code>, and a commit message as <code class="docutils literal notranslate"><span class="pre">CommitMessage</span></code>.</p>
+<p>A catalog that can load a format table itself overrides <code class="docutils literal notranslate"><span class="pre">Catalog::LoadFormatTable()</span></code>, the
+protected hook <code class="xref cpp cpp-func docutils literal notranslate"><span class="pre">Catalog::GetFormatTable()</span></code> calls. The file system catalog uses it to say
+its metadata lives under the table location, and the REST catalog to take the location and the
+schema from one response instead of two that could disagree. A catalog that does not override it
+still serves format tables, by reading the location and the schema through the virtuals every
+catalog has.</p>
+<p><code class="docutils literal notranslate"><span class="pre">TableScan::ListPartitions()</span></code> lists the partitions a scan can see. A format table answers it by
+listing directories; every other table type returns <code class="docutils literal notranslate"><span class="pre">NotImplemented</span></code> for now.</p>
+<p>Not all of the generic interfaces fit. <code class="docutils literal notranslate"><span class="pre">FileStoreCommit</span></code> is mostly about snapshots and manifests -
+expiring them, rolling back to one, filtering by a commit identifier recorded in one - and a format
+table keeps none of that state, so those calls are refused rather than quietly doing nothing.
+<code class="docutils literal notranslate"><span class="pre">FileStoreWrite::Compact()</span></code> is refused for the same reason, and both write and commit take batch
+writes only, since there is no snapshot to record a commit identifier or a watermark in.
+<code class="docutils literal notranslate"><span class="pre">TableScan</span></code> takes a partition filter and a limit; a predicate or a bucket filter is refused. Java
+refuses a predicate from <code class="docutils literal notranslate"><span class="pre">FormatTableScan.withFilter</span></code> too, but <code class="docutils literal notranslate"><span class="pre">FormatReadBuilder.newScan()</span></code>
+splits one first and hands the partition half to the scan, so there a predicate over partition
+columns still prunes directories. See the limits below.</p>
+<p>Options given at the call win over the ones the schema stored, as they do for every other table -
+except <code class="docutils literal notranslate"><span class="pre">type</span></code>, which is structural and is read from the schema alone, so one read or write
+cannot decide what kind of table this is. The merged result is validated, not the schema’s own
+options, so an option a format table refuses - <code class="docutils literal notranslate"><span class="pre">metastore.partitioned-table</span></code>, a file format
+nothing here can read - is refused wherever it comes from rather than dropped in silence.</p>
+<p>A setting the format path cannot act on is refused by name rather than quietly dropped:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ReadContextBuilder::SetReadSchema()</span></code>. A projected read schema can rename a column, prune a
+nested one and give it metadata of its own; a format table’s projection is a list of top-level
+names, so name the columns instead.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">WithStreamingMode()</span></code> on a scan or a write, a global index result on a scan, and a real-time
+context on a scan, a read or a write: a format table has no snapshots, no real-time store and no
+index.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">WriteContextBuilder::WithWriteSchema()</span></code>, which names a subset of the columns to write.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">WriteContextBuilder::WithWriteId()</span></code>, which prefixes a postpone-bucket writer’s files so one
+compaction reader can put them back in order; a format table has no buckets.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CommitContextBuilder::IgnoreEmptyCommit(false)</span></code>, <code class="docutils literal notranslate"><span class="pre">UseRESTCatalogCommit(true)</span></code> and
+<code class="docutils literal notranslate"><span class="pre">AppendCommitCheckConflict(true)</span></code>. Keeping an empty commit means writing a snapshot that adds
+no files, a rest-catalog commit sends that snapshot to a catalog, and the conflict check reads
+the manifests of concurrent commits - none of which exist here. Each is refused only when set
+away from its default, so an ordinary commit is unaffected.</p></li>
+<li><p>the <code class="docutils literal notranslate"><span class="pre">branch</span></code> option, whatever names it: a format table keeps no metadata to branch, and its
+data is the files under its one location, which is where a read or a write would go whichever
+branch was asked for. It is refused wherever it comes from - the schema, a catalog that parsed
+<code class="docutils literal notranslate"><span class="pre">tbl$branch_dev</span></code>, or the options of a single call - and so is <code class="docutils literal notranslate"><span class="pre">WithBranch()</span></code> on a context
+built from a format table. A branch quietly ignored would be the wrong answer everywhere and a
+destructive one for an overwrite, which would clear the data it was told not to touch. The
+value naming the main branch is the default and is left alone.</p></li>
+<li><p>A scan predicate or bucket filter, as above, and more than one partition filter: a scan descends
+one directory layout, so it takes the values of a single partition rather than a set of them.</p></li>
+</ul>
+<p>What a data file is opened with is not one of the refusals. <code class="docutils literal notranslate"><span class="pre">EnablePrefetch()</span></code>, the read-ahead
+cache and its <code class="docutils literal notranslate"><span class="pre">CacheConfig</span></code>, and the <code class="docutils literal notranslate"><span class="pre">Cache</span></code> a read carries all apply, because a format table
+opens its files through the same component the managed table path opens its own with. What differs
+between the two paths is which files there are and how a row is put back together, not how a file
+is read.</p>
+<p>Some settings are not refused because they describe machinery the format path never reaches, and
+refusing them would refuse the defaults: <code class="docutils literal notranslate"><span class="pre">EnableMultiThreadRowToBatch()</span></code> on a read, a write’s
+temporary directory and spill configuration, and <code class="docutils literal notranslate"><span class="pre">WithIgnoreNumBucketCheck()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">WithIgnorePreviousFiles()</span></code> on a write. They have no effect here: a format read hands out the
+batches parquet or orc already produced rather than assembling them from rows, a format write
+buffers in memory and never spills, and a table with no buckets has no bucket count to check and
+no previous files to read back.</p>
+<p>A write is two-phase, since a directory has no metadata to switch atomically: a file is written
+into a <code class="docutils literal notranslate"><span class="pre">_temporary</span></code> directory beside where it will end up, under a hidden name of its own, and
+only the commit renames it into place. That is the layout Java Paimon’s
+<code class="docutils literal notranslate"><span class="pre">RenamingTwoPhaseOutputStream</span></code> stages under. The directory and the name are both hidden, the
+convention a Hive-style directory uses for output that is not committed table data, and what a scan
+of this table skips. The <code class="docutils literal notranslate"><span class="pre">_temporary</span></code> directory is shared with every other writer
+of the same table and is left behind after a commit.</p>
+<p>An overwriting commit clears what it replaces before publishing anything. What it replaces is the
+static partition when one is given - the partitions below that prefix, whether or not this commit
+wrote to them - and otherwise the partitions the commit actually writes to, when
+<code class="docutils literal notranslate"><span class="pre">dynamic-partition-overwrite</span></code> is on, its default, and the table is partitioned. With the option
+off, or for an unpartitioned table, it replaces the whole table instead, which is the condition
+Java’s <code class="docutils literal notranslate"><span class="pre">FormatTableCommit</span></code> and a managed table commit both apply. An overwrite that replaces the
+table empties it even when it publishes no file, so a statement whose query returns nothing still
+clears what was there.</p>
+<p>A plan is in-memory only. <code class="docutils literal notranslate"><span class="pre">FormatDataSplit</span></code> has no serialized form - <code class="docutils literal notranslate"><span class="pre">Split::Serialize()</span></code>
+refuses it - and neither has <code class="docutils literal notranslate"><span class="pre">FormatCommitMessage</span></code>: a format table’s plan has no cross-runtime
+encoding, so plan, read and commit within one process.</p>
+<p>A <code class="docutils literal notranslate"><span class="pre">FormatTableWrite</span></code> and a <code class="docutils literal notranslate"><span class="pre">FormatTableCommit</span></code> are each driven by one thread, but separate
+ones may fill and add to a table at once: each write stages its files under a uuid of its own, and
+each commit publishes only the files its own messages name. Two <em>overwriting</em> commits over the
+same directory race, since an overwrite clears what is committed there before publishing anything.
+A <code class="docutils literal notranslate"><span class="pre">FormatTableScan</span></code> may be shared, since planning leaves it as it was.</p>
+<p><code class="docutils literal notranslate"><span class="pre">TableRead::CreateCountReader()</span></code> is not implemented for a format table, so counting its rows
+means reading them. That is a gap here rather than something the layout forces: <code class="docutils literal notranslate"><span class="pre">parquet</span></code> and
+<code class="docutils literal notranslate"><span class="pre">orc</span></code> both record a row count in their own footer.</p>
+<p>A writer starts a new file once the one it is filling reaches <code class="docutils literal notranslate"><span class="pre">target-file-row-num</span></code> rows or
+<code class="docutils literal notranslate"><span class="pre">target-file-size</span></code> bytes. Both are checked between batches rather than between rows, because a
+batch is the unit this API writes in, so a file may pass either target by up to one batch. Java
+checks the row count on every row and the size every thousand rows, and its files therefore sit
+closer to the target.</p>
+</section>
+<section id="aborting-a-write">
+<h2>Aborting a write<a class="headerlink" href="#aborting-a-write" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">FormatTableWrite::Abort()</span></code> removes the files the write staged. It is the one call still allowed
+after <code class="docutils literal notranslate"><span class="pre">PrepareCommit()</span></code>, and that is what it is for: a write dropped <em>before</em> preparing clears
+its staged files from its own destructor, so only a commit that is prepared and then abandoned
+needs it.</p>
+<p>Path containment is checked on the path text, which stops a <code class="docutils literal notranslate"><span class="pre">..</span></code> from leaving the table but not
+a symbolic link pointing out of it - the same as Java’s own local file system behaviour. A
+relative local location is resolved against the working directory first, as the local file system
+resolves one while opening a file, so a table located at <code class="docutils literal notranslate"><span class="pre">./table</span></code> and the absolute paths its
+own listing hands back are recognised as the same place. <code class="docutils literal notranslate"><span class="pre">FormatTable::Location()</span></code> still reports
+the location as it was given.</p>
+<p><code class="docutils literal notranslate"><span class="pre">FormatTableCommit::Abort()</span></code> does the same for the messages a commit was given. <strong>Neither undoes
+a commit that succeeded</strong>: once a file has been renamed into place it is no longer staged, and
+nothing here will take it back. Java’s committer removes the published path as well as the staged
+one, which matters there because a commit publishes file by file with nothing watching; here a
+commit that fails part way takes back every target it tried to publish before it returns, so an
+abort is left with the staged files alone. That includes the target of the rename the commit
+failed on, which a store may have produced before failing to say so - on an object store a rename
+is a copy followed by a delete, and a request that took effect but lost its response looks like
+one that did nothing. The target is removed on the strength of it belonging to this write: its
+name carries the uuid of the write that staged it, and no two messages of one commit may name the
+same target. An overwriting commit is the exception: it has already deleted what it replaces, so
+taking the published files back too would leave neither the old rows nor the new, and they are
+kept. Java preserves them for the same reason.</p>
+<p>Both are best effort and never fail here, so a warning in the log is the only signal that a file
+could not be removed - and a published target left behind is one a scan goes on to read. Java’s
+<code class="docutils literal notranslate"><span class="pre">abort</span></code> instead collects its failures and reports them.</p>
+<p>Give <code class="docutils literal notranslate"><span class="pre">FormatTableCommit</span></code> only the messages this job’s own writers produced. A message names a
+staged file by path, and a commit can tell that the path belongs to this table, sits in the
+partition the message declares, and is staged rather than already published - not whose staged file
+it is. A well-formed message from somewhere else is published, or discarded by <code class="docutils literal notranslate"><span class="pre">Abort()</span></code>, like
+any other.</p>
+</section>
+<section id="relationship-to-java-paimon">
+<h2>Relationship to Java Paimon<a class="headerlink" href="#relationship-to-java-paimon" title="Link to this heading">#</a></h2>
+<p>Java serves format tables from a Hive or REST catalog, which holds the schema. This implementation
+also serves them from a file system catalog, which keeps the schema under the table directory - an
+extension Java does not have. Only for such a table are the <code class="docutils literal notranslate"><span class="pre">schema</span></code> and <code class="docutils literal notranslate"><span class="pre">branch</span></code> directories
+below the location treated as metadata rather than as data.</p>
+<p>A file system catalog keeps a table’s schema in <code class="docutils literal notranslate"><span class="pre">schema</span></code> and its branches in <code class="docutils literal notranslate"><span class="pre">branch</span></code> below
+the table location, so under <code class="docutils literal notranslate"><span class="pre">format-table.partition-path-only-value</span></code> the first partition value
+may not be <code class="docutils literal notranslate"><span class="pre">schema</span></code> or <code class="docutils literal notranslate"><span class="pre">branch</span></code>: the directory a write would use is the one holding the
+table’s own metadata. Such a write is refused, as is an overwrite naming that partition - which
+would otherwise delete the schema. A table served from a REST or Hive catalog keeps its schema
+elsewhere, so there these are ordinary partition values and are read and written like any other.</p>
+<p>Under that same layout a partition value may not start with <code class="docutils literal notranslate"><span class="pre">_</span></code> or <code class="docutils literal notranslate"><span class="pre">.</span></code> either, whichever
+catalog serves the table: the value is the whole directory name, and a scan skips every hidden
+name. Java writes such a directory and then cannot read it back; here the write is refused
+instead. The one exception is the value standing for a null partition, <code class="docutils literal notranslate"><span class="pre">partition.default-name</span></code>,
+which the scan reads at a partition level by design. Under the <code class="docutils literal notranslate"><span class="pre">key=value</span></code> layout the question
+does not arise, since the key in front of the value keeps the directory name visible.</p>
+<p>A few smaller differences come from this library’s own conventions:</p>
+<ul class="simple">
+<li><p>a write takes one partition per batch: the batch declares it through
+<code class="docutils literal notranslate"><span class="pre">RecordBatchBuilder::SetPartition()</span></code> and every row of that batch is stored under it. Java
+routes row by row, so one write call there may land in any number of partitions;</p></li>
+<li><p>a write takes its partition from <code class="docutils literal notranslate"><span class="pre">RecordBatchBuilder::SetPartition()</span></code> rather than from the
+rows. A row’s own partition column is not checked against the declaration and never reads back:
+a format table’s partition columns are rebuilt from the directory name, as a managed table’s are
+from the manifest, and the managed write path takes <code class="docutils literal notranslate"><span class="pre">RecordBatch::GetPartition()</span></code> on the same
+terms. The values arrive as text. They are still read into their column types and rendered back
+out before anything is named after them - the round trip Java’s writer makes when it renders a
+partition out of the row it is writing, through the partition computer its
+<code class="docutils literal notranslate"><span class="pre">FileStorePathFactory</span></code> holds. The table therefore decides the directory name and the commit
+message, not the spelling the caller used: with <code class="docutils literal notranslate"><span class="pre">partition.legacy-name</span></code> on, its default, a
+<code class="docutils literal notranslate"><span class="pre">DATE</span></code> partition is written as its day count whether the caller wrote <code class="docutils literal notranslate"><span class="pre">19723</span></code> or
+<code class="docutils literal notranslate"><span class="pre">2024-01-01</span></code>, and as <code class="docutils literal notranslate"><span class="pre">YYYY-MM-DD</span></code> when the option is off. A value that cannot be read into
+its column type is refused. <code class="docutils literal notranslate"><span class="pre">FormatTableCommit</span></code>’s static partition is <em>not</em> put through that
+round trip and is used as given, which is what Java’s <code class="docutils literal notranslate"><span class="pre">FormatTableCommit.buildPartitionPath</span></code>
+does with it too;</p></li>
+<li><p>a commit message carries the partition its file belongs to, and a commit checks that it agrees
+with the directory the file sits in. Java’s message carries none and derives the partition from
+the committer’s target path, so the two cannot disagree there. A message here reaches the commit
+through the base <code class="docutils literal notranslate"><span class="pre">CommitMessage</span></code> type, so the value is checked rather than trusted;</p></li>
+<li><p>a projection that names the same column twice is rejected when the read is built. Java reads
+such a column once per entry;</p></li>
+<li><p>a row limit is the caller’s. <code class="docutils literal notranslate"><span class="pre">FormatTableScan</span></code> takes one, but a format table records no row
+counts, so only a non-positive limit prunes anything - it plans nothing at all. A positive one
+neither drops splits nor bounds the reader <code class="docutils literal notranslate"><span class="pre">FormatTableRead</span></code> hands out, so the caller stops
+calling <code class="docutils literal notranslate"><span class="pre">NextBatch()</span></code> once it has enough. Java wraps its reader in a <code class="docutils literal notranslate"><span class="pre">LimitRecordReader</span></code>.</p></li>
+</ul>
+</section>
+<section id="current-limits">
+<h2>Current limits<a class="headerlink" href="#current-limits" title="Link to this heading">#</a></h2>
+<p>The layout, the option precedence and the read, write and overwrite semantics described above
+follow Java Paimon’s. What this implementation covers is nonetheless a subset of what Java’s
+format table does; it does not yet support:</p>
+<ul class="simple">
+<li><p>the <code class="docutils literal notranslate"><span class="pre">csv</span></code>, <code class="docutils literal notranslate"><span class="pre">json</span></code>, <code class="docutils literal notranslate"><span class="pre">text</span></code> and <code class="docutils literal notranslate"><span class="pre">mosaic</span></code> file formats, leaving <code class="docutils literal notranslate"><span class="pre">parquet</span></code> and <code class="docutils literal notranslate"><span class="pre">orc</span></code>.
+The first three are line-delimited text in Java, which shares one line-reading layer between
+them; this library has no text file format at all, so the first of them to be added has to bring
+that layer with it. <code class="docutils literal notranslate"><span class="pre">mosaic</span></code> is none of those: it has a reader and a writer of its own, which
+this library builds under <code class="docutils literal notranslate"><span class="pre">PAIMON_ENABLE_MOSAIC</span></code>, but a format table does not reach them yet;</p></li>
+<li><p>cutting one large data file into byte ranges so that several readers share it. Java does this
+for an uncompressed <code class="docutils literal notranslate"><span class="pre">csv</span></code> or <code class="docutils literal notranslate"><span class="pre">json</span></code> file written with the default line delimiter, and for no
+other format - not for <code class="docutils literal notranslate"><span class="pre">text</span></code> or <code class="docutils literal notranslate"><span class="pre">mosaic</span></code> either; <code class="docutils literal notranslate"><span class="pre">parquet</span></code> and <code class="docutils literal notranslate"><span class="pre">orc</span></code> each record where
+their own row groups and stripes begin, and a reader handed a byte range of one would have to
+find that out for itself;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">metastore.partitioned-table</span></code>, which moves partition visibility into the catalog, and the
+Hive partition sync that goes with it;</p></li>
+<li><p>partition filters beyond equality on partition values, where Java accepts a full predicate. The
+values are compared through their column type, as Java’s are, but discovery here lists one
+directory level at a time and tests each name’s value, while Java turns a leading run of
+equality constraints into a path and starts listing below it; a table with many partitions
+therefore costs more listings here than in Java;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scan.ignore-corrupt-files</span></code> and <code class="docutils literal notranslate"><span class="pre">scan.ignore-lost-files</span></code>, which are not implemented: a
+corrupt or missing data file fails the read rather than being skipped;</p></li>
+<li><p>reading a column whose type in the file is not the type the table declares. A column is matched
+by name and then read as the table declares it, so a file storing it as some other type fails
+the read rather than being converted to that type. Java’s orc reader converts a few such pairs,
+through orc’s own schema evolution. The same goes for a <code class="docutils literal notranslate"><span class="pre">STRUCT</span></code> whose children the file
+orders differently, which the read refuses rather than putting back in the table’s order. A
+<code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code> of another unit is the one difference the read carries, and how far depends on
+the format: an orc file records no unit at all - a value is a seconds-plus-nanoseconds pair,
+built at whatever precision the read asks for - so any unit is read as the table declares it,
+while a parquet file records the unit its values are in and only <code class="docutils literal notranslate"><span class="pre">MILLI</span></code> under a <code class="docutils literal notranslate"><span class="pre">SECOND</span></code>
+column is rescaled, the pair parquet’s own round trip needs, every other being refused rather
+than relabelled;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">FileStoreCommit::TruncateTable()</span></code>, which Java implements for a format table by deleting its
+data files while leaving the partition directories in place, and
+<code class="docutils literal notranslate"><span class="pre">FileStoreCommit::DropPartition()</span></code>, which would remove a partition directory outright. An
+overwrite of a partition with no messages empties it but leaves the directory, which is what
+Java’s <code class="docutils literal notranslate"><span class="pre">truncatePartitions()</span></code> does rather than a drop;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">format-table.commit-hive-sync-url</span></code>, which registers committed partitions with a Hive
+metastore;</p></li>
+<li><p>column default values. Java replaces a null in a column whose schema field declares a default
+with that default as it writes; here the null is written as it came;</p></li>
+<li><p>a table every one of whose columns is a partition column. Java projects the partition columns
+out of what it writes, leaving files that carry nothing but a row count; here such a schema is
+refused when the table is created and when it is opened;</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code>, <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>, <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> partition columns, which Java allows. This
+is a restriction of the whole library rather than of format tables. The types that do work are
+<code class="docutils literal notranslate"><span class="pre">BOOLEAN</span></code>, <code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>, <code class="docutils literal notranslate"><span class="pre">INT</span></code>, <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>, <code class="docutils literal notranslate"><span class="pre">STRING</span></code> and <code class="docutils literal notranslate"><span class="pre">DATE</span></code> - the set
+the managed table path reads and writes partitions in. Any other, <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> among them, is
+refused when the table is created and when it is opened, rather than at the first read or write:
+validation asks by building the partition computer that does the round trip, so there is one
+answer rather than a list of types that could fall out of step with it.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">data-file.path-directory</span></code> has no effect here, and none in Java either: Java’s format table
+writer builds its paths from the table root rather than from that directory.
+<code class="docutils literal notranslate"><span class="pre">format-table.implementation</span></code> is honoured by the engines rather than by the table - in Java
+Spark it selects between Paimon’s own implementation and the engine’s <code class="docutils literal notranslate"><span class="pre">FileTable</span></code> - so it has
+no meaning inside this library.</p>
+</section>
+<section id="validation">
+<h2>Validation<a class="headerlink" href="#validation" title="Link to this heading">#</a></h2>
+<p>A table Java can serve and this library cannot is refused at creation rather than accepted and
+then found unopenable, whichever catalog it is created through. It can still reach a catalog
+another way - written by Java, or by an older client - so the same checks run again when the
+table is opened.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="append_only_table.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Append Only Table</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="system_tables.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">System Tables</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-and-writing">Reading and writing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#aborting-a-write">Aborting a write</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#relationship-to-java-paimon">Relationship to Java Paimon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limits">Current limits</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#validation">Validation</a></li>
+</ul>
+  </nav></div>
+
+  <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/apache/paimon-cpp/edit/main/docs/source/user_guide/format_table.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=cb8930eaaf36d9849b67"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=cb8930eaaf36d9849b67"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026-2026 Apache Software Foundation.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 9.1.0.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.21.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

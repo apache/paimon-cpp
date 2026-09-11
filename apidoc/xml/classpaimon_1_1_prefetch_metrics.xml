@@ -1,0 +1,257 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_prefetch_metrics" kind="class" language="C++" prot="public">
+    <compoundname>paimon::PrefetchMetrics</compoundname>
+    <includes refid="prefetch__file__batch__reader_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h</includes>
+    <sectiondef kind="public-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a57a35360b6ff70a03028dbe4a1822e3b" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::ENABLED[]</definition>
+        <argsstring>[]</argsstring>
+        <name>ENABLED</name>
+        <qualifiedname>paimon::PrefetchMetrics::ENABLED</qualifiedname>
+        <initializer>= &quot;prefetch.enabled&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="33" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="33" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a932f12673af955d2c3d6d743f1a3b6d1" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::PARALLELISM[]</definition>
+        <argsstring>[]</argsstring>
+        <name>PARALLELISM</name>
+        <qualifiedname>paimon::PrefetchMetrics::PARALLELISM</qualifiedname>
+        <initializer>= &quot;prefetch.parallelism&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="34" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="34" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1ac503f46daf978b4d8fb5b0adea5161d0" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::READ_RANGES_TOTAL[]</definition>
+        <argsstring>[]</argsstring>
+        <name>READ_RANGES_TOTAL</name>
+        <qualifiedname>paimon::PrefetchMetrics::READ_RANGES_TOTAL</qualifiedname>
+        <initializer>= &quot;prefetch.read-ranges.total&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="35" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="35" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a560720373caf6612f64aecd3f7ed6985" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::READ_RANGES_AFTER_BITMAP[]</definition>
+        <argsstring>[]</argsstring>
+        <name>READ_RANGES_AFTER_BITMAP</name>
+        <qualifiedname>paimon::PrefetchMetrics::READ_RANGES_AFTER_BITMAP</qualifiedname>
+        <initializer>= &quot;prefetch.read-ranges.after-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bitmap&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="36" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="36" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1aa5c86292fe9d7a6e2ea7b5b027d6b033" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::SEEK_COUNT[]</definition>
+        <argsstring>[]</argsstring>
+        <name>SEEK_COUNT</name>
+        <qualifiedname>paimon::PrefetchMetrics::SEEK_COUNT</qualifiedname>
+        <initializer>= &quot;prefetch.seek.count&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="37" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="37" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a7db1437b3a30647ab1d13342609cdf74" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::PRODUCED_BATCHES[]</definition>
+        <argsstring>[]</argsstring>
+        <name>PRODUCED_BATCHES</name>
+        <qualifiedname>paimon::PrefetchMetrics::PRODUCED_BATCHES</qualifiedname>
+        <initializer>= &quot;prefetch.produced-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">batches&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="38" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="38" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1ad5aabaec0affe27e60239425afd91f02" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::CONSUMED_BATCHES[]</definition>
+        <argsstring>[]</argsstring>
+        <name>CONSUMED_BATCHES</name>
+        <qualifiedname>paimon::PrefetchMetrics::CONSUMED_BATCHES</qualifiedname>
+        <initializer>= &quot;prefetch.consumed-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">batches&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="39" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="39" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a7cf173f766d115905ceb839eb47d75c5" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::DISCARDED_BATCHES[]</definition>
+        <argsstring>[]</argsstring>
+        <name>DISCARDED_BATCHES</name>
+        <qualifiedname>paimon::PrefetchMetrics::DISCARDED_BATCHES</qualifiedname>
+        <initializer>= &quot;prefetch.discarded-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">batches&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="40" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="40" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a47b30c7f0bef64520556f1ed5b75cc4f" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::ERRORS[]</definition>
+        <argsstring>[]</argsstring>
+        <name>ERRORS</name>
+        <qualifiedname>paimon::PrefetchMetrics::ERRORS</qualifiedname>
+        <initializer>= &quot;prefetch.errors&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="41" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="41" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a890c6332511903ac0343dfa8380d00f4" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::ADAPTIVE_DISABLED_COUNT[]</definition>
+        <argsstring>[]</argsstring>
+        <name>ADAPTIVE_DISABLED_COUNT</name>
+        <qualifiedname>paimon::PrefetchMetrics::ADAPTIVE_DISABLED_COUNT</qualifiedname>
+        <initializer>= &quot;prefetch.adaptive-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">disabled</ref>-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">count&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="42" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="42" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a2aa8b58c53268b5884d3fb7315a90994" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::QUEUE_FULL_COUNT[]</definition>
+        <argsstring>[]</argsstring>
+        <name>QUEUE_FULL_COUNT</name>
+        <qualifiedname>paimon::PrefetchMetrics::QUEUE_FULL_COUNT</qualifiedname>
+        <initializer>= &quot;prefetch.queue-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">full</ref>-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">count&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="43" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="43" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1ad7caf2422a3ed934443b9b8d054cd451" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::QUEUE_DEPTH[]</definition>
+        <argsstring>[]</argsstring>
+        <name>QUEUE_DEPTH</name>
+        <qualifiedname>paimon::PrefetchMetrics::QUEUE_DEPTH</qualifiedname>
+        <initializer>= &quot;prefetch.queue-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">depth&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="44" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="44" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a43b75dcff1a34257cbf0e298270f40ce" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::QUEUE_DEPTH_MAX[]</definition>
+        <argsstring>[]</argsstring>
+        <name>QUEUE_DEPTH_MAX</name>
+        <qualifiedname>paimon::PrefetchMetrics::QUEUE_DEPTH_MAX</qualifiedname>
+        <initializer>= &quot;prefetch.queue-depth.max&quot;</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="45" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="45" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1af6113757ea31da6fe6f4b5e7830416f6" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::READER_READ_LATENCY_US[]</definition>
+        <argsstring>[]</argsstring>
+        <name>READER_READ_LATENCY_US</name>
+        <qualifiedname>paimon::PrefetchMetrics::READER_READ_LATENCY_US</qualifiedname>
+        <initializer>= &quot;prefetch.reader-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">read</ref>-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">latency</ref>-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">us&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="46" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="46" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_prefetch_metrics_1a5831d8d9bc1a77265de829a72505d609" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>constexpr char paimon::PrefetchMetrics::CONSUMER_WAIT_LATENCY_US[]</definition>
+        <argsstring>[]</argsstring>
+        <name>CONSUMER_WAIT_LATENCY_US</name>
+        <qualifiedname>paimon::PrefetchMetrics::CONSUMER_WAIT_LATENCY_US</qualifiedname>
+        <initializer>= &quot;prefetch.consumer-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">wait</ref>-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">latency</ref>-<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">us&quot;</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="47" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="47" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>C++-only prefetch reader metrics. Java Paimon has no corresponding metrics. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" line="31" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/reader/prefetch_file_batch_reader.h" bodystart="31" bodyend="48"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a890c6332511903ac0343dfa8380d00f4" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>ADAPTIVE_DISABLED_COUNT</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1ad5aabaec0affe27e60239425afd91f02" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>CONSUMED_BATCHES</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a5831d8d9bc1a77265de829a72505d609" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>CONSUMER_WAIT_LATENCY_US</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a7cf173f766d115905ceb839eb47d75c5" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>DISCARDED_BATCHES</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a57a35360b6ff70a03028dbe4a1822e3b" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>ENABLED</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a47b30c7f0bef64520556f1ed5b75cc4f" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>ERRORS</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a932f12673af955d2c3d6d743f1a3b6d1" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>PARALLELISM</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a7db1437b3a30647ab1d13342609cdf74" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>PRODUCED_BATCHES</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1ad7caf2422a3ed934443b9b8d054cd451" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>QUEUE_DEPTH</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a43b75dcff1a34257cbf0e298270f40ce" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>QUEUE_DEPTH_MAX</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a2aa8b58c53268b5884d3fb7315a90994" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>QUEUE_FULL_COUNT</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1a560720373caf6612f64aecd3f7ed6985" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>READ_RANGES_AFTER_BITMAP</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1ac503f46daf978b4d8fb5b0adea5161d0" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>READ_RANGES_TOTAL</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1af6113757ea31da6fe6f4b5e7830416f6" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>READER_READ_LATENCY_US</name></member>
+      <member refid="classpaimon_1_1_prefetch_metrics_1aa5c86292fe9d7a6e2ea7b5b027d6b033" prot="public" virt="non-virtual"><scope>paimon::PrefetchMetrics</scope><name>SEEK_COUNT</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

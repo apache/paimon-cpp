@@ -1,0 +1,286 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_cache_config" kind="class" language="C++" prot="public">
+    <compoundname>paimon::CacheConfig</compoundname>
+    <includes refid="prefetch__cache__config_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h</includes>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_cache_config_1a85f4a665f031038d447ae56aaea61543" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::range_size_limit_</definition>
+        <argsstring></argsstring>
+        <name>range_size_limit_</name>
+        <qualifiedname>paimon::CacheConfig::range_size_limit_</qualifiedname>
+        <initializer>= 32 * 1024 * 1024</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="103" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="103" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_cache_config_1a66ed2830dc908c3088206e0382af287a" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::hole_size_limit_</definition>
+        <argsstring></argsstring>
+        <name>hole_size_limit_</name>
+        <qualifiedname>paimon::CacheConfig::hole_size_limit_</qualifiedname>
+        <initializer>= 8 * 1024</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="104" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="104" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_cache_config_1a132adafe235d5334716266d8eb28f90a" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::pre_buffer_limit_</definition>
+        <argsstring></argsstring>
+        <name>pre_buffer_limit_</name>
+        <qualifiedname>paimon::CacheConfig::pre_buffer_limit_</qualifiedname>
+        <initializer>= 256 * 1024 * 1024</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="105" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="105" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_cache_config_1a6c40a88db59fcf9b3bddbb74e6256667" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::block_size_</definition>
+        <argsstring></argsstring>
+        <name>block_size_</name>
+        <qualifiedname>paimon::CacheConfig::block_size_</qualifiedname>
+        <initializer>= 64 * 1024</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="111" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="111" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_cache_config_1a68b77707e7ece40937c222b75d7e46f4" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::block_cache_limit_</definition>
+        <argsstring></argsstring>
+        <name>block_cache_limit_</name>
+        <qualifiedname>paimon::CacheConfig::block_cache_limit_</qualifiedname>
+        <initializer>= 1024 * 1024</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="114" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="114" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1a6ac21b106189c1b2b1a88ebb43b0d69e" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::GetRangeSizeLimit</definition>
+        <argsstring>() const</argsstring>
+        <name>GetRangeSizeLimit</name>
+        <qualifiedname>paimon::CacheConfig::GetRangeSizeLimit</qualifiedname>
+        <briefdescription>
+<para>Returns the maximum allowed size (in bytes) for a single cached range. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Defaults to 32 MiB. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="39" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="39" bodyend="41"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1aa57751ee46af856b9d29a5c9b4419c18" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">void</ref></type>
+        <definition>void paimon::CacheConfig::SetRangeSizeLimit</definition>
+        <argsstring>(uint64_t range_size_limit)</argsstring>
+        <name>SetRangeSizeLimit</name>
+        <qualifiedname>paimon::CacheConfig::SetRangeSizeLimit</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>range_size_limit</declname>
+        </param>
+        <briefdescription>
+<para>Sets the maximum allowed size (in bytes) for a single cached range. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="44" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="44" bodyend="46"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1a4b016a5a4f178c4d8ae4ac141d42f87d" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::GetHoleSizeLimit</definition>
+        <argsstring>() const</argsstring>
+        <name>GetHoleSizeLimit</name>
+        <qualifiedname>paimon::CacheConfig::GetHoleSizeLimit</qualifiedname>
+        <briefdescription>
+<para>Returns the maximum gap size (in bytes) considered mergeable between adjacent ranges. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Defaults to 8 KiB. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="50" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="50" bodyend="52"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1afeea0b4c1c87616cee91d80b4fa0cff2" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">void</ref></type>
+        <definition>void paimon::CacheConfig::SetHoleSizeLimit</definition>
+        <argsstring>(uint64_t hole_size_limit)</argsstring>
+        <name>SetHoleSizeLimit</name>
+        <qualifiedname>paimon::CacheConfig::SetHoleSizeLimit</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>hole_size_limit</declname>
+        </param>
+        <briefdescription>
+<para>Sets the maximum gap size (in bytes) considered mergeable between adjacent ranges. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="55" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="55" bodyend="57"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1a6b505f42777a2c2369b27e6a7df98e9f" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::GetPreBufferLimit</definition>
+        <argsstring>() const</argsstring>
+        <name>GetPreBufferLimit</name>
+        <qualifiedname>paimon::CacheConfig::GetPreBufferLimit</qualifiedname>
+        <briefdescription>
+<para>Returns the maximum size to pre-buffer ahead of the current read position. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Defaults to 256 MiB. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="61" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="61" bodyend="63"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1a3588a14feec9cdf3473610687935e8ab" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">void</ref></type>
+        <definition>void paimon::CacheConfig::SetPreBufferLimit</definition>
+        <argsstring>(uint64_t pre_buffer_limit)</argsstring>
+        <name>SetPreBufferLimit</name>
+        <qualifiedname>paimon::CacheConfig::SetPreBufferLimit</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>pre_buffer_limit</declname>
+        </param>
+        <briefdescription>
+<para>Sets the maximum size to pre-buffer ahead of the current read position. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="66" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="66" bodyend="68"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1a3c5a86918ab69bf31c0a5564cc0ef6f6" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::GetBlockSize</definition>
+        <argsstring>() const</argsstring>
+        <name>GetBlockSize</name>
+        <qualifiedname>paimon::CacheConfig::GetBlockSize</qualifiedname>
+        <briefdescription>
+<para>Returns the granularity (in bytes) of the block cache entries serving the small reads that the prefetched ranges do not cover. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Defaults to 64 KiB. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="72" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="72" bodyend="74"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1a17f7e69f5b8c67ba558765819eef1fc2" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">void</ref></type>
+        <definition>void paimon::CacheConfig::SetBlockSize</definition>
+        <argsstring>(uint64_t block_size)</argsstring>
+        <name>SetBlockSize</name>
+        <qualifiedname>paimon::CacheConfig::SetBlockSize</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>block_size</declname>
+        </param>
+        <briefdescription>
+<para>Sets the granularity (in bytes) of the block cache entries. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="77" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="77" bodyend="79"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1a8f8d247d300cb66b7dba20365e55a082" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>uint64_t paimon::CacheConfig::GetBlockCacheLimit</definition>
+        <argsstring>() const</argsstring>
+        <name>GetBlockCacheLimit</name>
+        <qualifiedname>paimon::CacheConfig::GetBlockCacheLimit</qualifiedname>
+        <briefdescription>
+<para>Returns the maximum total size (in bytes) of the block cache entries of one file. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Zero disables the block cache. Defaults to 1 MiB. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="83" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="83" bodyend="85"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_cache_config_1aee271f72bd1099d00fd1bcf7d9f9bd4e" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">void</ref></type>
+        <definition>void paimon::CacheConfig::SetBlockCacheLimit</definition>
+        <argsstring>(uint64_t block_cache_limit)</argsstring>
+        <name>SetBlockCacheLimit</name>
+        <qualifiedname>paimon::CacheConfig::SetBlockCacheLimit</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+          <declname>block_cache_limit</declname>
+        </param>
+        <briefdescription>
+<para>Sets the maximum total size (in bytes) of the block cache entries of one file. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Zero disables the block cache. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="89" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="89" bodyend="91"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Configuration parameters for the read-ahead cache behavior. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>This struct controls various limits and prefetching strategies used by ReadAheadCache to balance memory usage, I/O efficiency, and latency hiding. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" line="35" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/utils/prefetch_cache_config.h" bodystart="35" bodyend="115"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_cache_config_1a68b77707e7ece40937c222b75d7e46f4" prot="private" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>block_cache_limit_</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a6c40a88db59fcf9b3bddbb74e6256667" prot="private" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>block_size_</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a8f8d247d300cb66b7dba20365e55a082" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>GetBlockCacheLimit</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a3c5a86918ab69bf31c0a5564cc0ef6f6" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>GetBlockSize</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a4b016a5a4f178c4d8ae4ac141d42f87d" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>GetHoleSizeLimit</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a6b505f42777a2c2369b27e6a7df98e9f" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>GetPreBufferLimit</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a6ac21b106189c1b2b1a88ebb43b0d69e" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>GetRangeSizeLimit</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a66ed2830dc908c3088206e0382af287a" prot="private" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>hole_size_limit_</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a132adafe235d5334716266d8eb28f90a" prot="private" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>pre_buffer_limit_</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a85f4a665f031038d447ae56aaea61543" prot="private" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>range_size_limit_</name></member>
+      <member refid="classpaimon_1_1_cache_config_1aee271f72bd1099d00fd1bcf7d9f9bd4e" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>SetBlockCacheLimit</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a17f7e69f5b8c67ba558765819eef1fc2" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>SetBlockSize</name></member>
+      <member refid="classpaimon_1_1_cache_config_1afeea0b4c1c87616cee91d80b4fa0cff2" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>SetHoleSizeLimit</name></member>
+      <member refid="classpaimon_1_1_cache_config_1a3588a14feec9cdf3473610687935e8ab" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>SetPreBufferLimit</name></member>
+      <member refid="classpaimon_1_1_cache_config_1aa57751ee46af856b9d29a5c9b4419c18" prot="public" virt="non-virtual"><scope>paimon::CacheConfig</scope><name>SetRangeSizeLimit</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

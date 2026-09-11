@@ -1,0 +1,271 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_file_status" kind="class" language="C++" prot="public">
+    <compoundname>paimon::FileStatus</compoundname>
+    <includes refid="file__system_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h</includes>
+    <sectiondef kind="public-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_file_status_1a2294312fee9a40cea8353c1cf2a2e116" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>constexpr int64_t paimon::FileStatus::kUnknownModificationTime</definition>
+        <argsstring></argsstring>
+        <name>kUnknownModificationTime</name>
+        <qualifiedname>paimon::FileStatus::kUnknownModificationTime</qualifiedname>
+        <initializer>= -1</initializer>
+        <briefdescription>
+<para>Sentinel returned by <computeroutput><ref refid="classpaimon_1_1_file_status_1a286dfb8c6f784cec91ec2be5c148b821" kindref="member">GetModificationTime()</ref></computeroutput> when the modification time is not known. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="174" column="30" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="174" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_file_status_1a1b4f7cc1cf98fa8da4d3792aeb209b77" prot="public" static="yes" constexpr="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">constexpr</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>constexpr int64_t paimon::FileStatus::kNoSize</definition>
+        <argsstring></argsstring>
+        <name>kNoSize</name>
+        <qualifiedname>paimon::FileStatus::kNoSize</qualifiedname>
+        <initializer>= -1</initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="176" column="30" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="176" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_file_status_1a1d2040698b3a5d97d40c529e0322b230" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FileStatus::path_</definition>
+        <argsstring></argsstring>
+        <name>path_</name>
+        <qualifiedname>paimon::FileStatus::path_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="219" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="219" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_file_status_1ab2823a0715edfa784a0968e2b7a5816b" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileStatus::length_</definition>
+        <argsstring></argsstring>
+        <name>length_</name>
+        <qualifiedname>paimon::FileStatus::length_</qualifiedname>
+        <initializer>= <ref refid="classpaimon_1_1_file_status_1a1b4f7cc1cf98fa8da4d3792aeb209b77" kindref="member">kNoSize</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="220" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="220" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_file_status_1af3ed7785b5d77095f1e9671ee7e8d5f7" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::FileStatus::is_dir_</definition>
+        <argsstring></argsstring>
+        <name>is_dir_</name>
+        <qualifiedname>paimon::FileStatus::is_dir_</qualifiedname>
+        <initializer>= <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">false</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="221" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="221" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_file_status_1a7397665c6eeddc38f2e6d761155140a0" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileStatus::modification_time_</definition>
+        <argsstring></argsstring>
+        <name>modification_time_</name>
+        <qualifiedname>paimon::FileStatus::modification_time_</qualifiedname>
+        <initializer>= <ref refid="classpaimon_1_1_file_status_1a2294312fee9a40cea8353c1cf2a2e116" kindref="member">kUnknownModificationTime</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="222" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="222" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_file_status_1a6278b7b7d8c7327ba7d7af3674836381" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::FileStatus::FileStatus</definition>
+        <argsstring>()=default</argsstring>
+        <name>FileStatus</name>
+        <qualifiedname>paimon::FileStatus::FileStatus</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="178" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_status_1a42af84baa379263138e8b71cfbe732cf" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::FileStatus::FileStatus</definition>
+        <argsstring>(std::string path, int64_t length, bool is_dir=false, int64_t modification_time=kUnknownModificationTime)</argsstring>
+        <name>FileStatus</name>
+        <qualifiedname>paimon::FileStatus::FileStatus</qualifiedname>
+        <param>
+          <type>std::string</type>
+          <declname>path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>length</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+          <declname>is_dir</declname>
+          <defval><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">false</ref></defval>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>modification_time</declname>
+          <defval><ref refid="classpaimon_1_1_file_status_1a2294312fee9a40cea8353c1cf2a2e116" kindref="member">kUnknownModificationTime</ref></defval>
+        </param>
+        <briefdescription>
+<para>Create a file status from caller-supplied metadata. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>path</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The path of the file or directory. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>length</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The size of the file in bytes. It may be negative only when the size is unknown. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>is_dir</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Whether the path represents a directory. Defaults to false. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>modification_time</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The last modification time in milliseconds since the epoch (UTC January 1, 1970). Defaults to <computeroutput>kUnknownModificationTime</computeroutput>. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="187" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="187" bodyend="192"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_status_1ab193413a4bb94283f4bef619f357107f" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileStatus::GetLen</definition>
+        <argsstring>() const</argsstring>
+        <name>GetLen</name>
+        <qualifiedname>paimon::FileStatus::GetLen</qualifiedname>
+        <briefdescription>
+<para>Get the size of the file in bytes. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="note"><para>For directories, this method is undefined behavior. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="196" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="196" bodyend="198"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_status_1a7e2ed84dd62daa659425bd9481acb77f" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::FileStatus::IsDir</definition>
+        <argsstring>() const</argsstring>
+        <name>IsDir</name>
+        <qualifiedname>paimon::FileStatus::IsDir</qualifiedname>
+        <briefdescription>
+<para>Check if this entry represents a directory. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="201" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="201" bodyend="203"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_status_1ad3eedbdf213160a587c3bcc789c47a4c" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string paimon::FileStatus::GetPath</definition>
+        <argsstring>() const</argsstring>
+        <name>GetPath</name>
+        <qualifiedname>paimon::FileStatus::GetPath</qualifiedname>
+        <briefdescription>
+<para>Get the path of this file or directory. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="206" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="206" bodyend="208"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_status_1a286dfb8c6f784cec91ec2be5c148b821" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileStatus::GetModificationTime</definition>
+        <argsstring>() const</argsstring>
+        <name>GetModificationTime</name>
+        <qualifiedname>paimon::FileStatus::GetModificationTime</qualifiedname>
+        <briefdescription>
+<para>Get the last modification time of the file. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>A long value representing the time the file was last modified, measured in milliseconds since the epoch (UTC January 1, 1970). </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="214" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="214" bodyend="216"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>File status information. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>This class provides comprehensive file system metadata including file path, size, directory flag, and modification time. It is a concrete value type that can be copied and stored cheaply. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="171" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="171" bodyend="223"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_file_status_1a6278b7b7d8c7327ba7d7af3674836381" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>FileStatus</name></member>
+      <member refid="classpaimon_1_1_file_status_1a42af84baa379263138e8b71cfbe732cf" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>FileStatus</name></member>
+      <member refid="classpaimon_1_1_file_status_1ab193413a4bb94283f4bef619f357107f" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>GetLen</name></member>
+      <member refid="classpaimon_1_1_file_status_1a286dfb8c6f784cec91ec2be5c148b821" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>GetModificationTime</name></member>
+      <member refid="classpaimon_1_1_file_status_1ad3eedbdf213160a587c3bcc789c47a4c" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>GetPath</name></member>
+      <member refid="classpaimon_1_1_file_status_1af3ed7785b5d77095f1e9671ee7e8d5f7" prot="private" virt="non-virtual"><scope>paimon::FileStatus</scope><name>is_dir_</name></member>
+      <member refid="classpaimon_1_1_file_status_1a7e2ed84dd62daa659425bd9481acb77f" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>IsDir</name></member>
+      <member refid="classpaimon_1_1_file_status_1a1b4f7cc1cf98fa8da4d3792aeb209b77" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>kNoSize</name></member>
+      <member refid="classpaimon_1_1_file_status_1a2294312fee9a40cea8353c1cf2a2e116" prot="public" virt="non-virtual"><scope>paimon::FileStatus</scope><name>kUnknownModificationTime</name></member>
+      <member refid="classpaimon_1_1_file_status_1ab2823a0715edfa784a0968e2b7a5816b" prot="private" virt="non-virtual"><scope>paimon::FileStatus</scope><name>length_</name></member>
+      <member refid="classpaimon_1_1_file_status_1a7397665c6eeddc38f2e6d761155140a0" prot="private" virt="non-virtual"><scope>paimon::FileStatus</scope><name>modification_time_</name></member>
+      <member refid="classpaimon_1_1_file_status_1a1d2040698b3a5d97d40c529e0322b230" prot="private" virt="non-virtual"><scope>paimon::FileStatus</scope><name>path_</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
