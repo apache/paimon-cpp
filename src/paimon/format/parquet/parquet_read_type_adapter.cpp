@@ -101,7 +101,7 @@ Result<bool> ParquetReadTypeAdapter::NeedsArrayConversionImpl(
     const std::shared_ptr<arrow::DataType>& target_data_type = target_field->type();
     arrow::Type::type type = src_data_type->id();
     if (type != target_data_type->id()) {
-        return Status::Invalid(fmt::format("src type {} and target type {} mismatch",
+        return Status::Invalid(fmt::format("source type {} and target type {} mismatch",
                                            src_data_type->ToString(),
                                            target_data_type->ToString()));
     }
