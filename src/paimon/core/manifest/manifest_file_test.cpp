@@ -147,8 +147,8 @@ class ManifestFileTest : public testing::Test {
                                                                   &manifest_entries,
                                                                   /*expected_total_buckets=*/2));
         } else if (bucket) {
-            PAIMON_RETURN_NOT_OK(
-                manifest_file->ReadBucketEntries(file_name, bucket.value(), &manifest_entries));
+            PAIMON_RETURN_NOT_OK(manifest_file->ReadBucketEntries(file_name, bucket.value(),
+                                                                  &manifest_entries, std::nullopt));
         } else {
             PAIMON_RETURN_NOT_OK(
                 manifest_file->Read(file_name, /*filter=*/nullptr, &manifest_entries));
@@ -373,16 +373,18 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
     ASSERT_EQ(2, all_entries.size());
 
     std::vector<ManifestEntry> bucket_one_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, &bucket_one_entries));
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, &bucket_one_entries,
+                                               std::nullopt));
     ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
 
     std::vector<ManifestEntry> bucket_zero_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/0, &bucket_zero_entries));
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/0, &bucket_zero_entries,
+                                               std::nullopt));
     ASSERT_EQ(std::vector<ManifestEntry>({all_entries[1]}), bucket_zero_entries);
 
     std::vector<ManifestEntry> missing_bucket_entries;
-    ASSERT_OK(
-        manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/2, &missing_bucket_entries));
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/2, &missing_bucket_entries,
+                                               std::nullopt));
     ASSERT_TRUE(missing_bucket_entries.empty());
 
     ASSERT_EQ(1, counting_file_system->open_count);
@@ -509,13 +511,13 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
         for (int32_t read = 0; read < 2; ++read) {
             std::vector<ManifestEntry> bucket_entries;
             ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0,
-                                                       &bucket_entries));
+                                                       &bucket_entries, std::nullopt));
             ASSERT_EQ(std::vector<ManifestEntry>({valid_target_bucket}), bucket_entries);
             ASSERT_EQ(cache_mode == 1 ? 1 : read + 1, file_system->open_count);
         }
         std::vector<ManifestEntry> missing_bucket_entries;
         ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/2,
-                                                   &missing_bucket_entries));
+                                                   &missing_bucket_entries, std::nullopt));
         ASSERT_TRUE(missing_bucket_entries.empty());
         std::vector<ManifestEntry> all_entries;
         ASSERT_NOK_WITH_MSG(

@@ -439,8 +439,8 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
                     PAIMON_RETURN_NOT_OK(
                         manifest_file_->Read(meta.FileName(), /*filter=*/nullptr, &bucket_entries));
                 } else {
-                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(meta.FileName(), bucket,
-                                                                           &bucket_entries));
+                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
+                        meta.FileName(), bucket, &bucket_entries, std::nullopt));
                 }
                 return bucket_entries;
             };

@@ -65,9 +65,9 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
 
     /// Read entries for a bucket. An inferred total bucket count also retains entries with
     /// different or unknown bucket counts for the existing compatibility checks.
-    Status ReadBucketEntries(
-        const std::string& file_name, int32_t bucket, std::vector<ManifestEntry>* entries,
-        const std::optional<int32_t>& expected_total_buckets = std::nullopt) const;
+    Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
+                             std::vector<ManifestEntry>* entries,
+                             const std::optional<int32_t>& expected_total_buckets) const;
 
  private:
     Status PrepareBucketRead(std::unique_ptr<FileBatchReader>* reader, int32_t bucket,
