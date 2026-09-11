@@ -1786,6 +1786,70 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeWithPageFilteredRowGroup) {
     ASSERT_LT(filtered_total, chunk_end - chunk_offset);
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestMixedRowGroupPreBufferThroughBuilder) {
+    auto src_array = MakeSequentialIntData(12);
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
+    WriteArray(file_path_, src_array, schema, /*write_batch_size=*/1,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/4, /*max_page_size=*/1);
+    // RG0 is fully matched, RG1 keeps two pages, and RG2 is pruned entirely.
+    auto predicate = PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"f0",
+                                                FieldType::INT, Literal(6));
+    auto expected = std::make_shared<arrow::ChunkedArray>(src_array->Slice(0, 6));
+    enum class PreBufferMode { DEFAULT, DISABLED, FRAMEWORK_PREFETCH };
+    uint64_t disabled_bytes = 0;
+    for (PreBufferMode mode :
+         {PreBufferMode::DEFAULT, PreBufferMode::DISABLED, PreBufferMode::FRAMEWORK_PREFETCH}) {
+        SCOPED_TRACE(static_cast<int32_t>(mode));
+        std::map<std::string, std::string> options = {
+            {PARQUET_READ_ENABLE_PAGE_INDEX_FILTER, "true"},
+            {PARQUET_READ_CACHE_OPTION_HOLE_SIZE_LIMIT, "0"}};
+        if (mode != PreBufferMode::DEFAULT) {
+            options[PARQUET_READ_ENABLE_PRE_BUFFER] =
+                mode == PreBufferMode::DISABLED ? "false" : "true";
+        }
+        ParquetReaderBuilder builder(options, /*batch_size=*/2);
+        if (mode == PreBufferMode::FRAMEWORK_PREFETCH) {
+            ReadHints hints;
+            hints.prefetch_enabled = true;
+            hints.read_ahead_cache_enabled = true;
+            builder.WithReadHints(hints);
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path_));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder.Build(in));
+        auto parquet_reader = dynamic_cast<ParquetFileBatchReader*>(reader.get());
+        ASSERT_TRUE(parquet_reader);
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&c_schema, predicate, std::nullopt));
+        // Load page indexes before measuring data I/O. With zero coalescing gap, the
+        // exported ranges are the exact data bytes needed by the mixed scan.
+        ASSERT_OK_AND_ASSIGN(auto ranges, parquet_reader->PreBufferRange());
+        uint64_t expected_bytes = 0;
+        for (const auto& range : ranges) {
+            expected_bytes += range.second;
+        }
+        ASSERT_GT(expected_bytes, 0u);
+        ASSERT_OK_AND_ASSIGN(uint64_t baseline, reader->GetReaderMetrics()->GetCounter(
+                                                    ParquetMetrics::READ_STORAGE_BYTES));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             paimon::test::ReadResultCollector::CollectResult(reader.get()));
+        reader->Close();
+        ASSERT_TRUE(expected->Equals(result)) << result->ToString();
+        ASSERT_OK_AND_ASSIGN(uint64_t total_bytes, reader->GetReaderMetrics()->GetCounter(
+                                                       ParquetMetrics::READ_STORAGE_BYTES));
+        const uint64_t data_bytes = total_bytes - baseline;
+        if (mode == PreBufferMode::DEFAULT) {
+            ASSERT_EQ(expected_bytes, data_bytes);
+        } else if (mode == PreBufferMode::DISABLED) {
+            disabled_bytes = data_bytes;
+            ASSERT_GT(disabled_bytes, expected_bytes);
+        } else {
+            // Framework prefetch hints override an explicitly enabled option.
+            ASSERT_EQ(disabled_bytes, data_bytes);
+        }
+    }
+}
+
 // End-to-end: PreBufferRange() feeds the shared ReadAheadCache through CacheInputStream,
 // and data reads are served from the cache.
 TEST_F(ParquetFileBatchReaderTest, TestPreBufferRangeFeedsReadAheadCache) {
