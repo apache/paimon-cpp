@@ -63,20 +63,15 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// @note This method is atomic.
     Result<std::vector<ManifestFileMeta>> Write(const std::vector<ManifestEntry>& entries);
 
-    struct InferredBucketLayout {
-        int32_t total_buckets;
-        int64_t schema_id;
-    };
-
-    /// Read entries for a bucket. An inferred layout also retains historical or unknown
-    /// layouts for the existing compatibility checks.
+    /// Read entries for a bucket. An inferred total bucket count also retains entries with
+    /// different or unknown bucket counts for the existing compatibility checks.
     Status ReadBucketEntries(
         const std::string& file_name, int32_t bucket, std::vector<ManifestEntry>* entries,
-        const std::optional<InferredBucketLayout>& inferred_layout = std::nullopt) const;
+        const std::optional<int32_t>& expected_total_buckets = std::nullopt) const;
 
  private:
-    Status PrepareBucketRead(FileBatchReader* reader, int32_t bucket,
-                             const std::optional<InferredBucketLayout>& inferred_layout) const;
+    Status PrepareBucketRead(std::unique_ptr<FileBatchReader>* reader, int32_t bucket,
+                             const std::optional<int32_t>& expected_total_buckets) const;
 
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,

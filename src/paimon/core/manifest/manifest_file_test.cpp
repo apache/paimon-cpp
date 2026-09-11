@@ -143,9 +143,9 @@ class ManifestFileTest : public testing::Test {
                                  /*target_file_size=*/1024, pool, options, unused_schema));
         std::vector<ManifestEntry> manifest_entries;
         if (bucket && inferred_bucket) {
-            PAIMON_RETURN_NOT_OK(manifest_file->ReadBucketEntries(
-                file_name, bucket.value(), &manifest_entries,
-                ManifestFile::InferredBucketLayout{/*total_buckets=*/2, /*schema_id=*/0}));
+            PAIMON_RETURN_NOT_OK(manifest_file->ReadBucketEntries(file_name, bucket.value(),
+                                                                  &manifest_entries,
+                                                                  /*expected_total_buckets=*/2));
         } else if (bucket) {
             PAIMON_RETURN_NOT_OK(
                 manifest_file->ReadBucketEntries(file_name, bucket.value(), &manifest_entries));
@@ -425,6 +425,8 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
         constexpr size_t payload_size = 8 * 1024 * 1024;
         auto large_file = std::make_shared<DataFileMeta>(*source_entries[0].File());
         large_file->file_name.assign(payload_size, 'x');
+        // A schema change alone must not force unrelated buckets to be materialized.
+        large_file->schema_id = source_entries[1].File()->schema_id + 1;
         ManifestEntry excluded(FileKind::Add(), source_entries[0].Partition(), 1, 2, large_file);
         ManifestEntry selected(FileKind::Add(), source_entries[1].Partition(), 0, 2,
                                source_entries[1].File());
@@ -441,9 +443,8 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
                                                   1024, read_pool, options, unused_schema));
             std::vector<ManifestEntry> entries;
             if (inferred) {
-                ASSERT_OK(reader->ReadBucketEntries(
-                    written.first, 0, &entries,
-                    ManifestFile::InferredBucketLayout{2, large_file->schema_id}));
+                ASSERT_OK(reader->ReadBucketEntries(written.first, 0, &entries,
+                                                    /*expected_total_buckets=*/2));
                 ASSERT_EQ(std::vector<ManifestEntry>({selected}), entries);
                 ASSERT_LT(read_pool->MaxMemoryUsage(), payload_size / 2);
             } else {
@@ -526,19 +527,17 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
 TEST_F(ManifestFileTest, TestBucketProbeValidatesVersionsOutsideSelectedBucket) {
     auto pool = GetDefaultPool();
     ManifestEntrySerializer serializer(pool);
-    // Supply matching layout identifiers so the other bucket would be skipped unless
-    // every row's version is validated before inferred-bucket filtering.
-    auto type = arrow::struct_(
-        {arrow::field(serializer.GetDataType()->field(0)->name(), arrow::int32()),
-         arrow::field(serializer.GetDataType()->field(3)->name(), arrow::int32()),
-         arrow::field(serializer.GetDataType()->field(4)->name(), arrow::int32()),
-         arrow::field(serializer.GetDataType()->field(5)->name(),
-                      arrow::struct_({serializer.GetDataType()->field(5)->type()->field(9)}))});
+    // A matching bucket count would prune the other bucket, but its version must still be
+    // validated. The probe must not require _FILE or its schema ID.
+    auto type =
+        arrow::struct_({arrow::field(serializer.GetDataType()->field(0)->name(), arrow::int32()),
+                        arrow::field(serializer.GetDataType()->field(3)->name(), arrow::int32()),
+                        arrow::field(serializer.GetDataType()->field(4)->name(), arrow::int32())});
     const std::vector<std::pair<std::string, std::string>> cases = {
-        {R"([[999,1,2,[0]],[2,0,2,[0]]])", "Unsupported version: 999"},
-        {R"([[1,1,2,[0]],[2,0,2,[0]]])", "not compatible"},
-        {R"([[null,1,2,[0]],[2,0,2,[0]]])", "must not be null"},
-        {R"([[2,null,2,[0]],[2,0,2,[0]]])", "must not be null"}};
+        {R"([[999,1,2],[2,0,2]])", "Unsupported version: 999"},
+        {R"([[1,1,2],[2,0,2]])", "not compatible"},
+        {R"([[null,1,2],[2,0,2]])", "must not be null"},
+        {R"([[2,null,2],[2,0,2]])", "must not be null"}};
     for (const auto& item : cases) {
         SCOPED_TRACE(item.first);
         auto dir = UniqueTestDirectory::Create();
@@ -567,12 +566,9 @@ TEST_F(ManifestFileTest, TestBucketProbeValidatesVersionsOutsideSelectedBucket) 
                                                  /*cache_enabled=*/true),
                             item.second);
         // The inferred path must also validate versions before discarding other buckets.
-        if (item.second != "must not be null") {
-            ASSERT_NOK_WITH_MSG(
-                TryReadManifestEntry("avro", dir->Str(), file_name, pool, /*bucket=*/0,
-                                     /*cache_enabled=*/true, /*inferred_bucket=*/true),
-                item.second);
-        }
+        ASSERT_NOK_WITH_MSG(TryReadManifestEntry("avro", dir->Str(), file_name, pool, /*bucket=*/0,
+                                                 /*cache_enabled=*/true, /*inferred_bucket=*/true),
+                            item.second);
     }
 }
 

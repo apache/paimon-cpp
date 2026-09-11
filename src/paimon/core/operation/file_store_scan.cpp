@@ -431,9 +431,7 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
                 std::vector<ManifestEntry> bucket_entries;
                 if (inferred_bucket) {
                     PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
-                        meta.FileName(), bucket, &bucket_entries,
-                        ManifestFile::InferredBucketLayout{core_options_.GetBucket(),
-                                                           table_schema_->Id()}));
+                        meta.FileName(), bucket, &bucket_entries, core_options_.GetBucket()));
                 } else if (meta.MinBucket() && meta.MaxBucket() &&
                            meta.MinBucket().value() == bucket &&
                            meta.MaxBucket().value() == bucket) {
@@ -469,8 +467,7 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     unmerged_entries.reserve(entries.size());
     for (auto& entry : entries) {
         if (entry.Bucket() == bucket ||
-            (inferred_bucket && (entry.TotalBuckets() != core_options_.GetBucket() ||
-                                 entry.File()->schema_id != table_schema_->Id()))) {
+            (inferred_bucket && entry.TotalBuckets() != core_options_.GetBucket())) {
             unmerged_entries.emplace_back(std::move(entry));
         }
     }
