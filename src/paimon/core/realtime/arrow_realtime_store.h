@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "paimon/realtime/realtime_store.h"
@@ -35,6 +36,8 @@ class StructArray;
 }  // namespace arrow
 
 namespace paimon {
+class FileSystem;
+class IOManager;
 class MemoryPool;
 class PredicateFilter;
 
@@ -42,7 +45,9 @@ class PredicateFilter;
 class ArrowRealtimeStore final : public RealtimeStore {
  public:
     ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
-                       StatisticsMode statistics_mode,
+                       StatisticsMode statistics_mode, const std::string& temp_directory,
+                       const std::shared_ptr<FileSystem>& spill_file_system,
+                       const std::string& spill_compression, int32_t spill_compression_level,
                        const std::shared_ptr<MemoryPool>& memory_pool,
                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
@@ -82,16 +87,28 @@ class ArrowRealtimeStore final : public RealtimeStore {
         uint64_t memory_usage;
     };
 
+    struct SpilledBatch {
+        OffsetRange offset_range;
+        std::optional<BatchStatistics> statistics;
+        int64_t row_count;
+        uint64_t memory_usage;
+    };
+
     class Segment;
+    class MemorySegment;
+    class SpilledSegment;
+    class SpillFile;
     class ReadView;
     class AppendCommitBatchReader;
     class StoredBatchReader;
+    class SpillBatchReader;
     class AppendQueryBatchReader;
 
     Result<std::optional<BatchStatistics>> CollectStatistics(
         const std::shared_ptr<arrow::StructArray>& data) const;
 
-    static Result<bool> MayMatchStatistics(const StoredBatch& stored,
+    static Result<bool> MayMatchStatistics(int64_t row_count,
+                                           const std::optional<BatchStatistics>& statistics,
                                            const std::shared_ptr<arrow::Schema>& read_schema,
                                            const std::shared_ptr<PredicateFilter>& predicate_filter,
                                            const std::vector<int32_t>& statistics_mapping,
@@ -102,6 +119,10 @@ class ArrowRealtimeStore final : public RealtimeStore {
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     RealtimeStoreMode mode_;
     StatisticsMode statistics_mode_;
+    std::shared_ptr<IOManager> io_manager_;
+    std::shared_ptr<FileSystem> spill_file_system_;
+    std::string spill_compression_;
+    int32_t spill_compression_level_;
     mutable std::mutex mutex_;
     std::vector<StoredBatch> building_batches_;
     std::vector<std::shared_ptr<Segment>> sealed_segments_;

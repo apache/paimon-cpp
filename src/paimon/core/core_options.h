@@ -108,6 +108,7 @@ class PAIMON_EXPORT CoreOptions {
     std::optional<int64_t> GetScanSnapshotId() const;
     std::optional<int64_t> GetScanTimestampMillis() const;
     bool RealtimeEnabled() const;
+    bool RealtimeSpillEnabled() const;
     int64_t GetRealtimeReadViewTtlMillis() const;
     /// Returns the statistics mode used by the real-time store.
     StatisticsMode GetRealtimeStoreStatisticsMode() const;

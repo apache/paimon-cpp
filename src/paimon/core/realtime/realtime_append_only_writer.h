@@ -49,7 +49,7 @@ class RealtimeAppendOnlyWriter : public BatchWriter {
         const std::shared_ptr<RealtimeContext>& realtime_context,
         const std::shared_ptr<AppendOnlyWriter>& file_writer,
         const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, const CoreOptions& options,
-        const std::shared_ptr<MemoryPool>& memory_pool);
+        const std::string& temp_directory, const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
 

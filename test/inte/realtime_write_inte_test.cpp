@@ -505,8 +505,17 @@ class RealtimeWriteInteTest : public ::testing::Test {
 
     Result<std::unique_ptr<FileStoreWrite>> CreateRealtimeWriter(
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
+        return CreateRealtimeWriter(realtime_context, /*temp_directory=*/"");
+    }
+
+    Result<std::unique_ptr<FileStoreWrite>> CreateRealtimeWriter(
+        const std::shared_ptr<RealtimeContext>& realtime_context,
+        const std::string& temp_directory) const {
         WriteContextBuilder builder(table_path_, commit_user_);
         builder.SetOptions(options_).WithStreamingMode(true).WithRealtimeContext(realtime_context);
+        if (!temp_directory.empty()) {
+            builder.WithTempDirectory(temp_directory);
+        }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context, builder.Finish());
         return FileStoreWrite::Create(std::move(context));
     }
@@ -515,6 +524,19 @@ class RealtimeWriteInteTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContext> realtime_context,
                                RealtimeContext::Create());
         return CreateRealtimeWriter(realtime_context);
+    }
+
+    bool WaitForChannelFileCount(const std::string& temp_directory, int64_t expected_count) const {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory) ==
+                expected_count) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory) ==
+               expected_count;
     }
 
     void ResetExternalOffset(const std::map<std::string, std::string>& partition, int32_t bucket,
@@ -4234,6 +4256,166 @@ TEST_F(RealtimeWriteInteTest, TestReaderPinsMemoryAcrossRefresh) {
     ASSERT_NE(nullptr, result);
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
         << result->ToString();
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestAppendRealtimeSpillFileLifecycle) {
+    options_[Options::REALTIME_SPILL_ENABLED] = "true";
+    CreateTable(/*partition_keys=*/{});
+    const std::string temp_directory = PathUtil::JoinPath(dir_->Str(), "append-realtime-spill");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context, temp_directory));
+
+    std::vector<Row> first_rows = MakeRows(/*first_id=*/0, /*count=*/4, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first_batch,
+                         MakeBatch(std::vector<Row>(first_rows.begin(), first_rows.begin() + 2),
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(first_batch)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> second_batch,
+                         MakeBatch(std::vector<Row>(first_rows.begin() + 2, first_rows.end()),
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(second_batch)));
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues memory_metrics_before_spill,
+                         ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_GT(memory_metrics_before_spill.building_memory, 0);
+    ASSERT_EQ(0, memory_metrics_before_spill.sealed_memory);
+    ASSERT_EQ(memory_metrics_before_spill.building_memory,
+              memory_metrics_before_spill.total_memory);
+
+    ASSERT_OK(writer->Seal());
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues memory_metrics_after_spill,
+                         ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(0, memory_metrics_after_spill.building_memory);
+    ASSERT_EQ(0, memory_metrics_after_spill.sealed_memory);
+    ASSERT_EQ(0, memory_metrics_after_spill.total_memory);
+    ASSERT_EQ(0, memory_metrics_after_spill.building_rows);
+    ASSERT_EQ(4, memory_metrics_after_spill.sealed_rows);
+    ASSERT_EQ(4, memory_metrics_after_spill.total_rows);
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> first_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, first_progress.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned_plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, pinned_plan->Splits().size());
+    ASSERT_NE(nullptr, std::dynamic_pointer_cast<RealtimeSplit>(pinned_plan->Splits()[0]));
+    ASSERT_OK_AND_ASSIGN(int64_t first_snapshot_id,
+                         Commit(first_progress, /*commit_identifier=*/0));
+
+    ASSERT_OK(writer->RefreshCommittedSnapshot(first_snapshot_id));
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+    ASSERT_OK_AND_ASSIGN(RealtimeMetricValues memory_metrics_after_reclaim,
+                         ReadRealtimeMetrics(writer->GetMetrics()));
+    ASSERT_EQ(0, memory_metrics_after_reclaim.total_memory);
+    ASSERT_EQ(0, memory_metrics_after_reclaim.total_rows);
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> pinned_rows, ReadRows(pinned_plan, realtime_context));
+    ASSERT_EQ(first_rows, pinned_rows);
+    ASSERT_TRUE(WaitForChannelFileCount(temp_directory, /*expected_count=*/0));
+
+    std::vector<Row> second_rows = MakeRows(/*first_id=*/4, /*count=*/4, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> third_batch,
+                         MakeBatch(std::vector<Row>(second_rows.begin(), second_rows.begin() + 2),
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(third_batch)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> fourth_batch,
+                         MakeBatch(std::vector<Row>(second_rows.begin() + 2, second_rows.end()),
+                                   /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(fourth_batch)));
+    ASSERT_OK(writer->Seal());
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_EQ(1, second_progress.size());
+    ASSERT_OK_AND_ASSIGN(int64_t second_snapshot_id,
+                         Commit(second_progress, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(second_snapshot_id));
+    ASSERT_EQ(0, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+
+    std::vector<Row> expected_rows = first_rows;
+    expected_rows.insert(expected_rows.end(), second_rows.begin(), second_rows.end());
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, actual_rows);
+    ASSERT_OK(writer->Close());
+}
+
+TEST_F(RealtimeWriteInteTest, TestPkDvRealtimeSpillFileLifecycle) {
+    options_[Options::FILE_FORMAT] = "parquet";
+    options_[Options::DELETION_VECTORS_ENABLED] = "true";
+    options_[Options::REALTIME_SPILL_ENABLED] = "true";
+    CreatePkTable();
+    const std::string temp_directory = PathUtil::JoinPath(dir_->Str(), "pk-dv-realtime-spill");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context, temp_directory));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> first_batch,
+                         MakeBatch({Row{1, "old-one", "p0"}, Row{2, "two", "p0"}},
+                                   /*partitioned=*/false, /*bucket=*/0,
+                                   {RecordBatch::RowKind::INSERT, RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(writer->Write(std::move(first_batch)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> second_batch,
+        MakeBatch({Row{1, "new-one", "p0"}, Row{3, "three", "p0"}},
+                  /*partitioned=*/false, /*bucket=*/0,
+                  {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(writer->Write(std::move(second_batch)));
+    ASSERT_OK(writer->Seal());
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> first_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_EQ(1, first_progress.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned_plan,
+                         CreatePlan(realtime_context, /*predicate=*/nullptr));
+    ASSERT_EQ(1, pinned_plan->Splits().size());
+    ASSERT_NE(nullptr, std::dynamic_pointer_cast<RealtimeSplit>(pinned_plan->Splits()[0]));
+    ASSERT_OK_AND_ASSIGN(int64_t first_snapshot_id,
+                         Commit(first_progress, /*commit_identifier=*/0));
+
+    ASSERT_OK(writer->RefreshCommittedSnapshot(first_snapshot_id));
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> pinned_rows, ReadRows(pinned_plan, realtime_context));
+    ASSERT_EQ((std::vector<Row>{{1, "new-one", "p0"}, {2, "two", "p0"}, {3, "three", "p0"}}),
+              pinned_rows);
+    ASSERT_TRUE(WaitForChannelFileCount(temp_directory, /*expected_count=*/0));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot compact_snapshot, CompactAndCommit(/*partition=*/{}, /*bucket=*/0,
+                                                                     /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(compact_snapshot.Id()));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> third_batch,
+                         MakeBatch({Row{2, "latest-two", "p0"}}, /*partitioned=*/false,
+                                   /*bucket=*/0, {RecordBatch::RowKind::UPDATE_AFTER}));
+    ASSERT_OK(writer->Write(std::move(third_batch)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> fourth_batch,
+                         MakeBatch({Row{3, "deleted-three", "p0"}, Row{4, "four", "p0"}},
+                                   /*partitioned=*/false, /*bucket=*/0,
+                                   {RecordBatch::RowKind::DELETE, RecordBatch::RowKind::INSERT}));
+    ASSERT_OK(writer->Write(std::move(fourth_batch)));
+    ASSERT_OK(writer->Seal());
+    ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> second_progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+    ASSERT_EQ(1, second_progress.size());
+    ASSERT_OK_AND_ASSIGN(int64_t second_snapshot_id,
+                         Commit(second_progress, /*commit_identifier=*/2));
+
+    const std::vector<Row> expected_rows = {
+        {1, "new-one", "p0"}, {2, "latest-two", "p0"}, {4, "four", "p0"}};
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> rows_before_reclaim, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, rows_before_reclaim);
+
+    ASSERT_OK(writer->RefreshCommittedSnapshot(second_snapshot_id));
+    ASSERT_EQ(0, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
+    ASSERT_EQ(expected_rows, actual_rows);
     ASSERT_OK(writer->Close());
 }
 

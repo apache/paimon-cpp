@@ -58,6 +58,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(std::nullopt, core_options.GetScanSnapshotId());
     ASSERT_EQ(5 * 60 * 1000, core_options.GetRealtimeReadViewTtlMillis());
     ASSERT_FALSE(core_options.RealtimeEnabled());
+    ASSERT_FALSE(core_options.RealtimeSpillEnabled());
     ASSERT_EQ(StatisticsMode::NONE, core_options.GetRealtimeStoreStatisticsMode());
     ASSERT_EQ("zstd", core_options.GetFileCompression());
     ASSERT_EQ(std::nullopt, core_options.GetChangelogFileCompression());
@@ -325,6 +326,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "true"},
         {Options::REALTIME_ENABLED, "true"},
+        {Options::REALTIME_SPILL_ENABLED, "true"},
         {Options::BUCKET_FUNCTION_TYPE, "mod"},
         {"fields.metrics.map.storage-layout", "shared-shredding"},
         {"fields.metrics.map.shared-shredding.max-columns", "128"},
@@ -494,6 +496,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.TableReadSequenceNumberEnabled());
     ASSERT_TRUE(core_options.KeyValueSequenceNumberEnabled());
     ASSERT_TRUE(core_options.RealtimeEnabled());
+    ASSERT_TRUE(core_options.RealtimeSpillEnabled());
     ASSERT_TRUE(core_options.LookupRemoteFileEnabled());
     ASSERT_EQ(core_options.GetLookupRemoteLevelThreshold(), 2);
     ASSERT_EQ(BucketFunctionType::MOD, core_options.GetBucketFunctionType());

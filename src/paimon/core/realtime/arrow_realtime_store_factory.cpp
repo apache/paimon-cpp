@@ -19,11 +19,14 @@
 
 #include "paimon/realtime/arrow_realtime_store_factory.h"
 
+#include <string>
+
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/realtime/arrow_realtime_store.h"
 #include "paimon/macros.h"
 
@@ -47,8 +50,23 @@ Result<std::shared_ptr<RealtimeStore>> ArrowRealtimeStoreFactory::Create(
                                static_cast<int32_t>(request.mode));
     }
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(request.memory_pool);
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(request.options));
+    const CompressOptions& spill_compression = options.GetSpillCompressOptions();
+    std::string spill_directory;
+    if (options.RealtimeSpillEnabled()) {
+        if (request.temp_directory.empty()) {
+            return Status::Invalid(
+                "realtime.spill-enabled requires a non-empty temporary directory");
+        }
+        if (!request.file_system) {
+            return Status::Invalid("realtime.spill-enabled requires a file system");
+        }
+        spill_directory = request.temp_directory;
+    }
     return std::make_shared<ArrowRealtimeStore>(
-        imported_schema, request.mode, request.statistics_mode, request.memory_pool, arrow_pool);
+        imported_schema, request.mode, request.statistics_mode, spill_directory,
+        request.file_system, spill_compression.compress, spill_compression.zstd_level,
+        request.memory_pool, arrow_pool);
 }
 
 }  // namespace paimon

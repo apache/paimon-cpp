@@ -21,7 +21,6 @@
 #include <memory>
 
 #include "arrow/array/array_primitive.h"
-#include "arrow/ipc/api.h"
 #include "paimon/common/data/columnar/columnar_batch_context.h"
 #include "paimon/core/disk/file_io_channel.h"
 #include "paimon/core/io/key_value_record_reader.h"
@@ -31,11 +30,12 @@
 
 namespace arrow {
 class MemoryPool;
+class Schema;
 }  // namespace arrow
 
 namespace paimon {
 
-class ArrowInputStreamAdapter;
+class ArrowIpcFileReader;
 class Metrics;
 
 class SpillReader : public KeyValueRecordReader {
@@ -47,6 +47,8 @@ class SpillReader : public KeyValueRecordReader {
 
     SpillReader(const SpillReader&) = delete;
     SpillReader& operator=(const SpillReader&) = delete;
+
+    ~SpillReader() override;
 
     class Iterator : public KeyValueRecordReader::Iterator {
      public:
@@ -66,25 +68,24 @@ class SpillReader : public KeyValueRecordReader {
     void Close() override;
 
  private:
-    SpillReader(const std::shared_ptr<FileSystem>& fs,
-                const std::shared_ptr<arrow::Schema>& key_schema,
-                const std::shared_ptr<arrow::Schema>& value_schema, bool use_threads,
+    SpillReader(const std::shared_ptr<arrow::Schema>& key_schema,
+                const std::shared_ptr<arrow::Schema>& value_schema,
                 const std::shared_ptr<MemoryPool>& pool);
 
-    Status Open(const FileIOChannel::ID& channel_id);
+    Status Open(const std::shared_ptr<FileSystem>& fs, const FileIOChannel::ID& channel_id,
+                bool use_threads);
     void Reset();
 
-    std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<arrow::Schema> key_schema_;
     std::shared_ptr<arrow::Schema> value_schema_;
     std::shared_ptr<MemoryPool> pool_;
+    // Record batches returned by Arrow keep only a raw pointer to their allocation pool. Keep the
+    // adapter alive after closing the IPC reader while rows from the last batch may still be held
+    // by the merge reader.
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
-    bool use_threads_;
     std::shared_ptr<Metrics> metrics_;
 
-    std::shared_ptr<InputStream> in_stream_;
-    std::shared_ptr<ArrowInputStreamAdapter> arrow_input_stream_adapter_;
-    std::shared_ptr<arrow::ipc::RecordBatchFileReader> arrow_reader_;
+    std::unique_ptr<ArrowIpcFileReader> ipc_reader_;
     int32_t current_batch_index_ = 0;
     int32_t num_record_batches_ = 0;
 

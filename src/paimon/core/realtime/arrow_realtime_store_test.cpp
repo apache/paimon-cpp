@@ -32,11 +32,13 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/realtime/realtime_offset_batch_reader.h"
+#include "paimon/defs.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
 #include "paimon/record_batch.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -74,8 +76,11 @@ class ArrowRealtimeStoreTest : public testing::Test {
     }
 
     std::shared_ptr<ArrowRealtimeStore> CreateStore(StatisticsMode statistics_mode) const {
-        return std::make_shared<ArrowRealtimeStore>(schema_, RealtimeStoreMode::APPEND_ONLY,
-                                                    statistics_mode, pool_, arrow_pool_);
+        return std::make_shared<ArrowRealtimeStore>(
+            schema_, RealtimeStoreMode::APPEND_ONLY, statistics_mode, /*temp_directory=*/"",
+            /*spill_file_system=*/nullptr,
+            /*spill_compression=*/"zstd",
+            /*spill_compression_level=*/1, pool_, arrow_pool_);
     }
 
     std::unique_ptr<RecordBatch> MakeBatch(const std::string& json) const {
@@ -105,17 +110,16 @@ class ArrowRealtimeStoreTest : public testing::Test {
         return c_schema;
     }
 
-    std::vector<int64_t> ReadIds(const BatchReader::ReadBatchWithBitmap& batch) const {
-        std::shared_ptr<arrow::Array> array =
-            arrow::ImportArray(batch.first.first.get(), batch.first.second.get()).ValueOrDie();
-        std::shared_ptr<arrow::StructArray> struct_array =
-            checked_pointer_cast<arrow::StructArray>(array);
-        std::shared_ptr<arrow::Int64Array> ids =
-            checked_pointer_cast<arrow::Int64Array>(struct_array->GetFieldByName("id"));
+    std::vector<int64_t> ReadIds(const std::shared_ptr<arrow::ChunkedArray>& chunked_array) const {
         std::vector<int64_t> result;
-        for (RoaringBitmap32::Iterator iter = batch.second.Begin(); iter != batch.second.End();
-             ++iter) {
-            result.push_back(ids->Value(*iter));
+        for (const std::shared_ptr<arrow::Array>& chunk : chunked_array->chunks()) {
+            std::shared_ptr<arrow::StructArray> struct_array =
+                checked_pointer_cast<arrow::StructArray>(chunk);
+            std::shared_ptr<arrow::Int64Array> ids =
+                checked_pointer_cast<arrow::Int64Array>(struct_array->GetFieldByName("id"));
+            for (int64_t i = 0; i < ids->length(); ++i) {
+                result.push_back(ids->Value(i));
+            }
         }
         return result;
     }
@@ -221,10 +225,9 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
         RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
         ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                              store_->CreateQueryReaders(view, context));
-        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch,
-                             readers[0]->NextBatchWithBitmap());
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());
         arrow::Result<std::shared_ptr<arrow::Array>> import_result =
-            arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
+            arrow::ImportArray(batch.first.get(), batch.second.get());
         ASSERT_TRUE(import_result.ok());
         std::shared_ptr<arrow::Array> array = std::move(import_result).ValueOrDie();
         ASSERT_TRUE(array->type()->Equals(arrow::struct_(read_schema->fields())));
@@ -300,6 +303,94 @@ TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
         << "expected: " << expected_array->ToString() << ", actual: " << actual_array->ToString();
 }
 
+TEST_F(ArrowRealtimeStoreTest, TestSealSpillsAndKeepsPinnedMemoryViewReadable) {
+    std::unique_ptr<UniqueTestDirectory> temp_directory = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, temp_directory);
+    ArrowRealtimeStoreFactory factory;
+    std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
+    RealtimeStoreCreateRequest request{std::move(write_schema),
+                                       {{Options::REALTIME_SPILL_ENABLED, "true"}},
+                                       pool_,
+                                       RealtimeStoreMode::APPEND_ONLY,
+                                       StatisticsMode::NONE};
+    request.temp_directory = temp_directory->Str();
+    request.file_system = temp_directory->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeStore> realtime_store,
+                         factory.Create(std::move(request)));
+    std::shared_ptr<ArrowRealtimeStore> store =
+        std::dynamic_pointer_cast<ArrowRealtimeStore>(realtime_store);
+    ASSERT_NE(nullptr, store);
+    ASSERT_OK(store->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[0, 1, "a"], [1, 2, "b"]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store->Write(RealtimeWriteBatch{MakeBatch(R"([[2, 3, "c"]])"), OffsetRange(2, 3)}));
+    ASSERT_GT(store->GetMemoryUsage(), 0);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> pinned_view, store->AcquireReadView());
+
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                         store->SealForCommit());
+    ASSERT_TRUE(segment.has_value());
+    ASSERT_EQ(0, store->GetMemoryUsage());
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> commit_readers,
+                         store->CreateCommitReaders(segment.value()));
+    ASSERT_EQ(1, commit_readers.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> committed,
+                         ReadResultCollector::CollectResult(std::move(commit_readers[0])));
+    ASSERT_EQ(std::vector<int64_t>({1, 2, 3}), ReadIds(committed));
+
+    std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
+    RealtimeQueryContext context{read_schema.get(), /*predicate=*/nullptr};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> query_readers,
+                         store->CreateQueryReaders(pinned_view, context));
+    ASSERT_EQ(1, query_readers.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> pinned,
+                         ReadResultCollector::CollectResult(std::move(query_readers[0])));
+    ASSERT_EQ(std::vector<int64_t>({1, 2, 3}), ReadIds(pinned));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> spilled_view, store->AcquireReadView());
+    std::unique_ptr<ArrowSchema> spilled_read_schema = MakeReadSchema(schema_);
+    RealtimeQueryContext spilled_context{spilled_read_schema.get(), /*predicate=*/nullptr};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> spilled_readers,
+                         store->CreateQueryReaders(spilled_view, spilled_context));
+    ASSERT_EQ(1, spilled_readers.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> spilled,
+                         ReadResultCollector::CollectResult(std::move(spilled_readers[0])));
+    ASSERT_EQ(std::vector<int64_t>({1, 2, 3}), ReadIds(spilled));
+}
+
+TEST_F(ArrowRealtimeStoreTest, TestFactoryDoesNotSpillWithoutOption) {
+    std::unique_ptr<UniqueTestDirectory> temp_directory = UniqueTestDirectory::Create();
+    ASSERT_NE(nullptr, temp_directory);
+    ArrowRealtimeStoreFactory factory;
+    std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
+    RealtimeStoreCreateRequest request{std::move(write_schema), /*options=*/{}, pool_,
+                                       RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE};
+    request.temp_directory = temp_directory->Str();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeStore> realtime_store,
+                         factory.Create(std::move(request)));
+    std::shared_ptr<ArrowRealtimeStore> store =
+        std::dynamic_pointer_cast<ArrowRealtimeStore>(realtime_store);
+    ASSERT_NE(nullptr, store);
+    ASSERT_OK(store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 1, "a"]])"), OffsetRange(0, 1)}));
+
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                         store->SealForCommit());
+    ASSERT_TRUE(segment.has_value());
+    ASSERT_GT(store->GetMemoryUsage(), 0);
+}
+
+TEST_F(ArrowRealtimeStoreTest, TestFactoryRejectsSpillWithoutTempDirectory) {
+    ArrowRealtimeStoreFactory factory;
+    std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
+    RealtimeStoreCreateRequest request{std::move(write_schema),
+                                       {{Options::REALTIME_SPILL_ENABLED, "true"}},
+                                       pool_,
+                                       RealtimeStoreMode::APPEND_ONLY,
+                                       StatisticsMode::NONE};
+    ASSERT_NOK_WITH_MSG(factory.Create(std::move(request)),
+                        "realtime.spill-enabled requires a non-empty temporary directory");
+}
+
 TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     ArrowRealtimeStoreFactory factory;
     std::unique_ptr<ArrowSchema> write_schema = MakeReadSchema(schema_);
@@ -327,20 +418,18 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     readers[0] =
         std::make_unique<RealtimeOffsetBatchReader>(std::move(readers[0]), OffsetRange(3, 4));
 
-    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, readers[0]->NextBatchWithBitmap());
-    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
-    ASSERT_EQ(std::vector<int64_t>({11}), ReadIds(batch));
-    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap eof, readers[0]->NextBatchWithBitmap());
-    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> filtered,
+                         ReadResultCollector::CollectResult(std::move(readers[0])));
+    ASSERT_EQ(std::vector<int64_t>({11}), ReadIds(filtered));
 
     std::unique_ptr<ArrowSchema> unfiltered_read_schema = MakeReadSchema(schema_);
     RealtimeQueryContext unfiltered_context{unfiltered_read_schema.get(), /*predicate=*/nullptr};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> unfiltered_readers,
                          store->CreateQueryReaders(view, unfiltered_context));
     ASSERT_EQ(1, unfiltered_readers.size());
-    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap unfiltered_batch,
-                         unfiltered_readers[0]->NextBatchWithBitmap());
-    ASSERT_EQ(std::vector<int64_t>({0, 1}), ReadIds(unfiltered_batch));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> unfiltered,
+                         ReadResultCollector::CollectResult(std::move(unfiltered_readers[0])));
+    ASSERT_EQ(std::vector<int64_t>({0, 1, 10, 11}), ReadIds(unfiltered));
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestMissingStatisticsRetainsNonMatchingBatch) {
@@ -358,9 +447,9 @@ TEST_F(ArrowRealtimeStoreTest, TestMissingStatisticsRetainsNonMatchingBatch) {
                          store_->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
 
-    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, readers[0]->NextBatchWithBitmap());
-    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
-    ASSERT_EQ(std::vector<int64_t>({0, 1}), ReadIds(batch));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> retained,
+                         ReadResultCollector::CollectResult(std::move(readers[0])));
+    ASSERT_EQ(std::vector<int64_t>({0, 1, 10, 11}), ReadIds(retained));
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestRejectsHandlesFromAnotherStoreImplementation) {

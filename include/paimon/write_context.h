@@ -206,7 +206,8 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithExecutor(const std::shared_ptr<Executor>& executor);
 
-    /// Set the temporary directory path for IO operations (lookup and external disk spill).
+    /// Set the temporary directory path for IO operations (lookup, external disk spill, and
+    /// real-time spill).
     /// @param temp_dir The temporary directory path.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithTempDirectory(const std::string& temp_dir);

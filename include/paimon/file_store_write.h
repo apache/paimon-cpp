@@ -61,8 +61,9 @@ class PAIMON_EXPORT FileStoreWrite {
     virtual Status Write(std::unique_ptr<RecordBatch>&& batch) = 0;
 
     /// Slices the current in-memory real-time data into a sealed segment so it can be reclaimed
-    /// independently. A future implementation will support spilling sealed segments to a
-    /// temporary directory; currently this method only creates the in-memory segment boundary.
+    /// independently. When `realtime.spill-enabled` is true and the write context has a temporary
+    /// directory, the default real-time store synchronously spills each non-empty sealed segment
+    /// to a local Arrow IPC file.
     /// Calling this method on a non-real-time writer returns an error.
     /// If sealing fails, the caller must recreate both the `RealtimeContext` and writer. The
     /// upstream must then recover input from the durable recovery offset persisted in the

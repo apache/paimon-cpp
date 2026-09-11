@@ -21,7 +21,6 @@
 #include <memory>
 #include <string>
 
-#include "arrow/ipc/api.h"
 #include "paimon/core/disk/file_io_channel.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
@@ -34,7 +33,7 @@ class Schema;
 
 namespace paimon {
 
-class ArrowOutputStreamAdapter;
+class ArrowIpcFileWriter;
 class MemoryPool;
 class SpillChannelManager;
 
@@ -47,6 +46,8 @@ class SpillWriter {
         const std::string& compression, int32_t compression_level, bool use_threads,
         const std::shared_ptr<MemoryPool>& pool);
 
+    ~SpillWriter();
+
     SpillWriter(const SpillWriter&) = delete;
     SpillWriter& operator=(const SpillWriter&) = delete;
 
@@ -56,27 +57,16 @@ class SpillWriter {
     const FileIOChannel::ID& GetChannelId() const;
 
  private:
-    SpillWriter(const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<arrow::Schema>& schema,
+    SpillWriter() = default;
+
+    Status Open(const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<arrow::Schema>& schema,
                 const std::shared_ptr<FileIOChannel::Enumerator>& channel_enumerator,
                 const std::shared_ptr<SpillChannelManager>& spill_channel_manager,
                 const std::string& compression, int32_t compression_level, bool use_threads,
                 const std::shared_ptr<MemoryPool>& pool);
 
-    Status Open();
-
-    std::shared_ptr<FileSystem> fs_;
-    std::shared_ptr<arrow::Schema> schema_;
-    std::shared_ptr<FileIOChannel::Enumerator> channel_enumerator_;
-    std::shared_ptr<SpillChannelManager> spill_channel_manager_;
-    std::string compression_;
-    int32_t compression_level_;
-    bool use_threads_;
-    std::shared_ptr<OutputStream> out_stream_;
-    std::shared_ptr<ArrowOutputStreamAdapter> arrow_output_stream_adapter_;
-    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
-    std::shared_ptr<arrow::ipc::RecordBatchWriter> arrow_writer_;
+    std::unique_ptr<ArrowIpcFileWriter> ipc_writer_;
     FileIOChannel::ID channel_id_;
-    bool closed_ = false;
 };
 
 }  // namespace paimon

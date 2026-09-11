@@ -39,6 +39,7 @@ struct ArrowSchema;
 
 namespace paimon {
 
+class FileSystem;
 class MemoryPool;
 class Predicate;
 
@@ -62,6 +63,12 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
     /// Statistics collected by the store for query pruning.
     StatisticsMode statistics_mode = StatisticsMode::NONE;
+    /// Directory used by the default store for immutable spill files when
+    /// `realtime.spill-enabled` is true. Custom stores may ignore this hint.
+    std::string temp_directory;
+    /// File system used to access `temp_directory`. The default store retains shared ownership
+    /// for its lifetime. Custom stores may ignore this hint.
+    std::shared_ptr<FileSystem> file_system;
 };
 
 /// A record batch and its application-assigned offset bounds.
@@ -162,6 +169,8 @@ class PAIMON_EXPORT RealtimeStore {
     /// preserve write order and contain `_REALTIME_OFFSET` followed by the table write fields.
     /// Primary-key readers contain the real-time primary-key store fields; each reader's complete
     /// stream is sorted by full primary key then sequence number.
+    /// Returned readers have independent mutable read state and may be operated concurrently with
+    /// one another without external synchronization.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) = 0;
 
@@ -174,6 +183,8 @@ class PAIMON_EXPORT RealtimeStore {
     /// Creates readers over rows in `view`. The readers collectively expose every candidate row
     /// exactly once. Primary-key reader streams are sorted by full primary key then sequence
     /// number. Paimon retains `view` for the lifetime of the resulting framework reader.
+    /// Returned readers have independent mutable read state and may be operated concurrently with
+    /// one another without external synchronization.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
         const std::shared_ptr<RealtimeReadView>& view, const RealtimeQueryContext& context) = 0;
 
