@@ -50,9 +50,9 @@ enum class PAIMON_EXPORT RealtimeStoreMode {
 /// Parameters used by a `RealtimeStoreFactory` to create a store.
 struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     /// Schema whose ownership is transferred to the factory. Append mode receives the complete
-    /// append transport schema: [_REALTIME_OFFSET, table write fields]. Primary-key mode receives
-    /// the realtime primary-key transport schema:
-    /// [_VALUE_KIND, _SEQUENCE_NUMBER, _REALTIME_OFFSET, table write fields].
+    /// append store-write schema: [_REALTIME_OFFSET, table write fields]. Primary-key mode receives
+    /// the real-time primary-key store-write schema:
+    /// [_SEQUENCE_NUMBER, _VALUE_KIND, _REALTIME_OFFSET, table write fields].
     std::unique_ptr<::ArrowSchema> write_schema;
     /// Table options available to the store implementation.
     std::map<std::string, std::string> options;
@@ -60,23 +60,36 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     std::shared_ptr<MemoryPool> memory_pool;
     /// Table mode implemented by the store.
     RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
-    /// Statistics collected by append-only stores.
+    /// Statistics collected by the store for query pruning.
     StatisticsMode statistics_mode = StatisticsMode::NONE;
 };
 
 /// A record batch and its application-assigned offset bounds.
 ///
-/// Append-mode batches use the append transport schema [_REALTIME_OFFSET, table write fields], and
-/// offsets are strictly increasing before the batch enters the store. Primary-key batches use the
-/// realtime primary-key transport schema, are sorted by full primary key then sequence number, and
-/// retain the original offset in `_REALTIME_OFFSET`. `offset_range` is the left-closed, right-open
-/// envelope from the first application offset through one past the last; offsets may have gaps, so
-/// its count is not the batch row count.
+/// Append-mode batches use the append store-write schema
+/// [_REALTIME_OFFSET, table write fields], and offsets are strictly increasing before the batch
+/// enters the store. Primary-key batches use the real-time primary-key store-write schema, are
+/// sorted by full primary key then sequence number, and retain the original offset in
+/// `_REALTIME_OFFSET`. `offset_range` is the left-closed, right-open envelope from the first
+/// application offset through one past the last; offsets may have gaps, so its count is not the
+/// batch row count.
 struct PAIMON_EXPORT RealtimeWriteBatch {
     /// Input batch whose ownership is transferred to `RealtimeStore::Write`.
     std::unique_ptr<RecordBatch> batch;
     /// Left-closed, right-open offset envelope covered by `batch`.
     OffsetRange offset_range;
+};
+
+/// Current memory and row counts tracked by a `RealtimeStore`.
+///
+/// Row counts are physical stored rows. For primary-key stores they include old versions and
+/// delete records, rather than the rows visible after merge-on-read. A segment removed by
+/// `AdvanceCommittedOffset` is no longer included, even if an older read view still pins it.
+struct PAIMON_EXPORT RealtimeStoreDataUsage {
+    uint64_t building_memory_bytes = 0;
+    uint64_t sealed_memory_bytes = 0;
+    uint64_t building_row_count = 0;
+    uint64_t sealed_row_count = 0;
 };
 
 /// Opaque handle to an immutable segment returned by `RealtimeStore::SealForCommit`.
@@ -109,11 +122,11 @@ class PAIMON_EXPORT RealtimeReadView {
 
 /// Parameters used by a `RealtimeStore` to create readers for a query.
 struct PAIMON_EXPORT RealtimeQueryContext {
-    /// Physical source schema the store must materialize. Query readers must include the mandatory
-    /// `_VALUE_KIND` field in returned batches. Paimon may subsequently convert physical fields
-    /// into the query's logical output schema, for example for selected-key MAP or VARIANT access.
-    /// This schema is borrowed and remains valid only during `CreateQueryReaders`; plugins must
-    /// import or copy it synchronously.
+    /// Physical source schema the store must materialize. Every returned batch must match this
+    /// schema exactly. Paimon may subsequently add framework fields or convert physical fields into
+    /// the query's logical output schema, for example for selected-key MAP or VARIANT access. This
+    /// schema is borrowed and remains valid only during `CreateQueryReaders`; plugins must import
+    /// or copy it synchronously.
     ::ArrowSchema* read_schema;
     /// Optional predicate using field indexes from `read_schema`. A non-null predicate allows the
     /// plugin to prune candidate rows. Exact filtering is applied by the Paimon read framework.
@@ -146,9 +159,9 @@ class PAIMON_EXPORT RealtimeStore {
     /// Creates readers that expose all rows in a sealed segment for Paimon file writing.
     ///
     /// The returned readers collectively expose every sealed row exactly once. Append-mode readers
-    /// preserve write order and contain `_VALUE_KIND`, `_REALTIME_OFFSET`, and table write fields.
-    /// Primary-key readers contain the realtime primary-key transport fields; each reader's
-    /// complete stream is sorted by full primary key then sequence number.
+    /// preserve write order and contain `_REALTIME_OFFSET` followed by the table write fields.
+    /// Primary-key readers contain the real-time primary-key store fields; each reader's complete
+    /// stream is sorted by full primary key then sequence number.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) = 0;
 
@@ -172,6 +185,9 @@ class PAIMON_EXPORT RealtimeStore {
     /// An implementation may reclaim covered segments immediately, defer destruction, spill them,
     /// or retain them. Existing read views continue to keep referenced resources alive.
     virtual Status AdvanceCommittedOffset(int64_t committed_end_offset) = 0;
+
+    /// Returns one consistent snapshot of current building and sealed data usage.
+    virtual RealtimeStoreDataUsage GetDataUsage() const = 0;
 
     /// Returns the number of bytes currently retained by building and sealed segments.
     virtual uint64_t GetMemoryUsage() const = 0;

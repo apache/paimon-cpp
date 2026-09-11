@@ -93,6 +93,7 @@ AppendOnlyFileStoreWrite::AppendOnlyFileStoreWrite(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<arrow::Schema>& schema,
     const std::shared_ptr<arrow::Schema>& write_schema,
+    const std::shared_ptr<RealtimeSchemaLayout>& realtime_schema_layout,
     const std::shared_ptr<arrow::Schema>& partition_schema,
     const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
     const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
@@ -100,9 +101,10 @@ AppendOnlyFileStoreWrite::AppendOnlyFileStoreWrite(
     const std::shared_ptr<RealtimeContext>& realtime_context,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
     : AbstractFileStoreWrite(file_store_path_factory, snapshot_manager, schema_manager, commit_user,
-                             root_path, table_schema, schema, write_schema, partition_schema,
-                             dv_maintainer_factory, io_manager, options, ignore_previous_files,
-                             is_streaming_mode, ignore_num_bucket_check, executor, pool),
+                             root_path, table_schema, schema, write_schema, realtime_schema_layout,
+                             partition_schema, dv_maintainer_factory, io_manager, options,
+                             ignore_previous_files, is_streaming_mode, ignore_num_bucket_check,
+                             executor, pool),
       realtime_context_(realtime_context),
       logger_(Logger::GetLogger("AppendOnlyFileStoreWrite")) {
     write_cols_ = write_schema->field_names();
@@ -294,11 +296,8 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
                            file_store_path_factory_->GeneratePartitionVector(partition));
     std::map<std::string, std::string> partition_map(partition_values.begin(),
                                                      partition_values.end());
-    auto c_write_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*write_schema_, c_write_schema.get()));
-    return RealtimeAppendOnlyWriter::Create(
-        partition_map, bucket, std::move(c_write_schema), realtime_context_, writer, write_schema_,
-        options_.GetRealtimeStoreStatisticsMode(), options_.ToMap(), pool_);
+    return RealtimeAppendOnlyWriter::Create(partition_map, bucket, realtime_context_, writer,
+                                            realtime_schema_layout_, options_, pool_);
 }
 
 Result<AppendOnlyFileStoreWrite::WriterFactory> AppendOnlyFileStoreWrite::GetDataFileWriterFactory(

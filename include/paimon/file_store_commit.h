@@ -85,10 +85,18 @@ class PAIMON_EXPORT FileStoreCommit {
     /// Omitting an earlier entry may advance committed progress past unpublished files and allow
     /// their real-time data to be reclaimed.
     ///
-    /// If this method returns an error, the caller may retry with the same arguments. Each call
-    /// reloads the latest committed state. As in `FilterAndCommit`, a retry's identifier is
-    /// considered committed when it is not newer than the latest identifier for `commit_user`.
-    /// The requested offset ranges must also be covered by the latest committed progress.
+    /// Snapshot conflicts are retried internally using the configured commit retry limit, timeout,
+    /// and backoff. Each attempt reloads the latest snapshot and rebases both file changes and
+    /// offset progress. A retry succeeds idempotently when both the identifier and all requested
+    /// ranges are already committed. Inconsistent identifiers, overlapping offset progress, and
+    /// file or index conflicts fail without further retry.
+    ///
+    /// An error is terminal for the writer state which produced `realtime_commits`. The caller must
+    /// discard its `RealtimeContext` and `FileStoreWrite`, load the current latest snapshot's
+    /// durable offsets, recreate both objects, and replay input from those exclusive offsets.
+    /// External conflicts returned after submitting a REST catalog request are not retried by this
+    /// method. Concurrent rollback or partition deletion from another process must be fenced by
+    /// the upstream coordinator.
     ///
     /// @param realtime_commits Commit messages and left-closed, right-open offset ranges to
     /// commit.

@@ -162,6 +162,15 @@ Result<std::unique_ptr<KeyValueRecordReader::Iterator>> KeyValueDataFileRecordRe
     return std::make_unique<KeyValueDataFileRecordReader::Iterator>(this);
 }
 
+void KeyValueDataFileRecordReader::Warmup() {
+    // reader_ is typed as BatchReader, but Warmup() lives on FileBatchReader. This is the single
+    // boundary where the two hierarchies meet; every FileBatchReader decorator below here forwards
+    // Warmup() through its own FileBatchReader-typed inner reader without any cast.
+    if (auto* file_reader = dynamic_cast<FileBatchReader*>(reader_.get())) {
+        file_reader->Warmup();
+    }
+}
+
 void KeyValueDataFileRecordReader::Reset() {
     file_reader_ = nullptr;
     selection_bitmap_ = RoaringBitmap32();

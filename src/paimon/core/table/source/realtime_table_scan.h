@@ -61,6 +61,10 @@ class RealtimeTableScan : public TableScan {
 
     Result<RealtimeOffsetMap> LoadCommittedOffsets(const std::shared_ptr<Plan>& disk_plan) const;
 
+    Status ValidateSnapshotProgress(const std::vector<RealtimePartitionBucketView>& memory_views,
+                                    const RealtimeOffsetMap& snapshot_offsets,
+                                    const RealtimeOffsetMap& context_offsets) const;
+
     Result<MemoryViewMap> CollectActiveMemoryViews(
         std::vector<RealtimePartitionBucketView>&& memory_views,
         const RealtimeOffsetMap& committed_offsets) const;

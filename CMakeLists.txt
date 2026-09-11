@@ -569,7 +569,10 @@ install(EXPORT PaimonTargets
         NAMESPACE Paimon::
         DESTINATION ${PAIMON_CMAKE_INSTALL_DIR})
 
-if(PAIMON_BUILD_BENCHMARKS)
+# benchmark/ also holds gtest targets that guard the assumptions the benchmarks are built on, and
+# those have to be built whenever tests are. The subdirectory gates each target on the option it
+# belongs to, so a tests-only build adds no benchmark executable.
+if(PAIMON_BUILD_TESTS OR PAIMON_BUILD_BENCHMARKS)
     add_subdirectory(benchmark)
 endif()
 

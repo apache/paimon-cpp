@@ -34,10 +34,8 @@ namespace paimon {
 /// ReadAheadCache to balance memory usage, I/O efficiency, and latency hiding.
 class PAIMON_EXPORT CacheConfig {
  public:
-    CacheConfig();
-    CacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit, uint64_t pre_buffer_limit);
-
     /// Returns the maximum allowed size (in bytes) for a single cached range.
+    /// Defaults to 32 MiB.
     uint64_t GetRangeSizeLimit() const {
         return range_size_limit_;
     }
@@ -47,7 +45,8 @@ class PAIMON_EXPORT CacheConfig {
         range_size_limit_ = range_size_limit;
     }
 
-    /// Returns the maximum gap size (in bytes) considered mergeable between adjacent ranges.
+    /// Returns the maximum gap size (in bytes) considered mergeable between
+    /// adjacent ranges. Defaults to 8 KiB.
     uint64_t GetHoleSizeLimit() const {
         return hole_size_limit_;
     }
@@ -57,7 +56,8 @@ class PAIMON_EXPORT CacheConfig {
         hole_size_limit_ = hole_size_limit;
     }
 
-    /// Returns the maximum size to pre-buffer ahead of the current read position.
+    /// Returns the maximum size to pre-buffer ahead of the current read
+    /// position. Defaults to 256 MiB.
     uint64_t GetPreBufferLimit() const {
         return pre_buffer_limit_;
     }
@@ -67,10 +67,73 @@ class PAIMON_EXPORT CacheConfig {
         pre_buffer_limit_ = pre_buffer_limit;
     }
 
+    /// Returns the granularity (in bytes) of the block cache entries serving the
+    /// small reads that the prefetched ranges do not cover. Defaults to 64 KiB.
+    uint64_t GetBlockSize() const {
+        return block_size_;
+    }
+
+    /// Sets the granularity (in bytes) of the block cache entries.
+    void SetBlockSize(uint64_t block_size) {
+        block_size_ = block_size;
+    }
+
+    /// Returns the maximum total size (in bytes) of the block cache entries of
+    /// one file. Zero disables the block cache. Defaults to 1 MiB.
+    uint64_t GetBlockCacheLimit() const {
+        return block_cache_limit_;
+    }
+
+    /// Sets the maximum total size (in bytes) of the block cache entries of one
+    /// file. Zero disables the block cache.
+    void SetBlockCacheLimit(uint64_t block_cache_limit) {
+        block_cache_limit_ = block_cache_limit;
+    }
+
  private:
-    uint64_t range_size_limit_;
-    uint64_t hole_size_limit_;
-    uint64_t pre_buffer_limit_;
+    // The defaults are aligned with the reader's request granularity and with
+    // realistic data file sizes:
+    // - range_size_limit matches the parquet reader's 32 MiB request blocks
+    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
+    //   below the request size, so a request can never be served from one piece.
+    // - pre_buffer_limit must exceed the LARGEST single read a reader issues
+    //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
+    //   only dispatched up to this window, so a request reaching past it can
+    //   never be served and falls back to a second fetch of the same bytes.
+    uint64_t range_size_limit_ = 32 * 1024 * 1024;
+    uint64_t hole_size_limit_ = 8 * 1024;
+    uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
+    // Blocks are aligned to the END of the file, so a block never reaches past
+    // EOF. 64 KiB is the granularity the reads no prefetched range covers are
+    // shared at: small enough that a metadata read at the tail of a file is
+    // served by one block instead of straddling two, large enough that a block
+    // fetch does not pull in much more than the reads ask for.
+    uint64_t block_size_ = 64 * 1024;
+    // One block is enough for the metadata tail of a file; the limit only
+    // bounds the pathological case, as blocks are never evicted.
+    uint64_t block_cache_limit_ = 1024 * 1024;
+};
+
+/// Controls how far a reader prepares the next file before that file is actually read.
+///
+/// Warmup overlaps remote-storage latency with the read of the current file. Each level takes the
+/// next file one step further along the read pipeline: `RAW` covers the remote fetch, `DECODED`
+/// adds the decode on top of it. Higher levels hide more latency, but commit more memory and
+/// background I/O to files that a query may end up never reading (for example when a LIMIT stops
+/// the scan early). Callers can trade latency against memory by picking a level.
+enum class PAIMON_EXPORT WarmupLevel {
+    /// Do not warm up. The next file's I/O starts only when it is actually read. This is the
+    /// behavior from before warmup existed and uses no extra memory or background threads.
+    NONE,
+    /// Fetch only the next file's raw, still-compressed bytes into memory, and leave the decoder
+    /// alone. Overlaps the remote fetch while keeping memory lower than `DECODED`, because no
+    /// decoded batches are materialized ahead of the read. It fetches through the read-ahead
+    /// cache, so it falls back to `NONE` when that cache is disabled.
+    RAW,
+    /// Fetch the raw bytes and start the background decode loop as well, so decoded batches are
+    /// ready before the file is read. Hides the most latency but uses the most memory. This is the
+    /// default.
+    DECODED,
 };
 
 }  // namespace paimon

@@ -30,6 +30,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/data/variant.h"
 #include "paimon/memory/memory_pool.h"
@@ -74,7 +75,9 @@ TEST(RealtimeStoreReadPipelineTest, SelectedMapKeysAsMapAndStruct) {
         DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset());
     auto id_field = arrow::field("id", arrow::int64());
     auto tags_field = arrow::field("tags", map_type);
-    auto write_schema = arrow::schema({offset_field, id_field, tags_field});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                         RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY,
+                                                      arrow::schema({id_field, tags_field})));
     std::shared_ptr<arrow::DataType> source_type =
         arrow::struct_({value_kind_field, offset_field, id_field, tags_field});
     std::shared_ptr<arrow::Array> source =
@@ -88,8 +91,8 @@ TEST(RealtimeStoreReadPipelineTest, SelectedMapKeysAsMapAndStruct) {
     auto selected_map = MapReadField(map_type, "c,a,missing");
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<RealtimeStoreReadPipeline> map_pipeline,
-        RealtimeStoreReadPipeline::Create(arrow::schema({value_kind_field, id_field, selected_map}),
-                                          write_schema, pool, GetArrowPool(pool)));
+        RealtimeStoreReadPipeline::Create(arrow::schema({id_field, selected_map}), *schema_layout,
+                                          pool, GetArrowPool(pool)));
     ASSERT_TRUE(map_pipeline->StoreReadSchema()->field(2)->type()->Equals(map_type));
     auto map_source_reader = std::make_unique<MockFileBatchReader>(
         source, source_type, static_cast<int32_t>(source->length()));
@@ -113,10 +116,10 @@ TEST(RealtimeStoreReadPipelineTest, SelectedMapKeysAsMapAndStruct) {
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Field> selected_struct,
                          MapAccessField(tags_field, {"a", "missing"}));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeStoreReadPipeline> struct_pipeline,
-                         RealtimeStoreReadPipeline::Create(
-                             arrow::schema({value_kind_field, id_field, selected_struct}),
-                             write_schema, pool, GetArrowPool(pool)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RealtimeStoreReadPipeline> struct_pipeline,
+        RealtimeStoreReadPipeline::Create(arrow::schema({id_field, selected_struct}),
+                                          *schema_layout, pool, GetArrowPool(pool)));
     ASSERT_EQ(struct_pipeline->StoreReadSchema()->field(2)->type()->id(), arrow::Type::MAP);
     auto struct_source_reader = std::make_unique<MockFileBatchReader>(
         source, source_type, static_cast<int32_t>(source->length()));
@@ -148,7 +151,9 @@ TEST(RealtimeStoreReadPipelineTest, VariantAccessOnLogicalVariant) {
         DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset());
     auto id_field = arrow::field("id", arrow::int32());
     auto variant_field = VariantTypeUtils::ToArrowField("v");
-    auto write_schema = arrow::schema({offset_field, id_field, variant_field});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+                         RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY,
+                                                      arrow::schema({id_field, variant_field})));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::StructArray> data,
                          VariantTestData::BuildVariantBatch(id_field, variant_field,
                                                             {R"({"a":5,"city":"hangzhou"})"}, pool,
@@ -173,11 +178,11 @@ TEST(RealtimeStoreReadPipelineTest, VariantAccessOnLogicalVariant) {
     auto access_field_result = arrow::ImportField(c_access_field.get());
     ASSERT_TRUE(access_field_result.ok()) << access_field_result.status().ToString();
     std::shared_ptr<arrow::Field> access_field = access_field_result.ValueOrDie();
-    auto read_schema = arrow::schema({value_kind_field, id_field, access_field});
+    auto read_schema = arrow::schema({id_field, access_field});
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
-        RealtimeStoreReadPipeline::Create(read_schema, write_schema, pool, GetArrowPool(pool)));
+        RealtimeStoreReadPipeline::Create(read_schema, *schema_layout, pool, GetArrowPool(pool)));
     ASSERT_TRUE(pipeline->StoreReadSchema()->field(2)->type()->Equals(variant_field->type()));
     auto source_reader = std::make_unique<MockFileBatchReader>(
         source, source->type(), static_cast<int32_t>(source->length()));

@@ -94,6 +94,10 @@ class ApplyBitmapIndexBatchReader : public FileBatchReader {
         return reader_->SupportPreciseBitmapSelection();
     }
 
+    void Warmup() override {
+        reader_->Warmup();
+    }
+
  private:
     Result<RoaringBitmap32> Filter(int32_t batch_size) const {
         RoaringBitmap32 result;

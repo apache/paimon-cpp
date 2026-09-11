@@ -19,6 +19,8 @@
 
 #include "paimon/core/table/source/key_value_table_read.h"
 
+#include <map>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -37,15 +39,16 @@
 #include "paimon/core/operation/merge_file_split_read.h"
 #include "paimon/core/operation/raw_file_split_read.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
-#include "paimon/core/realtime/realtime_offset_utils.h"
 #include "paimon/core/realtime/realtime_primary_key_reader.h"
 #include "paimon/core/realtime/realtime_reader.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/realtime/realtime_store_read_pipeline.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/pk_count_reader.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -61,22 +64,26 @@ namespace {
 Result<std::shared_ptr<arrow::Schema>> CreateRealtimePrimaryKeyLogicalSchema(
     const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema) {
-    arrow::FieldVector transport_value_fields;
-    transport_value_fields.reserve(key_schema->num_fields() + value_schema->num_fields());
+    arrow::FieldVector query_value_fields;
+    query_value_fields.reserve(key_schema->num_fields() + value_schema->num_fields());
     std::unordered_set<int32_t> field_ids;
     for (const std::shared_ptr<arrow::Field>& field : key_schema->fields()) {
         PAIMON_ASSIGN_OR_RAISE(int32_t field_id, NestedProjectionUtils::GetPaimonFieldId(field));
         if (field_ids.insert(field_id).second) {
-            transport_value_fields.push_back(field);
+            query_value_fields.push_back(field);
         }
     }
     for (const std::shared_ptr<arrow::Field>& field : value_schema->fields()) {
         PAIMON_ASSIGN_OR_RAISE(int32_t field_id, NestedProjectionUtils::GetPaimonFieldId(field));
         if (field_ids.insert(field_id).second) {
-            transport_value_fields.push_back(field);
+            query_value_fields.push_back(field);
         }
     }
-    return RealtimePrimaryKeyLayout::CreateSchema(transport_value_fields);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+        RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY,
+                                     arrow::schema(std::move(query_value_fields))));
+    return schema_layout->QuerySchema();
 }
 
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
@@ -89,19 +96,31 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateMemoryReaders(
     const std::shared_ptr<MemoryPool>& memory_pool) {
     std::shared_ptr<arrow::Schema> table_write_schema =
         DataField::ConvertDataFieldsToArrowSchema(context->GetTableSchema()->Fields());
-    std::shared_ptr<arrow::Schema> realtime_input_schema =
-        RealtimeOffsetUtils::CreateInputSchema(table_write_schema);
-    std::shared_ptr<arrow::Schema> realtime_write_schema =
-        RealtimePrimaryKeyLayout::CreateSchema(realtime_input_schema->fields());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<RealtimeSchemaLayout> schema_layout,
+        RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, table_write_schema));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RealtimeStoreReadPipeline> pipeline,
-        RealtimeStoreReadPipeline::Create(logical_schema, realtime_write_schema, memory_pool,
+        RealtimeStoreReadPipeline::Create(logical_schema, *schema_layout, memory_pool,
                                           context->GetArrowMemoryPool()));
     const std::shared_ptr<arrow::Schema>& store_read_schema = pipeline->StoreReadSchema();
     auto c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*store_read_schema, c_schema.get()));
     ScopeGuard schema_guard([schema = c_schema.get()]() { ArrowSchemaRelease(schema); });
-    RealtimeQueryContext query_context{c_schema.get(), /*predicate=*/nullptr};
+    std::map<std::string, int32_t> primary_key_name_to_index;
+    for (const std::shared_ptr<arrow::Field>& key_field : key_schema->fields()) {
+        int32_t field_index = store_read_schema->GetFieldIndex(key_field->name());
+        if (field_index < 0) {
+            return Status::Invalid(
+                "primary key field is missing from real-time store read schema: ",
+                key_field->name());
+        }
+        primary_key_name_to_index.emplace(key_field->name(), field_index);
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> primary_key_predicate,
+                           PredicateUtils::CreatePickedFieldFilter(context->GetPredicate(),
+                                                                   primary_key_name_to_index));
+    RealtimeQueryContext query_context{c_schema.get(), std::move(primary_key_predicate)};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> batch_readers,
                            memory.store->CreateQueryReaders(memory.read_view, query_context));
     PAIMON_ASSIGN_OR_RAISE(

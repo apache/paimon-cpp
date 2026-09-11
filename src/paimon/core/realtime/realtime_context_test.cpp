@@ -74,14 +74,18 @@ class TestingRealtimeStore : public RealtimeStore {
         committed_offsets.push_back(committed_offset);
         return Status::OK();
     }
+    RealtimeStoreDataUsage GetDataUsage() const override {
+        return data_usage;
+    }
     uint64_t GetMemoryUsage() const override {
-        return 0;
+        return data_usage.building_memory_bytes + data_usage.sealed_memory_bytes;
     }
 
     int32_t acquire_count = 0;
     int32_t advance_count = 0;
     bool fail_next_advance = false;
     bool return_null_read_view = false;
+    RealtimeStoreDataUsage data_usage;
     std::vector<int64_t> committed_offsets;
 };
 
@@ -159,8 +163,8 @@ TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
     ASSERT_NE(first.store, fourth.store);
     ASSERT_EQ(3, factory->stores.size());
 
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context->AcquireReadViews());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context->AcquireReadState());
+    const std::vector<RealtimePartitionBucketView>& views = read_state.views;
     ASSERT_EQ(3, views.size());
     const RealtimePartitionBucket expected_partition_bucket({{"dt", "2026-08-02"}}, 0);
     ASSERT_EQ(expected_partition_bucket, views[0].partition_bucket);
@@ -169,6 +173,40 @@ TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
     ASSERT_EQ(2, factory->stores[0]->acquire_count);
     ASSERT_EQ(1, factory->stores[1]->acquire_count);
     ASSERT_EQ(1, factory->stores[2]->acquire_count);
+}
+
+TEST(RealtimeContextTest, TestMetricsAggregateAllStores) {
+    auto factory = std::make_shared<TestingRealtimeStoreFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+    ASSERT_OK(GetOrCreateAppendStore(context, {{"dt", "2026-08-02"}}, 0, MakeWriteSchema(), {},
+                                     GetDefaultPool()));
+    ASSERT_OK(GetOrCreateAppendStore(context, {{"dt", "2026-08-03"}}, 1, MakeWriteSchema(), {},
+                                     GetDefaultPool()));
+    ASSERT_EQ(2, factory->stores.size());
+    factory->stores[0]->data_usage =
+        RealtimeStoreDataUsage{/*building_memory_bytes=*/10, /*sealed_memory_bytes=*/20,
+                               /*building_row_count=*/1, /*sealed_row_count=*/2};
+    factory->stores[1]->data_usage =
+        RealtimeStoreDataUsage{/*building_memory_bytes=*/30, /*sealed_memory_bytes=*/40,
+                               /*building_row_count=*/3, /*sealed_row_count=*/4};
+
+    std::shared_ptr<Metrics> metrics = context->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double building_memory,
+                         metrics->GetGauge(RealtimeMetrics::kBuildingMemoryBytes));
+    ASSERT_OK_AND_ASSIGN(double sealed_memory,
+                         metrics->GetGauge(RealtimeMetrics::kSealedMemoryBytes));
+    ASSERT_OK_AND_ASSIGN(double total_memory,
+                         metrics->GetGauge(RealtimeMetrics::kTotalMemoryBytes));
+    ASSERT_OK_AND_ASSIGN(double building_rows,
+                         metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(double sealed_rows, metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(double total_rows, metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(40, building_memory);
+    ASSERT_EQ(60, sealed_memory);
+    ASSERT_EQ(100, total_memory);
+    ASSERT_EQ(4, building_rows);
+    ASSERT_EQ(6, sealed_rows);
+    ASSERT_EQ(10, total_rows);
 }
 
 TEST(RealtimeContextTest, TestRejectsMismatchedModeOnStoreReuse) {
@@ -376,8 +414,8 @@ TEST(RealtimeContextTest, TestPinsResolvesAndReleasesReadViewTicket) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     ASSERT_OK(GetOrCreateAppendStore(context, /*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                      GetDefaultPool()));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context->AcquireReadViews());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context->AcquireReadState());
+    const std::vector<RealtimePartitionBucketView>& views = read_state.views;
     ASSERT_EQ(1, views.size());
 
     ASSERT_NOK_WITH_MSG(context->PinReadView(views[0], /*ttl_millis=*/0),
@@ -400,8 +438,8 @@ TEST(RealtimeContextTest, TestExpiresAbandonedReadViewTicket) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
     ASSERT_OK(GetOrCreateAppendStore(context, /*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                      GetDefaultPool()));
-    ASSERT_OK_AND_ASSIGN(std::vector<RealtimePartitionBucketView> views,
-                         context->AcquireReadViews());
+    ASSERT_OK_AND_ASSIGN(RealtimeReadState read_state, context->AcquireReadState());
+    std::vector<RealtimePartitionBucketView>& views = read_state.views;
     ASSERT_EQ(1, views.size());
     std::weak_ptr<RealtimeReadView> weak_view = views[0].read_view;
     ASSERT_OK_AND_ASSIGN(std::string ticket, context->PinReadView(views[0], /*ttl_millis=*/10));
@@ -432,7 +470,7 @@ TEST(RealtimeContextTest, TestRejectsNullPluginResults) {
     ASSERT_OK(GetOrCreateAppendStore(context, /*partition=*/{}, /*bucket=*/0, MakeWriteSchema(), {},
                                      GetDefaultPool()));
     factory->stores[0]->return_null_read_view = true;
-    ASSERT_NOK_WITH_MSG(context->AcquireReadViews(), "real-time store returned a null read view");
+    ASSERT_NOK_WITH_MSG(context->AcquireReadState(), "real-time store returned a null read view");
 }
 
 }  // namespace

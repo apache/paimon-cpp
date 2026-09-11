@@ -36,16 +36,15 @@ class Schema;
 
 namespace paimon {
 
+class RealtimeSchemaLayout;
+
 /// Builds the schema requested from a `RealtimeStore` and converts a store reader into the
 /// logical representation expected by table read.
 class RealtimeStoreReadPipeline {
  public:
-    /// `realtime_write_schema` is the complete schema written to `RealtimeStore`, including its
-    /// system fields.
     static Result<std::unique_ptr<RealtimeStoreReadPipeline>> Create(
         const std::shared_ptr<arrow::Schema>& logical_schema,
-        const std::shared_ptr<arrow::Schema>& realtime_write_schema,
-        const std::shared_ptr<MemoryPool>& memory_pool,
+        const RealtimeSchemaLayout& schema_layout, const std::shared_ptr<MemoryPool>& memory_pool,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     const std::shared_ptr<arrow::Schema>& StoreReadSchema() const {

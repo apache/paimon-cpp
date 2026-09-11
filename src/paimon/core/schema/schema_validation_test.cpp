@@ -1245,7 +1245,8 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsBlobValue) {
     });
     ASSERT_NOK_WITH_MSG(TableSchema::Create(/*schema_id=*/0, nested_schema,
                                             /*partition_keys=*/{}, /*primary_keys=*/{}, options),
-                        "Blob field must be a top-level field.");
+                        "BLOB field must be a top-level field or the direct value of a "
+                        "top-level MAP field.");
 }
 
 TEST(SchemaValidationTest, TestMapSharedShreddingCompression) {
