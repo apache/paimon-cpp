@@ -171,17 +171,10 @@ Status DecodeStructToBuilder(const ::avro::NodePtr& avro_node,
     auto* struct_builder = checked_cast<arrow::StructBuilder*>(array_builder);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(struct_builder->Append());
 
-    const std::set<size_t>* fields = projection ? &projection.value() : nullptr;
-    if (!fields && !ctx->struct_projections.empty()) {
-        auto iter = ctx->struct_projections.find(array_builder);
-        if (iter != ctx->struct_projections.end()) {
-            fields = &iter->second;
-        }
-    }
     size_t skipped_fields = 0;
     // Read all Avro fields in order (must maintain decoder position)
     for (size_t avro_idx = 0; avro_idx < avro_node->leaves(); ++avro_idx) {
-        if (fields && fields->find(avro_idx) == fields->end()) {
+        if (projection && projection->find(avro_idx) == projection->end()) {
             skipped_fields++;
             PAIMON_RETURN_NOT_OK(SkipAvroValue(avro_node->leafAt(avro_idx), decoder));
         } else {

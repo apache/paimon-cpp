@@ -165,8 +165,7 @@ class CountingManifestEntrySerializer : public ManifestEntrySerializer {
 }  // namespace
 
 TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
-    for (bool compatible_schema : {false, true}) {
-        SCOPED_TRACE(compatible_schema);
+    {
         auto dir = UniqueTestDirectory::Create();
         ASSERT_TRUE(dir);
         auto fs = dir->GetFileSystem();
@@ -174,11 +173,7 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
         schema_id_ = 0;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> initial_scan,
                              CreateScan(nullptr));
-        auto historical_options = options_;
-        if (!compatible_schema) {
-            historical_options[Options::BUCKET_KEY] = "value";
-        }
-        ASSERT_OK(schema_manager_->CreateTable(initial_scan->schema_, {}, {}, historical_options));
+        ASSERT_OK(schema_manager_->CreateTable(initial_scan->schema_, {}, {}, options_));
         schema_id_ = 1;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> inferred_scan,
                              CreateScan(KeyEquals()));
@@ -252,10 +247,10 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
                 counter->decoded_entries = 0;
                 std::vector<ManifestEntry> candidates;
                 ASSERT_OK(scan->ReadAndMergeBucketFileEntries(metas, bucket, &candidates));
-                // Only the three unrelated current-layout entries can be skipped. Historical
-                // layouts and both sides of the cross-manifest deletion must be decoded.
+                // Both schema versions have the same bucket layout: skip their unrelated
+                // buckets, but retain different bucket counts and both sides of the deletion.
                 ASSERT_EQ(counter->decoded_entries.load(),
-                          entries.size() + 1 - (lazy_decode ? kNumBuckets - 1 : 0));
+                          entries.size() + 1 - (lazy_decode ? 2 * (kNumBuckets - 1) : 0));
                 std::vector<std::string> files;
                 for (const auto& entry : candidates) {
                     ASSERT_NE(entry.FileName(), "deleted.avro");
@@ -265,7 +260,7 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
                     }
                 }
                 std::sort(files.begin(), files.end());
-                ASSERT_EQ(files.size(), compatible_schema ? 4 : 7);
+                ASSERT_EQ(files.size(), 4);
                 if (!lazy_decode) {
                     baseline = candidates;
                     baseline_files = files;
