@@ -23,15 +23,48 @@
 #include <utility>
 #include <vector>
 
+#include "arrow/array/array_nested.h"
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/common/utils/scope_guard.h"
 
 namespace paimon::lance {
+namespace {
+
+Status ValidateRowValues(const std::shared_ptr<arrow::Array>& array) {
+    if (array->type_id() == arrow::Type::STRUCT) {
+        // Lance v2.0 drops STRUCT parent validity, even with a nullable schema.
+        if (array->null_count() != 0) {
+            return Status::Invalid("Lance 0.39 v2.0 does not preserve null ROW values");
+        }
+        for (const auto& child : checked_pointer_cast<arrow::StructArray>(array)->fields()) {
+            PAIMON_RETURN_NOT_OK(ValidateRowValues(child));
+        }
+    } else if (array->type_id() == arrow::Type::LIST) {
+        auto list = checked_pointer_cast<arrow::ListArray>(array);
+        if (list->value_type()->id() != arrow::Type::STRUCT &&
+            list->value_type()->id() != arrow::Type::LIST) {
+            return Status::OK();
+        }
+        if (list->null_count() == 0) {
+            return ValidateRowValues(list->values()->Slice(
+                list->value_offset(0), list->value_offset(list->length()) - list->value_offset(0)));
+        }
+        for (int64_t i = 0; i < list->length(); ++i) {
+            if (!list->IsNull(i)) {
+                PAIMON_RETURN_NOT_OK(ValidateRowValues(list->value_slice(i)));
+            }
+        }
+    }
+    return Status::OK();
+}
+
+}  // namespace
 
 LanceFormatWriter::LanceFormatWriter(const std::shared_ptr<arrow::Schema>& schema,
                                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
@@ -80,8 +113,13 @@ Status LanceFormatWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &import_schema));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                       arrow::ImportArray(batch, &import_schema));
+    // Normalize sliced nested arrays before Arrow C export: Lance 0.39's encoder
+    // expects child buffers and offsets to describe the same logical slice.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized,
                            ArrowUtils::NormalizeArrayOffsets(array, arrow_pool_.get()));
+    for (const auto& child : checked_pointer_cast<arrow::StructArray>(normalized)->fields()) {
+        PAIMON_RETURN_NOT_OK(ValidateRowValues(child));
+    }
     ::ArrowArray ffi_array = {};
     ::ArrowSchema ffi_schema = {};
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*normalized, &ffi_array, &ffi_schema));
@@ -124,6 +162,8 @@ Result<bool> LanceFormatWriter::ReachTargetSize(bool suggested_check, int64_t ta
     if (paimon_lance_writer_tell(writer_, &position) != 0) {
         return LanceFfiError("get Lance writer position");
     }
+    // Unlike Java's input Arrow-buffer estimate, this is the current encoded file
+    // position (excluding buffered data), so file rolling boundaries may differ.
     return position >= static_cast<uint64_t>(target_size);
 }
 

@@ -824,7 +824,6 @@ Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Fie
         case arrow::Type::DATE32:
         case arrow::Type::STRING:
         case arrow::Type::BINARY:
-        case arrow::Type::TIME32:
         case arrow::Type::DECIMAL128:
         case arrow::Type::FIXED_SIZE_LIST:
             return Status::OK();
@@ -839,10 +838,6 @@ Status SchemaValidation::ValidateLanceDataField(const std::shared_ptr<arrow::Fie
         case arrow::Type::LIST:
             return ValidateLanceDataField(type->field(0));
         case arrow::Type::STRUCT:
-            if (field->nullable()) {
-                return Status::Invalid(fmt::format(
-                    "Lance file format does not support nullable ROW field '{}'", field->name()));
-            }
             for (const std::shared_ptr<arrow::Field>& child : type->fields()) {
                 PAIMON_RETURN_NOT_OK(ValidateLanceDataField(child));
             }

@@ -53,7 +53,7 @@ class LanceReaderBuilder : public ReaderBuilder {
         PAIMON_ASSIGN_OR_RAISE(uint32_t batch_readahead,
                                OptionsUtils::GetValueFromMap<uint32_t>(
                                    options_, kLanceBatchReadahead, kDefaultLanceBatchReadahead));
-        return LanceFileBatchReader::Create(input, batch_size_, batch_readahead, options_, pool_,
+        return LanceFileBatchReader::Create(input, batch_size_, batch_readahead, options_,
                                             arrow_pool_);
     }
 

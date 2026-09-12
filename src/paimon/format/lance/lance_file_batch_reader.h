@@ -32,7 +32,6 @@
 
 namespace paimon {
 class InputStream;
-class MemoryPool;
 class Metrics;
 }  // namespace paimon
 
@@ -42,7 +41,7 @@ class LanceFileBatchReader : public FileBatchReader {
  public:
     static Result<std::unique_ptr<LanceFileBatchReader>> Create(
         const std::shared_ptr<InputStream>& input, int32_t batch_size, uint32_t batch_readahead,
-        const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool,
+        const std::map<std::string, std::string>& options,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~LanceFileBatchReader() override;
@@ -63,7 +62,6 @@ class LanceFileBatchReader : public FileBatchReader {
     LanceFileBatchReader(const std::shared_ptr<InputStream>& input, int32_t batch_size,
                          uint32_t batch_readahead, PaimonLanceReader* reader,
                          const std::shared_ptr<arrow::Schema>& file_schema, uint64_t total_rows,
-                         const std::shared_ptr<MemoryPool>& pool,
                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Status OpenStream();
@@ -82,7 +80,6 @@ class LanceFileBatchReader : public FileBatchReader {
     std::vector<uint64_t> selection_row_ids_;
     std::vector<uint64_t> selection_starts_;
     std::vector<uint64_t> selection_ends_;
-    std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<Metrics> metrics_;
     uint64_t next_row_offset_ = 0;

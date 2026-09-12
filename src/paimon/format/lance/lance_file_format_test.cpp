@@ -31,6 +31,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/format/column_stats.h"
 #include "paimon/format/file_format.h"
@@ -159,6 +160,19 @@ TEST(LanceUtilsTest, ConvertsObjectStoreOptions) {
     ASSERT_EQ(oss_options.at("access_key_id"), "bucket-key");
     ASSERT_EQ(oss_options.at("secret_access_key"), "bucket-secret");
     ASSERT_EQ(oss_options.at("session_token"), "bucket-token");
+    ASSERT_EQ(oss_options.count("endpoint"), 0);
+    ASSERT_EQ(oss_options.count("virtual_hosted_style_request"), 0);
+    for (const char* endpoint : {"http://oss.example.com", "https://oss.example.com"}) {
+        auto mapped = to_map(
+            GetLanceStorageOptions({{"fs.oss.endpoint", endpoint}}, "oss://bucket/data.lance"));
+        ASSERT_EQ(mapped.at("oss_endpoint"), endpoint);
+    }
+    auto overridden =
+        to_map(GetLanceStorageOptions({{"fs.oss.endpoint", "global.example.com"},
+                                       {"fs.oss.bucket.bucket.endpoint", "bucket.example.com"},
+                                       {"lance.storage.oss_endpoint", "custom.example.com"}},
+                                      "oss://bucket/data.lance"));
+    ASSERT_EQ(overridden.at("oss_endpoint"), "custom.example.com");
 }
 
 TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
@@ -173,7 +187,6 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
         arrow::field("string_col", arrow::utf8()),
         arrow::field("binary_col", arrow::binary()),
         arrow::field("date_col", arrow::date32()),
-        arrow::field("time_col", arrow::time32(arrow::TimeUnit::MILLI)),
         arrow::field("timestamp_col", arrow::timestamp(arrow::TimeUnit::MICRO)),
         arrow::field("decimal_col", arrow::decimal128(12, 2)),
         arrow::field("array_col", arrow::list(arrow::float32())),
@@ -185,11 +198,11 @@ TEST_F(LanceFileFormatTest, WriteThenReadSupportedTypes) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
     std::shared_ptr<arrow::Array> expected =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
-          [true,-1,-2,-3,-4,1.5,2.5,"one","abc",1,1234,
+          [true,-1,-2,-3,-4,1.5,2.5,"one","abc",1,
            "1970-01-01 00:00:00.000001","12.34",[1.0,2.0],[7],[3.0,4.0]],
-          [false,1,2,3,4,3.5,4.5,"two","xyz",2,5678,
+          [false,1,2,3,4,3.5,4.5,"two","xyz",2,
            "2030-12-31 23:59:59.999999","-12.34",[],[8],[5.0,6.0]],
-          [null,null,null,null,null,null,null,null,null,null,null,null,null,null,[null],null]
+          [null,null,null,null,null,null,null,null,null,null,null,null,null,[null],null]
         ])")
             .ValueOrDie();
     std::string path = PathUtil::JoinPath(directory_->Str(), "supported-types.lance");
@@ -218,6 +231,28 @@ TEST_F(LanceFileFormatTest, RejectsNullTopLevelRows) {
                         "Lance writer does not accept null top-level rows");
 }
 
+TEST_F(LanceFileFormatTest, NullableRowValues) {
+    auto row_type = arrow::struct_({arrow::field("value", arrow::int32())});
+    for (const auto& type : {row_type, arrow::list(row_type)}) {
+        arrow::FieldVector fields = {arrow::field("row", type)};
+        auto schema = arrow::schema(fields);
+        const std::string json = type->id() == arrow::Type::STRUCT
+                                     ? R"([[null], [[7]], [[null]]])"
+                                     : R"([[[null]], [[[7]]], [null]])";
+        auto data =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), json).ValueOrDie();
+        std::string path = PathUtil::JoinPath(directory_->Str(), type->name() + ".lance");
+        ASSERT_NOK_WITH_MSG(WriteFile(path, schema, data, /*batch_size=*/3),
+                            "does not preserve null ROW values");
+        auto slice = data->Slice(1, 2);
+        ASSERT_OK(WriteFile(path, schema, slice, /*batch_size=*/2));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, OpenReader(path, 2));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(slice)));
+    }
+}
+
 TEST_F(LanceFileFormatTest, ProjectionSelectionAndFileRowIds) {
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
                                  arrow::field("name", arrow::utf8())};
@@ -240,11 +275,13 @@ TEST_F(LanceFileFormatTest, ProjectionSelectionAndFileRowIds) {
                                     RoaringBitmap32::From({1, 2, 4})));
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch first_batch, reader->NextBatch());
+    // Import directly: ReadResultCollector normalizes away field metadata and
+    // nullability, which are part of the contract checked here.
     arrow::Result<std::shared_ptr<arrow::Array>> first_result =
         arrow::ImportArray(first_batch.first.get(), first_batch.second.get());
     ASSERT_TRUE(first_result.ok()) << first_result.status().ToString();
     std::shared_ptr<arrow::Array> first = std::move(first_result).MoveValueUnsafe();
-    auto first_type = std::static_pointer_cast<arrow::StructType>(first->type());
+    auto first_type = checked_pointer_cast<arrow::StructType>(first->type());
     ASSERT_TRUE(first_type->field(0)->Equals(*read_field, /*check_metadata=*/true));
     ASSERT_TRUE(first->Equals(arrow::ipc::internal::json::ArrayFromJSON(
                                   arrow::struct_({read_field}), R"([["one"],["two"]])")

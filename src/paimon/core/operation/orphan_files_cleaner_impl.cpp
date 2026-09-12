@@ -81,7 +81,8 @@ bool OrphanFilesCleanerImpl::SupportToClean(const std::string& file_name) {
             return true;
         }
     }
-    static std::vector<std::string> supported_formats = {".orc", ".parquet", ".avro", ".lance"};
+    static std::vector<std::string> supported_formats = {".orc", ".parquet", ".avro", ".lance",
+                                                         ".mosaic"};
     for (const auto& format : supported_formats) {
         if (StringUtils::StartsWith(file_name, "data-") &&
             StringUtils::EndsWith(file_name, format)) {

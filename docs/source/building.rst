@@ -193,6 +193,15 @@ Lance forwards the standard ``s3.*`` and ``fs.oss.*`` table options to its objec
 An option named ``lance.storage.<key>`` is passed through as ``<key>`` and overrides the
 corresponding standard option.
 
+Nullable ROW declarations are supported, but the writer rejects actual null ROW
+values because Lance 0.39's default v2.0 encoding does not preserve parent validity.
+
+For ``oss://``, Lance 0.39 uses OpenDAL: ``oss_endpoint`` is the service endpoint
+without a bucket prefix, and a bare hostname defaults to HTTPS. Java's additional
+S3-style ``endpoint`` and ``virtual_hosted_style_request`` options are not used by
+this backend. OSS session tokens supplied through table options are not supported
+by the pinned backend; forwarding a token option does not enable STS authentication.
+
 Third-party dependency source
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

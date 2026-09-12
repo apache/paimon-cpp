@@ -51,7 +51,7 @@ LanceStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& file
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input, file_system->Open(path));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<LanceFileBatchReader> reader,
-        LanceFileBatchReader::Create(input, /*batch_size=*/1, /*batch_readahead=*/1, options_, pool,
+        LanceFileBatchReader::Create(input, /*batch_size=*/1, /*batch_readahead=*/1, options_,
                                      GetArrowPool(pool)));
     ColumnStatsVector stats;
     stats.reserve(schema_->num_fields());
@@ -74,7 +74,6 @@ Result<std::unique_ptr<ColumnStats>> LanceStatsExtractor::CreateEmptyStats(
         case arrow::Type::INT16:
             return ColumnStats::CreateSmallIntColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::INT32:
-        case arrow::Type::TIME32:
             return ColumnStats::CreateIntColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::INT64:
             return ColumnStats::CreateBigIntColumnStats(std::nullopt, std::nullopt, std::nullopt);

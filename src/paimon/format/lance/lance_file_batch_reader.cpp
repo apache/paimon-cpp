@@ -30,6 +30,7 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/format/lance/lance_utils.h"
 #include "paimon/fs/file_system.h"
@@ -41,7 +42,6 @@ LanceFileBatchReader::LanceFileBatchReader(const std::shared_ptr<InputStream>& i
                                            PaimonLanceReader* reader,
                                            const std::shared_ptr<arrow::Schema>& file_schema,
                                            uint64_t total_rows,
-                                           const std::shared_ptr<MemoryPool>& pool,
                                            const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : input_(input),
       batch_size_(batch_size),
@@ -49,16 +49,14 @@ LanceFileBatchReader::LanceFileBatchReader(const std::shared_ptr<InputStream>& i
       reader_(reader),
       file_schema_(file_schema),
       total_rows_(total_rows),
-      pool_(pool),
       arrow_pool_(arrow_pool),
       metrics_(std::make_shared<MetricsImpl>()) {}
 
 Result<std::unique_ptr<LanceFileBatchReader>> LanceFileBatchReader::Create(
     const std::shared_ptr<InputStream>& input, int32_t batch_size, uint32_t batch_readahead,
-    const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool,
+    const std::map<std::string, std::string>& options,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
-    if (input == nullptr || pool == nullptr || arrow_pool == nullptr || batch_size <= 0 ||
-        batch_readahead == 0) {
+    if (input == nullptr || arrow_pool == nullptr || batch_size <= 0 || batch_readahead == 0) {
         return Status::Invalid(
             "Lance reader requires non-null input and memory pools, positive "
             "batch size, and positive batch readahead");
@@ -82,24 +80,21 @@ Result<std::unique_ptr<LanceFileBatchReader>> LanceFileBatchReader::Create(
         return LanceFfiError("open Lance reader");
     }
 
+    ScopeGuard guard([reader]() { paimon_lance_reader_free(reader); });
     ::ArrowSchema ffi_schema = {};
     if (paimon_lance_reader_export_schema(reader, &ffi_schema) != 0) {
-        paimon_lance_reader_free(reader);
         return LanceFfiError("read Lance schema");
     }
-    arrow::Result<std::shared_ptr<arrow::Schema>> schema_result = arrow::ImportSchema(&ffi_schema);
-    if (!schema_result.ok()) {
-        paimon_lance_reader_free(reader);
-        return ToPaimonStatus(schema_result.status());
-    }
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_schema,
+                                      arrow::ImportSchema(&ffi_schema));
     uint64_t total_rows = 0;
     if (paimon_lance_reader_num_rows(reader, &total_rows) != 0) {
-        paimon_lance_reader_free(reader);
         return LanceFfiError("read Lance row count");
     }
-    return std::unique_ptr<LanceFileBatchReader>(new LanceFileBatchReader(
-        input, batch_size, batch_readahead, reader, std::move(schema_result).MoveValueUnsafe(),
-        total_rows, pool, arrow_pool));
+    auto result = std::unique_ptr<LanceFileBatchReader>(new LanceFileBatchReader(
+        input, batch_size, batch_readahead, reader, file_schema, total_rows, arrow_pool));
+    guard.Release();
+    return result;
 }
 
 LanceFileBatchReader::~LanceFileBatchReader() {
@@ -141,11 +136,12 @@ Result<BatchReader::ReadBatch> LanceFileBatchReader::AlignBatch(ReadBatch batch)
     for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
         std::shared_ptr<arrow::Array> child = struct_array->GetFieldByName(field->name());
         if (child == nullptr) {
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                child,
-                arrow::MakeArrayOfNull(field->type(), struct_array->length(), arrow_pool_.get()));
-        } else if (!child->type()->Equals(field->type()) &&
-                   ArrowUtils::EqualsIgnoreNullable(child->type(), field->type())) {
+            return Status::Invalid(fmt::format("Lance batch is missing field '{}'", field->name()));
+        }
+        // Lance may change the VECTOR element's nullability. The generic nested
+        // alignment helper rejects that fixed-size-list type difference.
+        if (!child->type()->Equals(field->type()) &&
+            ArrowUtils::EqualsIgnoreNullable(child->type(), field->type())) {
             std::shared_ptr<arrow::ArrayData> data = child->data()->Copy();
             data->type = field->type();
             child = arrow::MakeArray(std::move(data));
@@ -221,9 +217,7 @@ Status LanceFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
 
     projection_names_.clear();
     for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
-        if (file_schema_->GetFieldByName(field->name()) != nullptr) {
-            projection_names_.push_back(field->name());
-        }
+        projection_names_.push_back(field->name());
     }
     if (projection_names_.empty() && file_schema_->num_fields() > 0) {
         projection_names_.push_back(file_schema_->field(0)->name());

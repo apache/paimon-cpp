@@ -109,6 +109,8 @@ void AddOssOptions(const std::map<std::string, std::string>& options, const std:
             CopyOption(options, "fs.oss.bucket." + bucket + "." + suffix, target, storage_options);
         }
     };
+    // lance-io 0.39 uses OpenDAL for oss://. It consumes oss_endpoint and adds
+    // the bucket itself; Java's S3 endpoint/virtual-host options are unused here.
     copy_oss_option("endpoint", "oss_endpoint");
     copy_oss_option("region", "oss_region");
     copy_oss_option("accessKeyId", "oss_access_key_id");

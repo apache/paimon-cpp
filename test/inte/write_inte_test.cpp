@@ -815,7 +815,10 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithPartitionAndMultiBuckets) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
-    if (GetParam() == "mosaic" || GetParam() == "lance") {
+    if (GetParam() == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
+    if (GetParam() == "mosaic") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -1647,7 +1650,10 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
 }
 
 TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
-    if (GetParam() == "mosaic" || GetParam() == "lance") {
+    if (GetParam() == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
+    if (GetParam() == "mosaic") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -2502,7 +2508,10 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
 
 TEST_P(WriteInteTest, TestWriteWithFieldId) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
+    if (file_format == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
     // prepare write schema and write data
@@ -3373,7 +3382,10 @@ TEST_P(WriteInteTest, TestWriteMemoryUse) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWithAllNull) {
-    if (GetParam() == "mosaic" || GetParam() == "lance") {
+    if (GetParam() == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
+    if (GetParam() == "mosaic") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -4051,7 +4063,10 @@ TEST_P(WriteInteTest, TestNullabilityCheck) {
 
 TEST_P(WriteInteTest, TestPkSpillableMapSharedShreddingReadWrite) {
     auto file_format = GetParam();
-    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
+    if (file_format == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
+    if (file_format == "avro" || file_format == "mosaic") {
         return;
     }
 

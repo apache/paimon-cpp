@@ -2920,6 +2920,103 @@ TEST_P(ScanAndReadInteTest, TestCastTimestampType) {
     ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
+#ifdef PAIMON_ENABLE_LANCE
+TEST_F(ScanAndReadInteTest, TestLanceJavaCompatibility) {
+    TimezoneGuard timezone_guard("UTC");
+    auto nested_type = arrow::struct_(
+        {arrow::field("number", arrow::int32()), arrow::field("label", arrow::utf8())});
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("f_boolean", arrow::boolean()),
+        arrow::field("f_tinyint", arrow::int8()),
+        arrow::field("f_smallint", arrow::int16()),
+        arrow::field("f_bigint", arrow::int64()),
+        arrow::field("f_float", arrow::float32()),
+        arrow::field("f_double", arrow::float64()),
+        arrow::field("f_char", arrow::utf8()),
+        arrow::field("f_string", arrow::utf8()),
+        arrow::field("f_binary", arrow::binary()),
+        arrow::field("f_varbinary", arrow::binary()),
+        arrow::field("f_date", arrow::date32()),
+        arrow::field("f_ts_0", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("f_ts_3", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("f_ts_6", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("f_ts_9", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f_decimal_1_0", arrow::decimal128(1, 0)),
+        arrow::field("f_decimal_18_2", arrow::decimal128(18, 2)),
+        arrow::field("f_decimal_19_2", arrow::decimal128(19, 2)),
+        arrow::field("f_decimal_38_18", arrow::decimal128(38, 18)),
+        arrow::field("f_array_int", arrow::list(arrow::int32())),
+        arrow::field("f_array_array_int", arrow::list(arrow::list(arrow::int32()))),
+        arrow::field("f_struct", nested_type),
+        arrow::field("f_nullable_struct", nested_type),
+        arrow::field("f_vector", arrow::fixed_size_list(arrow::float32(), 3)),
+    };
+    // Nullable-declared ROW is readable when every parent is valid. Null children are distinct
+    // from null parents; see the Java generator's null-parent probe in test_data/lance/README.md.
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[0, 1, true, -5, -1000, 10000000001, 1.25, -2.5, "char0001", "value-1", "bin1", "\u0000\u0001\u0002\u007f", -1, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [1, null, -1], [[1, null], null, []], [1, "required"], [1, "nullable"], [1.0, -1.5, 0.25]],
+[0, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, [null, null], [null, null], null],
+[0, 10, false, -5, -1000, 10000000010, 1.25, -2.5, "char0001", "", "bin1", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [], [[10, null], null, []], [10, "required"], [10, "nullable"], [10.0, -1.5, 0.25]],
+[0, 11, true, -5, -1000, 10000000011, 1.25, -2.5, "char0001", "value-11", "bin1", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [11, null, -11], [[11, null], null, []], [11, "required"], [11, "nullable"], [11.0, -1.5, 0.25]]
+])")
+            .ValueOrDie());
+    const std::string table_path = GetDataDir() + "/lance/append_java_compat.db/append_java_compat";
+    auto check = [&](const std::shared_ptr<Predicate>& predicate,
+                     const std::vector<std::string>& projection,
+                     const std::shared_ptr<arrow::ChunkedArray>& expected_result,
+                     bool exact_filter = false) {
+        ScanContextBuilder scan_builder(table_path);
+        ReadContextBuilder read_builder(table_path);
+        if (predicate) {
+            scan_builder.SetPredicate(predicate);
+            if (projection.empty()) {
+                read_builder.SetPredicate(predicate);
+            }
+        }
+        if (!projection.empty()) {
+            // The scan predicate uses table field indexes, not reordered projection indexes.
+            read_builder.SetReadFieldNames(projection);
+        }
+        read_builder.EnablePredicateFilter(exact_filter);
+        read_builder.AddOption("read.batch-size", "1");
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(2));
+        ASSERT_FALSE(plan->Splits().empty());
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(expected_result->Equals(actual))
+            << "actual: " << actual->ToString() << "\nexpected: " << expected_result->ToString();
+    };
+    check(/*predicate=*/nullptr, /*projection=*/{}, expected);
+    auto predicate = PredicateBuilder::GreaterOrEqual(0, "id", FieldType::INT, Literal(10));
+    // Missing statistics retain both files; exact filtering is opt-in above the format layer.
+    check(predicate, /*projection=*/{}, expected);
+    check(predicate, /*projection=*/{}, expected->Slice(2, 2), /*exact_filter=*/true);
+    auto predicate_without_stats = PredicateBuilder::GreaterOrEqual(
+        4, "f_bigint", FieldType::BIGINT, Literal(int64_t{10000000010LL}));
+    check(predicate_without_stats, /*projection=*/{}, expected);
+
+    auto projected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields[0], fields[24], fields[1], fields[25]}), R"([
+[0, [1, "nullable"], 1, [1.0, -1.5, 0.25]],
+[0, [null, null], 2, null],
+[0, [10, "nullable"], 10, [10.0, -1.5, 0.25]],
+[0, [11, "nullable"], 11, [11.0, -1.5, 0.25]]
+])")
+            .ValueOrDie());
+    check(predicate, {"f_nullable_struct", "id", "f_vector"}, projected);
+}
+#endif
+
 #ifdef PAIMON_ENABLE_MOSAIC
 TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
     TimezoneGuard timezone_guard("UTC");
