@@ -74,7 +74,8 @@ class ArrowRealtimeStoreTest : public testing::Test {
     }
 
     std::shared_ptr<ArrowRealtimeStore> CreateStore(StatisticsMode statistics_mode) const {
-        return std::make_shared<ArrowRealtimeStore>(schema_, statistics_mode, pool_, arrow_pool_);
+        return std::make_shared<ArrowRealtimeStore>(schema_, RealtimeStoreMode::APPEND_ONLY,
+                                                    statistics_mode, pool_, arrow_pool_);
     }
 
     std::unique_ptr<RecordBatch> MakeBatch(const std::string& json) const {
@@ -156,6 +157,49 @@ TEST_F(ArrowRealtimeStoreTest, TestWriteValidationAndSeal) {
     ASSERT_GT(store_->GetMemoryUsage(), 0);
 }
 
+TEST_F(ArrowRealtimeStoreTest, TestDataUsageTracksBuildingSealedAndReclaimedData) {
+    RealtimeStoreDataUsage usage = store_->GetDataUsage();
+    ASSERT_EQ(0, usage.building_memory_bytes);
+    ASSERT_EQ(0, usage.sealed_memory_bytes);
+    ASSERT_EQ(0, usage.building_row_count);
+    ASSERT_EQ(0, usage.sealed_row_count);
+
+    ASSERT_OK(store_->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"), OffsetRange(0, 2)}));
+    usage = store_->GetDataUsage();
+    ASSERT_GT(usage.building_memory_bytes, 0);
+    ASSERT_EQ(0, usage.sealed_memory_bytes);
+    ASSERT_EQ(2, usage.building_row_count);
+    ASSERT_EQ(0, usage.sealed_row_count);
+    ASSERT_EQ(usage.building_memory_bytes, store_->GetMemoryUsage());
+    const uint64_t first_segment_memory = usage.building_memory_bytes;
+
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                         store_->SealForCommit());
+    ASSERT_TRUE(segment.has_value());
+    usage = store_->GetDataUsage();
+    ASSERT_EQ(0, usage.building_memory_bytes);
+    ASSERT_EQ(first_segment_memory, usage.sealed_memory_bytes);
+    ASSERT_EQ(0, usage.building_row_count);
+    ASSERT_EQ(2, usage.sealed_row_count);
+
+    ASSERT_OK(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[2, 2, "c"]])"), OffsetRange(2, 3)}));
+    usage = store_->GetDataUsage();
+    ASSERT_GT(usage.building_memory_bytes, 0);
+    ASSERT_EQ(first_segment_memory, usage.sealed_memory_bytes);
+    ASSERT_EQ(1, usage.building_row_count);
+    ASSERT_EQ(2, usage.sealed_row_count);
+    ASSERT_EQ(usage.building_memory_bytes + usage.sealed_memory_bytes, store_->GetMemoryUsage());
+
+    ASSERT_OK(store_->AdvanceCommittedOffset(/*committed_end_offset=*/2));
+    usage = store_->GetDataUsage();
+    ASSERT_GT(usage.building_memory_bytes, 0);
+    ASSERT_EQ(0, usage.sealed_memory_bytes);
+    ASSERT_EQ(1, usage.building_row_count);
+    ASSERT_EQ(0, usage.sealed_row_count);
+    ASSERT_EQ(usage.building_memory_bytes, store_->GetMemoryUsage());
+}
+
 TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
     ASSERT_OK(store_->Write(RealtimeWriteBatch{
         MakeBatch(R"([[10, 10, "a"], [11, 11, "b"], [12, 12, "c"]])"), OffsetRange(10, 13)}));
@@ -172,6 +216,19 @@ TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
         DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
         arrow::field("value", arrow::utf8()),
     });
+    {
+        std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
+        RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+        ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                             store_->CreateQueryReaders(view, context));
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch,
+                             readers[0]->NextBatchWithBitmap());
+        arrow::Result<std::shared_ptr<arrow::Array>> import_result =
+            arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
+        ASSERT_TRUE(import_result.ok());
+        std::shared_ptr<arrow::Array> array = std::move(import_result).ValueOrDie();
+        ASSERT_TRUE(array->type()->Equals(arrow::struct_(read_schema->fields())));
+    }
     {
         std::unique_ptr<ArrowSchema> c_schema = MakeReadSchema(read_schema);
         RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
@@ -235,15 +292,9 @@ TEST_F(ArrowRealtimeStoreTest, TestCommitReaderPreservesSlicedBatch) {
         arrow::ImportArray(batch.first.get(), batch.second.get());
     ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();
     std::shared_ptr<arrow::Array> actual_array = std::move(import_result).ValueOrDie();
-    std::shared_ptr<arrow::DataType> expected_type = arrow::struct_({
-        arrow::field("_VALUE_KIND", arrow::int8()),
-        DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
-        arrow::field("id", arrow::int64()),
-        arrow::field("value", arrow::utf8()),
-    });
+    std::shared_ptr<arrow::DataType> expected_type = arrow::struct_(schema_->fields());
     std::shared_ptr<arrow::Array> expected_array =
-        arrow::ipc::internal::json::ArrayFromJSON(expected_type,
-                                                  R"([[0, 0, 1, null], [0, 1, 2, "c"]])")
+        arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([[0, 1, null], [1, 2, "c"]])")
             .ValueOrDie();
     ASSERT_TRUE(actual_array->Equals(*expected_array))
         << "expected: " << expected_array->ToString() << ", actual: " << actual_array->ToString();
@@ -320,6 +371,7 @@ TEST_F(ArrowRealtimeStoreTest, TestRejectsHandlesFromAnotherStoreImplementation)
     RealtimeQueryContext context{read_schema.get(), /*predicate=*/nullptr};
     ASSERT_NOK_WITH_MSG(store_->CreateQueryReaders(std::make_shared<ForeignReadView>(), context),
                         "read view was not created by the Arrow real-time store");
+
     read_schema->release(read_schema.get());
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store_->AcquireReadView());

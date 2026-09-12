@@ -21,9 +21,7 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <utility>
-#include <vector>
 
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
@@ -52,7 +50,6 @@ class CompleteRowKindBatchReader : public BatchReader {
     void Close() override {
         reader_->Close();
         row_kind_array_.reset();
-        field_names_with_row_kind_.clear();
     }
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override {
@@ -62,12 +59,9 @@ class CompleteRowKindBatchReader : public BatchReader {
  private:
     Result<std::shared_ptr<arrow::Array>> PrepareRowKindArray(int32_t struct_array_length);
 
-    void UpdateFieldNamesWithRowKind(const std::shared_ptr<arrow::StructArray>& struct_array);
-
  private:
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<BatchReader> reader_;
     std::shared_ptr<arrow::Array> row_kind_array_;
-    std::vector<std::string> field_names_with_row_kind_;
 };
 }  // namespace paimon

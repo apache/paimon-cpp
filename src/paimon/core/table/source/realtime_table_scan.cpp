@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/snapshot.h"
@@ -76,6 +77,31 @@ Result<RealtimeOffsetMap> RealtimeTableScan::LoadCommittedOffsets(
                            snapshot_manager_->LoadSnapshot(disk_plan->SnapshotId().value()));
     return RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),
                                                  file_system_);
+}
+
+Status RealtimeTableScan::ValidateSnapshotProgress(
+    const std::vector<RealtimePartitionBucketView>& memory_views,
+    const RealtimeOffsetMap& snapshot_offsets, const RealtimeOffsetMap& context_offsets) const {
+    for (const RealtimePartitionBucketView& memory : memory_views) {
+        if (scan_filter_->GetBucketFilter() &&
+            memory.partition_bucket.bucket != scan_filter_->GetBucketFilter().value()) {
+            continue;
+        }
+        if (!MatchPartition(memory.partition_bucket.partition)) {
+            continue;
+        }
+        const int64_t snapshot_offset =
+            GetCommittedEndOffset(snapshot_offsets, memory.partition_bucket);
+        const int64_t context_offset =
+            GetCommittedEndOffset(context_offsets, memory.partition_bucket);
+        if (snapshot_offset < context_offset) {
+            return Status::Invalid(fmt::format(
+                "real-time scan snapshot offset {} is behind context committed offset {} for "
+                "bucket {}; the missing range may already have been reclaimed",
+                snapshot_offset, context_offset, memory.partition_bucket.bucket));
+        }
+    }
+    return Status::OK();
 }
 
 Result<RealtimeTableScan::MemoryViewMap> RealtimeTableScan::CollectActiveMemoryViews(
@@ -196,12 +222,14 @@ RealtimeTableScan::RealtimeTableScan(std::unique_ptr<TableScan>&& disk_scan, boo
 Result<std::shared_ptr<Plan>> RealtimeTableScan::CreatePlan() {
     // Memory is pinned first. If a commit and reclaim happens before disk planning, the old memory
     // remains alive in these views and the selected snapshot offset removes its covered prefix.
-    PAIMON_ASSIGN_OR_RAISE(std::vector<RealtimePartitionBucketView> memory_views,
-                           realtime_context_->AcquireReadViews());
+    PAIMON_ASSIGN_OR_RAISE(RealtimeReadState read_state, realtime_context_->AcquireReadState());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> disk_plan, disk_scan_->CreatePlan());
     PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap committed_offsets, LoadCommittedOffsets(disk_plan));
-    PAIMON_ASSIGN_OR_RAISE(MemoryViewMap active_memory,
-                           CollectActiveMemoryViews(std::move(memory_views), committed_offsets));
+    PAIMON_RETURN_NOT_OK(ValidateSnapshotProgress(read_state.views, committed_offsets,
+                                                  read_state.committed_offsets));
+    PAIMON_ASSIGN_OR_RAISE(
+        MemoryViewMap active_memory,
+        CollectActiveMemoryViews(std::move(read_state.views), committed_offsets));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Split>> splits,
                            CreateRealtimeSplits(disk_plan->Splits(), std::move(active_memory),
                                                 committed_offsets, disk_plan->SnapshotId()));

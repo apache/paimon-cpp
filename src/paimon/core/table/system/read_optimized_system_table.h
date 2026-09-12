@@ -44,6 +44,14 @@ class ReadOptimizedSystemTable : public SystemTable {
         const std::shared_ptr<ReadContext>& context) const override;
 
  private:
+    /// Build the context for the data table underneath this read-optimized view.
+    ///
+    /// The builder starts from the defaults, so every setting the caller configured has to be
+    /// copied across explicitly: one that is not copied silently reverts to its default for `$ro`,
+    /// and neither end reports it.
+    Result<std::unique_ptr<ReadContext>> CreateDataReadContext(
+        const std::shared_ptr<ReadContext>& context) const;
+
     std::map<std::string, std::string> ReadOptimizedOptions() const;
 
     std::string table_path_;

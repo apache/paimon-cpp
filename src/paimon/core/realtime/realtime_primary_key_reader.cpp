@@ -22,9 +22,6 @@
 #include <utility>
 #include <vector>
 
-#include "arrow/type.h"
-#include "paimon/common/table/special_fields.h"
-#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/key_value_data_file_record_reader.h"
 #include "paimon/core/key_value.h"
@@ -67,16 +64,6 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> CreateKeyValueReaders
 }
 
 }  // namespace
-
-std::shared_ptr<arrow::Schema> RealtimePrimaryKeyLayout::CreateSchema(
-    const std::vector<std::shared_ptr<arrow::Field>>& value_fields) {
-    arrow::FieldVector fields = {
-        DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind())->WithNullable(false),
-        DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber())
-            ->WithNullable(false)};
-    fields.insert(fields.end(), value_fields.begin(), value_fields.end());
-    return arrow::schema(std::move(fields));
-}
 
 Result<std::vector<std::unique_ptr<KeyValueRecordReader>>>
 RealtimePrimaryKeyReaderFactory::CreateForCommit(

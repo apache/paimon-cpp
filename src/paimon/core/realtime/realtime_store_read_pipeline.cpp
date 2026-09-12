@@ -32,6 +32,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/realtime/realtime_offset_batch_reader.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 
 namespace paimon {
@@ -87,18 +88,18 @@ class PhysicalToLogicalBatchReader : public BatchReader {
                 "real-time physical-to-logical conversion requires a StructArray");
         }
         auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
-        const std::string value_kind_name = SpecialFields::ValueKind().Name();
-        if (struct_array->num_fields() == 0 ||
-            struct_array->struct_type()->field(0)->name() != value_kind_name) {
-            return Status::Invalid("real-time query batch must start with _VALUE_KIND");
+        arrow::ArrayVector result_arrays;
+        arrow::FieldVector result_fields;
+        for (int32_t i = 0; i < struct_array->num_fields(); ++i) {
+            const std::shared_ptr<arrow::Field>& source_field =
+                struct_array->struct_type()->field(i);
+            if (SpecialFields::IsSystemField(source_field->name())) {
+                result_arrays.push_back(struct_array->field(i));
+                result_fields.push_back(source_field);
+            }
         }
-
-        arrow::ArrayVector result_arrays = {struct_array->field(0)};
-        arrow::FieldVector result_fields = {struct_array->struct_type()->field(0)};
-        result_arrays.reserve(logical_schema_->num_fields() + 1);
-        result_fields.reserve(logical_schema_->num_fields() + 1);
         for (const std::shared_ptr<arrow::Field>& read_field : logical_schema_->fields()) {
-            if (read_field->name() == value_kind_name) {
+            if (SpecialFields::IsSystemField(read_field->name())) {
                 continue;
             }
             int32_t source_index = struct_array->struct_type()->GetFieldIndex(read_field->name());
@@ -139,13 +140,13 @@ class PhysicalToLogicalBatchReader : public BatchReader {
 }  // namespace
 
 Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Create(
-    const std::shared_ptr<arrow::Schema>& logical_schema,
-    const std::shared_ptr<arrow::Schema>& realtime_write_schema,
+    const std::shared_ptr<arrow::Schema>& logical_schema, const RealtimeSchemaLayout& schema_layout,
     const std::shared_ptr<MemoryPool>& memory_pool,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
-    if (!logical_schema || !realtime_write_schema || !memory_pool || !arrow_pool) {
+    if (!logical_schema || !memory_pool || !arrow_pool) {
         return Status::Invalid("real-time store read pipeline requires schemas and memory pools");
     }
+    const std::shared_ptr<arrow::Schema>& store_write_schema = schema_layout.StoreWriteSchema();
 
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> plans;
     for (const std::shared_ptr<arrow::Field>& read_field : logical_schema->fields()) {
@@ -153,7 +154,7 @@ Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Cr
             continue;
         }
         std::shared_ptr<arrow::Field> write_field =
-            realtime_write_schema->GetFieldByName(read_field->name());
+            store_write_schema->GetFieldByName(read_field->name());
         if (!write_field) {
             return Status::Invalid(
                 fmt::format("selected-key MAP field {} does not exist in real-time write schema",
@@ -167,7 +168,7 @@ Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Cr
 
     std::map<std::string, std::shared_ptr<ShreddingColumnReadPlan>> variant_plans;
     PAIMON_ASSIGN_OR_RAISE(variant_plans, VariantShreddingReadPlanFactory::CreateReadPlans(
-                                              logical_schema, realtime_write_schema, memory_pool));
+                                              logical_schema, store_write_schema, memory_pool));
     for (auto& [field_name, plan] : variant_plans) {
         if (!plans.emplace(field_name, std::move(plan)).second) {
             return Status::Invalid(
@@ -176,11 +177,11 @@ Result<std::unique_ptr<RealtimeStoreReadPipeline>> RealtimeStoreReadPipeline::Cr
     }
 
     bool needs_conversion = !plans.empty();
-    // PK: _VALUE_KIND, _SEQUENCE_NUMBER, _REALTIME_OFFSET, then requested physical fields.
+    // PK: _SEQUENCE_NUMBER, _VALUE_KIND, _REALTIME_OFFSET, then requested physical fields.
     // Append: _REALTIME_OFFSET, then requested physical fields.
     arrow::FieldVector store_read_fields;
-    store_read_fields.reserve(realtime_write_schema->num_fields());
-    for (const std::shared_ptr<arrow::Field>& write_field : realtime_write_schema->fields()) {
+    store_read_fields.reserve(store_write_schema->num_fields());
+    for (const std::shared_ptr<arrow::Field>& write_field : store_write_schema->fields()) {
         if (SpecialFields::IsSystemField(write_field->name())) {
             store_read_fields.push_back(write_field);
         }
