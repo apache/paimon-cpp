@@ -233,12 +233,15 @@ TEST_F(LanceFileFormatTest, RejectsNullTopLevelRows) {
 
 TEST_F(LanceFileFormatTest, NullableRowValues) {
     auto row_type = arrow::struct_({arrow::field("value", arrow::int32())});
-    for (const auto& type : {row_type, arrow::list(row_type)}) {
+    for (const auto& [type, json] :
+         std::vector<std::pair<std::shared_ptr<arrow::DataType>, std::string>>{
+             {row_type, R"([[null], [[7]], [[null]]])"},
+             {arrow::list(row_type), R"([[[null]], [[[7]]], [null]])"},
+             {arrow::struct_({arrow::field("inner", row_type)}),
+              R"([[[null]], [[[7]]], [[[null]]]])"},
+             {arrow::list(arrow::list(row_type)), R"([[[[null]]], [[[[7]]]], [[null, []]]])"}}) {
         arrow::FieldVector fields = {arrow::field("row", type)};
         auto schema = arrow::schema(fields);
-        const std::string json = type->id() == arrow::Type::STRUCT
-                                     ? R"([[null], [[7]], [[null]]])"
-                                     : R"([[[null]], [[[7]]], [null]])";
         auto data =
             arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), json).ValueOrDie();
         std::string path = PathUtil::JoinPath(directory_->Str(), type->name() + ".lance");
@@ -251,6 +254,25 @@ TEST_F(LanceFileFormatTest, NullableRowValues) {
                              paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
         ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(slice)));
     }
+}
+
+TEST_F(LanceFileFormatTest, NullListMasksNullRowElements) {
+    auto type = arrow::list(arrow::struct_({arrow::field("value", arrow::int32())}));
+    auto list = arrow::ipc::internal::json::ArrayFromJSON(type, R"([[null], [[7]]])").ValueOrDie();
+    auto list_data = list->data()->Copy();
+    list_data->buffers[0] = arrow::Buffer::FromString(std::string(1, '\x02'));
+    list_data->null_count = 1;
+    arrow::FieldVector fields = {arrow::field("rows", type)};
+    auto data = arrow::StructArray::Make({arrow::MakeArray(list_data)}, fields).ValueOrDie();
+    auto expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([[null], [[[7]]]])")
+            .ValueOrDie();
+    std::string path = PathUtil::JoinPath(directory_->Str(), "masked-null-row.lance");
+    ASSERT_OK(WriteFile(path, arrow::schema(fields), data, /*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, OpenReader(path, 2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(expected)));
 }
 
 TEST_F(LanceFileFormatTest, ProjectionSelectionAndFileRowIds) {
