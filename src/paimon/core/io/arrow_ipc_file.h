@@ -22,18 +22,10 @@
 #include <memory>
 #include <string>
 
+#include "arrow/ipc/type_fwd.h"
+#include "arrow/type_fwd.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
-
-namespace arrow {
-class MemoryPool;
-class RecordBatch;
-class Schema;
-namespace ipc {
-class RecordBatchFileReader;
-class RecordBatchWriter;
-}  // namespace ipc
-}  // namespace arrow
 
 namespace paimon {
 
