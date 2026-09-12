@@ -78,7 +78,18 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, orc_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet data files");
+                        "VECTOR currently only supports parquet/lance data files");
+
+    std::map<std::string, std::string> changelog_options = {
+        {Options::BUCKET, "1"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::CHANGELOG_FILE_FORMAT, "orc"},
+    };
+    ASSERT_OK_AND_ASSIGN(table_schema,
+                         TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
+                                             /*primary_keys=*/{"id"}, changelog_options));
+    ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                        "changelog-file.format is orc");
 
     std::map<std::string, std::string> primary_key_options = {{Options::BUCKET, "1"}};
     ASSERT_OK_AND_ASSIGN(table_schema,
@@ -168,7 +179,7 @@ TEST(SchemaValidationTest, TestVectorType) {
                          TableSchema::Create(/*schema_id=*/0, schema, /*partition_keys=*/{},
                                              /*primary_keys=*/{}, data_evolution_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                        "VECTOR currently only supports parquet data files");
+                        "VECTOR currently only supports parquet/lance data files");
 }
 
 #ifdef PAIMON_ENABLE_MOSAIC
@@ -237,6 +248,84 @@ TEST(SchemaValidationTest, TestMosaicDataTypes) {
                             arrow::schema({arrow::field("id", arrow::int32()), blob_field}),
                             /*partition_keys=*/{}, /*primary_keys=*/{}, blob_options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type BLOB");
+}
+#endif
+
+#ifdef PAIMON_ENABLE_LANCE
+TEST(SchemaValidationTest, TestLanceDataTypes) {
+    std::map<std::string, std::string> options = {{Options::BUCKET, "-1"},
+                                                  {Options::FILE_FORMAT, "lance"}};
+    arrow::FieldVector supported_fields = {
+        arrow::field("boolean", arrow::boolean()),
+        arrow::field("tinyint", arrow::int8()),
+        arrow::field("smallint", arrow::int16()),
+        arrow::field("integer", arrow::int32()),
+        arrow::field("bigint", arrow::int64()),
+        arrow::field("float", arrow::float32()),
+        arrow::field("double", arrow::float64()),
+        arrow::field("string", arrow::utf8()),
+        arrow::field("binary", arrow::binary()),
+        arrow::field("date", arrow::date32()),
+        arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("decimal", arrow::decimal128(38, 2)),
+        arrow::field("array", arrow::list(arrow::float32())),
+        arrow::field("row", arrow::struct_({arrow::field("value", arrow::int32())}),
+                     /*nullable=*/false),
+        arrow::field("nullable_row", arrow::struct_({arrow::field("value", arrow::int32())})),
+        arrow::field("nested_nullable_row",
+                     arrow::struct_({arrow::field(
+                         "child", arrow::struct_({arrow::field("value", arrow::int32())}))}),
+                     /*nullable=*/false),
+        arrow::field("row_array",
+                     arrow::list(arrow::struct_({arrow::field("value", arrow::int32())}))),
+        arrow::field("vector", arrow::fixed_size_list(arrow::float32(), 3)),
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(/*schema_id=*/0, arrow::schema(supported_fields),
+                                             /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+    ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+
+    arrow::FieldVector unsupported_fields = {
+        arrow::field("map", arrow::map(arrow::int32(), arrow::utf8())),
+        arrow::field("ltz", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC")),
+        VariantTypeUtils::ToArrowField("variant"),
+    };
+    std::vector<std::string> expected_errors = {"type MAP", "LOCAL_ZONED_TIMESTAMP",
+                                                "type VARIANT"};
+    for (size_t i = 0; i < unsupported_fields.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(/*schema_id=*/0, arrow::schema({unsupported_fields[i]}),
+                                /*partition_keys=*/{}, /*primary_keys=*/{}, options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
+                            expected_errors[i]);
+    }
+
+    for (const auto& field : arrow::FieldVector{
+             arrow::field("time_seconds", arrow::time32(arrow::TimeUnit::SECOND)),
+             arrow::field("time_millis", arrow::time32(arrow::TimeUnit::MILLI)),
+             arrow::field("nested_time",
+                          arrow::struct_({arrow::field(
+                              "values", arrow::list(arrow::time32(arrow::TimeUnit::MILLI)))}))}) {
+        ASSERT_NOK_WITH_MSG(
+            TableSchema::Create(/*schema_id=*/0, arrow::schema({field}),
+                                /*partition_keys=*/{}, /*primary_keys=*/{}, options),
+            "Unknown or unsupported arrow type: time32");
+    }
+
+    for (const auto& [option_key, option_value] : std::vector<std::pair<std::string, std::string>>{
+             {Options::FILE_FORMAT_PER_LEVEL, "1:lance"},
+             {Options::CHANGELOG_FILE_FORMAT, "lance"}}) {
+        std::map<std::string, std::string> alternate_format_options = {
+            {Options::BUCKET, "-1"}, {Options::FILE_FORMAT, "parquet"}, {option_key, option_value}};
+        ASSERT_OK_AND_ASSIGN(
+            table_schema,
+            TableSchema::Create(
+                /*schema_id=*/0,
+                arrow::schema({arrow::field("map", arrow::map(arrow::int32(), arrow::utf8()))}),
+                /*partition_keys=*/{}, /*primary_keys=*/{}, alternate_format_options));
+        ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema), "type MAP");
+    }
 }
 #endif
 

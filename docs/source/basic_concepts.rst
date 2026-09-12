@@ -55,7 +55,7 @@ the corresponding snapshot.
 Data Files
 ---------------------------
 Data files are grouped by partitions. Paimon C++ supports Parquet (default),
-ORC, and Avro as data file formats.
+ORC, and Avro as data file formats, with optional Lance and Mosaic support.
 
 Partition
 ---------------------------

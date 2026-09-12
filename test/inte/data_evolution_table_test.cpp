@@ -846,7 +846,7 @@ TEST_P(DataEvolutionTableTest, TestOnlySomeColumns) {
 }
 
 TEST_P(DataEvolutionTableTest, TestMultipleSharedShreddingMapsPartialOverwrite) {
-    if (FileFormat() == "mosaic") {
+    if (FileFormat() == "mosaic" || FileFormat() == "lance") {
         return;
     }
     if (FileFormat() == "avro") {
@@ -1477,7 +1477,7 @@ TEST_P(DataEvolutionTableTest, TestWithPartitionWithoutPartitionFieldsInFile) {
 
 TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
     auto file_format = FileFormat();
-    if (file_format == "avro") {
+    if (file_format == "avro" || file_format == "lance") {
         return;
     }
     std::vector<std::string> partition_keys = {"f1"};
@@ -1653,8 +1653,8 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
 }
 
 TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
-    if (FileFormat() != "parquet") {
-        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+    if (FileFormat() != "parquet" && FileFormat() != "lance") {
+        GTEST_SKIP() << "VECTOR currently only supports Parquet and Lance data files";
     }
     auto vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
@@ -1662,7 +1662,7 @@ TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
                                  arrow::field("embedding", vector_type),
                                  arrow::field("tag", arrow::utf8())};
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1746,7 +1746,7 @@ TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
 
 TEST_P(DataEvolutionTableTest, TestNestedVectorReadWrite) {
     if (FileFormat() != "parquet") {
-        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+        GTEST_SKIP() << "Nested nullable ROW test currently only supports Parquet data files";
     }
     auto vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
@@ -1793,8 +1793,8 @@ TEST_P(DataEvolutionTableTest, TestNestedVectorReadWrite) {
 }
 
 TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolution) {
-    if (FileFormat() != "parquet") {
-        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+    if (FileFormat() != "parquet" && FileFormat() != "lance") {
+        GTEST_SKIP() << "VECTOR currently only supports Parquet and Lance data files";
     }
     auto retained_vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
@@ -1808,7 +1808,7 @@ TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolution) {
         arrow::field("dropped_embedding", dropped_vector_type),
     };
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1860,15 +1860,15 @@ TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolution) {
 }
 
 TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolutionRejectsTypeChange) {
-    if (FileFormat() != "parquet") {
-        GTEST_SKIP() << "VECTOR currently only supports Parquet data files";
+    if (FileFormat() != "parquet" && FileFormat() != "lance") {
+        GTEST_SKIP() << "VECTOR currently only supports Parquet and Lance data files";
     }
     auto vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
                                  arrow::field("embedding", vector_type)};
     std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, "parquet"},
+        {Options::FILE_FORMAT, FileFormat()},
         {Options::FILE_SYSTEM, "local"},
         {Options::BUCKET, "-1"},
         {Options::ROW_TRACKING_ENABLED, "true"},
@@ -1899,7 +1899,7 @@ TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolutionRejectsTypeChange) {
 
 TEST_P(DataEvolutionTableTest, TestAlterTable) {
     auto file_format = FileFormat();
-    if (file_format == "mosaic") {
+    if (file_format == "mosaic" || file_format == "lance") {
         return;
     }
     if (file_format == "avro") {
@@ -1998,7 +1998,7 @@ TEST_P(DataEvolutionTableTest, TestAlterTable) {
 }
 
 TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
-    if (FileFormat() == "mosaic") {
+    if (FileFormat() == "mosaic" || FileFormat() == "lance") {
         return;
     }
     auto file_format = FileFormat();
@@ -2031,7 +2031,7 @@ TEST_P(DataEvolutionTableTest, TestReadCompactFiles) {
 }
 
 TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
-    if (FileFormat() == "mosaic") {
+    if (FileFormat() == "mosaic" || FileFormat() == "lance") {
         return;
     }
     auto file_format = FileFormat();
@@ -2115,7 +2115,7 @@ TEST_P(DataEvolutionTableTest, TestReadTableWithDenseStats) {
 }
 
 TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
-    if (FileFormat() == "mosaic") {
+    if (FileFormat() == "mosaic" || FileFormat() == "lance") {
         return;
     }
     auto file_format = FileFormat();
@@ -2256,7 +2256,7 @@ TEST_P(DataEvolutionTableTest, TestScanAndReadWithIndex) {
 }
 
 TEST_P(DataEvolutionTableTest, TestDataEvolutionPredicatePushDownBoundaries) {
-    if (FileFormat() == "mosaic") {
+    if (FileFormat() == "mosaic" || FileFormat() == "lance") {
         return;
     }
     auto file_format = FileFormat();
@@ -2369,7 +2369,7 @@ TEST_P(DataEvolutionTableTest, TestDataEvolutionPredicatePushDownBoundaries) {
 }
 
 TEST_P(DataEvolutionTableTest, TestFormatPredicatePushDownWithoutFileIndex) {
-    if (FileFormat() == "avro") {
+    if (FileFormat() == "avro" || FileFormat() == "lance") {
         return;
     }
 
@@ -2422,8 +2422,8 @@ TEST_P(DataEvolutionTableTest, TestFormatPredicatePushDownWithoutFileIndex) {
 }
 
 TEST_P(DataEvolutionTableTest, TestPredicate) {
-    if (FileFormat() == "avro") {
-        // Avro does not have stats.
+    if (FileFormat() == "avro" || FileFormat() == "lance") {
+        // Avro and Lance do not have stats.
         return;
     }
     if (FileFormat() == "mosaic") {
@@ -2735,8 +2735,8 @@ TEST_P(DataEvolutionTableTest, TestWithRowIds) {
                               /*predicate=*/nullptr,
                               /*row_ranges=*/row_ranges));
     }
-    if (FileFormat() == "avro") {
-        // Avro does not support stats.
+    if (FileFormat() == "avro" || FileFormat() == "lance") {
+        // Avro and Lance do not support stats.
         return;
     }
     {
@@ -3395,6 +3395,9 @@ std::vector<DataEvolutionTableParam> GetTestValuesForDataEvolutionTableTest() {
         values.emplace_back("parquet", enable_snapshot_live_manifest_cache);
 #ifdef PAIMON_ENABLE_MOSAIC
         values.emplace_back("mosaic", enable_snapshot_live_manifest_cache);
+#endif
+#ifdef PAIMON_ENABLE_LANCE
+        values.emplace_back("lance", enable_snapshot_live_manifest_cache);
 #endif
 #ifdef PAIMON_ENABLE_ORC
         values.emplace_back("orc", enable_snapshot_live_manifest_cache);

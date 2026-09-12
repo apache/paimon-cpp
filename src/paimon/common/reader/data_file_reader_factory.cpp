@@ -35,12 +35,12 @@ namespace {
 
 /// Formats the prefetching reader cannot drive: `blob` is read whole rather than in batches and
 /// `avro` is row-oriented, so neither has the batch boundaries it reads ahead to. `mosaic` has
-/// never been tried under one.
+/// never been tried under one. Lance's Rust reader drives its own batch readahead.
 // TODO(xinyu.lxy): test mosaic under prefetch. A format table cannot hold mosaic files, so this
 // only concerns the managed table path.
 bool FormatSupportsPrefetch(const std::string& format_identifier) {
     return format_identifier != "blob" && format_identifier != "avro" &&
-           format_identifier != "mosaic";
+           format_identifier != "lance" && format_identifier != "mosaic";
 }
 
 }  // namespace

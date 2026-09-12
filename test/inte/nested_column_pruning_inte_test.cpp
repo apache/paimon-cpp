@@ -800,6 +800,9 @@ TEST_P(NestedColumnPruningInteTest, PruneNestedStructWithSpecialFields) {
 
 // Test: Table has MAP<STRING, INT32> field, read with selected keys filter.
 TEST_P(NestedColumnPruningInteTest, MapSelectedKeys) {
+    if (file_format_ == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
     // Table schema: f0 (int32), f1 (map<string, int32>)
     auto map_type = arrow::map(arrow::utf8(), arrow::int32());
     arrow::FieldVector table_fields = {
@@ -851,6 +854,9 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeys) {
 
 // Test: Selected-keys metadata on MAP nested inside STRUCT should be applied.
 TEST_P(NestedColumnPruningInteTest, NestedMapSelectedKeysInStruct) {
+    if (file_format_ == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
     auto map_type = arrow::map(arrow::utf8(), arrow::int32());
     auto struct_type = arrow::struct_({
         arrow::field("m", map_type),
@@ -905,6 +911,9 @@ TEST_P(NestedColumnPruningInteTest, NestedMapSelectedKeysInStruct) {
 
 // Test: Partial STRUCT sub-field recall where one recalled child is MAP with selected keys.
 TEST_P(NestedColumnPruningInteTest, PruneStructSubFieldsWithNestedMapSelectedKeys) {
+    if (file_format_ == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
     auto map_type = arrow::map(arrow::utf8(), arrow::int32());
     auto struct_type = arrow::struct_({
         arrow::field("m", map_type),
@@ -962,6 +971,9 @@ TEST_P(NestedColumnPruningInteTest, PruneStructSubFieldsWithNestedMapSelectedKey
 // Test: Null semantics should be preserved when pruning STRUCT sub-fields and
 // applying selected-keys filtering on nested MAP.
 TEST_P(NestedColumnPruningInteTest, PruneStructSubFieldsWithNestedMapSelectedKeysAndNulls) {
+    if (file_format_ == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
     auto map_type = arrow::map(arrow::utf8(), arrow::int32());
     auto struct_type = arrow::struct_({
         arrow::field("m", map_type),
@@ -1022,6 +1034,9 @@ TEST_P(NestedColumnPruningInteTest, PruneStructSubFieldsWithNestedMapSelectedKey
 
 // Test: MAP_SELECTED_KEYS metadata value is empty string, select empty-string map key.
 TEST_P(NestedColumnPruningInteTest, MapSelectedKeysEmptyStringKey) {
+    if (file_format_ == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
     // Table schema: f0 (int32), f1 (map<string, int32>)
     auto map_type = arrow::map(arrow::utf8(), arrow::int32());
     arrow::FieldVector table_fields = {
@@ -1073,6 +1088,9 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysEmptyStringKey) {
 
 // Test: MAP_SELECTED_KEYS output map entry order should follow selected key order.
 TEST_P(NestedColumnPruningInteTest, MapSelectedKeysPreserveOrder) {
+    if (file_format_ == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
     auto map_type = arrow::map(arrow::utf8(), arrow::int32());
     arrow::FieldVector table_fields = {
         arrow::field("f0", arrow::int32()),
@@ -1121,6 +1139,9 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysPreserveOrder) {
 }
 
 TEST_P(NestedColumnPruningInteTest, NestedStructMapSelectedKeysWithPredicate) {
+    if (file_format_ == "lance") {
+        GTEST_SKIP() << "Lance file format does not support type MAP";
+    }
     if (file_format_ == "avro") {
         return;
     }
@@ -1459,6 +1480,9 @@ std::vector<std::string> GetTestValuesForNestedColumnPruningInteTest() {
     values.emplace_back("parquet");
 #ifdef PAIMON_ENABLE_ORC
     values.emplace_back("orc");
+#endif
+#ifdef PAIMON_ENABLE_LANCE
+    values.emplace_back("lance");
 #endif
     return values;
 }

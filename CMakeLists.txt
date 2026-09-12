@@ -61,6 +61,7 @@ option(PAIMON_USE_CXX11_ABI "Use C++11 ABI" ON)
 option(PAIMON_ENABLE_AVRO "Whether to enable avro file format" ON)
 option(PAIMON_ENABLE_ORC "Whether to enable orc file format" ON)
 option(PAIMON_ENABLE_MOSAIC "Whether to enable mosaic file format (Rust FFI)" OFF)
+option(PAIMON_ENABLE_LANCE "Whether to enable lance file format (Rust FFI)" OFF)
 option(PAIMON_ENABLE_JINDO "Whether to enable jindo file system" OFF)
 option(PAIMON_ENABLE_OSS "Whether to enable OSS SDK v2 file system" OFF)
 option(PAIMON_ENABLE_S3 "Whether to enable S3 file system" OFF)
@@ -92,6 +93,9 @@ if(PAIMON_ENABLE_AVRO)
 endif()
 if(PAIMON_ENABLE_MOSAIC)
     add_definitions(-DPAIMON_ENABLE_MOSAIC)
+endif()
+if(PAIMON_ENABLE_LANCE)
+    add_definitions(-DPAIMON_ENABLE_LANCE)
 endif()
 if(PAIMON_ENABLE_JINDO)
     add_definitions(-DPAIMON_ENABLE_JINDO)
@@ -328,13 +332,21 @@ set(PAIMON_SHARED_PRIVATE_LINK_LIBS ${PAIMON_STATIC_LINK_LIBS})
 add_subdirectory(third_party/roaring_bitmap EXCLUDE_FROM_ALL)
 add_subdirectory(third_party/xxhash EXCLUDE_FROM_ALL)
 
-# ---- tantivy-fulltext Rust FFI via Corrosion-rs --------------------------------
-# Corrosion wraps the Cargo crate as a CMake target named `paimon_tantivy_ffi`.
-# `corrosion_experimental_cbindgen` runs cbindgen from CMake and writes the
-# header to a stable path; it also adds that path to the target's INTERFACE
-# include dirs so C++ consumers pick it up via target_link_libraries.
-if(PAIMON_ENABLE_TANTIVY)
+# ---- Rust FFI crates via Corrosion-rs -------------------------------------------
+if(PAIMON_ENABLE_LANCE OR PAIMON_ENABLE_TANTIVY)
     include(CorrosionFetch)
+endif()
+
+if(PAIMON_ENABLE_LANCE)
+    find_program(PAIMON_LANCE_PROTOC protoc REQUIRED)
+    corrosion_import_crate(MANIFEST_PATH crates/lance_ffi/Cargo.toml CRATES
+                           paimon_lance_ffi)
+    corrosion_experimental_cbindgen(TARGET paimon_lance_ffi HEADER_NAME
+                                    paimon_lance_ffi.h)
+    corrosion_set_env_vars(paimon_lance_ffi "PROTOC=${PAIMON_LANCE_PROTOC}")
+endif()
+
+if(PAIMON_ENABLE_TANTIVY)
     corrosion_import_crate(MANIFEST_PATH crates/tantivy_ffi/Cargo.toml CRATES
                            paimon_tantivy_ffi)
     corrosion_experimental_cbindgen(TARGET paimon_tantivy_ffi HEADER_NAME
@@ -403,6 +415,11 @@ if(PAIMON_BUILD_TESTS OR PAIMON_BUILD_BENCHMARKS)
                                             paimon_mosaic_file_format_static)
     endif()
 
+    if(PAIMON_ENABLE_LANCE)
+        paimon_link_libraries_whole_archive(PAIMON_LANCE_FILE_FORMAT_STATIC_LINK_LIBS
+                                            paimon_lance_file_format_static)
+    endif()
+
     if(PAIMON_ENABLE_ORC)
         paimon_link_libraries_whole_archive(PAIMON_ORC_FILE_FORMAT_STATIC_LINK_LIBS
                                             paimon_orc_file_format_static)
@@ -460,6 +477,14 @@ if(PAIMON_BUILD_TESTS)
         list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
         paimon_link_libraries_whole_archive(PAIMON_MOSAIC_FILE_FORMAT_STATIC_LINK_LIBS
                                             paimon_mosaic_file_format_static)
+    endif()
+
+    if(PAIMON_ENABLE_LANCE)
+        paimon_link_libraries_no_as_needed(TEST_PLUGIN_LINK_LIBS
+                                           paimon_lance_file_format_shared)
+        list(APPEND TEST_STATIC_LINK_LIBS ${TEST_PLUGIN_LINK_LIBS})
+        paimon_link_libraries_whole_archive(PAIMON_LANCE_FILE_FORMAT_STATIC_LINK_LIBS
+                                            paimon_lance_file_format_static)
     endif()
 
     if(PAIMON_ENABLE_ORC)
@@ -553,6 +578,9 @@ add_subdirectory(src/paimon/format/parquet)
 add_subdirectory(src/paimon/format/avro)
 if(PAIMON_ENABLE_MOSAIC)
     add_subdirectory(src/paimon/format/mosaic)
+endif()
+if(PAIMON_ENABLE_LANCE)
+    add_subdirectory(src/paimon/format/lance)
 endif()
 if(PAIMON_ENABLE_LUMINA)
     add_subdirectory(src/paimon/global_index/lumina)
