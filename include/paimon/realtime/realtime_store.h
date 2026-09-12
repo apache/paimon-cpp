@@ -65,10 +65,10 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     StatisticsMode statistics_mode = StatisticsMode::NONE;
     /// Directory used by the default store for immutable spill files when
     /// `realtime.spill-enabled` is true. Custom stores may ignore this hint.
-    std::string temp_directory;
+    std::string temp_directory = "";
     /// File system used to access `temp_directory`. The default store retains shared ownership
     /// for its lifetime. Custom stores may ignore this hint.
-    std::shared_ptr<FileSystem> file_system;
+    std::shared_ptr<FileSystem> file_system = nullptr;
 };
 
 /// A record batch and its application-assigned offset bounds.
