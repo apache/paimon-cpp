@@ -211,6 +211,7 @@ endif()
 
 set(PAIMON_CORE_SRCS
     core/disk/file_io_channel.cpp
+    core/io/arrow_ipc_file.cpp
     core/mergetree/spill_reader.cpp
     core/mergetree/spill_writer.cpp
     core/append/append_only_writer.cpp

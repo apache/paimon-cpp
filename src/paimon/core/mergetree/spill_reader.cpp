@@ -18,53 +18,43 @@
 
 #include "paimon/core/mergetree/spill_reader.h"
 
+#include "arrow/api.h"
 #include "paimon/common/data/columnar/columnar_row_ref.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
-#include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
-#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/core/io/arrow_ipc_file.h"
+#include "paimon/macros.h"
 
 namespace paimon {
 
-SpillReader::SpillReader(const std::shared_ptr<FileSystem>& fs,
-                         const std::shared_ptr<arrow::Schema>& key_schema,
-                         const std::shared_ptr<arrow::Schema>& value_schema, bool use_threads,
+SpillReader::~SpillReader() = default;
+
+SpillReader::SpillReader(const std::shared_ptr<arrow::Schema>& key_schema,
+                         const std::shared_ptr<arrow::Schema>& value_schema,
                          const std::shared_ptr<MemoryPool>& pool)
-    : fs_(fs),
-      key_schema_(key_schema),
+    : key_schema_(key_schema),
       value_schema_(value_schema),
       pool_(pool),
       arrow_pool_(GetArrowPool(pool)),
-      use_threads_(use_threads),
       metrics_(std::make_shared<MetricsImpl>()) {}
 
 Result<std::unique_ptr<SpillReader>> SpillReader::Create(
     const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema, bool use_threads,
     const FileIOChannel::ID& channel_id, const std::shared_ptr<MemoryPool>& pool) {
-    std::unique_ptr<SpillReader> reader(
-        new SpillReader(fs, key_schema, value_schema, use_threads, pool));
-    PAIMON_RETURN_NOT_OK(reader->Open(channel_id));
+    std::unique_ptr<SpillReader> reader(new SpillReader(key_schema, value_schema, pool));
+    PAIMON_RETURN_NOT_OK(reader->Open(fs, channel_id, use_threads));
     return reader;
 }
 
-Status SpillReader::Open(const FileIOChannel::ID& channel_id) {
-    const std::string& file_path = channel_id.GetPath();
-    PAIMON_ASSIGN_OR_RAISE(in_stream_, fs_->Open(file_path));
-    PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(file_path));
-    int64_t file_len = file_status.GetLen();
-    arrow_input_stream_adapter_ =
-        std::make_shared<ArrowInputStreamAdapter>(in_stream_, file_len, arrow_pool_);
-    auto ipc_read_options = arrow::ipc::IpcReadOptions::Defaults();
-    ipc_read_options.memory_pool = arrow_pool_.get();
-    ipc_read_options.use_threads = use_threads_;
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-        arrow_reader_,
-        arrow::ipc::RecordBatchFileReader::Open(arrow_input_stream_adapter_, ipc_read_options));
-    num_record_batches_ = arrow_reader_->num_record_batches();
+Status SpillReader::Open(const std::shared_ptr<FileSystem>& fs, const FileIOChannel::ID& channel_id,
+                         bool use_threads) {
+    PAIMON_ASSIGN_OR_RAISE(
+        ipc_reader_, ArrowIpcFileReader::Open(fs, channel_id.GetPath(), use_threads, arrow_pool_));
+    num_record_batches_ = ipc_reader_->GetRecordBatchCount();
     current_batch_index_ = 0;
     return Status::OK();
 }
@@ -91,8 +81,8 @@ Result<std::unique_ptr<KeyValueRecordReader::Iterator>> SpillReader::NextBatch()
     if (current_batch_index_ >= num_record_batches_) {
         return std::unique_ptr<KeyValueRecordReader::Iterator>();
     }
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::RecordBatch> record_batch,
-                                      arrow_reader_->ReadRecordBatch(current_batch_index_));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::RecordBatch> record_batch,
+                           ipc_reader_->ReadRecordBatch(current_batch_index_));
     current_batch_index_++;
 
     batch_length_ = record_batch->num_rows();
@@ -150,11 +140,9 @@ std::shared_ptr<Metrics> SpillReader::GetReaderMetrics() const {
 
 void SpillReader::Close() {
     Reset();
-    arrow_reader_.reset();
-    arrow_input_stream_adapter_.reset();
-    if (in_stream_) {
-        [[maybe_unused]] auto status = in_stream_->Close();
-        in_stream_.reset();
+    if (ipc_reader_) {
+        ipc_reader_->Close();
+        ipc_reader_.reset();
     }
 }
 

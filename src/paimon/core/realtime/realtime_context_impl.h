@@ -114,6 +114,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
         std::shared_ptr<RealtimeStore> store;
         std::shared_ptr<arrow::Schema> write_schema;
         RealtimeStoreMode mode;
+        std::string temp_directory;
         int64_t materialized_max_sequence_number = -1;
     };
 

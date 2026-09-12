@@ -37,6 +37,7 @@
 #include "paimon/core/append/bucketed_append_compact_manager.h"
 #include "paimon/core/compact/noop_compact_manager.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/disk/io_manager.h"
 #include "paimon/core/io/append_data_file_writer_factory.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
@@ -297,7 +298,8 @@ Result<std::shared_ptr<BatchWriter>> AppendOnlyFileStoreWrite::CreateWriter(
     std::map<std::string, std::string> partition_map(partition_values.begin(),
                                                      partition_values.end());
     return RealtimeAppendOnlyWriter::Create(partition_map, bucket, realtime_context_, writer,
-                                            realtime_schema_layout_, options_, pool_);
+                                            realtime_schema_layout_, options_,
+                                            io_manager_ ? io_manager_->GetTempDir() : "", pool_);
 }
 
 Result<AppendOnlyFileStoreWrite::WriterFactory> AppendOnlyFileStoreWrite::GetDataFileWriterFactory(
