@@ -276,8 +276,8 @@ void LocalInputStream::ReadAsync(char* buffer, int64_t size, int64_t offset,
     Status status = Status::OK();
     if (!read_size.ok()) {
         status = read_size.status();
-    } else if (read_size.value() != size) {
-        status = Status::IOError("Short asynchronous read of local file");
+    } else {
+        assert(read_size.value() == size);
     }
     callback(status);
 }
