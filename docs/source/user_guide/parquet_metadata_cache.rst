@@ -39,7 +39,7 @@ same snapshot. On a cache hit, the read path avoids reading the Parquet footer
 bytes from the filesystem again. Paimon C++ still parses the cached footer bytes
 into ``parquet::FileMetaData`` for each reader open. ColumnIndex and OffsetIndex
 bytes also use ``CacheKind::DATA_FILE_FOOTER`` with their actual positions and
-lengths. Data ranges remain uncached unless explicitly enabled.
+lengths. Data pages and column chunks are not stored in this metadata cache.
 
 Configuration
 -------------
@@ -101,30 +101,21 @@ Passing ``nullptr`` or omitting ``WithCache()`` leaves Parquet metadata caching
 disabled. If a file URI cannot be obtained, Paimon C++ also bypasses the cache
 and opens the Parquet file normally.
 
-Data Range Cache
-----------------
+Reader-Local Page Indexes
+-------------------------
 
-Set ``parquet.read.enable-data-cache=true`` and supply a bounded ``Cache`` through
-``ReadContextBuilder::WithCache()`` to reuse immutable Parquet data ranges across
-reader lifetimes. The option defaults to ``false``. Data ranges use
-``CacheKind::DEFAULT``; applications with kind-specific budgets should size that
-budget independently from ``DATA_FILE_FOOTER``.
+Within one file reader, page-range planning and filtered decoding reuse parsed
+OffsetIndex objects for each retained row-group index reader.
+These objects are not stored in the caller's shared ``Cache``. They are released
+with their owning row-group index reader; the existing limit of 1,024 retained
+row-group readers is a count limit, not a parsed-index byte budget. Restricted
+predicate index readers remain separate so their column hints do not restrict
+later projected-column reads.
 
-The key consists of the content-identifying URI, exact offset and length. This
-cache does not reuse subranges of a larger entry or prefetch whole files.
-Only successful complete reads are cached; failed and short reads are not
-published. Streams without a usable URI bypass caching. Synchronous and
-asynchronous reads share the cache. Asynchronous hits return completed futures
-whose buffers retain their cached bytes, even after eviction. Misses use the
-underlying stream's asynchronous API instead of running blocking reads on Arrow's
-IO executor, and populate the cache only after successful completion. A rejected
-cache insertion does not fail an otherwise successful read. Streams are retained
-until asynchronous completion; the underlying stream must report short reads as
-errors. The application owns eviction and invalidation. File URIs must uniquely
-identify immutable content, as required by ``InputStream::GetUri()``; do not reuse
-a URI for overwritten content while retaining its cached entries. Buffers retain
-their allocator until eviction. ``parquet.read.storage-read-bytes`` excludes cache
-hits and can be compared between repeated reader instances.
+This is independent of ``ReadAheadCache`` and its per-file ``FileBlockCache``,
+which reuse bytes rather than parsed objects. That block cache survives resets
+of the prefetch plan, but does not provide reuse across independent file-cache
+lifetimes. This optimization introduces no data-cache option or shared data cache.
 
 Future Optimizations
 --------------------

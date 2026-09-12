@@ -1341,11 +1341,6 @@ TEST_F(PageFilteredRowGroupReaderTest, BitmapAllPagesSomeRowGroups) {
     }
 }
 
-/// Test: OffsetIndex lets the reader jump directly to selected data pages.
-///
-/// The bitmap selects rows from page 1 and page 8. Synchronous positional reads issued while
-/// consuming the row group must not cover any unselected page header. Before direct page jumps,
-/// SerializedPageReader sequentially Peeked every page header and this assertion failed.
 TEST_F(PageFilteredRowGroupReaderTest, SparsePageSelectionMatchesLinearReference) {
     std::string file_name = dir_->Str() + "/sparse_page_selection.parquet";
     WriteTestFile(file_name, MakeSequentialIntData(10000), 10, 10000);
@@ -1356,7 +1351,18 @@ TEST_F(PageFilteredRowGroupReaderTest, SparsePageSelectionMatchesLinearReference
     auto indexes = reader->GetPageIndexReader()->RowGroup(0);
     auto offset_index = indexes->GetOffsetIndex(0);
     const auto& pages = offset_index->page_locations();
-    ASSERT_EQ(1000, pages.size());
+    ASSERT_EQ(size_t{1000}, pages.size());
+    std::vector<RowRanges> selections;
+    selections.emplace_back();
+    selections.push_back(RowRanges::CreateSingle(10000));
+    selections.emplace_back(RowRanges::Range(-10, 10010));
+    selections.emplace_back(RowRanges::Range(10000, 10010));
+    selections.emplace_back(RowRanges::Range(-10, -1));
+    RowRanges dense;
+    for (int64_t row = 0; row < 10000; row += 2) {
+        dense.Add({row, row});
+    }
+    selections.push_back(std::move(dense));
     for (int32_t seed = 0; seed < 32; ++seed) {
         RowRanges rows;
         rows.Add({0, 0});
@@ -1367,6 +1373,11 @@ TEST_F(PageFilteredRowGroupReaderTest, SparsePageSelectionMatchesLinearReference
             int64_t start = (i * 7919 + seed * 13) % 10000;
             rows.Add({start, std::min<int64_t>(9999, start + seed)});
         }
+        selections.push_back(std::move(rows));
+    }
+    for (size_t selection = 0; selection < selections.size(); ++selection) {
+        SCOPED_TRACE(selection);
+        const auto& rows = selections[selection];
         auto actual = PageFilteredRowGroupReader::ComputePageRanges(TargetRowGroup(0, true, rows),
                                                                     {0}, indexes, reader.get());
         std::vector<::arrow::io::ReadRange> expected;
@@ -1384,6 +1395,11 @@ TEST_F(PageFilteredRowGroupReaderTest, SparsePageSelectionMatchesLinearReference
     }
 }
 
+/// Test: OffsetIndex lets the reader jump directly to selected data pages.
+///
+/// The bitmap selects rows from page 1 and page 8. Synchronous positional reads issued while
+/// consuming the row group must not cover any unselected page header. Before direct page jumps,
+/// SerializedPageReader sequentially Peeked every page header and this assertion failed.
 TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpDoesNotReadUnselectedPageHeaders) {
     std::string file_name = dir_->Str() + "/direct_offset_index_jump.parquet";
     auto data = MakeSequentialIntData(100);

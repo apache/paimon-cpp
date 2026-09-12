@@ -45,7 +45,8 @@ namespace paimon::parquet {
 
 namespace {
 
-// Parsed indexes borrow reader-owned state and must stay inside this file reader.
+// Planning and decoding repeatedly request the same offsets. Keep parsed indexes
+// with the row-group reader, not in the cross-reader byte cache.
 class CachedRowGroupPageIndexReader : public ::parquet::RowGroupPageIndexReader {
  public:
     explicit CachedRowGroupPageIndexReader(
@@ -53,13 +54,7 @@ class CachedRowGroupPageIndexReader : public ::parquet::RowGroupPageIndexReader 
         : reader_(std::move(reader)) {}
 
     std::shared_ptr<::parquet::ColumnIndex> GetColumnIndex(int32_t i) override {
-        auto found = column_indexes_.find(i);
-        if (found != column_indexes_.end()) {
-            return found->second;
-        }
-        auto index = reader_->GetColumnIndex(i);
-        column_indexes_.emplace(i, index);
-        return index;
+        return reader_->GetColumnIndex(i);
     }
 
     std::shared_ptr<::parquet::OffsetIndex> GetOffsetIndex(int32_t i) override {
@@ -74,7 +69,6 @@ class CachedRowGroupPageIndexReader : public ::parquet::RowGroupPageIndexReader 
 
  private:
     std::shared_ptr<::parquet::RowGroupPageIndexReader> reader_;
-    std::map<int32_t, std::shared_ptr<::parquet::ColumnIndex>> column_indexes_;
     std::map<int32_t, std::shared_ptr<::parquet::OffsetIndex>> offset_indexes_;
 };
 

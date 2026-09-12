@@ -55,16 +55,14 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
     ParquetInputStream(const std::shared_ptr<paimon::InputStream>& input, int64_t file_size,
                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                        const std::shared_ptr<MemoryPool>& pool, const std::shared_ptr<Cache>& cache,
-                       const std::string& file_uri, bool cache_data = false)
+                       const std::string& file_uri)
         : ArrowInputStreamAdapter(input, file_size, arrow_pool),
           pool_(pool),
           cache_(cache),
-          file_uri_(file_uri),
-          file_size_(file_size),
-          cache_data_(cache_data) {}
+          file_uri_(file_uri) {}
 
     // Called before the stream is published to the file reader. Only index
-    // ranges described by its footer use the metadata cache budget.
+    // ranges described by its footer are eligible; data pages remain uncached.
     void SetPageIndexRanges(const ::parquet::FileMetaData& metadata) {
         for (int32_t rg = 0; rg < metadata.num_row_groups(); ++rg) {
             auto ranges = ::parquet::PageIndexReader::DeterminePageIndexRangesInRowGroup(
@@ -80,22 +78,21 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
     using ArrowInputStreamAdapter::ReadAt;
 
     arrow::Result<int64_t> ReadAt(int64_t position, int64_t nbytes, void* out) override {
-        if (!cache_ || file_uri_.empty() || position < 0 || nbytes <= 0 || position > file_size_ ||
-            nbytes > file_size_ - position || nbytes > std::numeric_limits<int32_t>::max()) {
+        if (!cache_ || file_uri_.empty() || nbytes <= 0 ||
+            nbytes > std::numeric_limits<int32_t>::max()) {
             return ArrowInputStreamAdapter::ReadAt(position, nbytes, out);
         }
-        bool is_index = false;
         auto range = index_ranges_.upper_bound(position);
-        if (range != index_ranges_.begin()) {
-            --range;
-            const int64_t offset = position - range->first;
-            is_index = offset <= range->second && nbytes <= range->second - offset;
+        if (range == index_ranges_.begin()) {
+            return ArrowInputStreamAdapter::ReadAt(position, nbytes, out);
         }
-        if (!is_index && !cache_data_) {
+        --range;
+        if (position - range->first > range->second ||
+            nbytes > range->second - (position - range->first)) {
             return ArrowInputStreamAdapter::ReadAt(position, nbytes, out);
         }
         auto key = CacheKey::ForKind(file_uri_, position, static_cast<int32_t>(nbytes),
-                                     is_index ? CacheKind::DATA_FILE_FOOTER : CacheKind::DEFAULT);
+                                     CacheKind::DATA_FILE_FOOTER);
         auto value = cache_->Get(
             key,
             [this, position,
@@ -106,7 +103,7 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
                     int64_t size,
                     ArrowInputStreamAdapter::ReadAt(position, nbytes, segment.MutableData()));
                 if (size != nbytes) {
-                    return Status::IOError("Short read of Parquet cached range");
+                    return Status::IOError("Short read of Parquet page index");
                 }
                 return std::make_shared<CacheValue>(segment, CacheCallback());
             });
@@ -114,81 +111,16 @@ class ParquetInputStream : public ArrowInputStreamAdapter {
             return ToArrowStatus(value.status());
         }
         if (!value.value() || value.value()->GetSegment().Size() != nbytes) {
-            return arrow::Status::IOError("Invalid Parquet cached range value");
+            return arrow::Status::IOError("Invalid Parquet page-index cache value");
         }
         std::memcpy(out, value.value()->GetSegment().Data(), nbytes);
         return nbytes;
-    }
-
-    arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext& io_context,
-                                                            int64_t position,
-                                                            int64_t nbytes) override {
-        if (!cache_data_ || !cache_ || file_uri_.empty() || position < 0 || nbytes <= 0 ||
-            position > file_size_ || nbytes > file_size_ - position ||
-            nbytes > std::numeric_limits<int32_t>::max()) {
-            return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes);
-        }
-        bool is_index = false;
-        auto range = index_ranges_.upper_bound(position);
-        if (range != index_ranges_.begin()) {
-            --range;
-            const int64_t offset = position - range->first;
-            is_index = offset <= range->second && nbytes <= range->second - offset;
-        }
-        auto key = CacheKey::ForKind(file_uri_, position, static_cast<int32_t>(nbytes),
-                                     is_index ? CacheKind::DATA_FILE_FOOTER : CacheKind::DEFAULT);
-        // A failed supplier leaves a miss unpublished. Do not occupy Arrow's
-        // bounded IO executor with blocking storage reads on cache misses.
-        bool missed = false;
-        auto cached = cache_->Get(
-            key,
-            [&missed](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
-                missed = true;
-                return Status::Invalid("Parquet async cache miss");
-            });
-        if (!missed) {
-            if (!cached.ok()) {
-                return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(
-                    ToArrowStatus(cached.status()));
-            }
-            if (!cached.value() || cached.value()->GetSegment().Size() != nbytes) {
-                return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(
-                    arrow::Status::IOError("Invalid Parquet cached range value"));
-            }
-            struct CachedBuffer {
-                explicit CachedBuffer(std::shared_ptr<CacheValue> value)
-                    : owner(std::move(value)),
-                      buffer(reinterpret_cast<const uint8_t*>(owner->GetSegment().Data()),
-                             owner->GetSegment().Size()) {}
-                std::shared_ptr<CacheValue> owner;
-                arrow::Buffer buffer;
-            };
-            auto owner = std::make_shared<CachedBuffer>(cached.value());
-            auto* buffer = &owner->buffer;
-            return arrow::Future<std::shared_ptr<arrow::Buffer>>::MakeFinished(
-                std::shared_ptr<arrow::Buffer>(std::move(owner), buffer));
-        }
-        return ArrowInputStreamAdapter::ReadAsync(io_context, position, nbytes)
-            .Then([stream = shared_from_this(), cache = cache_, pool = pool_, key,
-                   nbytes](const std::shared_ptr<arrow::Buffer>& buffer)
-                      -> arrow::Result<std::shared_ptr<arrow::Buffer>> {
-                // InputStream reports short reads as errors before this continuation.
-                MemorySegment segment =
-                    AllocateParquetCacheSegment(static_cast<int32_t>(nbytes), pool);
-                std::memcpy(segment.MutableData(), buffer->data(), nbytes);
-                // Cache admission must not fail a successful storage read.
-                [[maybe_unused]] auto status =
-                    cache->Put(key, std::make_shared<CacheValue>(segment, CacheCallback()));
-                return buffer;
-            });
     }
 
  private:
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<Cache> cache_;
     std::string file_uri_;
-    int64_t file_size_;
-    bool cache_data_;
     std::map<int64_t, int64_t> index_ranges_;
 };
 

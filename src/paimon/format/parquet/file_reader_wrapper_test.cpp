@@ -311,7 +311,7 @@ TEST_F(FileReaderWrapperTest, PredicateReadsOnlyItsPageIndexesAndKeepsPayloadRea
     ASSERT_FALSE(end);
 }
 
-TEST_F(FileReaderWrapperTest, ReusesParsedIndexesWithinFileReader) {
+TEST_F(FileReaderWrapperTest, ReusesParsedOffsetIndexesWithinFileReader) {
     std::string file_path = PathUtil::JoinPath(dir_->Str(), "parsed-index.parquet");
     PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/true);
     ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapper(file_path));
@@ -328,18 +328,40 @@ TEST_F(FileReaderWrapperTest, ReusesParsedIndexesWithinFileReader) {
             ASSERT_TRUE(offset);
             ASSERT_TRUE(column);
             ASSERT_EQ(offset, first->GetOffsetIndex(col));
-            ASSERT_EQ(column, first->GetColumnIndex(col));
             ASSERT_NE(offset, second->GetOffsetIndex(col));
-            ASSERT_NE(column, second->GetColumnIndex(col));
             released_index = offset;
         }
-        EXPECT_THROW(first->GetOffsetIndex(-1), ::parquet::ParquetException);
-        EXPECT_THROW(first->GetColumnIndex(100), ::parquet::ParquetException);
+        ASSERT_THROW(first->GetOffsetIndex(-1), ::parquet::ParquetException);
+        ASSERT_THROW(first->GetColumnIndex(100), ::parquet::ParquetException);
         ASSERT_TRUE(first->GetOffsetIndex(0));
     }
     ASSERT_FALSE(released_index.expired());
     reader.reset();
     ASSERT_TRUE(released_index.expired());
+}
+
+TEST_F(FileReaderWrapperTest, MissingPageIndexesRemainReadable) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "no-page-index.parquet");
+    PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/false);
+    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapper(file_path));
+    for (int32_t i = 0; i < 2; ++i) {
+        auto indexes = reader->GetRowGroupPageIndexReader(0);
+        if (indexes) {
+            for (int32_t col = 0; col < 3; ++col) {
+                ASSERT_FALSE(indexes->GetOffsetIndex(col));
+                ASSERT_FALSE(indexes->GetColumnIndex(col));
+            }
+        }
+    }
+    int64_t rows = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> batch, reader->Next());
+        if (!batch) {
+            break;
+        }
+        rows += batch->num_rows();
+    }
+    ASSERT_EQ(2000, rows);
 }
 
 TEST_F(FileReaderWrapperTest, Simple) {

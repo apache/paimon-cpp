@@ -107,15 +107,24 @@ void VisitSelectedPages(const RowRanges& row_ranges,
                         Visitor&& visit) {
     size_t next_page = 0;
     for (const auto& range : row_ranges.GetRanges()) {
+        if (next_page == pages.size()) {
+            break;
+        }
         if (range.to < 0 || range.from >= row_count) {
             continue;
         }
-        auto end = std::upper_bound(pages.begin(), pages.end(), range.from,
-                                    [](int64_t row, const ::parquet::PageLocation& page) {
-                                        return row < page.first_row_index;
-                                    });
-        size_t first = end == pages.begin() ? 0 : static_cast<size_t>(end - pages.begin() - 1);
-        first = std::max(first, next_page);
+        // Several disjoint row ranges can select the same page.
+        if (range.to < pages[next_page].first_row_index) {
+            continue;
+        }
+        size_t first = next_page;
+        if (first + 1 < pages.size() && range.from >= pages[first + 1].first_row_index) {
+            auto end = std::upper_bound(pages.begin() + first, pages.end(), range.from,
+                                        [](int64_t row, const ::parquet::PageLocation& page) {
+                                            return row < page.first_row_index;
+                                        });
+            first = static_cast<size_t>(end - pages.begin() - 1);
+        }
         for (; first < pages.size() && pages[first].first_row_index <= range.to; ++first) {
             visit(static_cast<int32_t>(first));
         }
