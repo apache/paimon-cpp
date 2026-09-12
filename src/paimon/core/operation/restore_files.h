@@ -38,12 +38,14 @@ class RestoreFiles {
                  const std::optional<int32_t>& total_buckets,
                  const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
                  const std::shared_ptr<IndexFileMeta>& dynamic_bucket_index,
-                 const std::vector<std::shared_ptr<IndexFileMeta>>& delete_vectors_index)
+                 const std::vector<std::shared_ptr<IndexFileMeta>>& delete_vectors_index,
+                 const std::vector<std::shared_ptr<IndexFileMeta>>& primary_key_index_payloads = {})
         : snapshot_(snapshot),
           total_buckets_(total_buckets),
           data_files_(data_files),
           dynamic_bucket_index_(dynamic_bucket_index),
-          delete_vectors_index_(delete_vectors_index) {}
+          delete_vectors_index_(delete_vectors_index),
+          primary_key_index_payloads_(primary_key_index_payloads) {}
 
     std::optional<Snapshot> GetSnapshot() const {
         return snapshot_;
@@ -60,6 +62,9 @@ class RestoreFiles {
     std::vector<std::shared_ptr<IndexFileMeta>> DeleteVectorsIndex() const {
         return delete_vectors_index_;
     }
+    std::vector<std::shared_ptr<IndexFileMeta>> PrimaryKeyIndexPayloads() const {
+        return primary_key_index_payloads_;
+    }
 
     static std::shared_ptr<RestoreFiles> Empty() {
         return std::make_shared<RestoreFiles>();
@@ -71,6 +76,7 @@ class RestoreFiles {
     std::vector<std::shared_ptr<DataFileMeta>> data_files_;
     std::shared_ptr<IndexFileMeta> dynamic_bucket_index_;
     std::vector<std::shared_ptr<IndexFileMeta>> delete_vectors_index_;
+    std::vector<std::shared_ptr<IndexFileMeta>> primary_key_index_payloads_;
 };
 
 }  // namespace paimon

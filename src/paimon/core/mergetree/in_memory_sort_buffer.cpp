@@ -42,13 +42,15 @@ InMemorySortBuffer::InMemorySortBuffer(int64_t last_sequence_number,
                                        bool sequence_fields_ascending,
                                        const std::shared_ptr<FieldsComparator>& key_comparator,
                                        uint64_t write_buffer_size,
-                                       const std::shared_ptr<MemoryPool>& pool)
+                                       const std::shared_ptr<MemoryPool>& pool,
+                                       const std::shared_ptr<FieldsComparator>& sort_comparator)
     : pool_(pool),
       value_type_(value_type),
       trimmed_primary_keys_(trimmed_primary_keys),
       user_defined_sequence_fields_(user_defined_sequence_fields),
       sequence_fields_ascending_(sequence_fields_ascending),
       key_comparator_(key_comparator),
+      sort_comparator_(sort_comparator),
       write_buffer_size_(write_buffer_size),
       next_sequence_number_(last_sequence_number + 1) {}
 
@@ -104,7 +106,7 @@ Result<std::vector<std::unique_ptr<KeyValueRecordReader>>> InMemorySortBuffer::C
         auto in_memory_reader = std::make_unique<KeyValueInMemoryRecordReader>(
             buffered_batch.first_sequence_number, buffered_batch.struct_array,
             buffered_batch.row_kinds, trimmed_primary_keys_, user_defined_sequence_fields_,
-            sequence_fields_ascending_, key_comparator_, pool_);
+            sequence_fields_ascending_, key_comparator_, pool_, sort_comparator_);
         readers.push_back(std::move(in_memory_reader));
     }
     return readers;

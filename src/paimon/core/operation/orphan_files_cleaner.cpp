@@ -27,6 +27,7 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/operation/orphan_files_cleaner_impl.h"
@@ -169,9 +170,6 @@ Result<std::unique_ptr<OrphanFilesCleaner>> OrphanFilesCleaner::Create(
     if (table_schema == std::nullopt) {
         return Status::Invalid("not found latest schema");
     }
-    if (!table_schema.value()->PrimaryKeys().empty()) {
-        return Status::NotImplemented("orphan files cleaner only support append table");
-    }
     // merge options
     const auto& schema = table_schema.value();
     auto opts = schema->Options();
@@ -208,10 +206,15 @@ Result<std::unique_ptr<OrphanFilesCleaner>> OrphanFilesCleaner::Create(
                              options.GetManifestCompression(), path_factory,
                              options.GetManifestTargetFileSize(), ctx->GetMemoryPool(), options,
                              partition_schema));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<IndexManifestFile> index_manifest_file,
+        IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
+                                  options.GetManifestCompression(), path_factory,
+                                  options.GetBucket(), ctx->GetMemoryPool(), options));
     return std::make_unique<OrphanFilesCleanerImpl>(
         ctx->GetMemoryPool(), ctx->GetExecutor(), arrow_schema, ctx->GetRootPath(), options,
         snapshot_manager, schema->PartitionKeys(), manifest_file, manifest_list,
-        ctx->GetOlderThanMs(), ctx->GetFileRetainCondition());
+        index_manifest_file, ctx->GetOlderThanMs(), ctx->GetFileRetainCondition());
 }
 
 }  // namespace paimon
