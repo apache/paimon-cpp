@@ -21,15 +21,11 @@
 #include <memory>
 #include <string>
 
+#include "arrow/type_fwd.h"
 #include "paimon/core/disk/file_io_channel.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
-
-namespace arrow {
-class RecordBatch;
-class Schema;
-}  // namespace arrow
 
 namespace paimon {
 
