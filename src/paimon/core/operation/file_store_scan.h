@@ -304,6 +304,8 @@ class FileStoreScan {
 
     Result<bool> FilterManifestEntry(const ManifestEntry& entry) const;
     Result<bool> HasCompatibleBucketKeys(int64_t data_schema_id) const;
+    Result<bool> CheckHistoricalBucketCompatibility(
+        const std::vector<ManifestFileMeta>& manifest_metas) const;
 
  protected:
     std::shared_ptr<MemoryPool> pool_;

@@ -58,6 +58,7 @@
 #include "paimon/table/source/scan_metrics.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
 namespace paimon::test {
@@ -149,6 +150,16 @@ class AppendBucketPruningTest : public testing::Test {
 
 namespace {
 
+class CountingSchemaFileSystem : public LocalFileSystem {
+ public:
+    Status ReadFile(const std::string& path, std::string* content) override {
+        ++read_count;
+        return LocalFileSystem::ReadFile(path, content);
+    }
+
+    int32_t read_count = 0;
+};
+
 class CountingManifestEntrySerializer : public ManifestEntrySerializer {
  public:
     explicit CountingManifestEntrySerializer(const std::shared_ptr<MemoryPool>& pool)
@@ -235,7 +246,6 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
                                    schema_id_, std::nullopt, std::nullopt, std::nullopt,
                                    std::nullopt, std::nullopt, std::nullopt);
             }
-            std::vector<ManifestEntry> baseline;
             std::vector<std::string> baseline_files;
             for (bool lazy_decode : {false, true}) {
                 SCOPED_TRACE(lazy_decode);
@@ -262,10 +272,8 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
                 std::sort(files.begin(), files.end());
                 ASSERT_EQ(files.size(), 4);
                 if (!lazy_decode) {
-                    baseline = candidates;
                     baseline_files = files;
                 } else {
-                    ASSERT_EQ(candidates, baseline);
                     ASSERT_EQ(files, baseline_files);
                 }
             }
@@ -277,6 +285,134 @@ TEST_F(AppendBucketPruningTest, PrunesStringKeyLookup) {
     BinaryRow key = BinaryRowGenerator::GenerateRow({std::string("key")}, pool_.get());
     int32_t expected_bucket = DefaultBucketFunction().Bucket(key, kNumBuckets);
     CheckBuckets(KeyEquals(), expected_bucket);
+}
+
+TEST_F(AppendBucketPruningTest, FallsBackForIncompatibleOrMissingHistoricalSchemas) {
+    for (bool incompatible : {false, true}) {
+        SCOPED_TRACE(incompatible);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto fs = dir->GetFileSystem();
+        schema_manager_ = std::make_shared<SchemaManager>(fs, dir->Str());
+        schema_id_ = 0;
+        rowkey_type_ = arrow::int32();
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> initial, CreateScan(nullptr));
+        ASSERT_OK(schema_manager_->CreateTable(initial->schema_, {}, {}, options_));
+        schema_id_ = 2;
+        rowkey_type_ = incompatible ? arrow::int64() : arrow::int32();
+        auto predicate =
+            incompatible
+                ? PredicateBuilder::Equal(0, "rowkey", FieldType::BIGINT, Literal(int64_t{-1}))
+                : PredicateBuilder::Equal(0, "rowkey", FieldType::INT, Literal(int32_t{-1}));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> current,
+                             CreateScan(predicate));
+        if (incompatible) {
+            ASSERT_OK(TestHelper::WriteNextSchema(fs, dir->Str(), current->table_schema_->Fields(),
+                                                  1, options_));
+        }
+        // Schema 0 is incompatible, or schema 1 is missing but has no referenced data files.
+        // In both cases the manifest's maximum schema ID (2) is compatible with the scan.
+        const int32_t bucket = current->bucket_selector_->Bucket(kNumBuckets);
+        SimpleStats old_stats = BinaryRowGenerator::GenerateStats(
+            {int32_t{-100}, 0}, {int32_t{0}, 100}, {0, 0}, pool_.get());
+        SimpleStats current_stats =
+            incompatible ? BinaryRowGenerator::GenerateStats({int64_t{-100}, 0}, {int64_t{0}, 100},
+                                                             {0, 0}, pool_.get())
+                         : old_stats;
+        std::vector<ManifestEntry> entries;
+        for (int32_t id = 0; id <= kNumBuckets; ++id) {
+            const bool historical = id < kNumBuckets;
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<DataFileMeta> file,
+                DataFileMeta::ForAppend(fmt::format("data-{}.avro", id), 100, 10,
+                                        historical ? old_stats : current_stats, 0, 9,
+                                        historical ? 0 : schema_id_, std::nullopt, std::nullopt,
+                                        std::nullopt, std::nullopt, std::nullopt));
+            entries.emplace_back(FileKind::Add(), BinaryRow::EmptyRow(), historical ? id : bucket,
+                                 kNumBuckets, file);
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format,
+                             FileFormatFactory::Get("avro", {}));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<FileStorePathFactory> paths,
+            FileStorePathFactory::Create(dir->Str(), initial->schema_, {}, "", "avro", "data-",
+                                         true, {}, std::nullopt, false, pool_));
+        ASSERT_OK(fs->Mkdirs(FileStorePathFactory::ManifestPath(dir->Str())));
+        for (bool cache_enabled : {false, true}) {
+            SCOPED_TRACE(cache_enabled);
+            ASSERT_OK_AND_ASSIGN(CoreOptions manifest_options, CoreOptions::FromMap({}));
+            if (cache_enabled) {
+                manifest_options.WithCache(std::make_shared<LruCache>(16 * 1024 * 1024));
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ManifestFile> manifest,
+                                 ManifestFile::Create(fs, format, "null", paths, 1024 * 1024, pool_,
+                                                      manifest_options, arrow::schema({})));
+            ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> metas, manifest->Write(entries));
+            ASSERT_EQ(metas.size(), 1);
+            ASSERT_EQ(metas[0].SchemaId(), schema_id_);
+            auto serializer = std::make_unique<CountingManifestEntrySerializer>(pool_);
+            auto* counter = serializer.get();
+            manifest->serializer_ = std::move(serializer);
+            for (bool lazy_decode : {false, true}) {
+                SCOPED_TRACE(lazy_decode);
+                options_[Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED] =
+                    lazy_decode ? "true" : "false";
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> scan,
+                                     CreateScan(predicate));
+                scan->manifest_file_ = manifest;
+                std::vector<ManifestEntry> baseline;
+                ASSERT_OK(scan->ReadAndMergeFileEntries(metas, &baseline));
+                ASSERT_EQ(baseline.size(), incompatible ? kNumBuckets + 1 : 2);
+                counter->decoded_entries = 0;
+                std::vector<ManifestEntry> candidates;
+                ASSERT_OK(scan->ReadAndMergeBucketFileEntries(metas, bucket, &candidates));
+                ASSERT_EQ(counter->decoded_entries.load(), entries.size());
+                std::vector<ManifestEntry> filtered;
+                for (const auto& entry : candidates) {
+                    ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterManifestEntry(entry));
+                    if (keep) {
+                        filtered.push_back(entry);
+                    }
+                }
+                ASSERT_EQ(filtered, baseline);
+            }
+        }
+    }
+}
+
+TEST_F(AppendBucketPruningTest, HistoricalCompatibilityReusesSchemaReads) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = std::make_shared<CountingSchemaFileSystem>();
+    schema_manager_ = std::make_shared<SchemaManager>(fs, dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> initial, CreateScan(nullptr));
+    ASSERT_OK(schema_manager_->CreateTable(initial->schema_, {}, {}, options_));
+    ASSERT_OK(
+        TestHelper::WriteNextSchema(fs, dir->Str(), initial->table_schema_->Fields(), 1, options_));
+    // Use a fresh manager so the test starts with cold schema and compatibility caches.
+    schema_manager_ = std::make_shared<SchemaManager>(fs, dir->Str());
+    schema_id_ = 2;
+    extra_field_ = true;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AppendOnlyFileStoreScan> scan, CreateScan(KeyEquals()));
+    std::vector<ManifestFileMeta> metas = {
+        ManifestFileMeta("unused", 0, 0, 0, SimpleStats::EmptyStats(), schema_id_, std::nullopt,
+                         std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt)};
+    fs->read_count = 0;
+    ASSERT_OK_AND_ASSIGN(bool compatible, scan->CheckHistoricalBucketCompatibility(metas));
+    ASSERT_TRUE(compatible);
+    ASSERT_EQ(fs->read_count, 2);
+    ASSERT_OK_AND_ASSIGN(compatible, scan->CheckHistoricalBucketCompatibility(metas));
+    ASSERT_TRUE(compatible);
+    ASSERT_EQ(fs->read_count, 2);
+    // A failure to read an unused historical schema is not cached as a successful proof.
+    ASSERT_OK(fs->Delete(schema_manager_->ToSchemaPath(1)));
+    schema_manager_ = std::make_shared<SchemaManager>(fs, dir->Str());
+    ASSERT_OK_AND_ASSIGN(scan, CreateScan(KeyEquals()));
+    ASSERT_NOK(scan->CheckHistoricalBucketCompatibility(metas));
+    ASSERT_OK(
+        TestHelper::WriteNextSchema(fs, dir->Str(), initial->table_schema_->Fields(), 1, options_));
+    ASSERT_OK_AND_ASSIGN(compatible, scan->CheckHistoricalBucketCompatibility(metas));
+    ASSERT_TRUE(compatible);
 }
 
 TEST_F(AppendBucketPruningTest, PreservesExplicitBucketFilter) {

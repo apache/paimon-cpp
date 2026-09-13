@@ -447,7 +447,14 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     const std::vector<ManifestFileMeta>& manifest_metas, int32_t bucket,
     std::vector<ManifestEntry>* merged_entries) const {
     const bool inferred_bucket = !bucket_filter_ && bucket_selector_ != nullptr;
-    if (core_options_.ScanManifestEntryLazyDecodeEnabled()) {
+    bool use_lazy_decode = core_options_.ScanManifestEntryLazyDecodeEnabled();
+    if (use_lazy_decode && inferred_bucket) {
+        // A manifest's schema ID is only an upper bound. Prove the whole historical range
+        // compatible before pruning, and fall back if an unused historical schema cannot be read.
+        Result<bool> compatible = CheckHistoricalBucketCompatibility(manifest_metas);
+        use_lazy_decode = compatible.ok() && compatible.value();
+    }
+    if (use_lazy_decode) {
         std::vector<std::future<Result<std::vector<ManifestEntry>>>> futures;
         futures.reserve(manifest_metas.size());
         for (const auto& meta : manifest_metas) {
@@ -492,11 +499,30 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
     unmerged_entries.reserve(entries.size());
     for (auto& entry : entries) {
         if (entry.Bucket() == bucket ||
-            (inferred_bucket && entry.TotalBuckets() != core_options_.GetBucket())) {
+            (inferred_bucket && (entry.TotalBuckets() != core_options_.GetBucket() ||
+                                 entry.File()->schema_id != table_schema_->Id()))) {
             unmerged_entries.emplace_back(std::move(entry));
         }
     }
     return MergeLiveEntries(unmerged_entries, merged_entries);
+}
+
+Result<bool> FileStoreScan::CheckHistoricalBucketCompatibility(
+    const std::vector<ManifestFileMeta>& manifest_metas) const {
+    int64_t max_schema_id = -1;
+    for (const auto& meta : manifest_metas) {
+        max_schema_id = std::max(max_schema_id, meta.SchemaId());
+    }
+    for (int64_t schema_id = 0; schema_id <= max_schema_id; ++schema_id) {
+        PAIMON_ASSIGN_OR_RAISE(bool compatible, HasCompatibleBucketKeys(schema_id));
+        if (!compatible) {
+            return false;
+        }
+        if (schema_id == max_schema_id) {
+            break;
+        }
+    }
+    return true;
 }
 
 Status FileStoreScan::MergeLiveEntries(const std::vector<ManifestEntry>& unmerged_entries,

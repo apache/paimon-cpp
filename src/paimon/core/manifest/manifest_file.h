@@ -65,6 +65,8 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
 
     /// Read entries for a bucket. An inferred total bucket count also retains entries with
     /// different or unknown bucket counts for the existing compatibility checks.
+    /// For inferred buckets, the caller must first verify that all historical bucket schemas
+    /// covered by the manifest are compatible with the scan's bucket selector.
     /// Serialization versions are validated only for the retained entries.
     Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
                              std::optional<int64_t> file_size,

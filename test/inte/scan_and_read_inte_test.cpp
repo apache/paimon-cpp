@@ -638,6 +638,106 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
     }
 }
 
+TEST(SelectiveManifestDecodeInteTest, TestBucketKeyTypeEvolution) {
+    constexpr int32_t kBuckets = 4;
+    constexpr int32_t kKeys = 64;
+    auto old_field = arrow::field("rowkey", arrow::int32());
+    auto current_field = arrow::field("rowkey", arrow::int64());
+    std::vector<std::string> keys;
+    for (int32_t i = 0; i < kKeys; ++i) {
+        keys.push_back(fmt::format("[{}]", -i - 1));
+    }
+    std::vector<std::vector<int32_t>> buckets;
+    for (const auto& field : {old_field, current_field}) {
+        auto array = arrow::ipc::internal::json::ArrayFromJSON(
+                         arrow::struct_({field}), fmt::format("[{}]", fmt::join(keys, ",")))
+                         .ValueOrDie();
+        ArrowArray c_array;
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportArray(*array, &c_array, &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BucketIdCalculator> calculator,
+                             BucketIdCalculator::Create(false, kBuckets, GetDefaultPool()));
+        buckets.emplace_back(kKeys);
+        ASSERT_OK(calculator->CalculateBucketIds(&c_array, &c_schema, buckets.back().data()));
+    }
+    int32_t key_index = 0;
+    while (key_index < kKeys && buckets[0][key_index] == buckets[1][key_index]) {
+        ++key_index;
+    }
+    ASSERT_LT(key_index, kKeys);
+    const int64_t key = -key_index - 1;
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_TRUE(dir);
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
+                                                  {Options::BUCKET, fmt::format("{}", kBuckets)},
+                                                  {Options::BUCKET_KEY, "rowkey"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), arrow::schema({old_field}), {}, {}, options, false));
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_({old_field}), fmt::format("[[{}]]", key), {},
+                                    buckets[0][key_index], {}));
+    std::vector<std::unique_ptr<RecordBatch>> batches;
+    batches.push_back(std::move(batch));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
+    helper.reset();
+    ASSERT_OK(TestHelper::WriteNextSchema(dir->GetFileSystem(), table_path,
+                                          {DataField(0, current_field)}, 0, options));
+    auto predicate = PredicateBuilder::Equal(0, "rowkey", FieldType::BIGINT, Literal(key));
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(
+                        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), current_field}),
+                        fmt::format("[[0, {}]]", key))
+                        .ValueOrDie();
+    for (bool cache_manifest_bytes : {false, true}) {
+        SCOPED_TRACE(cache_manifest_bytes);
+        for (bool lazy_decode : {false, true}) {
+            SCOPED_TRACE(lazy_decode);
+            std::map<CacheKind, int64_t> capacities = {
+                {CacheKind::SNAPSHOT_LIVE_MANIFEST, 16 * 1024 * 1024}};
+            if (cache_manifest_bytes) {
+                capacities.emplace(CacheKind::MANIFEST, 16 * 1024 * 1024);
+            }
+            auto cache = std::make_shared<CountingRoutingCache>(capacities);
+            for (int32_t attempt = 0; attempt < 2; ++attempt) {
+                ScanContextBuilder builder(table_path);
+                builder.SetPredicate(predicate)
+                    .WithCache(cache)
+                    .AddOption(Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3")
+                    .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED,
+                               lazy_decode ? "true" : "false");
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                     TableScan::Create(std::move(context)));
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+                ASSERT_EQ(plan->Splits().size(), 1);
+                auto split = std::dynamic_pointer_cast<DataSplit>(plan->Splits()[0]);
+                ASSERT_TRUE(split);
+                ASSERT_EQ(split->Bucket(), buckets[0][key_index]);
+                ASSERT_NE(split->Bucket(), buckets[1][key_index]);
+                ASSERT_OK_AND_ASSIGN(uint64_t hit, scan->GetMetrics()->GetCounter(
+                                                       ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
+                ASSERT_EQ(hit, attempt);
+                ReadContextBuilder read_builder(table_path);
+                read_builder.SetPredicate(predicate).EnablePredicateFilter(true);
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                     read_builder.Finish());
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                     TableRead::Create(std::move(read_context)));
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                     read->CreateReader(plan->Splits()));
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> rows,
+                                     ReadResultCollector::CollectResult(std::move(reader)));
+                ASSERT_TRUE(rows);
+                ASSERT_TRUE(rows->Equals(std::make_shared<arrow::ChunkedArray>(expected)))
+                    << rows->type()->ToString() << "\n"
+                    << rows->ToString();
+            }
+        }
+    }
+}
+
 TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
     for (const auto& key_type : {arrow::utf8(), arrow::binary()}) {
         SCOPED_TRACE(key_type->ToString());
