@@ -350,7 +350,7 @@ struct ExpandedByte {
 
 constexpr ExpandedByte ExpandBitmapByte(uint8_t bits) {
     ExpandedByte expanded{};
-    for (int i = 0; i < 8; i++) {
+    for (int32_t i = 0; i < 8; i++) {
         expanded.bytes[i] = static_cast<char>((bits >> i) & uint8_t{1});
     }
     return expanded;
@@ -358,7 +358,7 @@ constexpr ExpandedByte ExpandBitmapByte(uint8_t bits) {
 
 constexpr std::array<ExpandedByte, 256> MakeExpandedBytes() {
     std::array<ExpandedByte, 256> table{};
-    for (int bits = 0; bits < 256; bits++) {
+    for (int32_t bits = 0; bits < 256; bits++) {
         table[static_cast<size_t>(bits)] = ExpandBitmapByte(static_cast<uint8_t>(bits));
     }
     return table;
