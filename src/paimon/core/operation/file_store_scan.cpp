@@ -276,8 +276,33 @@ Status FileStoreScan::ReadManifests(std::optional<Snapshot>* snapshot_ptr,
 Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
                                                 std::vector<ManifestFileMeta>* manifests) const {
     switch (scan_mode_) {
-        case ScanMode::ALL:
-            return manifest_list_->ReadDataManifests(snapshot, manifests);
+        case ScanMode::ALL: {
+            // The base and the delta manifest list are two independent files and neither read
+            // depends on the other, so issue both together instead of paying the two metadata
+            // round trips one after the other. The result keeps the base-then-delta order that
+            // ReadDataManifests produced.
+            auto read_list = [this, &snapshot](bool base) -> Result<std::vector<ManifestFileMeta>> {
+                std::vector<ManifestFileMeta> metas;
+                PAIMON_RETURN_NOT_OK(base ? manifest_list_->ReadBaseManifests(snapshot, &metas)
+                                          : manifest_list_->ReadDeltaManifests(snapshot, &metas));
+                return metas;
+            };
+            std::vector<std::future<Result<std::vector<ManifestFileMeta>>>> futures;
+            futures.reserve(2);
+            futures.push_back(
+                Via(executor_.get(), [read_list]() { return read_list(/*base=*/true); }));
+            futures.push_back(
+                Via(executor_.get(), [read_list]() { return read_list(/*base=*/false); }));
+            for (auto& metas : CollectAll(futures)) {
+                if (!metas.ok()) {
+                    return metas.status();
+                }
+                for (auto& meta : metas.value()) {
+                    manifests->emplace_back(std::move(meta));
+                }
+            }
+            return Status::OK();
+        }
         case ScanMode::DELTA:
             return manifest_list_->ReadDeltaManifests(snapshot, manifests);
         case ScanMode::CHANGELOG:
@@ -299,8 +324,8 @@ Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manif
             if (apply_scan_filter) {
                 PAIMON_RETURN_NOT_OK(ReadManifestFileMeta(meta, &tmp_entries));
             } else {
-                PAIMON_RETURN_NOT_OK(
-                    manifest_file_->Read(meta.FileName(), /*filter=*/nullptr, &tmp_entries));
+                PAIMON_RETURN_NOT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr,
+                                                          &tmp_entries, meta.FileSize()));
             }
             return tmp_entries;
         };
@@ -429,8 +454,8 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
         for (const auto& meta : manifest_metas) {
             auto read_meta_task = [this, meta, bucket]() -> Result<std::vector<ManifestEntry>> {
                 std::vector<ManifestEntry> bucket_entries;
-                PAIMON_RETURN_NOT_OK(
-                    manifest_file_->ReadBucketEntries(meta.FileName(), bucket, &bucket_entries));
+                PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
+                    meta.FileName(), bucket, &bucket_entries, meta.FileSize()));
                 return bucket_entries;
             };
             futures.push_back(Via(executor_.get(), read_meta_task));
@@ -551,7 +576,7 @@ Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
     PAIMON_RETURN_NOT_OK(manifest_file_->Read(
         manifest.FileName(),
         [this](const ManifestEntry& entry) -> Result<bool> { return FilterManifestEntry(entry); },
-        &unfiltered_entries));
+        &unfiltered_entries, manifest.FileSize()));
     entries->reserve(entries->size() + unfiltered_entries.size());
     for (auto& entry : unfiltered_entries) {
         entries->emplace_back(std::move(entry));

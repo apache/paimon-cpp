@@ -55,6 +55,13 @@ class CountingFileSystem : public FileSystem {
         return local_.Open(path);
     }
 
+    /// Overridden because the base implementation forwards to `Open(path)`, which would fold the
+    /// two ways of opening into one counter and hide whether a known length reached the store.
+    Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override {
+        opened_lengths.push_back(file_status.GetLen());
+        return local_.Open(file_status.GetPath());
+    }
+
     Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
                                                  bool overwrite) const override {
         return local_.Create(path, overwrite);
@@ -93,6 +100,7 @@ class CountingFileSystem : public FileSystem {
 
     mutable int open_count = 0;
     mutable int get_file_status_count = 0;
+    mutable std::vector<int64_t> opened_lengths;
 
  private:
     LocalFileSystem local_;
@@ -364,6 +372,51 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
     ASSERT_EQ(1, counting_file_system->open_count);
     ASSERT_EQ(4, manifest_cache->GetCount());
     ASSERT_EQ(1, manifest_cache->SupplierCallCount());
+}
+
+// A scan reads manifests whose length the manifest list already recorded. Handing that length over
+// is what lets the store skip the metadata request a bare open issues, which on a remote store is
+// a round trip paid before any of the file is read.
+TEST_F(ManifestFileTest, TestReadPassesKnownSizeToOpen) {
+    auto pool = GetDefaultPool();
+    auto counting_file_system = std::make_shared<CountingFileSystem>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
+                         FileFormatFactory::Get("orc", {}));
+    std::string root_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        FileStorePathFactory::Create(root_path, unused_schema, /*partition_keys=*/{},
+                                     /*default_part_value=*/"", file_format->Identifier(),
+                                     /*data_file_prefix=*/"data-",
+                                     /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                     /*global_index_external_path=*/std::nullopt,
+                                     /*index_file_in_data_file_dir=*/false, pool));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ManifestFile> manifest_file,
+        ManifestFile::Create(counting_file_system, file_format, "zstd", path_factory,
+                             /*target_file_size=*/1024, pool, options, unused_schema));
+
+    const std::string manifest_name = "manifest-3a44a0da-1008-463c-914e-28d271375e24-0";
+    // The length the checked-in manifest list records for this manifest, and the length the file
+    // on disk actually has.
+    constexpr int64_t kRecordedSize = 2617;
+
+    std::vector<ManifestEntry> all_entries;
+    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, &all_entries, kRecordedSize));
+    ASSERT_EQ(2, all_entries.size());
+    ASSERT_EQ(std::vector<int64_t>({kRecordedSize}), counting_file_system->opened_lengths);
+    ASSERT_EQ(0, counting_file_system->open_count);
+
+    std::vector<ManifestEntry> bucket_one_entries;
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, &bucket_one_entries,
+                                               kRecordedSize));
+    ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
+    ASSERT_EQ(std::vector<int64_t>({kRecordedSize, kRecordedSize}),
+              counting_file_system->opened_lengths);
+    ASSERT_EQ(0, counting_file_system->open_count);
 }
 
 TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {

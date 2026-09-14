@@ -60,15 +60,16 @@ Status FileUtils::ListOriginalVersionedFiles(const std::shared_ptr<FileSystem>& 
 Status FileUtils::ListVersionedFileStatus(const std::shared_ptr<FileSystem>& fs,
                                           const std::string& dir, const std::string& prefix,
                                           std::vector<BasicFileStatus>* file_status_list) {
-    PAIMON_ASSIGN_OR_RAISE(bool exist, fs->Exists(dir));
-    if (exist) {
-        std::vector<BasicFileStatus> file_statuses;
-        PAIMON_RETURN_NOT_OK(fs->ListDir(dir, &file_statuses));
-        for (auto& file_status : file_statuses) {
-            std::string file_name = PathUtil::GetName(file_status.GetPath());
-            if (StringUtils::StartsWith(file_name, prefix)) {
-                file_status_list->emplace_back(std::move(file_status));
-            }
+    // No Exists() probe in front of the listing. Every FileSystem lists a directory that is not
+    // there as an empty result rather than an error, so the probe only decided whether to make a
+    // call that answers the same question. On a remote store it costs a round trip of its own,
+    // which is what a schema or snapshot lookup pays before it can read anything.
+    std::vector<BasicFileStatus> file_statuses;
+    PAIMON_RETURN_NOT_OK(fs->ListDir(dir, &file_statuses));
+    for (auto& file_status : file_statuses) {
+        std::string file_name = PathUtil::GetName(file_status.GetPath());
+        if (StringUtils::StartsWith(file_name, prefix)) {
+            file_status_list->emplace_back(std::move(file_status));
         }
     }
     return Status::OK();

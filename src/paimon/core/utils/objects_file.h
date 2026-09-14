@@ -20,6 +20,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -63,11 +64,15 @@ class ObjectsFile {
 
     virtual ~ObjectsFile() = default;
 
+    /// @param file_size Length of the file when planning already knows it, which lets the read
+    ///                  skip the metadata request a bare `Open` issues on a remote store. Leave it
+    ///                  unset when the length is not known; the read then discovers it itself.
     Status Read(const std::string& file_name, const std::function<Result<bool>(const T&)>& filter,
-                std::vector<T>* result) const;
+                std::vector<T>* result, std::optional<int64_t> file_size = std::nullopt) const;
     Status ReadIfFileExist(const std::string& file_name,
                            const std::function<Result<bool>(const T&)>& filter,
-                           std::vector<T>* result) const;
+                           std::vector<T>* result,
+                           std::optional<int64_t> file_size = std::nullopt) const;
 
     void DeleteQuietly(const std::string& file_name) {
         std::string path = path_factory_->ToPath(file_name);
@@ -89,7 +94,8 @@ class ObjectsFile {
 
     Status ReadArrowBatches(
         const std::string& file_name,
-        const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer) const;
+        const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
+        std::optional<int64_t> file_size = std::nullopt) const;
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
@@ -105,7 +111,12 @@ class ObjectsFile {
     std::string compression_;
     std::shared_ptr<Cache> cache_;
 
-    Result<MemorySegment> ReadFileSegment(const std::string& file_path) const;
+    Result<MemorySegment> ReadFileSegment(const std::string& file_path,
+                                          const std::optional<int64_t>& file_size) const;
+
+    /// Opens the file for reading, handing over the length when the caller already has it.
+    Result<std::unique_ptr<InputStream>> OpenForRead(const std::string& file_path,
+                                                     const std::optional<int64_t>& file_size) const;
 };
 
 template <typename T>
@@ -132,11 +143,12 @@ ObjectsFile<T>::ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
 template <typename T>
 Status ObjectsFile<T>::ReadIfFileExist(const std::string& file_name,
                                        const std::function<Result<bool>(const T&)>& filter,
-                                       std::vector<T>* result) const {
+                                       std::vector<T>* result,
+                                       std::optional<int64_t> file_size) const {
     std::string file_path = path_factory_->ToPath(file_name);
     PAIMON_ASSIGN_OR_RAISE(bool path_exist, file_system_->Exists(file_path));
     if (path_exist) {
-        return Read(file_name, filter, result);
+        return Read(file_name, filter, result, file_size);
     }
     return Status::OK();
 }
@@ -144,7 +156,7 @@ Status ObjectsFile<T>::ReadIfFileExist(const std::string& file_name,
 template <typename T>
 Status ObjectsFile<T>::Read(const std::string& file_name,
                             const std::function<Result<bool>(const T&)>& filter,
-                            std::vector<T>* result) const {
+                            std::vector<T>* result, std::optional<int64_t> file_size) const {
     return ReadArrowBatches(
         file_name,
         [this, &filter, result](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
@@ -164,13 +176,15 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
                 }
             }
             return Status::OK();
-        });
+        },
+        file_size);
 }
 
 template <typename T>
 Status ObjectsFile<T>::ReadArrowBatches(
     const std::string& file_name,
-    const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer) const {
+    const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
+    std::optional<int64_t> file_size) const {
     std::string file_path = path_factory_->ToPath(file_name);
     std::shared_ptr<InputStream> file_input_stream;
     std::shared_ptr<Bytes> cached_bytes;
@@ -180,9 +194,9 @@ Status ObjectsFile<T>::ReadArrowBatches(
         auto cache_key =
             CacheKey::ForKind(file_path, /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);
         auto supplier =
-            [this,
-             &file_path](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
-            PAIMON_ASSIGN_OR_RAISE(MemorySegment segment, ReadFileSegment(file_path));
+            [this, &file_path,
+             &file_size](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
+            PAIMON_ASSIGN_OR_RAISE(MemorySegment segment, ReadFileSegment(file_path, file_size));
             return std::make_shared<CacheValue>(segment, CacheCallback());
         };
         Result<std::shared_ptr<CacheValue>> cache_result = cache_->Get(cache_key, supplier);
@@ -195,7 +209,7 @@ Status ObjectsFile<T>::ReadArrowBatches(
     }
     if (!file_input_stream) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> unique_file_input_stream,
-                               file_system_->Open(file_path));
+                               OpenForRead(file_path, file_size));
         file_input_stream = std::shared_ptr<InputStream>(std::move(unique_file_input_stream));
     }
 
@@ -223,9 +237,24 @@ Status ObjectsFile<T>::ReadArrowBatches(
 }
 
 template <typename T>
-Result<MemorySegment> ObjectsFile<T>::ReadFileSegment(const std::string& file_path) const {
+Result<std::unique_ptr<InputStream>> ObjectsFile<T>::OpenForRead(
+    const std::string& file_path, const std::optional<int64_t>& file_size) const {
+    if (file_size.has_value()) {
+        // Planning already read this length out of the manifest metadata, and `Open(FileStatus)` is
+        // documented to let the file system skip the metadata request a bare open issues. That
+        // request is a round trip of its own on a remote store, paid before a single byte of the
+        // file is read. The files here are written once and never rewritten, so a length recorded
+        // at planning time cannot go stale underneath the read.
+        return file_system_->Open(FileStatus(file_path, file_size.value()));
+    }
+    return file_system_->Open(file_path);
+}
+
+template <typename T>
+Result<MemorySegment> ObjectsFile<T>::ReadFileSegment(
+    const std::string& file_path, const std::optional<int64_t>& file_size) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                           file_system_->Open(file_path));
+                           OpenForRead(file_path, file_size));
     PAIMON_ASSIGN_OR_RAISE(int64_t input_length, input_stream->Length());
 
     PAIMON_RETURN_NOT_OK(input_stream->Seek(0, FS_SEEK_SET));

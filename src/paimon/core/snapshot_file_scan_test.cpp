@@ -26,11 +26,14 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/defs.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/scan_context.h"
 #include "paimon/testing/utils/testharness.h"
@@ -62,6 +65,25 @@ std::set<std::string> ExpectedFiles(const std::string& table_path,
     }
     return paths;
 }
+
+/// Records how each file was opened, so a scan can be shown to hand over the lengths that planning
+/// already has instead of leaving the store to answer them again. `Open(FileStatus)` has to be
+/// overridden here: the base implementation forwards to `Open(path)`, which would erase the
+/// difference between the two.
+class OpenRecordingFileSystem : public LocalFileSystem {
+ public:
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        opens.emplace_back(path, std::nullopt);
+        return LocalFileSystem::Open(path);
+    }
+
+    Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override {
+        opens.emplace_back(file_status.GetPath(), file_status.GetLen());
+        return LocalFileSystem::Open(file_status.GetPath());
+    }
+
+    mutable std::vector<std::pair<std::string, std::optional<int64_t>>> opens;
+};
 
 }  // namespace
 
@@ -312,6 +334,41 @@ TEST(SnapshotFileScanTest, TestInvalidArguments) {
         CreateFilter(/*partition_filters=*/{}, /*bucket_filter=*/std::nullopt, predicate);
     ASSERT_NOK_WITH_MSG(ListFiles("unused", std::nullopt, scan_filter),
                         "snapshot file scan does not support predicate filter");
+}
+
+// The metadata that leads a scan to a manifest already records how long that manifest is, in the
+// manifest list for a manifest and in the snapshot for a manifest list. Handing those lengths over
+// is what saves a metadata round trip per file on a remote store, and it is the whole point of the
+// size fields being carried through planning.
+TEST(SnapshotFileScanTest, TestListFilesOpensManifestsWithKnownLength) {
+    std::string table_path = GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<OpenRecordingFileSystem>();
+
+    ASSERT_OK_AND_ASSIGN(
+        std::set<std::string> all_files,
+        SnapshotFileScan::ListFiles(table_path, /*branch=*/"main", /*snapshot_id=*/std::nullopt,
+                                    /*scan_filter=*/nullptr, /*options=*/{}, file_system,
+                                    /*executor=*/nullptr, /*memory_pool=*/nullptr));
+    ASSERT_FALSE(all_files.empty());
+
+    // Every manifest the scan read has to be opened with the length the manifest list recorded for
+    // it. The two manifest lists are not held to that here: this snapshot was written before the
+    // size fields existed, so they fall back to discovering their own length, and
+    // ManifestListTest.TestReadDataManifests* covers both sides of that choice.
+    int manifest_opens = 0;
+    for (const auto& [path, length] : file_system->opens) {
+        const std::string name = PathUtil::GetName(path);
+        if (name.rfind("manifest-list-", 0) == 0) {
+            continue;
+        }
+        if (path.find("/manifest/") == std::string::npos) {
+            continue;
+        }
+        ++manifest_opens;
+        ASSERT_TRUE(length.has_value()) << "opened without a known length: " << path;
+    }
+    // The latest snapshot of this table references five manifests.
+    ASSERT_EQ(5, manifest_opens);
 }
 
 }  // namespace paimon::test

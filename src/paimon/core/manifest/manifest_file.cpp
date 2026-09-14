@@ -20,6 +20,7 @@
 
 #include <cassert>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include "arrow/c/abi.h"
@@ -90,7 +91,8 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
 }
 
 Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
-                                       std::vector<ManifestEntry>* entries) const {
+                                       std::vector<ManifestEntry>* entries,
+                                       std::optional<int64_t> file_size) const {
     return ReadArrowBatches(
         file_name,
         [this, bucket, entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
@@ -106,7 +108,8 @@ Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t buc
                 entries->push_back(std::move(entry));
             }
             return Status::OK();
-        });
+        },
+        file_size);
 }
 
 Result<std::vector<ManifestFileMeta>> ManifestFile::Write(

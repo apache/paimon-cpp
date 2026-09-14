@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,8 +64,12 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     Result<std::vector<ManifestFileMeta>> Write(const std::vector<ManifestEntry>& entries);
 
     /// Read a manifest file and deserialize only entries for the specified bucket.
+    ///
+    /// @param file_size Length of the manifest when the caller already has it from the manifest
+    ///                  list, which saves the read a metadata request on a remote store.
     Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
-                             std::vector<ManifestEntry>* entries) const;
+                             std::vector<ManifestEntry>* entries,
+                             std::optional<int64_t> file_size = std::nullopt) const;
 
  private:
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
