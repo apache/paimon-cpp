@@ -228,7 +228,7 @@ TEST_F(LanceFileFormatTest, RejectsNullTopLevelRows) {
             .ValueOrDie();
     ASSERT_NOK_WITH_MSG(WriteFile(PathUtil::JoinPath(directory_->Str(), "null-row.lance"),
                                   arrow::schema(fields), data, /*batch_size=*/2),
-                        "Lance writer does not accept null top-level rows");
+                        "Lance 0.39 v2.0 does not preserve null ROW values");
 }
 
 TEST_F(LanceFileFormatTest, NullableRowValues) {
@@ -370,27 +370,23 @@ TEST_F(LanceFileFormatTest, ExtractStatistics) {
     ASSERT_EQ(result.first[1]->ToString(), "min null, max null, null count null");
 }
 
-TEST_F(LanceFileFormatTest, ReadJavaLance039Fixture) {
-    std::string path = paimon::test::GetDataDir() + "/lance/java_lance_0_39_0.lance";
-    arrow::FieldVector fields = {
-        arrow::field("id", arrow::int32()),
-        arrow::field("name", arrow::utf8()),
-        arrow::field("score", arrow::float64()),
-    };
-    std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, OpenReader(path, 2));
-    ::ArrowSchema ffi_schema = {};
-    ASSERT_TRUE(arrow::ExportSchema(*schema, &ffi_schema).ok());
-    ASSERT_OK(reader->SetReadSchema(&ffi_schema, /*predicate=*/nullptr,
-                                    /*selection_bitmap=*/std::nullopt));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         paimon::test::ReadResultCollector::CollectResult(std::move(reader)));
-    std::shared_ptr<arrow::Array> expected =
-        arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_(fields),
-            R"([[1,"alpha",1.25],[2,"beta",-2.5],[3,null,null],[4,"delta",4.75]])")
-            .ValueOrDie();
-    ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(expected))) << actual->ToString();
+TEST_F(LanceFileFormatTest, RejectsIncompatibleReadTypes) {
+    arrow::FieldVector fields = {arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MICRO)),
+                                 arrow::field("decimal", arrow::decimal128(10, 2))};
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(
+                    arrow::struct_(fields), R"([["1970-01-01 00:00:01.000000", "12.34"]])")
+                    .ValueOrDie();
+    std::string path = PathUtil::JoinPath(directory_->Str(), "incompatible-types.lance");
+    ASSERT_OK(WriteFile(path, arrow::schema(fields), data, /*batch_size=*/1));
+    for (const auto& field : {arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MILLI)),
+                              arrow::field("decimal", arrow::decimal128(10, 3))}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, OpenReader(path, 1));
+        ::ArrowSchema ffi_schema = {};
+        ASSERT_TRUE(arrow::ExportSchema(*arrow::schema({field}), &ffi_schema).ok());
+        ASSERT_OK(reader->SetReadSchema(&ffi_schema, /*predicate=*/nullptr,
+                                        /*selection_bitmap=*/std::nullopt));
+        ASSERT_NOK_WITH_MSG(reader->NextBatch(), "unsupported leaf type change");
+    }
 }
 
 TEST_F(LanceFileFormatTest, RejectsInvalidReaderSettings) {

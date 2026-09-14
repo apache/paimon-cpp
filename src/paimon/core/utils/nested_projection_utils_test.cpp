@@ -404,6 +404,72 @@ TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeAppliesReadNullability) {
     ASSERT_TRUE(aligned->type()->field(0)->nullable());
 }
 
+TEST(NestedProjectionUtilsTest, AlignFixedSizeListAppliesReadType) {
+    auto* pool = arrow::default_memory_pool();
+    for (bool nullable : {false, true}) {
+        auto data_type =
+            arrow::fixed_size_list(arrow::field("item", arrow::float32(), !nullable), 2);
+        auto read_type = arrow::fixed_size_list(
+            arrow::field("element", arrow::float32(), nullable,
+                         arrow::key_value_metadata({"description"}, {"vector element"})),
+            2);
+        const std::string json = R"([[1, 2], null, [3, 4], [5, 6]])";
+        auto array = arrow::ipc::internal::json::ArrayFromJSON(data_type, json).ValueOrDie();
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(read_type, json).ValueOrDie();
+        for (const auto& input : {array, array->Slice(1, 2), array->Slice(2, 0)}) {
+            ASSERT_OK_AND_ASSIGN(
+                auto aligned, NestedProjectionUtils::AlignArrayToReadType(input, read_type, pool));
+            ASSERT_TRUE(aligned->type()->Equals(read_type, /*check_metadata=*/true));
+            ASSERT_TRUE(aligned->Equals(expected->Slice(input->offset(), input->length())));
+            ASSERT_TRUE(aligned->ValidateFull().ok());
+            ASSERT_EQ(aligned->offset(), input->offset());
+            ASSERT_EQ(aligned->data()->buffers, input->data()->buffers);
+            ASSERT_EQ(aligned->data()->child_data[0], input->data()->child_data[0]);
+        }
+    }
+}
+
+TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeAppliesNestedMetadata) {
+    auto* pool = arrow::default_memory_pool();
+    auto value = arrow::struct_({arrow::field("value", arrow::int32())});
+    auto read_value = arrow::struct_({MakeField("value", arrow::int32(), 1)});
+    auto data_type = arrow::struct_({arrow::field("vector", arrow::fixed_size_list(value, 2))});
+    auto read_type =
+        arrow::struct_({MakeField("vector", arrow::fixed_size_list(read_value, 2), 0)});
+    const std::string json = R"([[[[1], [2]]], [null], [[[3], [4]]]])";
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(data_type, json).ValueOrDie()->Slice(1);
+    auto expected =
+        arrow::ipc::internal::json::ArrayFromJSON(read_type, json).ValueOrDie()->Slice(1);
+    ASSERT_OK_AND_ASSIGN(auto aligned,
+                         NestedProjectionUtils::AlignArrayToReadType(array, read_type, pool));
+    ASSERT_TRUE(aligned->type()->Equals(read_type, /*check_metadata=*/true));
+    ASSERT_TRUE(aligned->Equals(expected));
+    ASSERT_TRUE(aligned->ValidateFull().ok());
+    ASSERT_OK_AND_ASSIGN(auto unchanged,
+                         NestedProjectionUtils::AlignArrayToReadType(aligned, read_type, pool));
+    ASSERT_EQ(unchanged, aligned);
+}
+
+TEST(NestedProjectionUtilsTest, AlignFixedSizeListRejectsIncompatibleTypes) {
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(
+                     arrow::fixed_size_list(arrow::float32(), 2), "[[1, 2]]")
+                     .ValueOrDie();
+    auto* pool = arrow::default_memory_pool();
+    ASSERT_NOK_WITH_MSG(NestedProjectionUtils::AlignArrayToReadType(
+                            array, arrow::fixed_size_list(arrow::float32(), 3), pool),
+                        "cannot change fixed-size list size");
+    ASSERT_NOK_WITH_MSG(NestedProjectionUtils::AlignArrayToReadType(
+                            array, arrow::fixed_size_list(arrow::float64(), 2), pool),
+                        "unsupported leaf type change");
+    ASSERT_NOK_WITH_MSG(
+        NestedProjectionUtils::AlignArrayToReadType(array, arrow::list(arrow::float32()), pool),
+        "cannot reconcile");
+    auto list = arrow::ipc::internal::json::ArrayFromJSON(arrow::list(arrow::float32()), "[[1, 2]]")
+                    .ValueOrDie();
+    ASSERT_NOK_WITH_MSG(NestedProjectionUtils::AlignArrayToReadType(list, array->type(), pool),
+                        "cannot reconcile");
+}
+
 TEST(NestedProjectionUtilsTest, AlignArrayToReadTypeFieldIdChangeNullFillsNotLeak) {
     // a(id=10) replaced by a(id=11), same name/type: new field must read null, not leak.
     auto* pool = arrow::default_memory_pool();

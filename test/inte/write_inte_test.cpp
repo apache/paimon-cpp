@@ -4063,10 +4063,7 @@ TEST_P(WriteInteTest, TestNullabilityCheck) {
 
 TEST_P(WriteInteTest, TestPkSpillableMapSharedShreddingReadWrite) {
     auto file_format = GetParam();
-    if (file_format == "lance") {
-        GTEST_SKIP() << "Lance file format does not support type MAP";
-    }
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
 

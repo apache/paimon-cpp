@@ -117,9 +117,7 @@ Status LanceFormatWriter::AddBatch(::ArrowArray* batch) {
     // expects child buffers and offsets to describe the same logical slice.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> normalized,
                            ArrowUtils::NormalizeArrayOffsets(array, arrow_pool_.get()));
-    for (const auto& child : checked_pointer_cast<arrow::StructArray>(normalized)->fields()) {
-        PAIMON_RETURN_NOT_OK(ValidateRowValues(child));
-    }
+    PAIMON_RETURN_NOT_OK(ValidateRowValues(normalized));
     ::ArrowArray ffi_array = {};
     ::ArrowSchema ffi_schema = {};
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*normalized, &ffi_array, &ffi_schema));

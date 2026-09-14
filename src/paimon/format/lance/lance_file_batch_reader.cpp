@@ -26,10 +26,8 @@
 #include "arrow/c/helpers.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
-#include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/format/lance/lance_utils.h"
@@ -130,34 +128,9 @@ Result<BatchReader::ReadBatch> LanceFileBatchReader::AlignBatch(ReadBatch batch)
     if (array->type_id() != arrow::Type::STRUCT) {
         return Status::Invalid("Lance reader returned a non-struct Arrow batch");
     }
-    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
-    arrow::ArrayVector fields;
-    fields.reserve(read_schema_->num_fields());
-    for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
-        std::shared_ptr<arrow::Array> child = struct_array->GetFieldByName(field->name());
-        if (child == nullptr) {
-            return Status::Invalid(fmt::format("Lance batch is missing field '{}'", field->name()));
-        }
-        // Lance may change the VECTOR element's nullability. The generic nested
-        // alignment helper rejects that fixed-size-list type difference.
-        if (!child->type()->Equals(field->type()) &&
-            ArrowUtils::EqualsIgnoreNullable(child->type(), field->type())) {
-            std::shared_ptr<arrow::ArrayData> data = child->data()->Copy();
-            data->type = field->type();
-            child = arrow::MakeArray(std::move(data));
-        } else if (!child->type()->Equals(field->type())) {
-            PAIMON_ASSIGN_OR_RAISE(child, NestedProjectionUtils::AlignArrayToReadType(
-                                              child, field->type(), arrow_pool_.get()));
-        }
-        fields.push_back(std::move(child));
-    }
-    std::shared_ptr<arrow::Array> aligned;
-    if (fields.empty()) {
-        aligned = std::make_shared<arrow::StructArray>(arrow::struct_({}), array->length(), fields);
-    } else {
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(aligned,
-                                          arrow::StructArray::Make(fields, read_schema_->fields()));
-    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> aligned,
+                           NestedProjectionUtils::AlignArrayToReadType(
+                               array, arrow::struct_(read_schema_->fields()), arrow_pool_.get()));
     auto out_array = std::make_unique<::ArrowArray>();
     auto out_schema = std::make_unique<::ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(

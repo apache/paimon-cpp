@@ -2954,7 +2954,7 @@ TEST_F(ScanAndReadInteTest, TestLanceJavaCompatibility) {
         arrow::field("f_vector", arrow::fixed_size_list(arrow::float32(), 3)),
     };
     // Nullable-declared ROW is readable when every parent is valid. Null children are distinct
-    // from null parents; see the Java generator's null-parent probe in test_data/lance/README.md.
+    // from null parents; see the README alongside the Java compatibility table.
     auto expected = std::make_shared<arrow::ChunkedArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
 [0, 1, true, -5, -1000, 10000000001, 1.25, -2.5, "char0001", "value-1", "bin1", "\u0000\u0001\u0002\u007f", -1, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [1, null, -1], [[1, null], null, []], [1, "required"], [1, "nullable"], [1.0, -1.5, 0.25]],
