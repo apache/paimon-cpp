@@ -410,7 +410,8 @@ Status ExpireSnapshots::GetDataFileSkippingSet(
         LinkedHashMap<FileEntry::Identifier, ManifestEntry> boundary_entries;
         for (const ManifestFileMeta& manifest : manifests) {
             std::vector<ManifestEntry> entries;
-            PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest.FileName(), nullptr, &entries));
+            PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest.FileName(), nullptr,
+                                                      /*file_size=*/std::nullopt, &entries));
             if (i == 0) {
                 PAIMON_RETURN_NOT_OK(FileEntry::MergeEntries(entries, &boundary_entries));
             } else {
