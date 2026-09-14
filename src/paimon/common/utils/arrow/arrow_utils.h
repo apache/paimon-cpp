@@ -43,6 +43,8 @@ class PAIMON_EXPORT ArrowUtils {
     static Result<std::vector<int32_t>> CreateProjection(
         const std::shared_ptr<arrow::Schema>& src_schema, const arrow::FieldVector& target_fields);
 
+    /// Checks that every logically visible null matches the schema. Values hidden by a null
+    /// STRUCT, LIST, MAP, or FIXED_SIZE_LIST parent are ignored.
     static Status CheckNullabilityMatch(const std::shared_ptr<arrow::Schema>& schema,
                                         const std::shared_ptr<arrow::Array>& data);
 
@@ -133,10 +135,6 @@ class PAIMON_EXPORT ArrowUtils {
         const std::shared_ptr<arrow::StructArray>& batch,
         const std::shared_ptr<arrow::DataType>& logical_type, arrow::MemoryPool* pool,
         bool preserve_layout_recoverable_dictionaries);
-
- private:
-    static Status InnerCheckNullabilityMatch(const std::shared_ptr<arrow::Field>& field,
-                                             const std::shared_ptr<arrow::Array>& data);
 };
 
 }  // namespace paimon

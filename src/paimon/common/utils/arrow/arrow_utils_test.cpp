@@ -220,6 +220,57 @@ TEST(ArrowUtilsTest, TestCheckNullableMatchWithStruct) {
     }
 }
 
+TEST(ArrowUtilsTest, TestCheckNullableMatchParentNullMasksChildren) {
+    auto child = arrow::field("child", arrow::int32(), /*nullable=*/false);
+    auto struct_field = arrow::field("parent", arrow::struct_({child}), /*nullable=*/true);
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto vector_field = arrow::field("embedding", vector_type, /*nullable=*/true);
+    auto schema = arrow::schema({struct_field, vector_field});
+
+    // Do not build the complete batch with ArrayFromJSON: for a null STRUCT it appends a valid
+    // default value to primitive children, which cannot represent the hidden child null under test.
+    auto parent_with_validity = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({child}), R"([null, [1]])")
+            .ValueOrDie());
+    std::shared_ptr<arrow::Array> child_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[null, 1]").ValueOrDie();
+    std::shared_ptr<arrow::StructArray> parent =
+        arrow::StructArray::Make({child_array}, {child}, parent_with_validity->null_bitmap(),
+                                 parent_with_validity->null_count())
+            .ValueOrDie();
+    auto vector = checked_pointer_cast<arrow::FixedSizeListArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(vector_type, R"([null, [1.0, 2.0, 3.0]])")
+            .ValueOrDie());
+    std::shared_ptr<arrow::StructArray> batch =
+        arrow::StructArray::Make({parent, vector}, {struct_field, vector_field}).ValueOrDie();
+
+    ASSERT_OK(ArrowUtils::CheckNullabilityMatch(schema, batch));
+}
+
+TEST(ArrowUtilsTest, TestCheckNullableMatchRejectsVisibleChildNulls) {
+    auto child = arrow::field("child", arrow::int32(), /*nullable=*/false);
+    auto struct_field = arrow::field("parent", arrow::struct_({child}), /*nullable=*/true);
+    std::shared_ptr<arrow::Array> struct_batch =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({struct_field}), R"([[[null]]])")
+            .ValueOrDie();
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({struct_field}), struct_batch),
+        "CheckNullabilityMatch failed, field child not nullable while data have null value");
+
+    auto vector_type =
+        arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
+    auto vector_field = arrow::field("embedding", vector_type, /*nullable=*/true);
+    std::shared_ptr<arrow::Array> vector_batch =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({vector_field}),
+                                                  R"([[[1.0, null, 3.0]]])")
+            .ValueOrDie();
+    ASSERT_NOK_WITH_MSG(
+        ArrowUtils::CheckNullabilityMatch(arrow::schema({vector_field}), vector_batch),
+        "VECTOR field embedding is invalid: CheckNullabilityMatch failed, field item not nullable "
+        "while data have null value");
+}
+
 TEST(ArrowUtilsTest, TestCheckNullableMatchWithList) {
     auto value_field = arrow::field("value", arrow::int32(), /*nullable=*/false);
     auto list_field = arrow::field("list_column", arrow::list(value_field), /*nullable=*/false);
@@ -270,7 +321,8 @@ TEST(ArrowUtilsTest, TestCheckNullableMatchRejectsNullVectorElement) {
 
     ASSERT_NOK_WITH_MSG(
         ArrowUtils::CheckNullabilityMatch(arrow::schema({vector_field}), struct_array),
-        "VECTOR field embedding is invalid: VECTOR cannot contain null elements");
+        "VECTOR field embedding is invalid: CheckNullabilityMatch failed, field item not nullable "
+        "while data have null value");
 }
 
 // Arrow accepts a FixedSizeList whose child is shorter than `length * list_size` when importing
