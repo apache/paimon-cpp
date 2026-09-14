@@ -34,29 +34,27 @@ SpillReader::~SpillReader() = default;
 
 SpillReader::SpillReader(const std::shared_ptr<arrow::Schema>& key_schema,
                          const std::shared_ptr<arrow::Schema>& value_schema,
+                         std::unique_ptr<ArrowIpcFileReader>&& ipc_reader,
+                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                          const std::shared_ptr<MemoryPool>& pool)
     : key_schema_(key_schema),
       value_schema_(value_schema),
       pool_(pool),
-      arrow_pool_(GetArrowPool(pool)),
-      metrics_(std::make_shared<MetricsImpl>()) {}
+      arrow_pool_(arrow_pool),
+      metrics_(std::make_shared<MetricsImpl>()),
+      ipc_reader_(std::move(ipc_reader)),
+      num_record_batches_(ipc_reader_->GetRecordBatchCount()) {}
 
 Result<std::unique_ptr<SpillReader>> SpillReader::Create(
     const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<arrow::Schema>& key_schema,
     const std::shared_ptr<arrow::Schema>& value_schema, bool use_threads,
     const FileIOChannel::ID& channel_id, const std::shared_ptr<MemoryPool>& pool) {
-    std::unique_ptr<SpillReader> reader(new SpillReader(key_schema, value_schema, pool));
-    PAIMON_RETURN_NOT_OK(reader->Open(fs, channel_id, use_threads));
-    return reader;
-}
-
-Status SpillReader::Open(const std::shared_ptr<FileSystem>& fs, const FileIOChannel::ID& channel_id,
-                         bool use_threads) {
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
     PAIMON_ASSIGN_OR_RAISE(
-        ipc_reader_, ArrowIpcFileReader::Open(fs, channel_id.GetPath(), use_threads, arrow_pool_));
-    num_record_batches_ = ipc_reader_->GetRecordBatchCount();
-    current_batch_index_ = 0;
-    return Status::OK();
+        std::unique_ptr<ArrowIpcFileReader> ipc_reader,
+        ArrowIpcFileReader::Open(fs, channel_id.GetPath(), use_threads, arrow_pool));
+    return std::unique_ptr<SpillReader>(
+        new SpillReader(key_schema, value_schema, std::move(ipc_reader), arrow_pool, pool));
 }
 
 SpillReader::Iterator::Iterator(SpillReader* reader) : reader_(reader) {}

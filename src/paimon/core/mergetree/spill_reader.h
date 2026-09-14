@@ -70,10 +70,9 @@ class SpillReader : public KeyValueRecordReader {
  private:
     SpillReader(const std::shared_ptr<arrow::Schema>& key_schema,
                 const std::shared_ptr<arrow::Schema>& value_schema,
+                std::unique_ptr<ArrowIpcFileReader>&& ipc_reader,
+                const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                 const std::shared_ptr<MemoryPool>& pool);
-
-    Status Open(const std::shared_ptr<FileSystem>& fs, const FileIOChannel::ID& channel_id,
-                bool use_threads);
     void Reset();
 
     std::shared_ptr<arrow::Schema> key_schema_;

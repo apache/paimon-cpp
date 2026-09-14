@@ -268,6 +268,40 @@ class ArrowRealtimeStore::SpilledSegment final : public ArrowRealtimeStore::Segm
     uint64_t memory_usage_ = 0;
 };
 
+class ArrowRealtimeStore::SharedSpillFileReader {
+ public:
+    static Result<std::shared_ptr<SharedSpillFileReader>> Create(
+        const std::shared_ptr<SpillFile>& spill_file, int32_t expected_batch_count,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<ArrowIpcFileReader> file_reader,
+            ArrowIpcFileReader::Open(spill_file->GetFileSystem(), spill_file->GetPath(),
+                                     /*use_threads=*/false, arrow_pool));
+        if (file_reader->GetRecordBatchCount() != expected_batch_count) {
+            return Status::Invalid(
+                "real-time spill file batch count does not match segment metadata");
+        }
+        return std::shared_ptr<SharedSpillFileReader>(
+            new SharedSpillFileReader(spill_file, std::move(file_reader)));
+    }
+
+    Result<std::shared_ptr<arrow::RecordBatch>> ReadRecordBatch(int32_t batch_index) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return file_reader_->ReadRecordBatch(batch_index);
+    }
+
+ private:
+    SharedSpillFileReader(const std::shared_ptr<SpillFile>& spill_file,
+                          std::unique_ptr<ArrowIpcFileReader>&& file_reader)
+        : spill_file_(spill_file), file_reader_(std::move(file_reader)) {}
+
+    // Keep the spill file alive until the shared IPC reader closes. Members are destroyed in
+    // reverse declaration order, so the reader closes before the file can be deleted.
+    std::shared_ptr<SpillFile> spill_file_;
+    std::unique_ptr<ArrowIpcFileReader> file_reader_;
+    std::mutex mutex_;
+};
+
 class ArrowRealtimeStore::ReadView : public RealtimeReadView {
  public:
     explicit ReadView(std::vector<std::shared_ptr<Segment>>&& segments)
@@ -355,13 +389,11 @@ class ArrowRealtimeStore::StoredBatchReader : public BatchReader {
 
 class ArrowRealtimeStore::SpillBatchReader : public BatchReader {
  public:
-    SpillBatchReader(std::unique_ptr<ArrowIpcFileReader>&& file_reader,
-                     const std::shared_ptr<SpillFile>& spill_file,
+    SpillBatchReader(const std::shared_ptr<SharedSpillFileReader>& file_reader,
                      std::vector<int32_t>&& batch_indexes,
                      const std::shared_ptr<arrow::Schema>& read_schema,
                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-        : file_reader_(std::move(file_reader)),
-          spill_file_(spill_file),
+        : file_reader_(file_reader),
           batch_indexes_(std::move(batch_indexes)),
           read_schema_(read_schema),
           arrow_pool_(arrow_pool),
@@ -389,14 +421,12 @@ class ArrowRealtimeStore::SpillBatchReader : public BatchReader {
 
     void Close() override {
         file_reader_.reset();
-        spill_file_.reset();
         read_schema_.reset();
         arrow_pool_.reset();
     }
 
  private:
-    std::unique_ptr<ArrowIpcFileReader> file_reader_;
-    std::shared_ptr<SpillFile> spill_file_;
+    std::shared_ptr<SharedSpillFileReader> file_reader_;
     std::vector<int32_t> batch_indexes_;
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -592,23 +622,26 @@ Result<std::optional<ArrowRealtimeStore::BatchStatistics>> ArrowRealtimeStore::C
 }
 
 Result<bool> ArrowRealtimeStore::MayMatchStatistics(
-    int64_t row_count, const std::optional<BatchStatistics>& statistics_optional,
+    int64_t row_count, const std::optional<BatchStatistics>& statistics,
     const std::shared_ptr<arrow::Schema>& read_schema,
     const std::shared_ptr<PredicateFilter>& predicate_filter,
     const std::vector<int32_t>& statistics_mapping,
     const std::shared_ptr<MemoryPool>& memory_pool) {
-    if (!predicate_filter || !statistics_optional) {
+    if (!predicate_filter || !statistics) {
         return true;
     }
-    const BatchStatistics& statistics = statistics_optional.value();
+    const BatchStatistics& batch_statistics = statistics.value();
     std::shared_ptr<InternalRow> min_row = std::make_shared<ColumnarRow>(
-        statistics.min_values, statistics.min_values->fields(), memory_pool, /*row_id=*/0);
+        batch_statistics.min_values, batch_statistics.min_values->fields(), memory_pool,
+        /*row_id=*/0);
     std::shared_ptr<InternalRow> max_row = std::make_shared<ColumnarRow>(
-        statistics.max_values, statistics.max_values->fields(), memory_pool, /*row_id=*/0);
+        batch_statistics.max_values, batch_statistics.max_values->fields(), memory_pool,
+        /*row_id=*/0);
     ProjectedRow projected_min(min_row, statistics_mapping);
     ProjectedRow projected_max(max_row, statistics_mapping);
-    std::shared_ptr<InternalArray> null_counts = std::make_shared<ColumnarArray>(
-        statistics.null_counts.get(), memory_pool, /*offset=*/0, statistics.null_counts->length());
+    std::shared_ptr<InternalArray> null_counts =
+        std::make_shared<ColumnarArray>(batch_statistics.null_counts.get(), memory_pool,
+                                        /*offset=*/0, batch_statistics.null_counts->length());
     ProjectedArray projected_null_counts(null_counts, statistics_mapping);
     return predicate_filter->Test(read_schema, row_count, projected_min, projected_max,
                                   projected_null_counts);
@@ -750,39 +783,21 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateComm
     if (!spilled_segment) {
         return Status::Invalid("unknown Arrow real-time segment type");
     }
+    const int32_t batch_count = static_cast<int32_t>(spilled_segment->GetBatches().size());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<SharedSpillFileReader> file_reader,
+        SharedSpillFileReader::Create(spilled_segment->GetFile(), batch_count, arrow_pool_));
     if (mode_ == RealtimeStoreMode::APPEND_ONLY) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ArrowIpcFileReader> file_reader,
-                               ArrowIpcFileReader::Open(spilled_segment->GetFile()->GetFileSystem(),
-                                                        spilled_segment->GetFile()->GetPath(),
-                                                        /*use_threads=*/false, arrow_pool_));
-        if (file_reader->GetRecordBatchCount() !=
-            static_cast<int32_t>(spilled_segment->GetBatches().size())) {
-            return Status::Invalid(
-                "real-time spill file batch count does not match segment metadata");
-        }
-        std::vector<int32_t> indexes(file_reader->GetRecordBatchCount());
+        std::vector<int32_t> indexes(batch_count);
         std::iota(indexes.begin(), indexes.end(), 0);
-        readers.push_back(std::make_unique<SpillBatchReader>(
-            std::move(file_reader), spilled_segment->GetFile(), std::move(indexes),
-            /*read_schema=*/nullptr, arrow_pool_));
+        readers.push_back(std::make_unique<SpillBatchReader>(file_reader, std::move(indexes),
+                                                             /*read_schema=*/nullptr, arrow_pool_));
         return readers;
     }
     readers.reserve(spilled_segment->GetBatches().size());
-    // PK merge-on-read may consume returned readers concurrently. Give every batch reader an
-    // independent file handle and RecordBatchFileReader instead of serializing on a shared one.
-    for (int32_t i = 0; i < static_cast<int32_t>(spilled_segment->GetBatches().size()); ++i) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ArrowIpcFileReader> file_reader,
-                               ArrowIpcFileReader::Open(spilled_segment->GetFile()->GetFileSystem(),
-                                                        spilled_segment->GetFile()->GetPath(),
-                                                        /*use_threads=*/false, arrow_pool_));
-        if (file_reader->GetRecordBatchCount() !=
-            static_cast<int32_t>(spilled_segment->GetBatches().size())) {
-            return Status::Invalid(
-                "real-time spill file batch count does not match segment metadata");
-        }
-        readers.push_back(std::make_unique<SpillBatchReader>(
-            std::move(file_reader), spilled_segment->GetFile(), std::vector<int32_t>{i},
-            /*read_schema=*/nullptr, arrow_pool_));
+    for (int32_t i = 0; i < batch_count; ++i) {
+        readers.push_back(std::make_unique<SpillBatchReader>(file_reader, std::vector<int32_t>{i},
+                                                             /*read_schema=*/nullptr, arrow_pool_));
     }
     return readers;
 }
@@ -866,22 +881,14 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
             if (matching_indexes.empty()) {
                 continue;
             }
-            // Readers returned for PK merge-on-read are independent and can be consumed in
-            // parallel by upper layers.
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<SharedSpillFileReader> file_reader,
+                SharedSpillFileReader::Create(
+                    spilled_segment->GetFile(),
+                    static_cast<int32_t>(spilled_segment->GetBatches().size()), arrow_pool_));
             for (int32_t batch_index : matching_indexes) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    std::unique_ptr<ArrowIpcFileReader> file_reader,
-                    ArrowIpcFileReader::Open(spilled_segment->GetFile()->GetFileSystem(),
-                                             spilled_segment->GetFile()->GetPath(),
-                                             /*use_threads=*/false, arrow_pool_));
-                if (file_reader->GetRecordBatchCount() !=
-                    static_cast<int32_t>(spilled_segment->GetBatches().size())) {
-                    return Status::Invalid(
-                        "real-time spill file batch count does not match segment metadata");
-                }
                 readers.push_back(std::make_unique<SpillBatchReader>(
-                    std::move(file_reader), spilled_segment->GetFile(),
-                    std::vector<int32_t>{batch_index}, read_schema, arrow_pool_));
+                    file_reader, std::vector<int32_t>{batch_index}, read_schema, arrow_pool_));
             }
         }
         return SliceQueryReaders(std::move(readers), context.read_batch_size, arrow_pool_);

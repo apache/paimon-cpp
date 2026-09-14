@@ -28,37 +28,30 @@ namespace paimon {
 
 SpillWriter::~SpillWriter() = default;
 
+SpillWriter::SpillWriter(std::unique_ptr<ArrowIpcFileWriter>&& ipc_writer,
+                         const FileIOChannel::ID& channel_id)
+    : ipc_writer_(std::move(ipc_writer)), channel_id_(channel_id) {}
+
 Result<std::unique_ptr<SpillWriter>> SpillWriter::Create(
     const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<arrow::Schema>& schema,
     const std::shared_ptr<FileIOChannel::Enumerator>& channel_enumerator,
     const std::shared_ptr<SpillChannelManager>& spill_channel_manager,
     const std::string& compression, int32_t compression_level, bool use_threads,
     const std::shared_ptr<MemoryPool>& pool) {
-    std::unique_ptr<SpillWriter> writer(new SpillWriter());
-    PAIMON_RETURN_NOT_OK(writer->Open(fs, schema, channel_enumerator, spill_channel_manager,
-                                      compression, compression_level, use_threads, pool));
-    return writer;
-}
-
-Status SpillWriter::Open(const std::shared_ptr<FileSystem>& fs,
-                         const std::shared_ptr<arrow::Schema>& schema,
-                         const std::shared_ptr<FileIOChannel::Enumerator>& channel_enumerator,
-                         const std::shared_ptr<SpillChannelManager>& spill_channel_manager,
-                         const std::string& compression, int32_t compression_level,
-                         bool use_threads, const std::shared_ptr<MemoryPool>& pool) {
-    channel_id_ = channel_enumerator->Next();
+    FileIOChannel::ID channel_id = channel_enumerator->Next();
     auto cleanup_guard = ScopeGuard([&]() {
-        ipc_writer_.reset();
-        if (!channel_id_.GetPath().empty()) {
-            [[maybe_unused]] auto status = fs->Delete(channel_id_.GetPath());
+        if (!channel_id.GetPath().empty()) {
+            [[maybe_unused]] auto status = fs->Delete(channel_id.GetPath());
         }
     });
-    PAIMON_ASSIGN_OR_RAISE(ipc_writer_, ArrowIpcFileWriter::Create(
-                                            fs, channel_id_.GetPath(), schema, compression,
-                                            compression_level, use_threads, GetArrowPool(pool)));
-    spill_channel_manager->AddChannel(channel_id_);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<ArrowIpcFileWriter> ipc_writer,
+        ArrowIpcFileWriter::Create(fs, channel_id.GetPath(), schema, compression, compression_level,
+                                   use_threads, GetArrowPool(pool)));
+    std::unique_ptr<SpillWriter> writer(new SpillWriter(std::move(ipc_writer), channel_id));
+    spill_channel_manager->AddChannel(channel_id);
     cleanup_guard.Release();
-    return Status::OK();
+    return writer;
 }
 
 Status SpillWriter::WriteBatch(const std::shared_ptr<arrow::RecordBatch>& batch) {

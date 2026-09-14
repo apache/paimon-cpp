@@ -53,13 +53,8 @@ class SpillWriter {
     const FileIOChannel::ID& GetChannelId() const;
 
  private:
-    SpillWriter() = default;
-
-    Status Open(const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<arrow::Schema>& schema,
-                const std::shared_ptr<FileIOChannel::Enumerator>& channel_enumerator,
-                const std::shared_ptr<SpillChannelManager>& spill_channel_manager,
-                const std::string& compression, int32_t compression_level, bool use_threads,
-                const std::shared_ptr<MemoryPool>& pool);
+    SpillWriter(std::unique_ptr<ArrowIpcFileWriter>&& ipc_writer,
+                const FileIOChannel::ID& channel_id);
 
     std::unique_ptr<ArrowIpcFileWriter> ipc_writer_;
     FileIOChannel::ID channel_id_;

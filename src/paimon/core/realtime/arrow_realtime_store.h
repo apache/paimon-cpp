@@ -101,6 +101,7 @@ class ArrowRealtimeStore final : public RealtimeStore {
     class ReadView;
     class AppendCommitBatchReader;
     class StoredBatchReader;
+    class SharedSpillFileReader;
     class SpillBatchReader;
     class AppendQueryBatchReader;
 
