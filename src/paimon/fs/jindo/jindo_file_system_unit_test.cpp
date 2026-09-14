@@ -18,7 +18,9 @@
  */
 
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -52,6 +54,41 @@ class TestOutputStream : public OutputStream {
     }
 };
 
+class TestInputStream : public InputStream {
+ public:
+    Status Seek(int64_t, SeekOrigin) override {
+        return Status::OK();
+    }
+
+    Result<int64_t> GetPos() const override {
+        return 0;
+    }
+
+    Result<int64_t> Read(char*, int64_t size) override {
+        return size;
+    }
+
+    Result<int64_t> Read(char*, int64_t size, int64_t) override {
+        return size;
+    }
+
+    void ReadAsync(char*, int64_t, int64_t, std::function<void(Status)>&& callback) override {
+        callback(Status::OK());
+    }
+
+    Status Close() override {
+        return Status::OK();
+    }
+
+    Result<std::string> GetUri() const override {
+        return std::string();
+    }
+
+    Result<int64_t> Length() const override {
+        return 0;
+    }
+};
+
 class TestJindoFileSystem : public jindo::JindoFileSystem {
  public:
     TestJindoFileSystem() : JindoFileSystem(std::make_unique<JdoFileSystem>()) {}
@@ -82,7 +119,24 @@ class TestJindoFileSystem : public jindo::JindoFileSystem {
         return calls_;
     }
 
+    const std::vector<std::optional<int64_t>>& GetOpenReaderLengths() const {
+        return open_reader_lengths_;
+    }
+
+    const std::vector<std::string>& GetOpenReaderPaths() const {
+        return open_reader_paths_;
+    }
+
  protected:
+    Result<std::unique_ptr<InputStream>> OpenReader(
+        const std::string& path, std::optional<int64_t> file_length) const override {
+        calls_.push_back("open_reader");
+        open_reader_paths_.push_back(path);
+        open_reader_lengths_.push_back(file_length);
+        std::unique_ptr<InputStream> input = std::make_unique<TestInputStream>();
+        return input;
+    }
+
     Result<std::unique_ptr<OutputStream>> OpenWriter(const std::string&) const override {
         calls_.push_back("open_writer");
         writer_opened_ = true;
@@ -94,6 +148,8 @@ class TestJindoFileSystem : public jindo::JindoFileSystem {
     mutable std::string parent_path_;
     mutable bool writer_opened_ = false;
     mutable std::vector<std::string> calls_;
+    mutable std::vector<std::string> open_reader_paths_;
+    mutable std::vector<std::optional<int64_t>> open_reader_lengths_;
     Status mkdirs_status_ = Status::OK();
 };
 
@@ -134,6 +190,47 @@ TEST(JindoFileSystemUnitTest, CreateReturnsParentDirectoryFailure) {
     ASSERT_FALSE(fs.IsWriterOpened());
     ASSERT_EQ(fs.GetCalls().size(), 1);
     ASSERT_EQ(fs.GetCalls()[0], "mkdirs");
+}
+
+TEST(JindoFileSystemUnitTest, OpenWithoutFileStatusLeavesLengthToStore) {
+    TestJindoFileSystem fs;
+    const std::string path = "oss://bucket/table/bucket-24/data.parquet";
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, fs.Open(path));
+    ASSERT_TRUE(input);
+    ASSERT_EQ(fs.GetOpenReaderLengths().size(), 1);
+    ASSERT_FALSE(fs.GetOpenReaderLengths()[0].has_value());
+}
+
+TEST(JindoFileSystemUnitTest, OpenWithFileStatusPassesTrustedLength) {
+    TestJindoFileSystem fs;
+    const std::string path = "oss://bucket/table/bucket-24/data.parquet";
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, fs.Open(FileStatus(path, 4096)));
+    ASSERT_TRUE(input);
+    ASSERT_EQ(fs.GetOpenReaderLengths().size(), 1);
+    ASSERT_TRUE(fs.GetOpenReaderLengths()[0].has_value());
+    ASSERT_EQ(fs.GetOpenReaderLengths()[0].value(), 4096);
+    ASSERT_EQ(fs.GetOpenReaderPaths(), std::vector<std::string>{path});
+}
+
+TEST(JindoFileSystemUnitTest, OpenWithFileStatusKeepsZeroLengthOnFastPath) {
+    TestJindoFileSystem fs;
+    const std::string path = "oss://bucket/table/bucket-24/empty.parquet";
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, fs.Open(FileStatus(path, 0)));
+    ASSERT_TRUE(input);
+    ASSERT_EQ(fs.GetOpenReaderLengths().size(), 1);
+    ASSERT_TRUE(fs.GetOpenReaderLengths()[0].has_value());
+    ASSERT_EQ(fs.GetOpenReaderLengths()[0].value(), 0);
+}
+
+TEST(JindoFileSystemUnitTest, OpenWithFileStatusRejectsNegativeLength) {
+    TestJindoFileSystem fs;
+
+    ASSERT_NOK_WITH_MSG(fs.Open(FileStatus("oss://bucket/data.parquet", /*length=*/-1)),
+                        "file size");
+    ASSERT_TRUE(fs.GetOpenReaderLengths().empty());
 }
 
 }  // namespace paimon::test
