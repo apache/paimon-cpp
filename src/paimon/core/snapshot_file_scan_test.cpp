@@ -23,6 +23,7 @@
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -73,15 +74,24 @@ std::set<std::string> ExpectedFiles(const std::string& table_path,
 class OpenRecordingFileSystem : public LocalFileSystem {
  public:
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
-        opens.emplace_back(path, std::nullopt);
+        {
+            std::lock_guard<std::mutex> lock(opens_mutex);
+            opens.emplace_back(path, std::nullopt);
+        }
         return LocalFileSystem::Open(path);
     }
 
     Result<std::unique_ptr<InputStream>> Open(const FileStatus& file_status) const override {
-        opens.emplace_back(file_status.GetPath(), file_status.GetLen());
+        {
+            std::lock_guard<std::mutex> lock(opens_mutex);
+            opens.emplace_back(file_status.GetPath(), file_status.GetLen());
+        }
         return LocalFileSystem::Open(file_status.GetPath());
     }
 
+    // A scan reads manifests concurrently through the executor, so recording the opens has to be
+    // synchronized; the reads of `opens` happen only after the scan has collected every task.
+    mutable std::mutex opens_mutex;
     mutable std::vector<std::pair<std::string, std::optional<int64_t>>> opens;
 };
 
