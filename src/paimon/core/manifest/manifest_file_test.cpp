@@ -132,10 +132,12 @@ class ManifestFileTest : public testing::Test {
                                  /*target_file_size=*/1024, pool, options, unused_schema));
         std::vector<ManifestEntry> manifest_entries;
         if (bucket) {
-            EXPECT_OK(
-                manifest_file->ReadBucketEntries(file_name, bucket.value(), &manifest_entries));
+            EXPECT_OK(manifest_file->ReadBucketEntries(file_name, bucket.value(),
+                                                       /*file_size=*/std::nullopt,
+                                                       &manifest_entries));
         } else {
-            EXPECT_OK(manifest_file->Read(file_name, /*filter=*/nullptr, &manifest_entries));
+            EXPECT_OK(manifest_file->Read(file_name, /*filter=*/nullptr,
+                                          /*file_size=*/std::nullopt, &manifest_entries));
         }
 
         return manifest_entries;
@@ -271,7 +273,7 @@ TEST_F(ManifestFileTest, TestManifestCacheIsDisabledWithoutInjectedCache) {
 
     std::vector<ManifestEntry> first_read;
     ASSERT_OK(manifest_file->Read("manifest-3ea5ee21-d399-4f1c-a749-2fc63dbf0852-1",
-                                  /*filter=*/nullptr, &first_read));
+                                  /*filter=*/nullptr, /*file_size=*/std::nullopt, &first_read));
     ASSERT_EQ(5, first_read.size());
     ASSERT_EQ(1, counting_file_system->open_count);
     ASSERT_EQ(0, counting_file_system->get_file_status_count);
@@ -280,7 +282,7 @@ TEST_F(ManifestFileTest, TestManifestCacheIsDisabledWithoutInjectedCache) {
     ASSERT_OK(manifest_file->Read(
         "manifest-3ea5ee21-d399-4f1c-a749-2fc63dbf0852-1",
         [](const ManifestEntry& entry) -> Result<bool> { return entry.Kind() == FileKind::Add(); },
-        &filtered_read));
+        /*file_size=*/std::nullopt, &filtered_read));
     ASSERT_EQ(1, filtered_read.size());
     ASSERT_EQ(2, counting_file_system->open_count);
     ASSERT_EQ(0, counting_file_system->get_file_status_count);
@@ -313,10 +315,10 @@ TEST_F(ManifestFileTest, TestManifestCacheReusesCachedBytes) {
 
     std::vector<ManifestEntry> first_read;
     ASSERT_OK(manifest_file->Read("manifest-3ea5ee21-d399-4f1c-a749-2fc63dbf0852-1",
-                                  /*filter=*/nullptr, &first_read));
+                                  /*filter=*/nullptr, /*file_size=*/std::nullopt, &first_read));
     std::vector<ManifestEntry> second_read;
     ASSERT_OK(manifest_file->Read("manifest-3ea5ee21-d399-4f1c-a749-2fc63dbf0852-1",
-                                  /*filter=*/nullptr, &second_read));
+                                  /*filter=*/nullptr, /*file_size=*/std::nullopt, &second_read));
 
     ASSERT_EQ(first_read, second_read);
     ASSERT_EQ(1, counting_file_system->open_count);
@@ -353,20 +355,24 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
 
     const std::string manifest_name = "manifest-3a44a0da-1008-463c-914e-28d271375e24-0";
     std::vector<ManifestEntry> all_entries;
-    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, &all_entries));
+    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, /*file_size=*/std::nullopt,
+                                  &all_entries));
     ASSERT_EQ(2, all_entries.size());
 
     std::vector<ManifestEntry> bucket_one_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, &bucket_one_entries));
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1,
+                                               /*file_size=*/std::nullopt, &bucket_one_entries));
     ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
 
     std::vector<ManifestEntry> bucket_zero_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/0, &bucket_zero_entries));
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/0,
+                                               /*file_size=*/std::nullopt, &bucket_zero_entries));
     ASSERT_EQ(std::vector<ManifestEntry>({all_entries[1]}), bucket_zero_entries);
 
     std::vector<ManifestEntry> missing_bucket_entries;
-    ASSERT_OK(
-        manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/2, &missing_bucket_entries));
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/2,
+                                               /*file_size=*/std::nullopt,
+                                               &missing_bucket_entries));
     ASSERT_TRUE(missing_bucket_entries.empty());
 
     ASSERT_EQ(1, counting_file_system->open_count);
@@ -405,14 +411,14 @@ TEST_F(ManifestFileTest, TestReadPassesKnownSizeToOpen) {
     constexpr int64_t kRecordedSize = 2617;
 
     std::vector<ManifestEntry> all_entries;
-    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, &all_entries, kRecordedSize));
+    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, kRecordedSize, &all_entries));
     ASSERT_EQ(2, all_entries.size());
     ASSERT_EQ(std::vector<int64_t>({kRecordedSize}), counting_file_system->opened_lengths);
     ASSERT_EQ(0, counting_file_system->open_count);
 
     std::vector<ManifestEntry> bucket_one_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, &bucket_one_entries,
-                                               kRecordedSize));
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, kRecordedSize,
+                                               &bucket_one_entries));
     ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
     ASSERT_EQ(std::vector<int64_t>({kRecordedSize, kRecordedSize}),
               counting_file_system->opened_lengths);
@@ -459,11 +465,13 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
         manifest_file->WriteWithoutRolling({invalid_other_bucket, valid_target_bucket}));
 
     std::vector<ManifestEntry> all_entries;
-    ASSERT_NOK_WITH_MSG(manifest_file->Read(written_file.first, /*filter=*/nullptr, &all_entries),
+    ASSERT_NOK_WITH_MSG(manifest_file->Read(written_file.first, /*filter=*/nullptr,
+                                            /*file_size=*/std::nullopt, &all_entries),
                         "Unsupported byte value 2 for file kind.");
 
     std::vector<ManifestEntry> bucket_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0, &bucket_entries));
+    ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0,
+                                               /*file_size=*/std::nullopt, &bucket_entries));
     ASSERT_EQ(std::vector<ManifestEntry>({valid_target_bucket}), bucket_entries);
 }
 

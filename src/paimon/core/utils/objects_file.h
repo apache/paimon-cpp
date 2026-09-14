@@ -65,14 +65,14 @@ class ObjectsFile {
     virtual ~ObjectsFile() = default;
 
     /// @param file_size Length of the file when planning already knows it, which lets the read
-    ///                  skip the metadata request a bare `Open` issues on a remote store. Leave it
-    ///                  unset when the length is not known; the read then discovers it itself.
+    ///                  skip the metadata request a bare `Open` issues on a remote store. Pass
+    ///                  std::nullopt when the length is not known; the read then discovers it
+    ///                  itself.
     Status Read(const std::string& file_name, const std::function<Result<bool>(const T&)>& filter,
-                std::vector<T>* result, std::optional<int64_t> file_size = std::nullopt) const;
+                std::optional<int64_t> file_size, std::vector<T>* result) const;
     Status ReadIfFileExist(const std::string& file_name,
                            const std::function<Result<bool>(const T&)>& filter,
-                           std::vector<T>* result,
-                           std::optional<int64_t> file_size = std::nullopt) const;
+                           std::optional<int64_t> file_size, std::vector<T>* result) const;
 
     void DeleteQuietly(const std::string& file_name) {
         std::string path = path_factory_->ToPath(file_name);
@@ -95,7 +95,7 @@ class ObjectsFile {
     Status ReadArrowBatches(
         const std::string& file_name,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        std::optional<int64_t> file_size = std::nullopt) const;
+        std::optional<int64_t> file_size) const;
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
@@ -143,12 +143,12 @@ ObjectsFile<T>::ObjectsFile(const std::shared_ptr<FileSystem>& file_system,
 template <typename T>
 Status ObjectsFile<T>::ReadIfFileExist(const std::string& file_name,
                                        const std::function<Result<bool>(const T&)>& filter,
-                                       std::vector<T>* result,
-                                       std::optional<int64_t> file_size) const {
+                                       std::optional<int64_t> file_size,
+                                       std::vector<T>* result) const {
     std::string file_path = path_factory_->ToPath(file_name);
     PAIMON_ASSIGN_OR_RAISE(bool path_exist, file_system_->Exists(file_path));
     if (path_exist) {
-        return Read(file_name, filter, result, file_size);
+        return Read(file_name, filter, file_size, result);
     }
     return Status::OK();
 }
@@ -156,7 +156,7 @@ Status ObjectsFile<T>::ReadIfFileExist(const std::string& file_name,
 template <typename T>
 Status ObjectsFile<T>::Read(const std::string& file_name,
                             const std::function<Result<bool>(const T&)>& filter,
-                            std::vector<T>* result, std::optional<int64_t> file_size) const {
+                            std::optional<int64_t> file_size, std::vector<T>* result) const {
     return ReadArrowBatches(
         file_name,
         [this, &filter, result](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {

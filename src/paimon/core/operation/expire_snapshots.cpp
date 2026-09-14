@@ -306,7 +306,8 @@ bool ExpireSnapshots::TryDeleteEmptyDirectory(const std::string& path) const {
 Status ExpireSnapshots::CleanUnusedManifests(const std::string& manifest_list_name,
                                              const std::set<std::string>& skipping_sets) {
     std::vector<ManifestFileMeta> manifest_file_metas;
-    auto status = manifest_list_->Read(manifest_list_name, nullptr, &manifest_file_metas);
+    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt,
+                                       &manifest_file_metas);
     if (status.ok()) {
         std::vector<std::string> to_delete_manifests;
         // TODO(jinli.zjw): optimize for async
@@ -326,13 +327,14 @@ Status ExpireSnapshots::CleanUnusedDataFiles(
     const std::string& manifest_list_name, const std::set<std::string>& skipping_data_files,
     DataFilePathFactoryCache* data_file_path_factory_cache) {
     std::vector<ManifestFileMeta> manifest_file_metas;
-    auto status = manifest_list_->Read(manifest_list_name, nullptr, &manifest_file_metas);
+    auto status = manifest_list_->Read(manifest_list_name, nullptr, /*file_size=*/std::nullopt,
+                                       &manifest_file_metas);
     if (status.ok()) {
         std::map<std::string, ManifestEntry> data_files_to_delete;
         for (const auto& manifest_file_meta : manifest_file_metas) {
             std::vector<ManifestEntry> manifest_entries;
-            auto status =
-                manifest_file_->Read(manifest_file_meta.FileName(), nullptr, &manifest_entries);
+            auto status = manifest_file_->Read(manifest_file_meta.FileName(), nullptr,
+                                               /*file_size=*/std::nullopt, &manifest_entries);
             if (!status.ok()) {
                 // cancel deletion if any exception occurs
                 PAIMON_LOG_WARN(logger_, "Failed to read some manifest files. Cancel deletion. %s",

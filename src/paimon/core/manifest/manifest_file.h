@@ -66,10 +66,11 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// Read a manifest file and deserialize only entries for the specified bucket.
     ///
     /// @param file_size Length of the manifest when the caller already has it from the manifest
-    ///                  list, which saves the read a metadata request on a remote store.
+    ///                  list, which saves the read a metadata request on a remote store. Pass
+    ///                  std::nullopt when the length is not known.
     Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
-                             std::vector<ManifestEntry>* entries,
-                             std::optional<int64_t> file_size = std::nullopt) const;
+                             std::optional<int64_t> file_size,
+                             std::vector<ManifestEntry>* entries) const;
 
  private:
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,

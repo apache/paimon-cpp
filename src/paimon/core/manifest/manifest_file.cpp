@@ -91,8 +91,8 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
 }
 
 Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
-                                       std::vector<ManifestEntry>* entries,
-                                       std::optional<int64_t> file_size) const {
+                                       std::optional<int64_t> file_size,
+                                       std::vector<ManifestEntry>* entries) const {
     return ReadArrowBatches(
         file_name,
         [this, bucket, entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {

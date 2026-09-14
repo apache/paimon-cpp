@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <utility>
@@ -3372,7 +3373,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-commit-1", index_entries[0].index_file->FileName());
 }
@@ -3436,7 +3438,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithCompactIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-commit-compact-1", index_entries[0].index_file->FileName());
 }
@@ -3474,7 +3477,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithDeletedIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_TRUE(index_entries.empty());
 }
 
@@ -3513,7 +3517,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithCompactDeletedIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_TRUE(index_entries.empty());
 }
 
@@ -3545,7 +3550,8 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteWithCompactIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(compact_snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-compact-1", index_entries[0].index_file->FileName());
 }
@@ -3638,7 +3644,8 @@ TEST_F(FileStoreCommitImplTest, TestFilterAndOverwriteWithCompactIndexFiles) {
 
     std::vector<IndexManifestEntry> index_entries;
     ASSERT_OK(commit_impl->index_manifest_file_->Read(compact_snapshot.IndexManifest().value(),
-                                                      /*filter=*/nullptr, &index_entries));
+                                                      /*filter=*/nullptr,
+                                                      /*file_size=*/std::nullopt, &index_entries));
     ASSERT_EQ(1u, index_entries.size());
     ASSERT_EQ("bitmap-index-filter-compact-1", index_entries[0].index_file->FileName());
 }
@@ -3946,7 +3953,7 @@ TEST_F(FileStoreCommitImplTest, TestOverwriteDropsDeleteFileStats) {
     std::vector<ManifestEntry> delta_entries;
     for (const ManifestFileMeta& manifest : delta_manifests) {
         ASSERT_OK(commit_impl->manifest_file_->Read(manifest.FileName(), /*filter=*/nullptr,
-                                                    &delta_entries));
+                                                    /*file_size=*/std::nullopt, &delta_entries));
     }
 
     int32_t add_count = 0;

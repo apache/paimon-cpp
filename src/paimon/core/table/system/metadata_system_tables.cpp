@@ -270,8 +270,8 @@ Result<std::vector<ManifestEntry>> ReadLatestManifestEntries(
                            CreateManifestFile(context, path_factory, core_options, pool));
     std::vector<ManifestEntry> entries;
     for (const auto& manifest : manifests) {
-        PAIMON_RETURN_NOT_OK(
-            manifest_file->Read(manifest.FileName(), /*filter=*/nullptr, &entries));
+        PAIMON_RETURN_NOT_OK(manifest_file->Read(manifest.FileName(), /*filter=*/nullptr,
+                                                 /*file_size=*/std::nullopt, &entries));
     }
     return entries;
 }

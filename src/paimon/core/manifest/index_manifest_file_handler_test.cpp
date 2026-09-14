@@ -123,7 +123,8 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerDeletesThenAddsByFileName) {
                                         /*bucket_mode=*/4, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
-    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr,
+                                        /*file_size=*/std::nullopt, &written_entries));
     ASSERT_EQ(written_entries.size(), 1);
     ASSERT_EQ(written_entries[0].index_file->FileName(), "global-0");
     ASSERT_EQ(written_entries[0].index_file->RowCount(), 2);
@@ -156,7 +157,8 @@ TEST_F(IndexManifestFileHandlerTest, BucketedCombinerUsesPartitionBucketAndIndex
                                         /*bucket_mode=*/2, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
-    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr,
+                                        /*file_size=*/std::nullopt, &written_entries));
     ASSERT_EQ(written_entries.size(), 2);
 
     bool found_bucket0 = false;
@@ -192,7 +194,8 @@ TEST_F(IndexManifestFileHandlerTest, BucketedCombinerOverwritesDuplicateAddedEnt
                              /*bucket_mode=*/2, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
-    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr,
+                                        /*file_size=*/std::nullopt, &written_entries));
     ASSERT_EQ(written_entries.size(), 1);
     ASSERT_EQ(written_entries[0].index_file->FileName(), "dv-0-new");
     ASSERT_EQ(written_entries[0].index_file->RowCount(), 20);
@@ -213,7 +216,8 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerOverwritesDuplicateAddedEntri
                              /*bucket_mode=*/4, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
-    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr,
+                                        /*file_size=*/std::nullopt, &written_entries));
     ASSERT_EQ(written_entries.size(), 1);
     ASSERT_EQ(written_entries[0].index_file->FileName(), "global-0");
     ASSERT_EQ(written_entries[0].index_file->RowCount(), 20);
@@ -257,7 +261,8 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUn
                                         /*bucket_mode=*/-1, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
-    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr,
+                                        /*file_size=*/std::nullopt, &written_entries));
     ASSERT_EQ(written_entries.size(), 2);
     std::set<std::string> written_file_names;
     for (const auto& entry : written_entries) {
@@ -278,7 +283,8 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUn
                                         /*bucket_mode=*/-1, index_manifest_file.get()));
 
     written_entries.clear();
-    ASSERT_OK(index_manifest_file->Read(reordered_manifest, /*filter=*/nullptr, &written_entries));
+    ASSERT_OK(index_manifest_file->Read(reordered_manifest, /*filter=*/nullptr,
+                                        /*file_size=*/std::nullopt, &written_entries));
     ASSERT_EQ(written_entries.size(), 2);
     written_file_names.clear();
     for (const auto& entry : written_entries) {

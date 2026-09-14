@@ -25,6 +25,7 @@
 #include <future>
 #include <limits>
 #include <list>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -253,7 +254,8 @@ Result<std::vector<ManifestEntry>> FileStoreCommitImpl::ReadAddManifestEntries(
     for (const auto& meta : data_manifests) {
         std::vector<ManifestEntry> entries;
         PAIMON_RETURN_NOT_OK(manifest_file_->Read(
-            meta.FileName(), [](const ManifestEntry&) -> Result<bool> { return true; }, &entries));
+            meta.FileName(), [](const ManifestEntry&) -> Result<bool> { return true; },
+            /*file_size=*/std::nullopt, &entries));
         unmerged_entries.insert(unmerged_entries.end(), std::make_move_iterator(entries.begin()),
                                 std::make_move_iterator(entries.end()));
     }
@@ -1133,7 +1135,7 @@ Result<std::optional<int64_t>> FileStoreCommitImpl::MaxSequenceNumber(
         std::vector<ManifestEntry> entries;
         PAIMON_RETURN_NOT_OK(manifest_file_->Read(
             manifest.FileName(), [](const ManifestEntry&) -> Result<bool> { return true; },
-            &entries));
+            /*file_size=*/std::nullopt, &entries));
         std::optional<int64_t> current_max =
             SequenceSnapshotProperties::MaxSequenceNumberFromFiles(entries);
         if (current_max) {

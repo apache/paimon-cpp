@@ -121,7 +121,8 @@ class ManifestListTest : public testing::Test {
         const std::string& file_name, const std::shared_ptr<MemoryPool>& pool) const {
         auto manifest_list = CreateManifestList(file_format_str, root_path, pool);
         std::vector<ManifestFileMeta> manifest_file_metas;
-        EXPECT_OK(manifest_list->Read(file_name, /*filter=*/nullptr, &manifest_file_metas));
+        EXPECT_OK(manifest_list->Read(file_name, /*filter=*/nullptr, /*file_size=*/std::nullopt,
+                                      &manifest_file_metas));
         return manifest_file_metas;
     }
 };

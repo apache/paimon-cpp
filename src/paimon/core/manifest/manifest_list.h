@@ -90,8 +90,8 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @return Status indicating whether the operation was successful or not.
     Status ReadBaseManifests(const Snapshot& snapshot,
                              std::vector<ManifestFileMeta>* manifests) const {
-        return Read(snapshot.BaseManifestList(), /*filter=*/nullptr, manifests,
-                    snapshot.BaseManifestListSize());
+        return Read(snapshot.BaseManifestList(), /*filter=*/nullptr,
+                    snapshot.BaseManifestListSize(), manifests);
     }
 
     /// Return a `ManifestFileMeta` for each delta manifest in this snapshot.
@@ -101,8 +101,8 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @return Status indicating whether the operation was successful or not.
     Status ReadDeltaManifests(const Snapshot& snapshot,
                               std::vector<ManifestFileMeta>* manifests) const {
-        return Read(snapshot.DeltaManifestList(), /*filter=*/nullptr, manifests,
-                    snapshot.DeltaManifestListSize());
+        return Read(snapshot.DeltaManifestList(), /*filter=*/nullptr,
+                    snapshot.DeltaManifestListSize(), manifests);
     }
 
     /// Return a `ManifestFileMeta` for each changelog manifest in this snapshot.
@@ -115,8 +115,8 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
         const std::optional<std::string>& changelog_manifest_list =
             snapshot.ChangelogManifestList();
         if (changelog_manifest_list) {
-            return Read(changelog_manifest_list.value(), /*filter=*/nullptr, manifests,
-                        snapshot.ChangelogManifestListSize());
+            return Read(changelog_manifest_list.value(), /*filter=*/nullptr,
+                        snapshot.ChangelogManifestListSize(), manifests);
         } else {
             return Status::OK();
         }

@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <functional>
 #include <list>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -175,7 +176,8 @@ Result<std::vector<ManifestFileMeta>> ManifestFileMerger::MergeEntries(
     }
     std::vector<ManifestEntry> entries;
     for (const auto& meta : metas) {
-        PAIMON_RETURN_NOT_OK(manifest_file->Read(meta.FileName(), /*filter=*/nullptr, &entries));
+        PAIMON_RETURN_NOT_OK(manifest_file->Read(meta.FileName(), /*filter=*/nullptr,
+                                                 /*file_size=*/std::nullopt, &entries));
     }
     std::vector<ManifestEntry> result;
     PAIMON_RETURN_NOT_OK(FileEntry::MergeEntries<ManifestEntry>(entries, &result));
