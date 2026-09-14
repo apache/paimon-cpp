@@ -20,7 +20,6 @@
 #include "paimon/core/index/pksorted/pk_sorted_index_builder.h"
 
 #include <algorithm>
-#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -29,6 +28,7 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -53,8 +53,6 @@
 
 namespace paimon {
 namespace {
-
-constexpr char kRowIdFieldName[] = "_PK_INDEX_ROW_ID";
 
 class TrackingGlobalIndexFileWriter : public GlobalIndexFileWriter {
  public:
@@ -146,29 +144,56 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     }
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldsComparator> unique_comparator,
-                           FieldsComparator::CreateWithJavaFloatingPointOrder(
-                               {field_}, {0}, /*is_ascending_order=*/true));
+                           FieldsComparator::Create({field_}, {0},
+                                                    /*is_ascending_order=*/true));
     auto comparator = std::shared_ptr<FieldsComparator>(std::move(unique_comparator));
-    DataField row_id_field(std::numeric_limits<int32_t>::max(),
-                           arrow::field(kRowIdFieldName, arrow::int64(), false));
+    const DataField& row_id_field = SpecialFields::RowId();
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FieldsComparator> unique_sequence_comparator,
         FieldsComparator::Create({field_, row_id_field}, {1}, /*is_ascending_order=*/true));
     auto sequence_comparator =
         std::shared_ptr<FieldsComparator>(std::move(unique_sequence_comparator));
+    // Keep the Arrow memory-pool adapter alive for as long as the sort buffer can retain
+    // arrays allocated through it.
+    std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<SortBuffer> sort_buffer,
+                           CreateSortBuffer(comparator, sequence_comparator));
+    ScopeGuard sort_cleanup([&]() { sort_buffer->Clear(); });
+
+    PAIMON_RETURN_NOT_OK(ReadSourceFiles(ordered_files, sort_buffer.get(), arrow_pool.get()));
+
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
+                           sort_buffer->CreateReaders());
+    auto sorted_reader = std::make_unique<SortMergeReaderWithMinHeap>(
+        std::move(readers), comparator, sequence_comparator,
+        /*merge_function_wrapper=*/nullptr);
+    auto file_manager = std::make_shared<GlobalIndexFileManager>(fs_, index_path_factory_);
+    auto tracking_writer = std::make_shared<TrackingGlobalIndexFileWriter>(file_manager);
+    Result<std::shared_ptr<IndexFileMeta>> result = PkSortedIndexFile::BuildFromSortedReader(
+        field_, definition_.IndexType(), definition_.Options(), data_level, source_metas,
+        std::move(sorted_reader), tracking_writer, index_path_factory_->IsExternalPath(),
+        options_.GetWriteBatchSize(), pool_);
+    if (!result.ok()) {
+        tracking_writer->Cleanup(fs_);
+        return result.status();
+    }
+    return std::move(result).value();
+}
+
+Result<std::unique_ptr<SortBuffer>> PkSortedIndexBuilder::CreateSortBuffer(
+    const std::shared_ptr<FieldsComparator>& comparator,
+    const std::shared_ptr<FieldsComparator>& sequence_comparator) const {
+    const DataField& row_id_field = SpecialFields::RowId();
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldsComparator> unique_in_memory_comparator,
-                           FieldsComparator::CreateWithJavaFloatingPointOrder(
-                               {field_, row_id_field}, {0, 1}, /*is_ascending_order=*/true));
+                           FieldsComparator::Create({field_, row_id_field}, {0, 1},
+                                                    /*is_ascending_order=*/true));
     auto in_memory_comparator =
         std::shared_ptr<FieldsComparator>(std::move(unique_in_memory_comparator));
     auto value_schema = arrow::schema({field_.ArrowField(), row_id_field.ArrowField()});
-    // Keep the Arrow memory-pool adapter alive for as long as the sort buffer can retain
-    // arrays allocated through it.
-    std::unique_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool_);
     auto in_memory_buffer = std::make_unique<InMemorySortBuffer>(
         /*last_sequence_number=*/-1, arrow::struct_(value_schema->fields()),
         std::vector<std::string>{field_.Name()},
-        /*user_defined_sequence_fields=*/std::vector<std::string>{kRowIdFieldName},
+        /*user_defined_sequence_fields=*/std::vector<std::string>{row_id_field.Name()},
         /*sequence_fields_ascending=*/true, comparator, options_.GetWriteBufferSize(), pool_,
         in_memory_comparator);
     std::unique_ptr<SortBuffer> sort_buffer;
@@ -181,8 +206,13 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
     } else {
         sort_buffer = std::move(in_memory_buffer);
     }
-    ScopeGuard sort_cleanup([&]() { sort_buffer->Clear(); });
+    return sort_buffer;
+}
 
+Status PkSortedIndexBuilder::ReadSourceFiles(
+    const std::vector<std::shared_ptr<DataFileMeta>>& ordered_files, SortBuffer* sort_buffer,
+    arrow::MemoryPool* arrow_pool) const {
+    const DataField& row_id_field = SpecialFields::RowId();
     int64_t rows_buffered = 0;
     for (const std::shared_ptr<DataFileMeta>& file : ordered_files) {
         Status read_status = data_file_reader_->ReadFile(
@@ -197,7 +227,7 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
                 for (int64_t index = 0; index < batch->length(); ++index) {
                     group_ordinals.push_back(rows_buffered + index);
                 }
-                arrow::Int64Builder row_id_builder(arrow_pool.get());
+                arrow::Int64Builder row_id_builder(arrow_pool);
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(row_id_builder.AppendValues(group_ordinals));
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> row_ids,
                                                   row_id_builder.Finish());
@@ -216,16 +246,16 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
                     PAIMON_ASSIGN_OR_RAISE(
                         indexed_values,
                         CastingUtils::Cast(indexed_values, field_.ArrowField()->type(),
-                                           arrow::compute::CastOptions::Safe(), arrow_pool.get()));
+                                           arrow::compute::CastOptions::Safe(), arrow_pool));
                 }
                 // The physical reader owns the pool adapter behind its batch buffers. Copy the
                 // indexed values into the Build-scoped pool before retaining them in sort_buffer.
-                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                    std::shared_ptr<arrow::Array> values,
-                    arrow::Concatenate({indexed_values}, arrow_pool.get()));
+                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> values,
+                                                  arrow::Concatenate({indexed_values}, arrow_pool));
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                     std::shared_ptr<arrow::StructArray> sort_batch,
-                    arrow::StructArray::Make({values, row_ids}, {field_.Name(), kRowIdFieldName}));
+                    arrow::StructArray::Make({values, row_ids},
+                                             {field_.Name(), row_id_field.Name()}));
                 ArrowArray c_array;
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*sort_batch, &c_array));
                 auto record_batch = std::make_unique<RecordBatch>(
@@ -243,23 +273,7 @@ Result<std::shared_ptr<IndexFileMeta>> PkSortedIndexBuilder::Build(
             });
         PAIMON_RETURN_NOT_OK(read_status);
     }
-
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<KeyValueRecordReader>> readers,
-                           sort_buffer->CreateReaders());
-    auto sorted_reader = std::make_unique<SortMergeReaderWithMinHeap>(
-        std::move(readers), comparator, sequence_comparator,
-        /*merge_function_wrapper=*/nullptr);
-    auto file_manager = std::make_shared<GlobalIndexFileManager>(fs_, index_path_factory_);
-    auto tracking_writer = std::make_shared<TrackingGlobalIndexFileWriter>(file_manager);
-    Result<std::shared_ptr<IndexFileMeta>> result = PkSortedIndexFile::BuildFromSortedReader(
-        field_, definition_.IndexType(), definition_.Options(), data_level, source_metas,
-        std::move(sorted_reader), tracking_writer, index_path_factory_->IsExternalPath(),
-        options_.GetWriteBatchSize(), pool_);
-    if (!result.ok()) {
-        tracking_writer->Cleanup(fs_);
-        return result.status();
-    }
-    return std::move(result).value();
+    return Status::OK();
 }
 
 Status PkSortedIndexBuilder::DeletePayload(const std::shared_ptr<IndexFileMeta>& payload) const {

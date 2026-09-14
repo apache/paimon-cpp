@@ -57,13 +57,9 @@ Result<std::unique_ptr<PkSortedDataFileReader>> PkSortedDataFileReader::Create(
         .WithMemoryPool(pool)
         .EnablePrefetch(false)
         .EnablePredicateFilter(false);
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, builder.Finish());
-    auto shared_read_context = std::shared_ptr<ReadContext>(std::move(read_context));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(shared_read_context, table_schema, read_options));
-    auto shared_internal_context =
-        std::shared_ptr<InternalReadContext>(std::move(internal_context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context, builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> shared_internal_context,
+                           InternalReadContext::Create(read_context, table_schema, read_options));
     return std::unique_ptr<PkSortedDataFileReader>(
         new PkSortedDataFileReader(path_factory, shared_internal_context, pool, executor));
 }

@@ -29,6 +29,7 @@
 #include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/index/index_file_handler.h"
+#include "paimon/core/index/pk/primary_key_index_source_file.h"
 #include "paimon/core/index/pk/primary_key_index_source_policy.h"
 #include "paimon/core/index/pksorted/pk_sorted_bucket_index_state.h"
 #include "paimon/core/index/pksorted/pk_sorted_index_builder.h"
@@ -100,9 +101,25 @@ bool IsPrimaryKeyBTreePayload(const std::shared_ptr<IndexFileMeta>& payload) {
            IndexFileHandler::IsPrimaryKeySourceIndex(*payload);
 }
 
+bool CoversAllSources(const std::vector<PrimaryKeyIndexSourceFile>& group_sources,
+                      const std::vector<PrimaryKeyIndexSourceFile>& desired_sources) {
+    size_t group_index = 0;
+    for (const PrimaryKeyIndexSourceFile& desired : desired_sources) {
+        while (group_index < group_sources.size() &&
+               group_sources[group_index].file_name < desired.file_name) {
+            group_index++;
+        }
+        if (group_index == group_sources.size() || group_sources[group_index] != desired) {
+            return false;
+        }
+        group_index++;
+    }
+    return true;
+}
+
 }  // namespace
 
-Result<std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>>
+std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>
 BucketedPrimaryKeyIndexMaintainer::Factory::Create(
     const std::string& root_path, const std::string& branch,
     const std::shared_ptr<TableSchema>& table_schema,
@@ -152,16 +169,13 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
     if (increment == nullptr) {
         return Status::Invalid("Primary-key index commit increment is null.");
     }
-    auto previous_data_files = active_data_files_;
+    auto next_data_files = active_data_files_;
     const DataIncrement& data_increment = increment->GetNewFilesIncrement();
     const CompactIncrement& compact_increment = increment->GetCompactIncrement();
     PAIMON_RETURN_NOT_OK(ValidateAppendFiles(data_increment.NewFiles()));
-    RemoveDataFiles(compact_increment.CompactBefore(), &active_data_files_);
-    Status update_status = AddSourceFiles(compact_increment.CompactAfter(), &active_data_files_);
-    if (!update_status.ok()) {
-        active_data_files_ = std::move(previous_data_files);
-        return update_status;
-    }
+    RemoveDataFiles(compact_increment.CompactBefore(), &next_data_files);
+    PAIMON_RETURN_NOT_OK(AddSourceFiles(compact_increment.CompactAfter(), &next_data_files));
+    active_data_files_ = std::move(next_data_files);
 
     std::vector<std::shared_ptr<DataFileMeta>> active_data;
     active_data.reserve(active_data_files_.size());
@@ -169,10 +183,7 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
         active_data.push_back(file.second);
     }
 
-    std::vector<std::shared_ptr<IndexFileMeta>> deleted_payloads;
-    std::vector<std::shared_ptr<IndexFileMeta>> new_payloads;
-    std::unordered_set<std::string> deleted_identities;
-    std::unordered_set<std::string> new_identities;
+    PayloadChanges changes;
 
     std::set<int32_t> owned_btree_field_ids;
     for (const FieldMaintainer& field : fields_) {
@@ -185,82 +196,101 @@ Status BucketedPrimaryKeyIndexMaintainer::PrepareCommit(CommitIncrement* increme
         const std::optional<GlobalIndexMeta>& meta = payload->GetGlobalIndexMeta();
         if (meta != std::nullopt && meta->source_meta != nullptr &&
             owned_btree_field_ids.count(meta->index_field_id) == 0) {
-            AddUniquePayload(payload, &deleted_identities, &deleted_payloads);
+            AddUniquePayload(payload, &changes.deleted_identities, &changes.deleted_payloads);
         }
     }
 
     for (const FieldMaintainer& field : fields_) {
-        std::vector<std::shared_ptr<IndexFileMeta>> field_payloads;
-        for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads_) {
-            if (!IsPrimaryKeyBTreePayload(payload) ||
-                payload->IndexType() != field.definition.IndexType()) {
-                continue;
-            }
-            const std::optional<GlobalIndexMeta>& meta = payload->GetGlobalIndexMeta();
-            if (meta != std::nullopt && meta->index_field_id == field.definition.FieldId()) {
-                field_payloads.push_back(payload);
-            }
-        }
-        PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
-            field.definition.FieldId(), field.definition.IndexType(), active_data, field_payloads);
-        std::set<int32_t> current_levels;
-        for (const std::shared_ptr<PkSortedIndexGroup>& group : state.Groups()) {
-            current_levels.insert(group->DataLevel());
-        }
-        for (const std::shared_ptr<IndexFileMeta>& rejected : state.RejectedPayloads()) {
-            AddUniquePayload(rejected, &deleted_identities, &deleted_payloads);
-        }
-
-        std::map<int32_t, std::vector<std::shared_ptr<DataFileMeta>>> desired_by_level;
-        for (const std::shared_ptr<DataFileMeta>& file : active_data) {
-            if (file != nullptr && PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
-                desired_by_level[file->level].push_back(file);
-            }
-        }
-        for (auto& level_files : desired_by_level) {
-            std::sort(level_files.second.begin(), level_files.second.end(),
-                      [](const std::shared_ptr<DataFileMeta>& left,
-                         const std::shared_ptr<DataFileMeta>& right) {
-                          return left->file_name < right->file_name;
-                      });
-            if (current_levels.count(level_files.first) > 0) {
-                continue;
-            }
-            Result<std::shared_ptr<IndexFileMeta>> build_result =
-                field.builder->Build(level_files.second);
-            if (!build_result.ok()) {
-                PAIMON_LOG_WARN(
-                    GetLogger(),
-                    "Failed to build primary-key BTree index for column %s at data level %d; "
-                    "committing that level without an index payload. %s",
-                    field.definition.Column().c_str(), level_files.first,
-                    build_result.status().ToString().c_str());
-                continue;
-            }
-            AddUniquePayload(std::move(build_result).value(), &new_identities, &new_payloads);
-        }
+        ReconcileField(field, active_data, &changes);
     }
 
     std::vector<std::shared_ptr<IndexFileMeta>> next_payloads;
-    next_payloads.reserve(active_payloads_.size() + new_payloads.size());
+    next_payloads.reserve(active_payloads_.size() + changes.new_payloads.size());
     for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads_) {
-        if (deleted_identities.count(PayloadIdentity(payload)) == 0) {
+        if (changes.deleted_identities.count(PayloadIdentity(payload)) == 0) {
             next_payloads.push_back(payload);
         }
     }
-    next_payloads.insert(next_payloads.end(), new_payloads.begin(), new_payloads.end());
+    next_payloads.insert(next_payloads.end(), changes.new_payloads.begin(),
+                         changes.new_payloads.end());
     active_payloads_ = std::move(next_payloads);
 
     bool has_compaction_transition =
         !compact_increment.CompactBefore().empty() || !compact_increment.CompactAfter().empty();
     if (has_compaction_transition) {
-        increment->GetCompactIncrement().AddNewIndexFiles(std::move(new_payloads));
-        increment->GetCompactIncrement().AddDeletedIndexFiles(std::move(deleted_payloads));
+        increment->GetCompactIncrement().AddNewIndexFiles(std::move(changes.new_payloads));
+        increment->GetCompactIncrement().AddDeletedIndexFiles(std::move(changes.deleted_payloads));
     } else {
-        increment->GetNewFilesIncrement().AddNewIndexFiles(std::move(new_payloads));
-        increment->GetNewFilesIncrement().AddDeletedIndexFiles(std::move(deleted_payloads));
+        increment->GetNewFilesIncrement().AddNewIndexFiles(std::move(changes.new_payloads));
+        increment->GetNewFilesIncrement().AddDeletedIndexFiles(std::move(changes.deleted_payloads));
     }
     return Status::OK();
+}
+
+void BucketedPrimaryKeyIndexMaintainer::ReconcileField(
+    const FieldMaintainer& field, const std::vector<std::shared_ptr<DataFileMeta>>& active_data,
+    PayloadChanges* changes) const {
+    std::vector<std::shared_ptr<IndexFileMeta>> field_payloads;
+    for (const std::shared_ptr<IndexFileMeta>& payload : active_payloads_) {
+        if (!IsPrimaryKeyBTreePayload(payload) ||
+            payload->IndexType() != field.definition.IndexType()) {
+            continue;
+        }
+        const std::optional<GlobalIndexMeta>& meta = payload->GetGlobalIndexMeta();
+        if (meta != std::nullopt && meta->index_field_id == field.definition.FieldId()) {
+            field_payloads.push_back(payload);
+        }
+    }
+    PkSortedBucketIndexState state = PkSortedBucketIndexState::FromActiveDataFiles(
+        field.definition.FieldId(), field.definition.IndexType(), active_data, field_payloads);
+    std::map<int32_t, std::shared_ptr<PkSortedIndexGroup>> current_groups_by_level;
+    for (const std::shared_ptr<PkSortedIndexGroup>& group : state.Groups()) {
+        current_groups_by_level.emplace(group->DataLevel(), group);
+    }
+    for (const std::shared_ptr<IndexFileMeta>& rejected : state.RejectedPayloads()) {
+        AddUniquePayload(rejected, &changes->deleted_identities, &changes->deleted_payloads);
+    }
+
+    std::map<int32_t, std::vector<std::shared_ptr<DataFileMeta>>> desired_by_level;
+    for (const std::shared_ptr<DataFileMeta>& file : active_data) {
+        if (file != nullptr && PrimaryKeyIndexSourcePolicy::ShouldRead(*file)) {
+            desired_by_level[file->level].push_back(file);
+        }
+    }
+    for (auto& level_files : desired_by_level) {
+        std::sort(level_files.second.begin(), level_files.second.end(),
+                  [](const std::shared_ptr<DataFileMeta>& left,
+                     const std::shared_ptr<DataFileMeta>& right) {
+                      return left->file_name < right->file_name;
+                  });
+        std::vector<PrimaryKeyIndexSourceFile> desired_sources;
+        desired_sources.reserve(level_files.second.size());
+        for (const std::shared_ptr<DataFileMeta>& file : level_files.second) {
+            desired_sources.emplace_back(file->file_name, file->row_count);
+        }
+        auto current_group = current_groups_by_level.find(level_files.first);
+        if (current_group != current_groups_by_level.end() &&
+            CoversAllSources(current_group->second->SourceFiles(), desired_sources)) {
+            continue;
+        }
+        Result<std::shared_ptr<IndexFileMeta>> build_result =
+            field.builder->Build(level_files.second);
+        if (!build_result.ok()) {
+            PAIMON_LOG_WARN(
+                GetLogger(),
+                "Failed to build primary-key BTree index for column %s at data level %d; "
+                "leaving uncovered files on normal scan fallback. %s",
+                field.definition.Column().c_str(), level_files.first,
+                build_result.status().ToString().c_str());
+            continue;
+        }
+        if (current_group != current_groups_by_level.end()) {
+            AddUniquePayload(current_group->second->Payload(), &changes->deleted_identities,
+                             &changes->deleted_payloads);
+        }
+        AddUniquePayload(std::move(build_result).value(), &changes->new_identities,
+                         &changes->new_payloads);
+    }
 }
 
 }  // namespace paimon

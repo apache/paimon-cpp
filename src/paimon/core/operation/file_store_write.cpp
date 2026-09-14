@@ -451,12 +451,11 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory>
             primary_key_index_maintainer_factory;
         if (has_btree_index || has_restored_btree_index) {
-            PAIMON_ASSIGN_OR_RAISE(
-                primary_key_index_maintainer_factory,
+            primary_key_index_maintainer_factory =
                 BucketedPrimaryKeyIndexMaintainer::Factory::Create(
                     ctx->GetRootPath(), branch, schema, primary_key_index_definitions.Definitions(),
                     file_store_path_factory, index_file_handler, options, io_manager,
-                    ctx->EnableMultiThreadSpill(), ctx->GetExecutor(), ctx->GetMemoryPool()));
+                    ctx->EnableMultiThreadSpill(), ctx->GetExecutor(), ctx->GetMemoryPool());
         }
 
         std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
