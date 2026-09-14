@@ -235,7 +235,9 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
                 continue;
             }
             const StoredBatch& stored = batches[next_batch_++];
-            PAIMON_ASSIGN_OR_RAISE(bool may_match, MayMatch(stored));
+            PAIMON_ASSIGN_OR_RAISE(bool may_match, ArrowRealtimeStore::MayMatchStatistics(
+                                                       stored, read_schema_, predicate_filter_,
+                                                       statistics_mapping_, memory_pool_));
             if (!may_match) {
                 continue;
             }
@@ -258,26 +260,6 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
 
     void Close() override {
         view_ = nullptr;
-    }
-
- private:
-    Result<bool> MayMatch(const StoredBatch& stored) const {
-        if (!predicate_filter_ || !stored.statistics) {
-            return true;
-        }
-        const BatchStatistics& statistics = stored.statistics.value();
-        std::shared_ptr<InternalRow> min_row = std::make_shared<ColumnarRow>(
-            statistics.min_values, statistics.min_values->fields(), memory_pool_, /*row_id=*/0);
-        std::shared_ptr<InternalRow> max_row = std::make_shared<ColumnarRow>(
-            statistics.max_values, statistics.max_values->fields(), memory_pool_, /*row_id=*/0);
-        ProjectedRow projected_min(min_row, statistics_mapping_);
-        ProjectedRow projected_max(max_row, statistics_mapping_);
-        std::shared_ptr<InternalArray> null_counts =
-            std::make_shared<ColumnarArray>(statistics.null_counts.get(), memory_pool_,
-                                            /*offset=*/0, statistics.null_counts->length());
-        ProjectedArray projected_null_counts(null_counts, statistics_mapping_);
-        return predicate_filter_->Test(read_schema_, stored.data->length(), projected_min,
-                                       projected_max, projected_null_counts);
     }
 
  private:
@@ -304,7 +286,7 @@ ArrowRealtimeStore::ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& wri
 
 Result<std::optional<ArrowRealtimeStore::BatchStatistics>> ArrowRealtimeStore::CollectStatistics(
     const std::shared_ptr<arrow::StructArray>& data) const {
-    if (mode_ == RealtimeStoreMode::PRIMARY_KEY || statistics_mode_ == StatisticsMode::NONE) {
+    if (statistics_mode_ == StatisticsMode::NONE) {
         return std::optional<BatchStatistics>();
     }
 
@@ -358,8 +340,31 @@ Result<std::optional<ArrowRealtimeStore::BatchStatistics>> ArrowRealtimeStore::C
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::StructArray> max_values_struct,
         arrow::StructArray::Make(max_values, write_schema_->fields()));
-    return std::optional<BatchStatistics>(BatchStatistics{
-        std::move(min_values_struct), std::move(max_values_struct), std::move(null_counts_array)});
+    return std::optional<BatchStatistics>(BatchStatistics{arrow_pool_, std::move(min_values_struct),
+                                                          std::move(max_values_struct),
+                                                          std::move(null_counts_array)});
+}
+
+Result<bool> ArrowRealtimeStore::MayMatchStatistics(
+    const StoredBatch& stored, const std::shared_ptr<arrow::Schema>& read_schema,
+    const std::shared_ptr<PredicateFilter>& predicate_filter,
+    const std::vector<int32_t>& statistics_mapping,
+    const std::shared_ptr<MemoryPool>& memory_pool) {
+    if (!predicate_filter || !stored.statistics) {
+        return true;
+    }
+    const BatchStatistics& statistics = stored.statistics.value();
+    std::shared_ptr<InternalRow> min_row = std::make_shared<ColumnarRow>(
+        statistics.min_values, statistics.min_values->fields(), memory_pool, /*row_id=*/0);
+    std::shared_ptr<InternalRow> max_row = std::make_shared<ColumnarRow>(
+        statistics.max_values, statistics.max_values->fields(), memory_pool, /*row_id=*/0);
+    ProjectedRow projected_min(min_row, statistics_mapping);
+    ProjectedRow projected_max(max_row, statistics_mapping);
+    std::shared_ptr<InternalArray> null_counts = std::make_shared<ColumnarArray>(
+        statistics.null_counts.get(), memory_pool, /*offset=*/0, statistics.null_counts->length());
+    ProjectedArray projected_null_counts(null_counts, statistics_mapping);
+    return predicate_filter->Test(read_schema, stored.data->length(), projected_min, projected_max,
+                                  projected_null_counts);
 }
 
 Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
@@ -392,6 +397,7 @@ Status ArrowRealtimeStore::Write(RealtimeWriteBatch&& write_batch) {
                         ArrowUtils::GetArrayMemoryUsage(statistics->null_counts->data());
     }
     building_memory_usage_ += memory_usage;
+    building_row_count_ += static_cast<uint64_t>(struct_array->length());
     building_batches_.push_back(StoredBatch{std::move(struct_array), write_batch.offset_range,
                                             std::move(statistics), memory_usage});
     if (!building_range_) {
@@ -409,9 +415,12 @@ Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> ArrowRealtimeStore
     }
     auto segment = std::make_shared<Segment>(building_range_.value(), std::move(building_batches_));
     sealed_segments_.push_back(segment);
+    sealed_memory_usage_ += building_memory_usage_;
+    sealed_row_count_ += building_row_count_;
     building_batches_.clear();
     building_range_.reset();
     building_memory_usage_ = 0;
+    building_row_count_ = 0;
     return std::optional<std::shared_ptr<RealtimeSegmentHandle>>(std::move(segment));
 }
 
@@ -459,17 +468,6 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
     if (!arrow_view->GetOffsetRange()) {
         return readers;
     }
-    if (mode_ == RealtimeStoreMode::PRIMARY_KEY) {
-        for (const std::shared_ptr<Segment>& segment : arrow_view->GetSegments()) {
-            for (const StoredBatch& batch : segment->GetBatches()) {
-                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> projected,
-                                       ProjectBatch(batch.data, read_schema, arrow_pool_.get()));
-                readers.push_back(std::make_unique<StoredBatchReader>(projected, arrow_pool_));
-            }
-        }
-        return readers;
-    }
-
     std::shared_ptr<PredicateFilter> predicate_filter;
     if (context.predicate) {
         predicate_filter = std::dynamic_pointer_cast<PredicateFilter>(context.predicate);
@@ -479,6 +477,23 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
     for (const std::shared_ptr<arrow::Field>& field : read_schema->fields()) {
         statistics_mapping.push_back(write_schema_->GetFieldIndex(field->name()));
     }
+    if (mode_ == RealtimeStoreMode::PRIMARY_KEY) {
+        for (const std::shared_ptr<Segment>& segment : arrow_view->GetSegments()) {
+            for (const StoredBatch& batch : segment->GetBatches()) {
+                PAIMON_ASSIGN_OR_RAISE(bool may_match,
+                                       MayMatchStatistics(batch, read_schema, predicate_filter,
+                                                          statistics_mapping, memory_pool_));
+                if (!may_match) {
+                    continue;
+                }
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::StructArray> projected,
+                                       ProjectBatch(batch.data, read_schema, arrow_pool_.get()));
+                readers.push_back(std::make_unique<StoredBatchReader>(projected, arrow_pool_));
+            }
+        }
+        return readers;
+    }
+
     std::unique_ptr<BatchReader> reader = std::make_unique<AppendQueryBatchReader>(
         arrow_view, read_schema, predicate_filter, std::move(statistics_mapping), arrow_pool_,
         memory_pool_);
@@ -491,22 +506,34 @@ Status ArrowRealtimeStore::AdvanceCommittedOffset(int64_t committed_end_offset) 
     // TODO(xinyu.lxy): Consider deferring segment destruction to a reclamation queue. Existing
     // read views may pin reclaimed batches, so the last query releasing a view can otherwise pay
     // the full buffer destruction cost and observe higher tail latency.
+    uint64_t reclaimed_memory_usage = 0;
+    uint64_t reclaimed_row_count = 0;
+    for (const std::shared_ptr<Segment>& segment : sealed_segments_) {
+        if (segment->GetOffsetRange().end <= committed_end_offset) {
+            reclaimed_memory_usage += segment->GetMemoryUsage();
+            reclaimed_row_count += static_cast<uint64_t>(segment->GetRowCount());
+        }
+    }
     sealed_segments_.erase(
         std::remove_if(sealed_segments_.begin(), sealed_segments_.end(),
                        [committed_end_offset](const std::shared_ptr<Segment>& segment) {
                            return segment->GetOffsetRange().end <= committed_end_offset;
                        }),
         sealed_segments_.end());
+    sealed_memory_usage_ -= reclaimed_memory_usage;
+    sealed_row_count_ -= reclaimed_row_count;
     return Status::OK();
+}
+
+RealtimeStoreDataUsage ArrowRealtimeStore::GetDataUsage() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return RealtimeStoreDataUsage{building_memory_usage_, sealed_memory_usage_, building_row_count_,
+                                  sealed_row_count_};
 }
 
 uint64_t ArrowRealtimeStore::GetMemoryUsage() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    uint64_t result = building_memory_usage_;
-    for (const std::shared_ptr<Segment>& segment : sealed_segments_) {
-        result += segment->GetMemoryUsage();
-    }
-    return result;
+    return building_memory_usage_ + sealed_memory_usage_;
 }
 
 }  // namespace paimon

@@ -789,9 +789,9 @@ Status SchemaValidation::ValidateMosaicDataFields(const TableSchema& schema,
     const std::vector<std::string> inline_blob_fields = options.GetBlobInlineFields();
     const std::set<std::string> inline_blob_field_set(inline_blob_fields.begin(),
                                                       inline_blob_fields.end());
-    // Match Java SchemaValidation by validating only fields stored in the normal data file. C++
-    // permits BLOB only as a top-level field; descriptor and view fields are inline, so Mosaic
-    // must reject them here.
+    // Match Java SchemaValidation by validating only fields stored in the normal data file.
+    // Top-level BLOB fields stored in separate files are skipped; descriptor and view fields are
+    // inline, so Mosaic must reject them here.
     for (const DataField& field : schema.Fields()) {
         if (BlobUtils::IsBlobField(field.ArrowField()) &&
             inline_blob_field_set.count(field.Name()) == 0) {

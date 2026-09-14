@@ -147,6 +147,11 @@ class FileStoreCommitImpl : public FileStoreCommit {
     Status Init(std::unique_ptr<CommitContext> ctx);
 
  private:
+    struct TryCommitResult {
+        int32_t attempts;
+        bool already_committed;
+    };
+
     Status Commit(const std::shared_ptr<ManifestCommittable>& manifest_committable,
                   bool check_append_files, bool retry_on_conflict,
                   const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges);
@@ -175,6 +180,15 @@ class FileStoreCommitImpl : public FileStoreCommit {
     Result<std::vector<std::shared_ptr<ManifestCommittable>>> FilterCommitted(
         const std::vector<std::shared_ptr<ManifestCommittable>>& committables);
 
+    Result<std::optional<Snapshot>> LatestSnapshotOfCommitUserAtOrBefore(
+        const std::optional<Snapshot>& latest_snapshot) const;
+
+    /// Returns the containing snapshot id when the commit is already complete, or nullopt when
+    /// neither its identifier nor offset ranges have been committed.
+    Result<std::optional<int64_t>> ResolveRealtimeCommit(
+        const std::optional<Snapshot>& latest_snapshot, int64_t identifier,
+        const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges) const;
+
     std::shared_ptr<ManifestCommittable> CreateManifestCommittable(
         int64_t identifier, const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
         std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties);
@@ -185,7 +199,7 @@ class FileStoreCommitImpl : public FileStoreCommit {
     void ReportCommit(const ManifestEntryChanges& changes, int64_t commit_duration,
                       int32_t generated_snapshot, int32_t attempt);
 
-    Result<int32_t> TryCommit(
+    Result<TryCommitResult> TryCommit(
         const std::vector<ManifestEntry>& delta_files,
         const std::vector<ManifestEntry>& changelog_files,
         const std::vector<IndexManifestEntry>& index_entries, int64_t identifier,
@@ -195,7 +209,7 @@ class FileStoreCommitImpl : public FileStoreCommit {
         const std::vector<std::map<std::string, std::string>>& removed_realtime_partitions,
         bool detect_conflicts, bool retry_on_conflict);
 
-    Result<int32_t> TryCommit(
+    Result<TryCommitResult> TryCommit(
         const std::shared_ptr<CommitChangesProvider>& changes_provider, int64_t identifier,
         std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties,
         const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,

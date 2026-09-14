@@ -311,11 +311,29 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
         [10, 1, "a"],
         [20, 2, "b"]
     ])")));
+    std::shared_ptr<Metrics> building_metrics = file_store_write->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double building_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(double sealed_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(double total_rows,
+                         building_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(2, building_rows);
+    ASSERT_EQ(0, sealed_rows);
+    ASSERT_EQ(2, total_rows);
     ASSERT_NOK_WITH_MSG(
         file_store_write->PrepareCommit(/*wait_compaction=*/false, /*commit_identifier=*/0),
         "real-time writer must use PrepareCommitWithProgress");
     ASSERT_OK_AND_ASSIGN(auto first_prepared,
                          file_store_write->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    std::shared_ptr<Metrics> sealed_metrics = file_store_write->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(building_rows,
+                         sealed_metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(sealed_rows, sealed_metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(total_rows, sealed_metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(0, building_rows);
+    ASSERT_EQ(2, sealed_rows);
+    ASSERT_EQ(2, total_rows);
     ASSERT_EQ(1, first_prepared.size());
     ASSERT_TRUE(first_prepared[0].partition_bucket.partition.empty());
     ASSERT_EQ(0, first_prepared[0].partition_bucket.bucket);

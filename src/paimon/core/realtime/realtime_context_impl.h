@@ -80,6 +80,8 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
 
     Status CheckUsable() const;
 
+    std::shared_ptr<Metrics> GetMetrics() const override;
+
     Result<RealtimeStoreState> GetOrCreateRealtimeStore(
         RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket);
 
@@ -122,7 +124,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     void CleanupReadViews();
 
     std::shared_ptr<RealtimeStoreFactory> factory_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::mutex progress_mutex_;
     std::map<RealtimePartitionBucket, StoreEntry> stores_;
     // Full-table progress used as the initial offset when a store is created lazily.

@@ -62,6 +62,7 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/operation/commit/realtime_commit_properties.h"
 #include "paimon/core/operation/metrics/commit_metrics.h"
 #include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/table_schema.h"
@@ -598,6 +599,95 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithConflictSnapshotAndRetryOnce) {
     ASSERT_OK_AND_ASSIGN(
         bool exist, file_system_->Exists(PathUtil::JoinPath(table_path, "snapshot/snapshot-6")));
     ASSERT_TRUE(exist);
+}
+
+TEST_F(FileStoreCommitImplTest, TestRealtimeCommitRebasesAfterSnapshotConflict) {
+    const std::vector<std::string> data_files = {
+        "/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc",
+        "/f1=10/bucket-1/data-6828284c-e707-49b5-af6b-69be79af120c-0.orc",
+        "/f1=20/bucket-0/data-8dc7f04c-3c98-48b2-9d56-834d746c4a40-0.orc",
+        "/f1=10/bucket-1/data-fd1d2255-43f2-4534-b4cc-08b29e662940-0.orc",
+        "/f1=20/bucket-0/data-7b3f4cc7-116b-4d2f-9c62-5dadc1f11bcb-0.orc"};
+    ASSERT_OK(PrepareFakeFiles(data_files));
+
+    std::vector<std::shared_ptr<CommitMessage>> realtime_messages =
+        GetCommitMessages(paimon::test::GetDataDir() +
+                              "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
+                          /*version=*/3);
+    std::vector<std::shared_ptr<CommitMessage>> concurrent_messages =
+        GetCommitMessages(paimon::test::GetDataDir() +
+                              "/orc/append_09.db/append_09/commit_messages/commit_messages-02",
+                          /*version=*/3);
+    ASSERT_EQ(3, realtime_messages.size());
+    ASSERT_EQ(2, concurrent_messages.size());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
+                         FileSystemFactory::Get("gmock_fs", table_path_, {}));
+    CommitContextBuilder realtime_builder(table_path_, "realtime_commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> realtime_context,
+                         realtime_builder.AddOption(Options::REALTIME_ENABLED, "true")
+                             .AddOption(Options::COMMIT_MAX_RETRIES, "1")
+                             .AddOption(Options::COMMIT_MIN_RETRY_WAIT, "1ms")
+                             .AddOption(Options::COMMIT_MAX_RETRY_WAIT, "1ms")
+                             .WithFileSystem(fs)
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> realtime_commit,
+                         FileStoreCommit::Create(std::move(realtime_context)));
+    auto realtime_commit_impl = std::dynamic_pointer_cast<FileStoreCommitImpl>(
+        std::shared_ptr<FileStoreCommit>(std::move(realtime_commit)));
+
+    std::vector<RealtimeCommitProgress> realtime_progress;
+    for (const std::shared_ptr<CommitMessage>& message : realtime_messages) {
+        std::shared_ptr<CommitMessageImpl> message_impl =
+            std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        ASSERT_NE(nullptr, message_impl);
+        std::map<std::string, std::string> partition;
+        ASSERT_OK_AND_ASSIGN(partition,
+                             realtime_commit_impl->PartitionToMap(message_impl->Partition()));
+        realtime_progress.push_back(RealtimeCommitProgress{
+            message, RealtimePartitionBucket(std::move(partition), message_impl->Bucket()),
+            OffsetRange(/*begin=*/0, /*end=*/1)});
+    }
+
+    CommitContextBuilder concurrent_builder(table_path_, "concurrent_commit_user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> concurrent_context,
+                         concurrent_builder.WithFileSystem(file_system_).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> concurrent_commit,
+                         FileStoreCommit::Create(std::move(concurrent_context)));
+
+    auto* mock_fs = dynamic_cast<GmockFileSystem*>(fs.get());
+    ASSERT_NE(nullptr, mock_fs);
+    EXPECT_CALL(*mock_fs, Exists(testing::_))
+        .Times(testing::AnyNumber())
+        .WillRepeatedly(testing::Invoke(
+            [mock_fs](const std::string& path) { return mock_fs->LocalFileSystem::Exists(path); }));
+    const std::string first_snapshot_path = PathUtil::JoinPath(table_path_, "snapshot/snapshot-1");
+    EXPECT_CALL(*mock_fs, Exists(testing::StrEq(first_snapshot_path)))
+        .WillOnce(testing::Invoke([&](const std::string&) -> Result<bool> {
+            PAIMON_RETURN_NOT_OK(concurrent_commit->Commit(
+                concurrent_messages, /*commit_identifier=*/10, /*watermark=*/std::nullopt));
+            return true;
+        }))
+        .RetiresOnSaturation();
+
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot_id, realtime_commit_impl->CommitWithProgress(
+                                                  realtime_progress, /*commit_identifier=*/1,
+                                                  /*watermark=*/std::nullopt));
+    ASSERT_EQ(2, snapshot_id);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot,
+                         realtime_commit_impl->snapshot_manager_->LoadSnapshot(snapshot_id));
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> entries,
+                         realtime_commit_impl->ReadAddManifestEntries(snapshot));
+    ASSERT_EQ(5, entries.size());
+    ASSERT_OK_AND_ASSIGN(RealtimeOffsetMap offsets, RealtimeCommitProperties::ReadOffsets(
+                                                        std::optional<Snapshot>(snapshot), fs));
+    ASSERT_EQ(3, offsets.size());
+    for (const RealtimeCommitProgress& progress : realtime_progress) {
+        ASSERT_EQ(1, offsets.at(progress.partition_bucket));
+    }
+    ASSERT_OK_AND_ASSIGN(uint64_t attempts, realtime_commit_impl->GetCommitMetrics()->GetCounter(
+                                                CommitMetrics::LAST_COMMIT_ATTEMPTS));
+    ASSERT_EQ(2, attempts);
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithAtomicWriteSnapshotTimeoutAndActuallySucceed) {
