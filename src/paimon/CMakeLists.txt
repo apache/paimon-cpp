@@ -606,12 +606,12 @@ if(PAIMON_BUILD_TESTS)
                     common/global_index/bitmap_global_index_result_test.cpp
                     common/global_index/bitmap_scored_global_index_result_test.cpp
                     common/global_index/bitmap/bitmap_global_index_test.cpp
-                    common/global_index/btree/btree_index_meta_test.cpp
+                    common/global_index/sorted_index_file_meta_test.cpp
                     common/global_index/btree/btree_file_footer_test.cpp
-                    common/global_index/btree/key_serializer_test.cpp
+                    common/global_index/key_serializer_test.cpp
                     common/global_index/btree/btree_global_index_integration_test.cpp
                     common/global_index/btree/btree_compatibility_test.cpp
-                    common/global_index/btree/btree_file_meta_selector_test.cpp
+                    common/global_index/sorted_file_meta_selector_test.cpp
                     common/global_index/btree/lazy_filtered_btree_reader_test.cpp
                     common/global_index/rangebitmap/range_bitmap_global_index_test.cpp
                     common/global_index/wrap/file_index_reader_wrapper_test.cpp

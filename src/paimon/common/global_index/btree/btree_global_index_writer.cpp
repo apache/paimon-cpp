@@ -26,8 +26,9 @@
 #include "fmt/format.h"
 #include "paimon/common/compression/block_compression_factory.h"
 #include "paimon/common/global_index/btree/btree_defs.h"
-#include "paimon/common/global_index/btree/key_serializer.h"
 #include "paimon/common/global_index/global_index_utils.h"
+#include "paimon/common/global_index/key_serializer.h"
+#include "paimon/common/global_index/sorted_index_file_meta.h"
 #include "paimon/common/memory/memory_slice_output.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -45,6 +46,8 @@ Result<std::shared_ptr<BTreeGlobalIndexWriter>> BTreeGlobalIndexWriter::Create(
     PAIMON_RETURN_NOT_OK(Preconditions::CheckNotNull(
         key_field,
         fmt::format("field {} not in arrow_array when Create BTreeGlobalIndexWriter", field_name)));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<KeySerializer> key_serializer,
+                           KeySerializer::Create(key_field->type(), pool));
     PAIMON_ASSIGN_OR_RAISE(std::string index_file_name,
                            file_writer->NewFileName(BtreeDefs::kIdentifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output_stream,
@@ -52,19 +55,19 @@ Result<std::shared_ptr<BTreeGlobalIndexWriter>> BTreeGlobalIndexWriter::Create(
     auto sst_file_writer = std::make_unique<SstFileWriter>(output_stream, /*bloom_filter=*/nullptr,
                                                            block_size, compression_factory, pool);
     return std::shared_ptr<BTreeGlobalIndexWriter>(new BTreeGlobalIndexWriter(
-        field_name, arrow_type, key_field->type(), file_writer, index_file_name, output_stream,
+        field_name, arrow_type, key_serializer, file_writer, index_file_name, output_stream,
         std::move(sst_file_writer), pool));
 }
 
 BTreeGlobalIndexWriter::BTreeGlobalIndexWriter(
     const std::string& field_name, const std::shared_ptr<arrow::DataType>& arrow_type,
-    const std::shared_ptr<arrow::DataType>& key_type,
+    const std::shared_ptr<KeySerializer>& key_serializer,
     const std::shared_ptr<GlobalIndexFileWriter>& file_writer, const std::string& index_file_name,
     const std::shared_ptr<OutputStream>& output_stream, std::unique_ptr<SstFileWriter>&& sst_writer,
     const std::shared_ptr<MemoryPool>& pool)
     : field_name_(field_name),
       arrow_type_(arrow_type),
-      key_type_(key_type),
+      key_serializer_(key_serializer),
       pool_(pool),
       file_writer_(file_writer),
       index_file_name_(index_file_name),
@@ -135,7 +138,7 @@ Status BTreeGlobalIndexWriter::Flush() {
     current_row_ids_.clear();
     assert(last_key_);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> key_bytes,
-                           KeySerializer::SerializeKey(last_key_.value(), key_type_, pool_.get()));
+                           key_serializer_->Serialize(last_key_.value()));
     return sst_writer_->Write(std::move(key_bytes), output.ToSlice().CopyBytes(pool_.get()));
 }
 
@@ -190,16 +193,14 @@ Result<std::vector<GlobalIndexIOMeta>> BTreeGlobalIndexWriter::Finish() {
     std::shared_ptr<Bytes> first_key_bytes;
     std::shared_ptr<Bytes> last_key_bytes;
     if (first_key_) {
-        PAIMON_ASSIGN_OR_RAISE(first_key_bytes, KeySerializer::SerializeKey(
-                                                    first_key_.value(), key_type_, pool_.get()));
+        PAIMON_ASSIGN_OR_RAISE(first_key_bytes, key_serializer_->Serialize(first_key_.value()));
     }
     if (last_key_) {
-        PAIMON_ASSIGN_OR_RAISE(
-            last_key_bytes, KeySerializer::SerializeKey(last_key_.value(), key_type_, pool_.get()));
+        PAIMON_ASSIGN_OR_RAISE(last_key_bytes, key_serializer_->Serialize(last_key_.value()));
     }
     // Create index meta
-    auto index_meta =
-        std::make_shared<BTreeIndexMeta>(first_key_bytes, last_key_bytes, !null_bitmap_.IsEmpty());
+    auto index_meta = std::make_shared<SortedIndexFileMeta>(first_key_bytes, last_key_bytes,
+                                                            !null_bitmap_.IsEmpty());
     auto meta_bytes = index_meta->Serialize(pool_.get());
 
     // Create GlobalIndexIOMeta

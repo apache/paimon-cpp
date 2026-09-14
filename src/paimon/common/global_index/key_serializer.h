@@ -19,29 +19,41 @@
 
 #pragma once
 
+#include <memory>
+
 #include "arrow/api.h"
 #include "paimon/common/memory/memory_slice.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 namespace paimon {
+
+/// Provides core methods to serialize, deserialize, and compare global index keys.
 class KeySerializer {
  public:
-    KeySerializer() = delete;
-    ~KeySerializer() = delete;
+    ~KeySerializer() = default;
 
-    static Result<std::shared_ptr<Bytes>> SerializeKey(const Literal& literal,
-                                                       const std::shared_ptr<arrow::DataType>& type,
-                                                       MemoryPool* pool);
-
-    static Result<Literal> DeserializeKey(const MemorySlice& slice,
-                                          const std::shared_ptr<arrow::DataType>& type,
-                                          MemoryPool* pool);
-
-    static Status ValidateSerializedKey(const MemorySlice& slice,
-                                        const std::shared_ptr<arrow::DataType>& type);
-
-    static MemorySlice::SliceComparator CreateComparator(
+    static Result<std::shared_ptr<KeySerializer>> Create(
         const std::shared_ptr<arrow::DataType>& type, const std::shared_ptr<MemoryPool>& pool);
+
+    Result<std::shared_ptr<Bytes>> Serialize(const Literal& literal) const;
+
+    Result<Literal> Deserialize(const MemorySlice& slice) const;
+
+    Status ValidateSerializedKey(const MemorySlice& slice) const;
+
+    MemorySlice::SliceComparator CreateComparator() const;
+
+    MemoryPool* GetMemoryPool() const {
+        return pool_.get();
+    }
+
+ private:
+    KeySerializer(const std::shared_ptr<arrow::DataType>& type,
+                  const std::shared_ptr<MemoryPool>& pool)
+        : type_(type), pool_(pool) {}
+
+    std::shared_ptr<arrow::DataType> type_;
+    std::shared_ptr<MemoryPool> pool_;
 };
 }  // namespace paimon
