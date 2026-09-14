@@ -604,6 +604,32 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
     ASSERT_EQ(count, read_result->length());
 }
 
+// One reader is built per data file of a split, and those readers are built in parallel.
+// Snapshot 5 has a bucket holding five files, so the parallel build path is exercised here and
+// has to return the very same rows in the very same order as the other snapshot-5 read above.
+TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5WithReaderBuildParallelism) {
+    auto file_format = FileFormat();
+    std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
+
+    ScanContextBuilder scan_context_builder(table_path);
+    scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "5");
+    ASSERT_OK_AND_ASSIGN(auto scan_context, FinishScanContext(scan_context_builder));
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
+    auto splits = result_plan->Splits();
+    ASSERT_EQ(3, splits.size());
+
+    ReadContextBuilder read_context_builder(table_path);
+    AddReadOptionsForPrefetch(&read_context_builder);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
+    ASSERT_OK_AND_ASSIGN(auto read_result,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+    ASSERT_TRUE(read_result);
+    ASSERT_GT(read_result->length(), 0);
+}
+
 TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotWithStreamWithDefaultMode) {
     auto file_format = FileFormat();
     std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
