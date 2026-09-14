@@ -220,11 +220,15 @@ class LateMaterializingFileBatchReaderTest : public ::testing::Test {
         auto type =
             arrow::struct_({arrow::field("k", arrow::int64()),
                             arrow::field("v", arrow::dictionary(arrow::int32(), arrow::utf8()))});
+        // `StringDictionaryBuilder` picks the narrowest index type its dictionary fits in - int8
+        // for the three values below - and `StructBuilder::type()` takes each field type from its
+        // builder, so the column would come out as `dictionary<int8,utf8>` whatever `type` says.
+        // The 32 builder is what keeps the index width this fixture declares.
         arrow::StructBuilder builder(type, arrow::default_memory_pool(),
                                      {std::make_shared<arrow::Int64Builder>(),
-                                      std::make_shared<arrow::StringDictionaryBuilder>()});
+                                      std::make_shared<arrow::StringDictionary32Builder>()});
         auto* k = checked_cast<arrow::Int64Builder*>(builder.field_builder(0));
-        auto* v = checked_cast<arrow::StringDictionaryBuilder*>(builder.field_builder(1));
+        auto* v = checked_cast<arrow::StringDictionary32Builder*>(builder.field_builder(1));
         for (int32_t i = 0; i < n; ++i) {
             EXPECT_TRUE(builder.Append().ok());
             EXPECT_TRUE(k->Append(i).ok());
@@ -590,7 +594,10 @@ TEST_F(LateMaterializingFileBatchReaderTest, DictionaryPayloadColumnKeepsEncodin
             struct_array->GetFieldByName("k"));
         std::shared_ptr<arrow::Array> v = struct_array->GetFieldByName("v");
         ASSERT_TRUE(k && v);
-        ASSERT_EQ(v->type_id(), arrow::Type::DICTIONARY);
+        // The index width is checked before the casts below, which a release build resolves
+        // statically and would otherwise read the index buffer at the wrong width.
+        ASSERT_TRUE(v->type()->Equals(*arrow::dictionary(arrow::int32(), arrow::utf8())))
+            << v->type()->ToString();
         auto dict = arrow::internal::checked_pointer_cast<arrow::DictionaryArray>(v);
         auto indices = arrow::internal::checked_pointer_cast<arrow::Int32Array>(dict->indices());
         auto values = arrow::internal::checked_pointer_cast<arrow::StringArray>(dict->dictionary());
