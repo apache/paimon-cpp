@@ -222,17 +222,13 @@ TEST_F(JindoFileSystemTest, TestOpenWithKnownFileSizeReadsBackContent) {
     ASSERT_EQ(content, read_content);
     ASSERT_OK(in_stream->Close());
 
-    // A stale length shorter than the object must never yield more bytes than it vouches for.
+    // A stale length shorter than the object must never yield bytes beyond what it vouches
+    // for: the wrapper read is all-or-nothing, so over-reading the declared length fails with
+    // an EOF error instead of silently returning truncated data.
     const int64_t short_length = static_cast<int64_t>(content.size()) - 3;
     ASSERT_OK_AND_ASSIGN(auto short_stream, fs_->Open(FileStatus(file_path, short_length)));
     std::string short_read(content.size(), '\0');
-    Result<int64_t> short_result = short_stream->Read(short_read.data(), short_read.size());
-    if (short_result.ok()) {
-        ASSERT_LE(short_result.value(), short_length);
-    } else {
-        ASSERT_TRUE(short_result.status().IsIOError() || short_result.status().IsInvalid())
-            << short_result.status().ToString();
-    }
+    ASSERT_NOK_WITH_MSG(short_stream->Read(short_read.data(), short_read.size()), "EOF reached");
     ASSERT_OK(short_stream->Close());
 }
 
