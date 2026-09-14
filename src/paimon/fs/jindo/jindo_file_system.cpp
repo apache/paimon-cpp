@@ -88,6 +88,18 @@ Result<std::unique_ptr<InputStream>> JindoFileSystem::Open(const std::string& pa
     return std::make_unique<JindoInputStream>(impl_, std::move(reader));
 }
 
+Result<std::unique_ptr<InputStream>> JindoFileSystem::Open(const FileStatus& file_status) const {
+    const int64_t file_length = file_status.GetLen();
+    PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(file_length, "file size"));
+    // The trusted length lets the store skip the getFileStatus it otherwise issues on open.
+    // The status is not re-validated here; a stale or incorrect length surfaces as a read
+    // error later rather than at open time.
+    std::unique_ptr<JdoReader> reader;
+    PAIMON_RETURN_NOT_OK_FROM_JINDO(
+        impl_->GetFileSystem()->openReader(file_status.GetPath(), file_length, &reader));
+    return std::make_unique<JindoInputStream>(impl_, std::move(reader));
+}
+
 Result<std::unique_ptr<OutputStream>> JindoFileSystem::Create(const std::string& path,
                                                               bool overwrite) const {
     PAIMON_ASSIGN_OR_RAISE(bool exist, Exists(path));

@@ -134,6 +134,13 @@ public:
 
     JdoStatus openReader(const std::string &path, std::unique_ptr<JdoReader>* result);
 
+    // Open a read-only reader with a trusted file length. The length is handed to the store
+    // together with a "file status already resolved" hint, so open skips the getFileStatus
+    // request it would otherwise issue. The caller is responsible for the length being correct;
+    // a stale length may make reads end early or fail at read time instead of at open time.
+    JdoStatus openReader(const std::string &path, int64_t file_length,
+                         std::unique_ptr<JdoReader>* result);
+
     JdoStatus openWriter(const std::string &path, std::unique_ptr<JdoWriter>* result);
 
     JdoStatus mkdir(const std::string &path, bool recursive);

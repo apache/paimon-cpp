@@ -136,4 +136,14 @@ TEST(JindoFileSystemUnitTest, CreateReturnsParentDirectoryFailure) {
     ASSERT_EQ(fs.GetCalls()[0], "mkdirs");
 }
 
+TEST(JindoFileSystemUnitTest, OpenWithFileStatusRejectsNegativeLengthBeforeOpening) {
+    // The length is validated before the store is touched, so this holds without a live OSS:
+    // an uninitialized JdoFileSystem would report an init error, not a size error, if the
+    // validation were skipped.
+    jindo::JindoFileSystem fs(std::make_unique<JdoFileSystem>());
+
+    ASSERT_NOK_WITH_MSG(fs.Open(FileStatus("oss://bucket/data.parquet", /*length=*/-1)),
+                        "file size");
+}
+
 }  // namespace paimon::test
