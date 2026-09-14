@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "paimon/fs/file_system.h"
@@ -74,6 +75,20 @@ class PAIMON_EXPORT ReadAheadCacheMetrics {
     /// Total bytes requested by the IOs the cache itself issued to the
     /// underlying stream.
     static inline const char IO_BYTES[] = "read-ahead-cache.io.bytes";
+    /// Ranges registered by AddRanges() after the cache was initialized, and the
+    /// bytes they cover. They are counted after coalescing and splitting, so the
+    /// count is the number of prefetch IOs the late ranges added rather than the
+    /// number of ranges the caller reported.
+    static inline const char LATE_REGISTERED[] = "read-ahead-cache.late.registered";
+    static inline const char LATE_REGISTERED_BYTES[] = "read-ahead-cache.late.registered-bytes";
+    /// The reported ranges AddRanges() did not register, and the bytes they
+    /// cover: a range already covered by an earlier registration, or a range of
+    /// a registration round that has ended. The count is the number of reported
+    /// ranges - after coalescing - that were dropped in whole or in part, so
+    /// `late.registered-bytes` and `late.dropped-bytes` together account for
+    /// every byte reported.
+    static inline const char LATE_DROPPED[] = "read-ahead-cache.late.dropped";
+    static inline const char LATE_DROPPED_BYTES[] = "read-ahead-cache.late.dropped-bytes";
 };
 
 /// A byte range with offset and length.
@@ -131,8 +146,35 @@ class PAIMON_EXPORT ReadAheadCache {
     /// @param ranges The byte ranges to be cached.
     /// @return Status of the operation.
     /// @note This method must be called before any Read() calls. Ranges will be coalesced based
-    /// on the cache configuration.
+    /// on the cache configuration. Every call opens a new registration round, see
+    /// RegistrationRound().
     Status Init(std::vector<ByteRange>&& ranges);
+
+    /// The identifier of the registration round Init() opened, or zero when no round is open: the
+    /// cache was never initialized, it was reset, or its buffers were released. Every Init() opens
+    /// a new round, so a caller that kept the identifier of the round it initialized can tell
+    /// AddRanges() which round the ranges it registers belong to.
+    uint64_t RegistrationRound() const;
+
+    /// Register more byte ranges into an already initialized cache, for the ranges that only
+    /// become known while reading: the late-materialization payload pass learns which pages it
+    /// needs only after the probe pass has evaluated the predicate.
+    ///
+    /// Unlike Init(), this may be called repeatedly and concurrently with Read(). Read() finds its
+    /// covering entries by walking a disjoint, offset-ordered list, so of a new range only the
+    /// part no registered range covers is registered; the overlapping part is dropped, as the
+    /// round that registered it is already fetching those bytes. The registered part is cut into
+    /// ranges of at most `late_range_size_limit` bytes, one prefetch IO each, so a large pass is
+    /// fetched concurrently instead of in one long request.
+    ///
+    /// @param ranges The byte ranges to register on top of the ranges already registered.
+    /// @param expected_round The registration round the ranges belong to, as returned by
+    /// RegistrationRound() when that round was opened. Everything is dropped when the round is no
+    /// longer the open one, so a pass that outlived its round registers nothing: those bytes are
+    /// not going to be read. Zero is never an open round.
+    /// @return The offset of the first newly registered range, or nullopt when nothing was added.
+    Result<std::optional<uint64_t>> AddRanges(std::vector<ByteRange>&& ranges,
+                                              uint64_t expected_round);
 
     /// Read a range previously provided to Init(), copying the cached data
     /// directly into the given destination buffer.
@@ -153,10 +195,15 @@ class PAIMON_EXPORT ReadAheadCache {
     /// when the first Read() arrives, racing the caller's own miss fetch.
     void Warmup();
 
-    /// Collect the counters of the Read() calls, of the block cache and of the
-    /// IOs into the given metrics as counters named after
-    /// `ReadAheadCacheMetrics`. Only reads issued through Read() are counted
-    /// as hits, block hits or misses; the fetches the cache dispatches itself
+    /// Start fetching the registered ranges from `from_offset` forward, bounded by the
+    /// pre-buffer limit. Warmup() is this call made from the first registered range.
+    /// @param from_offset The offset to start fetching from, typically one AddRanges() returned.
+    void Warmup(uint64_t from_offset);
+
+    /// Collect the counters of the Read() calls, of the block cache, of the IOs
+    /// and of the late registrations into the given metrics as counters named
+    /// after `ReadAheadCacheMetrics`. Only reads issued through Read() are
+    /// counted as hits, block hits or misses; the fetches the cache dispatches
     /// are counted in the io counters instead.
     /// @param metrics The metrics to write the counters into. A null
     /// pointer or a null shared pointer is a no-op.

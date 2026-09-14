@@ -45,6 +45,19 @@ class PAIMON_EXPORT CacheConfig {
         range_size_limit_ = range_size_limit;
     }
 
+    /// Returns the maximum allowed size (in bytes) for a single range registered after the cache
+    /// was initialized, i.e. for the ranges that only become known while reading.
+    /// Defaults to 8 MiB.
+    uint64_t GetLateRangeSizeLimit() const {
+        return late_range_size_limit_;
+    }
+
+    /// Sets the maximum allowed size (in bytes) for a single range registered after the cache was
+    /// initialized.
+    void SetLateRangeSizeLimit(uint64_t late_range_size_limit) {
+        late_range_size_limit_ = late_range_size_limit;
+    }
+
     /// Returns the maximum gap size (in bytes) considered mergeable between
     /// adjacent ranges. Defaults to 8 KiB.
     uint64_t GetHoleSizeLimit() const {
@@ -100,7 +113,13 @@ class PAIMON_EXPORT CacheConfig {
     //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
     //   only dispatched up to this window, so a request reaching past it can
     //   never be served and falls back to a second fetch of the same bytes.
+    // - late_range_size_limit bounds the ranges registered mid-read instead of
+    //   at Init: those are fetched only just before they are read, and one range
+    //   is one request, so they are cut smaller than range_size_limit to be
+    //   fetched concurrently rather than in one long request. A read spanning
+    //   several of them is still served, as they are adjacent.
     uint64_t range_size_limit_ = 32 * 1024 * 1024;
+    uint64_t late_range_size_limit_ = 8 * 1024 * 1024;
     uint64_t hole_size_limit_ = 8 * 1024;
     uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
     // Blocks are aligned to the END of the file, so a block never reaches past

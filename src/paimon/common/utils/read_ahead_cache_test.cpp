@@ -22,6 +22,7 @@
 #include <chrono>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -37,11 +38,14 @@
 namespace paimon::test {
 
 // The range limits the tests exercise. The defaults are sized for real data
-// files, which the small test files would never reach.
+// files, which the small test files would never reach. The ranges registered
+// mid-read are cut at the same limit as the ones registered up front, so a test
+// that does not care about the late granularity sees one range per registration.
 CacheConfig TestCacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit,
                             uint64_t pre_buffer_limit) {
     CacheConfig config;
     config.SetRangeSizeLimit(range_size_limit);
+    config.SetLateRangeSizeLimit(range_size_limit);
     config.SetHoleSizeLimit(hole_size_limit);
     config.SetPreBufferLimit(pre_buffer_limit);
     return config;
@@ -106,6 +110,13 @@ void AssertReadMiss(const ByteRange& range, ReadAheadCache* cache) {
     ASSERT_OK_AND_ASSIGN(hit, cache->Read(range, dest.data()));
     ASSERT_FALSE(hit);
     ASSERT_EQ(std::string(dest.size(), 'X'), dest);
+}
+
+// Report the counter of the given metric name, or zero when it was not collected.
+uint64_t CounterOf(const char* name, ReadAheadCache* cache) {
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(&metrics);
+    return metrics->GetCounter(name).value_or(0);
 }
 
 TEST(TestReadAheadCache, TestBasics) {
@@ -507,6 +518,253 @@ TEST(TestReadAheadCache, TestReinitAfterReset) {
 
     // The old ranges are gone.
     AssertReadMiss({20, 2}, &cache);
+}
+
+// Test that AddRanges() registers ranges that only become known after the cache was
+// initialized, so the reads that follow are served from the cache.
+TEST(TestReadAheadCache, TestAddRangesRegistersNewRanges) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    AssertReadMiss({16, 10}, &cache);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{16, 10}}, cache.RegistrationRound()));
+    ASSERT_TRUE(first_added.has_value());
+    ASSERT_EQ(16u, first_added.value());
+
+    AssertReadEquals({16, 10}, "qrstuvwxyz", &cache);
+    // The range registered by Init() is still served.
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+
+    ASSERT_EQ(1u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED, &cache));
+    ASSERT_EQ(10u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED_BYTES, &cache));
+    ASSERT_EQ(0u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED, &cache));
+}
+
+// Of a new range intersecting an already registered one, only the part the registered ranges do
+// not cover is registered: the registered ranges stay disjoint, and the read the new range asked
+// for is served instead of dropped along with it.
+TEST(TestReadAheadCache, TestAddRangesClipsIntersectingRange) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{5, 10}}, cache.RegistrationRound()));
+    ASSERT_TRUE(first_added.has_value());
+    // [5, 10) is already registered, so the round starts at the first byte that is not.
+    ASSERT_EQ(10u, first_added.value());
+
+    // Served by the registered range and the newly registered one together, as they are adjacent.
+    AssertReadEquals({5, 10}, "fghijklmno", &cache);
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+
+    ASSERT_EQ(1u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED, &cache));
+    ASSERT_EQ(5u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED_BYTES, &cache));
+    ASSERT_EQ(1u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED, &cache));
+    ASSERT_EQ(5u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED_BYTES, &cache));
+}
+
+// A new range fully covered by the registered ones registers nothing at all.
+TEST(TestReadAheadCache, TestAddRangesDropsCoveredRange) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{2, 4}}, cache.RegistrationRound()));
+    ASSERT_FALSE(first_added.has_value());
+
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+    ASSERT_EQ(0u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED, &cache));
+    ASSERT_EQ(1u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED, &cache));
+    ASSERT_EQ(4u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED_BYTES, &cache));
+}
+
+// The registered ranges stay offset-ordered and disjoint when the new ranges interleave with them,
+// so that a read still finds its covering entries.
+TEST(TestReadAheadCache, TestAddRangesInterleavesWithRegisteredRanges) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/26,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{4, 4}, {16, 4}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    // Two ranges each straddling a registered one, plus one entirely in the hole between them.
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{2, 4}, {10, 2}, {18, 6}}, cache.RegistrationRound()));
+    ASSERT_TRUE(first_added.has_value());
+    ASSERT_EQ(2u, first_added.value());
+
+    AssertReadEquals({2, 6}, "cdefgh", &cache);
+    AssertReadEquals({10, 2}, "kl", &cache);
+    AssertReadEquals({16, 8}, "qrstuvwx", &cache);
+    // The holes nobody registered are still misses.
+    AssertReadMiss({12, 4}, &cache);
+
+    // [2, 4), [10, 12) and [20, 24) are new; [4, 8) and [16, 20) were registered already.
+    ASSERT_EQ(3u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED, &cache));
+    ASSERT_EQ(8u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED_BYTES, &cache));
+    ASSERT_EQ(2u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED, &cache));
+    ASSERT_EQ(4u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED_BYTES, &cache));
+}
+
+// A range registered mid-read is cut at the late range limit, so it is fetched by several
+// concurrent requests rather than by one long one. The pieces are adjacent, so a read spanning
+// them is still served.
+TEST(TestReadAheadCache, TestAddRangesSplitsLateRanges) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/26,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    config.SetLateRangeSizeLimit(5);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 5}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{10, 15}}, cache.RegistrationRound()));
+    ASSERT_TRUE(first_added.has_value());
+    ASSERT_EQ(10u, first_added.value());
+    ASSERT_EQ(3u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED, &cache));
+    ASSERT_EQ(15u, CounterOf(ReadAheadCacheMetrics::LATE_REGISTERED_BYTES, &cache));
+
+    cache.Warmup(first_added.value());
+    // One request per piece, instead of one request for the whole 15 bytes.
+    ASSERT_EQ(3u, CounterOf(ReadAheadCacheMetrics::IO_COUNT, &cache));
+
+    AssertReadEquals({10, 15}, "klmnopqrstuvwxy", &cache);
+    ASSERT_EQ(3u, CounterOf(ReadAheadCacheMetrics::IO_COUNT, &cache));
+}
+
+// AddRanges() rebuilds the per-range cached flags, so a range fetched before the call is not
+// fetched a second time.
+TEST(TestReadAheadCache, TestAddRangesKeepsCachedRanges) {
+    // A window of exactly one range, so that reading the first one never reaches the second.
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/10);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    cache.Warmup();
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+
+    auto io_count_of = [&cache]() { return CounterOf(ReadAheadCacheMetrics::IO_COUNT, &cache); };
+    const uint64_t io_count_before = io_count_of();
+    ASSERT_EQ(1u, io_count_before);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{16, 10}}, cache.RegistrationRound()));
+    ASSERT_TRUE(first_added.has_value());
+
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+    ASSERT_EQ(io_count_before, io_count_of());
+}
+
+// A cache that was never initialized has no open registration round to extend.
+TEST(TestReadAheadCache, TestAddRangesOnUninitializedCacheIsNoop) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::unique_ptr<UniqueTestDirectory> dir;
+    std::shared_ptr<InputStream> in = OpenTestFile(&dir, "data_file", content);
+    ReadAheadCache cache(in, config, /*file_size=*/0, TestPool());
+
+    ASSERT_EQ(0u, cache.RegistrationRound());
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{0, 10}}, cache.RegistrationRound()));
+    ASSERT_FALSE(first_added.has_value());
+    AssertReadMiss({0, 10}, &cache);
+    // Reported as dropped, so that the ranges nobody registers can be told from those nobody
+    // reports.
+    ASSERT_EQ(1u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED, &cache));
+    ASSERT_EQ(10u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED_BYTES, &cache));
+}
+
+// Ranges of a round that has ended are dropped rather than registered into the round that
+// replaced it: a pass whose read-range generation is gone has nobody left to read its bytes.
+TEST(TestReadAheadCache, TestAddRangesOfEndedRoundIsNoop) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    const uint64_t ended_round = cache.RegistrationRound();
+    ASSERT_NE(0u, ended_round);
+
+    cache.Reset();
+    ASSERT_EQ(0u, cache.RegistrationRound());
+    ASSERT_OK(cache.Init({{0, 10}}));
+    const uint64_t open_round = cache.RegistrationRound();
+    ASSERT_NE(ended_round, open_round);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added,
+                         cache.AddRanges({{16, 10}}, ended_round));
+    ASSERT_FALSE(first_added.has_value());
+    AssertReadMiss({16, 10}, &cache);
+    ASSERT_EQ(10u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED_BYTES, &cache));
+
+    // The open round still accepts them.
+    ASSERT_OK_AND_ASSIGN(first_added, cache.AddRanges({{16, 10}}, open_round));
+    ASSERT_TRUE(first_added.has_value());
+    AssertReadEquals({16, 10}, "qrstuvwxyz", &cache);
+}
+
+// Neither has a cache whose buffers were released: its registration round has ended.
+TEST(TestReadAheadCache, TestAddRangesAfterReleaseBuffersIsNoop) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    const uint64_t round = cache.RegistrationRound();
+    cache.ReleaseBuffers();
+    ASSERT_EQ(0u, cache.RegistrationRound());
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added, cache.AddRanges({{16, 10}}, round));
+    ASSERT_FALSE(first_added.has_value());
+    AssertReadMiss({16, 10}, &cache);
+}
+
+// Warmup(offset) starts fetching from the given range rather than from the first one, which is
+// what a pass registering its ranges mid-read needs: the earlier ranges belong to the pass that
+// has already run.
+TEST(TestReadAheadCache, TestWarmupFromOffset) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 5}, {8, 5}, {16, 5}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    auto io_hook = paimon::IOHook::GetInstance();
+    paimon::ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
+    // IOCount() only counts while armed; INT64_MAX never triggers the error mode.
+    io_hook->Reset(INT64_MAX, paimon::IOHook::Mode::RETURN_ERROR);
+
+    cache.Warmup(/*from_offset=*/16);
+    // Only the range at 16 was fetched: the two before it were skipped.
+    ASSERT_EQ(io_hook->IOCount(), 1);
+
+    AssertReadEquals({16, 5}, "qrstu", &cache);
+    ASSERT_EQ(io_hook->IOCount(), 1);
 }
 
 // Test that Init() merges ranges separated by a small hole, so a read

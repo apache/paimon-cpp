@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -135,6 +136,19 @@ class PAIMON_EXPORT PrefetchFileBatchReader : public FileBatchReader {
     virtual Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() {
         return std::vector<std::pair<uint64_t, uint64_t>>{};
     }
+
+    /// Sink a reader reports byte ranges to when they only become known after reading has
+    /// started, so the prefetch layer can register them with its shared read-ahead cache.
+    ///
+    /// PreBufferRange() covers what is known up front; a reader whose ranges depend on data it
+    /// has already read - the late-materialization payload pass only knows which pages hold the
+    /// matched rows once the probe pass has run - reports them here instead.
+    using PreBufferSink = std::function<void(std::vector<std::pair<uint64_t, uint64_t>>&&)>;
+
+    /// Installs the sink above, or clears it when `sink` is empty. By default a reader has no
+    /// late byte ranges to report and ignores the sink.
+    /// @param sink The sink to report late byte ranges to.
+    virtual void SetPreBufferSink(PreBufferSink /*sink*/) {}
 };
 
 }  // namespace paimon
