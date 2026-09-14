@@ -20,7 +20,6 @@
 
 #include <atomic>
 #include <cassert>
-#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -84,27 +83,20 @@ JindoFileSystem::JindoFileSystem(std::unique_ptr<JdoFileSystem>&& fs)
     : impl_(std::make_shared<JindoFileSystemImpl>(std::move(fs))) {}
 
 Result<std::unique_ptr<InputStream>> JindoFileSystem::Open(const std::string& path) const {
-    return OpenReader(path, /*file_length=*/std::nullopt);
+    std::unique_ptr<JdoReader> reader;
+    PAIMON_RETURN_NOT_OK_FROM_JINDO(impl_->GetFileSystem()->openReader(path, &reader));
+    return std::make_unique<JindoInputStream>(impl_, std::move(reader));
 }
 
 Result<std::unique_ptr<InputStream>> JindoFileSystem::Open(const FileStatus& file_status) const {
     const int64_t file_length = file_status.GetLen();
     PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(file_length, "file size"));
-    return OpenReader(file_status.GetPath(), file_length);
-}
-
-Result<std::unique_ptr<InputStream>> JindoFileSystem::OpenReader(
-    const std::string& path, std::optional<int64_t> file_length) const {
+    // The trusted length lets the store skip the getFileStatus it otherwise issues on open.
+    // The status is not re-validated here; a stale or incorrect length surfaces as a read
+    // error later rather than at open time.
     std::unique_ptr<JdoReader> reader;
-    if (file_length.has_value()) {
-        // The trusted length lets the store skip the getFileStatus it otherwise issues on open.
-        // The status is not re-validated here; a stale or incorrect length surfaces as a read
-        // error later rather than at open time.
-        PAIMON_RETURN_NOT_OK_FROM_JINDO(
-            impl_->GetFileSystem()->openReader(path, file_length.value(), &reader));
-    } else {
-        PAIMON_RETURN_NOT_OK_FROM_JINDO(impl_->GetFileSystem()->openReader(path, &reader));
-    }
+    PAIMON_RETURN_NOT_OK_FROM_JINDO(
+        impl_->GetFileSystem()->openReader(file_status.GetPath(), file_length, &reader));
     return std::make_unique<JindoInputStream>(impl_, std::move(reader));
 }
 

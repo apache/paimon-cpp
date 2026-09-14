@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,12 +62,6 @@ class JindoFileSystem : public FileSystem {
 
  protected:
     virtual Result<std::unique_ptr<OutputStream>> OpenWriter(const std::string& path) const;
-
-    // Open a reader, handing `file_length` to the store when the caller already knows it so that
-    // open can skip its own getFileStatus. `std::nullopt` leaves the length to be resolved by the
-    // store.
-    virtual Result<std::unique_ptr<InputStream>> OpenReader(
-        const std::string& path, std::optional<int64_t> file_length) const;
 
  private:
     std::shared_ptr<JindoFileSystemImpl> impl_;
