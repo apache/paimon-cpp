@@ -398,7 +398,7 @@ TEST_F(ExpireSnapshotsTest, TestRejectExpirationWhileAnotherBranchExists) {
                            fs_, options.GetExpireConfig(), options.RealtimeEnabled(), executor_);
     ASSERT_OK(fs_->Mkdirs(PathUtil::JoinPath(test_data_path_, "branch/branch-dev")));
     ASSERT_NOK_WITH_MSG(expire.ExpireUntil(/*earliest_snapshot_id=*/1,
-                                           /*end_exclusive_id=*/2),
+                                           /*end_exclusive_id=*/2, /*latest_snapshot_id=*/2),
                         "cross-branch file retention is not supported");
 }
 
@@ -419,20 +419,23 @@ TEST_F(ExpireSnapshotsTest, TestExpireKeepsSourceBackedBTreeIndexReferencedByTag
     ASSERT_TRUE(tagged_index_manifest);
 
     using ManifestListMeta = std::pair<std::string, int64_t>;
-    ManifestEntry tagged_data = CreateManifestEntry("tagged.data", /*bucket=*/0, FileKind::Add());
+    ManifestEntry tagged_data =
+        CreateManifestEntry("tagged.data", /*bucket=*/0, FileKind::Add(), {"tagged.data.index"});
     ASSERT_OK_AND_ASSIGN(std::string tagged_bucket_path,
                          path_factory_->BucketPath(tagged_data.Partition(), tagged_data.Bucket()));
     ASSERT_OK(fs_->Mkdirs(tagged_bucket_path));
     std::string tagged_data_path = PathUtil::JoinPath(tagged_bucket_path, tagged_data.FileName());
     ASSERT_OK(fs_->WriteFile(tagged_data_path, "data", /*overwrite=*/false));
+    std::string tagged_extra_path = PathUtil::JoinPath(tagged_bucket_path, "tagged.data.index");
+    ASSERT_OK(fs_->WriteFile(tagged_extra_path, "index", /*overwrite=*/false));
     ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> tagged_data_manifests,
                          manifest_file_->Write({tagged_data}));
     ASSERT_OK_AND_ASSIGN(ManifestListMeta tagged_base_manifest_list,
                          manifest_list_->Write(tagged_data_manifests));
     ASSERT_OK_AND_ASSIGN(ManifestListMeta tagged_delta_manifest_list, manifest_list_->Write({}));
     ASSERT_OK_AND_ASSIGN(ManifestListMeta retained_base_manifest_list, manifest_list_->Write({}));
-    ManifestEntry deleted_tagged_data =
-        CreateManifestEntry(tagged_data.FileName(), /*bucket=*/0, FileKind::Delete());
+    ManifestEntry deleted_tagged_data = CreateManifestEntry(
+        tagged_data.FileName(), /*bucket=*/0, FileKind::Delete(), {"tagged.data.index"});
     ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> retained_data_manifests,
                          manifest_file_->Write({deleted_tagged_data}));
     ASSERT_OK_AND_ASSIGN(ManifestListMeta retained_delta_manifest_list,
@@ -494,6 +497,8 @@ TEST_F(ExpireSnapshotsTest, TestExpireKeepsSourceBackedBTreeIndexReferencedByTag
     ASSERT_TRUE(tagged_index_exists);
     ASSERT_OK_AND_ASSIGN(bool tagged_data_exists, fs_->Exists(tagged_data_path));
     ASSERT_TRUE(tagged_data_exists);
+    ASSERT_OK_AND_ASSIGN(bool tagged_extra_exists, fs_->Exists(tagged_extra_path));
+    ASSERT_TRUE(tagged_extra_exists);
 }
 
 TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {
