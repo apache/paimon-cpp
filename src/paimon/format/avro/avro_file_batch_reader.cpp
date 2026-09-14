@@ -19,7 +19,7 @@
 #include "paimon/format/avro/avro_file_batch_reader.h"
 
 #include <algorithm>
-#include <limits>
+#include <cassert>
 #include <memory>
 #include <utility>
 
@@ -102,17 +102,26 @@ Result<std::unique_ptr<::avro::DataFileReaderBase>> AvroFileBatchReader::CreateD
 }
 
 Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
-    if (next_row_to_read_ == std::numeric_limits<uint64_t>::max()) {
-        next_row_to_read_ = 0;
-    }
     previous_first_row_ = next_row_to_read_;
     previous_row_ids_.clear();
     previous_batch_row_count_ = 0;
-    if (selection_bitmap_ && selection_bitmap_->IsEmpty()) {
-        return BatchReader::MakeEofBatch();
-    }
     try {
-        PAIMON_RETURN_NOT_OK(ReadRowsIntoBuilder());
+        while (array_builder_->length() < batch_size_) {
+            const std::optional<uint64_t> target =
+                selection_ ? selection_->NextRow() : std::optional<uint64_t>(next_row_to_read_);
+            if (!target) {
+                break;
+            }
+            PAIMON_ASSIGN_OR_RAISE(bool available, AdvanceToRow(target.value()));
+            if (!available) {
+                break;
+            }
+            PAIMON_RETURN_NOT_OK(ReadCurrentRow(/*materialize=*/true));
+            if (selection_) {
+                previous_row_ids_.push_back(target.value());
+                selection_->Advance();
+            }
+        }
         if (array_builder_->length() == 0) {
             previous_batch_row_count_ = 0;
             return BatchReader::MakeEofBatch();
@@ -138,47 +147,94 @@ Result<BatchReader::ReadBatch> AvroFileBatchReader::NextBatch() {
     }
 }
 
-Status AvroFileBatchReader::ReadRowsIntoBuilder() {
-    while (array_builder_->length() < batch_size_) {
-        if (selection_iterator_) {
-            if (*selection_iterator_ == *selection_end_) {
-                break;
-            }
-            const uint64_t selected_row = static_cast<uint32_t>(**selection_iterator_);
-            if (selected_row >= total_rows_.value()) {
-                break;
-            }
-            if (next_row_to_read_ < block_index_[selected_block_].first) {
-                reader_->seek(block_index_[selected_block_].second);
-                next_row_to_read_ = block_index_[selected_block_].first;
-            }
+std::optional<uint64_t> AvroFileBatchReader::SelectionCursor::NextRow() const {
+    if (next_ == end_) {
+        return std::nullopt;
+    }
+    return static_cast<uint32_t>(*next_);
+}
+
+void AvroFileBatchReader::BlockIndex::Observe(uint64_t row, int64_t file_offset) {
+    if (state_ != State::kBuilding ||
+        (!blocks_.empty() && blocks_.back().file_offset == file_offset)) {
+        return;
+    }
+    if (blocks_.size() == kMaxBlocks) {
+        blocks_.clear();
+        state_ = State::kDisabled;
+        return;
+    }
+    blocks_.push_back({row, file_offset});
+}
+
+void AvroFileBatchReader::BlockIndex::Finish(uint64_t row_count) {
+    if (state_ == State::kBuilding) {
+        row_count_ = row_count;
+        state_ = State::kReady;
+    }
+}
+
+void AvroFileBatchReader::BlockIndex::Reset() {
+    if (state_ != State::kReady) {
+        blocks_.clear();
+        state_ = State::kBuilding;
+    }
+}
+
+std::optional<uint64_t> AvroFileBatchReader::BlockIndex::RowCount() const {
+    return state_ == State::kReady ? std::optional<uint64_t>(row_count_) : std::nullopt;
+}
+
+std::optional<AvroFileBatchReader::BlockIndex::Position> AvroFileBatchReader::BlockIndex::Locate(
+    uint64_t row) const {
+    if (state_ != State::kReady || row >= row_count_ || blocks_.empty()) {
+        return std::nullopt;
+    }
+    auto block = std::upper_bound(
+        blocks_.begin(), blocks_.end(), row,
+        [](uint64_t target, const Position& position) { return target < position.first_row; });
+    return *(block - 1);
+}
+
+Result<bool> AvroFileBatchReader::AdvanceToRow(uint64_t row) {
+    assert(row >= next_row_to_read_);
+    const std::optional<uint64_t> row_count = block_index_.RowCount();
+    if (row_count && row >= row_count.value()) {
+        return false;
+    }
+    if (row > next_row_to_read_) {
+        const auto block = block_index_.Locate(row);
+        if (block && block->first_row > next_row_to_read_) {
+            reader_->seek(block->file_offset);
+            next_row_to_read_ = block->first_row;
         }
-        if (!reader_->hasMore()) {
-            if (!selection_bitmap_ && !block_index_disabled_) {
-                block_index_complete_ = true;
-                total_rows_ = next_row_to_read_;
-            }
-            break;
+    }
+    while (next_row_to_read_ < row) {
+        if (!PrepareNextRow()) {
+            return false;
         }
-        if (!selection_bitmap_ && !block_index_complete_ && !block_index_disabled_) {
-            const int64_t block_position = reader_->previousSync();
-            if (block_index_.empty() || block_index_.back().second != block_position) {
-                if (block_index_.size() == kMaxIndexedBlocks) {
-                    block_index_.clear();
-                    block_index_disabled_ = true;
-                } else {
-                    block_index_.emplace_back(next_row_to_read_, block_position);
-                }
-            }
+        PAIMON_RETURN_NOT_OK(ReadCurrentRow(/*materialize=*/false));
+    }
+    return PrepareNextRow();
+}
+
+bool AvroFileBatchReader::PrepareNextRow() {
+    if (!reader_->hasMore()) {
+        if (!selection_) {
+            block_index_.Finish(next_row_to_read_);
         }
-        reader_->decr();
-        const uint64_t file_row = next_row_to_read_++;
-        if (selection_bitmap_ && (file_row > std::numeric_limits<uint32_t>::max() ||
-                                  !selection_bitmap_->Contains(static_cast<uint32_t>(file_row)))) {
-            PAIMON_RETURN_NOT_OK(
-                AvroDirectDecoder::SkipValue(reader_->dataSchema().root(), &reader_->decoder()));
-            continue;
-        }
+        return false;
+    }
+    // Preserve index construction during full reads; bitmap reads only consume an existing index.
+    if (!selection_) {
+        block_index_.Observe(next_row_to_read_, reader_->previousSync());
+    }
+    return true;
+}
+
+Status AvroFileBatchReader::ReadCurrentRow(bool materialize) {
+    reader_->decr();
+    if (materialize) {
         if (array_builder_->length() == 0) {
             PAIMON_RETURN_NOT_OK(
                 AvroDirectDecoder::ReserveBuilderCapacity(batch_size_, array_builder_.get()));
@@ -186,20 +242,11 @@ Status AvroFileBatchReader::ReadRowsIntoBuilder() {
         PAIMON_RETURN_NOT_OK(AvroDirectDecoder::DecodeAvroToBuilder(
             reader_->dataSchema().root(), read_fields_projection_, &reader_->decoder(),
             array_builder_.get(), &decode_context_));
-        if (selection_bitmap_) {
-            previous_row_ids_.push_back(file_row);
-        }
-        if (selection_iterator_) {
-            ++(*selection_iterator_);
-            if (*selection_iterator_ != *selection_end_) {
-                const uint64_t selected_row = static_cast<uint32_t>(**selection_iterator_);
-                auto block = std::upper_bound(
-                    block_index_.begin(), block_index_.end(), selected_row,
-                    [](uint64_t row, const auto& entry) { return row < entry.first; });
-                selected_block_ = std::distance(block_index_.begin(), block) - 1;
-            }
-        }
+    } else {
+        PAIMON_RETURN_NOT_OK(
+            AvroDirectDecoder::SkipValue(reader_->dataSchema().root(), &reader_->decoder()));
     }
+    ++next_row_to_read_;
     return Status::OK();
 }
 
@@ -235,27 +282,15 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     reader_ = std::move(reader);
     array_builder_ = std::move(array_builder);
     decode_context_.ClearBuilderMetadata();
-    selection_iterator_.reset();
-    selection_end_.reset();
-    selection_bitmap_ = selection_bitmap;
-    if (!block_index_complete_) {
-        block_index_.clear();
-        block_index_disabled_ = false;
+    selection_.reset();
+    if (selection_bitmap) {
+        selection_.emplace(selection_bitmap.value());
     }
-    if (selection_bitmap_ && !selection_bitmap_->IsEmpty() && block_index_complete_ &&
-        !block_index_.empty()) {
-        selection_iterator_ = selection_bitmap_->Begin();
-        selection_end_ = selection_bitmap_->End();
-        const uint64_t selected_row = static_cast<uint32_t>(**selection_iterator_);
-        auto block =
-            std::upper_bound(block_index_.begin(), block_index_.end(), selected_row,
-                             [](uint64_t row, const auto& entry) { return row < entry.first; });
-        selected_block_ = std::distance(block_index_.begin(), block) - 1;
-    }
+    block_index_.Reset();
     previous_row_ids_.clear();
-    previous_first_row_ = std::numeric_limits<uint64_t>::max();
+    previous_first_row_.reset();
     previous_batch_row_count_ = 0;
-    next_row_to_read_ = std::numeric_limits<uint64_t>::max();
+    next_row_to_read_ = 0;
     close_ = false;
     return Status::OK();
 }
@@ -285,6 +320,9 @@ Result<std::unique_ptr<::ArrowSchema>> AvroFileBatchReader::GetFileSchema() cons
 }
 
 Result<uint64_t> AvroFileBatchReader::GetNumberOfRows() const {
+    if (const auto row_count = block_index_.RowCount()) {
+        return row_count.value();
+    }
     if (!total_rows_) {
         PAIMON_ASSIGN_OR_RAISE(int64_t current_pos, input_stream_->GetPos());
         ScopeGuard stream_guard([this, current_pos]() -> void {

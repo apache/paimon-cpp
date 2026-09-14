@@ -26,8 +26,10 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "paimon/common/data/columnar/columnar_row.h"
+#include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/reader/late_materializing_file_batch_reader.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/rolling_file_writer.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_entry_serializer.h"
@@ -50,6 +52,12 @@ class Schema;
 
 namespace paimon {
 class MemoryPool;
+
+namespace {
+constexpr int32_t kVersionFieldIndex = 0;
+constexpr int32_t kBucketFieldIndex = 3;
+constexpr int32_t kTotalBucketsFieldIndex = 4;
+}  // namespace
 
 ManifestFile::ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                            const std::shared_ptr<ReaderBuilder>& reader_builder,
@@ -93,10 +101,10 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
 }
 
 Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
+                                       const std::optional<int32_t>& expected_total_buckets,
                              std::optional<int64_t> file_size,
-                                       std::vector<ManifestEntry>* entries,
-                                       const std::optional<int32_t>& expected_total_buckets) const {
-    // Readers without an in-memory selective probe still filter aligned Arrow columns
+                                       std::vector<ManifestEntry>* entries) const {
+    // Readers without precise bitmap selection still filter aligned Arrow columns
     // before constructing ManifestEntry and DataFileMeta objects.
     return ReadArrowBatches(
         file_name, file_size,
@@ -105,27 +113,29 @@ Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t buc
             ColumnarRow row(batch->fields(), pool_, /*row_id=*/0);
             for (int64_t i = 0; i < batch->length(); ++i) {
                 row.SetRowId(i);
+                PAIMON_RETURN_NOT_OK(
+                    ManifestEntrySerializer::ValidateVersion(row.GetInt(kVersionFieldIndex)));
                 // Different or unknown bucket counts must reach the compatibility checks.
                 const bool historical_layout =
-                    expected_total_buckets && (row.IsNullAt(3) || row.IsNullAt(4) ||
-                                               row.GetInt(4) != expected_total_buckets.value());
+                    expected_total_buckets &&
+                    (row.IsNullAt(kBucketFieldIndex) || row.IsNullAt(kTotalBucketsFieldIndex) ||
+                     row.GetInt(kTotalBucketsFieldIndex) != expected_total_buckets.value());
                 if (!historical_layout && ManifestEntrySerializer::GetBucket(row) != bucket) {
                     continue;
                 }
-                // Only validate entries retained by the bucket selector. FromRow checks the
-                // serialization version before decoding the remaining metadata.
                 PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
                 entries->push_back(std::move(entry));
             }
             return Status::OK();
         },
         [this, bucket, expected_total_buckets](std::unique_ptr<FileBatchReader>* reader) {
-            return PrepareBucketRead(reader, bucket, expected_total_buckets);
+            return PrepareBucketRead(bucket, expected_total_buckets, reader);
         });
 }
 
-Status ManifestFile::PrepareBucketRead(std::unique_ptr<FileBatchReader>* reader, int32_t bucket,
-                                       const std::optional<int32_t>& expected_total_buckets) const {
+Status ManifestFile::PrepareBucketRead(int32_t bucket,
+                                       const std::optional<int32_t>& expected_total_buckets,
+                                       std::unique_ptr<FileBatchReader>* reader) const {
     if (!(*reader)->SupportPreciseBitmapSelection()) {
         return Status::OK();
     }
@@ -133,21 +143,11 @@ Status ManifestFile::PrepareBucketRead(std::unique_ptr<FileBatchReader>* reader,
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_schema,
                                       arrow::ImportSchema(c_schema.get()));
     const auto& target_type = serializer_->GetDataType();
-    const std::string& bucket_name = target_type->field(3)->name();
-    auto bucket_field = file_schema->GetFieldByName(bucket_name);
-    if (!bucket_field || bucket_field->type()->id() != arrow::Type::INT32) {
-        return Status::OK();
-    }
-    if (expected_total_buckets) {
-        auto total_field = file_schema->GetFieldByName("_TOTAL_BUCKETS");
-        if (!total_field || total_field->type()->id() != arrow::Type::INT32) {
-            return Status::OK();
-        }
-    }
+    const std::string& bucket_name = target_type->field(kBucketFieldIndex)->name();
     std::shared_ptr<Predicate> selector = PredicateBuilder::Equal(
         file_schema->GetFieldIndex(bucket_name), bucket_name, FieldType::INT, Literal(bucket));
     if (expected_total_buckets) {
-        const std::string total_name = "_TOTAL_BUCKETS";
+        const std::string& total_name = target_type->field(kTotalBucketsFieldIndex)->name();
         const int32_t total_index = file_schema->GetFieldIndex(total_name);
         PAIMON_ASSIGN_OR_RAISE(
             selector,
@@ -155,6 +155,24 @@ Status ManifestFile::PrepareBucketRead(std::unique_ptr<FileBatchReader>* reader,
                 {selector, PredicateBuilder::IsNull(total_index, total_name, FieldType::INT),
                  PredicateBuilder::NotEqual(total_index, total_name, FieldType::INT,
                                             Literal(expected_total_buckets.value()))}));
+    }
+    // Retain unsupported versions regardless of bucket so the consumer validates every version
+    // before bucket filtering, including when the probe would otherwise select no entries.
+    const std::string& version_name = target_type->field(kVersionFieldIndex)->name();
+    const int32_t version_index = file_schema->GetFieldIndex(version_name);
+    PAIMON_ASSIGN_OR_RAISE(
+        selector,
+        PredicateBuilder::Or(
+            {selector, PredicateBuilder::IsNull(version_index, version_name, FieldType::INT),
+             PredicateBuilder::NotEqual(
+                 version_index, version_name, FieldType::INT,
+                 Literal(
+                     checked_cast<ManifestEntrySerializer*>(serializer_.get())->GetVersion()))}));
+    if (!PredicateValidator::ValidatePredicateWithSchema(*file_schema, selector,
+                                                         /*validate_field_idx=*/true)
+             .ok()) {
+        // An incompatible projection must fall back to ordinary schema evolution.
+        return Status::OK();
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<LateMaterializingFileBatchReader> selective_reader,

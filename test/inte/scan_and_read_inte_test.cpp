@@ -600,18 +600,18 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
         // Manifest lists are still consulted, but their bytes must also come from the cache.
         ASSERT_EQ(cache->SupplierCallCount(CacheKind::MANIFEST), supplier_calls);
     }
-    // Rejecting raw-manifest caching keeps object filtering but disables the two-pass Arrow probe.
-    auto fallback_cache =
+    // Selective decoding also applies when only manifest entries, not raw bytes, are cached.
+    auto entry_cache_only =
         std::make_shared<CountingRoutingCache>(CacheKind::SNAPSHOT_LIVE_MANIFEST, 64 * 1024 * 1024);
-    ASSERT_OK_AND_ASSIGN(ScanResult fallback, scan(true, fallback_cache, true));
-    ASSERT_EQ(fallback.cache_hit, 0);
-    ASSERT_NO_FATAL_FAILURE(check_read(fallback, kPartitions, false));
-    ASSERT_GT(fallback_cache->GetCount(CacheKind::MANIFEST), 0);
-    ASSERT_EQ(fallback_cache->SupplierCallCount(CacheKind::MANIFEST), 0);
-    RecordProperty("fallback_peak_bytes", fmt::format("{}", fallback.peak_bytes));
+    ASSERT_OK_AND_ASSIGN(ScanResult uncached_manifest, scan(true, entry_cache_only, true));
+    ASSERT_EQ(uncached_manifest.cache_hit, 0);
+    ASSERT_NO_FATAL_FAILURE(check_read(uncached_manifest, kPartitions, false));
+    ASSERT_GT(entry_cache_only->GetCount(CacheKind::MANIFEST), 0);
+    ASSERT_EQ(entry_cache_only->SupplierCallCount(CacheKind::MANIFEST), 0);
+    RecordProperty("uncached_manifest_peak_bytes", fmt::format("{}", uncached_manifest.peak_bytes));
     // Wide, real column statistics make full Arrow materialization observable without timing gates.
     ASSERT_LT(peaks[1], peaks[0] / 2);
-    ASSERT_LT(peaks[1], fallback.peak_bytes / 2);
+    ASSERT_LT(uncached_manifest.peak_bytes, peaks[0] / 2);
 
     // Change both schema ID and bucket count, then append the same key in a new partition.
     // Old files must still be read from bucket 31 while the new file belongs to bucket 15.

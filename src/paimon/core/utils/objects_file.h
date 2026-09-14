@@ -92,8 +92,8 @@ class ObjectsFile {
         return Status::OK();
     }
 
-    // Optional preparation may wrap the reader and reread the file. Only run it for retained
-    // in-memory bytes to avoid repeated remote reads.
+    // Optional preparation may wrap the reader and reread the file, using either cached bytes
+    // or the underlying file stream.
     Status ReadArrowBatches(
         const std::string& file_name, std::optional<int64_t> file_size,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
@@ -217,7 +217,7 @@ Status ObjectsFile<T>::ReadArrowBatches(
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> batch_reader,
                            reader_builder_->Build(file_input_stream));
-    if (prepare_reader && cached_bytes) {
+    if (prepare_reader) {
         PAIMON_RETURN_NOT_OK(prepare_reader(&batch_reader));
     }
     auto reader = std::make_unique<ManifestMetaReader>(std::move(batch_reader),

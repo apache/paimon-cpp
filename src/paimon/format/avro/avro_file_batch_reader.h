@@ -18,8 +18,9 @@
 
 #pragma once
 
-#include <limits>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -52,7 +53,7 @@ class AvroFileBatchReader : public FileBatchReader {
 
     Result<uint64_t> GetPreviousBatchFileRowId(uint64_t batch_row_id) const override {
         if (previous_batch_row_count_ == 0) {
-            if (previous_first_row_ == std::numeric_limits<uint64_t>::max()) {
+            if (!previous_first_row_) {
                 return Status::Invalid("No batch has been read yet.");
             } else {
                 return Status::Invalid("Last batch was EOF.");
@@ -63,8 +64,8 @@ class AvroFileBatchReader : public FileBatchReader {
                 fmt::format("batch_row_id {} is out of range, last batch row count is {}",
                             batch_row_id, previous_batch_row_count_));
         }
-        return selection_bitmap_ ? previous_row_ids_[batch_row_id]
-                                 : previous_first_row_ + batch_row_id;
+        return selection_ ? previous_row_ids_[batch_row_id]
+                          : previous_first_row_.value() + batch_row_id;
     }
 
     Result<uint64_t> GetNumberOfRows() const override;
@@ -82,8 +83,50 @@ class AvroFileBatchReader : public FileBatchReader {
     }
 
  private:
-    // Fill one batch, applying bitmap selection and tracking physical row IDs and block boundaries.
-    Status ReadRowsIntoBuilder();
+    class SelectionCursor {
+     public:
+        explicit SelectionCursor(const RoaringBitmap32& bitmap)
+            : bitmap_(bitmap), next_(bitmap_.Begin()), end_(bitmap_.End()) {}
+        SelectionCursor(const SelectionCursor&) = delete;
+        SelectionCursor& operator=(const SelectionCursor&) = delete;
+
+        std::optional<uint64_t> NextRow() const;
+
+        void Advance() {
+            ++next_;
+        }
+
+     private:
+        // Iterators must be destroyed before the bitmap they reference.
+        RoaringBitmap32 bitmap_;
+        RoaringBitmap32::Iterator next_;
+        RoaringBitmap32::Iterator end_;
+    };
+
+    class BlockIndex {
+     public:
+        struct Position {
+            uint64_t first_row;
+            int64_t file_offset;
+        };
+
+        void Observe(uint64_t row, int64_t file_offset);
+        void Finish(uint64_t row_count);
+        void Reset();
+        std::optional<Position> Locate(uint64_t row) const;
+        std::optional<uint64_t> RowCount() const;
+
+     private:
+        enum class State { kBuilding, kReady, kDisabled };
+        static constexpr size_t kMaxBlocks = 64 * 1024;
+        State state_ = State::kBuilding;
+        std::vector<Position> blocks_;
+        uint64_t row_count_ = 0;
+    };
+
+    Result<bool> AdvanceToRow(uint64_t row);
+    bool PrepareNextRow();
+    Status ReadCurrentRow(bool materialize);
 
     void DoClose();
 
@@ -109,19 +152,12 @@ class AvroFileBatchReader : public FileBatchReader {
     std::unique_ptr<::avro::DataFileReaderBase> reader_;
     std::unique_ptr<arrow::ArrayBuilder> array_builder_;
     std::optional<std::set<size_t>> read_fields_projection_;
-    std::optional<RoaringBitmap32> selection_bitmap_;
-    // Reuse block boundaries discovered by a complete sequential pass over this reader's file.
-    // The index is local to the reader and bounded; oversized files retain sequential selection.
-    static constexpr size_t kMaxIndexedBlocks = 64 * 1024;
-    std::vector<std::pair<uint64_t, int64_t>> block_index_;
-    bool block_index_complete_ = false;
-    bool block_index_disabled_ = false;
-    std::optional<RoaringBitmap32::Iterator> selection_iterator_;
-    std::optional<RoaringBitmap32::Iterator> selection_end_;
-    size_t selected_block_ = 0;
+    std::optional<SelectionCursor> selection_;
+    // File-level acceleration, independent of the current projection and bitmap.
+    BlockIndex block_index_;
     std::vector<uint64_t> previous_row_ids_;
-    uint64_t previous_first_row_ = std::numeric_limits<uint64_t>::max();
-    uint64_t next_row_to_read_ = std::numeric_limits<uint64_t>::max();
+    std::optional<uint64_t> previous_first_row_;
+    uint64_t next_row_to_read_ = 0;
     uint64_t previous_batch_row_count_ = 0;
     mutable std::optional<uint64_t> total_rows_ = std::nullopt;
     const int32_t batch_size_;

@@ -461,18 +461,17 @@ Status FileStoreScan::ReadAndMergeBucketFileEntries(
             auto read_meta_task = [this, meta, bucket,
                                    inferred_bucket]() -> Result<std::vector<ManifestEntry>> {
                 std::vector<ManifestEntry> bucket_entries;
-                if (inferred_bucket) {
-                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
-                        meta.FileName(), bucket, &bucket_entries, core_options_.GetBucket()));
-                } else if (meta.MinBucket() && meta.MaxBucket() &&
-                           meta.MinBucket().value() == bucket &&
-                           meta.MaxBucket().value() == bucket) {
+                if (meta.MinBucket() && meta.MaxBucket() && meta.MinBucket().value() == bucket &&
+                    meta.MaxBucket().value() == bucket) {
                     // Every entry belongs to this bucket; a projection pass cannot prune rows.
                     PAIMON_RETURN_NOT_OK(
                         manifest_file_->Read(meta.FileName(), /*filter=*/nullptr, &bucket_entries));
+                } else if (inferred_bucket) {
+                    PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
+                        meta.FileName(), bucket, core_options_.GetBucket(), &bucket_entries));
                 } else {
                     PAIMON_RETURN_NOT_OK(manifest_file_->ReadBucketEntries(
-                        meta.FileName(), bucket, &bucket_entries, std::nullopt));
+                        meta.FileName(), bucket, std::nullopt, &bucket_entries));
                 }
                 return bucket_entries;
             };

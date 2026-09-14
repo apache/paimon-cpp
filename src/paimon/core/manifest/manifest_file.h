@@ -67,15 +67,15 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// different or unknown bucket counts for the existing compatibility checks.
     /// For inferred buckets, the caller must first verify that all historical bucket schemas
     /// covered by the manifest are compatible with the scan's bucket selector.
-    /// Serialization versions are validated only for the retained entries.
+    /// Serialization versions are validated for all entries before bucket filtering.
     Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
+                             const std::optional<int32_t>& expected_total_buckets,
                              std::optional<int64_t> file_size,
-                             std::vector<ManifestEntry>* entries,
-                             const std::optional<int32_t>& expected_total_buckets) const;
+                             std::vector<ManifestEntry>* entries) const;
 
  private:
-    Status PrepareBucketRead(std::unique_ptr<FileBatchReader>* reader, int32_t bucket,
-                             const std::optional<int32_t>& expected_total_buckets) const;
+    Status PrepareBucketRead(int32_t bucket, const std::optional<int32_t>& expected_total_buckets,
+                             std::unique_ptr<FileBatchReader>* reader) const;
 
     ManifestFile(const std::shared_ptr<FileSystem>& file_system,
                  const std::shared_ptr<ReaderBuilder>& reader_builder,
