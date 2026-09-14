@@ -1,22 +1,3 @@
-<!--
-Licensed to the Apache Software Foundation (ASF) under one
-or more contributor license agreements. See the NOTICE file
-distributed with this work for additional information
-regarding copyright ownership. The ASF licenses this file
-to you under the Apache License, Version 2.0 (the
-"License"); you may not use this file except in compliance
-with the License. You may obtain a copy of the License at
-
-  http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing,
-software distributed under the License is distributed on an
-"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-KIND, either express or implied. See the License for the
-specific language governing permissions and limitations
-under the License.
--->
-
 Table: append_java_compat
 Writer: Paimon Java 2.1-SNAPSHOT at commit 63ffd403648e1cf9848e32bb29a398c1b3b16ab1
 Lance version: lance-core 0.39.0
@@ -70,13 +51,8 @@ Add: (11, true, -5, -1000, 10000000011, 1.25, -2.5, "char0001", "value-11", 0x62
 
 Commit - snapshot 2 (4 rows total)
 
-ScanAndReadInteTest.TestLanceJavaCompatibility checks all values, reordered projection and
-opt-in exact predicate filtering with batch size 1. The default scan retains both files;
-the test does not assume Lance min/max pruning.
-
 At this Java revision, nullable ROW declarations are accepted but actual null ROW parents
 do not survive the Lance round trip (a separate probe read id=2's null parent as non-null).
 Both struct parents here are valid, including id=2 where their children are NULL.
 TIME32 is omitted because the C++ table path does not support it; Java's Lance validator
-rejects local-zoned timestamps, MAP, MULTISET, VARIANT and BLOB. This fixture does not
-claim null-parent ROW support or Python compatibility.
+rejects local-zoned timestamps, MAP, MULTISET, VARIANT and BLOB.

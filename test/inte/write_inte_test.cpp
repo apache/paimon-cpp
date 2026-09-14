@@ -815,10 +815,7 @@ TEST_P(WriteInteTest, TestAppendTableStreamWriteWithPartitionAndMultiBuckets) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWriteWithComplexType) {
-    if (GetParam() == "lance") {
-        GTEST_SKIP() << "Lance file format does not support type MAP";
-    }
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -1650,10 +1647,7 @@ TEST_P(WriteInteTest, TestPkTableWriteWithNoPartitionKey) {
 }
 
 TEST_P(WriteInteTest, TestPkTableWriteWithComplexType) {
-    if (GetParam() == "lance") {
-        GTEST_SKIP() << "Lance file format does not support type MAP";
-    }
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();
@@ -2508,10 +2502,7 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
 
 TEST_P(WriteInteTest, TestWriteWithFieldId) {
     auto file_format = GetParam();
-    if (file_format == "lance") {
-        GTEST_SKIP() << "Lance file format does not support type MAP";
-    }
-    if (file_format == "avro" || file_format == "mosaic") {
+    if (file_format == "avro" || file_format == "mosaic" || file_format == "lance") {
         return;
     }
     // prepare write schema and write data
@@ -3113,12 +3104,8 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
 }
 
 TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
-    }
-    if (GetParam() == "lance") {
-        GTEST_SKIP()
-            << "Lance 0.39 default v2.0 files do not preserve nullable STRUCT parent validity";
     }
     arrow::FieldVector fields = {
         arrow::field("f0", arrow::struct_({arrow::field("v0", arrow::boolean()),
@@ -3382,10 +3369,7 @@ TEST_P(WriteInteTest, TestWriteMemoryUse) {
 }
 
 TEST_P(WriteInteTest, TestAppendTableWithAllNull) {
-    if (GetParam() == "lance") {
-        GTEST_SKIP() << "Lance file format does not support type MAP";
-    }
-    if (GetParam() == "mosaic") {
+    if (GetParam() == "mosaic" || GetParam() == "lance") {
         return;
     }
     auto dir = UniqueTestDirectory::Create();

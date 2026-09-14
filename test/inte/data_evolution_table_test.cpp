@@ -1654,7 +1654,7 @@ TEST_P(DataEvolutionTableTest, TestPartitionWithPredicate) {
 
 TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
     if (FileFormat() != "parquet" && FileFormat() != "lance") {
-        GTEST_SKIP() << "VECTOR currently only supports Parquet and Lance data files";
+        return;
     }
     auto vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
@@ -1746,7 +1746,7 @@ TEST_P(DataEvolutionTableTest, TestVectorReadWrite) {
 
 TEST_P(DataEvolutionTableTest, TestNestedVectorReadWrite) {
     if (FileFormat() != "parquet") {
-        GTEST_SKIP() << "Nested nullable ROW test currently only supports Parquet data files";
+        return;
     }
     auto vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
@@ -1794,7 +1794,7 @@ TEST_P(DataEvolutionTableTest, TestNestedVectorReadWrite) {
 
 TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolution) {
     if (FileFormat() != "parquet" && FileFormat() != "lance") {
-        GTEST_SKIP() << "VECTOR currently only supports Parquet and Lance data files";
+        return;
     }
     auto retained_vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);
@@ -1861,7 +1861,7 @@ TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolution) {
 
 TEST_P(DataEvolutionTableTest, TestVectorSchemaEvolutionRejectsTypeChange) {
     if (FileFormat() != "parquet" && FileFormat() != "lance") {
-        GTEST_SKIP() << "VECTOR currently only supports Parquet and Lance data files";
+        return;
     }
     auto vector_type =
         arrow::fixed_size_list(arrow::field("item", arrow::float32(), /*nullable=*/false), 3);

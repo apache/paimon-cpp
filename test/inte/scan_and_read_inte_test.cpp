@@ -3015,6 +3015,84 @@ TEST_F(ScanAndReadInteTest, TestLanceJavaCompatibility) {
             .ValueOrDie());
     check(predicate, {"f_nullable_struct", "id", "f_vector"}, projected);
 }
+
+TEST_F(ScanAndReadInteTest, TestLancePythonCompatibility) {
+    TimezoneGuard timezone_guard("UTC");
+    arrow::FieldVector fields = {
+        arrow::field("_VALUE_KIND", arrow::int8()),
+        arrow::field("id", arrow::int32()),
+        arrow::field("f_boolean", arrow::boolean()),
+        arrow::field("f_tinyint", arrow::int8()),
+        arrow::field("f_smallint", arrow::int16()),
+        arrow::field("f_bigint", arrow::int64()),
+        arrow::field("f_float", arrow::float32()),
+        arrow::field("f_double", arrow::float64()),
+        arrow::field("f_string", arrow::utf8()),
+        arrow::field("f_binary", arrow::binary()),
+        arrow::field("f_date", arrow::date32()),
+        arrow::field("f_ts_0", arrow::timestamp(arrow::TimeUnit::SECOND)),
+        arrow::field("f_ts_3", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("f_ts_6", arrow::timestamp(arrow::TimeUnit::MICRO)),
+        arrow::field("f_ts_9", arrow::timestamp(arrow::TimeUnit::NANO)),
+        arrow::field("f_decimal_1_0", arrow::decimal128(1, 0)),
+        arrow::field("f_decimal_18_2", arrow::decimal128(18, 2)),
+        arrow::field("f_decimal_19_2", arrow::decimal128(19, 2)),
+        arrow::field("f_decimal_38_18", arrow::decimal128(38, 18)),
+        arrow::field("f_array_int", arrow::list(arrow::int32())),
+        arrow::field("f_array_array_int", arrow::list(arrow::list(arrow::int32()))),
+        arrow::field("f_struct", arrow::struct_({arrow::field("number", arrow::int32()),
+                                                 arrow::field("label", arrow::utf8())})),
+        arrow::field("f_vector", arrow::fixed_size_list(arrow::float32(), 3)),
+    };
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+[0, 1, true, -5, -1000, 10000000001, 1.25, -2.5, "value-1", "\u0000\u0001\u0002\u007f", -1, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [1, null, -1], [[1, null], null, []], [1, "row-1"], [1.0, -1.5, 0.25]],
+[0, 2, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, [null, null], null],
+[0, 10, false, -5, -1000, 10000000010, 1.25, -2.5, "", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [], [[10, null], null, []], [10, "row-10"], [10.0, -1.5, 0.25]],
+[0, 11, true, -5, -1000, 10000000011, 1.25, -2.5, "value-11", "\u0000\u0001\u0002\u007f", 20000, "1970-01-01 00:00:01", "1970-01-01 00:00:01.123", "1970-01-01 00:00:01.123456", "1970-01-01 00:00:01.123456789", "-3", "1.25", "12345678901234567.89", "12345678901234567890.123456789012345678", [11, null, -11], [[11, null], null, []], [11, "row-11"], [11.0, -1.5, 0.25]]
+])")
+            .ValueOrDie());
+    const std::string table_path =
+        GetDataDir() + "/lance/append_python_compat.db/append_python_compat";
+    auto check = [&](int64_t snapshot_id, const std::vector<std::string>& projection,
+                     const std::shared_ptr<arrow::ChunkedArray>& expected_result) {
+        SCOPED_TRACE("snapshot " + std::to_string(snapshot_id));
+        ScanContextBuilder scan_builder(table_path);
+        scan_builder.AddOption(Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id));
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(snapshot_id));
+        ASSERT_FALSE(plan->Splits().empty());
+
+        ReadContextBuilder read_builder(table_path);
+        read_builder.AddOption("read.batch-size", "1");
+        if (!projection.empty()) {
+            read_builder.SetReadFieldNames(projection);
+        }
+        ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(expected_result->Equals(actual))
+            << "actual: " << actual->ToString() << "\nexpected: " << expected_result->ToString();
+    };
+    // These are independently committed Paimon snapshots, not standalone Lance datasets.
+    check(1, /*projection=*/{}, expected->Slice(0, 2));
+    check(2, /*projection=*/{}, expected);
+    auto projected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({fields[0], fields[21], fields[1], fields[22], fields[19]}), R"([
+[0, [1, "row-1"], 1, [1.0, -1.5, 0.25], [1, null, -1]],
+[0, [null, null], 2, null, null],
+[0, [10, "row-10"], 10, [10.0, -1.5, 0.25], []],
+[0, [11, "row-11"], 11, [11.0, -1.5, 0.25], [11, null, -11]]
+])")
+            .ValueOrDie());
+    check(1, {"f_struct", "id", "f_vector", "f_array_int"}, projected->Slice(0, 2));
+    check(2, {"f_struct", "id", "f_vector", "f_array_int"}, projected);
+}
 #endif
 
 #ifdef PAIMON_ENABLE_MOSAIC
