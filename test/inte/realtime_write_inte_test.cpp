@@ -1249,6 +1249,42 @@ TEST_F(RealtimeWriteInteTest, TestAppendCommitAndRead) {
     FinalizeCommitAndCheck(writer.get(), /*realtime_commits=*/{}, /*prepare_identifier=*/0, rows);
 }
 
+TEST_F(RealtimeWriteInteTest, TestRealtimeReadBatchSizeSplitsLargeAppendBatch) {
+    CreateTable(/*partition_keys=*/{});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context));
+
+    constexpr int64_t kRowCount = 1000;
+    const std::vector<Row> expected_rows = MakeRows(/*first_id=*/0, kRowCount, /*partition=*/"p0");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch(expected_rows, /*partitioned=*/false));
+    ASSERT_OK(writer->Write(std::move(batch)));
+
+    for (int32_t read_batch_size : {1, 17, 128, 2048}) {
+        options_[Options::READ_BATCH_SIZE] = std::to_string(read_batch_size);
+        ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(realtime_context));
+        ASSERT_EQ(expected_rows, actual_rows);
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                             CreatePlan(realtime_context, /*predicate=*/nullptr));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<arrow::ChunkedArray> result,
+            ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, /*predicate=*/nullptr,
+                     /*enable_predicate_filter=*/false));
+        ASSERT_NE(nullptr, result);
+        ASSERT_EQ(kRowCount, result->length());
+        ASSERT_EQ((kRowCount + read_batch_size - 1) / read_batch_size, result->num_chunks());
+        for (const std::shared_ptr<arrow::Array>& chunk : result->chunks()) {
+            ASSERT_GT(chunk->length(), 0);
+            ASSERT_LE(chunk->length(), read_batch_size);
+        }
+    }
+    FinalizeCommitAndCheck(writer.get(), /*realtime_commits=*/{}, /*prepare_identifier=*/0,
+                           expected_rows);
+}
+
 TEST_F(RealtimeWriteInteTest, TestRealtimeMetricsTrackBuildingSealedAndCommittedData) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,

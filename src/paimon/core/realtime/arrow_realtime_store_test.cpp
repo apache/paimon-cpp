@@ -339,23 +339,33 @@ TEST_F(ArrowRealtimeStoreTest, TestSealSpillsAndKeepsPinnedMemoryViewReadable) {
     ASSERT_EQ(std::vector<int64_t>({1, 2, 3}), ReadIds(committed));
 
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
-    RealtimeQueryContext context{read_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext context{read_schema.get(), /*predicate=*/nullptr,
+                                 /*read_batch_size=*/1};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> query_readers,
                          store->CreateQueryReaders(pinned_view, context));
     ASSERT_EQ(1, query_readers.size());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> pinned,
                          ReadResultCollector::CollectResult(std::move(query_readers[0])));
     ASSERT_EQ(std::vector<int64_t>({1, 2, 3}), ReadIds(pinned));
+    ASSERT_EQ(3, pinned->num_chunks());
+    for (const std::shared_ptr<arrow::Array>& chunk : pinned->chunks()) {
+        ASSERT_EQ(1, chunk->length());
+    }
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> spilled_view, store->AcquireReadView());
     std::unique_ptr<ArrowSchema> spilled_read_schema = MakeReadSchema(schema_);
-    RealtimeQueryContext spilled_context{spilled_read_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext spilled_context{spilled_read_schema.get(), /*predicate=*/nullptr,
+                                         /*read_batch_size=*/1};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> spilled_readers,
                          store->CreateQueryReaders(spilled_view, spilled_context));
     ASSERT_EQ(1, spilled_readers.size());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> spilled,
                          ReadResultCollector::CollectResult(std::move(spilled_readers[0])));
     ASSERT_EQ(std::vector<int64_t>({1, 2, 3}), ReadIds(spilled));
+    ASSERT_EQ(3, spilled->num_chunks());
+    for (const std::shared_ptr<arrow::Array>& chunk : spilled->chunks()) {
+        ASSERT_EQ(1, chunk->length());
+    }
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestFactoryDoesNotSpillWithoutOption) {

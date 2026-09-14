@@ -138,6 +138,8 @@ struct PAIMON_EXPORT RealtimeQueryContext {
     /// Optional predicate using field indexes from `read_schema`. A non-null predicate allows the
     /// plugin to prune candidate rows. Exact filtering is applied by the Paimon read framework.
     std::shared_ptr<Predicate> predicate;
+    /// Maximum number of rows in a returned query batch.
+    int32_t read_batch_size = 1024;
 };
 
 /// Customizable plugin interface for storing and querying real-time rows before Paimon data-file
@@ -182,7 +184,8 @@ class PAIMON_EXPORT RealtimeStore {
 
     /// Creates readers over rows in `view`. The readers collectively expose every candidate row
     /// exactly once. Primary-key reader streams are sorted by full primary key then sequence
-    /// number. Paimon retains `view` for the lifetime of the resulting framework reader.
+    /// number. Every returned batch contains at most `context.read_batch_size` rows. Paimon retains
+    /// `view` for the lifetime of the resulting framework reader.
     /// Returned readers have independent mutable read state and may be operated concurrently with
     /// one another without external synchronization.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(

@@ -102,6 +102,65 @@ Result<BatchReader::ReadBatch> ExportStructBatch(
     return BatchReader::ReadBatch(std::move(c_array), std::move(c_schema));
 }
 
+class SlicedQueryBatchReader final : public BatchReader {
+ public:
+    SlicedQueryBatchReader(std::unique_ptr<BatchReader>&& reader, int32_t read_batch_size,
+                           const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
+        : reader_(std::move(reader)), read_batch_size_(read_batch_size), arrow_pool_(arrow_pool) {}
+
+    Result<ReadBatch> NextBatch() override {
+        while (!current_batch_ || next_row_ >= current_batch_->length()) {
+            current_batch_.reset();
+            next_row_ = 0;
+            PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, reader_->NextBatch());
+            if (IsEofBatch(batch)) {
+                return batch;
+            }
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                std::shared_ptr<arrow::Array> array,
+                arrow::ImportArray(batch.first.get(), batch.second.get()));
+            if (!array || array->type_id() != arrow::Type::STRUCT) {
+                return Status::Invalid("real-time query batch must be a StructArray");
+            }
+            current_batch_ = checked_pointer_cast<arrow::StructArray>(array);
+        }
+
+        const int64_t length =
+            std::min<int64_t>(read_batch_size_, current_batch_->length() - next_row_);
+        std::shared_ptr<arrow::StructArray> slice =
+            checked_pointer_cast<arrow::StructArray>(current_batch_->Slice(next_row_, length));
+        next_row_ += length;
+        return ExportStructBatch(slice, arrow_pool_);
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return reader_->GetReaderMetrics();
+    }
+
+    void Close() override {
+        current_batch_.reset();
+        arrow_pool_.reset();
+        reader_->Close();
+    }
+
+ private:
+    std::unique_ptr<BatchReader> reader_;
+    int32_t read_batch_size_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    std::shared_ptr<arrow::StructArray> current_batch_;
+    int64_t next_row_ = 0;
+};
+
+std::vector<std::unique_ptr<BatchReader>> SliceQueryReaders(
+    std::vector<std::unique_ptr<BatchReader>>&& readers, int32_t read_batch_size,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    for (std::unique_ptr<BatchReader>& reader : readers) {
+        reader = std::make_unique<SlicedQueryBatchReader>(std::move(reader), read_batch_size,
+                                                          arrow_pool);
+    }
+    return std::move(readers);
+}
+
 }  // namespace
 
 class ArrowRealtimeStore::Segment : public RealtimeSegmentHandle {
@@ -362,8 +421,6 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
           metrics_(std::make_shared<MetricsImpl>()) {}
 
     Result<ReadBatch> NextBatch() override {
-        // TODO(xinyu.lxy): Memory query reads return complete stored write batches and
-        // intentionally ignore the configured read batch size.
         while (view_ && next_segment_ < view_->GetSegments().size()) {
             const std::shared_ptr<Segment>& segment = view_->GetSegments()[next_segment_];
             std::shared_ptr<MemorySegment> memory_segment =
@@ -750,11 +807,14 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
     if (context.read_schema == nullptr || context.read_schema->release == nullptr) {
         return Status::Invalid("mem query read schema is null");
     }
+    if (context.read_batch_size <= 0) {
+        return Status::Invalid("real-time query read batch size must be positive");
+    }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> read_schema,
                                       arrow::ImportSchema(context.read_schema));
     std::vector<std::unique_ptr<BatchReader>> readers;
     if (!arrow_view->GetOffsetRange()) {
-        return readers;
+        return SliceQueryReaders(std::move(readers), context.read_batch_size, arrow_pool_);
     }
     std::shared_ptr<PredicateFilter> predicate_filter;
     if (context.predicate) {
@@ -824,14 +884,14 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateQuer
                     std::vector<int32_t>{batch_index}, read_schema, arrow_pool_));
             }
         }
-        return readers;
+        return SliceQueryReaders(std::move(readers), context.read_batch_size, arrow_pool_);
     }
 
     std::unique_ptr<BatchReader> reader = std::make_unique<AppendQueryBatchReader>(
         arrow_view, read_schema, predicate_filter, std::move(statistics_mapping), arrow_pool_,
         memory_pool_);
     readers.push_back(std::move(reader));
-    return readers;
+    return SliceQueryReaders(std::move(readers), context.read_batch_size, arrow_pool_);
 }
 
 Status ArrowRealtimeStore::AdvanceCommittedOffset(int64_t committed_end_offset) {

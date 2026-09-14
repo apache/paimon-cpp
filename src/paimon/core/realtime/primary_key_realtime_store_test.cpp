@@ -215,10 +215,34 @@ TEST(PrimaryKeyRealtimeStoreTest, TestSpilledFileReturnsOneIndependentReaderPerS
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
+                                 /*read_batch_size=*/1};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> query_readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(2, query_readers.size());
+
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch first, query_readers[0]->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(first));
+    AssertOffsetsZero(first.first.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first_array,
+                         ReadResultCollector::GetArray(std::move(first)));
+    ASSERT_EQ(1, first_array->length());
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch independent, query_readers[1]->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(independent));
+    AssertOffsetsZero(independent.first.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> independent_array,
+                         ReadResultCollector::GetArray(std::move(independent)));
+    ASSERT_EQ(1, independent_array->length());
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch second, query_readers[0]->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(second));
+    AssertOffsetsZero(second.first.get());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> second_array,
+                         ReadResultCollector::GetArray(std::move(second)));
+    ASSERT_EQ(1, second_array->length());
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch first_eof, query_readers[0]->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(first_eof));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch independent_eof, query_readers[1]->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(independent_eof));
 }
 
 void AssertSlicedBatch(BatchReader* reader) {
