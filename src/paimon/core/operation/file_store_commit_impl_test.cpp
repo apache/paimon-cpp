@@ -2238,13 +2238,6 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestDeletionVectorOnlyChange) 
     ASSERT_OK_AND_ASSIGN(Snapshot latest_snapshot, commit_impl->snapshot_manager_->LoadSnapshot(2));
     ASSERT_TRUE(latest_snapshot.IndexManifest().has_value());
 
-    // Unsupported expiration must leave the rollback target and its manifests intact.
-    Result<int32_t> expired = commit->Expire();
-    ASSERT_FALSE(expired.ok());
-    ASSERT_TRUE(expired.status().IsNotImplemented()) << expired.status().ToString();
-    ASSERT_OK_AND_ASSIGN(bool exists, commit_impl->snapshot_manager_->SnapshotExists(1));
-    ASSERT_TRUE(exists);
-
     // Roll back to snapshot 1: the data files are identical, so the delta carries no data change
     // and the new snapshot inherits the target's (empty) index manifest, dropping the deletion
     // vector.
@@ -2264,6 +2257,12 @@ TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestDeletionVectorOnlyChange) 
     ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> rolled_back_entries,
                          commit_impl->ReadAddManifestEntries(rolled_back_snapshot));
     ASSERT_EQ(CollectFileNames(rolled_back_entries), CollectFileNames(target_entries));
+    // Index-manifest expiration is supported. Expire only after the rollback has used its target.
+    ASSERT_OK_AND_ASSIGN(int32_t expired, commit->Expire());
+    ASSERT_EQ(expired, 2);
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestEntry> retained_entries,
+                         commit_impl->ReadAddManifestEntries(rolled_back_snapshot));
+    ASSERT_EQ(CollectFileNames(retained_entries), CollectFileNames(rolled_back_entries));
 }
 
 TEST_F(FileStoreCommitImplTest, TestRollbackToAsLatestConcurrentConflictReturnsFalse) {
