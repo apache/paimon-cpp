@@ -626,8 +626,26 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5WithReaderBuildParallelism) {
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
-    ASSERT_TRUE(read_result);
-    ASSERT_GT(read_result->length(), 0);
+
+    // The parallel build has to return exactly the rows of the sequential snapshot-5 read above,
+    // in the very same order.
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow_data_type_, R"([
+[0, "Alice", 10, 1, 11.1],
+[0, "Bob", 10, 0, 12.1],
+[0, "Emily", 10, 0, 13.1],
+[0, "Tony", 10, 0, 14.1],
+[0, "Emily", 10, 0, 15.1],
+[0, "Bob", 10, 0, 12.1],
+[0, "Alex", 10, 0, 16.1],
+[0, "David", 10, 0, 17.1],
+[0, "Lily", 10, 0, 17.1],
+[0, "Lucy", 20, 1, 14.1],
+[0, "Paul", 20, 1, null]
+   ])")
+            .ValueOrDie());
+    ASSERT_TRUE(expected);
+    ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
 }
 
 TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotWithStreamWithDefaultMode) {

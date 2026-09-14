@@ -68,29 +68,6 @@ class FileStorePathFactory;
 class MemoryPool;
 class Predicate;
 
-namespace {
-
-/// Set while a thread is building one data file reader. Building a reader may reach
-/// `CreateRawFileReaders` again, and that nested call has to stay serial: it would
-/// otherwise submit tasks to the reader build pool and block a worker of that same
-/// pool waiting for them.
-thread_local bool building_reader = false;
-
-class BuildingReaderGuard {
- public:
-    BuildingReaderGuard() {
-        building_reader = true;
-    }
-    ~BuildingReaderGuard() {
-        building_reader = false;
-    }
-
-    BuildingReaderGuard(const BuildingReaderGuard&) = delete;
-    BuildingReaderGuard& operator=(const BuildingReaderGuard&) = delete;
-};
-
-}  // namespace
-
 AbstractSplitRead::AbstractSplitRead(const std::shared_ptr<FileStorePathFactory>& path_factory,
                                      const std::shared_ptr<InternalReadContext>& context,
                                      std::unique_ptr<SchemaManager>&& schema_manager,
@@ -122,7 +99,7 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
     raw_file_readers.reserve(data_files.size());
     const uint32_t parallel_num =
         static_cast<uint32_t>(std::min<size_t>(kReaderBuildMaxParallelNum, data_files.size()));
-    if (parallel_num <= 1 || building_reader) {
+    if (parallel_num <= 1) {
         for (const auto& file : data_files) {
             PAIMON_ASSIGN_OR_RAISE(
                 std::unique_ptr<FileBatchReader> file_reader,
@@ -145,7 +122,6 @@ Result<std::vector<std::unique_ptr<FileBatchReader>>> AbstractSplitRead::CreateR
         futures.push_back(Via(
             build_executor.get(), [this, file, &partition, &field_mapping_builder, &dv_factory,
                                    &row_ranges, &data_file_path_factory, &extra_format_options]() {
-                BuildingReaderGuard guard;
                 return CreateRawFileReader(partition, file, field_mapping_builder.get(), dv_factory,
                                            row_ranges, data_file_path_factory,
                                            extra_format_options);

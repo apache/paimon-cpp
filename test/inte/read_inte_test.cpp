@@ -2861,8 +2861,37 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithReaderBuildParallelism
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto result_array,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
-    ASSERT_TRUE(result_array);
-    ASSERT_GT(result_array->length(), 0);
+
+    // The concurrent build resolves each file against its own schema id, so it has to return
+    // exactly the rows the sequential schema-evolution read above returns.
+    std::vector<DataField> read_fields = {DataField(0, arrow::field("key0", arrow::int32())),
+                                          DataField(1, arrow::field("key1", arrow::int32())),
+                                          DataField(6, arrow::field("k", arrow::int32())),
+                                          DataField(3, arrow::field("c", arrow::int32())),
+                                          DataField(7, arrow::field("d", arrow::int32())),
+                                          DataField(5, arrow::field("a", arrow::int32())),
+                                          DataField(8, arrow::field("e", arrow::int32()))};
+    auto fields_with_row_kind = read_fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
+    std::shared_ptr<arrow::DataType> arrow_data_type =
+        DataField::ConvertDataFieldsToArrowStructType(fields_with_row_kind);
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
+        [0, 0, 1, 16, 13, null, 15, null],
+        [0, 0, 1, 26, 23, null, 25, null],
+        [0, 0, 1, 36, 33, null, 35, null],
+        [0, 0, 1, 66, 63, 517, 65, 618],
+        [0, 0, 1, 76, 73, 527, 75, 628],
+        [0, 0, 1, 86, 83, 537, 85, 638],
+        [0, 1, 1, 96, 93, 547, 95, 648],
+        [0, 1, 1, 106, 103, 557, 105, 658],
+        [0, 1, 1, 46, 43, null, 45, null],
+        [0, 1, 1, 56, 53, null, 55, null]
+    ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    ASSERT_TRUE(result_array->Equals(*expected_array));
 }
 
 TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateFilter) {
