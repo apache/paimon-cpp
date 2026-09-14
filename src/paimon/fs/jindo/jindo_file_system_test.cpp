@@ -204,4 +204,32 @@ TEST(JindoFileSystemAsyncReadTest, TestConcurrentReadAsyncAndReadFromOss) {
     }
 }
 
+TEST_F(JindoFileSystemTest, TestOpenWithKnownFileSizeReadsBackContent) {
+    const std::string content = "abcdefghijk";
+    const std::string file_path = test_dir_ + "file.data";
+    ASSERT_OK(fs_->WriteFile(file_path, content, /*overwrite=*/true));
+
+    // The read path hands Open a length it already trusts; the stream must still serve the
+    // object's real bytes, not just echo the length back.
+    ASSERT_OK_AND_ASSIGN(auto in_stream,
+                         fs_->Open(FileStatus(file_path, static_cast<int64_t>(content.size()))));
+    ASSERT_OK_AND_ASSIGN(int64_t length, in_stream->Length());
+    ASSERT_EQ(length, static_cast<int64_t>(content.size()));
+    std::string read_content(content.size(), '\0');
+    ASSERT_OK_AND_ASSIGN(int64_t read_len,
+                         in_stream->Read(read_content.data(), read_content.size()));
+    ASSERT_EQ(read_len, static_cast<int64_t>(content.size()));
+    ASSERT_EQ(content, read_content);
+    ASSERT_OK(in_stream->Close());
+
+    // A stale length shorter than the object must never yield bytes beyond what it vouches
+    // for: the wrapper read is all-or-nothing, so over-reading the declared length fails with
+    // an EOF error instead of silently returning truncated data.
+    const int64_t short_length = static_cast<int64_t>(content.size()) - 3;
+    ASSERT_OK_AND_ASSIGN(auto short_stream, fs_->Open(FileStatus(file_path, short_length)));
+    std::string short_read(content.size(), '\0');
+    ASSERT_NOK_WITH_MSG(short_stream->Read(short_read.data(), short_read.size()), "EOF reached");
+    ASSERT_OK(short_stream->Close());
+}
+
 }  // namespace paimon::jindo::test

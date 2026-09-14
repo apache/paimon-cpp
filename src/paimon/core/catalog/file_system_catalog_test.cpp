@@ -26,13 +26,16 @@
 #include "arrow/c/helpers.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/commit_context.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/system_table_schema.h"
 #include "paimon/defs.h"
+#include "paimon/file_store_commit.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/snapshot/snapshot_info.h"
@@ -1233,6 +1236,58 @@ TEST(FileSystemCatalogTest, TestListSnapshots) {
 
     // Verify ascending order by snapshot_id
     ASSERT_LT(snapshots[0].snapshot_id, snapshots[1].snapshot_id);
+}
+
+namespace {
+class ClaimsVersionManagementCatalog : public FileSystemCatalog {
+ public:
+    using FileSystemCatalog::FileSystemCatalog;
+
+    bool SupportsVersionManagement() const override {
+        return true;
+    }
+};
+}  // namespace
+
+TEST(FileSystemCatalogTest, TestClaimingVersionManagementWithoutImplementingItIsRefused) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<Catalog> claiming = std::make_shared<ClaimsVersionManagementCatalog>(
+        core_options.GetFileSystem(), dir->Str(), options);
+
+    ASSERT_TRUE(claiming->SupportsVersionManagement());
+    ASSERT_EQ(AsVersionManaged(claiming), nullptr);
+    ASSERT_NOK_WITH_MSG(CheckVersionManagementImplemented(claiming),
+                        "does not implement VersionManagedCatalog");
+
+    CommitContextBuilder claiming_builder(dir->Str(), "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> claiming_context,
+                         claiming_builder.SetOptions(options)
+                             .WithCatalog(claiming, Identifier("db", "tbl"))
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(claiming_context)),
+                        "does not implement VersionManagedCatalog");
+
+    std::shared_ptr<Catalog> plain =
+        std::make_shared<FileSystemCatalog>(core_options.GetFileSystem(), dir->Str(), options);
+    ASSERT_OK(CheckVersionManagementImplemented(plain));
+    ASSERT_OK(CheckVersionManagementImplemented(nullptr));
+}
+
+TEST(FileSystemCatalogTest, TestDoesNotManageVersions) {
+    std::map<std::string, std::string> options;
+    options[Options::FILE_SYSTEM] = "local";
+    ASSERT_OK_AND_ASSIGN(auto core_options, CoreOptions::FromMap(options));
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<Catalog> catalog =
+        std::make_shared<FileSystemCatalog>(core_options.GetFileSystem(), dir->Str(), options);
+
+    ASSERT_FALSE(catalog->SupportsVersionManagement());
+    ASSERT_EQ(AsVersionManaged(catalog), nullptr);
 }
 
 TEST(FileSystemCatalogTest, TestListSnapshotsTableNotExist) {

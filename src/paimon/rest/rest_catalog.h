@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/catalog/catalog.h"
+#include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/logging.h"
 #include "paimon/rest/rest_api.h"
 #include "paimon/result.h"
@@ -39,7 +40,7 @@ class TableSchema;
 /// A catalog backed by a REST catalog server. Metadata operations are delegated to
 /// `RestApi`; table data is accessed through the file system configured by the
 /// server-merged options.
-class RestCatalog : public Catalog {
+class RestCatalog : public Catalog, public VersionManagedCatalog {
  public:
     /// Creates the catalog: fetches and merges "/v1/config" from the server configured
     /// by `CatalogOptions::URI`, then builds the file system from the merged options.
@@ -75,6 +76,18 @@ class RestCatalog : public Catalog {
     Result<std::vector<SnapshotInfo>> ListSnapshots(const Identifier& identifier,
                                                     const std::string& branch) const override;
 
+    bool SupportsVersionManagement() const override {
+        return true;
+    }
+
+    Result<std::optional<Snapshot>> LoadSnapshot(const Identifier& identifier) const override;
+
+    Result<bool> CommitSnapshot(const Identifier& identifier,
+                                const std::optional<std::string>& table_uuid,
+                                const std::optional<std::string>& base_snapshot_uuid,
+                                const Snapshot& snapshot,
+                                const std::vector<PartitionStatistics>& statistics) override;
+
     /// Options merged with the server side config.
     const std::map<std::string, std::string>& GetOptions() const override;
 
@@ -88,11 +101,15 @@ class RestCatalog : public Catalog {
     RestCatalog(std::unique_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
                 const std::string& warehouse);
 
-    /// Loads the table from the server and converts the response to a `TableSchema`
-    /// (options are enriched with the table path, audit info and branch).
+    /// Loads the schema and catalog table ID from the same response.
+    Result<std::shared_ptr<Schema>> LoadTableSchema(const Identifier& identifier,
+                                                    std::string* table_id) const;
+
+    /// Loads the schema with table path, audit and branch options.
+    /// Fills `table_path` and `table_id` when supplied.
     Result<std::shared_ptr<TableSchema>> LoadDataTableSchema(
         const Identifier& data_identifier, const std::optional<std::string>& branch,
-        std::string* table_path) const;
+        std::string* table_path, std::string* table_id) const;
 
     static Result<std::unique_ptr<TableSchema>> ToTableSchema(
         const GetTableResponse& response, const std::optional<std::string>& branch);

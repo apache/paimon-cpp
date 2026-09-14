@@ -267,6 +267,67 @@ TEST(RestMessagesTest, RenameTableRequestSerialize) {
     ASSERT_EQ("t2", parsed.GetDestinationTable());
 }
 
+TEST(RestMessagesTest, GetTableSnapshotResponseRoundTrip) {
+    std::string json = R"({"snapshot": {"snapshot": {"version": 3, "id": 7, "schemaId": 0,)"
+                       R"( "baseManifestList": "bml", "deltaManifestList": "dml",)"
+                       R"( "commitUser": "u", "commitIdentifier": 1, "commitKind": "APPEND",)"
+                       R"( "timeMillis": 100, "totalRecordCount": 10, "deltaRecordCount": 1},)"
+                       R"( "recordCount": 10, "fileSizeInBytes": 20, "fileCount": 3,)"
+                       R"( "lastFileCreationTime": 4}})";
+    ASSERT_OK_AND_ASSIGN(GetTableSnapshotResponse parsed,
+                         GetTableSnapshotResponse::FromJsonString(json));
+    ASSERT_TRUE(parsed.GetSnapshot());
+    ASSERT_EQ(parsed.GetSnapshot()->Id(), 7);
+    ASSERT_EQ(parsed.GetSnapshot()->BaseManifestList(), "bml");
+
+    ASSERT_OK_AND_ASSIGN(std::string written, parsed.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(GetTableSnapshotResponse round_tripped,
+                         GetTableSnapshotResponse::FromJsonString(written));
+    ASSERT_EQ(round_tripped.GetSnapshot(), parsed.GetSnapshot());
+
+    ASSERT_OK(RapidJsonUtil::FromJsonString(R"({"snapshot": null})", &parsed));
+    ASSERT_FALSE(parsed.GetSnapshot());
+    ASSERT_OK_AND_ASSIGN(std::string empty_json, parsed.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(GetTableSnapshotResponse empty_round_trip,
+                         GetTableSnapshotResponse::FromJsonString(empty_json));
+    ASSERT_FALSE(empty_round_trip.GetSnapshot());
+
+    ASSERT_NOK_WITH_MSG(GetTableSnapshotResponse::FromJsonString("{}"),
+                        "must exist and be an object");
+    ASSERT_NOK_WITH_MSG(GetTableSnapshotResponse::FromJsonString(R"({"snapshot": {}})"),
+                        "key must exist");
+    ASSERT_NOK_WITH_MSG(
+        GetTableSnapshotResponse::FromJsonString(R"({"snapshot": {"snapshot": null}})"),
+        "key must exist");
+    ASSERT_NOK_WITH_MSG(GetTableSnapshotResponse::FromJsonString(R"({"snapshot": 7})"),
+                        "must exist and be an object or null");
+    ASSERT_NOK_WITH_MSG(GetTableSnapshotResponse::FromJsonString("[]"),
+                        "must exist and be an object");
+}
+
+TEST(RestMessagesTest, CommitTableResponseRoundTrip) {
+    CommitTableResponse response(true);
+    ASSERT_OK_AND_ASSIGN(std::string json, response.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CommitTableResponse parsed, CommitTableResponse::FromJsonString(json));
+    ASSERT_TRUE(parsed.IsSuccess());
+
+    ASSERT_OK_AND_ASSIGN(CommitTableResponse refused,
+                         CommitTableResponse::FromJsonString(R"({"success": false})"));
+    ASSERT_FALSE(refused.IsSuccess());
+
+    ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("{}"), "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString(R"({"success": null})"),
+                        "key must exist");
+    ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString(R"({"success": "true"})"),
+                        "value must be bool");
+    ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString(R"({"success": 1})"),
+                        "value must be bool");
+    ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("[]"), "value must be an object");
+    ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("null"), "value must be an object");
+    ASSERT_NOK_WITH_MSG(CommitTableResponse::FromJsonString("true"), "value must be an object");
+    ASSERT_NOK(CommitTableResponse::FromJsonString("not json"));
+}
+
 TEST(RestMessagesTest, CreateDatabaseRequestRoundTrip) {
     CreateDatabaseRequest request("db1", {{"k1", "v1"}});
     ASSERT_OK_AND_ASSIGN(std::string json, request.ToJsonString());

@@ -18,8 +18,11 @@
 
 #include "paimon/core/utils/snapshot_manager.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -27,6 +30,9 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/result.h"
+#include "paimon/status.h"
+#include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -79,6 +85,300 @@ TEST(SnapshotManagerTest, TestSimpleWithBranch) {
                          mgr.LatestSnapshotOfUser("884df499-c17a-4c78-a865-6fbbfea02f0b"));
     ASSERT_EQ(snapshot.value().CommitUser(), "884df499-c17a-4c78-a865-6fbbfea02f0b");
     ASSERT_EQ(snapshot.value().CommitIdentifier(), 1);
+}
+
+TEST(SnapshotManagerTest, SnapshotLoaderAnswersWhichSnapshotIsLatest) {
+    std::string test_data_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, test_data_path);
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> from_files, mgr.LatestSnapshotId());
+    ASSERT_EQ(from_files.value(), 5);
+    ASSERT_OK_AND_ASSIGN(Snapshot second, mgr.LoadSnapshot(2));
+
+    mgr.SetSnapshotLoader(
+        [second]() -> Result<std::optional<Snapshot>> { return std::optional<Snapshot>(second); });
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> from_loader, mgr.LatestSnapshotId());
+    ASSERT_EQ(from_loader.value(), 2);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> latest, mgr.LatestSnapshot());
+    ASSERT_TRUE(latest.has_value());
+    ASSERT_EQ(latest.value().Id(), 2);
+
+    mgr.SetSnapshotLoader(
+        []() -> Result<std::optional<Snapshot>> { return std::optional<Snapshot>(); });
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> empty_id, mgr.LatestSnapshotId());
+    ASSERT_EQ(empty_id, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> empty, mgr.LatestSnapshot());
+    ASSERT_FALSE(empty.has_value());
+
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> earliest, mgr.EarliestSnapshotId());
+    ASSERT_EQ(earliest.value(), 1);
+    ASSERT_OK_AND_ASSIGN(Snapshot loaded, mgr.LoadSnapshot(5));
+    ASSERT_EQ(loaded.Id(), 5);
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserReadsTheLoadedSnapshot) {
+    std::string test_data_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, test_data_path);
+    ASSERT_OK_AND_ASSIGN(Snapshot fifth, mgr.LoadSnapshot(5));
+
+    mgr.SetSnapshotLoader(
+        [fifth]() -> Result<std::optional<Snapshot>> { return std::optional<Snapshot>(fifth); });
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> found,
+                         mgr.LatestSnapshotOfUser(fifth.CommitUser()));
+    ASSERT_TRUE(found.has_value());
+    ASSERT_EQ(found.value().Id(), 5);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> missing, mgr.LatestSnapshotOfUser("nobody"));
+    ASSERT_FALSE(missing.has_value());
+
+    mgr.SetSnapshotLoader(
+        []() -> Result<std::optional<Snapshot>> { return std::optional<Snapshot>(); });
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> none,
+                         mgr.LatestSnapshotOfUser(fifth.CommitUser()));
+    ASSERT_FALSE(none.has_value());
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserFailsWhenTheHistoryIsUnreadable) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, dir->Str());
+
+    Snapshot only_in_catalog = BuildTestSnapshot(9, "snapshot-uuid-9");
+    mgr.SetSnapshotLoader([only_in_catalog]() -> Result<std::optional<Snapshot>> {
+        return std::optional<Snapshot>(only_in_catalog);
+    });
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> own,
+                         mgr.LatestSnapshotOfUser(only_in_catalog.CommitUser()));
+    ASSERT_TRUE(own.has_value());
+    ASSERT_EQ(own.value().Id(), 9);
+
+    ASSERT_NOK_WITH_MSG(mgr.LatestSnapshotOfUser("somebody-else"),
+                        "cannot tell which snapshot of table");
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserPropagatesCorruptHistory) {
+    for (bool from_catalog : {false, true}) {
+        SCOPED_TRACE(from_catalog);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto file_system = std::make_shared<LocalFileSystem>();
+        SnapshotManager mgr(file_system, dir->Str());
+        ASSERT_OK(file_system->Mkdirs(mgr.SnapshotDirectory()));
+        ASSERT_OK(file_system->WriteFile(mgr.SnapshotPath(1), "not json", false));
+        Snapshot latest = BuildTestSnapshot(2);
+        ASSERT_OK_AND_ASSIGN(std::string json, latest.ToJsonString());
+        ASSERT_OK(file_system->WriteFile(mgr.SnapshotPath(2), json, false));
+        if (from_catalog) {
+            mgr.SetSnapshotLoader([latest]() -> Result<std::optional<Snapshot>> {
+                return std::optional<Snapshot>(latest);
+            });
+        }
+
+        ASSERT_NOK_WITH_MSG(mgr.LatestSnapshotOfUser("somebody-else"), "deserialize failed");
+    }
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserStopsAtTheEarliestRetainedSnapshot) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, dir->Str());
+    ASSERT_OK(file_system->Mkdirs(mgr.SnapshotDirectory()));
+    for (int64_t id : {5, 6}) {
+        ASSERT_OK_AND_ASSIGN(std::string json, BuildTestSnapshot(id).ToJsonString());
+        ASSERT_OK(file_system->WriteFile(mgr.SnapshotPath(id), json, false));
+    }
+    ASSERT_OK(mgr.CommitEarliestHint(5));
+
+    Snapshot sixth = BuildTestSnapshot(6, "snapshot-uuid-6");
+    mgr.SetSnapshotLoader(
+        [sixth]() -> Result<std::optional<Snapshot>> { return std::optional<Snapshot>(sixth); });
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> other, mgr.LatestSnapshotOfUser("somebody-else"));
+    ASSERT_FALSE(other.has_value());
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> bounded,
+                         mgr.LatestSnapshotOfUserAtOrBefore("somebody-else", sixth, true));
+    ASSERT_FALSE(bounded.has_value());
+
+    ASSERT_OK(mgr.CommitEarliestHint(2));
+    ASSERT_NOK_WITH_MSG(mgr.LatestSnapshotOfUser("somebody-else"),
+                        "is not under the table directory");
+    ASSERT_NOK_WITH_MSG(mgr.LatestSnapshotOfUserAtOrBefore("somebody-else", sixth, true),
+                        "is not under the table directory");
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserAtOrBeforeWalksBelowTheGivenSnapshot) {
+    std::string test_data_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, test_data_path);
+    ASSERT_OK_AND_ASSIGN(Snapshot third, mgr.LoadSnapshot(3));
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> own,
+                         mgr.LatestSnapshotOfUserAtOrBefore(third.CommitUser(), third, false));
+    ASSERT_TRUE(own.has_value());
+    ASSERT_EQ(own.value().Id(), 3);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> none,
+                         mgr.LatestSnapshotOfUserAtOrBefore("nobody", third, false));
+    ASSERT_FALSE(none.has_value());
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> empty,
+                         mgr.LatestSnapshotOfUserAtOrBefore("whoever", std::nullopt, false));
+    ASSERT_FALSE(empty.has_value());
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserStopsAtAnExpiredSnapshotAfterFallingBack) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, dir->Str());
+    ASSERT_OK(file_system->Mkdirs(mgr.SnapshotDirectory()));
+    for (int64_t id : {5, 6}) {
+        ASSERT_OK_AND_ASSIGN(std::string json, BuildTestSnapshot(id).ToJsonString());
+        ASSERT_OK(file_system->WriteFile(mgr.SnapshotPath(id), json, false));
+    }
+    mgr.SetSnapshotLoader([]() -> Result<std::optional<Snapshot>> {
+        return Status::NotImplemented("this catalog does not serve snapshots");
+    });
+
+    ASSERT_OK_AND_ASSIGN(SnapshotManager::LatestSnapshotResult latest,
+                         mgr.LatestSnapshotWithSource());
+    ASSERT_FALSE(latest.from_catalog);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> other, mgr.LatestSnapshotOfUser("somebody-else"));
+    ASSERT_FALSE(other.has_value());
+
+    ASSERT_OK_AND_ASSIGN(
+        std::optional<Snapshot> bounded,
+        mgr.LatestSnapshotOfUserAtOrBefore("somebody-else", latest.snapshot, latest.from_catalog));
+    ASSERT_FALSE(bounded.has_value());
+}
+
+namespace {
+class ExpiringHintFileSystem : public LocalFileSystem {
+ public:
+    ExpiringHintFileSystem(const std::string& hint_path, const std::string& refreshed,
+                           int32_t stale_reads)
+        : hint_path_(hint_path), refreshed_(refreshed), stale_reads_(stale_reads) {}
+
+    Status ReadFile(const std::string& path, std::string* content) override {
+        if (path == hint_path_ && hint_reads_++ >= stale_reads_) {
+            *content = refreshed_;
+            return Status::OK();
+        }
+        return LocalFileSystem::ReadFile(path, content);
+    }
+
+    int32_t HintReads() const {
+        return hint_reads_;
+    }
+
+ private:
+    std::string hint_path_;
+    std::string refreshed_;
+    int32_t stale_reads_;
+    int32_t hint_reads_ = 0;
+};
+
+std::shared_ptr<ExpiringHintFileSystem> SetUpDeletedButUnannouncedSnapshots(
+    const std::string& root_path, int32_t stale_reads) {
+    SnapshotManager paths(std::make_shared<LocalFileSystem>(), root_path);
+    auto file_system = std::make_shared<ExpiringHintFileSystem>(
+        PathUtil::JoinPath(paths.SnapshotDirectory(), SnapshotManager::EARLIEST), "5", stale_reads);
+    SnapshotManager writer(file_system, root_path);
+    EXPECT_OK(file_system->Mkdirs(writer.SnapshotDirectory()));
+    for (int64_t id : {5, 6}) {
+        EXPECT_OK_AND_ASSIGN(std::string json, BuildTestSnapshot(id).ToJsonString());
+        EXPECT_OK(file_system->WriteFile(writer.SnapshotPath(id), json, false));
+    }
+    EXPECT_OK(writer.CommitEarliestHint(1));
+    return file_system;
+}
+
+void SetCatalogHoldingTheSixthSnapshot(SnapshotManager* mgr) {
+    Snapshot sixth = BuildTestSnapshot(6, "snapshot-uuid-6");
+    mgr->SetSnapshotLoader(
+        [sixth]() -> Result<std::optional<Snapshot>> { return std::optional<Snapshot>(sixth); });
+}
+}  // namespace
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserRetriesTheBoundaryWhileItIsStillStale) {
+    for (int32_t stale_reads : {1, 2, 3}) {
+        SCOPED_TRACE(stale_reads);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        std::shared_ptr<ExpiringHintFileSystem> file_system =
+            SetUpDeletedButUnannouncedSnapshots(dir->Str(), stale_reads);
+        ASSERT_NE(nullptr, file_system);
+        SnapshotManager mgr(file_system, dir->Str());
+        SetCatalogHoldingTheSixthSnapshot(&mgr);
+
+        ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> other,
+                             mgr.LatestSnapshotOfUser("somebody-else"));
+        ASSERT_FALSE(other.has_value());
+        ASSERT_EQ(stale_reads + 1, file_system->HintReads());
+    }
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserStillReportsAGapItCannotExplain) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::shared_ptr<ExpiringHintFileSystem> file_system =
+        SetUpDeletedButUnannouncedSnapshots(dir->Str(), 100);
+    ASSERT_NE(nullptr, file_system);
+    SnapshotManager mgr(file_system, dir->Str());
+    SetCatalogHoldingTheSixthSnapshot(&mgr);
+
+    ASSERT_NOK_WITH_MSG(mgr.LatestSnapshotOfUser("somebody-else"),
+                        "is not under the table directory");
+    ASSERT_GT(file_system->HintReads(), 1);
+    ASSERT_LT(file_system->HintReads(), 100);
+}
+
+TEST(SnapshotManagerTest, LatestSnapshotOfUserStopsAtAnExpiredSnapshot) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, dir->Str());
+    ASSERT_OK(file_system->Mkdirs(mgr.SnapshotDirectory()));
+    for (int64_t id : {1, 3}) {
+        ASSERT_OK_AND_ASSIGN(std::string json, BuildTestSnapshot(id).ToJsonString());
+        ASSERT_OK(file_system->WriteFile(mgr.SnapshotPath(id), json, false));
+    }
+
+    Snapshot latest = BuildTestSnapshot(3);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> own,
+                         mgr.LatestSnapshotOfUser(latest.CommitUser()));
+    ASSERT_TRUE(own.has_value());
+    ASSERT_EQ(own.value().Id(), 3);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> other, mgr.LatestSnapshotOfUser("somebody-else"));
+    ASSERT_FALSE(other.has_value());
+}
+
+TEST(SnapshotManagerTest, SnapshotLoaderFallsBackAndPropagates) {
+    std::string test_data_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto file_system = std::make_shared<LocalFileSystem>();
+    SnapshotManager mgr(file_system, test_data_path);
+
+    int32_t asked = 0;
+    mgr.SetSnapshotLoader([&asked]() -> Result<std::optional<Snapshot>> {
+        ++asked;
+        return Status::NotImplemented("this catalog does not serve snapshots");
+    });
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> id, mgr.LatestSnapshotId());
+    ASSERT_EQ(id.value(), 5);
+    ASSERT_EQ(asked, 1);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> latest, mgr.LatestSnapshot());
+    ASSERT_TRUE(latest.has_value());
+    ASSERT_EQ(latest.value().Id(), 5);
+    ASSERT_EQ(asked, 2);
+
+    mgr.SetSnapshotLoader(
+        []() -> Result<std::optional<Snapshot>> { return Status::IOError("catalog unreachable"); });
+    ASSERT_NOK_WITH_MSG(mgr.LatestSnapshotId(), "catalog unreachable");
+    ASSERT_NOK_WITH_MSG(mgr.LatestSnapshot(), "catalog unreachable");
 }
 
 TEST(SnapshotManagerTest, TestGetAllSnapshots) {

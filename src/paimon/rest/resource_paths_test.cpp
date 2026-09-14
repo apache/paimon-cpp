@@ -31,6 +31,8 @@ TEST(ResourcePathsTest, WithPrefix) {
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1", paths.Table("db", "t1"));
     ASSERT_EQ("/v1/my+prefix/tables/rename", paths.RenameTable());
     ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/snapshots", paths.Snapshots("db", "t1"));
+    ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/commit", paths.CommitTable("db", "t1"));
+    ASSERT_EQ("/v1/my+prefix/databases/db/tables/t1/snapshot", paths.TableSnapshot("db", "t1"));
 }
 
 TEST(ResourcePathsTest, WithoutPrefix) {

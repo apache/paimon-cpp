@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,10 +32,24 @@ class SnapshotCommit {
  public:
     virtual ~SnapshotCommit() = default;
 
-    virtual Result<bool> Commit(const Snapshot& snapshot,
+    /// @param base_snapshot_uuid Base snapshot UUID; null for an absent or legacy snapshot.
+    /// @param snapshot Snapshot to be committed.
+    /// @param statistics Partition statistics for this change.
+    virtual Result<bool> Commit(const std::optional<std::string>& base_snapshot_uuid,
+                                const Snapshot& snapshot,
                                 const std::vector<PartitionStatistics>& statistics) = 0;
 
     virtual Result<std::string> GetLastCommitTableRequest() = 0;
+
+    /// Returns whether a successful call only prepares a request for the caller to send.
+    virtual bool IsRequestOnly() const {
+        return false;
+    }
+
+    /// Returns a log description of the commit target; empty for file-system commits.
+    virtual std::string DescribeTarget() const {
+        return "";
+    }
 };
 
 }  // namespace paimon

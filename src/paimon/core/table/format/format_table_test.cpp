@@ -65,6 +65,7 @@
 #include "paimon/table/source/split.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/write_context.h"
 
@@ -2689,8 +2690,6 @@ TEST(FormatTableTest, TestTheGenericEntryPointsReachAFormatTable) {
     ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(write_id_context)),
                         "a write id would name nothing");
 
-    // The three `CommitContext` settings that describe snapshot machinery. Each is refused only
-    // when it is set away from its default, so an ordinary commit is unaffected.
     CommitContextBuilder empty_commit_builder(dir->Str(), "test-user");
     empty_commit_builder.IgnoreEmptyCommit(false);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> empty_commit_context,
@@ -2702,6 +2701,21 @@ TEST(FormatTableTest, TestTheGenericEntryPointsReachAFormatTable) {
     rest_builder.UseRESTCatalogCommit(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> rest_context, rest_builder.Finish());
     ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(rest_context)), "rest catalog");
+
+    CommitContextBuilder table_id_builder(dir->Str(), "test-user");
+    table_id_builder.WithTableId("table-uuid");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> table_id_context,
+                         table_id_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(table_id_context)),
+                        "a format table sends no commit table request");
+
+    auto format_catalog = std::make_shared<MockVersionManagedCatalog>();
+    format_catalog->SetTableSchema(table->LatestSchema());
+    CommitContextBuilder catalog_builder(dir->Str(), "test-user");
+    catalog_builder.WithCatalog(format_catalog, Identifier("db", "fmt"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_context, catalog_builder.Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(catalog_context)),
+                        "keeps no snapshot for a catalog to take");
 
     CommitContextBuilder conflict_builder(dir->Str(), "test-user");
     conflict_builder.AppendCommitCheckConflict(true);
@@ -2850,6 +2864,19 @@ TEST(FormatTableTest, TestAContextBuiltFromAFormatTableRefusesASecondAnswer) {
     WriteContextBuilder write_fs_builder(table);
     write_fs_builder.WithFileSystem(dir->GetFileSystem());
     ASSERT_NOK_WITH_MSG(write_fs_builder.Finish(), "carries the file system");
+
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    WriteContextBuilder write_catalog_builder(table);
+    ASSERT_NOK_WITH_MSG(
+        write_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish(),
+        "WithCatalog() requires a native table");
+    catalog->SetTableSchema(latest.value());
+    WriteContextBuilder path_catalog_builder(dir->Str(), "test-user");
+    ASSERT_OK_AND_ASSIGN(
+        auto path_context,
+        path_catalog_builder.WithCatalog(catalog, Identifier("db", "tbl")).Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(std::move(path_context)),
+                        "use WriteContextBuilder(FormatTable)");
 
     CommitContextBuilder commit_fs_builder(table);
     commit_fs_builder.WithFileSystem(dir->GetFileSystem());

@@ -38,6 +38,7 @@
 #include "paimon/core/operation/commit/row_id_column_conflict_checker.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/logging.h"
 #include "paimon/memory/memory_pool.h"
@@ -65,7 +66,6 @@ class IndexManifestFile;
 struct IndexManifestEntry;
 class ManifestList;
 class ManifestFileMeta;
-class SnapshotManager;
 class SchemaManager;
 class TableSchema;
 class BinaryRowPartitionComputer;
@@ -82,6 +82,9 @@ class SnapshotCommit;
 /// Commit operation which provides commit and overwrite.
 class FileStoreCommitImpl : public FileStoreCommit {
  public:
+    /// Loads the current catalog schema ID; unset to use `schema_manager_`.
+    using SchemaIdLoader = std::function<Result<int64_t>()>;
+
     static Status ValidateCommitOptions(const CoreOptions& options);
 
     FileStoreCommitImpl(const std::shared_ptr<MemoryPool>& pool,
@@ -91,9 +94,10 @@ class FileStoreCommitImpl : public FileStoreCommit {
                         const std::shared_ptr<FileStorePathFactory>& path_factory,
                         std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
                         const std::shared_ptr<SnapshotManager>& snapshot_manager,
-                        bool ignore_empty_commit, bool use_rest_catalog_commit,
-                        bool append_commit_check_conflict,
+                        const std::shared_ptr<SnapshotCommit>& snapshot_commit,
+                        bool ignore_empty_commit, bool append_commit_check_conflict,
                         const std::shared_ptr<TableSchema>& table_schema,
+                        SchemaIdLoader schema_id_loader,
                         const std::shared_ptr<ManifestFile>& manifest_file,
                         const std::shared_ptr<ManifestList>& manifest_list,
                         const std::shared_ptr<IndexManifestFile>& index_manifest_file,
@@ -180,13 +184,14 @@ class FileStoreCommitImpl : public FileStoreCommit {
     Result<std::vector<std::shared_ptr<ManifestCommittable>>> FilterCommitted(
         const std::vector<std::shared_ptr<ManifestCommittable>>& committables);
 
+    /// Pass the source flag returned with `latest_snapshot` to apply the correct history boundary.
     Result<std::optional<Snapshot>> LatestSnapshotOfCommitUserAtOrBefore(
-        const std::optional<Snapshot>& latest_snapshot) const;
+        const std::optional<Snapshot>& latest_snapshot, bool latest_from_catalog) const;
 
     /// Returns the containing snapshot id when the commit is already complete, or nullopt when
     /// neither its identifier nor offset ranges have been committed.
     Result<std::optional<int64_t>> ResolveRealtimeCommit(
-        const std::optional<Snapshot>& latest_snapshot, int64_t identifier,
+        const SnapshotManager::LatestSnapshotResult& latest, int64_t identifier,
         const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges) const;
 
     std::shared_ptr<ManifestCommittable> CreateManifestCommittable(
@@ -226,7 +231,16 @@ class FileStoreCommitImpl : public FileStoreCommit {
                                const std::optional<Snapshot>& latest_snapshot,
                                bool detect_conflicts);
 
-    Result<bool> CommitSnapshotImpl(const Snapshot& new_snapshot,
+    /// Requires schemas for files carrying row IDs to be available in the table directory.
+    Status CheckRowIdSchemasArePublished(
+        const std::vector<std::shared_ptr<DataFileMeta>>& delta_files) const;
+
+    std::string CommitTargetSuffix() const;
+
+    static std::string FormatBaseSnapshotUuid(const std::optional<Snapshot>& snapshot);
+
+    Result<bool> CommitSnapshotImpl(const std::optional<Snapshot>& base_snapshot,
+                                    const Snapshot& new_snapshot,
                                     const std::vector<PartitionEntry>& delta_statistics);
 
     Result<std::vector<ManifestEntry>> ReadAddManifestEntries(const Snapshot& snapshot) const;
@@ -273,6 +287,7 @@ class FileStoreCommitImpl : public FileStoreCommit {
     int32_t num_bucket_ = 0;
     BucketMode bucket_mode_ = BucketMode::BUCKET_UNAWARE;
     std::shared_ptr<TableSchema> table_schema_;
+    SchemaIdLoader schema_id_loader_;
     std::shared_ptr<CommitScanner> commit_scanner_;
     ConflictDetection conflict_detection_;
 

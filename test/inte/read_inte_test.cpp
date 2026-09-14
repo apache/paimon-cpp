@@ -2818,6 +2818,82 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolution) {
     }
 }
 
+// Building a reader for a file written under an older schema goes through SchemaManager, and the
+// readers of one split are built concurrently. Every split here mixes both schema ids, so the
+// parallel build has to resolve each file against the right schema and return the right rows.
+TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithReaderBuildParallelism) {
+    auto param = GetParam();
+    std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
+                       "/append_table_with_alter_table.db/append_table_with_alter_table/";
+
+    std::vector<std::string> file_list_0;
+    std::vector<std::string> file_list_1;
+    if (param.file_format == "orc") {
+        file_list_0 = {"data-2190cec3-ce87-4175-8d19-9268becf4440-0.orc",
+                       "data-b34cd128-03e3-4e70-ba9c-5dec2183849c-0.orc"};
+        file_list_1 = {"data-13824b84-8572-4a20-b712-c0475d1828b4-0.orc",
+                       "data-492ed5ab-4740-4e93-8a0a-79a6893b1770-0.orc"};
+    } else if (param.file_format == "parquet") {
+        file_list_0 = {"data-512651de-64b5-4a10-8068-65403aaccdb8-0.parquet",
+                       "data-1aaec161-5365-426f-b33d-3cd99a3908f2-0.parquet"};
+        file_list_1 = {"data-11b12094-192f-4ad8-92a8-ae8cba5e25ef-0.parquet",
+                       "data-9dfb749f-0509-4db2-ae7b-1e4448b32165-0.parquet"};
+    }
+
+    DataSplitsSchema input_data_splits = {
+        {path + "key0=0/key1=1/bucket-0", BinaryRowGenerator::GenerateRow({0, 1}, pool_.get()),
+         file_list_0,
+         /*schema ids*/ {0, 1}},
+        {path + "key0=1/key1=1/bucket-0", BinaryRowGenerator::GenerateRow({1, 1}, pool_.get()),
+         file_list_1,
+         /*schema ids*/ {1, 0}}};
+    auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
+
+    ReadContextBuilder context_builder(path);
+    context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
+    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
+        .AddOption("read.batch-size", "2");
+    context_builder.EnablePrefetch(param.enable_prefetch)
+        .AddOption("test.enable-adaptive-prefetch-strategy",
+                   param.enable_adaptive_prefetch_strategy);
+    ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(batch_reader)));
+
+    // The concurrent build resolves each file against its own schema id, so it has to return
+    // exactly the rows the sequential schema-evolution read above returns.
+    std::vector<DataField> read_fields = {DataField(0, arrow::field("key0", arrow::int32())),
+                                          DataField(1, arrow::field("key1", arrow::int32())),
+                                          DataField(6, arrow::field("k", arrow::int32())),
+                                          DataField(3, arrow::field("c", arrow::int32())),
+                                          DataField(7, arrow::field("d", arrow::int32())),
+                                          DataField(5, arrow::field("a", arrow::int32())),
+                                          DataField(8, arrow::field("e", arrow::int32()))};
+    auto fields_with_row_kind = read_fields;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(), SpecialFields::ValueKind());
+    std::shared_ptr<arrow::DataType> arrow_data_type =
+        DataField::ConvertDataFieldsToArrowStructType(fields_with_row_kind);
+
+    std::shared_ptr<arrow::ChunkedArray> expected_array;
+    auto array_status = arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
+        [0, 0, 1, 16, 13, null, 15, null],
+        [0, 0, 1, 26, 23, null, 25, null],
+        [0, 0, 1, 36, 33, null, 35, null],
+        [0, 0, 1, 66, 63, 517, 65, 618],
+        [0, 0, 1, 76, 73, 527, 75, 628],
+        [0, 0, 1, 86, 83, 537, 85, 638],
+        [0, 1, 1, 96, 93, 547, 95, 648],
+        [0, 1, 1, 106, 103, 557, 105, 658],
+        [0, 1, 1, 46, 43, null, 45, null],
+        [0, 1, 1, 56, 53, null, 55, null]
+    ])"},
+                                                                         &expected_array);
+    ASSERT_TRUE(array_status.ok());
+    ASSERT_TRUE(result_array->Equals(*expected_array));
+}
+
 TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateFilter) {
     std::vector<DataField> read_fields = {DataField(5, arrow::field("a", arrow::int32())),
                                           DataField(6, arrow::field("k", arrow::int32())),

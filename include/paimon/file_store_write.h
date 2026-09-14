@@ -126,6 +126,10 @@ class PAIMON_EXPORT FileStoreWrite {
     ///
     /// The writer loads the snapshot's partition-bucket offsets and releases sealed memory that is
     /// fully covered by disk. Calling this method on a non-real-time writer returns an error.
+    ///
+    /// With `WriteContextBuilder::WithCatalog()`, the latest snapshot can be loaded from the
+    /// catalog. Older requested snapshots must be available on the file system.
+    ///
     /// If the snapshot overwrites table contents or moves committed progress backwards, such as
     /// after a partition drop, overwrite, or rollback, this method returns an error and the caller
     /// must recreate the `RealtimeContext` and writer. These operations are not fenced against an

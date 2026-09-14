@@ -63,6 +63,7 @@ set(PAIMON_COMMON_SRCS
     common/data/variant/variant_type_utils.cpp
     common/defs.cpp
     common/executor/executor.cpp
+    common/executor/reader_build_executor.cpp
     common/factories/singleton.cpp
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
@@ -765,6 +766,7 @@ if(PAIMON_BUILD_TESTS)
                     core/casting/cast_executor_test.cpp
                     core/casting/casted_row_test.cpp
                     core/casting/casting_utils_test.cpp
+                    core/catalog/catalog_snapshot_commit_test.cpp
                     core/catalog/commit_table_request_test.cpp
                     core/catalog/renaming_snapshot_commit_test.cpp
                     core/catalog/file_system_catalog_test.cpp

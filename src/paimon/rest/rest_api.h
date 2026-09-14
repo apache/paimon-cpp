@@ -20,10 +20,12 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/rest/resource_paths.h"
 #include "paimon/rest/rest_auth.h"
@@ -41,7 +43,8 @@ class RestErrorDetail : public StatusDetail {
  public:
     static constexpr const char* kTypeId = "rest-error-detail";
 
-    explicit RestErrorDetail(int64_t code) : code_(code) {}
+    explicit RestErrorDetail(int64_t code, const std::string& resource_type = "")
+        : code_(code), resource_type_(resource_type) {}
 
     const char* type_id() const override {
         return kTypeId;
@@ -55,8 +58,15 @@ class RestErrorDetail : public StatusDetail {
         return code_;
     }
 
+    /// Resource type reported by the server, or empty if absent.
+    /// A SNAPSHOT-specific 404 denotes an existing table without a snapshot.
+    const std::string& GetResourceType() const {
+        return resource_type_;
+    }
+
  private:
     int64_t code_;
+    std::string resource_type_;
 };
 
 /// The client of the REST catalog server. This layer only talks HTTP + JSON and never
@@ -105,6 +115,16 @@ class RestApi {
 
     Result<std::vector<Snapshot>> ListSnapshots(const Identifier& identifier) const;
 
+    /// The table's current snapshot, or null when it has none.
+    Result<std::optional<Snapshot>> LoadSnapshot(const Identifier& identifier) const;
+
+    /// See `VersionManagedCatalog::CommitSnapshot()` for arguments and result semantics.
+    Result<bool> CommitSnapshot(const Identifier& identifier,
+                                const std::optional<std::string>& table_uuid,
+                                const std::optional<std::string>& base_snapshot_uuid,
+                                const Snapshot& snapshot,
+                                const std::vector<PartitionStatistics>& statistics) const;
+
     /// Maps a non-successful http response to a status: 404 becomes `NotExist`, 409
     /// becomes `Exist`, 400 becomes `Invalid`, 501 becomes `NotImplemented` and the
     /// other codes become `IOError`. A redirect returned while `follow_redirects` is
@@ -118,11 +138,11 @@ class RestApi {
             const std::map<std::string, std::string>& base_headers,
             const std::map<std::string, std::string>& options, const ResourcePaths& paths);
 
-    /// Executes one request with the authentication headers merged in, mapping a
-    /// non-successful response to an error status.
+    /// Executes an authenticated request and maps unsuccessful responses to errors.
+    /// `retry_safe=false` disables retries and redirects.
     Result<RestHttpClient::Response> Execute(const std::string& method, const std::string& path,
                                              const std::map<std::string, std::string>& query_params,
-                                             const std::string& body) const;
+                                             const std::string& body, bool retry_safe = true) const;
 
     template <typename ResponseT>
     Result<ResponseT> GetEntity(const std::string& path,

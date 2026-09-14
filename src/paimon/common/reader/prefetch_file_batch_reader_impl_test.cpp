@@ -19,7 +19,10 @@
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <limits>
+#include <mutex>
 #include <set>
 
 #include "arrow/compute/api.h"
@@ -128,6 +131,37 @@ class FailingFileSystem : public MockFileSystem {
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
         return std::make_unique<FailingInputStream>();
     }
+};
+
+/// Blocks every Open() until `opens_needed` of them are in flight at once, so a caller that
+/// opens its streams one at a time never reaches the barrier and fails instead of passing
+/// silently. The wait is bounded so that failure is reported rather than hanging the test.
+class BarrierFileSystem : public MockFileSystem {
+ public:
+    explicit BarrierFileSystem(uint32_t opens_needed) : opens_needed_(opens_needed) {}
+
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        const uint32_t arrived = ++inflight_opens_;
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!condition_.wait_for(lock, kBarrierTimeout,
+                                 [this] { return inflight_opens_ >= opens_needed_; })) {
+            return Status::IOError(fmt::format(
+                "only {} of {} opens were in flight at once, so they are not concurrent", arrived,
+                opens_needed_));
+        }
+        condition_.notify_all();
+        return std::make_unique<MockInputStream>();
+    }
+
+ private:
+    // Generous so a loaded machine does not turn this into a flaky test; a regression makes the
+    // opens serial, which no wait ever satisfies.
+    static constexpr std::chrono::seconds kBarrierTimeout{60};
+
+    const uint32_t opens_needed_;
+    mutable std::atomic<uint32_t> inflight_opens_{0};
+    mutable std::mutex mutex_;
+    mutable std::condition_variable condition_;
 };
 
 class IoReadingMockFileBatchReader : public MockFileBatchReader {
@@ -1375,6 +1409,33 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupLevelDecoded) {
     ASSERT_OK_AND_ASSIGN(uint64_t produced_batches,
                          metrics->GetCounter(PrefetchMetrics::PRODUCED_BATCHES));
     ASSERT_GT(produced_batches, 0);
+}
+
+// The cache's stream used to be opened before the readers' streams were dispatched, which
+// serialized one remote round trip ahead of all of them. They are opened together now, and this
+// pins that down: the barrier needs every one of them in flight at once, so opening the cache's
+// stream first would leave the others waiting on a round trip that has not been started.
+TEST_F(PrefetchFileBatchReaderImplTest, TestCreateOpensAllStreamsConcurrently) {
+    auto data_array = PrepareArray(101);
+    const int32_t batch_size = 10;
+    const int32_t prefetch_max_parallel_num = 3;
+    // One stream for the cache plus one per reader.
+    const uint32_t opens_needed = prefetch_max_parallel_num + 1;
+    auto barrier_fs = std::make_shared<BarrierFileSystem>(opens_needed);
+    MockFormatReaderBuilder reader_builder(data_array, data_type_, batch_size);
+    // Unlike executor_ above, this one has a thread per open: with fewer threads than opens the
+    // barrier could not be reached however concurrent the dispatch is.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(opens_needed));
+
+    ASSERT_OK_AND_ASSIGN(
+        auto reader,
+        PrefetchFileBatchReaderImpl::Create(
+            /*data_file_path=*/"", /*data_file_size=*/0, &reader_builder, barrier_fs,
+            prefetch_max_parallel_num, batch_size, prefetch_max_parallel_num * 2,
+            /*enable_adaptive_prefetch_strategy=*/false, executor,
+            /*initialize_read_ranges=*/true, /*read_ahead_cache_enabled=*/true, CacheConfig(),
+            /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool_, GetArrowPool(pool_)));
+    ASSERT_NE(reader, nullptr);
 }
 
 }  // namespace paimon::test

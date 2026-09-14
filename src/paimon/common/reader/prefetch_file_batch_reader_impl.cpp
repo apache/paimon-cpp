@@ -38,6 +38,7 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/memory/memory_pool.h"
 
 namespace arrow {
 class Schema;
@@ -233,10 +234,44 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
     if (enable_io_metrics) {
         io_metrics = std::make_shared<PrefetchIoMetricsState>();
     }
+    // Opening a file mostly waits on remote I/O, so the streams are all opened concurrently
+    // instead of opening the cache's stream first and paying its round trip before the readers'
+    // begin. Both waves run on the read context's `executor`, which is sized to the prefetch
+    // parallelism, so no separate pool is spun up and torn down per file and the open/build
+    // concurrency follows the configured parallelism instead of a fixed default. That reuse is
+    // safe: neither wave's tasks wait on one another or on `executor`, and Create never runs on
+    // an `executor` worker, so the CollectAll calls below only ever wait on tasks that progress.
+    // The build has to be a second wave rather than folded into the first: each build task wraps
+    // its stream in the cache, and a task waiting on the cache would block a worker while the
+    // cache's own open is still queued behind it. Wave one only opens, so its tasks never wait on
+    // one another.
+    const uint32_t open_count =
+        read_ahead_cache_enabled ? prefetch_max_parallel_num + 1 : prefetch_max_parallel_num;
+    std::vector<std::future<Result<std::unique_ptr<InputStream>>>> open_futures;
+    open_futures.reserve(open_count);
+    for (uint32_t i = 0; i < open_count; i++) {
+        open_futures.push_back(
+            Via(executor.get(),
+                [&fs, &data_file_path, data_file_size]() -> Result<std::unique_ptr<InputStream>> {
+                    return fs->Open(FileStatus(data_file_path, data_file_size));
+                }));
+    }
+    // The tasks only reference locals of this frame, which stay alive because both CollectAll
+    // calls below drain every future before returning.
+    std::vector<Result<std::unique_ptr<InputStream>>> opened_streams = CollectAll(open_futures);
+    std::vector<std::unique_ptr<InputStream>> streams;
+    streams.reserve(opened_streams.size());
+    for (auto& opened_stream : opened_streams) {
+        if (!opened_stream.ok()) {
+            return opened_stream.status();
+        }
+        streams.push_back(std::move(opened_stream).value());
+    }
+
+    size_t next_stream = 0;
     std::shared_ptr<ReadAheadCache> cache;
     if (read_ahead_cache_enabled) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
-                               fs->Open(FileStatus(data_file_path, data_file_size)));
+        std::shared_ptr<InputStream> input_stream = std::move(streams[next_stream++]);
         if (io_metrics) {
             input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics);
         }
@@ -246,22 +281,24 @@ Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> PrefetchFileBatchReaderImpl
         cache = std::make_shared<ReadAheadCache>(input_stream, cache_config,
                                                  static_cast<uint64_t>(data_file_size), pool);
     }
+    // Wave two builds the readers, which reads each file's footer and so still needs the cache
+    // above to exist. The builds are concurrent, like the opens were.
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
+    futures.reserve(prefetch_max_parallel_num);
     for (uint32_t i = 0; i < prefetch_max_parallel_num; i++) {
-        futures.push_back(Via(
-            executor.get(),
-            [&fs, &data_file_path, data_file_size, &reader_builder, &cache,
-             io_metrics]() -> Result<std::unique_ptr<FileBatchReader>> {
-                PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
-                                       fs->Open(FileStatus(data_file_path, data_file_size)));
-                if (io_metrics) {
-                    input_stream =
-                        std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
-                }
-                auto cache_input_stream =
-                    std::make_shared<CacheInputStream>(std::move(input_stream), cache);
-                return reader_builder->Build(cache_input_stream);
-            }));
+        futures.push_back(Via(executor.get(),
+                              [&reader_builder, &cache, &streams, i, next_stream,
+                               io_metrics]() -> Result<std::unique_ptr<FileBatchReader>> {
+                                  std::unique_ptr<InputStream> input_stream =
+                                      std::move(streams[next_stream + i]);
+                                  if (io_metrics) {
+                                      input_stream = std::make_unique<MetricsInputStream>(
+                                          std::move(input_stream), io_metrics);
+                                  }
+                                  auto cache_input_stream = std::make_shared<CacheInputStream>(
+                                      std::move(input_stream), cache);
+                                  return reader_builder->Build(cache_input_stream);
+                              }));
     }
     std::vector<std::shared_ptr<PrefetchFileBatchReader>> readers;
     for (auto& file_batch_reader : CollectAll(futures)) {

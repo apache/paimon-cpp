@@ -47,6 +47,7 @@ class SchemaManager {
                   const std::string& branch);
 
     /// Read schema for schema id. Find schema in cache first.
+    /// Safe to call concurrently.
     Result<std::shared_ptr<TableSchema>> ReadSchema(int64_t schema_id) const;
     Result<std::optional<std::shared_ptr<TableSchema>>> Latest() const;
     Result<std::unique_ptr<TableSchema>> CreateTable(

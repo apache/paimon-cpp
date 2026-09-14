@@ -534,7 +534,7 @@ TEST_F(ExpireSnapshotsTest, TestGetDataFileToDelete) {
     }
 }
 
-TEST_F(ExpireSnapshotsTest, TestCleanUnusedDataFileDeletesExtraFiles) {
+TEST_F(ExpireSnapshotsTest, TestCleanUnusedDataFilePreservesRetainedExtraFiles) {
     auto mgr = std::make_shared<SnapshotManager>(fs_, test_data_path_);
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
     ExpireSnapshots expire(mgr, path_factory_, manifest_list_, manifest_file_, index_manifest_file_,
@@ -558,11 +558,11 @@ TEST_F(ExpireSnapshotsTest, TestCleanUnusedDataFileDeletesExtraFiles) {
     std::pair<std::string, int64_t> manifest_list;
     ASSERT_OK_AND_ASSIGN(manifest_list, manifest_list_->Write(manifest_files));
     ExpireSnapshots::DataFilePathFactoryCache data_file_path_factory_cache;
-    ASSERT_OK(expire.CleanUnusedDataFiles(manifest_list.first, {files.front()},
+    ASSERT_OK(expire.CleanUnusedDataFiles(manifest_list.first, {files[1]},
                                           &data_file_path_factory_cache));
     for (const std::string& file : files) {
         ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(file));
-        ASSERT_TRUE(exists) << file;
+        ASSERT_EQ(exists, file == files[1]) << file;
     }
     ASSERT_OK(expire.CleanUnusedDataFiles(manifest_list.first, {}, &data_file_path_factory_cache));
 

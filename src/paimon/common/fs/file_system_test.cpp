@@ -292,6 +292,13 @@ TEST_P(FileSystemTest, TestOpenWithKnownFileSize) {
     ASSERT_OK_AND_ASSIGN(auto input_stream, fs_->Open(file_status));
     ASSERT_OK_AND_ASSIGN(int64_t file_size, input_stream->Length());
     ASSERT_EQ(file_size, content.size());
+    // Reading through the trusted-length open must serve the object's real bytes, not just
+    // echo the length the caller passed in.
+    std::string read_content(content.size(), '\0');
+    ASSERT_OK_AND_ASSIGN(int64_t read_len,
+                         input_stream->Read(read_content.data(), read_content.size()));
+    ASSERT_EQ(read_len, static_cast<int64_t>(content.size()));
+    ASSERT_EQ(content, read_content);
     ASSERT_OK(input_stream->Close());
 
     ASSERT_TRUE(fs_->Open(FileStatus(file_path, /*length=*/-1)).status().IsInvalid());

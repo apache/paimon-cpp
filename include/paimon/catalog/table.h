@@ -20,6 +20,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -45,9 +46,10 @@ class PAIMON_EXPORT Table {
                                                  const std::string& table_path,
                                                  const Identifier& identifier);
 
+    /// @param uuid Metastore UUID, or empty if unavailable.
     Table(const std::shared_ptr<Schema>& schema, const std::string& database,
-          const std::string& table_name)
-        : schema_(schema), database_(database), table_name_(table_name) {}
+          const std::string& table_name, const std::string& uuid = "")
+        : schema_(schema), database_(database), table_name_(table_name), uuid_(uuid) {}
 
     ~Table() = default;
 
@@ -59,10 +61,16 @@ class PAIMON_EXPORT Table {
     /// Full name of the table, default is database.tableName.
     std::string FullName() const;
 
-    /// UUID of the table, metastore can provide the true UUID of this table, default is the full
-    /// name.
+    /// Returns the metastore UUID, falling back to `FullName()`.
+    /// @note Use `CatalogUuid()` for commit requests to avoid sending a table name as an ID.
     std::string Uuid() const {
-        return FullName();
+        return uuid_.empty() ? FullName() : uuid_;
+    }
+
+    /// Returns the metastore UUID, or null if unavailable, for
+    /// `CommitContextBuilder::WithTableId()`.
+    std::optional<std::string> CatalogUuid() const {
+        return uuid_.empty() ? std::nullopt : std::optional<std::string>(uuid_);
     }
 
     /// Loads the latest schema of table.
@@ -74,6 +82,7 @@ class PAIMON_EXPORT Table {
     std::shared_ptr<Schema> schema_;
     std::string database_;
     std::string table_name_;
+    std::string uuid_;
 };
 
 }  // namespace paimon

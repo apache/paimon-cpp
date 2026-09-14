@@ -140,6 +140,53 @@ TEST(RestHttpClientTest, ServiceUnavailableIsRetried) {
     ASSERT_EQ(3, request_count.load());
 }
 
+TEST(RestHttpClientTest, NonRetrySafeRequestDoesNotRetryTransientResponses) {
+    for (int32_t code : {429, 503}) {
+        SCOPED_TRACE(code);
+        std::atomic<int32_t> request_count{0};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                             MockRestServer::Start([&](const MockRestServer::Request& request) {
+                                 request_count++;
+                                 MockRestServer::Response response;
+                                 response.code = code;
+                                 return response;
+                             }));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestHttpClient> client,
+                             RestHttpClient::Create(server->GetBaseUri(), FastRetryConfig(5)));
+        ASSERT_OK_AND_ASSIGN(RestHttpClient::Response response,
+                             client->Execute("POST", "/v1/databases/db1/tables/t1/commit", {}, {},
+                                             "{}", true, false));
+        ASSERT_EQ(code, response.code);
+        ASSERT_EQ(1, request_count.load());
+    }
+}
+
+TEST(RestHttpClientTest, NonRetrySafeRequestDoesNotFollowRedirects) {
+    for (int32_t redirect_code : {301, 302, 303, 307, 308}) {
+        SCOPED_TRACE(redirect_code);
+        std::atomic<int32_t> request_count{0};
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                             MockRestServer::Start([&](const MockRestServer::Request& request) {
+                                 request_count++;
+                                 MockRestServer::Response response;
+                                 if (request.path == "/commit") {
+                                     response.code = redirect_code;
+                                     response.headers["Location"] = "/redirected-commit";
+                                 } else {
+                                     response.body = R"({"success": false})";
+                                 }
+                                 return response;
+                             }));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestHttpClient> client,
+                             RestHttpClient::Create(server->GetBaseUri(), FastRetryConfig(5)));
+        ASSERT_OK_AND_ASSIGN(
+            RestHttpClient::Response response,
+            client->Execute("POST", "/commit", {}, {}, R"({"tableId": "t1"})", true, false));
+        ASSERT_EQ(response.code, redirect_code);
+        ASSERT_EQ(request_count.load(), 1);
+    }
+}
+
 TEST(RestHttpClientTest, RetryAfterHeaderIsHonored) {
     std::atomic<int32_t> request_count{0};
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,

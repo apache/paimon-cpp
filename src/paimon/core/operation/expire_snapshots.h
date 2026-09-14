@@ -64,10 +64,11 @@ class ExpireSnapshots {
         std::unordered_map<BinaryRow,
                            std::unordered_map<int32_t, std::shared_ptr<DataFilePathFactory>>>;
 
-    Result<int32_t> ExpireUntil(int64_t earliest_snapshot_id, int64_t end_exclusive_id);
+    Result<int32_t> ExpireUntil(int64_t earliest_snapshot_id, int64_t end_exclusive_id,
+                                int64_t latest_snapshot_id);
 
     Status CleanUnusedDataFiles(const std::string& manifest_list_name,
-                                const std::set<std::string>& retained_data_files,
+                                const std::set<std::string>& skipping_data_files,
                                 DataFilePathFactoryCache* data_file_path_factory_cache);
     Status CleanUnusedManifests(const std::string& manifest_list_name,
                                 const std::set<std::string>& skipping_sets);
@@ -85,6 +86,11 @@ class ExpireSnapshots {
     Result<std::set<std::string>> GetTaggedDataFiles(const Snapshot& tagged_snapshot) const;
     Status AddIndexManifestToSkippingSet(const std::optional<std::string>& index_manifest,
                                          std::set<std::string>* skipping_manifest_set) const;
+    Status GetDataFileSkippingSet(const std::vector<Snapshot>& retained_snapshots,
+                                  DataFilePathFactoryCache* data_file_path_factory_cache,
+                                  std::set<std::string>* skipping_data_files) const;
+    Result<std::shared_ptr<DataFilePathFactory>> GetDataFilePathFactory(
+        const ManifestEntry& entry, DataFilePathFactoryCache* data_file_path_factory_cache) const;
     bool TryDeleteEmptyDirectory(const std::string& path) const;
 
     std::shared_ptr<SnapshotManager> snapshot_manager_;

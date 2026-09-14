@@ -18,11 +18,15 @@
 
 #include "paimon/write_context.h"
 
+#include <cstdint>
+
 #include "gtest/gtest.h"
+#include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -46,6 +50,39 @@ TEST(WriteContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
     ASSERT_FALSE(ctx->GetSpecificFileSystem());
+    ASSERT_FALSE(ctx->GetCatalog());
+    ASSERT_FALSE(ctx->GetIdentifier());
+}
+
+TEST(WriteContextTest, TestWithCatalog) {
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    WriteContextBuilder builder("table_root_path", "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
+    ASSERT_EQ(ctx->GetCatalog(), catalog);
+    ASSERT_EQ(ctx->GetIdentifier(), std::optional<Identifier>(Identifier("db1", "t1")));
+    ASSERT_OK_AND_ASSIGN(auto next_ctx, builder.Finish());
+    ASSERT_FALSE(next_ctx->GetCatalog());
+    ASSERT_FALSE(next_ctx->GetIdentifier());
+
+    ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
+                        "cannot write through a null catalog");
+}
+
+TEST(WriteContextTest, TestCatalogRequiresMainBranch) {
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    for (int32_t branch_source = 0; branch_source < 3; ++branch_source) {
+        SCOPED_TRACE(branch_source);
+        WriteContextBuilder builder("table_root_path", "commit_user_1");
+        builder.WithCatalog(catalog, Identifier("db1", branch_source == 0 ? "t1$branch_dev" : "t1"))
+            .WithBranch(branch_source == 1 ? "dev" : "main")
+            .AddOption(Options::BRANCH, branch_source == 2 ? "dev" : "main");
+        ASSERT_NOK_WITH_MSG(builder.Finish(), "requires the main branch");
+    }
+    WriteContextBuilder builder("table_root_path", "commit_user_1");
+    ASSERT_OK(builder.WithCatalog(catalog, Identifier("db1", "t1$branch_main"))
+                  .WithBranch("")
+                  .AddOption(Options::BRANCH, "main")
+                  .Finish());
 }
 
 TEST(WriteContextTest, TestSetContent) {
