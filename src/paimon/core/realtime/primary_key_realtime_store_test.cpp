@@ -34,6 +34,8 @@
 #include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/macros.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
@@ -70,10 +72,11 @@ std::shared_ptr<arrow::Schema> NestedStoreWriteSchema() {
                      1)});
 }
 
-std::shared_ptr<ArrowRealtimeStore> CreateStore(const std::shared_ptr<arrow::Schema>& schema,
-                                                const std::shared_ptr<MemoryPool>& pool) {
+std::shared_ptr<ArrowRealtimeStore> CreateStore(
+    const std::shared_ptr<arrow::Schema>& schema, const std::shared_ptr<MemoryPool>& pool,
+    StatisticsMode statistics_mode = StatisticsMode::NONE) {
     return std::make_shared<ArrowRealtimeStore>(schema, RealtimeStoreMode::PRIMARY_KEY,
-                                                StatisticsMode::NONE, pool, GetArrowPool(pool));
+                                                statistics_mode, pool, GetArrowPool(pool));
 }
 
 std::unique_ptr<RecordBatch> MakeBatch(const std::string& json) {
@@ -304,6 +307,30 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::Array> expected,
         ArrayFromJson(actual->type(), R"([[1, 0, 0, 2, "two"], [2, 0, 1, 1, "one"]])"));
+    ASSERT_TRUE(expected->Equals(actual));
+}
+
+TEST(PrimaryKeyRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingStoredBatch) {
+    std::shared_ptr<ArrowRealtimeStore> store =
+        CreateStore(StoreWriteSchema(), GetDefaultPool(), StatisticsMode::FULL);
+    ASSERT_OK(store->Write(RealtimeWriteBatch{
+        MakeBatch(R"([[1, 0, 0, 1, "one"], [2, 0, 1, 2, "two"]])"), OffsetRange(0, 2)}));
+    ASSERT_OK(store->Write(RealtimeWriteBatch{
+        MakeBatch(R"([[3, 0, 2, 10, "ten"], [4, 0, 3, 11, "eleven"]])"), OffsetRange(2, 4)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
+
+    auto c_schema = std::make_unique<ArrowSchema>();
+    ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
+    std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
+        /*field_index=*/3, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{10}));
+    RealtimeQueryContext context{c_schema.get(), predicate};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
+                         store->CreateQueryReaders(view, context));
+    ASSERT_EQ(1, readers.size());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual, ReadArray(std::move(readers)));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::Array> expected,
+        ArrayFromJson(actual->type(), R"([[3, 0, 2, 10, "ten"], [4, 0, 3, 11, "eleven"]])"));
     ASSERT_TRUE(expected->Equals(actual));
 }
 

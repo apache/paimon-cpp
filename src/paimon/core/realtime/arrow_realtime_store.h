@@ -36,6 +36,7 @@ class StructArray;
 
 namespace paimon {
 class MemoryPool;
+class PredicateFilter;
 
 /// Internal Arrow-backed implementation of the default `RealtimeStore`.
 class ArrowRealtimeStore final : public RealtimeStore {
@@ -60,10 +61,15 @@ class ArrowRealtimeStore final : public RealtimeStore {
 
     Status AdvanceCommittedOffset(int64_t committed_end_offset) override;
 
+    RealtimeStoreDataUsage GetDataUsage() const override;
+
     uint64_t GetMemoryUsage() const override;
 
  private:
     struct BatchStatistics {
+        // Arrow buffers retain a raw MemoryPool pointer. Keep their allocator alive until all
+        // statistics arrays have been released.
+        std::shared_ptr<arrow::MemoryPool> arrow_pool;
         std::shared_ptr<arrow::StructArray> min_values;
         std::shared_ptr<arrow::StructArray> max_values;
         std::shared_ptr<arrow::Array> null_counts;
@@ -85,6 +91,12 @@ class ArrowRealtimeStore final : public RealtimeStore {
     Result<std::optional<BatchStatistics>> CollectStatistics(
         const std::shared_ptr<arrow::StructArray>& data) const;
 
+    static Result<bool> MayMatchStatistics(const StoredBatch& stored,
+                                           const std::shared_ptr<arrow::Schema>& read_schema,
+                                           const std::shared_ptr<PredicateFilter>& predicate_filter,
+                                           const std::vector<int32_t>& statistics_mapping,
+                                           const std::shared_ptr<MemoryPool>& memory_pool);
+
     std::shared_ptr<arrow::Schema> write_schema_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -95,6 +107,9 @@ class ArrowRealtimeStore final : public RealtimeStore {
     std::vector<std::shared_ptr<Segment>> sealed_segments_;
     std::optional<OffsetRange> building_range_;
     uint64_t building_memory_usage_ = 0;
+    uint64_t sealed_memory_usage_ = 0;
+    uint64_t building_row_count_ = 0;
+    uint64_t sealed_row_count_ = 0;
 };
 
 }  // namespace paimon

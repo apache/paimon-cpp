@@ -157,6 +157,49 @@ TEST_F(ArrowRealtimeStoreTest, TestWriteValidationAndSeal) {
     ASSERT_GT(store_->GetMemoryUsage(), 0);
 }
 
+TEST_F(ArrowRealtimeStoreTest, TestDataUsageTracksBuildingSealedAndReclaimedData) {
+    RealtimeStoreDataUsage usage = store_->GetDataUsage();
+    ASSERT_EQ(0, usage.building_memory_bytes);
+    ASSERT_EQ(0, usage.sealed_memory_bytes);
+    ASSERT_EQ(0, usage.building_row_count);
+    ASSERT_EQ(0, usage.sealed_row_count);
+
+    ASSERT_OK(store_->Write(
+        RealtimeWriteBatch{MakeBatch(R"([[0, 0, "a"], [1, 1, "b"]])"), OffsetRange(0, 2)}));
+    usage = store_->GetDataUsage();
+    ASSERT_GT(usage.building_memory_bytes, 0);
+    ASSERT_EQ(0, usage.sealed_memory_bytes);
+    ASSERT_EQ(2, usage.building_row_count);
+    ASSERT_EQ(0, usage.sealed_row_count);
+    ASSERT_EQ(usage.building_memory_bytes, store_->GetMemoryUsage());
+    const uint64_t first_segment_memory = usage.building_memory_bytes;
+
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                         store_->SealForCommit());
+    ASSERT_TRUE(segment.has_value());
+    usage = store_->GetDataUsage();
+    ASSERT_EQ(0, usage.building_memory_bytes);
+    ASSERT_EQ(first_segment_memory, usage.sealed_memory_bytes);
+    ASSERT_EQ(0, usage.building_row_count);
+    ASSERT_EQ(2, usage.sealed_row_count);
+
+    ASSERT_OK(store_->Write(RealtimeWriteBatch{MakeBatch(R"([[2, 2, "c"]])"), OffsetRange(2, 3)}));
+    usage = store_->GetDataUsage();
+    ASSERT_GT(usage.building_memory_bytes, 0);
+    ASSERT_EQ(first_segment_memory, usage.sealed_memory_bytes);
+    ASSERT_EQ(1, usage.building_row_count);
+    ASSERT_EQ(2, usage.sealed_row_count);
+    ASSERT_EQ(usage.building_memory_bytes + usage.sealed_memory_bytes, store_->GetMemoryUsage());
+
+    ASSERT_OK(store_->AdvanceCommittedOffset(/*committed_end_offset=*/2));
+    usage = store_->GetDataUsage();
+    ASSERT_GT(usage.building_memory_bytes, 0);
+    ASSERT_EQ(0, usage.sealed_memory_bytes);
+    ASSERT_EQ(1, usage.building_row_count);
+    ASSERT_EQ(0, usage.sealed_row_count);
+    ASSERT_EQ(usage.building_memory_bytes, store_->GetMemoryUsage());
+}
+
 TEST_F(ArrowRealtimeStoreTest, TestQueryReaderClipsCommittedOffsetWithBitmap) {
     ASSERT_OK(store_->Write(RealtimeWriteBatch{
         MakeBatch(R"([[10, 10, "a"], [11, 11, "b"], [12, 12, "c"]])"), OffsetRange(10, 13)}));
