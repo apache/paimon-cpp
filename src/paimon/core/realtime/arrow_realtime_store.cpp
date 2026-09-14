@@ -783,7 +783,7 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowRealtimeStore::CreateComm
     if (!spilled_segment) {
         return Status::Invalid("unknown Arrow real-time segment type");
     }
-    const int32_t batch_count = static_cast<int32_t>(spilled_segment->GetBatches().size());
+    const auto batch_count = static_cast<int32_t>(spilled_segment->GetBatches().size());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<SharedSpillFileReader> file_reader,
         SharedSpillFileReader::Create(spilled_segment->GetFile(), batch_count, arrow_pool_));
