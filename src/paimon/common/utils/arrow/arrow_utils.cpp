@@ -19,9 +19,16 @@
 
 #include "paimon/common/utils/arrow/arrow_utils.h"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_nested.h"
+#include "arrow/array/array_primitive.h"
 #include "arrow/array/concatenate.h"
+#include "arrow/array/data.h"
 #include "arrow/array/util.h"
 #include "arrow/buffer.h"
 #include "arrow/c/abi.h"
@@ -334,6 +341,31 @@ Result<std::shared_ptr<arrow::ArrayData>> RebaseToZeroOffset(
     return CopyToZeroOffset(data, pool);
 }
 
+/// The eight bytes one byte of a bitmap expands to: `kExpandedBytes[b].bytes[i]` is bit `i` of `b`.
+/// Naming the bytes one at a time rather than building a word keeps the expansion independent of
+/// the host's byte order.
+struct ExpandedByte {
+    char bytes[8];
+};
+
+constexpr ExpandedByte ExpandBitmapByte(uint8_t bits) {
+    ExpandedByte expanded{};
+    for (int i = 0; i < 8; i++) {
+        expanded.bytes[i] = static_cast<char>((bits >> i) & uint8_t{1});
+    }
+    return expanded;
+}
+
+constexpr std::array<ExpandedByte, 256> MakeExpandedBytes() {
+    std::array<ExpandedByte, 256> table{};
+    for (int bits = 0; bits < 256; bits++) {
+        table[static_cast<size_t>(bits)] = ExpandBitmapByte(static_cast<uint8_t>(bits));
+    }
+    return table;
+}
+
+constexpr std::array<ExpandedByte, 256> kExpandedBytes = MakeExpandedBytes();
+
 }  // namespace
 
 const char* ArrowUtils::kArrowSchemaMetadataKey = "ARROW:schema";
@@ -430,6 +462,56 @@ uint64_t ArrowUtils::GetArrayMemoryUsage(const std::shared_ptr<arrow::ArrayData>
         result += GetArrayMemoryUsage(data->dictionary);
     }
     return result;
+}
+
+std::vector<char> ArrowUtils::UnpackBooleansToBytes(const arrow::BooleanArray& array, bool negate) {
+    const int64_t length = array.length();
+    std::vector<char> is_valid(static_cast<size_t>(length));
+    if (length == 0) {
+        return is_valid;
+    }
+
+    const std::shared_ptr<arrow::ArrayData>& data = array.data();
+    // `BooleanArray::Value(i)` and `Array::IsValid(i)` both read their bitmap at bit `i + offset`
+    // from the start of the buffer, so one bit index serves the value and the validity alike.
+    const int64_t bit_offset = data->offset;
+    const uint8_t* values = data->GetValuesSafe<uint8_t>(/*i=*/1, /*absolute_offset=*/0);
+    const uint8_t* validity = array.null_bitmap_data();
+    // Without a validity bitmap `Array::IsValid` falls back to `null_count != length`, which makes
+    // every row valid unless the array is null throughout. One that is has no row left to unpack,
+    // and is the only array whose value bitmap is not read.
+    if (validity == nullptr && data->null_count == length) {
+        return is_valid;
+    }
+
+    auto unpack_row = [&](int64_t row) -> char {
+        const int64_t bit = bit_offset + row;
+        const bool holds_value = validity == nullptr || arrow::bit_util::GetBit(validity, bit);
+        return static_cast<char>(holds_value && (arrow::bit_util::GetBit(values, bit) != negate));
+    };
+
+    char* out = is_valid.data();
+    int64_t row = 0;
+    // The rows sharing the leading partial byte, which the byte at a time body cannot take whole.
+    // None when the bit offset is already on a byte boundary, as it is for the batch a kernel has
+    // just written.
+    const int64_t head = std::min<int64_t>(length, (8 - (bit_offset & 7)) & 7);
+    for (; row < head; row++) {
+        out[row] = unpack_row(row);
+    }
+    for (; row + 8 <= length; row += 8) {
+        const int64_t byte = (bit_offset + row) >> 3;
+        // Every row holds a value when there is no validity bitmap, so all eight bits pass.
+        const uint8_t valid_byte = validity == nullptr ? uint8_t{0xFF} : validity[byte];
+        const uint8_t value_byte = values[byte];
+        const uint8_t bits = negate ? static_cast<uint8_t>(~value_byte & valid_byte)
+                                    : static_cast<uint8_t>(value_byte & valid_byte);
+        std::memcpy(out + row, kExpandedBytes[bits].bytes, sizeof(ExpandedByte));
+    }
+    for (; row < length; row++) {
+        out[row] = unpack_row(row);
+    }
+    return is_valid;
 }
 
 bool ArrowUtils::EqualsIgnoreNullable(const std::shared_ptr<arrow::DataType>& type,
