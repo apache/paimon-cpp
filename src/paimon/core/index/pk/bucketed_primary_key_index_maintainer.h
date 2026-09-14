@@ -23,6 +23,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "paimon/common/data/binary_row.h"
@@ -52,7 +53,7 @@ class BucketedPrimaryKeyIndexMaintainer {
  public:
     class Factory {
      public:
-        static Result<std::shared_ptr<Factory>> Create(
+        static std::shared_ptr<Factory> Create(
             const std::string& root_path, const std::string& branch,
             const std::shared_ptr<TableSchema>& table_schema,
             const std::vector<PrimaryKeyIndexDefinition>& definitions,
@@ -115,6 +116,17 @@ class BucketedPrimaryKeyIndexMaintainer {
         PrimaryKeyIndexDefinition definition;
         std::shared_ptr<PkSortedIndexBuilder> builder;
     };
+
+    struct PayloadChanges {
+        std::vector<std::shared_ptr<IndexFileMeta>> deleted_payloads;
+        std::vector<std::shared_ptr<IndexFileMeta>> new_payloads;
+        std::unordered_set<std::string> deleted_identities;
+        std::unordered_set<std::string> new_identities;
+    };
+
+    void ReconcileField(const FieldMaintainer& field,
+                        const std::vector<std::shared_ptr<DataFileMeta>>& active_data,
+                        PayloadChanges* changes) const;
 
     BucketedPrimaryKeyIndexMaintainer(
         std::vector<FieldMaintainer> fields,

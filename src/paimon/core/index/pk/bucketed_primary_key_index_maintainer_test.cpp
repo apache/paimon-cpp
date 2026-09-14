@@ -213,13 +213,12 @@ Result<std::shared_ptr<CommitMessage>> ReplaceBTreePayloadSources(
 TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest,
      DeletesRestoredBTreePayloadWhenNoDefinitionRemains) {
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory> factory,
+    std::shared_ptr<BucketedPrimaryKeyIndexMaintainer::Factory> factory =
         BucketedPrimaryKeyIndexMaintainer::Factory::Create(
             /*root_path=*/"", /*branch=*/"main", /*table_schema=*/nullptr,
             /*definitions=*/{}, /*path_factory=*/nullptr, /*index_file_handler=*/nullptr, options,
             /*io_manager=*/nullptr, /*enable_multi_thread_spill=*/false, /*executor=*/nullptr,
-            GetDefaultPool()));
+            GetDefaultPool());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<IndexFileMeta> stale_payload,
         MakeSourceBackedBTreePayload("stale-btree.index", /*field_id=*/7, GetDefaultPool()));
@@ -236,6 +235,27 @@ TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest,
     ASSERT_OK(maintainer->PrepareCommit(&increment));
     ASSERT_EQ(increment.GetNewFilesIncrement().DeletedIndexFiles(),
               (std::vector<std::shared_ptr<IndexFileMeta>>{stale_payload, malformed_pk_payload}));
+}
+
+TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest, InvalidIncrementPreservesState) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> file,
+                         DataFileMeta::ForAppend("source.data", 1, 1, SimpleStats::EmptyStats(), 0,
+                                                 0, 0, FileSource::Compact(), std::nullopt,
+                                                 std::nullopt, std::nullopt, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(file, file->Upgrade(1));
+    auto replacement = std::make_shared<DataFileMeta>(*file);
+    replacement->file_name = "replacement.data";
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFileMeta> payload,
+                         MakeSourceBackedBTreePayload("index", 7, GetDefaultPool()));
+    BucketedPrimaryKeyIndexMaintainer maintainer({}, {{file->file_name, file}}, {payload});
+    CommitIncrement increment(DataIncrement({}, {}, {}),
+                              CompactIncrement({file}, {replacement, nullptr}, {}), nullptr);
+    ASSERT_NOK(maintainer.PrepareCommit(&increment));
+    ASSERT_EQ(1, maintainer.active_data_files_.size());
+    ASSERT_EQ(file, maintainer.active_data_files_.at(file->file_name));
+    ASSERT_EQ(maintainer.active_payloads_, (std::vector<std::shared_ptr<IndexFileMeta>>{payload}));
+    ASSERT_TRUE(increment.GetCompactIncrement().NewIndexFiles().empty());
+    ASSERT_TRUE(increment.GetCompactIncrement().DeletedIndexFiles().empty());
 }
 
 TEST(BucketedPrimaryKeyIndexMaintainerStandaloneTest,

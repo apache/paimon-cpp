@@ -521,6 +521,8 @@ Result<std::shared_ptr<RestoreFiles>> AbstractFileStoreWrite::ScanExistingFileMe
     std::shared_ptr<IndexFileHandler> index_file_handler;
     if (dv_maintainer_factory_) {
         index_file_handler = dv_maintainer_factory_->GetIndexFileHandler();
+        assert(!primary_key_index_maintainer_factory_ ||
+               index_file_handler == primary_key_index_maintainer_factory_->GetIndexFileHandler());
     } else if (primary_key_index_maintainer_factory_) {
         index_file_handler = primary_key_index_maintainer_factory_->GetIndexFileHandler();
     }

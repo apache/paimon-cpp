@@ -144,19 +144,6 @@ Status ValidatePerLevelOption(
     return Status::OK();
 }
 
-std::vector<std::string> PrimaryKeyBTreeIndexColumns(
-    const std::map<std::string, std::string>& options) {
-    auto iter = options.find(Options::PK_BTREE_INDEX_COLUMNS);
-    if (iter == options.end()) {
-        return {};
-    }
-    std::vector<std::string> columns = StringUtils::Split(iter->second, ",", false);
-    for (std::string& column : columns) {
-        StringUtils::Trim(&column);
-    }
-    return columns;
-}
-
 bool IsSupportedBTreeIndexType(const std::shared_ptr<arrow::DataType>& type) {
     switch (type->id()) {
         case arrow::Type::BOOL:
@@ -571,7 +558,7 @@ Status SchemaValidation::ValidateForDeletionVectors(const CoreOptions& options) 
 
 Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schema,
                                                         const CoreOptions& options) {
-    std::vector<std::string> index_columns = PrimaryKeyBTreeIndexColumns(schema.Options());
+    std::vector<std::string> index_columns = options.GetPrimaryKeyBTreeIndexColumns();
     if (index_columns.empty()) {
         return Status::OK();
     }
@@ -598,10 +585,7 @@ Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schem
         return Status::Invalid(
             "Primary-key BTree indexes require deletion-vectors.merge-on-read = false.");
     }
-    PAIMON_ASSIGN_OR_RAISE(bool pk_clustering_override,
-                           OptionsUtils::GetValueFromMap<bool>(
-                               schema.Options(), Options::PK_CLUSTERING_OVERRIDE, false));
-    if (pk_clustering_override) {
+    if (options.PkClusteringOverrideEnabled()) {
         return Status::Invalid(
             "pk-clustering-override is currently unsupported by the C++ commit path, including "
             "tables with primary-key BTree indexes.");

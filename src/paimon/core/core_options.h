@@ -204,6 +204,8 @@ class PAIMON_EXPORT CoreOptions {
     double GetVariantShreddingAdaptiveRetentionRatio() const;
 
     bool DeletionVectorsEnabled() const;
+    bool PkClusteringOverrideEnabled() const;
+    std::vector<std::string> GetPrimaryKeyBTreeIndexColumns() const;
     bool DeletionVectorsBitmap64() const;
     int64_t DeletionVectorTargetFileSize() const;
     ChangelogProducer GetChangelogProducer() const;

@@ -34,6 +34,8 @@
 
 namespace paimon {
 class Executor;
+class FieldsComparator;
+class SortBuffer;
 class FileSystem;
 class FileStorePathFactory;
 class GlobalIndexFileManager;
@@ -61,6 +63,12 @@ class PkSortedIndexBuilder {
     Status DeletePayload(const std::shared_ptr<IndexFileMeta>& payload) const;
 
  private:
+    Result<std::unique_ptr<SortBuffer>> CreateSortBuffer(
+        const std::shared_ptr<FieldsComparator>& comparator,
+        const std::shared_ptr<FieldsComparator>& sequence_comparator) const;
+    Status ReadSourceFiles(const std::vector<std::shared_ptr<DataFileMeta>>& ordered_files,
+                           SortBuffer* sort_buffer, arrow::MemoryPool* arrow_pool) const;
+
     PkSortedIndexBuilder(const BinaryRow& partition, int32_t bucket, DataField field,
                          PrimaryKeyIndexDefinition definition,
                          const std::shared_ptr<PkSortedDataFileReader>& data_file_reader,
