@@ -373,8 +373,10 @@ rapidjson::Value GetTableTokenResponse::ToJson(rapidjson::Document::AllocatorTyp
 }
 
 void GetTableTokenResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
-    token_ = RapidJsonUtil::DeserializeKeyValue<std::map<std::string, std::string>>(
-        obj, kFieldToken, {});
+    // A response without credentials must not be turned into a fall back to the catalog
+    // credentials, so "token" is required while an explicitly empty object is accepted.
+    token_ =
+        RapidJsonUtil::DeserializeKeyValue<std::map<std::string, std::string>>(obj, kFieldToken);
     expires_at_millis_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldExpiresAtMillis, 0);
 }
 
