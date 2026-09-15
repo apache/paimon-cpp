@@ -44,7 +44,7 @@ cbindgen = "0.29"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 
 [profile.dev]
-panic = "abort"
+panic = "unwind"

@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> =
@@ -36,6 +38,26 @@ pub(crate) fn fail(message: impl Into<String>) -> i32 {
             CString::new(message).unwrap_or_else(|_| CString::new("").expect("empty CString"));
     });
     -1
+}
+
+pub(crate) fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("unknown panic");
+    format!("Lance panicked: {message}")
+}
+
+// Catch before returning through the C ABI, including panics during cleanup.
+pub(crate) fn catch_panic<T>(fallback: T, operation: impl FnOnce() -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(payload) => {
+            fail(panic_message(payload));
+            fallback
+        }
+    }
 }
 
 #[no_mangle]

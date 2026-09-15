@@ -20,6 +20,8 @@ use std::sync::OnceLock;
 
 use tokio::runtime::{Handle, Runtime};
 
+use crate::error::panic_message;
+
 static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
 
 pub(crate) fn runtime() -> Result<&'static Runtime, String> {
@@ -47,7 +49,7 @@ where
         scope
             .spawn(move || runtime.block_on(future))
             .join()
-            .map_err(|_| "Lance runtime worker panicked".to_string())?
+            .map_err(panic_message)?
     })
 }
 
@@ -56,5 +58,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn block_on_from_runtime_thread() {
         assert_eq!(super::block_on(async { Ok(42) }).unwrap(), 42);
+        let error = super::block_on(async {
+            panic!("worker panic");
+            #[allow(unreachable_code)]
+            Ok::<(), String>(())
+        })
+        .unwrap_err();
+        assert_eq!(error, "Lance panicked: worker panic");
     }
 }

@@ -34,7 +34,7 @@ use lance_io::utils::CachedFileSize;
 use lance_io::ReadBatchParams;
 use object_store::path::Path;
 
-use crate::error::{clear_last_error, fail};
+use crate::error::{catch_panic, clear_last_error, fail};
 use crate::runtime::block_on;
 use crate::util::{parse_options, parse_projection, parse_ranges, required_string};
 
@@ -44,6 +44,7 @@ pub struct PaimonLanceReader {
 
 pub struct PaimonLanceBatchReader {
     stream: Pin<Box<dyn RecordBatchStream>>,
+    failed: bool,
 }
 
 /// # Safety
@@ -59,65 +60,67 @@ pub unsafe extern "C" fn paimon_lance_reader_open(
     storage_option_count: usize,
     out_reader: *mut *mut PaimonLanceReader,
 ) -> i32 {
-    clear_last_error();
-    if out_reader.is_null() {
-        return fail("out_reader is nullptr");
-    }
-    unsafe {
-        *out_reader = ptr::null_mut();
-    }
-    let uri = match required_string(uri, "Lance reader URI") {
-        Ok(uri) => uri,
-        Err(error) => return fail(error),
-    };
-    let storage_options = match parse_options(
-        storage_option_keys,
-        storage_option_values,
-        storage_option_count,
-    ) {
-        Ok(options) => options,
-        Err(error) => return fail(error),
-    };
-    let reader = match block_on(async move {
-        let params = ObjectStoreParams {
-            storage_options: Some(storage_options),
-            ..Default::default()
+    catch_panic(-1, || {
+        clear_last_error();
+        if out_reader.is_null() {
+            return fail("out_reader is nullptr");
+        }
+        unsafe {
+            *out_reader = ptr::null_mut();
+        }
+        let uri = match required_string(uri, "Lance reader URI") {
+            Ok(uri) => uri,
+            Err(error) => return fail(error),
         };
-        let (object_store, path) = ObjectStore::from_uri_and_params(
-            Arc::new(ObjectStoreRegistry::default()),
-            &uri,
-            &params,
-        )
-        .await
-        .map_err(|error| format!("open Lance object store for {uri}: {error}"))?;
-        let config = SchedulerConfig::max_bandwidth(&object_store);
-        let scheduler = ScanScheduler::new(object_store, config);
-        let file_scheduler = scheduler
-            .open_file(
-                &Path::parse(&path).map_err(|error| format!("parse Lance path: {error}"))?,
-                &CachedFileSize::unknown(),
+        let storage_options = match parse_options(
+            storage_option_keys,
+            storage_option_values,
+            storage_option_count,
+        ) {
+            Ok(options) => options,
+            Err(error) => return fail(error),
+        };
+        let reader = match block_on(async move {
+            let params = ObjectStoreParams {
+                storage_options: Some(storage_options),
+                ..Default::default()
+            };
+            let (object_store, path) = ObjectStore::from_uri_and_params(
+                Arc::new(ObjectStoreRegistry::default()),
+                &uri,
+                &params,
             )
             .await
-            .map_err(|error| format!("open Lance file {uri}: {error}"))?;
-        FileReader::try_open(
-            file_scheduler,
-            None,
-            Arc::<DecoderPlugins>::default(),
-            &LanceCache::no_cache(),
-            FileReaderOptions::default(),
-        )
-        .await
-        .map_err(|error| format!("read Lance file metadata {uri}: {error}"))
-    }) {
-        Ok(reader) => reader,
-        Err(error) => return fail(error),
-    };
-    unsafe {
-        *out_reader = Box::into_raw(Box::new(PaimonLanceReader {
-            reader: Arc::new(reader),
-        }));
-    }
-    0
+            .map_err(|error| format!("open Lance object store for {uri}: {error}"))?;
+            let config = SchedulerConfig::max_bandwidth(&object_store);
+            let scheduler = ScanScheduler::new(object_store, config);
+            let file_scheduler = scheduler
+                .open_file(
+                    &Path::parse(&path).map_err(|error| format!("parse Lance path: {error}"))?,
+                    &CachedFileSize::unknown(),
+                )
+                .await
+                .map_err(|error| format!("open Lance file {uri}: {error}"))?;
+            FileReader::try_open(
+                file_scheduler,
+                None,
+                Arc::<DecoderPlugins>::default(),
+                &LanceCache::no_cache(),
+                FileReaderOptions::default(),
+            )
+            .await
+            .map_err(|error| format!("read Lance file metadata {uri}: {error}"))
+        }) {
+            Ok(reader) => reader,
+            Err(error) => return fail(error),
+        };
+        unsafe {
+            *out_reader = Box::into_raw(Box::new(PaimonLanceReader {
+                reader: Arc::new(reader),
+            }));
+        }
+        0
+    })
 }
 
 /// # Safety
@@ -129,20 +132,22 @@ pub unsafe extern "C" fn paimon_lance_reader_export_schema(
     reader: *const PaimonLanceReader,
     out_schema: *mut c_void,
 ) -> i32 {
-    clear_last_error();
-    if reader.is_null() || out_schema.is_null() {
-        return fail("Lance reader and Arrow schema must be non-null");
-    }
-    let reader = unsafe { &*reader };
-    let arrow_schema = ArrowSchema::from(reader.reader.schema().as_ref());
-    let ffi_schema = match FFI_ArrowSchema::try_from(&arrow_schema) {
-        Ok(schema) => schema,
-        Err(error) => return fail(format!("export Lance schema: {error}")),
-    };
-    unsafe {
-        ptr::write(out_schema.cast::<FFI_ArrowSchema>(), ffi_schema);
-    }
-    0
+    catch_panic(-1, || {
+        clear_last_error();
+        if reader.is_null() || out_schema.is_null() {
+            return fail("Lance reader and Arrow schema must be non-null");
+        }
+        let reader = unsafe { &*reader };
+        let arrow_schema = ArrowSchema::from(reader.reader.schema().as_ref());
+        let ffi_schema = match FFI_ArrowSchema::try_from(&arrow_schema) {
+            Ok(schema) => schema,
+            Err(error) => return fail(format!("export Lance schema: {error}")),
+        };
+        unsafe {
+            ptr::write(out_schema.cast::<FFI_ArrowSchema>(), ffi_schema);
+        }
+        0
+    })
 }
 
 /// # Safety
@@ -154,14 +159,16 @@ pub unsafe extern "C" fn paimon_lance_reader_num_rows(
     reader: *const PaimonLanceReader,
     out_row_count: *mut u64,
 ) -> i32 {
-    clear_last_error();
-    if reader.is_null() || out_row_count.is_null() {
-        return fail("Lance reader and out_row_count must be non-null");
-    }
-    unsafe {
-        *out_row_count = (*reader).reader.num_rows();
-    }
-    0
+    catch_panic(-1, || {
+        clear_last_error();
+        if reader.is_null() || out_row_count.is_null() {
+            return fail("Lance reader and out_row_count must be non-null");
+        }
+        unsafe {
+            *out_row_count = (*reader).reader.num_rows();
+        }
+        0
+    })
 }
 
 /// # Safety
@@ -183,65 +190,70 @@ pub unsafe extern "C" fn paimon_lance_reader_open_stream(
     selection_range_count: usize,
     out_batch_reader: *mut *mut PaimonLanceBatchReader,
 ) -> i32 {
-    clear_last_error();
-    if reader.is_null() || out_batch_reader.is_null() {
-        return fail("Lance reader and out_batch_reader must be non-null");
-    }
-    if batch_size == 0 || batch_readahead == 0 {
-        return fail("Lance batch size and batch readahead must be positive");
-    }
-    unsafe {
-        *out_batch_reader = ptr::null_mut();
-    }
-    let projection_names = match parse_projection(projection_names, projection_count) {
-        Ok(names) => names,
-        Err(error) => return fail(error),
-    };
-    let ranges = match parse_ranges(selection_starts, selection_ends, selection_range_count) {
-        Ok(ranges) => ranges,
-        Err(error) => return fail(error),
-    };
-    let reader = unsafe { &*reader };
-    let projection = if projection_names.is_empty() {
-        ReaderProjection::from_whole_schema(
-            reader.reader.schema(),
-            reader.reader.metadata().version(),
-        )
-    } else {
-        let names: Vec<&str> = projection_names.iter().map(String::as_str).collect();
-        match ReaderProjection::from_column_names(
-            reader.reader.metadata().version(),
-            reader.reader.schema(),
-            &names,
-        ) {
-            Ok(projection) => projection,
-            Err(error) => return fail(format!("create Lance projection: {error}")),
+    catch_panic(-1, || {
+        clear_last_error();
+        if reader.is_null() || out_batch_reader.is_null() {
+            return fail("Lance reader and out_batch_reader must be non-null");
         }
-    };
-    let read_params = if has_selection {
-        ReadBatchParams::Ranges(ranges.into_boxed_slice().into())
-    } else {
-        ReadBatchParams::RangeFull
-    };
-    let stream = match block_on(async {
-        reader
-            .reader
-            .read_stream_projected(
-                read_params,
-                batch_size,
-                batch_readahead,
-                projection,
-                FilterExpression::no_filter(),
+        if batch_size == 0 || batch_readahead == 0 {
+            return fail("Lance batch size and batch readahead must be positive");
+        }
+        unsafe {
+            *out_batch_reader = ptr::null_mut();
+        }
+        let projection_names = match parse_projection(projection_names, projection_count) {
+            Ok(names) => names,
+            Err(error) => return fail(error),
+        };
+        let ranges = match parse_ranges(selection_starts, selection_ends, selection_range_count) {
+            Ok(ranges) => ranges,
+            Err(error) => return fail(error),
+        };
+        let reader = unsafe { &*reader };
+        let projection = if projection_names.is_empty() {
+            ReaderProjection::from_whole_schema(
+                reader.reader.schema(),
+                reader.reader.metadata().version(),
             )
-            .map_err(|error| format!("open Lance batch reader: {error}"))
-    }) {
-        Ok(stream) => stream,
-        Err(error) => return fail(error),
-    };
-    unsafe {
-        *out_batch_reader = Box::into_raw(Box::new(PaimonLanceBatchReader { stream }));
-    }
-    0
+        } else {
+            let names: Vec<&str> = projection_names.iter().map(String::as_str).collect();
+            match ReaderProjection::from_column_names(
+                reader.reader.metadata().version(),
+                reader.reader.schema(),
+                &names,
+            ) {
+                Ok(projection) => projection,
+                Err(error) => return fail(format!("create Lance projection: {error}")),
+            }
+        };
+        let read_params = if has_selection {
+            ReadBatchParams::Ranges(ranges.into_boxed_slice().into())
+        } else {
+            ReadBatchParams::RangeFull
+        };
+        let stream = match block_on(async {
+            reader
+                .reader
+                .read_stream_projected(
+                    read_params,
+                    batch_size,
+                    batch_readahead,
+                    projection,
+                    FilterExpression::no_filter(),
+                )
+                .map_err(|error| format!("open Lance batch reader: {error}"))
+        }) {
+            Ok(stream) => stream,
+            Err(error) => return fail(error),
+        };
+        unsafe {
+            *out_batch_reader = Box::into_raw(Box::new(PaimonLanceBatchReader {
+                stream,
+                failed: false,
+            }));
+        }
+        0
+    })
 }
 
 /// # Safety
@@ -255,43 +267,51 @@ pub unsafe extern "C" fn paimon_lance_batch_reader_next(
     out_schema: *mut c_void,
     out_eof: *mut bool,
 ) -> i32 {
-    clear_last_error();
-    if reader.is_null() || out_array.is_null() || out_schema.is_null() || out_eof.is_null() {
-        return fail("Lance batch reader, Arrow outputs, and EOF output must be non-null");
-    }
-    let reader = unsafe { &mut *reader };
-    let next = match block_on(async {
-        reader
-            .stream
-            .next()
-            .await
-            .transpose()
-            .map_err(|error| format!("read Lance batch: {error}"))
-    }) {
-        Ok(next) => next,
-        Err(error) => return fail(error),
-    };
-    match next {
-        Some(batch) => {
-            let struct_array = StructArray::from(batch);
-            let (ffi_array, ffi_schema) = match to_ffi(&struct_array.to_data()) {
-                Ok(output) => output,
-                Err(error) => return fail(format!("export Lance batch: {error}")),
-            };
-            unsafe {
-                ptr::write(out_array.cast::<FFI_ArrowArray>(), ffi_array);
-                ptr::write(out_schema.cast::<FFI_ArrowSchema>(), ffi_schema);
-                *out_eof = false;
-            }
-            0
+    catch_panic(-1, || {
+        clear_last_error();
+        if reader.is_null() || out_array.is_null() || out_schema.is_null() || out_eof.is_null() {
+            return fail("Lance batch reader, Arrow outputs, and EOF output must be non-null");
         }
-        None => {
-            unsafe {
-                *out_eof = true;
-            }
-            0
+        let reader = unsafe { &mut *reader };
+        if reader.failed {
+            return fail("cannot read after Lance batch reader failed");
         }
-    }
+        reader.failed = true;
+        let next = match block_on(async {
+            reader
+                .stream
+                .next()
+                .await
+                .transpose()
+                .map_err(|error| format!("read Lance batch: {error}"))
+        }) {
+            Ok(next) => next,
+            Err(error) => return fail(error),
+        };
+        match next {
+            Some(batch) => {
+                let struct_array = StructArray::from(batch);
+                let (ffi_array, ffi_schema) = match to_ffi(&struct_array.to_data()) {
+                    Ok(output) => output,
+                    Err(error) => return fail(format!("export Lance batch: {error}")),
+                };
+                unsafe {
+                    ptr::write(out_array.cast::<FFI_ArrowArray>(), ffi_array);
+                    ptr::write(out_schema.cast::<FFI_ArrowSchema>(), ffi_schema);
+                    *out_eof = false;
+                }
+                reader.failed = false;
+                0
+            }
+            None => {
+                unsafe {
+                    *out_eof = true;
+                }
+                reader.failed = false;
+                0
+            }
+        }
+    })
 }
 
 /// # Safety
@@ -300,11 +320,13 @@ pub unsafe extern "C" fn paimon_lance_batch_reader_next(
 /// `paimon_lance_reader_open_stream`, and it must be freed at most once.
 #[no_mangle]
 pub unsafe extern "C" fn paimon_lance_batch_reader_free(reader: *mut PaimonLanceBatchReader) {
-    if !reader.is_null() {
-        unsafe {
-            drop(Box::from_raw(reader));
+    catch_panic((), || {
+        if !reader.is_null() {
+            unsafe {
+                drop(Box::from_raw(reader));
+            }
         }
-    }
+    })
 }
 
 /// # Safety
@@ -314,9 +336,39 @@ pub unsafe extern "C" fn paimon_lance_batch_reader_free(reader: *mut PaimonLance
 /// associated batch readers have been freed.
 #[no_mangle]
 pub unsafe extern "C" fn paimon_lance_reader_free(reader: *mut PaimonLanceReader) {
-    if !reader.is_null() {
-        unsafe {
-            drop(Box::from_raw(reader));
+    catch_panic((), || {
+        if !reader.is_null() {
+            unsafe {
+                drop(Box::from_raw(reader));
+            }
         }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::paimon_lance_last_error;
+    use std::ffi::{CStr, CString};
+    use std::fs;
+
+    #[test]
+    fn corrupt_file_returns_error() {
+        let path =
+            std::env::temp_dir().join(format!("paimon-lance-corrupt-{}", std::process::id()));
+        fs::write(&path, b"not a Lance file").unwrap();
+        let uri = CString::new(path.to_str().unwrap()).unwrap();
+        let mut reader = ptr::null_mut();
+        unsafe {
+            assert_eq!(
+                paimon_lance_reader_open(uri.as_ptr(), ptr::null(), ptr::null(), 0, &mut reader,),
+                -1
+            );
+            assert!(reader.is_null());
+            assert!(!CStr::from_ptr(paimon_lance_last_error())
+                .to_bytes()
+                .is_empty());
+        }
+        fs::remove_file(path).unwrap();
     }
 }
