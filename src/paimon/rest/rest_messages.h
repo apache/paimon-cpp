@@ -325,7 +325,8 @@ class GetTableResponse : public Jsonizable<GetTableResponse> {
 };
 
 /// The temporary file system credentials of one table. `token` carries file system
-/// options (e.g. "fs.oss.accessKeyId") that are merged over the catalog options.
+/// options (e.g. "fs.oss.accessKeyId") that are merged over the catalog options, and is
+/// required: a response that omits it is rejected instead of read as "no credentials".
 class GetTableTokenResponse : public Jsonizable<GetTableTokenResponse> {
  public:
     GetTableTokenResponse(const std::map<std::string, std::string>& token,

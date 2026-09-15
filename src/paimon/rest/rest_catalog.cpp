@@ -97,11 +97,7 @@ RestCatalog::RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<Fil
           api_->GetMergedOptions(), CatalogOptions::TABLE_DEFAULT_OPTION_PREFIX)),
       logger_(Logger::GetLogger("RestCatalog")) {
     if (data_token_enabled_) {
-        GenericLruCache<std::string, std::shared_ptr<FileSystem>>::Options cache_options;
-        cache_options.max_weight = kMaxTableFileSystems;
-        table_fs_cache_ =
-            std::make_unique<GenericLruCache<std::string, std::shared_ptr<FileSystem>>>(
-                std::move(cache_options));
+        token_fs_cache_ = RestTokenFileSystem::CreateFileSystemCache();
     }
 }
 
@@ -477,13 +473,13 @@ Result<std::shared_ptr<FileSystem>> RestCatalog::GetTableFileSystem(
     // The credentials are issued for the data table, so a system table shares those of
     // the table it belongs to.
     PAIMON_ASSIGN_OR_RAISE(Identifier load_identifier, ToLoadIdentifier(identifier));
-    return table_fs_cache_->Get(
-        load_identifier.GetFullName(),
-        [this, &load_identifier](const std::string&) -> Result<std::shared_ptr<FileSystem>> {
-            std::shared_ptr<FileSystem> fs = std::make_shared<RestTokenFileSystem>(
-                api_, api_->GetMergedOptions(), load_identifier);
-            return fs;
-        });
+    // Building the file system asks the server for nothing, the credentials are loaded on
+    // the first access, so nothing is keyed by the table here: the file systems built from
+    // the credentials are what `token_fs_cache_` reuses and bounds. Keying an instance by
+    // its table would keep serving the credentials of a dropped table to a table recreated
+    // at another location.
+    return std::make_shared<RestTokenFileSystem>(api_, api_->GetMergedOptions(), load_identifier,
+                                                 token_fs_cache_);
 }
 
 Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& identifier,

@@ -18,6 +18,7 @@
 
 #include "paimon/rest/rest_token_file_system.h"
 
+#include <functional>
 #include <mutex>
 #include <utility>
 
@@ -32,12 +33,31 @@ namespace {
 constexpr const char kOssEndpointOption[] = "fs.oss.endpoint";
 }  // namespace
 
+size_t RestToken::Hash::operator()(const RestToken& rest_token) const {
+    size_t result = std::hash<int64_t>()(rest_token.expires_at_millis);
+    for (const auto& [key, value] : rest_token.token) {
+        result = result * 31 + std::hash<std::string>()(key);
+        result = result * 31 + std::hash<std::string>()(value);
+    }
+    return result;
+}
+
+std::shared_ptr<RestTokenFileSystemCache> RestTokenFileSystem::CreateFileSystemCache() {
+    RestTokenFileSystemCache::Options cache_options;
+    cache_options.max_weight = kMaxCachedFileSystems;
+    cache_options.expire_after_access_ms = kFileSystemCacheExpireAfterAccessMillis;
+    return std::make_shared<RestTokenFileSystemCache>(std::move(cache_options));
+}
+
 RestTokenFileSystem::RestTokenFileSystem(const std::shared_ptr<RestApi>& api,
                                          const std::map<std::string, std::string>& catalog_options,
-                                         const Identifier& identifier, Clock clock)
+                                         const Identifier& identifier,
+                                         std::shared_ptr<RestTokenFileSystemCache> fs_cache,
+                                         Clock clock)
     : api_(api),
       catalog_options_(catalog_options),
       identifier_(identifier),
+      fs_cache_(fs_cache != nullptr ? std::move(fs_cache) : CreateFileSystemCache()),
       clock_(std::move(clock)),
       logger_(Logger::GetLogger("RestTokenFileSystem")) {}
 
@@ -62,7 +82,7 @@ std::map<std::string, std::string> RestTokenFileSystem::MergeTokenOptions(
     return merged;
 }
 
-Status RestTokenFileSystem::Refresh() const {
+Status RestTokenFileSystem::RefreshToken() const {
     PAIMON_LOG_INFO(logger_, "begin refresh data token for identifier [%s]",
                     identifier_.ToString().c_str());
     PAIMON_ASSIGN_OR_RAISE(GetTableTokenResponse response, api_->LoadTableToken(identifier_));
@@ -70,9 +90,12 @@ Status RestTokenFileSystem::Refresh() const {
                     identifier_.ToString().c_str(),
                     static_cast<int64_t>(response.GetExpiresAtMillis()));
 
-    RestToken token{MergeTokenOptions(response.GetToken()), response.GetExpiresAtMillis()};
-    // The credentials are the only file system options that change, so the file system is
-    // rebuilt from the catalog options with the credentials merged over them.
+    token_ = RestToken{MergeTokenOptions(response.GetToken()), response.GetExpiresAtMillis()};
+    return Status::OK();
+}
+
+Result<std::shared_ptr<FileSystem>> RestTokenFileSystem::BuildFileSystem(
+    const RestToken& token) const {
     std::map<std::string, std::string> fs_options = catalog_options_;
     for (const auto& [key, value] : token.token) {
         fs_options[key] = value;
@@ -84,31 +107,13 @@ Status RestTokenFileSystem::Refresh() const {
         return Status::Invalid("failed to build the file system of the data token of ",
                                identifier_.ToString());
     }
-
-    retained_fs_.push_back(fs);
-    while (retained_fs_.size() > kMaxRetainedFileSystems) {
-        retained_fs_.pop_front();
-    }
-    token_ = std::move(token);
-    fs_ = std::move(fs);
-    return Status::OK();
+    return fs;
 }
 
 Result<std::shared_ptr<FileSystem>> RestTokenFileSystem::Delegate() const {
-    {
-        std::shared_lock<std::shared_mutex> read_lock(mutex_);
-        if (!ShouldRefresh()) {
-            return fs_;
-        }
-    }
-
-    std::unique_lock<std::shared_mutex> write_lock(mutex_);
-    // Double-check, another thread may have refreshed while this one waited for the lock.
-    if (!ShouldRefresh()) {
-        return fs_;
-    }
-    PAIMON_RETURN_NOT_OK(Refresh());
-    return fs_;
+    PAIMON_ASSIGN_OR_RAISE(RestToken token, ValidToken());
+    return fs_cache_->Get(
+        token, [this](const RestToken& cached_token) { return BuildFileSystem(cached_token); });
 }
 
 Result<RestToken> RestTokenFileSystem::ValidToken() const {
@@ -120,10 +125,11 @@ Result<RestToken> RestTokenFileSystem::ValidToken() const {
     }
 
     std::unique_lock<std::shared_mutex> write_lock(mutex_);
+    // Double-check, another thread may have refreshed while this one waited for the lock.
     if (!ShouldRefresh()) {
         return token_.value();
     }
-    PAIMON_RETURN_NOT_OK(Refresh());
+    PAIMON_RETURN_NOT_OK(RefreshToken());
     return token_.value();
 }
 

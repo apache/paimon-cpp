@@ -217,10 +217,21 @@ TEST(RestMessagesTest, GetTableTokenResponseLenientParse) {
     ASSERT_EQ("v", no_expiration.GetToken().at("k"));
     ASSERT_EQ(0, no_expiration.GetExpiresAtMillis());
 
-    ASSERT_OK_AND_ASSIGN(GetTableTokenResponse no_token,
-                         GetTableTokenResponse::FromJsonString(R"({"expiresAtMillis": 5})"));
-    ASSERT_TRUE(no_token.GetToken().empty());
-    ASSERT_EQ(5, no_token.GetExpiresAtMillis());
+    // credentials the server reports as explicitly empty are parsed as such
+    ASSERT_OK_AND_ASSIGN(
+        GetTableTokenResponse empty_token,
+        GetTableTokenResponse::FromJsonString(R"({"token": {}, "expiresAtMillis": 5})"));
+    ASSERT_TRUE(empty_token.GetToken().empty());
+    ASSERT_EQ(5, empty_token.GetExpiresAtMillis());
+}
+
+TEST(RestMessagesTest, GetTableTokenResponseRequiresTheToken) {
+    // a missing or null token is a malformed response, telling it apart from an empty one
+    // keeps it from being served as "no credentials", which would fall back to the
+    // credentials configured for the catalog
+    ASSERT_NOK(GetTableTokenResponse::FromJsonString(R"({"expiresAtMillis": 5})").status());
+    ASSERT_NOK(
+        GetTableTokenResponse::FromJsonString(R"({"token": null, "expiresAtMillis": 5})").status());
 }
 
 TEST(RestMessagesTest, GetTableTokenResponseRoundTrip) {

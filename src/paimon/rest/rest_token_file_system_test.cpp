@@ -20,18 +20,24 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog_options.h"
+#include "paimon/common/factories/io_hook.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/defs.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
 #include "paimon/rest/rest_messages.h"
@@ -51,6 +57,9 @@ struct MockTokenState {
     int64_t expires_at_millis = 0;
     // when set, the token endpoint fails with this http code
     std::optional<int32_t> force_error_code;
+    // when set, the token endpoint answers with this body and http 200, which lets a test
+    // return a malformed response without going through serialization
+    std::optional<std::string> response_body;
     // guards all fields above: the handler runs on the server's accept thread while
     // tests seed and inspect the state
     std::mutex mutex;
@@ -76,6 +85,10 @@ MockRestServer::Response HandleTokenRequest(MockTokenState* state,
         response.body = error.ToJsonString().value();
         return response;
     }
+    if (state->response_body) {
+        response.body = state->response_body.value();
+        return response;
+    }
     GetTableTokenResponse token(state->token, state->expires_at_millis);
     response.body = token.ToJsonString().value();
     return response;
@@ -84,6 +97,26 @@ MockRestServer::Response HandleTokenRequest(MockTokenState* state,
 int64_t ToMillis(std::chrono::system_clock::time_point time) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
 }
+
+// A local file system that runs a callback right after a file was created, so a test can
+// rotate the credentials in the middle of a multi step operation without depending on
+// thread scheduling or on waiting for real time to pass.
+class RefreshOnCreateFileSystem : public LocalFileSystem {
+ public:
+    explicit RefreshOnCreateFileSystem(std::function<void()> on_create)
+        : on_create_(std::move(on_create)) {}
+
+    Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
+                                                 bool overwrite) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OutputStream> out,
+                               LocalFileSystem::Create(path, overwrite));
+        on_create_();
+        return out;
+    }
+
+ private:
+    std::function<void()> on_create_;
+};
 
 }  // namespace
 
@@ -116,7 +149,8 @@ class RestTokenFileSystemTest : public ::testing::Test {
         }
     }
 
-    std::shared_ptr<RestTokenFileSystem> CreateFileSystem() {
+    std::shared_ptr<RestTokenFileSystem> CreateFileSystem(
+        std::shared_ptr<RestTokenFileSystemCache> fs_cache = nullptr) {
         Result<std::unique_ptr<RestApi>> api =
             RestApi::Create(catalog_options_, "", /*config_required=*/false);
         if (!api.ok()) {
@@ -124,7 +158,7 @@ class RestTokenFileSystemTest : public ::testing::Test {
         }
         std::shared_ptr<RestApi> shared_api(std::move(api).value());
         return std::make_shared<RestTokenFileSystem>(
-            shared_api, catalog_options_, Identifier("db1", "t1"), [this] {
+            shared_api, catalog_options_, Identifier("db1", "t1"), std::move(fs_cache), [this] {
                 return std::chrono::system_clock::time_point(
                     std::chrono::milliseconds(now_millis_.load()));
             });
@@ -370,16 +404,364 @@ TEST_F(RestTokenFileSystemTest, ConcurrentFirstAccessLoadsTheTokenOnce) {
     ASSERT_EQ(1, state_->request_count.load());
 }
 
-TEST(RestTokenTest, OrdersByExpirationThenCredentials) {
-    RestToken early{{{"k", "v"}}, 1};
-    RestToken late{{{"k", "v"}}, 2};
-    ASSERT_TRUE(early < late);
-    ASSERT_FALSE(late < early);
+TEST_F(RestTokenFileSystemTest, ValidTokenNeedsNoDelegate) {
+    // a caller that brings its own file system only needs the credentials, so an option
+    // the delegate cannot be built from must not keep it from getting them
+    catalog_options_[Options::MANIFEST_FORMAT] = "no-such-format";
+    std::string path = WriteFile("data", "paimon");
+    std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem();
+    ASSERT_NE(nullptr, fs);
 
+    ASSERT_OK_AND_ASSIGN(RestToken token, fs->ValidToken());
+    ASSERT_EQ("ak-1", token.token.at("fs.oss.accessKeyId"));
+    ASSERT_EQ(kExpiresAtMillis, token.expires_at_millis);
+
+    // a file operation does need the delegate and reports why it cannot be built
+    Status status = fs->Exists(path).status();
+    ASSERT_NOK(status);
+    ASSERT_NOK_WITH_MSG(status, "no-such-format");
+}
+
+TEST_F(RestTokenFileSystemTest, FileSystemsOfEqualCredentialsAreShared) {
+    std::string path = WriteFile("data", "paimon");
+    std::shared_ptr<RestTokenFileSystemCache> cache = RestTokenFileSystem::CreateFileSystemCache();
+    std::shared_ptr<RestTokenFileSystem> first = CreateFileSystem(cache);
+    std::shared_ptr<RestTokenFileSystem> second = CreateFileSystem(cache);
+    ASSERT_NE(nullptr, first);
+    ASSERT_NE(nullptr, second);
+
+    ASSERT_OK(first->Exists(path).status());
+    ASSERT_OK(second->Exists(path).status());
+    // both loaded credentials of their own, which are equal and so share one delegate
+    ASSERT_EQ(2, state_->request_count.load());
+    ASSERT_EQ(1u, cache->Size());
+
+    // the delegate of the rotated credentials is added while the previous one is kept, so
+    // a stream opened just before the rotation does not lose the file system it came from
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->token = {{"fs.oss.accessKeyId", "ak-2"}};
+        state_->expires_at_millis = kExpiresAtMillis + RestApi::kTokenExpirationSafeTimeMillis;
+    }
+    now_millis_ = kExpiresAtMillis - 1;
+    ASSERT_OK(first->Exists(path).status());
+    ASSERT_EQ(2u, cache->Size());
+}
+
+TEST_F(RestTokenFileSystemTest, MalformedTokenResponseDoesNotAccessBackend) {
+    catalog_options_["fs.oss.accessKeyId"] = "catalog-ak";
+    std::string path = WriteFile("data", "original");
+    const std::vector<std::string> bodies = {
+        fmt::format(R"({{"expiresAtMillis":{}}})", kExpiresAtMillis),
+        fmt::format(R"({{"token":null,"expiresAtMillis":{}}})", kExpiresAtMillis)};
+    for (bool warm_cache : {false, true}) {
+        for (const auto& body : bodies) {
+            SCOPED_TRACE(body);
+            SCOPED_TRACE(warm_cache);
+            now_millis_ = kNowMillis;
+            {
+                std::lock_guard<std::mutex> lock(state_->mutex);
+                state_->response_body.reset();
+                state_->expires_at_millis = kExpiresAtMillis;
+            }
+            std::shared_ptr<RestTokenFileSystemCache> cache =
+                RestTokenFileSystem::CreateFileSystemCache();
+            std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+            ASSERT_NE(nullptr, fs);
+            if (warm_cache) {
+                ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists(path));
+                ASSERT_TRUE(exists);
+                // the loaded credentials have not expired yet but entered the refresh
+                // window, so a refresh that fails must not fall back to them
+                now_millis_ = kExpiresAtMillis - RestApi::kTokenExpirationSafeTimeMillis + 1;
+            }
+            {
+                std::lock_guard<std::mutex> lock(state_->mutex);
+                state_->response_body = body;
+            }
+            int32_t requests_before = state_->request_count.load();
+            // the hook counts every access of the local files, so it shows that a failed
+            // refresh never reaches the backend
+            IOHook* hook = IOHook::GetInstance();
+            ScopeGuard guard([hook]() { hook->Clear(); });
+            hook->Reset(0, IOHook::Mode::SILENT);
+            Status token_status = fs->ValidToken().status();
+            ASSERT_TRUE(token_status.IsInvalid()) << token_status.ToString();
+            Status read_status = fs->Exists(path).status();
+            ASSERT_TRUE(read_status.IsInvalid()) << read_status.ToString();
+            Status write_status = fs->WriteFile(path, "modified", /*overwrite=*/true);
+            ASSERT_TRUE(write_status.IsInvalid()) << write_status.ToString();
+            ASSERT_EQ(0, hook->IOCount());
+            ASSERT_EQ(warm_cache ? 1u : 0u, cache->Size());
+            ASSERT_EQ(requests_before + 3, state_->request_count.load());
+            hook->Clear();
+
+            std::string content;
+            ASSERT_OK(temp_dir_->GetFileSystem()->ReadFile(path, &content));
+            ASSERT_EQ("original", content);
+            {
+                std::lock_guard<std::mutex> lock(state_->mutex);
+                state_->response_body.reset();
+                state_->expires_at_millis =
+                    kExpiresAtMillis + RestApi::kTokenExpirationSafeTimeMillis;
+            }
+            ASSERT_OK(fs->ReadFile(path, &content));
+            ASSERT_EQ("original", content);
+            ASSERT_EQ(requests_before + 4, state_->request_count.load());
+        }
+    }
+}
+
+TEST_F(RestTokenFileSystemTest, ExplicitEmptyTokenAllowsFileOperations) {
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->token.clear();
+    }
+    std::shared_ptr<RestTokenFileSystemCache> cache = RestTokenFileSystem::CreateFileSystemCache();
+    std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+    ASSERT_NE(nullptr, fs);
+    ASSERT_OK_AND_ASSIGN(RestToken token, fs->ValidToken());
+    ASSERT_TRUE(token.token.empty());
+    ASSERT_EQ(0u, cache->Size());
+    std::string path = temp_dir_->Str() + "/empty-token";
+    ASSERT_OK(fs->WriteFile(path, "data", /*overwrite=*/false));
+    std::string content;
+    ASSERT_OK(fs->ReadFile(path, &content));
+    ASSERT_EQ("data", content);
+    ASSERT_EQ(1u, cache->Size());
+    ASSERT_EQ(1, state_->request_count.load());
+}
+
+TEST_F(RestTokenFileSystemTest, DefaultCacheEvictsAndRebuildsBackendWithoutReloadingToken) {
+    std::shared_ptr<RestTokenFileSystemCache> cache = RestTokenFileSystem::CreateFileSystemCache();
+    ASSERT_EQ(1000, cache->GetMaxWeight());
+    std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+    ASSERT_NE(nullptr, fs);
+    std::string path = WriteFile("data", "paimon");
+    ASSERT_OK(fs->Exists(path).status());
+    ASSERT_OK_AND_ASSIGN(RestToken token, fs->ValidToken());
+    std::optional<std::shared_ptr<FileSystem>> cached = cache->GetIfPresent(token);
+    ASSERT_TRUE(cached.has_value());
+    std::weak_ptr<FileSystem> old_backend = cached.value();
+    cached.reset();
+
+    // fill the cache with other credentials to reach its real default capacity; the file
+    // system asked for the credentials stays in use, only the delegate it built is evicted
+    std::shared_ptr<FileSystem> filler = temp_dir_->GetFileSystem();
+    for (int32_t i = 0; i < 1000; ++i) {
+        RestToken other{{{"entry", fmt::format("{}", i)}}, kExpiresAtMillis};
+        ASSERT_OK(cache->Get(other, [&filler](const RestToken&) { return filler; }).status());
+    }
+    ASSERT_EQ(1000u, cache->Size());
+    ASSERT_FALSE(cache->GetIfPresent(token).has_value());
+    ASSERT_TRUE(old_backend.expired());
+    ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists(path));
+    ASSERT_TRUE(exists);
+    ASSERT_TRUE(cache->GetIfPresent(token).has_value());
+    ASSERT_EQ(1000u, cache->Size());
+    ASSERT_EQ(1, state_->request_count.load());
+}
+
+TEST_F(RestTokenFileSystemTest, CacheExpirationDoesNotReloadValidToken) {
+    using RemovalCause = RestTokenFileSystemCache::RemovalCause;
+    std::vector<RemovalCause> causes;
+    std::vector<std::weak_ptr<FileSystem>> removed_backends;
+    RestTokenFileSystemCache::Options options;
+    // an idle time of zero expires every entry right away, which the production default of
+    // ten hours cannot do within a test
+    options.expire_after_access_ms = 0;
+    options.removal_callback = [&](const RestToken&, const std::shared_ptr<FileSystem>& backend,
+                                   RemovalCause cause) {
+        causes.push_back(cause);
+        removed_backends.push_back(backend);
+    };
+    std::shared_ptr<RestTokenFileSystemCache> cache =
+        std::make_shared<RestTokenFileSystemCache>(options);
+    std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+    ASSERT_NE(nullptr, fs);
+    std::string path = WriteFile("data", "paimon");
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists(path));
+        ASSERT_TRUE(exists);
+        ASSERT_EQ(0u, cache->Size());
+    }
+    ASSERT_EQ((std::vector<RemovalCause>{RemovalCause::EXPIRED, RemovalCause::EXPIRED}), causes);
+    ASSERT_EQ(2u, removed_backends.size());
+    ASSERT_TRUE(removed_backends[0].expired());
+    ASSERT_TRUE(removed_backends[1].expired());
+    ASSERT_EQ(1, state_->request_count.load());
+}
+
+TEST_F(RestTokenFileSystemTest, LocalStreamsSurviveRotationAndCacheEviction) {
+    RestTokenFileSystemCache::Options options;
+    options.max_weight = 1;
+    std::shared_ptr<RestTokenFileSystemCache> cache =
+        std::make_shared<RestTokenFileSystemCache>(options);
+    std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+    ASSERT_NE(nullptr, fs);
+    std::string path = WriteFile("data", "paimon");
+    std::string output_path = temp_dir_->Str() + "/output";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> in, fs->Open(path));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> out,
+                         fs->Create(output_path, /*overwrite=*/false));
+    ASSERT_OK_AND_ASSIGN(RestToken token, fs->ValidToken());
+    std::optional<std::shared_ptr<FileSystem>> cached = cache->GetIfPresent(token);
+    ASSERT_TRUE(cached.has_value());
+    std::weak_ptr<FileSystem> old_backend = cached.value();
+    cached.reset();
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->token = {{"fs.oss.accessKeyId", "ak-2"}};
+        state_->expires_at_millis = kExpiresAtMillis + RestApi::kTokenExpirationSafeTimeMillis;
+    }
+    now_millis_ = kExpiresAtMillis - 1;
+    ASSERT_OK(fs->Exists(path).status());
+    ASSERT_EQ(1u, cache->Size());
+    ASSERT_FALSE(cache->GetIfPresent(token).has_value());
+    ASSERT_TRUE(old_backend.expired());
+    ASSERT_EQ(2, state_->request_count.load());
+    fs.reset();
+    cache.reset();
+
+    // the streams of the local file system own their file handle, so they outlive the file
+    // system they came from; other backends do not have to make that guarantee
+    std::string content(6, '\0');
+    ASSERT_OK_AND_ASSIGN(int64_t read_length, in->Read(content.data(), content.size()));
+    ASSERT_EQ(6, read_length);
+    ASSERT_EQ("paimon", content);
+    ASSERT_OK(in->Close());
+    ASSERT_OK_AND_ASSIGN(int64_t written, out->Write(content.data(), content.size()));
+    ASSERT_EQ(6, written);
+    ASSERT_OK(out->Flush());
+    ASSERT_OK(out->Close());
+    ASSERT_OK(temp_dir_->GetFileSystem()->ReadFile(output_path, &content));
+    ASSERT_EQ("paimon", content);
+}
+
+TEST_F(RestTokenFileSystemTest, HighLevelFileOperationsAcrossTokenRefresh) {
+    std::shared_ptr<RestTokenFileSystemCache> cache = RestTokenFileSystem::CreateFileSystemCache();
+    std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+    ASSERT_NE(nullptr, fs);
+    ASSERT_OK_AND_ASSIGN(RestToken first_token, fs->ValidToken());
+    bool created = false;
+    // `AtomicStore` writes a temporary file and renames it, so the rotation happens between
+    // the steps of one operation
+    std::shared_ptr<FileSystem> delegate = std::make_shared<RefreshOnCreateFileSystem>([&]() {
+        created = true;
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->token = {{"fs.oss.accessKeyId", "ak-2"}};
+        state_->expires_at_millis = kExpiresAtMillis + RestApi::kTokenExpirationSafeTimeMillis;
+        now_millis_ = kExpiresAtMillis - 1;
+    });
+    ASSERT_OK(cache->Get(first_token, [&delegate](const RestToken&) { return delegate; }).status());
+    std::string path = temp_dir_->Str() + "/atomic";
+    ASSERT_OK(fs->AtomicStore(path, "original"));
+    ASSERT_TRUE(created);
+    ASSERT_EQ(2, state_->request_count.load());
+    ASSERT_OK_AND_ASSIGN(RestToken second_token, fs->ValidToken());
+    ASSERT_EQ("ak-2", second_token.token.at("fs.oss.accessKeyId"));
+    ASSERT_TRUE(cache->GetIfPresent(second_token).has_value());
+    std::string content;
+    ASSERT_OK(fs->ReadFile(path, &content));
+    ASSERT_EQ("original", content);
+    ASSERT_OK(fs->WriteFile(path, "updated", /*overwrite=*/true));
+    ASSERT_NOK(fs->WriteFile(path, "forbidden", /*overwrite=*/false));
+    ASSERT_NOK(fs->AtomicStore(path, "forbidden"));
+    ASSERT_OK(fs->ReadFile(path, &content));
+    ASSERT_EQ("updated", content);
+    std::vector<FileStatus> files;
+    ASSERT_OK(fs->ListFileStatus(temp_dir_->Str(), &files));
+    ASSERT_EQ(1u, files.size());
+    ASSERT_EQ(path, files[0].GetPath());
+    ASSERT_EQ(2, state_->request_count.load());
+}
+
+TEST_F(RestTokenFileSystemTest, ConcurrentFileSystemsShareOneCachedBackend) {
+    std::string path = WriteFile("data", "paimon");
+    std::shared_ptr<RestTokenFileSystemCache> cache = RestTokenFileSystem::CreateFileSystemCache();
+    constexpr size_t kThreads = 8;
+    std::vector<std::shared_ptr<RestTokenFileSystem>> file_systems;
+    file_systems.reserve(kThreads);
+    for (size_t i = 0; i < kThreads; ++i) {
+        std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+        ASSERT_NE(nullptr, fs);
+        file_systems.push_back(std::move(fs));
+    }
+
+    std::atomic<int32_t> failures{0};
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (const std::shared_ptr<RestTokenFileSystem>& file_system : file_systems) {
+        threads.emplace_back([&failures, &path, file_system] {
+            Result<bool> exists = file_system->Exists(path);
+            if (!exists.ok() || !exists.value()) {
+                failures++;
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+
+    ASSERT_EQ(0, failures.load());
+    // every file system loads credentials of its own, but since the server issues equal ones
+    // to all of them, the delegates they ask the cache for converge to a single entry
+    ASSERT_EQ(static_cast<int32_t>(kThreads), state_->request_count.load());
+    ASSERT_EQ(1u, cache->Size());
+    ASSERT_OK_AND_ASSIGN(RestToken token, file_systems.front()->ValidToken());
+    ASSERT_TRUE(cache->GetIfPresent(token).has_value());
+}
+
+TEST_F(RestTokenFileSystemTest, RefreshedTokenThatCannotBuildDelegateFails) {
+    std::string path = WriteFile("data", "paimon");
+    std::shared_ptr<RestTokenFileSystemCache> cache = RestTokenFileSystem::CreateFileSystemCache();
+    std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem(cache);
+    ASSERT_NE(nullptr, fs);
+    ASSERT_OK(fs->Exists(path).status());
+    ASSERT_EQ(1u, cache->Size());
+
+    // the refreshed credentials name a file system that cannot be built
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->token = {{Options::FILE_SYSTEM, "no-such-file-system"}};
+        state_->expires_at_millis = kExpiresAtMillis + RestApi::kTokenExpirationSafeTimeMillis;
+    }
+    now_millis_ = kExpiresAtMillis - 1;
+    Status status = fs->Exists(path).status();
+    ASSERT_NOK(status);
+    ASSERT_NOK_WITH_MSG(status, "no-such-file-system");
+    ASSERT_EQ(2, state_->request_count.load());
+    // the refreshed credentials replaced the previous ones, so the delegate that worked
+    // before is not served as a fallback
+    std::string content;
+    Status read_status = fs->ReadFile(path, &content);
+    ASSERT_NOK(read_status);
+    ASSERT_NOK_WITH_MSG(read_status, "no-such-file-system");
+    ASSERT_EQ(2, state_->request_count.load());
+
+    // credentials the delegate can be built from recover the file system
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->token = {{"fs.oss.accessKeyId", "ak-2"}};
+        state_->expires_at_millis = kExpiresAtMillis + 2 * RestApi::kTokenExpirationSafeTimeMillis;
+    }
+    now_millis_ = kExpiresAtMillis + RestApi::kTokenExpirationSafeTimeMillis - 1;
+    ASSERT_OK(fs->ReadFile(path, &content));
+    ASSERT_EQ("paimon", content);
+    ASSERT_EQ(3, state_->request_count.load());
+}
+
+TEST(RestTokenTest, EqualCredentialsShareOneFileSystemKey) {
+    RestToken token{{{"k", "v"}}, 1};
+    RestToken same{{{"k", "v"}}, 1};
+    ASSERT_TRUE(token == same);
+    ASSERT_EQ(RestToken::Hash()(token), RestToken::Hash()(same));
+
+    // neither a later expiration nor other credentials may be served the same file system
+    RestToken later{{{"k", "v"}}, 2};
     RestToken other_credentials{{{"k", "w"}}, 1};
-    ASSERT_TRUE(early < other_credentials);
-    ASSERT_FALSE(other_credentials < early);
-    ASSERT_FALSE(early < early);
+    ASSERT_FALSE(token == later);
+    ASSERT_FALSE(token == other_credentials);
 }
 
 }  // namespace paimon::test
