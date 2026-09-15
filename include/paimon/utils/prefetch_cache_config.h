@@ -34,8 +34,9 @@ namespace paimon {
 /// ReadAheadCache to balance memory usage, I/O efficiency, and latency hiding.
 class PAIMON_EXPORT CacheConfig {
  public:
-    /// Returns the maximum allowed size (in bytes) for a single cached range.
-    /// Defaults to 32 MiB.
+    /// Returns the maximum allowed size (in bytes) for a single cached range, both for the ranges
+    /// registered up front and, as the cap, for the ones registered mid-read.
+    /// Defaults to 8 MiB.
     uint64_t GetRangeSizeLimit() const {
         return range_size_limit_;
     }
@@ -43,19 +44,6 @@ class PAIMON_EXPORT CacheConfig {
     /// Sets the maximum allowed size (in bytes) for a single cached range.
     void SetRangeSizeLimit(uint64_t range_size_limit) {
         range_size_limit_ = range_size_limit;
-    }
-
-    /// Returns the maximum allowed size (in bytes) for a single range registered after the cache
-    /// was initialized, i.e. for the ranges that only become known while reading.
-    /// Defaults to 8 MiB.
-    uint64_t GetLateRangeSizeLimit() const {
-        return late_range_size_limit_;
-    }
-
-    /// Sets the maximum allowed size (in bytes) for a single range registered after the cache was
-    /// initialized.
-    void SetLateRangeSizeLimit(uint64_t late_range_size_limit) {
-        late_range_size_limit_ = late_range_size_limit;
     }
 
     /// Returns the maximum gap size (in bytes) considered mergeable between
@@ -131,27 +119,24 @@ class PAIMON_EXPORT CacheConfig {
  private:
     // The defaults are aligned with the reader's request granularity and with
     // realistic data file sizes:
-    // - range_size_limit matches the parquet reader's 32 MiB request blocks
-    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
-    //   below the request size, so a request can never be served from one piece.
+    // - range_size_limit bounds a single coalesced cached range, both for the
+    //   ranges registered up front at Init and, as the cap, for the ones
+    //   registered mid-read (see range_split_alignment below). One range is one
+    //   prefetch IO, so a smaller limit spreads a large pass over several
+    //   concurrent requests instead of one long serial one; a read spanning
+    //   several adjacent ranges is still served as one hit, as they are
+    //   contiguous. 8 MiB keeps a just-in-time mid-read pass concurrent while
+    //   staying large enough to amortize each request's round trip.
     // - pre_buffer_limit must exceed the LARGEST single read a reader issues
     //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
     //   only dispatched up to this window, so a request reaching past it can
     //   never be served and falls back to a second fetch of the same bytes.
-    // - late_range_size_limit bounds the ranges registered mid-read instead of
-    //   at Init: those are fetched only just before they are read, and one range
-    //   is one request, so they are cut smaller than range_size_limit to be
-    //   fetched concurrently rather than in one long request. A read spanning
-    //   several of them is still served, as they are adjacent. It is an upper
-    //   bound only: the size such a round is actually cut at is derived from the
-    //   bytes it registers, see range_split_alignment below.
     // - hole_size_limit trades bytes against requests: coalescing across a gap
     //   reads the gap too, but saves a request, and on remote storage a request
     //   costs a round trip whatever its size. The limit is therefore well above
     //   the page-sized gaps a filtered read leaves between the pages it keeps,
     //   which would otherwise each cost a request of their own.
-    uint64_t range_size_limit_ = 32 * 1024 * 1024;
-    uint64_t late_range_size_limit_ = 8 * 1024 * 1024;
+    uint64_t range_size_limit_ = 8 * 1024 * 1024;
     uint64_t hole_size_limit_ = 512 * 1024;
     uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
     // A fixed size limit cuts a small round into fewer requests than could be

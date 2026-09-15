@@ -164,7 +164,7 @@ class PAIMON_EXPORT ReadAheadCache {
     /// covering entries by walking a disjoint, offset-ordered list, so of a new range only the
     /// part no registered range covers is registered; the overlapping part is dropped, as the
     /// round that registered it is already fetching those bytes. The registered part is cut into
-    /// ranges of at most `late_range_size_limit` bytes, one prefetch IO each, so a large pass is
+    /// ranges of at most `range_size_limit` bytes, one prefetch IO each, so a large pass is
     /// fetched concurrently instead of in one long request.
     ///
     /// @param ranges The byte ranges to register on top of the ranges already registered.

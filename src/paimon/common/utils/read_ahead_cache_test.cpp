@@ -45,7 +45,6 @@ CacheConfig TestCacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit,
                             uint64_t pre_buffer_limit) {
     CacheConfig config;
     config.SetRangeSizeLimit(range_size_limit);
-    config.SetLateRangeSizeLimit(range_size_limit);
     config.SetHoleSizeLimit(hole_size_limit);
     config.SetPreBufferLimit(pre_buffer_limit);
     return config;
@@ -621,13 +620,12 @@ TEST(TestReadAheadCache, TestAddRangesInterleavesWithRegisteredRanges) {
     ASSERT_EQ(4u, CounterOf(ReadAheadCacheMetrics::LATE_DROPPED_BYTES, &cache));
 }
 
-// A range registered mid-read is cut at the late range limit, so it is fetched by several
+// A range registered mid-read is cut at the range size limit, so it is fetched by several
 // concurrent requests rather than by one long one. The pieces are adjacent, so a read spanning
 // them is still served.
 TEST(TestReadAheadCache, TestAddRangesSplitsLateRanges) {
-    CacheConfig config = TestCacheConfig(/*range_size_limit=*/26,
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/5,
                                          /*hole_size_limit=*/0, /*pre_buffer_limit=*/1024);
-    config.SetLateRangeSizeLimit(5);
     std::string content = "abcdefghijklmnopqrstuvwxyz";
     std::shared_ptr<ReadAheadCache> cache_ptr =
         CreateTestFileAndCache("data_file", content, config, {{0, 5}});
