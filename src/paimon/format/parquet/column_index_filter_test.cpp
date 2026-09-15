@@ -36,6 +36,7 @@
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
+#include "paimon/data/decimal.h"
 #include "paimon/defs.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/format/parquet/parquet_format_writer.h"
@@ -306,7 +307,8 @@ class ColumnIndexFilterTest : public ::testing::Test {
 
     Result<RowRanges> Filter(const std::shared_ptr<Predicate>& predicate) {
         return ColumnIndexFilter::CalculateRowRanges(predicate, page_index_reader_->RowGroup(0),
-                                                     column_name_to_index_, row_group_row_count_);
+                                                     column_name_to_index_, row_group_row_count_,
+                                                     parquet_reader_->metadata()->schema());
     }
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
@@ -552,19 +554,20 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
         auto less_negative_zero = PredicateBuilder::LessThan(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(-0.0f) : Literal(-0.0));
-        ASSERT_OK_AND_ASSIGN(auto ranges,
-                             ColumnIndexFilter::CalculateRowRanges(
-                                 less_negative_zero, page_index_reader->RowGroup(0), {{"value", 0}},
-                                 reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(
+            auto ranges,
+            ColumnIndexFilter::CalculateRowRanges(
+                less_negative_zero, page_index_reader->RowGroup(0), {{"value", 0}},
+                reader->metadata()->RowGroup(0)->num_rows(), reader->metadata()->schema()));
         ASSERT_TRUE(ranges.IsEmpty()) << "field type: " << static_cast<int32_t>(field_type);
 
         auto less_positive_zero = PredicateBuilder::LessThan(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(0.0f) : Literal(0.0));
-        ASSERT_OK_AND_ASSIGN(ranges,
-                             ColumnIndexFilter::CalculateRowRanges(
-                                 less_positive_zero, page_index_reader->RowGroup(0), {{"value", 0}},
-                                 reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        less_positive_zero, page_index_reader->RowGroup(0), {{"value", 0}},
+                        reader->metadata()->RowGroup(0)->num_rows(), reader->metadata()->schema()));
         ASSERT_EQ(20, ranges.RowCount());
         ASSERT_EQ(1, ranges.GetRanges().size());
         ASSERT_EQ(0, ranges.GetRanges()[0].from);
@@ -576,7 +579,7 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
         ASSERT_OK_AND_ASSIGN(
             ranges, ColumnIndexFilter::CalculateRowRanges(
                         greater_negative_zero, page_index_reader->RowGroup(0), {{"value", 0}},
-                        reader->metadata()->RowGroup(0)->num_rows()));
+                        reader->metadata()->RowGroup(0)->num_rows(), reader->metadata()->schema()));
         ASSERT_EQ(30, ranges.RowCount());
 
         auto not_equal_negative_zero = PredicateBuilder::NotEqual(
@@ -585,16 +588,16 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
         ASSERT_OK_AND_ASSIGN(
             ranges, ColumnIndexFilter::CalculateRowRanges(
                         not_equal_negative_zero, page_index_reader->RowGroup(0), {{"value", 0}},
-                        reader->metadata()->RowGroup(0)->num_rows()));
+                        reader->metadata()->RowGroup(0)->num_rows(), reader->metadata()->schema()));
         ASSERT_EQ(30, ranges.RowCount());
 
         auto greater_finite = PredicateBuilder::GreaterThan(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(2.0f) : Literal(2.0));
-        ASSERT_OK_AND_ASSIGN(ranges,
-                             ColumnIndexFilter::CalculateRowRanges(
-                                 greater_finite, page_index_reader->RowGroup(0), {{"value", 0}},
-                                 reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        greater_finite, page_index_reader->RowGroup(0), {{"value", 0}},
+                        reader->metadata()->RowGroup(0)->num_rows(), reader->metadata()->schema()));
         ASSERT_TRUE(ranges.IsEmpty());
 
         auto greater_between_pages = PredicateBuilder::GreaterThan(
@@ -603,7 +606,7 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
         ASSERT_OK_AND_ASSIGN(
             ranges, ColumnIndexFilter::CalculateRowRanges(
                         greater_between_pages, page_index_reader->RowGroup(0), {{"value", 0}},
-                        reader->metadata()->RowGroup(0)->num_rows()));
+                        reader->metadata()->RowGroup(0)->num_rows(), reader->metadata()->schema()));
         ASSERT_EQ(10, ranges.RowCount());
         ASSERT_EQ(1, ranges.GetRanges().size());
         ASSERT_EQ(20, ranges.GetRanges()[0].from);
@@ -612,12 +615,133 @@ TEST_F(ColumnIndexFilterTest, SignedZeroUsesJavaOrderForFloatingPointPages) {
         auto equal_finite = PredicateBuilder::Equal(
             /*field_index=*/0, /*field_name=*/"value", field_type,
             field_type == FieldType::FLOAT ? Literal(2.0f) : Literal(2.0));
-        ASSERT_OK_AND_ASSIGN(ranges,
-                             ColumnIndexFilter::CalculateRowRanges(
-                                 equal_finite, page_index_reader->RowGroup(0), {{"value", 0}},
-                                 reader->metadata()->RowGroup(0)->num_rows()));
+        ASSERT_OK_AND_ASSIGN(
+            ranges, ColumnIndexFilter::CalculateRowRanges(
+                        equal_finite, page_index_reader->RowGroup(0), {{"value", 0}},
+                        reader->metadata()->RowGroup(0)->num_rows(), reader->metadata()->schema()));
         ASSERT_TRUE(ranges.IsEmpty());
     }
+}
+
+/// Arrow writes DECIMAL as FIXED_LEN_BYTE_ARRAY unless store_decimal_as_integer is set,
+/// and those page bounds are big-endian two's complement. Precision 7-9 encodes into
+/// exactly 4 bytes and precision 17-18 into exactly 8 bytes, so the encoded length alone
+/// cannot tell them apart from INT32/INT64 decimals; decoding them little-endian turns
+/// min 1.00 into 1,677,721,600 and prunes away pages that do match.
+TEST_F(ColumnIndexFilterTest, DecimalFixedLenByteArrayPages) {
+    // Page 0: 1.00, page 1: 10.00, page 2: 100.00 (10 rows each).
+    constexpr int32_t kScale = 2;
+    const std::vector<int64_t> page_unscaled_values = {100, 1000, 10000};
+
+    for (int32_t precision : {9, 18}) {
+        auto decimal_type = arrow::decimal128(precision, kScale);
+        arrow::Decimal128Builder builder(decimal_type);
+        for (int64_t unscaled : page_unscaled_values) {
+            for (int32_t i = 0; i < 10; ++i) {
+                ASSERT_TRUE(builder.Append(arrow::Decimal128(unscaled)).ok());
+            }
+        }
+        std::shared_ptr<arrow::Array> values = builder.Finish().ValueOrDie();
+        auto field = arrow::field("value", decimal_type);
+        auto data = arrow::StructArray::Make({values}, {field}).ValueOrDie();
+
+        std::string file_name =
+            dir_->Str() + "/decimal_flba_p" + std::to_string(precision) + ".parquet";
+        WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/30);
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
+        ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
+        auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+        auto reader = ::parquet::ParquetFileReader::Open(in_stream);
+        ASSERT_TRUE(reader);
+        const auto* schema = reader->metadata()->schema();
+        // The fix is only exercised if the writer really chose the byte-array encoding
+        // with a length that collides with INT32 (precision 9) or INT64 (precision 18).
+        ASSERT_EQ(::parquet::Type::FIXED_LEN_BYTE_ARRAY, schema->Column(0)->physical_type());
+        ASSERT_EQ(precision == 9 ? 4 : 8, schema->Column(0)->type_length());
+
+        auto page_index_reader = reader->GetPageIndexReader();
+        ASSERT_TRUE(page_index_reader);
+        auto row_group_page_index = page_index_reader->RowGroup(0);
+        ASSERT_TRUE(row_group_page_index);
+        auto column_index = row_group_page_index->GetColumnIndex(0);
+        ASSERT_TRUE(column_index);
+        ASSERT_EQ(3, column_index->encoded_min_values().size());
+
+        int64_t row_count = reader->metadata()->RowGroup(0)->num_rows();
+        auto filter = [&](const std::shared_ptr<Predicate>& predicate) {
+            return ColumnIndexFilter::CalculateRowRanges(predicate, page_index_reader->RowGroup(0),
+                                                         {{"value", 0}}, row_count, schema);
+        };
+
+        // value < 5.00 → only page 0 (rows [0, 9]).
+        auto less_than = PredicateBuilder::LessThan(
+            /*field_index=*/0, /*field_name=*/"value", FieldType::DECIMAL,
+            Literal(Decimal(precision, kScale, 500)));
+        ASSERT_OK_AND_ASSIGN(auto ranges, filter(less_than));
+        ASSERT_EQ(1, ranges.GetRanges().size()) << "precision: " << precision;
+        EXPECT_EQ(0, ranges.GetRanges()[0].from);
+        EXPECT_EQ(9, ranges.GetRanges()[0].to);
+
+        // value > 50.00 → only page 2 (rows [20, 29]).
+        auto greater_than = PredicateBuilder::GreaterThan(
+            /*field_index=*/0, /*field_name=*/"value", FieldType::DECIMAL,
+            Literal(Decimal(precision, kScale, 5000)));
+        ASSERT_OK_AND_ASSIGN(ranges, filter(greater_than));
+        ASSERT_EQ(1, ranges.GetRanges().size()) << "precision: " << precision;
+        EXPECT_EQ(20, ranges.GetRanges()[0].from);
+        EXPECT_EQ(29, ranges.GetRanges()[0].to);
+
+        // value = 10.00 → only page 1 (rows [10, 19]).
+        auto equal = PredicateBuilder::Equal(
+            /*field_index=*/0, /*field_name=*/"value", FieldType::DECIMAL,
+            Literal(Decimal(precision, kScale, 1000)));
+        ASSERT_OK_AND_ASSIGN(ranges, filter(equal));
+        ASSERT_EQ(1, ranges.GetRanges().size()) << "precision: " << precision;
+        EXPECT_EQ(10, ranges.GetRanges()[0].from);
+        EXPECT_EQ(19, ranges.GetRanges()[0].to);
+
+        // value > 1000.00 → no page matches.
+        auto greater_than_all = PredicateBuilder::GreaterThan(
+            /*field_index=*/0, /*field_name=*/"value", FieldType::DECIMAL,
+            Literal(Decimal(precision, kScale, 100000)));
+        ASSERT_OK_AND_ASSIGN(ranges, filter(greater_than_all));
+        EXPECT_TRUE(ranges.IsEmpty()) << "precision: " << precision;
+    }
+}
+
+/// Without a schema descriptor the physical type of a DECIMAL column is unknown, so no
+/// page may be pruned on its statistics.
+TEST_F(ColumnIndexFilterTest, DecimalWithoutSchemaKeepsAllPages) {
+    auto decimal_type = arrow::decimal128(9, 2);
+    arrow::Decimal128Builder builder(decimal_type);
+    for (int64_t unscaled : {100, 1000, 10000}) {
+        for (int32_t i = 0; i < 10; ++i) {
+            ASSERT_TRUE(builder.Append(arrow::Decimal128(unscaled)).ok());
+        }
+    }
+    std::shared_ptr<arrow::Array> values = builder.Finish().ValueOrDie();
+    auto field = arrow::field("value", decimal_type);
+    auto data = arrow::StructArray::Make({values}, {field}).ValueOrDie();
+
+    std::string file_name = dir_->Str() + "/decimal_no_schema.parquet";
+    WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/30);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
+    auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+    auto reader = ::parquet::ParquetFileReader::Open(in_stream);
+    ASSERT_TRUE(reader);
+    auto page_index_reader = reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+
+    int64_t row_count = reader->metadata()->RowGroup(0)->num_rows();
+    auto less_than = PredicateBuilder::LessThan(
+        /*field_index=*/0, /*field_name=*/"value", FieldType::DECIMAL, Literal(Decimal(9, 2, 500)));
+    ASSERT_OK_AND_ASSIGN(auto ranges, ColumnIndexFilter::CalculateRowRanges(
+                                          less_than, page_index_reader->RowGroup(0), {{"value", 0}},
+                                          row_count, /*schema=*/nullptr));
+    EXPECT_EQ(row_count, ranges.RowCount());
 }
 
 /// Predicates referencing fields absent from the data file are stripped upstream

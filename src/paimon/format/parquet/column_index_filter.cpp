@@ -39,27 +39,29 @@ namespace paimon::parquet {
 Result<RowRanges> ColumnIndexFilter::CalculateRowRanges(
     const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-    const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count) {
+    const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
+    const ::parquet::SchemaDescriptor* schema) {
     if (!predicate || !rg_page_index_reader) {
         return RowRanges::CreateSingle(row_group_row_count);
     }
 
     return VisitPredicate(predicate, column_name_to_index, row_group_row_count,
-                          rg_page_index_reader.get());
+                          rg_page_index_reader.get(), schema);
 }
 
 Result<RowRanges> ColumnIndexFilter::VisitPredicate(
     const std::shared_ptr<Predicate>& predicate,
     const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
-    ::parquet::RowGroupPageIndexReader* rg_page_index_reader) {
+    ::parquet::RowGroupPageIndexReader* rg_page_index_reader,
+    const ::parquet::SchemaDescriptor* schema) {
     if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
         return VisitLeafPredicate(leaf_predicate, column_name_to_index, row_group_row_count,
-                                  rg_page_index_reader);
+                                  rg_page_index_reader, schema);
     }
 
     if (auto compound_predicate = std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
         return VisitCompoundPredicate(compound_predicate, column_name_to_index, row_group_row_count,
-                                      rg_page_index_reader);
+                                      rg_page_index_reader, schema);
     }
 
     return Status::Invalid("Unknown predicate type");
@@ -68,7 +70,8 @@ Result<RowRanges> ColumnIndexFilter::VisitPredicate(
 Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
     const std::shared_ptr<LeafPredicate>& leaf_predicate,
     const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
-    ::parquet::RowGroupPageIndexReader* rg_page_index_reader) {
+    ::parquet::RowGroupPageIndexReader* rg_page_index_reader,
+    const ::parquet::SchemaDescriptor* schema) {
     const std::string& field_name = leaf_predicate->FieldName();
     auto it = column_name_to_index.find(field_name);
     if (it == column_name_to_index.end()) {
@@ -92,6 +95,14 @@ Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
 
     const auto& literals = leaf_predicate->Literals();
     FieldType field_type = leaf_predicate->GetFieldType();
+    // The physical type decides how the encoded page statistics are laid out. It cannot
+    // be inferred from the length of the encoded bounds: a DECIMAL stored as a 4-byte
+    // FIXED_LEN_BYTE_ARRAY (precision 7-9) is indistinguishable from an INT32 one by
+    // length alone, yet is big-endian rather than little-endian.
+    ::parquet::Type::type physical_type = ::parquet::Type::UNDEFINED;
+    if (schema && column_index < schema->num_columns()) {
+        physical_type = schema->Column(column_index)->physical_type();
+    }
 
     if (function_type != Function::Type::IS_NULL && function_type != Function::Type::IS_NOT_NULL &&
         literals.empty()) {
@@ -108,25 +119,31 @@ Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
             matching_pages = FilterPagesByIsNotNull(column_index_ptr);
             break;
         case Function::Type::EQUAL:
-            matching_pages = FilterPagesByEqual(column_index_ptr, literals[0], field_type);
+            matching_pages =
+                FilterPagesByEqual(column_index_ptr, literals[0], field_type, physical_type);
             break;
         case Function::Type::NOT_EQUAL:
-            matching_pages = FilterPagesByNotEqual(column_index_ptr, literals[0], field_type);
+            matching_pages =
+                FilterPagesByNotEqual(column_index_ptr, literals[0], field_type, physical_type);
             break;
         case Function::Type::LESS_THAN:
-            matching_pages = FilterPagesByLessThan(column_index_ptr, literals[0], field_type);
+            matching_pages =
+                FilterPagesByLessThan(column_index_ptr, literals[0], field_type, physical_type);
             break;
         case Function::Type::LESS_OR_EQUAL:
-            matching_pages = FilterPagesByLessOrEqual(column_index_ptr, literals[0], field_type);
+            matching_pages =
+                FilterPagesByLessOrEqual(column_index_ptr, literals[0], field_type, physical_type);
             break;
         case Function::Type::GREATER_THAN:
-            matching_pages = FilterPagesByGreaterThan(column_index_ptr, literals[0], field_type);
+            matching_pages =
+                FilterPagesByGreaterThan(column_index_ptr, literals[0], field_type, physical_type);
             break;
         case Function::Type::GREATER_OR_EQUAL:
-            matching_pages = FilterPagesByGreaterOrEqual(column_index_ptr, literals[0], field_type);
+            matching_pages = FilterPagesByGreaterOrEqual(column_index_ptr, literals[0], field_type,
+                                                         physical_type);
             break;
         case Function::Type::IN:
-            matching_pages = FilterPagesByIn(column_index_ptr, literals, field_type);
+            matching_pages = FilterPagesByIn(column_index_ptr, literals, field_type, physical_type);
             break;
         case Function::Type::NOT_IN:
             matching_pages = FilterPagesByNotIn(column_index_ptr, literals);
@@ -142,7 +159,8 @@ Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
 Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
     const std::shared_ptr<CompoundPredicate>& compound_predicate,
     const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
-    ::parquet::RowGroupPageIndexReader* rg_page_index_reader) {
+    ::parquet::RowGroupPageIndexReader* rg_page_index_reader,
+    const ::parquet::SchemaDescriptor* schema) {
     const auto& children = compound_predicate->Children();
     const auto& function = compound_predicate->GetFunction();
     auto function_type = function.GetType();
@@ -154,7 +172,7 @@ Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
     // Calculate row ranges for first child
     PAIMON_ASSIGN_OR_RAISE(RowRanges result,
                            VisitPredicate(children[0], column_name_to_index, row_group_row_count,
-                                          rg_page_index_reader));
+                                          rg_page_index_reader, schema));
 
     if (function_type == Function::Type::AND) {
         // Short-circuit: if result is empty, no need to continue
@@ -163,9 +181,10 @@ Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
         }
 
         for (size_t i = 1; i < children.size(); ++i) {
-            PAIMON_ASSIGN_OR_RAISE(RowRanges child_ranges,
-                                   VisitPredicate(children[i], column_name_to_index,
-                                                  row_group_row_count, rg_page_index_reader));
+            PAIMON_ASSIGN_OR_RAISE(
+                RowRanges child_ranges,
+                VisitPredicate(children[i], column_name_to_index, row_group_row_count,
+                               rg_page_index_reader, schema));
 
             result = RowRanges::Intersection(result, child_ranges);
 
@@ -181,9 +200,10 @@ Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
         }
 
         for (size_t i = 1; i < children.size(); ++i) {
-            PAIMON_ASSIGN_OR_RAISE(RowRanges child_ranges,
-                                   VisitPredicate(children[i], column_name_to_index,
-                                                  row_group_row_count, rg_page_index_reader));
+            PAIMON_ASSIGN_OR_RAISE(
+                RowRanges child_ranges,
+                VisitPredicate(children[i], column_name_to_index, row_group_row_count,
+                               rg_page_index_reader, schema));
 
             result = RowRanges::Union(result, child_ranges);
 
@@ -201,7 +221,7 @@ Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
 
 std::vector<int32_t> ColumnIndexFilter::FilterPagesByEqual(
     const std::shared_ptr<::parquet::ColumnIndex>& column_index, const Literal& literal,
-    FieldType field_type) {
+    FieldType field_type, ::parquet::Type::type physical_type) {
     std::vector<int32_t> matching_pages;
 
     if (literal.IsNull()) {
@@ -219,7 +239,8 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByEqual(
             continue;
         }
 
-        if (PageMightContainEqual(min_values[i], max_values[i], literal, field_type)) {
+        if (PageMightContainEqual(min_values[i], max_values[i], literal, field_type,
+                                  physical_type)) {
             matching_pages.push_back(i);
         }
     }
@@ -229,7 +250,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByEqual(
 
 std::vector<int32_t> ColumnIndexFilter::FilterPagesByNotEqual(
     const std::shared_ptr<::parquet::ColumnIndex>& column_index, const Literal& literal,
-    FieldType field_type) {
+    FieldType field_type, ::parquet::Type::type physical_type) {
     std::vector<int32_t> matching_pages;
 
     if (literal.IsNull()) {
@@ -251,8 +272,8 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByNotEqual(
 
         // Try to exclude pages where min == max == literal (all non-null values equal literal).
         // NULL != literal is NULL (UNKNOWN) in SQL, so nulls don't produce true either.
-        auto cmp_min = CompareEncodedWithLiteral(min_values[i], literal, field_type);
-        auto cmp_max = CompareEncodedWithLiteral(max_values[i], literal, field_type);
+        auto cmp_min = CompareEncodedWithLiteral(min_values[i], literal, field_type, physical_type);
+        auto cmp_max = CompareEncodedWithLiteral(max_values[i], literal, field_type, physical_type);
         if (cmp_min.has_value() && cmp_max.has_value() && *cmp_min == 0 && *cmp_max == 0) {
             // min == max == literal: all non-null values equal literal, and nulls
             // don't satisfy != either. Skip this page entirely.
@@ -267,7 +288,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByNotEqual(
 
 std::vector<int32_t> ColumnIndexFilter::FilterPagesByLessThan(
     const std::shared_ptr<::parquet::ColumnIndex>& column_index, const Literal& literal,
-    FieldType field_type) {
+    FieldType field_type, ::parquet::Type::type physical_type) {
     std::vector<int32_t> matching_pages;
     const auto& null_pages = column_index->null_pages();
     const auto& min_values = column_index->encoded_min_values();
@@ -278,7 +299,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByLessThan(
             continue;
         }
 
-        if (PageMightContainLessThan(min_values[i], literal, field_type)) {
+        if (PageMightContainLessThan(min_values[i], literal, field_type, physical_type)) {
             matching_pages.push_back(i);
         }
     }
@@ -288,7 +309,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByLessThan(
 
 std::vector<int32_t> ColumnIndexFilter::FilterPagesByLessOrEqual(
     const std::shared_ptr<::parquet::ColumnIndex>& column_index, const Literal& literal,
-    FieldType field_type) {
+    FieldType field_type, ::parquet::Type::type physical_type) {
     std::vector<int32_t> matching_pages;
     const auto& null_pages = column_index->null_pages();
     const auto& min_values = column_index->encoded_min_values();
@@ -299,7 +320,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByLessOrEqual(
             continue;
         }
 
-        if (PageMightContainLessOrEqual(min_values[i], literal, field_type)) {
+        if (PageMightContainLessOrEqual(min_values[i], literal, field_type, physical_type)) {
             matching_pages.push_back(i);
         }
     }
@@ -309,7 +330,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByLessOrEqual(
 
 std::vector<int32_t> ColumnIndexFilter::FilterPagesByGreaterThan(
     const std::shared_ptr<::parquet::ColumnIndex>& column_index, const Literal& literal,
-    FieldType field_type) {
+    FieldType field_type, ::parquet::Type::type physical_type) {
     std::vector<int32_t> matching_pages;
     const auto& null_pages = column_index->null_pages();
     const auto& max_values = column_index->encoded_max_values();
@@ -320,7 +341,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByGreaterThan(
             continue;
         }
 
-        if (PageMightContainGreaterThan(max_values[i], literal, field_type)) {
+        if (PageMightContainGreaterThan(max_values[i], literal, field_type, physical_type)) {
             matching_pages.push_back(i);
         }
     }
@@ -330,7 +351,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByGreaterThan(
 
 std::vector<int32_t> ColumnIndexFilter::FilterPagesByGreaterOrEqual(
     const std::shared_ptr<::parquet::ColumnIndex>& column_index, const Literal& literal,
-    FieldType field_type) {
+    FieldType field_type, ::parquet::Type::type physical_type) {
     std::vector<int32_t> matching_pages;
     const auto& null_pages = column_index->null_pages();
     const auto& max_values = column_index->encoded_max_values();
@@ -341,7 +362,7 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByGreaterOrEqual(
             continue;
         }
 
-        if (PageMightContainGreaterOrEqual(max_values[i], literal, field_type)) {
+        if (PageMightContainGreaterOrEqual(max_values[i], literal, field_type, physical_type)) {
             matching_pages.push_back(i);
         }
     }
@@ -390,7 +411,8 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByIsNotNull(
 
 std::vector<int32_t> ColumnIndexFilter::FilterPagesByIn(
     const std::shared_ptr<::parquet::ColumnIndex>& column_index,
-    const std::vector<Literal>& literals, FieldType field_type) {
+    const std::vector<Literal>& literals, FieldType field_type,
+    ::parquet::Type::type physical_type) {
     std::vector<int32_t> matching_pages;
     const auto& null_pages = column_index->null_pages();
     const auto& min_values = column_index->encoded_min_values();
@@ -426,7 +448,8 @@ std::vector<int32_t> ColumnIndexFilter::FilterPagesByIn(
             if (literal.IsNull()) {
                 continue;
             }
-            if (PageMightContainEqual(min_values[i], max_values[i], literal, field_type)) {
+            if (PageMightContainEqual(min_values[i], max_values[i], literal, field_type,
+                                      physical_type)) {
                 matching_pages.push_back(i);
                 break;  // Page matched, no need to check more literals
             }
@@ -501,9 +524,9 @@ RowRanges ColumnIndexFilter::BuildRowRangesFromPageIndices(
     return ranges;
 }
 
-std::optional<int32_t> ColumnIndexFilter::CompareEncodedWithLiteral(const std::string& encoded,
-                                                                    const Literal& literal,
-                                                                    FieldType field_type) {
+std::optional<int32_t> ColumnIndexFilter::CompareEncodedWithLiteral(
+    const std::string& encoded, const Literal& literal, FieldType field_type,
+    ::parquet::Type::type physical_type) {
     if (literal.IsNull()) {
         return std::nullopt;
     }
@@ -570,33 +593,54 @@ std::optional<int32_t> ColumnIndexFilter::CompareEncodedWithLiteral(const std::s
             return (cmp < 0) ? -1 : (cmp > 0) ? 1 : 0;
         }
         case FieldType::DECIMAL: {
-            // Parquet stores DECIMAL as INT32, INT64, or FIXED_LEN_BYTE_ARRAY depending
-            // on precision. All are stored as unscaled integer values.
+            // Parquet stores DECIMAL as INT32, INT64, FIXED_LEN_BYTE_ARRAY or BYTE_ARRAY.
+            // All carry the unscaled integer value, but INT32/INT64 are little-endian
+            // plain values while the byte arrays are big-endian two's complement, so the
+            // physical type from the file schema must decide. The encoded length cannot:
+            // FIXED_LEN_BYTE_ARRAY is legal for any precision with length
+            // ceil((precision * log2(10) + 1) / 8), which is 4 bytes for precision 7-9
+            // and 8 bytes for precision 17-18.
             auto lit_decimal = literal.GetValue<Decimal>();
             Decimal::int128_t lit_val = lit_decimal.Value();
             Decimal::int128_t enc_val;
 
-            if (encoded.size() == sizeof(int32_t)) {
-                // INT32 physical type (precision <= 9)
-                int32_t raw;
-                std::memcpy(&raw, encoded.data(), sizeof(int32_t));
-                enc_val = static_cast<Decimal::int128_t>(raw);
-            } else if (encoded.size() == sizeof(int64_t)) {
-                // INT64 physical type (precision <= 18)
-                int64_t raw;
-                std::memcpy(&raw, encoded.data(), sizeof(int64_t));
-                enc_val = static_cast<Decimal::int128_t>(raw);
-            } else {
-                // FIXED_LEN_BYTE_ARRAY / BYTE_ARRAY: big-endian two's complement.
-                // Defer to Decimal::FromUnscaledBytes so endianness, padding, and
-                // sign extension stay consistent with parquet_stats_extractor.
-                if (encoded.empty()) {
-                    return std::nullopt;
+            switch (physical_type) {
+                case ::parquet::Type::INT32: {
+                    if (encoded.size() < sizeof(int32_t)) {
+                        return std::nullopt;
+                    }
+                    int32_t raw;
+                    std::memcpy(&raw, encoded.data(), sizeof(int32_t));
+                    enc_val = static_cast<Decimal::int128_t>(raw);
+                    break;
                 }
-                Bytes bytes(encoded, GetDefaultPool().get());
-                enc_val =
-                    Decimal::FromUnscaledBytes(lit_decimal.Precision(), lit_decimal.Scale(), &bytes)
-                        .Value();
+                case ::parquet::Type::INT64: {
+                    if (encoded.size() < sizeof(int64_t)) {
+                        return std::nullopt;
+                    }
+                    int64_t raw;
+                    std::memcpy(&raw, encoded.data(), sizeof(int64_t));
+                    enc_val = static_cast<Decimal::int128_t>(raw);
+                    break;
+                }
+                case ::parquet::Type::FIXED_LEN_BYTE_ARRAY:
+                case ::parquet::Type::BYTE_ARRAY: {
+                    // Big-endian two's complement. Defer to Decimal::FromUnscaledBytes so
+                    // endianness, padding, and sign extension stay consistent with
+                    // parquet_stats_extractor.
+                    if (encoded.empty()) {
+                        return std::nullopt;
+                    }
+                    Bytes bytes(encoded, GetDefaultPool().get());
+                    enc_val = Decimal::FromUnscaledBytes(lit_decimal.Precision(),
+                                                         lit_decimal.Scale(), &bytes)
+                                  .Value();
+                    break;
+                }
+                default:
+                    // Physical type unknown (no schema available) or not a valid decimal
+                    // encoding: fall back to safe behavior (include page).
+                    return std::nullopt;
             }
 
             return (enc_val < lit_val) ? -1 : (enc_val > lit_val) ? 1 : 0;
@@ -611,13 +655,14 @@ std::optional<int32_t> ColumnIndexFilter::CompareEncodedWithLiteral(const std::s
 
 bool ColumnIndexFilter::PageMightContainEqual(const std::string& encoded_min,
                                               const std::string& encoded_max,
-                                              const Literal& literal, FieldType field_type) {
+                                              const Literal& literal, FieldType field_type,
+                                              ::parquet::Type::type physical_type) {
     if (literal.IsNull()) {
         return false;  // Null is handled separately via null_pages
     }
 
     // Page might contain equal if min <= literal <= max
-    auto cmp_min = CompareEncodedWithLiteral(encoded_min, literal, field_type);
+    auto cmp_min = CompareEncodedWithLiteral(encoded_min, literal, field_type, physical_type);
     if (!cmp_min.has_value()) {
         return true;  // Can't compare, assume match
     }
@@ -625,7 +670,7 @@ bool ColumnIndexFilter::PageMightContainEqual(const std::string& encoded_min,
         return false;  // min > literal
     }
 
-    auto cmp_max = CompareEncodedWithLiteral(encoded_max, literal, field_type);
+    auto cmp_max = CompareEncodedWithLiteral(encoded_max, literal, field_type, physical_type);
     if (!cmp_max.has_value()) {
         return true;
     }
@@ -637,13 +682,14 @@ bool ColumnIndexFilter::PageMightContainEqual(const std::string& encoded_min,
 }
 
 bool ColumnIndexFilter::PageMightContainLessThan(const std::string& encoded_min,
-                                                 const Literal& literal, FieldType field_type) {
+                                                 const Literal& literal, FieldType field_type,
+                                                 ::parquet::Type::type physical_type) {
     if (literal.IsNull()) {
         return false;
     }
 
     // Page might contain values < literal if min < literal
-    auto cmp_min = CompareEncodedWithLiteral(encoded_min, literal, field_type);
+    auto cmp_min = CompareEncodedWithLiteral(encoded_min, literal, field_type, physical_type);
     if (!cmp_min.has_value()) {
         return true;
     }
@@ -651,13 +697,14 @@ bool ColumnIndexFilter::PageMightContainLessThan(const std::string& encoded_min,
 }
 
 bool ColumnIndexFilter::PageMightContainLessOrEqual(const std::string& encoded_min,
-                                                    const Literal& literal, FieldType field_type) {
+                                                    const Literal& literal, FieldType field_type,
+                                                    ::parquet::Type::type physical_type) {
     if (literal.IsNull()) {
         return false;
     }
 
     // Page might contain values <= literal if min <= literal
-    auto cmp_min = CompareEncodedWithLiteral(encoded_min, literal, field_type);
+    auto cmp_min = CompareEncodedWithLiteral(encoded_min, literal, field_type, physical_type);
     if (!cmp_min.has_value()) {
         return true;
     }
@@ -665,13 +712,14 @@ bool ColumnIndexFilter::PageMightContainLessOrEqual(const std::string& encoded_m
 }
 
 bool ColumnIndexFilter::PageMightContainGreaterThan(const std::string& encoded_max,
-                                                    const Literal& literal, FieldType field_type) {
+                                                    const Literal& literal, FieldType field_type,
+                                                    ::parquet::Type::type physical_type) {
     if (literal.IsNull()) {
         return false;
     }
 
     // Page might contain values > literal if max > literal
-    auto cmp_max = CompareEncodedWithLiteral(encoded_max, literal, field_type);
+    auto cmp_max = CompareEncodedWithLiteral(encoded_max, literal, field_type, physical_type);
     if (!cmp_max.has_value()) {
         return true;
     }
@@ -679,14 +727,14 @@ bool ColumnIndexFilter::PageMightContainGreaterThan(const std::string& encoded_m
 }
 
 bool ColumnIndexFilter::PageMightContainGreaterOrEqual(const std::string& encoded_max,
-                                                       const Literal& literal,
-                                                       FieldType field_type) {
+                                                       const Literal& literal, FieldType field_type,
+                                                       ::parquet::Type::type physical_type) {
     if (literal.IsNull()) {
         return false;
     }
 
     // Page might contain values >= literal if max >= literal
-    auto cmp_max = CompareEncodedWithLiteral(encoded_max, literal, field_type);
+    auto cmp_max = CompareEncodedWithLiteral(encoded_max, literal, field_type, physical_type);
     if (!cmp_max.has_value()) {
         return true;
     }
