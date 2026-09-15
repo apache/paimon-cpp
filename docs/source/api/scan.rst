@@ -47,12 +47,58 @@ Decimal literals are rescaled to the bucket field's type only when the conversio
 is exact. NaN literals and decimals that cannot be represented exactly disable
 inferred bucket pruning.
 
+Sharing table metadata
+======================
+
+``TableScanResources`` retains schema metadata across scans of the same managed table and
+branch. Create it once with a file system and pass it to each ``ScanContextBuilder``:
+
+.. code-block:: cpp
+
+   PAIMON_ASSIGN_OR_RAISE(
+       std::shared_ptr<paimon::TableScanResources> resources,
+       paimon::TableScanResources::Create(table_path, file_system, "main", paimon::GetDefaultPool()));
+
+   // Repeat for each query, reusing resources.
+   paimon::ScanContextBuilder builder(table_path);
+   builder.WithTableResources(resources).SetPredicate(predicate);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> context, builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          paimon::TableScan::Create(std::move(context)));
+
+Include ``paimon/table/source/table_scan_resources.h`` to create the resource object.
+The resources supply the file system and the default branch; conflicting explicit settings
+are rejected. The physical table path must match, including when scanning its ``$ro`` or
+``$audit_log`` system table. Format tables and global system tables do not use these resources.
+``Finish()`` resets the builder's resource setting, like ``WithCache()`` and ``WithExecutor()``.
+
+Every new scan still checks for the latest schema ID. Previously loaded schema versions, Arrow
+schemas, partition and primary-key field information, and statistics evolution objects are
+reused. Existing scans retain their original schema. Snapshot selection, filters, streaming
+progress, executors and scan metrics remain independent. ``SetTableSchema()`` keeps its existing
+behavior: on main it bypasses the shared schema cache; on other branches it is ignored.
+
+The resources can be shared by concurrent scans when the supplied file system and metadata
+memory pool support concurrent use. The resource object retains its metadata pool independently
+of each scan's memory pool. Cached schema versions are retained for the resource object's lifetime;
+there is no automatic eviction or background refresh. The caller must recreate the resources after
+fast-forward, deleting and recreating a table or branch, or changing file system access configuration.
+Fast-forward can replace schema contents under existing IDs, so discovering the latest ID does not
+refresh a cached schema. After fast-forward completes, create a new ``TableScanResources`` and use it
+for subsequent scans; existing resources and scans retain their cached metadata. This follows
+Paimon's `fast-forward cache refresh requirement
+<https://paimon.apache.org/docs/1.3/maintenance/manage-branches/#fast-forward>`_.
+A metadata cache does not pin snapshots or prevent their data files from expiring.
+
 Interface
 =========
 
 .. doxygenclass:: paimon::TableScan
    :members:
    :undoc-members:
+
+.. doxygenclass:: paimon::TableScanResources
+   :members:
 
 .. doxygenclass:: paimon::ScanContextBuilder
    :members:

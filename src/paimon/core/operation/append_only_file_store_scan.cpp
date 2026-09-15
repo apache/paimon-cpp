@@ -62,10 +62,12 @@ Result<std::unique_ptr<AppendOnlyFileStoreScan>> AppendOnlyFileStoreScan::Create
     const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<arrow::Schema>& arrow_schema,
     const std::shared_ptr<ScanFilter>& scan_filters, const CoreOptions& core_options,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
-    auto scan = std::unique_ptr<AppendOnlyFileStoreScan>(
-        new AppendOnlyFileStoreScan(snapshot_manager, schema_manager, manifest_list, manifest_file,
-                                    table_schema, arrow_schema, core_options, executor, pool));
+    const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<SimpleStatsEvolutions>& evolutions,
+    const std::shared_ptr<MemoryPool>& pool) {
+    auto scan = std::unique_ptr<AppendOnlyFileStoreScan>(new AppendOnlyFileStoreScan(
+        snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema, arrow_schema,
+        core_options, executor, evolutions, pool));
     PAIMON_RETURN_NOT_OK(
         scan->SplitAndSetFilter(table_schema->PartitionKeys(), arrow_schema, scan_filters));
     return scan;
@@ -78,10 +80,12 @@ AppendOnlyFileStoreScan::AppendOnlyFileStoreScan(
     const std::shared_ptr<ManifestFile>& manifest_file,
     const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<arrow::Schema>& schema,
     const CoreOptions& core_options, const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<SimpleStatsEvolutions>& evolutions,
     const std::shared_ptr<MemoryPool>& pool)
     : FileStoreScan(snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
                     schema, core_options, executor, pool) {
-    evolutions_ = std::make_shared<SimpleStatsEvolutions>(table_schema, pool);
+    evolutions_ =
+        evolutions ? evolutions : std::make_shared<SimpleStatsEvolutions>(table_schema, pool);
 }
 
 Result<bool> AppendOnlyFileStoreScan::FilterByStats(const ManifestEntry& entry) const {

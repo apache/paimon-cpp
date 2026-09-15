@@ -79,9 +79,9 @@ TEST(KeyValueBucketPruningTest, UsesEachEntriesBucketCount) {
         auto filters = std::make_shared<ScanFilter>(
             predicate, std::vector<std::map<std::string, std::string>>(), std::nullopt);
         ASSERT_OK_AND_ASSIGN(
-            auto scan,
-            KeyValueFileStoreScan::Create(nullptr, manager, nullptr, nullptr, schema, arrow_schema,
-                                          filters, core_options, CreateDefaultExecutor(), pool));
+            auto scan, KeyValueFileStoreScan::Create(nullptr, manager, nullptr, nullptr, schema,
+                                                     arrow_schema, filters, core_options,
+                                                     CreateDefaultExecutor(), nullptr, pool));
         SimpleStats stats = BinaryRowGenerator::GenerateStats({std::string("a")},
                                                               {std::string("z")}, {0}, pool.get());
         ASSERT_OK_AND_ASSIGN(
@@ -162,7 +162,7 @@ class KeyValueFileStoreScanTest : public testing::Test {
             std::unique_ptr<KeyValueFileStoreScan> scan,
             KeyValueFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
                                           manifest_file, table_schema, arrow_schema, scan_filter,
-                                          core_options, CreateDefaultExecutor(), pool_));
+                                          core_options, CreateDefaultExecutor(), nullptr, pool_));
         PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager->LoadSnapshot(snapshot_id));
         scan->WithSnapshot(snapshot);
         return scan;

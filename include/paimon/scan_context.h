@@ -33,6 +33,7 @@
 #include "paimon/visibility.h"
 namespace paimon {
 class ScanContextBuilder;
+class TableScanResources;
 class ScanFilter;
 class Executor;
 class FormatTable;
@@ -56,7 +57,8 @@ class PAIMON_EXPORT ScanContext {
                 const std::optional<std::string>& table_schema,
                 const std::map<std::string, std::string>& options,
                 const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table);
+                const std::shared_ptr<FormatTable>& format_table,
+                const std::shared_ptr<TableScanResources>& table_resources);
 
     ~ScanContext();
 
@@ -95,8 +97,10 @@ class PAIMON_EXPORT ScanContext {
         return realtime_context_;
     }
 
-    std::shared_ptr<FileSystem> GetSpecificFileSystem() const {
-        return specific_file_system_;
+    std::shared_ptr<FileSystem> GetSpecificFileSystem() const;
+
+    const std::shared_ptr<TableScanResources>& GetTableResources() const {
+        return table_resources_;
     }
 
     const std::optional<std::string>& GetSpecificTableSchema() const {
@@ -127,6 +131,7 @@ class PAIMON_EXPORT ScanContext {
     std::map<std::string, std::string> options_;
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
+    std::shared_ptr<TableScanResources> table_resources_;
 };
 
 /// Filter configuration for table scan operations
@@ -219,7 +224,8 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// This bypasses the global file system registry and uses the provided implementation directly.
     /// @param file_system The file system to use.
     /// @return Reference to this builder for method chaining.
-    /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
+    /// @note If not set, use the table resources' file system when provided, otherwise the
+    /// default file system (configured in `Options::FILE_SYSTEM`).
     ScanContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
     /// Set the table schema as a string to avoid schema loading I/O operations.
@@ -237,6 +243,12 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// Inject a cache for scan operations. Passing nullptr disables cache.
     /// @return Reference to this builder for method chaining.
     ScanContextBuilder& WithCache(const std::shared_ptr<Cache>& cache);
+
+    /// Share metadata resources with other scans of the same managed table and branch.
+    /// The resources supply the file system and default branch. Conflicting explicit settings
+    /// are rejected. Passing nullptr disables sharing. Finish() resets this setting.
+    /// On main, SetTableSchema() continues to bypass the shared schema cache.
+    ScanContextBuilder& WithTableResources(const std::shared_ptr<TableScanResources>& resources);
 
     /// Build and return a `ScanContext` instance with input validation.
     /// @return Result containing the constructed `ScanContext` or an error status.

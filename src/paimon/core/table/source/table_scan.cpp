@@ -61,6 +61,7 @@
 #include "paimon/core/table/source/realtime_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
 #include "paimon/core/table/source/split_generator.h"
+#include "paimon/core/table/source/table_scan_resources_impl.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -91,21 +92,37 @@ class TableScanImpl {
         const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<arrow::Schema>& arrow_schema,
         const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
-        const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
-        const ScanContext* context) {
+        const std::shared_ptr<Executor>& executor, const ScanContext* context,
+        const std::shared_ptr<const ScanSchemaResources>& schema_resources,
+        const std::shared_ptr<MemoryPool>& memory_pool) {
         auto fs = core_options.GetFileSystem();
         auto manifest_file_format = core_options.GetManifestFormat();
         std::string branch = BranchManager::NormalizeBranch(core_options.GetBranch());
-        auto snapshot_manager = std::make_shared<SnapshotManager>(fs, context->GetPath(), branch);
-        // TODO(liancheng.lsz): support fallback branch in scan
-        auto schema_manager = std::make_shared<SchemaManager>(fs, context->GetPath(), branch);
+        std::shared_ptr<SnapshotManager> snapshot_manager;
+        std::shared_ptr<SchemaManager> schema_manager;
+        if (context->GetTableResources()) {
+            auto& resources = TableScanResourcesAccess::Get(*context->GetTableResources());
+            snapshot_manager = resources.snapshot_manager_;
+            schema_manager = resources.schema_manager_;
+        } else {
+            snapshot_manager = std::make_shared<SnapshotManager>(fs, context->GetPath(), branch);
+            // TODO(liancheng.lsz): support fallback branch in scan
+            schema_manager = std::make_shared<SchemaManager>(fs, context->GetPath(), branch);
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<ManifestList> manifest_list,
             ManifestList::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
                                  path_factory, core_options.GetCache(), memory_pool));
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<arrow::Schema> partition_schema,
-            FieldMapping::GetPartitionSchema(arrow_schema, table_schema->PartitionKeys()));
+        std::shared_ptr<arrow::Schema> partition_schema;
+        if (schema_resources) {
+            partition_schema = schema_resources->partition_schema;
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(
+                partition_schema,
+                FieldMapping::GetPartitionSchema(arrow_schema, table_schema->PartitionKeys()));
+        }
+        std::shared_ptr<SimpleStatsEvolutions> evolutions =
+            schema_resources ? schema_resources->stats_evolutions : nullptr;
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<ManifestFile> manifest_file,
             ManifestFile::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
@@ -124,14 +141,14 @@ class TableScanImpl {
                     scan, AppendOnlyFileStoreScan::Create(
                               snapshot_manager, schema_manager, manifest_list, manifest_file,
                               table_schema, arrow_schema, context->GetScanFilters(), core_options,
-                              executor, memory_pool));
+                              executor, evolutions, memory_pool));
             }
         } else {
             PAIMON_ASSIGN_OR_RAISE(
                 scan, KeyValueFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
                                                     manifest_file, table_schema, arrow_schema,
                                                     context->GetScanFilters(), core_options,
-                                                    executor, memory_pool));
+                                                    executor, evolutions, memory_pool));
         }
         return WithTablePath(std::move(scan), context);
     }
@@ -144,7 +161,8 @@ class TableScanImpl {
 
     static Result<std::unique_ptr<SplitGenerator>> CreateSplitGenerator(
         const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
-        const ScanContext* context) {
+        const ScanContext* context,
+        const std::shared_ptr<const ScanSchemaResources>& schema_resources) {
         auto source_split_target_size = core_options.GetSourceSplitTargetSize();
         auto source_split_open_file_cost = core_options.GetSourceSplitOpenFileCost();
         if (table_schema->PrimaryKeys().empty()) {
@@ -159,10 +177,12 @@ class TableScanImpl {
                 source_split_target_size, source_split_open_file_cost, bucket_mode);
         } else {
             // TODO(liancheng.lsz): support evolution
-            PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> trimmed_primary_keys,
-                                   table_schema->TrimmedPrimaryKeys());
-            PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> trimmed_pk_fields,
-                                   table_schema->GetFields(trimmed_primary_keys));
+            std::vector<DataField> trimmed_pk_fields;
+            if (schema_resources) {
+                trimmed_pk_fields = schema_resources->primary_key_fields;
+            } else {
+                PAIMON_ASSIGN_OR_RAISE(trimmed_pk_fields, table_schema->TrimmedPrimaryKeyFields());
+            }
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<FieldsComparator> key_comparator,
                 FieldsComparator::Create(trimmed_pk_fields, /*is_ascending_order=*/true));
@@ -266,6 +286,9 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     std::shared_ptr<ScanContext> shared_context = std::move(context);
     // A table the caller already loaded says what it is, so nothing is read to find out.
     if (shared_context->GetFormatTable() != nullptr) {
+        if (shared_context->GetTableResources()) {
+            return Status::Invalid("table scan resources cannot be used with a format table");
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FormatTable> format_table,
             FormatTable::Copy(shared_context->GetFormatTable(), shared_context->GetOptions()));
@@ -275,13 +298,20 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
                            CoreOptions::FromMap(shared_context->GetOptions(),
                                                 shared_context->GetSpecificFileSystem(), {}));
+    SchemaManager* shared_schema_manager = nullptr;
+    if (shared_context->GetTableResources()) {
+        auto& resources = TableScanResourcesAccess::Get(*shared_context->GetTableResources());
+        PAIMON_RETURN_NOT_OK(resources.Validate(shared_context->GetPath(), tmp_options.GetBranch(),
+                                                shared_context->GetSpecificFileSystem()));
+        shared_schema_manager = resources.schema_manager_.get();
+    }
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), shared_context->GetPath(),
-                                            shared_context->GetOptions()));
+                                            shared_context->GetOptions(), shared_schema_manager));
         return system_table->NewScan(shared_context);
     }
     // A format table is planned by listing directories, so it never reaches the manifest path
@@ -290,12 +320,14 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     std::shared_ptr<TableSchema> latest_schema;
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FormatTable> format_table,
-        FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), shared_context->GetPath(),
-                                   BranchManager::NormalizeBranch(tmp_options.GetBranch()),
-                                   shared_context->GetOptions(),
-                                   shared_context->GetSpecificTableSchema(),
-                                   /*schema_manager=*/nullptr, &latest_schema));
+        FormatTableLoader::TryLoad(
+            tmp_options.GetFileSystem(), shared_context->GetPath(),
+            BranchManager::NormalizeBranch(tmp_options.GetBranch()), shared_context->GetOptions(),
+            shared_context->GetSpecificTableSchema(), shared_schema_manager, &latest_schema));
     if (format_table != nullptr) {
+        if (shared_context->GetTableResources()) {
+            return Status::Invalid("table scan resources cannot be used with a format table");
+        }
         return NewFormatTableScan(format_table, shared_context);
     }
     // With the schema the dispatch already read, so the managed path does not read it again.
@@ -361,9 +393,15 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
         PAIMON_ASSIGN_OR_RAISE(table_schema,
                                TableSchema::CreateFromJson(specific_table_schema.value()));
     } else {
-        SchemaManager schema_manager(tmp_options.GetFileSystem(), context->GetPath(), branch);
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_table_schema,
-                               schema_manager.Latest());
+        const SchemaManager* schema_manager =
+            context->GetTableResources()
+                ? TableScanResourcesAccess::Get(*context->GetTableResources()).schema_manager_.get()
+                : nullptr;
+        PAIMON_ASSIGN_OR_RAISE(
+            std::optional<std::shared_ptr<TableSchema>> latest_table_schema,
+            schema_manager
+                ? schema_manager->Latest()
+                : SchemaManager(tmp_options.GetFileSystem(), context->GetPath(), branch).Latest());
         if (latest_table_schema == std::nullopt) {
             return Status::Invalid("not found latest schema");
         }
@@ -396,7 +434,18 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
     }
 
     // validate schema and scan filter
-    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+    std::shared_ptr<const ScanSchemaResources> schema_resources;
+    // A caller-supplied schema may reuse an ID with different content. Keep its derived metadata
+    // private to this scan, just as its JSON is kept out of SchemaManager's cache.
+    if (context->GetTableResources() &&
+        !(branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_table_schema)) {
+        PAIMON_ASSIGN_OR_RAISE(schema_resources,
+                               TableScanResourcesAccess::Get(*context->GetTableResources())
+                                   .GetSchemaResources(table_schema));
+    }
+    auto arrow_schema = schema_resources
+                            ? schema_resources->arrow_schema
+                            : DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
             *arrow_schema, context->GetScanFilters()->GetPredicate(),
@@ -416,13 +465,14 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
             external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
             context->GetMemoryPool()));
 
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan> file_store_scan,
-                           TableScanImpl::CreateFileStoreScan(
-                               path_factory, arrow_schema, table_schema, core_options,
-                               context->GetExecutor(), context->GetMemoryPool(), context.get()));
     PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<SplitGenerator> split_generator,
-        TableScanImpl::CreateSplitGenerator(table_schema, core_options, context.get()));
+        std::shared_ptr<FileStoreScan> file_store_scan,
+        TableScanImpl::CreateFileStoreScan(path_factory, arrow_schema, table_schema, core_options,
+                                           context->GetExecutor(), context.get(), schema_resources,
+                                           context->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<SplitGenerator> split_generator,
+                           TableScanImpl::CreateSplitGenerator(table_schema, core_options,
+                                                               context.get(), schema_resources));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
                            TableScanImpl::CreateIndexFileHandler(core_options, path_factory,
                                                                  context->GetMemoryPool()));

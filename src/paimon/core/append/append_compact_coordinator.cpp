@@ -149,7 +149,7 @@ Result<std::unique_ptr<FileStoreScan>> CreateFileStoreScan(
         std::unique_ptr<AppendOnlyFileStoreScan> scan,
         AppendOnlyFileStoreScan::Create(snapshot_manager, schema_manager, manifest_list,
                                         manifest_file, table_schema, arrow_schema, scan_filter,
-                                        core_options, executor, pool));
+                                        core_options, executor, nullptr, pool));
     return std::unique_ptr<FileStoreScan>(std::move(scan));
 }
 

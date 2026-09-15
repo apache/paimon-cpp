@@ -196,7 +196,7 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                            context->GetOptions()));
+                                            context->GetOptions(), nullptr));
         return system_table->NewRead(context);
     }
 

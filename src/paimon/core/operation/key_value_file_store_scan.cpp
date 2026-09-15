@@ -62,10 +62,12 @@ Result<std::unique_ptr<KeyValueFileStoreScan>> KeyValueFileStoreScan::Create(
     const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<arrow::Schema>& arrow_schema,
     const std::shared_ptr<ScanFilter>& scan_filters, const CoreOptions& core_options,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
-    auto scan = std::unique_ptr<KeyValueFileStoreScan>(
-        new KeyValueFileStoreScan(snapshot_manager, schema_manager, manifest_list, manifest_file,
-                                  table_schema, arrow_schema, core_options, executor, pool));
+    const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<SimpleStatsEvolutions>& evolutions,
+    const std::shared_ptr<MemoryPool>& pool) {
+    auto scan = std::unique_ptr<KeyValueFileStoreScan>(new KeyValueFileStoreScan(
+        snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema, arrow_schema,
+        core_options, executor, evolutions, pool));
     PAIMON_RETURN_NOT_OK(
         scan->SplitAndSetFilter(table_schema->PartitionKeys(), arrow_schema, scan_filters));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> trimmed_pk, table_schema->TrimmedPrimaryKeys());
@@ -270,10 +272,12 @@ KeyValueFileStoreScan::KeyValueFileStoreScan(
     const std::shared_ptr<ManifestFile>& manifest_file,
     const std::shared_ptr<TableSchema>& table_schema, const std::shared_ptr<arrow::Schema>& schema,
     const CoreOptions& core_options, const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<SimpleStatsEvolutions>& evolutions,
     const std::shared_ptr<MemoryPool>& pool)
     : FileStoreScan(snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
                     schema, core_options, executor, pool) {
-    evolutions_ = std::make_shared<SimpleStatsEvolutions>(table_schema, pool);
+    evolutions_ =
+        evolutions ? evolutions : std::make_shared<SimpleStatsEvolutions>(table_schema, pool);
 }
 
 }  // namespace paimon
