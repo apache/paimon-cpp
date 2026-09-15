@@ -164,6 +164,7 @@ const char Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED[] = "table-read.sequence-
 const char Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED[] = "key-value.sequence_number.enabled";
 const char Options::SCAN_TIMESTAMP_MILLIS[] = "scan.timestamp-millis";
 const char Options::REALTIME_ENABLED[] = "realtime.enabled";
+const char Options::REALTIME_SPILL_ENABLED[] = "realtime.spill-enabled";
 const char Options::REALTIME_READ_VIEW_TTL[] = "realtime.read-view-ttl";
 const char Options::REALTIME_STORE_STATS_MODE[] = "realtime.store.stats-mode";
 const char Options::SCAN_TIMESTAMP[] = "scan.timestamp";
