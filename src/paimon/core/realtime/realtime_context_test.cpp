@@ -74,14 +74,18 @@ class TestingRealtimeStore : public RealtimeStore {
         committed_offsets.push_back(committed_offset);
         return Status::OK();
     }
+    RealtimeStoreDataUsage GetDataUsage() const override {
+        return data_usage;
+    }
     uint64_t GetMemoryUsage() const override {
-        return 0;
+        return data_usage.building_memory_bytes + data_usage.sealed_memory_bytes;
     }
 
     int32_t acquire_count = 0;
     int32_t advance_count = 0;
     bool fail_next_advance = false;
     bool return_null_read_view = false;
+    RealtimeStoreDataUsage data_usage;
     std::vector<int64_t> committed_offsets;
 };
 
@@ -126,11 +130,12 @@ Result<RealtimeStoreState> GetOrCreateAppendStore(
     const std::map<std::string, std::string>& partition, int32_t bucket,
     std::unique_ptr<ArrowSchema> write_schema, const std::map<std::string, std::string>& options,
     const std::shared_ptr<MemoryPool>& memory_pool,
-    StatisticsMode statistics_mode = StatisticsMode::NONE) {
-    return context->GetOrCreateRealtimeStore(
-        RealtimeStoreCreateRequest{std::move(write_schema), options, memory_pool,
-                                   RealtimeStoreMode::APPEND_ONLY, statistics_mode},
-        RealtimePartitionBucket(partition, bucket));
+    StatisticsMode statistics_mode = StatisticsMode::NONE, const std::string& temp_directory = "") {
+    RealtimeStoreCreateRequest request{std::move(write_schema), options, memory_pool,
+                                       RealtimeStoreMode::APPEND_ONLY, statistics_mode};
+    request.temp_directory = temp_directory;
+    return context->GetOrCreateRealtimeStore(std::move(request),
+                                             RealtimePartitionBucket(partition, bucket));
 }
 
 TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
@@ -171,6 +176,40 @@ TEST(RealtimeContextTest, TestReusesStoreAndCapturesRegisteredViews) {
     ASSERT_EQ(1, factory->stores[2]->acquire_count);
 }
 
+TEST(RealtimeContextTest, TestMetricsAggregateAllStores) {
+    auto factory = std::make_shared<TestingRealtimeStoreFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+    ASSERT_OK(GetOrCreateAppendStore(context, {{"dt", "2026-08-02"}}, 0, MakeWriteSchema(), {},
+                                     GetDefaultPool()));
+    ASSERT_OK(GetOrCreateAppendStore(context, {{"dt", "2026-08-03"}}, 1, MakeWriteSchema(), {},
+                                     GetDefaultPool()));
+    ASSERT_EQ(2, factory->stores.size());
+    factory->stores[0]->data_usage =
+        RealtimeStoreDataUsage{/*building_memory_bytes=*/10, /*sealed_memory_bytes=*/20,
+                               /*building_row_count=*/1, /*sealed_row_count=*/2};
+    factory->stores[1]->data_usage =
+        RealtimeStoreDataUsage{/*building_memory_bytes=*/30, /*sealed_memory_bytes=*/40,
+                               /*building_row_count=*/3, /*sealed_row_count=*/4};
+
+    std::shared_ptr<Metrics> metrics = context->GetMetrics();
+    ASSERT_OK_AND_ASSIGN(double building_memory,
+                         metrics->GetGauge(RealtimeMetrics::kBuildingMemoryBytes));
+    ASSERT_OK_AND_ASSIGN(double sealed_memory,
+                         metrics->GetGauge(RealtimeMetrics::kSealedMemoryBytes));
+    ASSERT_OK_AND_ASSIGN(double total_memory,
+                         metrics->GetGauge(RealtimeMetrics::kTotalMemoryBytes));
+    ASSERT_OK_AND_ASSIGN(double building_rows,
+                         metrics->GetGauge(RealtimeMetrics::kBuildingRowCount));
+    ASSERT_OK_AND_ASSIGN(double sealed_rows, metrics->GetGauge(RealtimeMetrics::kSealedRowCount));
+    ASSERT_OK_AND_ASSIGN(double total_rows, metrics->GetGauge(RealtimeMetrics::kTotalRowCount));
+    ASSERT_EQ(40, building_memory);
+    ASSERT_EQ(60, sealed_memory);
+    ASSERT_EQ(100, total_memory);
+    ASSERT_EQ(4, building_rows);
+    ASSERT_EQ(6, sealed_rows);
+    ASSERT_EQ(10, total_rows);
+}
+
 TEST(RealtimeContextTest, TestRejectsMismatchedModeOnStoreReuse) {
     auto factory = std::make_shared<TestingRealtimeStoreFactory>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
@@ -185,6 +224,21 @@ TEST(RealtimeContextTest, TestRejectsMismatchedModeOnStoreReuse) {
             RealtimePartitionBucket(partition, 0)),
         "schema or mode mismatch for partition {dt=2026-08-02}, bucket 0; recreate the "
         "RealtimeContext");
+    ASSERT_EQ(1, factory->stores.size());
+}
+
+TEST(RealtimeContextTest, TestRejectsMismatchedTempDirectoryOnStoreReuse) {
+    auto factory = std::make_shared<TestingRealtimeStoreFactory>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+    const std::map<std::string, std::string> partition = {{"dt", "2026-08-02"}};
+    ASSERT_OK(GetOrCreateAppendStore(context, partition, 0, MakeWriteSchema(), {}, GetDefaultPool(),
+                                     StatisticsMode::NONE, "first"));
+
+    ASSERT_NOK_WITH_MSG(
+        GetOrCreateAppendStore(context, partition, 0, MakeWriteSchema(), {}, GetDefaultPool(),
+                               StatisticsMode::NONE, "second"),
+        "real-time store temporary directory mismatch for partition {dt=2026-08-02}, bucket 0; "
+        "recreate the RealtimeContext");
     ASSERT_EQ(1, factory->stores.size());
 }
 

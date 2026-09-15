@@ -113,7 +113,118 @@ Databases and tables are then created, listed, loaded, renamed and dropped
 through the regular ``Catalog`` API, and table snapshots can be listed through
 ``Catalog::ListSnapshots``.
 
-The C++ REST catalog covers the database, table and snapshot operations of the
-``Catalog`` API. The parts of the Java REST catalog that have no C++ counterpart
-yet — altering a database or a table, views, functions, partitions, tags, branch
-management and consumers — are not supported.
+Committing through the catalog
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A REST catalog reports ``Catalog::SupportsVersionManagement() == true`` and
+publishes snapshots through the server. Pass the catalog and table identifier
+to ``CommitContextBuilder::WithCatalog`` to commit on local or object storage
+without an atomic snapshot-file rename:
+
+.. code-block:: cpp
+
+   // Writers and committers share ownership of the catalog.
+   std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
+
+   // Load the table's identity before preparing changes.
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
+                          shared_catalog->GetTable(paimon::Identifier("db", "tbl")));
+
+   paimon::CommitContextBuilder builder(table_path, "commit-user");
+   builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   // CatalogUuid() stays null when the server supplies no id.
+   if (std::optional<std::string> table_uuid = table->CatalogUuid()) {
+       builder.WithTableId(table_uuid.value());
+   }
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context, builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
+                          paimon::FileStoreCommit::Create(std::move(context)));
+   PAIMON_RETURN_NOT_OK(commit->Commit(commit_messages));
+
+Configure native writers with the same catalog and identifier. They load the
+current schema and latest snapshot from the catalog, including committed
+offsets when a real-time writer is created:
+
+.. code-block:: cpp
+
+   paimon::WriteContextBuilder write_builder(table_path, "commit-user");
+   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
+                          write_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
+                          paimon::FileStoreWrite::Create(std::move(write_context)));
+
+For real-time writes, also set ``WithStreamingMode(true)`` and
+``WithRealtimeContext(...)`` with ``realtime.enabled=true``. After
+``CommitWithProgress`` succeeds, pass its returned snapshot id to
+``writer->RefreshCommittedSnapshot`` to release committed in-memory data.
+The refresh reads the current snapshot from the catalog. If another commit has
+already advanced the latest snapshot, the requested snapshot must be published
+under the table path. Recreating the writer restores offsets from the catalog's
+current snapshot.
+
+Both builders use the catalog's file system for manifests and data, preserving
+its object-store credentials. ``WithFileSystem`` overrides it; writers also
+allow ``WithFileSystemSchemeToIdentifierMap`` to override file-system selection.
+For format tables, use ``WriteContextBuilder(FormatTable)`` instead.
+
+The snapshot being committed carries a uuid generated on the client, and the
+commit names the snapshot it is based on by that snapshot's uuid, so the server
+can tell a commit that raced another. A commit which lost such a race is
+rebased on the new latest snapshot and retried, bounded by ``commit.max-retries``
+and ``commit.timeout`` as a file-system commit is.
+
+The HTTP client neither retries nor follows redirects for a commit request.
+Transport errors and non-success responses, including 429, 503 and redirects,
+leave the outcome uncertain: the server may already have accepted the snapshot.
+Its metadata files are retained. Use ``FilterAndCommit`` for batch recovery;
+after a real-time error, recreate the writer and context and recover from durable
+offsets as described by ``CommitWithProgress``.
+
+Only the main branch is supported by ``WithCatalog``. Both builders reject other
+branches in the identifier or ``branch`` option; the write builder also checks
+``WithBranch``. Explicit ``tbl$branch_main`` and ``branch=main`` are accepted.
+
+The current schema and latest snapshot need no files under the table path.
+A catalog response of ``{"snapshot": null}`` means the table has no snapshot.
+Only a catalog reporting that snapshot loading is unsupported falls back to
+file-system lookup; other catalog errors propagate to the caller.
+
+Read ``Table::CatalogUuid()`` before preparing changes and pass it to
+``WithTableId`` so the server can reject commits to a dropped and recreated table.
+``Table::Uuid()`` can fall back to the table name and must not supply this id.
+An unset table id is sent as null and subject to server validation. Each commit
+attempt reloads the catalog's current schema id for the new snapshot.
+
+.. note::
+
+   Manifests, data and historical metadata still require file-system access:
+
+   * ``FilterAndCommit``, ``CommitWithProgress`` and streaming writer recovery
+     may walk older snapshots to find the commit user's last snapshot. Those
+     snapshots must be published under the table path. A missing retained
+     snapshot is an error; the ``EARLIEST`` hint distinguishes expired history.
+   * ``RowIdCheckConflict`` reuses the latest snapshot from the catalog and reads
+     earlier snapshots from the table path. With data evolution enabled, the
+     check also requires the schemas recorded by the row-id files it inspects.
+     Publishing only the current schema is insufficient when files use older ids.
+   * ``RollbackToAsLatest`` reads its target snapshot from the table path.
+     ``Expire`` manages only snapshots published there and updates the
+     ``EARLIEST`` hint; it does not expire catalog-held metadata.
+     Before deleting files, expiration verifies that the catalog's current
+     snapshot matches the latest published snapshot and reads the retained
+     history. It skips expiration while the current snapshot is unpublished
+     or differs from its file-system copy. Catalog and retained-metadata read
+     errors stop expiration before deletion. A catalog that does not support
+     loading its current snapshot cannot perform local expiration.
+     Retained snapshots with index manifests also stop expiration with
+     ``NotImplemented`` before any files are deleted.
+
+Expiration preserves files referenced by retained snapshots, including files
+restored by ``RollbackToAsLatest``. Serialize rollback and expiration through
+the upstream coordinator: a rollback must finish before expiration starts,
+so its restored file references are visible to the expiration operation.
+
+The C++ REST catalog covers the database, table, snapshot and commit operations
+of the ``Catalog`` API. The parts of the Java REST catalog that have no C++
+counterpart yet — altering a database or a table, views, functions, partitions,
+tags, branch management and consumers — are not supported.

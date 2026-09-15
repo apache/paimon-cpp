@@ -427,7 +427,14 @@ Status AbstractFileStoreWrite::Close() {
 }
 
 std::shared_ptr<Metrics> AbstractFileStoreWrite::GetMetrics() const {
-    return metrics_;
+    std::shared_ptr<RealtimeContext> context = GetRealtimeContext();
+    if (!context) {
+        return metrics_;
+    }
+    auto result = std::make_shared<MetricsImpl>();
+    result->Merge(metrics_);
+    result->Merge(context->GetMetrics());
+    return result;
 }
 
 Status AbstractFileStoreWrite::CheckRealtimeWriteUsable() const {

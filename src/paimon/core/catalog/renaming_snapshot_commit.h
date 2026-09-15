@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,7 +45,9 @@ class RenamingSnapshotCommit : public SnapshotCommit {
                            const std::shared_ptr<SnapshotManager>& snapshot_manager)
         : fs_(fs), snapshot_manager_(snapshot_manager) {}
 
-    Result<bool> Commit(const Snapshot& snapshot,
+    /// @note The atomic rename detects conflicts by snapshot ID, so `base_snapshot_uuid` is unused.
+    Result<bool> Commit(const std::optional<std::string>& base_snapshot_uuid,
+                        const Snapshot& snapshot,
                         const std::vector<PartitionStatistics>& statistics) override {
         PAIMON_ASSIGN_OR_RAISE(std::string json_str, snapshot.ToJsonString());
         std::string snapshot_path = snapshot_manager_->SnapshotPath(snapshot.Id());

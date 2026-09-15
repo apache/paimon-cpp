@@ -173,7 +173,9 @@ Status ArrowSchemaValidator::ValidateDataTypeWithFieldId(
         case arrow::Type::type::LARGE_BINARY: {
             if (BlobUtils::IsBlobMetadata(key_value_metadata)) {
                 if (!allow_blob) {
-                    return Status::Invalid("Blob field must be a top-level field.");
+                    return Status::Invalid(
+                        "BLOB field must be a top-level field or the direct value of a "
+                        "top-level MAP field.");
                 }
                 break;
             }
@@ -258,7 +260,9 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
         case arrow::Type::type::LARGE_BINARY: {
             if (BlobUtils::IsBlobField(field)) {
                 if (!allow_blob) {
-                    return Status::Invalid("Blob field must be a top-level field.");
+                    return Status::Invalid(
+                        "BLOB field must be a top-level field or the direct value of a "
+                        "top-level MAP field.");
                 }
                 break;
             }

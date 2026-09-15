@@ -39,6 +39,7 @@
 #include "arrow/c/helpers.h"
 #include "fmt/format.h"
 #include "paimon/arrow/abi.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/uuid.h"
@@ -110,6 +111,43 @@ Status RealtimeContextImpl::CheckUsable() const {
     return Status::OK();
 }
 
+std::shared_ptr<Metrics> RealtimeContextImpl::GetMetrics() const {
+    std::vector<std::shared_ptr<RealtimeStore>> stores;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stores.reserve(stores_.size());
+        for (const auto& [_, entry] : stores_) {
+            stores.push_back(entry.store);
+        }
+    }
+
+    RealtimeStoreDataUsage total_usage;
+    for (const std::shared_ptr<RealtimeStore>& store : stores) {
+        const RealtimeStoreDataUsage usage = store->GetDataUsage();
+        total_usage.building_memory_bytes += usage.building_memory_bytes;
+        total_usage.sealed_memory_bytes += usage.sealed_memory_bytes;
+        total_usage.building_row_count += usage.building_row_count;
+        total_usage.sealed_row_count += usage.sealed_row_count;
+    }
+
+    auto metrics = std::make_shared<MetricsImpl>();
+    metrics->SetGauge(RealtimeMetrics::kBuildingMemoryBytes,
+                      static_cast<double>(total_usage.building_memory_bytes));
+    metrics->SetGauge(RealtimeMetrics::kSealedMemoryBytes,
+                      static_cast<double>(total_usage.sealed_memory_bytes));
+    metrics->SetGauge(
+        RealtimeMetrics::kTotalMemoryBytes,
+        static_cast<double>(total_usage.building_memory_bytes + total_usage.sealed_memory_bytes));
+    metrics->SetGauge(RealtimeMetrics::kBuildingRowCount,
+                      static_cast<double>(total_usage.building_row_count));
+    metrics->SetGauge(RealtimeMetrics::kSealedRowCount,
+                      static_cast<double>(total_usage.sealed_row_count));
+    metrics->SetGauge(
+        RealtimeMetrics::kTotalRowCount,
+        static_cast<double>(total_usage.building_row_count + total_usage.sealed_row_count));
+    return metrics;
+}
+
 Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket) {
     PAIMON_RETURN_NOT_OK(CheckUsable());
@@ -140,6 +178,12 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
                 "the RealtimeContext",
                 PartitionToString(partition_bucket.partition), partition_bucket.bucket));
         }
+        if (iter->second.temp_directory != request.temp_directory) {
+            return Status::Invalid(fmt::format(
+                "real-time store temporary directory mismatch for partition {}, bucket {}; "
+                "recreate the RealtimeContext",
+                PartitionToString(partition_bucket.partition), partition_bucket.bucket));
+        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
                                iter->second.store->AcquireReadView());
         if (!read_view) {
@@ -164,12 +208,14 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportSchema(*requested_schema, request.write_schema.get()));
     RealtimeStoreMode mode = request.mode;
+    std::string temp_directory = request.temp_directory;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeStore> store,
                            factory_->Create(std::move(request)));
     if (!store) {
         return Status::Invalid("real-time store factory returned a null store");
     }
-    stores_.emplace(partition_bucket, StoreEntry{store, requested_schema, mode});
+    stores_.emplace(partition_bucket,
+                    StoreEntry{store, requested_schema, mode, std::move(temp_directory)});
     if (offset_iter != committed_offsets_.end()) {
         reclaimed_offsets_.emplace(partition_bucket, offset_iter->second);
     }

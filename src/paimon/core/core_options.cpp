@@ -435,6 +435,7 @@ struct CoreOptions::Impl {
     std::optional<int32_t> global_index_thread_num;
 
     bool realtime_enabled = false;
+    bool realtime_spill_enabled = false;
     bool scan_manifest_entry_lazy_decode_enabled = true;
     bool ignore_delete = false;
     bool manifest_delete_file_drop_stats = false;
@@ -847,6 +848,8 @@ struct CoreOptions::Impl {
     // Parse real-time write and read configurations.
     Status ParseRealtimeOptions(const ConfigParser& parser) {
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::REALTIME_ENABLED, &realtime_enabled));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::REALTIME_SPILL_ENABLED, &realtime_spill_enabled));
         PAIMON_RETURN_NOT_OK(parser.ParseTimeDuration(Options::REALTIME_READ_VIEW_TTL,
                                                       &realtime_read_view_ttl_millis));
         if (realtime_read_view_ttl_millis <= 0) {
@@ -1184,6 +1187,10 @@ std::optional<int64_t> CoreOptions::GetScanTimestampMillis() const {
 
 bool CoreOptions::RealtimeEnabled() const {
     return impl_->realtime_enabled;
+}
+
+bool CoreOptions::RealtimeSpillEnabled() const {
+    return impl_->realtime_spill_enabled;
 }
 
 int64_t CoreOptions::GetRealtimeReadViewTtlMillis() const {

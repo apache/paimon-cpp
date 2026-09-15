@@ -19,6 +19,7 @@
 #include "paimon/core/mergetree/compact/aggregate/aggregate_merge_function.h"
 
 #include <map>
+#include <optional>
 #include <variant>
 
 #include "arrow/api.h"
@@ -80,6 +81,59 @@ TEST(AggregateMergeFunctionTest, TestGetAggFuncName) {
         ASSERT_EQ(FieldLastValueAgg::NAME, str_agg);
     }
 }
+TEST(AggregateMergeFunctionTest, TestProduct) {
+    arrow::FieldVector fields = {arrow::field("k0", arrow::int32()),
+                                 arrow::field("v0", arrow::int32())};
+    auto value_schema = arrow::schema(fields);
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options,
+                         CoreOptions::FromMap({{"fields.v0.aggregate-function", "product"}}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<AggregateMergeFunction> merge_func,
+                         AggregateMergeFunction::Create(value_schema, /*primary_keys=*/{"k0"},
+                                                        core_options, GetDefaultPool()));
+
+    auto pool = GetDefaultPool();
+    // three rows sharing a key multiply into 2 * 3 * 5
+    KeyValue kv1(RowKind::Insert(), /*sequence_number=*/0, /*level=*/0, /*key=*/
+                 BinaryRowGenerator::GenerateRowPtr({10}, pool.get()),
+                 /*value=*/BinaryRowGenerator::GenerateRowPtr({10, 2}, pool.get()));
+    KeyValue kv2(RowKind::Insert(), /*sequence_number=*/0, /*level=*/1, /*key=*/
+                 BinaryRowGenerator::GenerateRowPtr({10}, pool.get()),
+                 /*value=*/BinaryRowGenerator::GenerateRowPtr({10, 3}, pool.get()));
+    KeyValue kv3(RowKind::Insert(), /*sequence_number=*/0, /*level=*/2, /*key=*/
+                 BinaryRowGenerator::GenerateRowPtr({10}, pool.get()),
+                 /*value=*/BinaryRowGenerator::GenerateRowPtr({10, 5}, pool.get()));
+    ASSERT_OK(merge_func->Add(std::move(kv1)));
+    ASSERT_OK(merge_func->Add(std::move(kv2)));
+    ASSERT_OK(merge_func->Add(std::move(kv3)));
+    ASSERT_OK_AND_ASSIGN(std::optional<KeyValue> product_result, merge_func->GetResult());
+    ASSERT_TRUE(product_result.has_value());
+    KeyValue expected(RowKind::Insert(), /*sequence_number=*/0,
+                      /*level=*/KeyValue::UNKNOWN_LEVEL, /*key=*/
+                      BinaryRowGenerator::GenerateRowPtr({10}, pool.get()),
+                      /*value=*/BinaryRowGenerator::GenerateRowPtr({10, 30}, pool.get()));
+    KeyValueChecker::CheckResult(expected, product_result.value(), /*key_arity=*/1,
+                                 /*value_arity=*/2);
+
+    // a delete retracts by dividing the accumulator back out
+    merge_func->Reset();
+    KeyValue kv4(RowKind::Insert(), /*sequence_number=*/0, /*level=*/0, /*key=*/
+                 BinaryRowGenerator::GenerateRowPtr({10}, pool.get()),
+                 /*value=*/BinaryRowGenerator::GenerateRowPtr({10, 30}, pool.get()));
+    KeyValue kv5(RowKind::Delete(), /*sequence_number=*/0, /*level=*/1, /*key=*/
+                 BinaryRowGenerator::GenerateRowPtr({10}, pool.get()),
+                 /*value=*/BinaryRowGenerator::GenerateRowPtr({10, 5}, pool.get()));
+    ASSERT_OK(merge_func->Add(std::move(kv4)));
+    ASSERT_OK(merge_func->Add(std::move(kv5)));
+    ASSERT_OK_AND_ASSIGN(std::optional<KeyValue> retract_result, merge_func->GetResult());
+    ASSERT_TRUE(retract_result.has_value());
+    KeyValue expected2(RowKind::Insert(), /*sequence_number=*/0,
+                       /*level=*/KeyValue::UNKNOWN_LEVEL, /*key=*/
+                       BinaryRowGenerator::GenerateRowPtr({10}, pool.get()),
+                       /*value=*/BinaryRowGenerator::GenerateRowPtr({10, 6}, pool.get()));
+    KeyValueChecker::CheckResult(expected2, retract_result.value(), /*key_arity=*/1,
+                                 /*value_arity=*/2);
+}
+
 TEST(AggregateMergeFunctionTest, TestSimple) {
     arrow::FieldVector fields = {arrow::field("k0", arrow::int32()),
                                  arrow::field("v0", arrow::int32())};

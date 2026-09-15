@@ -18,30 +18,20 @@
 
 #include "paimon/core/catalog/commit_table_request.h"
 
-#include <cstdint>
 #include <map>
 #include <optional>
+#include <string>
 
 #include "gtest/gtest.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
+#include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 
 TEST(CommitTableRequestTest, TestSimple) {
-    Snapshot snapshot(
-        /*version=*/3, /*id=*/1, /*schema_id=*/0,
-        /*base_manifest_list=*/"manifest-list-3879e56f-2f27-49ae-a2f3-3dcbb8eb0beb-0",
-        /*base_manifest_list_size=*/291,
-        /*delta_manifest_list=*/"manifest-list-3879e56f-2f27-49ae-a2f3-3dcbb8eb0beb-1",
-        /*delta_manifest_list_size=*/1342, /*changelog_manifest_list=*/std::nullopt,
-        /*changelog_manifest_list_size=*/std::nullopt, /*index_manifest=*/std::nullopt,
-        /*commit_user=*/"commit_user_1", /*commit_identifier=*/9223372036854775807,
-        /*commit_kind=*/Snapshot::CommitKind::Append(), /*time_millis=*/1758097357597,
-        /*total_record_count=*/5,
-        /*delta_record_count=*/5, /*changelog_record_count=*/0, /*watermark=*/std::nullopt,
-        /*statistics=*/std::nullopt, /*properties=*/std::nullopt, /*next_row_id=*/0);
+    Snapshot snapshot = BuildTestSnapshot(1);
     std::vector<PartitionStatistics> partition_statistics = {
         PartitionStatistics(/*spec=*/{{"f1", "20"}}, /*record_count=*/1, /*file_size_in_bytes=*/541,
                             /*file_count=*/1, /*last_file_creation_time=*/1724090888743,
@@ -50,6 +40,8 @@ TEST(CommitTableRequestTest, TestSimple) {
                             /*file_size_in_bytes=*/1118, /*file_count=*/2,
                             /*last_file_creation_time=*/1724090888727, /*total_buckets=*/-1)};
     std::string expected_request_str = R"({
+    "tableId": "table-uuid",
+    "baseSnapshotUuid": "base-snapshot-uuid",
     "snapshot": {
         "version": 3,
         "id": 1,
@@ -91,14 +83,58 @@ TEST(CommitTableRequestTest, TestSimple) {
     ]
 })";
 
-    CommitTableRequest request1(snapshot, partition_statistics);
+    CommitTableRequest request1("table-uuid", "base-snapshot-uuid", snapshot, partition_statistics);
     ASSERT_OK_AND_ASSIGN(std::string request_str1, request1.ToJsonString());
     ASSERT_EQ(request_str1, expected_request_str);
     ASSERT_OK_AND_ASSIGN(CommitTableRequest request2,
                          CommitTableRequest::FromJsonString(request_str1));
     ASSERT_EQ(request1, request2);
+    ASSERT_EQ(request2.GetTableId(), std::optional<std::string>("table-uuid"));
+    ASSERT_EQ(request2.GetBaseSnapshotUuid(), std::optional<std::string>("base-snapshot-uuid"));
     ASSERT_OK_AND_ASSIGN(std::string request_str2, request2.ToJsonString());
     ASSERT_EQ(request_str1, request_str2);
+}
+
+TEST(CommitTableRequestTest, TestNullTableIdAndBaseSnapshotUuid) {
+    Snapshot snapshot = BuildTestSnapshot(1);
+
+    std::string expected_request_str = R"({
+    "tableId": null,
+    "baseSnapshotUuid": null,
+    "snapshot": {
+        "version": 3,
+        "id": 1,
+        "schemaId": 0,
+        "baseManifestList": "manifest-list-3879e56f-2f27-49ae-a2f3-3dcbb8eb0beb-0",
+        "baseManifestListSize": 291,
+        "deltaManifestList": "manifest-list-3879e56f-2f27-49ae-a2f3-3dcbb8eb0beb-1",
+        "deltaManifestListSize": 1342,
+        "commitUser": "commit_user_1",
+        "commitIdentifier": 9223372036854775807,
+        "commitKind": "APPEND",
+        "timeMillis": 1758097357597,
+        "totalRecordCount": 5,
+        "deltaRecordCount": 5,
+        "changelogRecordCount": 0,
+        "nextRowId": 0
+    },
+    "statistics": []
+})";
+
+    CommitTableRequest request(std::nullopt, std::nullopt, snapshot, {});
+    ASSERT_OK_AND_ASSIGN(std::string request_str, request.ToJsonString());
+    ASSERT_EQ(request_str, expected_request_str);
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest parsed,
+                         CommitTableRequest::FromJsonString(request_str));
+    ASSERT_EQ(parsed.GetTableId(), std::nullopt);
+    ASSERT_EQ(parsed.GetBaseSnapshotUuid(), std::nullopt);
+    ASSERT_EQ(request, parsed);
+
+    ASSERT_OK_AND_ASSIGN(std::string snapshot_str, snapshot.ToJsonString());
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest without_fields,
+                         CommitTableRequest::FromJsonString(R"({"snapshot": )" + snapshot_str +
+                                                            R"(, "statistics": []})"));
+    ASSERT_EQ(without_fields, parsed);
 }
 
 }  // namespace paimon::test

@@ -36,14 +36,23 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
 #include "paimon/catalog_options.h"
+#include "paimon/commit_context.h"
+#include "paimon/commit_message.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/catalog/commit_table_request.h"
+#include "paimon/core/partition/partition_statistics.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
+#include "paimon/file_store_commit.h"
+#include "paimon/fs/file_system.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
 #include "paimon/schema/schema.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/testing/utils/snapshot_test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -60,6 +69,7 @@ struct MockCatalogState {
         std::string schema_json;
         int64_t schema_id = 0;
         std::string path;
+        std::string id = "1";
     };
     std::map<std::string, std::map<std::string, TableData>> databases;
     // headers of the last request, with lower-cased names
@@ -72,6 +82,17 @@ struct MockCatalogState {
     // how many create-table requests reached the server, so a schema the client should have
     // refused can be shown never to have been sent
     int32_t create_table_requests = 0;
+    std::string last_commit_body;
+    std::string last_commit_table;
+    bool refuse_commit = false;
+    bool break_commit_response = false;
+    bool commit_response_without_outcome = false;
+    bool accept_commit_then_report_unavailable = false;
+    int32_t accepted_commit_response_code = 503;
+    int32_t commit_requests = 0;
+    std::optional<std::string> current_snapshot;
+    bool null_snapshot_response = false;
+    std::string last_snapshot_table;
     // guards all fields above: the handler runs on the server's accept thread while
     // tests seed and inspect the state
     std::mutex mutex;
@@ -99,10 +120,11 @@ std::string SnapshotJson(int64_t id) {
 }
 
 std::string TableResponseJson(const std::string& name, const MockCatalogState::TableData& table) {
+    std::string id_member = table.id.empty() ? "" : fmt::format(R"("id":"{}",)", table.id);
     return fmt::format(
-        R"({{"id":"1","name":"{}","path":"{}","isExternal":false,"schemaId":{},"schema":{},)"
+        R"({{{}"name":"{}","path":"{}","isExternal":false,"schemaId":{},"schema":{},)"
         R"("owner":"owner1","updatedAt":123}})",
-        name, table.path, table.schema_id, table.schema_json);
+        id_member, name, table.path, table.schema_id, table.schema_json);
 }
 
 // Serves `names` one item per page to exercise the pagination loop of the client.
@@ -276,19 +298,100 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
         return MockError(400, "", "", "unsupported method");
     }
 
-    // "/{table}" or "/{table}/snapshots"
     std::string table_name = table_part.substr(1);
     bool list_snapshots = false;
+    bool commit_table = false;
+    bool load_snapshot = false;
     const std::string snapshots_suffix = "/snapshots";
+    const std::string snapshot_suffix = "/snapshot";
+    const std::string commit_suffix = "/commit";
     if (table_name.size() > snapshots_suffix.size() &&
         table_name.compare(table_name.size() - snapshots_suffix.size(), snapshots_suffix.size(),
                            snapshots_suffix) == 0) {
         table_name = table_name.substr(0, table_name.size() - snapshots_suffix.size());
         list_snapshots = true;
+    } else if (table_name.size() > commit_suffix.size() &&
+               table_name.compare(table_name.size() - commit_suffix.size(), commit_suffix.size(),
+                                  commit_suffix) == 0) {
+        table_name = table_name.substr(0, table_name.size() - commit_suffix.size());
+        commit_table = true;
+    } else if (table_name.size() > snapshot_suffix.size() &&
+               table_name.compare(table_name.size() - snapshot_suffix.size(),
+                                  snapshot_suffix.size(), snapshot_suffix) == 0) {
+        table_name = table_name.substr(0, table_name.size() - snapshot_suffix.size());
+        load_snapshot = true;
     }
     auto table_iter = tables.find(table_name);
     if (table_iter == tables.end()) {
         return MockError(404, ErrorResponse::kResourceTypeTable, table_name, "table not found");
+    }
+    if (commit_table) {
+        if (request.method != "POST") {
+            return MockError(400, "", "", "unsupported method");
+        }
+        state->last_commit_body = request.body;
+        state->last_commit_table = table_name;
+        ++state->commit_requests;
+        if (state->accept_commit_then_report_unavailable) {
+            if (state->commit_requests == 1) {
+                Result<CommitTableRequest> taken = CommitTableRequest::FromJsonString(request.body);
+                if (taken.ok()) {
+                    Result<std::string> json = taken.value().GetSnapshot().ToJsonString();
+                    if (json.ok()) {
+                        state->current_snapshot = json.value();
+                    }
+                }
+                if (state->accepted_commit_response_code == 200) {
+                    return JsonResponse(200, R"({"success": null})");
+                }
+                if (state->accepted_commit_response_code == 204) {
+                    return JsonResponse(204, "");
+                }
+                MockRestServer::Response response = MockError(state->accepted_commit_response_code,
+                                                              "", "", "commit outcome unknown");
+                response.headers["Location"] = request.path;
+                return response;
+            }
+            bool based_on_held = false;
+            Result<CommitTableRequest> later = CommitTableRequest::FromJsonString(request.body);
+            if (later.ok() && state->current_snapshot) {
+                Result<Snapshot> held = Snapshot::FromJsonString(state->current_snapshot.value());
+                based_on_held =
+                    held.ok() && later.value().GetBaseSnapshotUuid() == held.value().Uuid();
+                if (based_on_held) {
+                    Result<std::string> json = later.value().GetSnapshot().ToJsonString();
+                    if (json.ok()) {
+                        state->current_snapshot = json.value();
+                    }
+                }
+            }
+            return JsonResponse(200, CommitTableResponse(based_on_held).ToJsonString().value());
+        }
+        if (state->break_commit_response) {
+            return JsonResponse(200, "not json");
+        }
+        if (state->commit_response_without_outcome) {
+            return JsonResponse(200, R"({"success": null})");
+        }
+        CommitTableResponse response(!state->refuse_commit);
+        return JsonResponse(200, response.ToJsonString().value());
+    }
+    if (load_snapshot) {
+        if (request.method != "GET") {
+            return MockError(400, "", "", "unsupported method");
+        }
+        state->last_snapshot_table = table_name;
+        if (state->null_snapshot_response) {
+            return JsonResponse(200, R"({"snapshot": null})");
+        }
+        if (!state->current_snapshot) {
+            return MockError(404, ErrorResponse::kResourceTypeSnapshot, table_name,
+                             "snapshot not found");
+        }
+        return JsonResponse(200, fmt::format(R"({{"snapshot":{{"snapshot":{},"recordCount":1,)"
+                                             R"("fileSizeInBytes":2,"fileCount":3,)"
+                                             R"("lastFileCreationTime":4}}}})",
+                                             state->current_snapshot.value()));
     }
     if (list_snapshots) {
         // two pages, out of order to exercise pagination and sorting
@@ -341,8 +444,15 @@ class RestCatalogTest : public ::testing::Test {
         }
     }
 
-    Result<std::unique_ptr<RestCatalog>> CreateRestCatalog() {
-        return RestCatalog::Create(kWarehouse, options_, nullptr);
+    Result<std::unique_ptr<RestCatalog>> CreateRestCatalog(
+        const RestHttpClient::Config& http_config = RestHttpClient::Config()) {
+        return RestCatalog::Create(kWarehouse, options_, nullptr, http_config);
+    }
+
+    static RestHttpClient::Config FastRetryConfig() {
+        RestHttpClient::Config config;
+        config.retry_base_delay_ms = 1;
+        return config;
     }
 
     Status CreateSampleTable(Catalog* catalog, const Identifier& identifier,
@@ -503,8 +613,18 @@ TEST_F(RestCatalogTest, TableOperations) {
     ASSERT_OK_AND_ASSIGN(std::string location, catalog->GetTableLocation(identifier));
     ASSERT_EQ("wh1/db1.db/t1", location);
 
+    int32_t requests_before_get_table = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        requests_before_get_table = state_->get_table_requests;
+    }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(identifier));
     ASSERT_EQ("t1", table->Name());
+    ASSERT_EQ("1", table->Uuid());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(requests_before_get_table + 1, state_->get_table_requests);
+    }
     std::shared_ptr<DataSchema> schema =
         std::dynamic_pointer_cast<DataSchema>(table->LatestSchema());
     ASSERT_NE(nullptr, schema);
@@ -565,6 +685,42 @@ TEST_F(RestCatalogTest, TableOperations) {
     ASSERT_TRUE(drop_missing.IsNotExist()) << drop_missing.ToString();
 }
 
+TEST_F(RestCatalogTest, TableUuidFallsBackToFullNameWithoutServerId) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"].id.clear();
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(identifier));
+    ASSERT_EQ("db1.t1", table->Uuid());
+    ASSERT_EQ(table->CatalogUuid(), std::nullopt);
+
+    ASSERT_OK_AND_ASSIGN(bool committed,
+                         catalog->CommitSnapshot(identifier, table->CatalogUuid(), std::nullopt,
+                                                 BuildTestSnapshot(1), {}));
+    ASSERT_TRUE(committed);
+    std::string commit_body;
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        commit_body = state_->last_commit_body;
+    }
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest sent, CommitTableRequest::FromJsonString(commit_body));
+    ASSERT_EQ(sent.GetTableId(), std::nullopt);
+    ASSERT_NE(commit_body.find("\"tableId\": null"), std::string::npos) << commit_body;
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"].id = "server-side-id";
+    }
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> identified, catalog->GetTable(identifier));
+    ASSERT_EQ(identified->CatalogUuid(), std::optional<std::string>("server-side-id"));
+    ASSERT_EQ("server-side-id", identified->Uuid());
+}
+
 TEST_F(RestCatalogTest, ClientAndServerHeadersAreSent) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> databases, catalog->ListDatabases());
@@ -606,9 +762,19 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
                          catalog->LoadTableSchema(system_identifier));
     ASSERT_EQ((std::vector<std::string>{"key", "value"}), schema->FieldNames());
 
+    int32_t requests_before = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        requests_before = state_->get_table_requests;
+    }
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(system_identifier));
     ASSERT_EQ("t1$options", table->Name());
     ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->LatestSchema()->FieldNames());
+    ASSERT_EQ("db1.t1$options", table->Uuid());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(requests_before + 1, state_->get_table_requests);
+    }
 
     Status unsupported = catalog->LoadTableSchema(Identifier("db1", "t1$unsupported")).status();
     ASSERT_TRUE(unsupported.IsNotExist()) << unsupported.ToString();
@@ -812,8 +978,6 @@ TEST_F(RestCatalogTest, FormatTableIsLoadedInOneRequest) {
     // directory named "schema" there is a partition value, not metadata to skip.
     ASSERT_FALSE(table->LocationCarriesPaimonMetadata());
 
-    // And the other way round: a `Table` promises snapshots and manifests a format table never
-    // had, so it is refused there in the same words the file system catalog uses.
     ASSERT_NOK_WITH_MSG(catalog->GetTable(Identifier("db1", "fmt")), "Cannot open format table");
 
     // A managed table stays out of this path, and so does a system table.
@@ -1125,6 +1289,356 @@ TEST_F(RestCatalogTest, ListSnapshots) {
                         "branch table");
 }
 
+TEST_F(RestCatalogTest, FileStoreCommitIsBuiltFromTheCatalog) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    MockCatalogState::TableData table_data;
+    table_data.schema_json =
+        R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+        R"( "partitionKeys": [], "primaryKeys": [],)"
+        R"( "options": {"file.format": "mock_format", "manifest.format": "avro"}})";
+    table_data.path = dir->Str();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> rest_catalog, CreateRestCatalog());
+    ASSERT_OK(rest_catalog->CreateDatabase("db1", {}, false));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"] = table_data;
+    }
+    ASSERT_TRUE(rest_catalog->SupportsVersionManagement());
+
+    int32_t requests_before = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        requests_before = state_->get_table_requests;
+    }
+    std::shared_ptr<Catalog> shared_catalog(std::move(rest_catalog));
+    CommitContextBuilder builder(dir->Str(), "commit-user");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.WithCatalog(shared_catalog, Identifier("db1", "t1")).Finish());
+    ASSERT_OK(FileStoreCommit::Create(std::move(context)));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_GT(state_->get_table_requests, requests_before);
+    }
+}
+
+TEST_F(RestCatalogTest, CommitSnapshot) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+
+    ASSERT_TRUE(catalog->SupportsVersionManagement());
+
+    Snapshot snapshot = BuildTestSnapshot(2);
+    std::vector<PartitionStatistics> statistics = {
+        PartitionStatistics({{"dt", "20240101"}}, 1, 541, 1, 1724090888743, -1)};
+
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         catalog->CommitSnapshot(identifier, "table-uuid", "base-snapshot-uuid",
+                                                 snapshot, statistics));
+    ASSERT_TRUE(success);
+
+    std::string commit_body;
+    std::string commit_table;
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        commit_body = state_->last_commit_body;
+        commit_table = state_->last_commit_table;
+    }
+    ASSERT_EQ("t1", commit_table);
+    ASSERT_OK_AND_ASSIGN(CommitTableRequest request,
+                         CommitTableRequest::FromJsonString(commit_body));
+    ASSERT_EQ(request.GetTableId(), std::optional<std::string>("table-uuid"));
+    ASSERT_EQ(request.GetBaseSnapshotUuid(), std::optional<std::string>("base-snapshot-uuid"));
+    ASSERT_EQ(request.GetSnapshot().Id(), 2);
+    ASSERT_EQ(request.GetStatistics(), statistics);
+
+    MockCatalogState::TableData branch_data;
+    branch_data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+                              R"( "partitionKeys": [], "primaryKeys": [], "options": {}})";
+    branch_data.path = "wh1/db1.db/t1";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1$branch_b1"] = branch_data;
+        state_->last_commit_table.clear();
+        state_->last_commit_body.clear();
+    }
+    ASSERT_OK_AND_ASSIGN(bool branch_success,
+                         catalog->CommitSnapshot(Identifier("db1", "t1$branch_b1"), std::nullopt,
+                                                 std::nullopt, snapshot, statistics));
+    ASSERT_TRUE(branch_success);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ("t1$branch_b1", state_->last_commit_table);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->last_commit_table.clear();
+    }
+    ASSERT_OK_AND_ASSIGN(bool main_success,
+                         catalog->CommitSnapshot(Identifier("db1", "t1$branch_main"), std::nullopt,
+                                                 std::nullopt, snapshot, statistics));
+    ASSERT_TRUE(main_success);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ("t1", state_->last_commit_table);
+    }
+}
+
+TEST_F(RestCatalogTest, LoadSnapshot) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> empty, catalog->LoadSnapshot(identifier));
+    ASSERT_FALSE(empty.has_value());
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->null_snapshot_response = true;
+    }
+    ASSERT_OK_AND_ASSIGN(empty, catalog->LoadSnapshot(identifier));
+    ASSERT_FALSE(empty.has_value());
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->null_snapshot_response = false;
+        state_->current_snapshot = SnapshotJson(7);
+    }
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> loaded, catalog->LoadSnapshot(identifier));
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded.value().Id(), 7);
+    ASSERT_EQ(loaded.value().BaseManifestList(), "bml");
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ("t1", state_->last_snapshot_table);
+    }
+
+    MockCatalogState::TableData branch_data;
+    branch_data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+                              R"( "partitionKeys": [], "primaryKeys": [], "options": {}})";
+    branch_data.path = "wh1/db1.db/t1";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1$branch_b1"] = branch_data;
+    }
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> branch_snapshot,
+                         catalog->LoadSnapshot(Identifier("db1", "t1$branch_b1")));
+    ASSERT_TRUE(branch_snapshot.has_value());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ("t1$branch_b1", state_->last_snapshot_table);
+    }
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> main_snapshot,
+                         catalog->LoadSnapshot(Identifier("db1", "t1$branch_main")));
+    ASSERT_TRUE(main_snapshot.has_value());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ("t1", state_->last_snapshot_table);
+    }
+
+    Status missing = catalog->LoadSnapshot(Identifier("db1", "t9")).status();
+    ASSERT_TRUE(missing.IsNotExist()) << missing.ToString();
+
+    ASSERT_NOK_WITH_MSG(catalog->LoadSnapshot(Identifier("db1", "t1$snapshots")),
+                        "Cannot 'loadSnapshot' for system table");
+}
+
+TEST_F(RestCatalogTest, CommitSnapshotErrors) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+
+    Snapshot snapshot = BuildTestSnapshot(2);
+    std::vector<PartitionStatistics> statistics;
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->refuse_commit = true;
+    }
+    ASSERT_OK_AND_ASSIGN(bool refused,
+                         catalog->CommitSnapshot(identifier, "table-uuid", "base-snapshot-uuid",
+                                                 snapshot, statistics));
+    ASSERT_FALSE(refused);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->refuse_commit = false;
+    }
+
+    Status missing = catalog
+                         ->CommitSnapshot(Identifier("db1", "t9"), std::nullopt, std::nullopt,
+                                          snapshot, statistics)
+                         .status();
+    ASSERT_TRUE(missing.IsNotExist()) << missing.ToString();
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->break_commit_response = true;
+    }
+    ASSERT_NOK_WITH_MSG(
+        catalog->CommitSnapshot(identifier, "table-uuid", std::nullopt, snapshot, statistics),
+        "failed to deserialize the response");
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->break_commit_response = false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->commit_response_without_outcome = true;
+    }
+    ASSERT_NOK_WITH_MSG(
+        catalog->CommitSnapshot(identifier, "table-uuid", std::nullopt, snapshot, statistics),
+        "failed to deserialize the response");
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->commit_response_without_outcome = false;
+    }
+
+    ASSERT_NOK_WITH_MSG(catalog->CommitSnapshot(Identifier("db1", "t1$snapshots"), std::nullopt,
+                                                std::nullopt, snapshot, statistics),
+                        "Cannot 'commitSnapshot' for system table");
+}
+
+namespace {
+Result<std::vector<std::shared_ptr<CommitMessage>>> ReadFixtureCommitMessages(
+    const std::shared_ptr<FileSystem>& fs) {
+    std::string bytes;
+    PAIMON_RETURN_NOT_OK(
+        fs->ReadFile(paimon::test::GetDataDir() +
+                         "/orc/append_09.db/append_09/commit_messages/commit_messages-01",
+                     &bytes));
+    return CommitMessage::DeserializeList(3, bytes.data(), bytes.size(), GetDefaultPool());
+}
+}  // namespace
+
+class RestCatalogCommitRecoveryTest : public RestCatalogTest,
+                                      public ::testing::WithParamInterface<int32_t> {};
+
+TEST_P(RestCatalogCommitRecoveryTest, CommitAcceptedThenLostRecoversAfterRestart) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    MockCatalogState::TableData table_data;
+    table_data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "STRING"},)"
+                             R"( {"id": 1, "name": "f1", "type": "INT"},)"
+                             R"( {"id": 2, "name": "f2", "type": "INT"},)"
+                             R"( {"id": 3, "name": "f3", "type": "DOUBLE"}],)"
+                             R"( "partitionKeys": ["f1"], "primaryKeys": [],)"
+                             R"( "options": {"file.format": "orc", "manifest.format": "avro"}})";
+    table_data.path = dir->Str();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> rest_catalog,
+                         CreateRestCatalog(FastRetryConfig()));
+    ASSERT_OK(rest_catalog->CreateDatabase("db1", {}, false));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"] = table_data;
+        state_->accept_commit_then_report_unavailable = true;
+        state_->accepted_commit_response_code = GetParam();
+        state_->commit_requests = 0;
+    }
+    Identifier identifier("db1", "t1");
+    RestCatalog* raw_catalog = rest_catalog.get();
+    std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
+
+    auto create_commit = [&]() -> Result<std::unique_ptr<FileStoreCommit>> {
+        CommitContextBuilder builder(dir->Str(), "commit-user");
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
+                               builder.WithCatalog(catalog, identifier).Finish());
+        return FileStoreCommit::Create(std::move(context));
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, create_commit());
+
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> msgs,
+                         ReadFixtureCommitMessages(dir->GetFileSystem()));
+    ASSERT_GT(msgs.size(), 0u);
+    ASSERT_NOK_WITH_MSG(commit->Commit(msgs, 7), "call FilterAndCommit");
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(1, state_->commit_requests);
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> held, raw_catalog->LoadSnapshot(identifier));
+    ASSERT_TRUE(held.has_value());
+    ASSERT_EQ(held.value().Id(), 1);
+    ASSERT_EQ(held.value().CommitIdentifier(), 7);
+    ASSERT_EQ(held.value().CommitUser(), "commit-user");
+    for (const std::string& manifest_list :
+         {held.value().BaseManifestList(), held.value().DeltaManifestList()}) {
+        ASSERT_OK_AND_ASSIGN(bool exist, dir->GetFileSystem()->Exists(PathUtil::JoinPath(
+                                             dir->Str(), "manifest/" + manifest_list)));
+        ASSERT_TRUE(exist) << manifest_list;
+    }
+
+    std::map<int64_t, std::vector<std::shared_ptr<CommitMessage>>> inputs;
+    inputs[7] = msgs;
+    commit.reset();
+    ASSERT_OK_AND_ASSIGN(commit, create_commit());
+    ASSERT_OK_AND_ASSIGN(int32_t again, commit->FilterAndCommit(inputs, 10));
+    ASSERT_EQ(0, again);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> recovered, raw_catalog->LoadSnapshot(identifier));
+    ASSERT_EQ(recovered, held);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(1, state_->commit_requests);
+        state_->accept_commit_then_report_unavailable = false;
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(UncertainResponses, RestCatalogCommitRecoveryTest,
+                         ::testing::Values(200, 204, 307, 429, 503),
+                         [](const ::testing::TestParamInfo<int32_t>& info) {
+                             return fmt::format("Http{}", info.param);
+                         });
+
+TEST_F(RestCatalogTest, CommitTakenThenReportedUnavailableIsNotReplayed) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog,
+                         CreateRestCatalog(FastRetryConfig()));
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, false));
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->accept_commit_then_report_unavailable = true;
+        state_->commit_requests = 0;
+    }
+    const Snapshot taken = BuildTestSnapshot(2, "snapshot-uuid-2");
+    Status unavailable =
+        catalog->CommitSnapshot(identifier, "table-uuid", "base-snapshot-uuid", taken, {}).status();
+    ASSERT_FALSE(unavailable.ok()) << "a 503 must not read as a refusal";
+    ASSERT_TRUE(unavailable.IsIOError()) << unavailable.ToString();
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(1, state_->commit_requests);
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> held, catalog->LoadSnapshot(identifier));
+    ASSERT_TRUE(held.has_value());
+    ASSERT_EQ(held.value().Id(), 2);
+    ASSERT_EQ(held.value().Uuid(), std::optional<std::string>("snapshot-uuid-2"));
+
+    ASSERT_OK_AND_ASSIGN(bool replayed, catalog->CommitSnapshot(identifier, "table-uuid",
+                                                                "base-snapshot-uuid", taken, {}));
+    ASSERT_FALSE(replayed);
+
+    ASSERT_OK_AND_ASSIGN(bool rebased,
+                         catalog->CommitSnapshot(identifier, "table-uuid", "snapshot-uuid-2",
+                                                 BuildTestSnapshot(3, "snapshot-uuid-3"), {}));
+    ASSERT_TRUE(rebased);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> now_held, catalog->LoadSnapshot(identifier));
+    ASSERT_TRUE(now_held.has_value());
+    ASSERT_EQ(now_held.value().Id(), 3);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(3, state_->commit_requests);
+        state_->accept_commit_then_report_unavailable = false;
+    }
+}
+
 TEST(RestApiErrorTest, ErrorToStatus) {
     RestHttpClient::Response response;
     response.code = 404;
@@ -1134,6 +1648,24 @@ TEST(RestApiErrorTest, ErrorToStatus) {
     ASSERT_TRUE(status.IsNotExist());
     ASSERT_TRUE(status.ToString().find("requestId:req-123") != std::string::npos)
         << status.ToString();
+    ASSERT_NE(status.detail(), nullptr);
+    ASSERT_STREQ(status.detail()->type_id(), RestErrorDetail::kTypeId);
+    ASSERT_EQ(static_cast<const RestErrorDetail*>(status.detail().get())->GetResourceType(),
+              ErrorResponse::kResourceTypeTable);
+
+    response.body = R"({"message": "no snapshot", "resourceType": "SNAPSHOT",)"
+                    R"( "resourceName": "t1"})";
+    Status snapshot_status = RestApi::ErrorToStatus(response);
+    ASSERT_TRUE(snapshot_status.IsNotExist());
+    ASSERT_EQ(
+        static_cast<const RestErrorDetail*>(snapshot_status.detail().get())->GetResourceType(),
+        ErrorResponse::kResourceTypeSnapshot);
+
+    response.body = R"({"message": "boom"})";
+    Status plain = RestApi::ErrorToStatus(response);
+    ASSERT_TRUE(
+        static_cast<const RestErrorDetail*>(plain.detail().get())->GetResourceType().empty());
+    response.body = R"({"message": "no table", "resourceType": "TABLE", "resourceName": "t1"})";
 
     response.code = 409;
     Status exist_status = RestApi::ErrorToStatus(response);

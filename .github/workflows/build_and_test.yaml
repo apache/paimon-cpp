@@ -109,19 +109,21 @@ jobs:
       - name: Install Rust toolchain (Mosaic and tantivy-fts)
         shell: bash
         run: ci/scripts/setup_rust.sh
-      - name: Install HTTP and TLS development dependencies
+      - name: Install build and debugging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+          sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev
       - name: Build Paimon
         shell: bash
         env:
           CC: ${{ matrix.cc || 'clang' }}
           CXX: ${{ matrix.cxx || 'clang++' }}
-        run: >-
-          ci/scripts/build_paimon.sh
-          --source_dir "$(pwd)"
-          ${{ matrix.build_args }}
+        run: |
+          sudo sysctl -w kernel.core_pattern='core.%e.%p'
+          ulimit -c unlimited
+          ci/scripts/build_paimon.sh \
+            --source_dir "$(pwd)" \
+            ${{ matrix.build_args }}
       - name: Show ccache statistics
         if: always()
         run: ccache -s

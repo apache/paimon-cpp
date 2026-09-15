@@ -44,10 +44,10 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
     Result<std::vector<char>> Test(const arrow::Array& array,
                                    arrow::MemoryPool* pool) const override {
         const auto& struct_array = checked_cast<const arrow::StructArray&>(array);
-        if (field_index_ >= static_cast<int32_t>(struct_array.fields().size())) {
+        if (field_index_ >= struct_array.num_fields()) {
             return Status::Invalid(
                 fmt::format("field index {} exceed field count {} in struct array", field_index_,
-                            struct_array.fields().size()));
+                            struct_array.num_fields()));
         }
         const auto& field_array = struct_array.field(field_index_);
         return leaf_function_.Test(*field_array, literals_, pool);

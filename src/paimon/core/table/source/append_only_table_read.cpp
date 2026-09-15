@@ -180,7 +180,8 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> realtime_predicate,
                            PredicateUtils::CreatePickedFieldFilter(context_->GetPredicate(),
                                                                    realtime_field_name_to_index));
-    RealtimeQueryContext query_context{c_read_schema.get(), std::move(realtime_predicate)};
+    RealtimeQueryContext query_context{c_read_schema.get(), std::move(realtime_predicate),
+                                       context_->GetCoreOptions().GetReadBatchSize()};
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> memory_readers,
                            memory.store->CreateQueryReaders(memory.read_view, query_context));
     const size_t first_memory_reader = readers.size();

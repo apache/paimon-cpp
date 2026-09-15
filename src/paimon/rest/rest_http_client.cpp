@@ -404,7 +404,7 @@ Result<RestHttpClient::Response> RestHttpClient::Execute(
     const std::string& method, const std::string& path,
     const std::map<std::string, std::string>& query_params,
     const std::map<std::string, std::string>& headers, const std::string& body,
-    bool follow_redirects) const {
+    bool follow_redirects, bool retry_safe) const {
     if (method != "GET" && method != "POST" && method != "DELETE") {
         return Status::Invalid(fmt::format("unsupported http method: {}", method));
     }
@@ -423,6 +423,8 @@ Result<RestHttpClient::Response> RestHttpClient::Execute(
         url += "?" + BuildQueryString(query_params);
     }
     bool idempotent = IsIdempotent(method);
+    // Redirects can replay requests inside ExecuteOnce().
+    follow_redirects = follow_redirects && retry_safe;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     int32_t execution_count = 0;
     while (true) {
@@ -436,6 +438,7 @@ Result<RestHttpClient::Response> RestHttpClient::Execute(
         } else {
             retriable = idempotent && transport_retriable;
         }
+        retriable = retriable && retry_safe;
         int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - start)
                                  .count();

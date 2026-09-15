@@ -39,6 +39,7 @@ struct ArrowSchema;
 
 namespace paimon {
 
+class FileSystem;
 class MemoryPool;
 class Predicate;
 
@@ -60,8 +61,14 @@ struct PAIMON_EXPORT RealtimeStoreCreateRequest {
     std::shared_ptr<MemoryPool> memory_pool;
     /// Table mode implemented by the store.
     RealtimeStoreMode mode = RealtimeStoreMode::APPEND_ONLY;
-    /// Statistics collected by append-only stores.
+    /// Statistics collected by the store for query pruning.
     StatisticsMode statistics_mode = StatisticsMode::NONE;
+    /// Directory used by the default store for immutable spill files when
+    /// `realtime.spill-enabled` is true. Custom stores may ignore this hint.
+    std::string temp_directory = "";
+    /// File system used to access `temp_directory`. The default store retains shared ownership
+    /// for its lifetime. Custom stores may ignore this hint.
+    std::shared_ptr<FileSystem> file_system = nullptr;
 };
 
 /// A record batch and its application-assigned offset bounds.
@@ -78,6 +85,18 @@ struct PAIMON_EXPORT RealtimeWriteBatch {
     std::unique_ptr<RecordBatch> batch;
     /// Left-closed, right-open offset envelope covered by `batch`.
     OffsetRange offset_range;
+};
+
+/// Current memory and row counts tracked by a `RealtimeStore`.
+///
+/// Row counts are physical stored rows. For primary-key stores they include old versions and
+/// delete records, rather than the rows visible after merge-on-read. A segment removed by
+/// `AdvanceCommittedOffset` is no longer included, even if an older read view still pins it.
+struct PAIMON_EXPORT RealtimeStoreDataUsage {
+    uint64_t building_memory_bytes = 0;
+    uint64_t sealed_memory_bytes = 0;
+    uint64_t building_row_count = 0;
+    uint64_t sealed_row_count = 0;
 };
 
 /// Opaque handle to an immutable segment returned by `RealtimeStore::SealForCommit`.
@@ -119,6 +138,8 @@ struct PAIMON_EXPORT RealtimeQueryContext {
     /// Optional predicate using field indexes from `read_schema`. A non-null predicate allows the
     /// plugin to prune candidate rows. Exact filtering is applied by the Paimon read framework.
     std::shared_ptr<Predicate> predicate;
+    /// Maximum number of rows in a returned query batch.
+    int32_t read_batch_size = 1024;
 };
 
 /// Customizable plugin interface for storing and querying real-time rows before Paimon data-file
@@ -150,6 +171,8 @@ class PAIMON_EXPORT RealtimeStore {
     /// preserve write order and contain `_REALTIME_OFFSET` followed by the table write fields.
     /// Primary-key readers contain the real-time primary-key store fields; each reader's complete
     /// stream is sorted by full primary key then sequence number.
+    /// Returned readers have independent mutable read state and may be operated concurrently with
+    /// one another without external synchronization.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateCommitReaders(
         const std::shared_ptr<RealtimeSegmentHandle>& segment) = 0;
 
@@ -161,7 +184,10 @@ class PAIMON_EXPORT RealtimeStore {
 
     /// Creates readers over rows in `view`. The readers collectively expose every candidate row
     /// exactly once. Primary-key reader streams are sorted by full primary key then sequence
-    /// number. Paimon retains `view` for the lifetime of the resulting framework reader.
+    /// number. Every returned batch contains at most `context.read_batch_size` rows. Paimon retains
+    /// `view` for the lifetime of the resulting framework reader.
+    /// Returned readers have independent mutable read state and may be operated concurrently with
+    /// one another without external synchronization.
     virtual Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
         const std::shared_ptr<RealtimeReadView>& view, const RealtimeQueryContext& context) = 0;
 
@@ -173,6 +199,9 @@ class PAIMON_EXPORT RealtimeStore {
     /// An implementation may reclaim covered segments immediately, defer destruction, spill them,
     /// or retain them. Existing read views continue to keep referenced resources alive.
     virtual Status AdvanceCommittedOffset(int64_t committed_end_offset) = 0;
+
+    /// Returns one consistent snapshot of current building and sealed data usage.
+    virtual RealtimeStoreDataUsage GetDataUsage() const = 0;
 
     /// Returns the number of bytes currently retained by building and sealed segments.
     virtual uint64_t GetMemoryUsage() const = 0;

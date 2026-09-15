@@ -18,7 +18,10 @@
 
 #include "paimon/catalog/catalog.h"
 
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "fmt/format.h"
 #include "paimon/catalog_options.h"
@@ -62,6 +65,10 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(const std::string& root_path,
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options, file_system));
     return std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options);
+}
+
+bool Catalog::SupportsVersionManagement() const {
+    return false;
 }
 
 Result<std::shared_ptr<FormatTable>> Catalog::GetFormatTable(const Identifier& identifier) const {

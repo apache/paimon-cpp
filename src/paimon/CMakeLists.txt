@@ -63,6 +63,7 @@ set(PAIMON_COMMON_SRCS
     common/data/variant/variant_type_utils.cpp
     common/defs.cpp
     common/executor/executor.cpp
+    common/executor/reader_build_executor.cpp
     common/factories/singleton.cpp
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
@@ -211,6 +212,7 @@ endif()
 
 set(PAIMON_CORE_SRCS
     core/disk/file_io_channel.cpp
+    core/io/arrow_ipc_file.cpp
     core/mergetree/spill_reader.cpp
     core/mergetree/spill_writer.cpp
     core/append/append_only_writer.cpp
@@ -325,6 +327,7 @@ set(PAIMON_CORE_SRCS
     core/mergetree/compact/aggregate/field_collect_agg.cpp
     core/mergetree/compact/aggregate/field_merge_map_agg.cpp
     core/mergetree/compact/aggregate/field_nested_update_agg.cpp
+    core/mergetree/compact/aggregate/field_product_agg.cpp
     core/mergetree/compact/aggregate/field_sketch_agg.cpp
     core/mergetree/compact/aggregate/field_sum_agg.cpp
     core/mergetree/compact/interval_partition.cpp
@@ -761,6 +764,7 @@ if(PAIMON_BUILD_TESTS)
                     core/casting/cast_executor_test.cpp
                     core/casting/casted_row_test.cpp
                     core/casting/casting_utils_test.cpp
+                    core/catalog/catalog_snapshot_commit_test.cpp
                     core/catalog/commit_table_request_test.cpp
                     core/catalog/renaming_snapshot_commit_test.cpp
                     core/catalog/file_system_catalog_test.cpp
@@ -847,6 +851,7 @@ if(PAIMON_BUILD_TESTS)
                     core/mergetree/compact/aggregate/field_min_max_agg_test.cpp
                     core/mergetree/compact/aggregate/field_nested_update_agg_test.cpp
                     core/mergetree/compact/aggregate/field_primary_key_agg_test.cpp
+                    core/mergetree/compact/aggregate/field_product_agg_test.cpp
                     core/mergetree/compact/aggregate/field_sketch_agg_test.cpp
                     core/mergetree/compact/aggregate/field_sum_agg_test.cpp
                     core/mergetree/compact/deduplicate_merge_function_test.cpp

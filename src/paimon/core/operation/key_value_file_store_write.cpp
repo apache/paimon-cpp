@@ -26,6 +26,7 @@
 #include "paimon/common/table/special_fields.h"
 #include "paimon/core/compact/noop_compact_manager.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/disk/io_manager.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
@@ -139,12 +140,17 @@ Result<std::shared_ptr<BatchWriter>> KeyValueFileStoreWrite::CreateWriter(
         auto c_write_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(
             *realtime_schema_layout_->StoreWriteSchema(), c_write_schema.get()));
+        RealtimeStoreCreateRequest request{std::move(c_write_schema), options_.ToMap(), pool_,
+                                           RealtimeStoreMode::PRIMARY_KEY,
+                                           options_.GetRealtimeStoreStatisticsMode()};
+        if (options_.RealtimeSpillEnabled()) {
+            request.temp_directory = io_manager_ ? io_manager_->GetTempDir() : "";
+            request.file_system = options_.GetFileSystem();
+        }
         PAIMON_ASSIGN_OR_RAISE(
             RealtimeStoreState store_state,
             realtime_context_impl->GetOrCreateRealtimeStore(
-                RealtimeStoreCreateRequest{std::move(c_write_schema), options_.ToMap(), pool_,
-                                           RealtimeStoreMode::PRIMARY_KEY},
-                RealtimePartitionBucket(partition_map, bucket)));
+                std::move(request), RealtimePartitionBucket(partition_map, bucket)));
         realtime_store_state = std::move(store_state);
         compact_manager = std::make_shared<NoopCompactManager>();
     } else {
@@ -177,7 +183,10 @@ Status KeyValueFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
     if (!realtime_context_) {
         return Status::Invalid("refresh committed snapshot requires a real-time writer");
     }
-    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(snapshot_id));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest, snapshot_manager_->LatestSnapshot());
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, latest && latest->Id() == snapshot_id
+                                                  ? Result<Snapshot>(latest.value())
+                                                  : snapshot_manager_->LoadSnapshot(snapshot_id));
     PAIMON_ASSIGN_OR_RAISE(
         RealtimeOffsetMap committed_offsets,
         RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),
