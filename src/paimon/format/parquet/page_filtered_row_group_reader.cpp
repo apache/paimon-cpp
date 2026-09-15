@@ -48,7 +48,7 @@ namespace {
 /// The estimate it caps is a heuristic over footer fields, which are attacker-controlled and
 /// need not describe the pages this read touches, so it must not turn into an unbounded eager
 /// allocation. Past this size the builder's doubling is already amortized against a large read.
-constexpr int64_t kMaxMetadataValueBytesReservation = int64_t{16} * 1024 * 1024;
+constexpr int64_t kMaxMetadataValueBytesReservation = int64_t{64} * 1024 * 1024;
 
 struct DataPageLayout {
     int64_t column_chunk_offset;
