@@ -28,6 +28,7 @@ set(PAIMON_COMMON_SRCS
     common/data/binary_string.cpp
     common/data/blob.cpp
     common/data/blob_descriptor.cpp
+    common/data/blob_view.cpp
     common/data/blob_view_struct.cpp
     common/data/blob_utils.cpp
     common/data/columnar/columnar_array.cpp
@@ -566,6 +567,7 @@ if(PAIMON_BUILD_TESTS)
                     common/data/timestamp_test.cpp
                     common/data/blob_test.cpp
                     common/data/blob_descriptor_test.cpp
+                    common/data/blob_view_test.cpp
                     common/data/blob_view_struct_test.cpp
                     common/data/blob_utils_test.cpp
                     common/data/variant/generic_variant_test.cpp
