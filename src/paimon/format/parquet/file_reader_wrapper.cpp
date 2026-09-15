@@ -633,7 +633,7 @@ Result<RowRanges> FileReaderWrapper::CalculateFilteredRowRanges(
         // their offset indexes when the data reader is initialized later.
         return ColumnIndexFilter::CalculateRowRanges(
             predicate, page_index_reader->RowGroup(row_group_index), column_name_to_index,
-            row_count, meta_data->schema());
+            meta_data->schema(), row_count);
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("FileReaderWrapper::CalculateFilteredRowRanges")
 }

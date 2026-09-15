@@ -39,29 +39,29 @@ namespace paimon::parquet {
 Result<RowRanges> ColumnIndexFilter::CalculateRowRanges(
     const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-    const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
-    const ::parquet::SchemaDescriptor* schema) {
+    const std::map<std::string, int32_t>& column_name_to_index,
+    const ::parquet::SchemaDescriptor* schema, int64_t row_group_row_count) {
     if (!predicate || !rg_page_index_reader) {
         return RowRanges::CreateSingle(row_group_row_count);
     }
 
-    return VisitPredicate(predicate, column_name_to_index, row_group_row_count,
-                          rg_page_index_reader.get(), schema);
+    return VisitPredicate(predicate, column_name_to_index, schema, row_group_row_count,
+                          rg_page_index_reader.get());
 }
 
 Result<RowRanges> ColumnIndexFilter::VisitPredicate(
     const std::shared_ptr<Predicate>& predicate,
-    const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
-    ::parquet::RowGroupPageIndexReader* rg_page_index_reader,
-    const ::parquet::SchemaDescriptor* schema) {
+    const std::map<std::string, int32_t>& column_name_to_index,
+    const ::parquet::SchemaDescriptor* schema, int64_t row_group_row_count,
+    ::parquet::RowGroupPageIndexReader* rg_page_index_reader) {
     if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
-        return VisitLeafPredicate(leaf_predicate, column_name_to_index, row_group_row_count,
-                                  rg_page_index_reader, schema);
+        return VisitLeafPredicate(leaf_predicate, column_name_to_index, schema, row_group_row_count,
+                                  rg_page_index_reader);
     }
 
     if (auto compound_predicate = std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
-        return VisitCompoundPredicate(compound_predicate, column_name_to_index, row_group_row_count,
-                                      rg_page_index_reader, schema);
+        return VisitCompoundPredicate(compound_predicate, column_name_to_index, schema,
+                                      row_group_row_count, rg_page_index_reader);
     }
 
     return Status::Invalid("Unknown predicate type");
@@ -69,9 +69,9 @@ Result<RowRanges> ColumnIndexFilter::VisitPredicate(
 
 Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
     const std::shared_ptr<LeafPredicate>& leaf_predicate,
-    const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
-    ::parquet::RowGroupPageIndexReader* rg_page_index_reader,
-    const ::parquet::SchemaDescriptor* schema) {
+    const std::map<std::string, int32_t>& column_name_to_index,
+    const ::parquet::SchemaDescriptor* schema, int64_t row_group_row_count,
+    ::parquet::RowGroupPageIndexReader* rg_page_index_reader) {
     const std::string& field_name = leaf_predicate->FieldName();
     auto it = column_name_to_index.find(field_name);
     if (it == column_name_to_index.end()) {
@@ -158,9 +158,9 @@ Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
 
 Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
     const std::shared_ptr<CompoundPredicate>& compound_predicate,
-    const std::map<std::string, int32_t>& column_name_to_index, int64_t row_group_row_count,
-    ::parquet::RowGroupPageIndexReader* rg_page_index_reader,
-    const ::parquet::SchemaDescriptor* schema) {
+    const std::map<std::string, int32_t>& column_name_to_index,
+    const ::parquet::SchemaDescriptor* schema, int64_t row_group_row_count,
+    ::parquet::RowGroupPageIndexReader* rg_page_index_reader) {
     const auto& children = compound_predicate->Children();
     const auto& function = compound_predicate->GetFunction();
     auto function_type = function.GetType();
@@ -171,8 +171,8 @@ Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
 
     // Calculate row ranges for first child
     PAIMON_ASSIGN_OR_RAISE(RowRanges result,
-                           VisitPredicate(children[0], column_name_to_index, row_group_row_count,
-                                          rg_page_index_reader, schema));
+                           VisitPredicate(children[0], column_name_to_index, schema,
+                                          row_group_row_count, rg_page_index_reader));
 
     if (function_type == Function::Type::AND) {
         // Short-circuit: if result is empty, no need to continue
@@ -181,10 +181,9 @@ Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
         }
 
         for (size_t i = 1; i < children.size(); ++i) {
-            PAIMON_ASSIGN_OR_RAISE(
-                RowRanges child_ranges,
-                VisitPredicate(children[i], column_name_to_index, row_group_row_count,
-                               rg_page_index_reader, schema));
+            PAIMON_ASSIGN_OR_RAISE(RowRanges child_ranges,
+                                   VisitPredicate(children[i], column_name_to_index, schema,
+                                                  row_group_row_count, rg_page_index_reader));
 
             result = RowRanges::Intersection(result, child_ranges);
 
@@ -200,10 +199,9 @@ Result<RowRanges> ColumnIndexFilter::VisitCompoundPredicate(
         }
 
         for (size_t i = 1; i < children.size(); ++i) {
-            PAIMON_ASSIGN_OR_RAISE(
-                RowRanges child_ranges,
-                VisitPredicate(children[i], column_name_to_index, row_group_row_count,
-                               rg_page_index_reader, schema));
+            PAIMON_ASSIGN_OR_RAISE(RowRanges child_ranges,
+                                   VisitPredicate(children[i], column_name_to_index, schema,
+                                                  row_group_row_count, rg_page_index_reader));
 
             result = RowRanges::Union(result, child_ranges);
 
