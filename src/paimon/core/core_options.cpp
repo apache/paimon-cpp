@@ -447,6 +447,7 @@ struct CoreOptions::Impl {
     bool force_lookup = false;
     bool lookup_wait = true;
     bool changelog_row_deduplicate = false;
+    bool input_changelog_parallel_write_enabled = true;
     bool partial_update_remove_record_on_delete = false;
     bool aggregation_remove_record_on_delete = false;
     bool table_read_sequence_number_enabled = false;
@@ -752,6 +753,11 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(parser.ParseList<std::string>(
             Options::CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS, Options::FIELDS_SEPARATOR,
             &changelog_row_deduplicate_ignore_fields, /*need_trim=*/true));
+        // Parse changelog-producer.input.parallel-write - write data and input changelog
+        // files in parallel, default true.
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE,
+                               &input_changelog_parallel_write_enabled));
         // Parse partial-update.remove-record-on-delete - remove whole row on delete
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE,
                                                 &partial_update_remove_record_on_delete));
@@ -1628,6 +1634,10 @@ bool CoreOptions::ChangelogRowDeduplicate() const {
 
 const std::vector<std::string>& CoreOptions::GetChangelogRowDeduplicateIgnoreFields() const {
     return impl_->changelog_row_deduplicate_ignore_fields;
+}
+
+bool CoreOptions::InputChangelogParallelWriteEnabled() const {
+    return impl_->input_changelog_parallel_write_enabled;
 }
 
 std::string CoreOptions::ChangelogFilePrefix() const {
