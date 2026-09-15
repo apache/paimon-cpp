@@ -175,9 +175,8 @@ void AvroFileBatchReader::BlockIndex::Finish(uint64_t row_count) {
 }
 
 void AvroFileBatchReader::BlockIndex::Reset() {
-    if (state_ != State::kReady) {
+    if (state_ == State::kBuilding) {
         blocks_.clear();
-        state_ = State::kBuilding;
     }
 }
 

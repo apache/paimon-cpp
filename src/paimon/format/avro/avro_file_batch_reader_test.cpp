@@ -607,6 +607,39 @@ TEST_F(AvroFileBatchReaderTest, TestBitmapSelectionOnEmptyFileAndReset) {
     }
 }
 
+TEST_F(AvroFileBatchReaderTest, TestBlockIndexReset) {
+    AvroFileBatchReader::BlockIndex index;
+    index.Observe(/*row=*/0, /*file_offset=*/100);
+    index.Reset();
+    // A partial index must be discarded before rebuilding from the first row.
+    index.Observe(/*row=*/0, /*file_offset=*/200);
+    index.Finish(/*row_count=*/2);
+    ASSERT_EQ(index.RowCount(), 2);
+    ASSERT_TRUE(index.Locate(1));
+    ASSERT_EQ(index.Locate(1)->file_offset, 200);
+
+    // A completed index remains usable after a projection or selection reset.
+    index.Reset();
+    ASSERT_EQ(index.RowCount(), 2);
+    ASSERT_TRUE(index.Locate(1));
+    ASSERT_EQ(index.Locate(1)->file_offset, 200);
+
+    AvroFileBatchReader::BlockIndex oversized;
+    for (uint64_t row = 0; row <= 64 * 1024; ++row) {
+        oversized.Observe(row, static_cast<int64_t>(row));
+    }
+    oversized.Finish(/*row_count=*/64 * 1024 + 1);
+    ASSERT_FALSE(oversized.RowCount());
+    for (int32_t reset = 0; reset < 2; ++reset) {
+        oversized.Reset();
+        // An immutable file already known to exceed the limit must not start a new index.
+        oversized.Observe(/*row=*/0, /*file_offset=*/100);
+        oversized.Finish(/*row_count=*/1);
+        ASSERT_FALSE(oversized.RowCount());
+        ASSERT_FALSE(oversized.Locate(0));
+    }
+}
+
 TEST_F(AvroFileBatchReaderTest, TestBitmapSelectionBeyondBlockIndexLimit) {
     const std::string path = PathUtil::JoinPath(dir_->Str(), "many-blocks.avro");
     auto schema = ::avro::compileJsonSchemaFromString(

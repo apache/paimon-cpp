@@ -33,8 +33,8 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
-#include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"

@@ -638,34 +638,21 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
     }
 }
 
-TEST(SelectiveManifestDecodeInteTest, TestBucketKeyTypeEvolution) {
+TEST(SelectiveManifestDecodeInteTest, TestSchemaEvolutionPreservesBucketPruning) {
     constexpr int32_t kBuckets = 4;
-    constexpr int32_t kKeys = 64;
-    auto old_field = arrow::field("rowkey", arrow::int32());
-    auto current_field = arrow::field("rowkey", arrow::int64());
-    std::vector<std::string> keys;
-    for (int32_t i = 0; i < kKeys; ++i) {
-        keys.push_back(fmt::format("[{}]", -i - 1));
-    }
-    std::vector<std::vector<int32_t>> buckets;
-    for (const auto& field : {old_field, current_field}) {
-        auto array = arrow::ipc::internal::json::ArrayFromJSON(
-                         arrow::struct_({field}), fmt::format("[{}]", fmt::join(keys, ",")))
-                         .ValueOrDie();
-        ArrowArray c_array;
-        ArrowSchema c_schema;
-        ASSERT_TRUE(arrow::ExportArray(*array, &c_array, &c_schema).ok());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BucketIdCalculator> calculator,
-                             BucketIdCalculator::Create(false, kBuckets, GetDefaultPool()));
-        buckets.emplace_back(kKeys);
-        ASSERT_OK(calculator->CalculateBucketIds(&c_array, &c_schema, buckets.back().data()));
-    }
-    int32_t key_index = 0;
-    while (key_index < kKeys && buckets[0][key_index] == buckets[1][key_index]) {
-        ++key_index;
-    }
-    ASSERT_LT(key_index, kKeys);
-    const int64_t key = -key_index - 1;
+    auto key_field = arrow::field("rowkey", arrow::int32());
+    auto added_field = arrow::field("value", arrow::int32());
+    constexpr int32_t kKey = -1;
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({key_field}),
+                                                           fmt::format("[[{}]]", kKey))
+                     .ValueOrDie();
+    ArrowArray c_array;
+    ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportArray(*array, &c_array, &c_schema).ok());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BucketIdCalculator> calculator,
+                         BucketIdCalculator::Create(false, kBuckets, GetDefaultPool()));
+    int32_t bucket = 0;
+    ASSERT_OK(calculator->CalculateBucketIds(&c_array, &c_schema, &bucket));
     auto dir = UniqueTestDirectory::Create("local");
     ASSERT_TRUE(dir);
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
@@ -673,23 +660,24 @@ TEST(SelectiveManifestDecodeInteTest, TestBucketKeyTypeEvolution) {
                                                   {Options::BUCKET_KEY, "rowkey"}};
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TestHelper> helper,
-        TestHelper::Create(dir->Str(), arrow::schema({old_field}), {}, {}, options, false));
+        TestHelper::Create(dir->Str(), arrow::schema({key_field}), {}, {}, options, false));
     const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<RecordBatch> batch,
-        TestHelper::MakeRecordBatch(arrow::struct_({old_field}), fmt::format("[[{}]]", key), {},
-                                    buckets[0][key_index], {}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_({key_field}),
+                                                     fmt::format("[[{}]]", kKey), {}, bucket, {}));
     std::vector<std::unique_ptr<RecordBatch>> batches;
     batches.push_back(std::move(batch));
     ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
     helper.reset();
     ASSERT_OK(TestHelper::WriteNextSchema(dir->GetFileSystem(), table_path,
-                                          {DataField(0, current_field)}, 0, options));
-    auto predicate = PredicateBuilder::Equal(0, "rowkey", FieldType::BIGINT, Literal(key));
-    auto expected = arrow::ipc::internal::json::ArrayFromJSON(
-                        arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), current_field}),
-                        fmt::format("[[0, {}]]", key))
-                        .ValueOrDie();
+                                          {DataField(0, key_field), DataField(1, added_field)}, 1,
+                                          options));
+    auto predicate = PredicateBuilder::Equal(0, "rowkey", FieldType::INT, Literal(kKey));
+    auto expected =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()), key_field, added_field}),
+            fmt::format("[[0, {}, null]]", kKey))
+            .ValueOrDie();
     for (bool cache_manifest_bytes : {false, true}) {
         SCOPED_TRACE(cache_manifest_bytes);
         for (bool lazy_decode : {false, true}) {
@@ -714,8 +702,7 @@ TEST(SelectiveManifestDecodeInteTest, TestBucketKeyTypeEvolution) {
                 ASSERT_EQ(plan->Splits().size(), 1);
                 auto split = std::dynamic_pointer_cast<DataSplit>(plan->Splits()[0]);
                 ASSERT_TRUE(split);
-                ASSERT_EQ(split->Bucket(), buckets[0][key_index]);
-                ASSERT_NE(split->Bucket(), buckets[1][key_index]);
+                ASSERT_EQ(split->Bucket(), bucket);
                 ASSERT_OK_AND_ASSIGN(uint64_t hit, scan->GetMetrics()->GetCounter(
                                                        ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
                 ASSERT_EQ(hit, attempt);

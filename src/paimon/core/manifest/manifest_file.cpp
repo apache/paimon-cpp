@@ -102,7 +102,7 @@ Result<std::unique_ptr<ManifestFile>> ManifestFile::Create(
 
 Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t bucket,
                                        const std::optional<int32_t>& expected_total_buckets,
-                             std::optional<int64_t> file_size,
+                                       std::optional<int64_t> file_size,
                                        std::vector<ManifestEntry>* entries) const {
     // Readers without precise bitmap selection still filter aligned Arrow columns
     // before constructing ManifestEntry and DataFileMeta objects.
@@ -115,7 +115,7 @@ Status ManifestFile::ReadBucketEntries(const std::string& file_name, int32_t buc
                 row.SetRowId(i);
                 PAIMON_RETURN_NOT_OK(
                     ManifestEntrySerializer::ValidateVersion(row.GetInt(kVersionFieldIndex)));
-                // Different or unknown bucket counts must reach the compatibility checks.
+                // Different or unknown bucket counts must reach per-entry bucket filtering.
                 const bool historical_layout =
                     expected_total_buckets &&
                     (row.IsNullAt(kBucketFieldIndex) || row.IsNullAt(kTotalBucketsFieldIndex) ||
@@ -144,28 +144,27 @@ Status ManifestFile::PrepareBucketRead(int32_t bucket,
                                       arrow::ImportSchema(c_schema.get()));
     const auto& target_type = serializer_->GetDataType();
     const std::string& bucket_name = target_type->field(kBucketFieldIndex)->name();
-    std::shared_ptr<Predicate> selector = PredicateBuilder::Equal(
-        file_schema->GetFieldIndex(bucket_name), bucket_name, FieldType::INT, Literal(bucket));
+    std::shared_ptr<Predicate> selector =
+        PredicateBuilder::Equal(kBucketFieldIndex, bucket_name, FieldType::INT, Literal(bucket));
     if (expected_total_buckets) {
         const std::string& total_name = target_type->field(kTotalBucketsFieldIndex)->name();
-        const int32_t total_index = file_schema->GetFieldIndex(total_name);
         PAIMON_ASSIGN_OR_RAISE(
             selector,
             PredicateBuilder::Or(
-                {selector, PredicateBuilder::IsNull(total_index, total_name, FieldType::INT),
-                 PredicateBuilder::NotEqual(total_index, total_name, FieldType::INT,
+                {selector,
+                 PredicateBuilder::IsNull(kTotalBucketsFieldIndex, total_name, FieldType::INT),
+                 PredicateBuilder::NotEqual(kTotalBucketsFieldIndex, total_name, FieldType::INT,
                                             Literal(expected_total_buckets.value()))}));
     }
     // Retain unsupported versions regardless of bucket so the consumer validates every version
     // before bucket filtering, including when the probe would otherwise select no entries.
     const std::string& version_name = target_type->field(kVersionFieldIndex)->name();
-    const int32_t version_index = file_schema->GetFieldIndex(version_name);
     PAIMON_ASSIGN_OR_RAISE(
         selector,
         PredicateBuilder::Or(
-            {selector, PredicateBuilder::IsNull(version_index, version_name, FieldType::INT),
+            {selector, PredicateBuilder::IsNull(kVersionFieldIndex, version_name, FieldType::INT),
              PredicateBuilder::NotEqual(
-                 version_index, version_name, FieldType::INT,
+                 kVersionFieldIndex, version_name, FieldType::INT,
                  Literal(
                      checked_cast<ManifestEntrySerializer*>(serializer_.get())->GetVersion()))}));
     if (!PredicateValidator::ValidatePredicateWithSchema(*file_schema, selector,

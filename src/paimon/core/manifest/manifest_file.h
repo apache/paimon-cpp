@@ -64,10 +64,13 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     Result<std::vector<ManifestFileMeta>> Write(const std::vector<ManifestEntry>& entries);
 
     /// Read entries for a bucket. An inferred total bucket count also retains entries with
-    /// different or unknown bucket counts for the existing compatibility checks.
-    /// For inferred buckets, the caller must first verify that all historical bucket schemas
-    /// covered by the manifest are compatible with the scan's bucket selector.
+    /// different or unknown bucket counts for per-entry bucket filtering.
+    /// Bucket pruning assumes stable bucket-key hashing across schema versions.
     /// Serialization versions are validated for all entries before bucket filtering.
+    ///
+    /// @param file_size Length of the manifest when the caller already has it from the manifest
+    ///                  list, which saves the read a metadata request on a remote store. Pass
+    ///                  std::nullopt when the length is not known.
     Status ReadBucketEntries(const std::string& file_name, int32_t bucket,
                              const std::optional<int32_t>& expected_total_buckets,
                              std::optional<int64_t> file_size,

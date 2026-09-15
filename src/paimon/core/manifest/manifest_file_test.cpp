@@ -30,7 +30,9 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/data_define.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/meta_to_arrow_array_converter.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/manifest/manifest_entry.h"
@@ -153,13 +155,15 @@ class ManifestFileTest : public testing::Test {
         std::vector<ManifestEntry> manifest_entries;
         if (bucket && inferred_bucket) {
             PAIMON_RETURN_NOT_OK(manifest_file->ReadBucketEntries(
-                file_name, bucket.value(), /*expected_total_buckets=*/2, &manifest_entries));
+                file_name, bucket.value(), /*expected_total_buckets=*/2, /*file_size=*/std::nullopt,
+                &manifest_entries));
         } else if (bucket) {
-            PAIMON_RETURN_NOT_OK(manifest_file->ReadBucketEntries(file_name, bucket.value(),
-                                                                  std::nullopt, &manifest_entries));
-        } else {
             PAIMON_RETURN_NOT_OK(
-                manifest_file->Read(file_name, /*filter=*/nullptr, &manifest_entries));
+                manifest_file->ReadBucketEntries(file_name, bucket.value(), std::nullopt,
+                                                 /*file_size=*/std::nullopt, &manifest_entries));
+        } else {
+            PAIMON_RETURN_NOT_OK(manifest_file->Read(
+                file_name, /*filter=*/nullptr, /*file_size=*/std::nullopt, &manifest_entries));
         }
 
         return manifest_entries;
@@ -383,22 +387,68 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
 
     std::vector<ManifestEntry> bucket_one_entries;
     ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, std::nullopt,
-                                               &bucket_one_entries));
+                                               /*file_size=*/std::nullopt, &bucket_one_entries));
     ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
 
     std::vector<ManifestEntry> bucket_zero_entries;
     ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/0, std::nullopt,
-                                               &bucket_zero_entries));
+                                               /*file_size=*/std::nullopt, &bucket_zero_entries));
     ASSERT_EQ(std::vector<ManifestEntry>({all_entries[1]}), bucket_zero_entries);
 
     std::vector<ManifestEntry> missing_bucket_entries;
     ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/2, std::nullopt,
+                                               /*file_size=*/std::nullopt,
                                                &missing_bucket_entries));
     ASSERT_TRUE(missing_bucket_entries.empty());
 
     ASSERT_EQ(1, counting_file_system->open_count);
     ASSERT_EQ(4, manifest_cache->GetCount());
     ASSERT_EQ(1, manifest_cache->SupplierCallCount());
+}
+
+// A scan reads manifests whose length the manifest list already recorded. Handing that length over
+// is what lets the store skip the metadata request a bare open issues, which on a remote store is
+// a round trip paid before any of the file is read.
+TEST_F(ManifestFileTest, TestReadPassesKnownSizeToOpen) {
+    auto pool = GetDefaultPool();
+    auto counting_file_system = std::make_shared<CountingFileSystem>();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
+                         FileFormatFactory::Get("orc", {}));
+    std::string root_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> path_factory,
+        FileStorePathFactory::Create(root_path, unused_schema, /*partition_keys=*/{},
+                                     /*default_part_value=*/"", file_format->Identifier(),
+                                     /*data_file_prefix=*/"data-",
+                                     /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                                     /*global_index_external_path=*/std::nullopt,
+                                     /*index_file_in_data_file_dir=*/false, pool));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ManifestFile> manifest_file,
+        ManifestFile::Create(counting_file_system, file_format, "zstd", path_factory,
+                             /*target_file_size=*/1024, pool, options, unused_schema));
+
+    const std::string manifest_name = "manifest-3a44a0da-1008-463c-914e-28d271375e24-0";
+    // The length the checked-in manifest list records for this manifest, and the length the file
+    // on disk actually has.
+    constexpr int64_t kRecordedSize = 2617;
+
+    std::vector<ManifestEntry> all_entries;
+    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, kRecordedSize, &all_entries));
+    ASSERT_EQ(2, all_entries.size());
+    ASSERT_EQ(std::vector<int64_t>({kRecordedSize}), counting_file_system->opened_lengths);
+    ASSERT_EQ(0, counting_file_system->open_count);
+
+    std::vector<ManifestEntry> bucket_one_entries;
+    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, std::nullopt,
+                                               kRecordedSize, &bucket_one_entries));
+    ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
+    ASSERT_EQ(std::vector<int64_t>({kRecordedSize, kRecordedSize}),
+              counting_file_system->opened_lengths);
+    ASSERT_EQ(0, counting_file_system->open_count);
 }
 
 TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
@@ -449,7 +499,7 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
         ASSERT_OK_AND_ASSIGN(WrittenFile written,
                              manifest_file->WriteWithoutRolling({excluded, selected}));
         std::vector<ManifestEntry> warm;
-        ASSERT_OK(manifest_file->Read(written.first, nullptr, &warm));
+        ASSERT_OK(manifest_file->Read(written.first, nullptr, /*file_size=*/std::nullopt, &warm));
         // Cached bytes, if available, belong to a separate pool from reader allocations.
         for (bool inferred : {false, true}) {
             std::shared_ptr<MemoryPool> read_pool = GetMemoryPool();
@@ -459,11 +509,12 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
             std::vector<ManifestEntry> entries;
             if (inferred) {
                 ASSERT_OK(reader->ReadBucketEntries(written.first, 0, /*expected_total_buckets=*/2,
-                                                    &entries));
+                                                    /*file_size=*/std::nullopt, &entries));
                 ASSERT_EQ(std::vector<ManifestEntry>({selected}), entries);
                 ASSERT_LT(read_pool->MaxMemoryUsage(), payload_size / 2);
             } else {
-                ASSERT_OK(reader->Read(written.first, nullptr, &entries));
+                ASSERT_OK(
+                    reader->Read(written.first, nullptr, /*file_size=*/std::nullopt, &entries));
                 ASSERT_EQ(warm, entries);
                 ASSERT_GE(read_pool->MaxMemoryUsage(), payload_size);
             }
@@ -524,18 +575,87 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
         for (int32_t read = 0; read < 2; ++read) {
             std::vector<ManifestEntry> bucket_entries;
             ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/0,
-                                                       std::nullopt, &bucket_entries));
+                                                       std::nullopt, /*file_size=*/std::nullopt,
+                                                       &bucket_entries));
             ASSERT_EQ(std::vector<ManifestEntry>({valid_target_bucket}), bucket_entries);
             ASSERT_EQ(cache_mode == 1 ? 1 : read + 1, file_system->open_count);
         }
         std::vector<ManifestEntry> missing_bucket_entries;
         ASSERT_OK(manifest_file->ReadBucketEntries(written_file.first, /*bucket=*/2, std::nullopt,
+                                                   /*file_size=*/std::nullopt,
                                                    &missing_bucket_entries));
         ASSERT_TRUE(missing_bucket_entries.empty());
         std::vector<ManifestEntry> all_entries;
-        ASSERT_NOK_WITH_MSG(
-            manifest_file->Read(written_file.first, /*filter=*/nullptr, &all_entries),
-            "Unsupported byte value 2 for file kind.");
+        ASSERT_NOK_WITH_MSG(manifest_file->Read(written_file.first, /*filter=*/nullptr,
+                                                /*file_size=*/std::nullopt, &all_entries),
+                            "Unsupported byte value 2 for file kind.");
+    }
+}
+
+TEST_F(ManifestFileTest, TestReadBucketEntriesWithReorderedFields) {
+    auto pool = GetDefaultPool();
+    auto source =
+        ReadManifestEntry("orc", paimon::test::GetDataDir() + "/orc/append_09.db/append_09",
+                          "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+    ASSERT_EQ(source.size(), 2);
+    std::vector<ManifestEntry> entries;
+    std::vector<BinaryRow> rows;
+    ManifestEntrySerializer serializer(pool);
+    for (int32_t bucket = 0; bucket < 2; ++bucket) {
+        entries.emplace_back(FileKind::Add(), source[bucket].Partition(), bucket, 2,
+                             source[bucket].File());
+        ASSERT_OK_AND_ASSIGN(BinaryRow row, serializer.ToRow(entries.back()));
+        rows.push_back(std::move(row));
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MetaToArrowArrayConverter> converter,
+                         MetaToArrowArrayConverter::Create(serializer.GetDataType(), pool));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, converter->NextBatch(rows));
+    auto struct_array = checked_pointer_cast<arrow::StructArray>(array);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format, FileFormatFactory::Get("avro", {}));
+    // Move each selector field away from its standard position. Ordinary schema alignment
+    // must still restore the fields before version validation and bucket filtering.
+    for (int32_t field_index : {0, 3, 4}) {
+        SCOPED_TRACE(field_index);
+        auto fields = serializer.GetDataType()->fields();
+        auto columns = struct_array->fields();
+        std::swap(fields[1], fields[field_index]);
+        std::swap(columns[1], columns[field_index]);
+        auto reordered_result = arrow::StructArray::Make(columns, fields);
+        ASSERT_TRUE(reordered_result.ok()) << reordered_result.status().ToString();
+        std::shared_ptr<arrow::StructArray> reordered = reordered_result.ValueOrDie();
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto fs = dir->GetFileSystem();
+        const std::string manifest_dir = FileStorePathFactory::ManifestPath(dir->Str());
+        ASSERT_OK(fs->Mkdirs(manifest_dir));
+        const std::string file_name = "manifest-reordered";
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(fields), &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<WriterBuilder> builder,
+                             format->CreateWriterBuilder(&c_schema, 2));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                             fs->Create(manifest_dir + "/" + file_name, false));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FormatWriter> writer, builder->Build(output, "null"));
+        ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*reordered, &c_array).ok());
+        ASSERT_OK(writer->AddBatch(&c_array));
+        ASSERT_OK(writer->Flush());
+        ASSERT_OK(writer->Finish());
+        ASSERT_OK(output->Close());
+        for (bool cache_enabled : {false, true}) {
+            for (bool inferred_bucket : {false, true}) {
+                for (int32_t bucket : {0, 1, 2}) {
+                    ASSERT_OK_AND_ASSIGN(
+                        std::vector<ManifestEntry> actual,
+                        TryReadManifestEntry("avro", dir->Str(), file_name, pool, bucket,
+                                             cache_enabled, inferred_bucket));
+                    const std::vector<ManifestEntry> expected =
+                        bucket < 2 ? std::vector<ManifestEntry>{entries[bucket]}
+                                   : std::vector<ManifestEntry>{};
+                    ASSERT_EQ(actual, expected);
+                }
+            }
+        }
     }
 }
 
@@ -599,51 +719,6 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesValidatesAllVersions) {
             }
         }
     }
-}
-
-// A scan reads manifests whose length the manifest list already recorded. Handing that length over
-// is what lets the store skip the metadata request a bare open issues, which on a remote store is
-// a round trip paid before any of the file is read.
-TEST_F(ManifestFileTest, TestReadPassesKnownSizeToOpen) {
-    auto pool = GetDefaultPool();
-    auto counting_file_system = std::make_shared<CountingFileSystem>();
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
-                         FileFormatFactory::Get("orc", {}));
-    std::string root_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(root_path, unused_schema, /*partition_keys=*/{},
-                                     /*default_part_value=*/"", file_format->Identifier(),
-                                     /*data_file_prefix=*/"data-",
-                                     /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/std::nullopt,
-                                     /*index_file_in_data_file_dir=*/false, pool));
-    ASSERT_OK_AND_ASSIGN(CoreOptions options,
-                         CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(counting_file_system, file_format, "zstd", path_factory,
-                             /*target_file_size=*/1024, pool, options, unused_schema));
-
-    const std::string manifest_name = "manifest-3a44a0da-1008-463c-914e-28d271375e24-0";
-    // The length the checked-in manifest list records for this manifest, and the length the file
-    // on disk actually has.
-    constexpr int64_t kRecordedSize = 2617;
-
-    std::vector<ManifestEntry> all_entries;
-    ASSERT_OK(manifest_file->Read(manifest_name, /*filter=*/nullptr, kRecordedSize, &all_entries));
-    ASSERT_EQ(2, all_entries.size());
-    ASSERT_EQ(std::vector<int64_t>({kRecordedSize}), counting_file_system->opened_lengths);
-    ASSERT_EQ(0, counting_file_system->open_count);
-
-    std::vector<ManifestEntry> bucket_one_entries;
-    ASSERT_OK(manifest_file->ReadBucketEntries(manifest_name, /*bucket=*/1, std::nullopt, kRecordedSize,
-                                               &bucket_one_entries));
-    ASSERT_EQ(std::vector<ManifestEntry>({all_entries[0]}), bucket_one_entries);
-    ASSERT_EQ(std::vector<int64_t>({kRecordedSize, kRecordedSize}),
-              counting_file_system->opened_lengths);
-    ASSERT_EQ(0, counting_file_system->open_count);
 }
 
 TEST_F(ManifestFileTest, TestLegacyManifestFormatIsReadOnly) {
