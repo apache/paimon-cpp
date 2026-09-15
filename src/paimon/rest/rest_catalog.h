@@ -29,6 +29,7 @@
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/logging.h"
 #include "paimon/rest/rest_api.h"
+#include "paimon/rest/rest_token_file_system.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 
@@ -75,8 +76,10 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     std::shared_ptr<FileSystem> GetFileSystem() const override;
     /// Returns a file system that refreshes the temporary credentials the server issues
     /// for the table when `CatalogOptions::DATA_TOKEN_ENABLED` is set, and the
-    /// catalog-level file system otherwise. The instance of one table is reused, so that
-    /// its credentials are loaded once instead of per call.
+    /// catalog-level file system otherwise. Every call returns an instance bound to the
+    /// table it was asked for, whose credentials are loaded on the first access; the file
+    /// systems built from them are shared through a bounded cache, so the tables the
+    /// server issues the same credentials for share one file system.
     Result<std::shared_ptr<FileSystem>> GetTableFileSystem(
         const Identifier& identifier) const override;
     Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const override;
@@ -105,11 +108,6 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
         const Identifier& identifier) const override;
 
  private:
-    /// Upper bound of the retained data token file systems, matching the Java client. A
-    /// table evicted from the cache is served by a new instance, which loads credentials
-    /// of its own, so the bound trades a token request for a bounded footprint.
-    static constexpr int64_t kMaxTableFileSystems = 1000;
-
     RestCatalog(std::shared_ptr<RestApi> api, const std::shared_ptr<FileSystem>& fs,
                 const std::string& warehouse, bool data_token_enabled);
 
@@ -134,10 +132,10 @@ class RestCatalog : public Catalog, public VersionManagedCatalog {
     /// The "table-default." options of the merged config, applied to `CreateTable`
     /// options when absent.
     std::map<std::string, std::string> table_default_options_;
-    /// Data token file systems, keyed by the full name of the identifier sent to the
-    /// server. Only created when `data_token_enabled_` is set. Evicting an entry does not
-    /// invalidate a file system a caller still holds, since the entries are shared.
-    std::unique_ptr<GenericLruCache<std::string, std::shared_ptr<FileSystem>>> table_fs_cache_;
+    /// The file systems of the data tokens, keyed by the credentials they were built from
+    /// and shared by the data token file systems this catalog hands out. Only created when
+    /// `data_token_enabled_` is set.
+    std::shared_ptr<RestTokenFileSystemCache> token_fs_cache_;
     std::shared_ptr<Logger> logger_;
 };
 

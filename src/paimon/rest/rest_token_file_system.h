@@ -19,8 +19,8 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/logging.h"
 #include "paimon/rest/rest_api.h"
@@ -44,14 +45,23 @@ struct RestToken {
     std::map<std::string, std::string> token;
     int64_t expires_at_millis = 0;
 
-    /// Orders tokens so that one can key the file system cache.
-    bool operator<(const RestToken& other) const {
-        if (expires_at_millis != other.expires_at_millis) {
-            return expires_at_millis < other.expires_at_millis;
-        }
-        return token < other.token;
+    /// Credentials are interchangeable only when they grant the same access until the same
+    /// point in time, which is what makes them a file system cache key.
+    bool operator==(const RestToken& other) const {
+        return expires_at_millis == other.expires_at_millis && token == other.token;
     }
+
+    struct Hash {
+        size_t operator()(const RestToken& rest_token) const;
+    };
 };
+
+/// File systems keyed by the credentials they were built from, so that the tables the
+/// server issues the same credentials for share one file system. Sharing this cache
+/// between the `RestTokenFileSystem` instances of many tables keeps a rotation of one
+/// table's credentials from rebuilding the file systems of the others.
+using RestTokenFileSystemCache =
+    GenericLruCache<RestToken, std::shared_ptr<FileSystem>, RestToken::Hash>;
 
 /// A `FileSystem` that accesses table data with the temporary credentials issued by the
 /// REST catalog for one table, reloading them before they expire. Every operation is
@@ -61,18 +71,27 @@ class RestTokenFileSystem : public FileSystem {
  public:
     using Clock = std::function<std::chrono::system_clock::time_point()>;
 
-    /// The file systems of the most recent credentials are retained so that a stream
-    /// opened just before a rotation is not left with a destroyed file system.
-    static constexpr size_t kMaxRetainedFileSystems = 4;
+    /// Bounds of the file system cache, matching the Java client: the file system of
+    /// credentials that were not used for this long is dropped, which also keeps a stream
+    /// opened just before a rotation from losing the file system it came from.
+    static constexpr int64_t kFileSystemCacheExpireAfterAccessMillis = 10 * 3600 * 1000;
+    static constexpr int64_t kMaxCachedFileSystems = 1000;
+
+    /// Creates a cache the file systems of many tables can share.
+    static std::shared_ptr<RestTokenFileSystemCache> CreateFileSystemCache();
 
     /// @param api Client of the catalog that issues the credentials. Shared because this
     ///            file system commonly outlives the catalog it was obtained from.
     /// @param catalog_options Options the credentials are merged over.
     /// @param identifier The table the credentials are requested for.
+    /// @param fs_cache Cache of the delegates, shared with the file systems of the other
+    ///                 tables of the same catalog. A private one is created when null.
     /// @param clock Source of the current time, overridable for tests.
     RestTokenFileSystem(const std::shared_ptr<RestApi>& api,
                         const std::map<std::string, std::string>& catalog_options,
-                        const Identifier& identifier, Clock clock = std::chrono::system_clock::now);
+                        const Identifier& identifier,
+                        std::shared_ptr<RestTokenFileSystemCache> fs_cache = nullptr,
+                        Clock clock = std::chrono::system_clock::now);
 
     ~RestTokenFileSystem() override = default;
 
@@ -92,7 +111,9 @@ class RestTokenFileSystem : public FileSystem {
     Result<bool> Exists(const std::string& path) const override;
 
     /// Returns credentials that are not about to expire, reloading them when needed. Lets
-    /// a caller that brings its own file system use the credentials of this table.
+    /// a caller that brings its own file system use the credentials of this table, so it
+    /// builds no file system of its own and needs nothing but the catalog options the
+    /// credentials are requested with.
     Result<RestToken> ValidToken() const;
 
  private:
@@ -100,12 +121,16 @@ class RestTokenFileSystem : public FileSystem {
     /// expire in less than `RestApi::kTokenExpirationSafeTimeMillis`.
     Result<std::shared_ptr<FileSystem>> Delegate() const;
 
-    /// Reloads the credentials and builds their file system. Called with the write lock
-    /// of `mutex_` held.
-    Status Refresh() const;
+    /// Reloads the credentials from the server. Called with the write lock of `mutex_`
+    /// held.
+    Status RefreshToken() const;
 
     /// Whether `token_` is absent or expires within the safe time.
     bool ShouldRefresh() const;
+
+    /// Builds the file system of `token`: the credentials are the only file system options
+    /// that change, so it is built from the catalog options with them merged over.
+    Result<std::shared_ptr<FileSystem>> BuildFileSystem(const RestToken& token) const;
 
     /// `catalog_options_` with `token` merged over it.
     std::map<std::string, std::string> MergeTokenOptions(
@@ -114,14 +139,13 @@ class RestTokenFileSystem : public FileSystem {
     std::shared_ptr<RestApi> api_;
     std::map<std::string, std::string> catalog_options_;
     Identifier identifier_;
+    std::shared_ptr<RestTokenFileSystemCache> fs_cache_;
     Clock clock_;
     std::shared_ptr<Logger> logger_;
 
+    /// Guards `token_`.
     mutable std::shared_mutex mutex_;
     mutable std::optional<RestToken> token_;
-    mutable std::shared_ptr<FileSystem> fs_;
-    /// Retains the file systems of the recent credentials, oldest first.
-    mutable std::deque<std::shared_ptr<FileSystem>> retained_fs_;
 };
 
 }  // namespace paimon
