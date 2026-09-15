@@ -111,24 +111,44 @@ void AppendVisibleRange(int64_t offset, int64_t length, VisibleRanges* ranges) {
     ranges->push_back({offset, length});
 }
 
-VisibleRanges IntersectWithValidity(const arrow::Array& array, const VisibleRanges& visible_ranges,
-                                    bool* has_null) {
-    *has_null = false;
-    if (array.null_count() == 0) {
+Status NullabilityMismatch(const arrow::Field& field) {
+    return Status::Invalid(fmt::format(
+        "CheckNullabilityMatch failed, field {} not nullable while data have null value",
+        field.name()));
+}
+
+Result<VisibleRanges> IntersectWithValidity(const arrow::Array& array,
+                                            const VisibleRanges& visible_ranges,
+                                            const arrow::Field& field) {
+    const bool nullable = field.nullable();
+    if (visible_ranges.empty()) {
+        return VisibleRanges{};
+    }
+
+    const int64_t null_count = array.null_count();
+    if (null_count == 0) {
         return visible_ranges;
+    }
+    if (null_count == array.length()) {
+        if (!nullable) {
+            return NullabilityMismatch(field);
+        }
+        return VisibleRanges{};
     }
 
     VisibleRanges valid_ranges;
     for (const VisibleRange& range : visible_ranges) {
         int64_t run_start = -1;
-        int64_t range_end = range.offset + range.length;
+        const int64_t range_end = range.offset + range.length;
         for (int64_t i = range.offset; i < range_end; ++i) {
             if (array.IsValid(i)) {
                 if (run_start == -1) {
                     run_start = i;
                 }
             } else {
-                *has_null = true;
+                if (!nullable) {
+                    return NullabilityMismatch(field);
+                }
                 if (run_start != -1) {
                     AppendVisibleRange(run_start, i - run_start, &valid_ranges);
                     run_start = -1;
@@ -157,15 +177,18 @@ VisibleRanges GetVisibleValueRanges(const ListArray& array,
 Status CheckFieldNullability(const std::shared_ptr<arrow::Field>& field,
                              const std::shared_ptr<arrow::Array>& data,
                              const VisibleRanges& visible_ranges) {
-    bool has_null = false;
-    VisibleRanges valid_ranges = IntersectWithValidity(*data, visible_ranges, &has_null);
-    if (PAIMON_UNLIKELY(!field->nullable() && has_null)) {
-        return Status::Invalid(fmt::format(
-            "CheckNullabilityMatch failed, field {} not nullable while data have null value",
-            field->name()));
+    const std::shared_ptr<arrow::DataType>& type = field->type();
+    const bool needs_child_validation =
+        type->id() == arrow::Type::STRUCT || type->id() == arrow::Type::LIST ||
+        type->id() == arrow::Type::FIXED_SIZE_LIST || type->id() == arrow::Type::MAP;
+    if (!needs_child_validation &&
+        (field->nullable() || visible_ranges.empty() || data->null_count() == 0)) {
+        return Status::OK();
     }
 
-    const std::shared_ptr<arrow::DataType>& type = field->type();
+    PAIMON_ASSIGN_OR_RAISE(VisibleRanges valid_ranges,
+                           IntersectWithValidity(*data, visible_ranges, *field));
+
     if (type->id() == arrow::Type::STRUCT) {
         auto struct_type = checked_pointer_cast<arrow::StructType>(type);
         auto struct_array = checked_pointer_cast<arrow::StructArray>(data);
