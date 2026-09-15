@@ -1314,19 +1314,20 @@ TEST(ArrowUtilsTest, TestUnpackBooleansToBytesWithoutAValidityBitmap) {
 }
 
 TEST(ArrowUtilsTest, TestUnpackBooleansToBytesOfAnArrayThatIsNullThroughout) {
-    // Without a validity bitmap `Array::IsValid` falls back to `null_count != length`, so an array
-    // whose null count is its length holds no value at any row, however its value bitmap reads.
+    // A predicate over a column no row holds a value in leaves every row null. The value bitmap is
+    // all set, so a 1 among the unpacked bytes can only be a null row read as holding a value.
     const int64_t length = 9;
-    std::shared_ptr<arrow::Buffer> value_bits = arrow::AllocateBitmap(length).ValueOrDie();
-    arrow::bit_util::SetBitsTo(value_bits->mutable_data(), /*offset=*/0, length, /*bits=*/true);
-    const arrow::BooleanArray array(length, value_bits, /*null_bitmap=*/nullptr,
-                                    /*null_count=*/length);
+    const std::shared_ptr<arrow::BooleanArray> array =
+        BooleansOf(std::vector<bool>(static_cast<size_t>(length), true),
+                   std::vector<bool>(static_cast<size_t>(length), false));
+    const arrow::Status validated = array->ValidateFull();
+    ASSERT_TRUE(validated.ok()) << validated.ToString();
 
-    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/false),
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(*array, /*negate=*/false),
               std::vector<char>(static_cast<size_t>(length), 0));
-    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(array, /*negate=*/true),
+    ASSERT_EQ(ArrowUtils::UnpackBooleansToBytes(*array, /*negate=*/true),
               std::vector<char>(static_cast<size_t>(length), 0));
-    ASSERT_EQ(UnpackRowByRow(array, /*negate=*/true),
+    ASSERT_EQ(UnpackRowByRow(*array, /*negate=*/true),
               std::vector<char>(static_cast<size_t>(length), 0));
 }
 
