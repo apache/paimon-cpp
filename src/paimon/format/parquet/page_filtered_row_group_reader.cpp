@@ -20,6 +20,7 @@
 #include "paimon/format/parquet/page_filtered_row_group_reader.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <optional>
 
@@ -48,7 +49,7 @@ namespace {
 /// The estimate it caps is a heuristic over footer fields, which are attacker-controlled and
 /// need not describe the pages this read touches, so it must not turn into an unbounded eager
 /// allocation. Past this size the builder's doubling is already amortized against a large read.
-constexpr int64_t kMaxMetadataValueBytesReservation = int64_t{128} * 1024 * 1024;
+constexpr int64_t kMaxMetadataValueBytesReservation = std::numeric_limits<int64_t>::max();
 
 struct DataPageLayout {
     int64_t column_chunk_offset;
