@@ -1236,7 +1236,7 @@ std::vector<char> UnpackRowByRow(const arrow::BooleanArray& array, bool negate) 
 /// validity bitmap that marks row `i` as holding one when `valid[i]` is true.
 std::shared_ptr<arrow::BooleanArray> BooleansOf(const std::vector<bool>& values,
                                                 const std::vector<bool>& valid) {
-    const int64_t length = static_cast<int64_t>(values.size());
+    const auto length = static_cast<int64_t>(values.size());
     std::shared_ptr<arrow::Buffer> value_bits = arrow::AllocateBitmap(length).ValueOrDie();
     std::shared_ptr<arrow::Buffer> valid_bits = arrow::AllocateBitmap(length).ValueOrDie();
     int64_t null_count = 0;

@@ -475,7 +475,7 @@ std::vector<char> ArrowUtils::UnpackBooleansToBytes(const arrow::BooleanArray& a
     // `BooleanArray::Value(i)` and `Array::IsValid(i)` both read their bitmap at bit `i + offset`
     // from the start of the buffer, so one bit index serves the value and the validity alike.
     const int64_t bit_offset = data->offset;
-    const uint8_t* values = data->GetValuesSafe<uint8_t>(/*i=*/1, /*absolute_offset=*/0);
+    const auto values = data->GetValuesSafe<uint8_t>(/*i=*/1, /*absolute_offset=*/0);
     const uint8_t* validity = array.null_bitmap_data();
     // Without a validity bitmap `Array::IsValid` falls back to `null_count != length`, which makes
     // every row valid unless the array is null throughout. One that is has no row left to unpack,
