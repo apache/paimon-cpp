@@ -90,7 +90,7 @@ class ApplyDeletionVectorBatchReaderTest : public ::testing::Test,
                         /*enable_adaptive_prefetch_strategy=*/false, executor_,
                         /*initialize_read_ranges=*/true,
                         /*read_ahead_cache_enabled=*/true, CacheConfig(),
-                        /*enable_io_metrics=*/false, pool, arrow_pool));
+                        /*enable_io_metrics=*/false, WarmupLevel::DECODED, pool, arrow_pool));
             } else {
                 file_batch_reader =
                     std::make_unique<MockFileBatchReader>(data, target_type_, batch_size);
@@ -166,6 +166,21 @@ TEST_P(ApplyDeletionVectorBatchReaderTest, TestSimple2) {
         CheckResult(data_str, dv_data, "[10, 11, 12, 13, 14, 15, 16]");
     }
 }
+
+TEST(ApplyDeletionVectorBatchReaderWarmupTest, WarmupForwardsToInnerReader) {
+    auto target_type = arrow::struct_({arrow::field("f1", arrow::int32())});
+    auto mock_reader =
+        std::make_unique<MockFileBatchReader>(/*data=*/nullptr, target_type, /*batch_size=*/1);
+    auto* inner_reader = mock_reader.get();
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    auto deletion_vector = DeletionVector::FromPrimitiveArray(/*is_deleted=*/{}, pool.get());
+    ApplyDeletionVectorBatchReader reader(std::move(mock_reader), std::move(deletion_vector));
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader.Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 INSTANTIATE_TEST_SUITE_P(EnablePrefetch, ApplyDeletionVectorBatchReaderTest,
                          ::testing::Values(false, true));
 }  // namespace paimon::test

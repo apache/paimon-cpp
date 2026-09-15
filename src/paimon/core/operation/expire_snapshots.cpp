@@ -19,7 +19,6 @@
 #include "paimon/core/operation/expire_snapshots.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -31,9 +30,11 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/executor/future.h"
 #include "paimon/common/utils/date_time_utils.h"
+#include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/manifest/file_entry.h"
 #include "paimon/core/manifest/file_kind.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/manifest_file.h"
@@ -86,7 +87,7 @@ Result<int32_t> ExpireSnapshots::Expire() {
         return Status::Invalid("Expire failed: snapshot manager is nullptr");
     }
     PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest_snapshot_id,
-                           snapshot_manager_->LatestSnapshotId());
+                           snapshot_manager_->LatestSnapshotIdFromFileSystem());
     if (latest_snapshot_id == std::nullopt) {
         // no snapshot, nothing to expire
         return 0;
@@ -111,19 +112,72 @@ Result<int32_t> ExpireSnapshots::Expire() {
         if (exist) {
             PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(snapshot_id));
             if (older_than_ms <= snapshot.TimeMillis()) {
-                return ExpireUntil(earliest_snapshot_id.value(), snapshot_id);
+                return ExpireUntil(earliest_snapshot_id.value(), snapshot_id,
+                                   latest_snapshot_id.value());
             }
         }
     }
-    return ExpireUntil(earliest_snapshot_id.value(), max);
+    return ExpireUntil(earliest_snapshot_id.value(), max, latest_snapshot_id.value());
 }
 
-Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
-                                             int64_t end_exclusive_id) {
+Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id, int64_t end_exclusive_id,
+                                             int64_t latest_snapshot_id) {
     if (end_exclusive_id <= earliest_snapshot_id) {
         // TODO(jinli.zjw): write earliest hint
         return 0;
     }
+    // Read the retained boundary before deleting files referenced by expired snapshots.
+    PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(end_exclusive_id));
+    if (!exist) {
+        PAIMON_LOG_DEBUG(logger_, "Skip expiration of table %s: retained snapshot #%ld is missing.",
+                         snapshot_manager_->RootPath().c_str(), end_exclusive_id);
+        return 0;
+    }
+
+    // An unpublished catalog rollback can reference files deleted by older snapshots.
+    // Require the current snapshot and its retained history to be visible before deleting files.
+    PAIMON_ASSIGN_OR_RAISE(SnapshotManager::LatestSnapshotResult latest,
+                           snapshot_manager_->LatestSnapshotWithSource());
+    if (snapshot_manager_->HasSnapshotLoader() && !latest.from_catalog) {
+        return Status::NotImplemented(
+            "snapshot expiration through a catalog requires loading its current snapshot");
+    }
+    if (!latest.snapshot || latest.snapshot->Id() != latest_snapshot_id) {
+        PAIMON_LOG_DEBUG(logger_,
+                         "Skip expiration of table %s: the current snapshot differs from the "
+                         "latest published snapshot #%ld.",
+                         snapshot_manager_->RootPath().c_str(), latest_snapshot_id);
+        return 0;
+    }
+    std::vector<Snapshot> retained_snapshots;
+    for (int64_t id = end_exclusive_id; id <= latest_snapshot_id; ++id) {
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(id));
+        retained_snapshots.push_back(std::move(snapshot));
+    }
+    if (latest.from_catalog && !(retained_snapshots.back() == latest.snapshot.value())) {
+        PAIMON_LOG_DEBUG(logger_,
+                         "Skip expiration of table %s: snapshot #%ld differs between the catalog "
+                         "and file system.",
+                         snapshot_manager_->RootPath().c_str(), latest_snapshot_id);
+        return 0;
+    }
+    std::set<std::string> retained_offset_files;
+    if (realtime_enabled_) {
+        for (const Snapshot& retained_snapshot : retained_snapshots) {
+            std::optional<std::string> offsets_path =
+                RealtimeCommitProperties::GetOffsetsPath(retained_snapshot);
+            if (offsets_path) {
+                retained_offset_files.insert(offsets_path.value());
+            }
+        }
+    }
+    std::set<std::string> skipping_sets;
+    PAIMON_RETURN_NOT_OK(GetManifestSkippingSet(retained_snapshots, &skipping_sets));
+    DataFilePathFactoryCache data_file_path_factory_cache;
+    std::set<std::string> skipping_data_files;
+    PAIMON_RETURN_NOT_OK(GetDataFileSkippingSet(retained_snapshots, &data_file_path_factory_cache,
+                                                &skipping_data_files));
+
     int64_t begin_inclusive_id = earliest_snapshot_id;
     for (int64_t id = end_exclusive_id - 1; id >= earliest_snapshot_id; id--) {
         PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(id));
@@ -138,7 +192,6 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
     // Since the data file deletion information for each snapshot is recorded in the delta part of
     // the next snapshot, it is necessary to check the next snapshot. Otherwise, its data files will
     // not be deleted in this round.
-    DataFilePathFactoryCache data_file_path_factory_cache;
     for (int64_t id = begin_inclusive_id + 1; id <= end_exclusive_id; id++) {
         PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(id));
         if (!exist) {
@@ -146,8 +199,8 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
             continue;
         }
         PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(id));
-        PAIMON_RETURN_NOT_OK(
-            CleanUnusedDataFiles(snapshot.DeltaManifestList(), &data_file_path_factory_cache));
+        PAIMON_RETURN_NOT_OK(CleanUnusedDataFiles(snapshot.DeltaManifestList(), skipping_data_files,
+                                                  &data_file_path_factory_cache));
     }
     // TODO(jinli.zjw): support delete changelog files
 
@@ -155,30 +208,6 @@ Result<int32_t> ExpireSnapshots::ExpireUntil(int64_t earliest_snapshot_id,
     // then delete changed bucket directories if they are empty
     PAIMON_RETURN_NOT_OK(CleanEmptyDirectories());
 
-    PAIMON_ASSIGN_OR_RAISE(bool exist, snapshot_manager_->SnapshotExists(end_exclusive_id));
-    if (!exist) {
-        return 0;
-    }
-    std::vector<Snapshot> retained_snapshots;
-    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(end_exclusive_id));
-    retained_snapshots.push_back(snapshot);
-    std::set<std::string> retained_offset_files;
-    if (realtime_enabled_) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<Snapshot> all_snapshots,
-                               snapshot_manager_->GetAllSnapshots());
-        for (const Snapshot& retained_snapshot : all_snapshots) {
-            if (retained_snapshot.Id() < end_exclusive_id) {
-                continue;
-            }
-            std::optional<std::string> offsets_path =
-                RealtimeCommitProperties::GetOffsetsPath(retained_snapshot);
-            if (offsets_path) {
-                retained_offset_files.insert(offsets_path.value());
-            }
-        }
-    }
-    std::set<std::string> skipping_sets;
-    PAIMON_RETURN_NOT_OK(GetManifestSkippingSet(retained_snapshots, &skipping_sets));
     std::set<std::string> expired_offset_files;
     for (int64_t id = begin_inclusive_id; id < end_exclusive_id; id++) {
         PAIMON_LOG_DEBUG(logger_, "Ready to delete manifests in snapshot #%ld", id);
@@ -294,7 +323,8 @@ Status ExpireSnapshots::CleanUnusedManifests(const std::string& manifest_list_na
 }
 
 Status ExpireSnapshots::CleanUnusedDataFiles(
-    const std::string& manifest_list_name, DataFilePathFactoryCache* data_file_path_factory_cache) {
+    const std::string& manifest_list_name, const std::set<std::string>& skipping_data_files,
+    DataFilePathFactoryCache* data_file_path_factory_cache) {
     std::vector<ManifestFileMeta> manifest_file_metas;
     auto status = manifest_list_->Read(manifest_list_name, nullptr, &manifest_file_metas);
     if (status.ok()) {
@@ -316,21 +346,13 @@ Status ExpireSnapshots::CleanUnusedDataFiles(
         std::vector<std::future<void>> futures;
         ScopeGuard guard([&futures]() { Wait(futures); });
         for (const auto& [_, entry] : data_files_to_delete) {
-            std::unordered_map<int32_t, std::shared_ptr<DataFilePathFactory>>& bucket_factories =
-                (*data_file_path_factory_cache)[entry.Partition()];
-            auto factory_iter = bucket_factories.find(entry.Bucket());
-            if (factory_iter == bucket_factories.end()) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    std::shared_ptr<DataFilePathFactory> data_file_path_factory,
-                    path_factory_->CreateDataFilePathFactory(entry.Partition(), entry.Bucket()));
-                factory_iter =
-                    bucket_factories.emplace(entry.Bucket(), std::move(data_file_path_factory))
-                        .first;
-            }
-            const std::shared_ptr<DataFilePathFactory>& data_file_path_factory =
-                factory_iter->second;
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
+                                   GetDataFilePathFactory(entry, data_file_path_factory_cache));
             for (const std::string& delete_file_path :
                  data_file_path_factory->CollectFiles(entry.File())) {
+                if (skipping_data_files.count(delete_file_path) != 0) {
+                    continue;
+                }
                 futures.push_back(Via(executor_.get(), [this, delete_file_path]() {
                     auto status = fs_->Delete(delete_file_path);
                     // delete quietly will ignore any status error
@@ -338,6 +360,65 @@ Status ExpireSnapshots::CleanUnusedDataFiles(
                 }));
             }
             deletion_buckets_[entry.Partition()].insert(entry.Bucket());
+        }
+    }
+    return Status::OK();
+}
+
+Result<std::shared_ptr<DataFilePathFactory>> ExpireSnapshots::GetDataFilePathFactory(
+    const ManifestEntry& entry, DataFilePathFactoryCache* data_file_path_factory_cache) const {
+    std::unordered_map<int32_t, std::shared_ptr<DataFilePathFactory>>& bucket_factories =
+        (*data_file_path_factory_cache)[entry.Partition()];
+    auto factory_iter = bucket_factories.find(entry.Bucket());
+    if (factory_iter == bucket_factories.end()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<DataFilePathFactory> factory,
+            path_factory_->CreateDataFilePathFactory(entry.Partition(), entry.Bucket()));
+        factory_iter = bucket_factories.emplace(entry.Bucket(), std::move(factory)).first;
+    }
+    return factory_iter->second;
+}
+
+Status ExpireSnapshots::GetDataFileSkippingSet(
+    const std::vector<Snapshot>& retained_snapshots,
+    DataFilePathFactoryCache* data_file_path_factory_cache,
+    std::set<std::string>* skipping_data_files) const {
+    auto retain_files = [&](const ManifestEntry& entry) -> Status {
+        if (entry.Kind() == FileKind::Add()) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> factory,
+                                   GetDataFilePathFactory(entry, data_file_path_factory_cache));
+            for (const std::string& path : factory->CollectFiles(entry.File())) {
+                skipping_data_files->insert(path);
+            }
+        }
+        return Status::OK();
+    };
+
+    // Merge the boundary snapshot once, then protect additions from each later snapshot.
+    // A rollback can add an old file again, including its extra files and external location.
+    for (size_t i = 0; i < retained_snapshots.size(); ++i) {
+        std::vector<ManifestFileMeta> manifests;
+        if (i == 0) {
+            PAIMON_RETURN_NOT_OK(
+                manifest_list_->ReadDataManifests(retained_snapshots[i], &manifests));
+        } else {
+            PAIMON_RETURN_NOT_OK(
+                manifest_list_->ReadDeltaManifests(retained_snapshots[i], &manifests));
+        }
+        LinkedHashMap<FileEntry::Identifier, ManifestEntry> boundary_entries;
+        for (const ManifestFileMeta& manifest : manifests) {
+            std::vector<ManifestEntry> entries;
+            PAIMON_RETURN_NOT_OK(manifest_file_->Read(manifest.FileName(), nullptr, &entries));
+            if (i == 0) {
+                PAIMON_RETURN_NOT_OK(FileEntry::MergeEntries(entries, &boundary_entries));
+            } else {
+                for (const ManifestEntry& entry : entries) {
+                    PAIMON_RETURN_NOT_OK(retain_files(entry));
+                }
+            }
+        }
+        for (const auto& [_, entry] : boundary_entries) {
+            PAIMON_RETURN_NOT_OK(retain_files(entry));
         }
     }
     return Status::OK();
@@ -374,7 +455,6 @@ Status ExpireSnapshots::GetManifestSkippingSet(const std::vector<Snapshot>& reta
         }
         // TODO(jinli.zjw): skip index manifests
         if (snapshot.IndexManifest() && snapshot.IndexManifest().value() != "") {
-            assert(false);
             return Status::NotImplemented("do not support expire snapshot with index manifest");
         }
         if (snapshot.Statistics()) {

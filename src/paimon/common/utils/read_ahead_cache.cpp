@@ -29,7 +29,10 @@
 #include <future>
 #include <shared_mutex>
 
+#include "paimon/common/memory/bytes_utils.h"
+#include "paimon/common/metrics/atomic_counter_pair.h"
 #include "paimon/common/utils/byte_range_combiner.h"
+#include "paimon/common/utils/file_block_cache.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/metrics.h"
@@ -79,29 +82,9 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
 
 }  // namespace
 
-CacheConfig::CacheConfig(uint64_t range_size_limit, uint64_t hole_size_limit,
-                         uint64_t pre_buffer_limit)
-    : range_size_limit_(range_size_limit),
-      hole_size_limit_(hole_size_limit),
-      pre_buffer_limit_(pre_buffer_limit) {}
-
-CacheConfig::CacheConfig()
-    // Aligned with the reader's request granularity and with realistic data
-    // file sizes:
-    // - range_size_limit matches the parquet reader's 32 MiB request blocks
-    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
-    //   below the request size, so a request can never be served from one piece.
-    // - pre_buffer_limit must exceed the LARGEST single read a reader issues
-    //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
-    //   only dispatched up to this window, so a request reaching past it can
-    //   never be served and falls back to a second fetch of the same bytes.
-    : CacheConfig(/*range_size_limit=*/32 * 1024 * 1024,
-                  /*hole_size_limit=*/8 * 1024,
-                  /*pre_buffer_limit=*/256 * 1024 * 1024) {}
-
 class ReadAheadCache::Impl {
  public:
-    Impl(const std::shared_ptr<InputStream>& stream, const CacheConfig& config,
+    Impl(const std::shared_ptr<InputStream>& stream, const CacheConfig& config, uint64_t file_size,
          const std::shared_ptr<MemoryPool>& memory_pool);
     ~Impl();
 
@@ -121,14 +104,6 @@ class ReadAheadCache::Impl {
     /// so the caller may use them after releasing the lock.
     std::vector<RangeCacheEntry> FindCoveringEntries(const ByteRange& range);
     void PreBuffer(uint64_t offset);
-    void CountHit(uint64_t size) {
-        hits_.fetch_add(1, std::memory_order_relaxed);
-        hit_bytes_.fetch_add(size, std::memory_order_relaxed);
-    }
-    void CountMiss(uint64_t size) {
-        misses_.fetch_add(1, std::memory_order_relaxed);
-        miss_bytes_.fetch_add(size, std::memory_order_relaxed);
-    }
 
     /// Mark, publish and fetch the pending ranges at the given indices.
     ///
@@ -137,6 +112,10 @@ class ReadAheadCache::Impl {
     /// reader racing the prefetch waits on the in-flight entries instead of
     /// re-fetching the same bytes.
     void Cache(std::vector<size_t> pending_indices);
+
+    /// Clear the prefetch state, waiting for the fetches still writing into the
+    /// entry buffers. Leaves the block cache untouched.
+    void ReleasePrefetchBuffers();
 
     std::shared_ptr<InputStream> stream_;
     CacheConfig config_;
@@ -147,18 +126,18 @@ class ReadAheadCache::Impl {
     std::vector<std::atomic<bool>> is_cached_;
     std::vector<ByteRange> pending_ranges_;
     bool is_initialized_ = false;
-    // Statistics of the Read() requests issued to the cache, aggregated over
-    // all streams sharing this cache.
-    std::atomic<uint64_t> read_count_{0};
-    std::atomic<uint64_t> read_bytes_{0};
-    std::atomic<uint64_t> hits_{0};
-    std::atomic<uint64_t> hit_bytes_{0};
-    std::atomic<uint64_t> misses_{0};
-    std::atomic<uint64_t> miss_bytes_{0};
-    // Prefetch IO statistics: how many requests and bytes were actually issued
-    // to the underlying stream.
-    std::atomic<uint64_t> io_count_{0};
-    std::atomic<uint64_t> io_bytes_{0};
+    // Caches the reads that no registered range covers, or null when the block
+    // cache is disabled. Owns its own locking and counters.
+    std::unique_ptr<FileBlockCache> block_cache_;
+    // The Read() requests issued to the cache and how they were served,
+    // aggregated over all the streams sharing this cache. A read is counted
+    // either as a hit, a block cache hit or a miss.
+    AtomicCounterPair reads_;
+    AtomicCounterPair hits_;
+    AtomicCounterPair misses_;
+    // The prefetch IO actually issued to the underlying stream. The block cache
+    // counts its own fetches, which CollectMetrics() adds to these.
+    AtomicCounterPair ios_;
 };
 
 void ReadAheadCache::Impl::Cache(std::vector<size_t> pending_indices) {
@@ -178,7 +157,7 @@ void ReadAheadCache::Impl::Cache(std::vector<size_t> pending_indices) {
             const ByteRange& range = pending_ranges_[idx];
             auto promise = std::make_shared<std::promise<Status>>();
             auto future = promise->get_future();
-            auto buffer = std::make_shared<Bytes>(range.length, memory_pool_.get());
+            auto buffer = AllocateBytesKeepingPoolAlive(range.length, memory_pool_);
             fetches.push_back({range, buffer, promise});
             new_entries.emplace_back(range, std::move(buffer), std::move(future));
         }
@@ -242,33 +221,50 @@ void ReadAheadCache::Impl::PreBuffer(uint64_t offset) {
 }
 
 ReadAheadCache::Impl::Impl(const std::shared_ptr<InputStream>& stream, const CacheConfig& config,
-                           const std::shared_ptr<MemoryPool>& memory_pool)
-    : stream_(stream), config_(config), memory_pool_(memory_pool) {}
+                           uint64_t file_size, const std::shared_ptr<MemoryPool>& memory_pool)
+    : stream_(stream), config_(config), memory_pool_(memory_pool) {
+    // An unknown file size cannot be aligned to, and a zero limit or block size
+    // means the block cache is turned off: leave it null in those cases.
+    if (file_size > 0 && config_.GetBlockSize() > 0 && config_.GetBlockCacheLimit() > 0) {
+        block_cache_ = std::make_unique<FileBlockCache>(stream, file_size, config_.GetBlockSize(),
+                                                        config_.GetBlockCacheLimit(), memory_pool);
+    }
+}
 
 ReadAheadCache::Impl::~Impl() {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
     for (auto& entry : entries_) {
         entry.future.wait();
     }
+    // The block cache waits for its own fetches when it is destroyed.
 }
 
 void ReadAheadCache::Impl::Reset() {
-    ReleaseBuffers();
-    read_count_.store(0, std::memory_order_relaxed);
-    read_bytes_.store(0, std::memory_order_relaxed);
-    hits_.store(0, std::memory_order_relaxed);
-    hit_bytes_.store(0, std::memory_order_relaxed);
-    misses_.store(0, std::memory_order_relaxed);
-    miss_bytes_.store(0, std::memory_order_relaxed);
-    io_count_.store(0, std::memory_order_relaxed);
-    io_bytes_.store(0, std::memory_order_relaxed);
+    ReleasePrefetchBuffers();
+    reads_.Reset();
+    hits_.Reset();
+    misses_.Reset();
+    ios_.Reset();
+    if (block_cache_ != nullptr) {
+        // Only the counters: the blocks cache the file, not the registered
+        // ranges, and a reader resetting the cache reads the same file again.
+        block_cache_->ResetCounters();
+    }
 }
 
 void ReadAheadCache::Impl::ReleaseBuffers() {
+    ReleasePrefetchBuffers();
+    if (block_cache_ != nullptr) {
+        block_cache_->Release();
+    }
+}
+
+void ReadAheadCache::Impl::ReleasePrefetchBuffers() {
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
     // Entries are never evicted, so waiting on entries_ covers every
-    // dispatched fetch: no async callback can outlive the stream or the
-    // memory pool its buffer belongs to.
+    // dispatched fetch: no fetch is still writing into an entry buffer when the
+    // buffers go away. The buffers keep the memory pool alive themselves, for
+    // the callbacks that a stream destroys later than it resolves them.
     for (auto& entry : entries_) {
         entry.future.wait();
     }
@@ -285,16 +281,22 @@ void ReadAheadCache::Impl::CollectMetrics(std::shared_ptr<Metrics>* metrics) con
         return;
     }
     auto& m = *metrics;
-    m->SetCounter(ReadAheadCacheMetrics::READ_COUNT, read_count_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_BYTES, read_bytes_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES,
-                  hit_bytes_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_MISSES, misses_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES,
-                  miss_bytes_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::IO_COUNT, io_count_.load(std::memory_order_relaxed));
-    m->SetCounter(ReadAheadCacheMetrics::IO_BYTES, io_bytes_.load(std::memory_order_relaxed));
+    m->SetCounter(ReadAheadCacheMetrics::READ_COUNT, reads_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_BYTES, reads_.Bytes());
+    m->SetCounter(ReadAheadCacheMetrics::READ_HITS, hits_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_HIT_BYTES, hits_.Bytes());
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISSES, misses_.Count());
+    m->SetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES, misses_.Bytes());
+    // The block cache keeps its own counters. Its fetches also go to the
+    // underlying stream, so they are part of the io counters too.
+    const FileBlockCache::Counters blocks =
+        block_cache_ != nullptr ? block_cache_->GetCounters() : FileBlockCache::Counters{};
+    m->SetCounter(ReadAheadCacheMetrics::BLOCK_HITS, blocks.hits);
+    m->SetCounter(ReadAheadCacheMetrics::BLOCK_HIT_BYTES, blocks.hit_bytes);
+    m->SetCounter(ReadAheadCacheMetrics::BLOCK_FETCHES, blocks.fetches);
+    m->SetCounter(ReadAheadCacheMetrics::BLOCK_FETCH_BYTES, blocks.fetch_bytes);
+    m->SetCounter(ReadAheadCacheMetrics::IO_COUNT, ios_.Count() + blocks.fetches);
+    m->SetCounter(ReadAheadCacheMetrics::IO_BYTES, ios_.Bytes() + blocks.fetch_bytes);
 }
 
 void ReadAheadCache::Impl::Warmup() {
@@ -345,12 +347,18 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     if (range.length == 0) {
         return true;
     }
-    read_count_.fetch_add(1, std::memory_order_relaxed);
-    read_bytes_.fetch_add(range.length, std::memory_order_relaxed);
+    reads_.Add(range.length);
     PreBuffer(range.offset);
     std::vector<RangeCacheEntry> covering = FindCoveringEntries(range);
     if (covering.empty()) {
-        CountMiss(range.length);
+        // No registered range covers this read: the block cache can still serve
+        // it, and then serve the readers of the other streams sharing this cache
+        // that are about to read the same bytes.
+        if (block_cache_ != nullptr && block_cache_->Read(range, dest)) {
+            // The block cache counts its own hits, see CollectMetrics().
+            return true;
+        }
+        misses_.Add(range.length);
         return false;
     }
     // Wait OUTSIDE the lock: the futures resolve when the prefetch stream's
@@ -360,7 +368,7 @@ Result<bool> ReadAheadCache::Impl::Read(const ByteRange& range, char* dest) {
     }
     // The data copy runs OUTSIDE the lock for the same reason.
     CopyRangeFromEntries(covering, range, dest);
-    CountHit(range.length);
+    hits_.Add(range.length);
     return true;
 }
 
@@ -373,15 +381,14 @@ void ReadAheadCache::Impl::DispatchFetches(const std::vector<PendingFetch>& fetc
         stream_->ReadAsync(
             buffer->data(), read_size, read_offset,
             [promise, buffer](Status status) mutable { promise->set_value(status); });
-        io_count_.fetch_add(1, std::memory_order_relaxed);
-        io_bytes_.fetch_add(fetch.range.length, std::memory_order_relaxed);
+        ios_.Add(fetch.range.length);
     }
 }
 
 ReadAheadCache::ReadAheadCache(const std::shared_ptr<InputStream>& stream,
-                               const CacheConfig& config,
+                               const CacheConfig& config, uint64_t file_size,
                                const std::shared_ptr<MemoryPool>& memory_pool)
-    : impl_(std::make_unique<Impl>(stream, config, memory_pool)) {}
+    : impl_(std::make_unique<Impl>(stream, config, file_size, memory_pool)) {}
 
 ReadAheadCache::~ReadAheadCache() = default;
 

@@ -68,7 +68,7 @@ a constructor taking one - which is what Java does through ``FormatTable.newRead
 
 The table already carries its schema and the file system it was loaded through, so a context built
 from one refuses ``SetTableSchema()``, ``WithFileSystem()``,
-``WithFileSystemSchemeToIdentifierMap()`` and a branch rather than quietly ignoring them. Options
+``WithFileSystemSchemeToIdentifierMap()``, ``WithCatalog()`` and a branch. Options
 given at the call still win over the ones the schema stored, as they do everywhere else.
 
 A batch comes back in the table's column order, or the projection's when the read names one,
@@ -126,11 +126,13 @@ A setting the format path cannot act on is refused by name rather than quietly d
 * ``WriteContextBuilder::WithWriteSchema()``, which names a subset of the columns to write.
 * ``WriteContextBuilder::WithWriteId()``, which prefixes a postpone-bucket writer's files so one
   compaction reader can put them back in order; a format table has no buckets.
-* ``CommitContextBuilder::IgnoreEmptyCommit(false)``, ``UseRESTCatalogCommit(true)`` and
-  ``AppendCommitCheckConflict(true)``. Keeping an empty commit means writing a snapshot that adds
-  no files, a rest-catalog commit sends that snapshot to a catalog, and the conflict check reads
-  the manifests of concurrent commits - none of which exist here. Each is refused only when set
-  away from its default, so an ordinary commit is unaffected.
+* ``CommitContextBuilder::IgnoreEmptyCommit(false)``, ``UseRESTCatalogCommit(true)``,
+  ``WithTableId()``, ``WithCatalog()`` and ``AppendCommitCheckConflict(true)``. Keeping an empty
+  commit means writing a snapshot that adds no files, a rest-catalog commit sends that snapshot to
+  a catalog, a table id names the table in the request that commit sends, committing through a
+  catalog hands it a snapshot to take, and the conflict check reads the manifests of concurrent
+  commits - none of which exist here. Each is refused only when set away from its default, so an
+  ordinary commit is unaffected.
 * the ``branch`` option, whatever names it: a format table keeps no metadata to branch, and its
   data is the files under its one location, which is where a read or a write would go whichever
   branch was asked for. It is refused wherever it comes from - the schema, a catalog that parsed

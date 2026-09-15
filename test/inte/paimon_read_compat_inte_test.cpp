@@ -419,6 +419,29 @@ TEST_P(PaimonReadCompatInteTest, ReadsBlobValues) {
     ASSERT_EQ(inline_descriptor->Uri(), "file:///nonexistent/pypaimon-all-types-external-blob.bin");
     ASSERT_EQ(inline_descriptor->Offset(), 7);
     ASSERT_EQ(inline_descriptor->Length(), 11);
+
+    // Python and Java store MAP<STRING, BLOB> values in standard separate BLOB files. Validate
+    // resolved payloads, null values, and an empty map. Rust stores raw values inline in Parquet,
+    // which is not a compatible Paimon BLOB representation and is asserted separately below.
+    if (writer_prefix == "rust") {
+        return;
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::ChunkedArray> map_blob_result,
+        ReadTable(writer_prefix + "_map_blob_types", {"id", "f_map_blob"}, blob_value_options));
+    std::shared_ptr<arrow::StructArray> map_blob_rows = GetOnlyStructChunk(map_blob_result);
+    ASSERT_TRUE(map_blob_rows);
+    ASSERT_EQ(map_blob_rows->length(), 3);
+    AssertFieldEqualsJson(map_blob_rows, "id", arrow::int32(), "[1, 2, 3]");
+    AssertFieldEqualsJson(map_blob_rows, "f_map_blob",
+                          arrow::map(arrow::utf8(), arrow::large_binary()),
+                          R"([[ ["left", "blob-map-left"], ["right", null] ], null, []])");
+}
+
+TEST(PaimonReadCompatInteStandaloneTest, RejectsNonStandardRustMapBlob) {
+    ASSERT_NOK_WITH_MSG(
+        ReadTable("rust_map_blob_types", {"f_map_blob"}),
+        "Parquet does not support partial projection inside list/map: src map<string, binary");
 }
 
 TEST_P(PaimonReadCompatInteTest, ReadsVectorValues) {
@@ -484,7 +507,8 @@ TEST_P(PaimonUnsupportedTypeInteTest, ReportsExpectedError) {
 
 std::vector<UnsupportedReadParam> UnsupportedReadParams() {
     const std::vector<UnsupportedReadCase> read_cases = {
-        {"NestedBlob", "nested_blob_types", "f_array_blob", "Blob field must be a top-level field"},
+        {"ArrayBlob", "array_blob_types", "f_array_blob",
+         "BLOB field must be a top-level field or the direct value of a top-level MAP field"},
         {"TimePrecision0", "time_types", "f_time_0", "Unsupported type: TIME"},
         {"TimePrecision3", "time_types", "f_time_3", "Unsupported type: TIME"},
         {"TimePrecision6", "time_types", "f_time_6", "Unsupported type: TIME"},

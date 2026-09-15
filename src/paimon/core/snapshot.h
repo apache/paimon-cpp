@@ -72,6 +72,7 @@ class Snapshot : public Jsonizable<Snapshot> {
     };
 
     static constexpr char FIELD_VERSION[] = "version";
+    static constexpr char FIELD_UUID[] = "uuid";
     static constexpr char FIELD_ID[] = "id";
     static constexpr char FIELD_SCHEMA_ID[] = "schemaId";
     static constexpr char FIELD_BASE_MANIFEST_LIST[] = "baseManifestList";
@@ -95,6 +96,10 @@ class Snapshot : public Jsonizable<Snapshot> {
 
     JSONIZABLE_FRIEND_AND_DEFAULT_CTOR(Snapshot);
 
+    /// Generates a UUID for a new snapshot, returning an error if generation fails.
+    static Result<std::string> GenerateUuid();
+
+    /// @param uuid UUID from `GenerateUuid()` for new snapshots; null for legacy snapshots.
     Snapshot(int64_t id, int64_t schema_id, const std::string& base_manifest_list,
              const std::optional<int64_t>& base_manifest_list_size,
              const std::string& delta_manifest_list,
@@ -107,12 +112,13 @@ class Snapshot : public Jsonizable<Snapshot> {
              const std::optional<int64_t>& changelog_record_count,
              const std::optional<int64_t>& watermark, const std::optional<std::string>& statistics,
              const std::optional<std::map<std::string, std::string>>& properties,
-             const std::optional<int64_t>& next_row_id)
+             const std::optional<int64_t>& next_row_id,
+             const std::optional<std::string>& uuid = std::nullopt)
         : Snapshot(CURRENT_VERSION, id, schema_id, base_manifest_list, base_manifest_list_size,
                    delta_manifest_list, delta_manifest_list_size, changelog_manifest_list,
                    changelog_manifest_list_size, index_manifest, commit_user, commit_identifier,
                    commit_kind, time_millis, total_record_count, delta_record_count,
-                   changelog_record_count, watermark, statistics, properties, next_row_id) {}
+                   changelog_record_count, watermark, statistics, properties, next_row_id, uuid) {}
 
     Snapshot(const std::optional<int32_t>& version, int64_t id, int64_t schema_id,
              const std::string& base_manifest_list,
@@ -127,7 +133,8 @@ class Snapshot : public Jsonizable<Snapshot> {
              const std::optional<int64_t>& changelog_record_count,
              const std::optional<int64_t>& watermark, const std::optional<std::string>& statistics,
              const std::optional<std::map<std::string, std::string>>& properties,
-             const std::optional<int64_t>& next_row_id);
+             const std::optional<int64_t>& next_row_id,
+             const std::optional<std::string>& uuid = std::nullopt);
 
     bool operator==(const Snapshot& other) const;
     bool TEST_Equal(const Snapshot& other) const;
@@ -143,6 +150,11 @@ class Snapshot : public Jsonizable<Snapshot> {
     int32_t Version() const {
         // there is no version field for paimon <= 0.2
         return version_ == std::nullopt ? TABLE_STORE_02_VERSION : version_.value();
+    }
+
+    /// Generated on the client; null for snapshots created before uuid was introduced.
+    const std::optional<std::string>& Uuid() const {
+        return uuid_;
     }
 
     int64_t Id() const {
@@ -237,6 +249,9 @@ class Snapshot : public Jsonizable<Snapshot> {
     // version of snapshot
     // null for paimon <= 0.2
     std::optional<int32_t> version_;
+
+    std::optional<std::string> uuid_;
+
     int64_t id_ = -1;
     int64_t schema_id_ = -1;
 

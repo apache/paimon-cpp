@@ -79,6 +79,7 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<arrow::Schema>& schema,
         const std::shared_ptr<arrow::Schema>& write_schema,
+        const std::shared_ptr<RealtimeSchemaLayout>& realtime_schema_layout,
         const std::shared_ptr<arrow::Schema>& partition_schema,
         const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
         const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
@@ -117,6 +118,10 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
 
     bool IsRealtimeWrite() const override {
         return realtime_context_ != nullptr;
+    }
+
+    std::shared_ptr<RealtimeContext> GetRealtimeContext() const override {
+        return realtime_context_;
     }
 
     /// @param plan_factory The active shredding write plan, or nullptr when the rewrite stays a

@@ -73,6 +73,9 @@ class KeyValueInMemoryRecordReader : public KeyValueRecordReader {
         return std::make_shared<MetricsImpl>();
     }
 
+    /// Nothing to warm up: the records are already in memory and no file is opened by a read.
+    void Warmup() override {}
+
     void Close() override;
 
  private:

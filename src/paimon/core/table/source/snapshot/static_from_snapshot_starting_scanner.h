@@ -22,7 +22,6 @@
 #include <memory>
 
 #include "paimon/core/table/source/snapshot/starting_scanner.h"
-#include "paimon/logging.h"
 
 namespace paimon {
 /// `StartingScanner` for the `StartupMode::FromSnapshot()` or `StartupMode::FromSnapshotFull()`
@@ -31,8 +30,7 @@ class StaticFromSnapshotStartingScanner : public StartingScanner {
  public:
     StaticFromSnapshotStartingScanner(const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                       int64_t snapshot_id)
-        : StartingScanner(snapshot_manager),
-          logger_(Logger::GetLogger("StaticFromSnapshotStartingScanner")) {
+        : StartingScanner(snapshot_manager) {
         starting_snapshot_id_ = snapshot_id;
     }
 
@@ -43,9 +41,7 @@ class StaticFromSnapshotStartingScanner : public StartingScanner {
         PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest,
                                snapshot_manager_->LatestSnapshotId());
         if (earliest == std::nullopt || latest == std::nullopt) {
-            PAIMON_LOG_INFO(
-                logger_, "There is currently no snapshot. Waiting for snapshot generation.%s", "");
-            return std::make_shared<StartingScanner::NoSnapshot>();
+            return Status::Invalid("There is currently no snapshot.");
         }
         if (starting_snapshot_id_.value() < earliest.value() ||
             starting_snapshot_id_.value() > latest.value()) {
@@ -61,8 +57,5 @@ class StaticFromSnapshotStartingScanner : public StartingScanner {
             snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot)->Read());
         return std::make_shared<StartingScanner::CurrentSnapshot>(plan);
     }
-
- private:
-    std::unique_ptr<Logger> logger_;
 };
 }  // namespace paimon

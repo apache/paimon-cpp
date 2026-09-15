@@ -60,7 +60,7 @@ namespace {
 /// `table_unit`. A file's unit means something else in each format, so the rule does too:
 ///
 /// - parquet records the unit, so the file's is the one its values are in. Only `MILLI` under a
-///   `SECOND` column is rescaled, by `ParquetTimestampConverter`, which parquet's own round trip
+///   `SECOND` column is rescaled, by `ParquetReadTypeAdapter`, which parquet's own round trip
 ///   needs since it has no `SECOND`. Any other pair would be relabelled rather than rescaled -
 ///   `us` under an `ms` type reads a thousand times too large - so it is refused;
 /// - orc records none: a value is a seconds-plus-nanoseconds pair that `OrcAdapter` builds at
@@ -337,6 +337,7 @@ Result<std::unique_ptr<FormatTableRead>> FormatTableRead::Create(
     read_options.prefetch_batch_count = read_context->GetPrefetchBatchCount();
     read_options.read_ahead_cache_enabled = read_context->ReadAheadCacheEnabled();
     read_options.cache_config = read_context->GetCacheConfig();
+    read_options.warmup_level = read_context->GetWarmupLevel();
 
     return CreateInternal(table, projection, read_context->GetMemoryPool(),
                           read_context->GetPredicate(), read_context->EnablePredicateFilter(),

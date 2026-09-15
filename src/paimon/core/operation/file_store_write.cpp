@@ -23,9 +23,11 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/catalog/catalog.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/disk/io_manager.h"
 #include "paimon/core/manifest/index_manifest_file.h"
@@ -38,6 +40,7 @@
 #include "paimon/core/options/merge_engine.h"
 #include "paimon/core/postpone/postpone_bucket_file_store_write.h"
 #include "paimon/core/realtime/realtime_context_impl.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
@@ -49,6 +52,7 @@
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/format/file_format.h"
 #include "paimon/result.h"
+#include "paimon/schema/schema.h"
 #include "paimon/table/format/format_table.h"
 #include "paimon/write_context.h"
 
@@ -66,14 +70,15 @@ namespace {
 Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& realtime_context,
                                         const std::shared_ptr<SnapshotManager>& snapshot_manager,
                                         const CoreOptions& options) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
+                           RealtimeContextImpl::Cast(realtime_context));
+    PAIMON_RETURN_NOT_OK(realtime_context_impl->CheckUsable());
     PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
                            snapshot_manager->LatestSnapshot());
     if (latest_snapshot) {
         PAIMON_ASSIGN_OR_RAISE(
             RealtimeOffsetMap realtime_committed_offsets,
             RealtimeCommitProperties::ReadOffsets(latest_snapshot, options.GetFileSystem()));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                               RealtimeContextImpl::Cast(realtime_context));
         PAIMON_RETURN_NOT_OK(realtime_context_impl->AdvanceCommittedProgress(
             latest_snapshot->Id(), realtime_committed_offsets));
     }
@@ -84,6 +89,11 @@ Status RestoreRealtimeCommittedProgress(const std::shared_ptr<RealtimeContext>& 
 /// cannot honour rather than silently dropping it.
 Result<std::unique_ptr<FileStoreWrite>> NewFormatTableWrite(
     const std::shared_ptr<FormatTable>& table, const WriteContext& ctx) {
+    if (ctx.GetCatalog() != nullptr) {
+        return Status::Invalid(
+            "WithCatalog() requires a native table; use WriteContextBuilder(FormatTable) for a "
+            "format table");
+    }
     if (ctx.IsStreamingMode()) {
         return Status::NotImplemented(
             "a format table has no snapshots, so there is nothing a streaming write could "
@@ -114,6 +124,10 @@ Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithPro
     return Status::Invalid("prepare commit with progress requires a real-time writer");
 }
 
+Status FileStoreWrite::Seal() {
+    return Status::Invalid("seal requires a real-time writer");
+}
+
 Status FileStoreWrite::RefreshCommittedSnapshot(int64_t) {
     return Status::Invalid("refresh committed snapshot requires a real-time writer");
 }
@@ -136,9 +150,24 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         return NewFormatTableWrite(given_table, *ctx);
     }
 
+    PAIMON_RETURN_NOT_OK(CheckVersionManagementImplemented(ctx->GetCatalog()));
+    std::shared_ptr<FileSystem> specific_fs = ctx->GetSpecificFileSystem();
+    if (specific_fs == nullptr && ctx->GetFileSystemSchemeToIdentifierMap().empty() &&
+        ctx->GetCatalog() != nullptr) {
+        specific_fs = ctx->GetCatalog()->GetFileSystem();
+    }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_options,
-                           CoreOptions::FromMap(ctx->GetOptions(), ctx->GetSpecificFileSystem(),
+                           CoreOptions::FromMap(ctx->GetOptions(), specific_fs,
                                                 ctx->GetFileSystemSchemeToIdentifierMap()));
+    std::optional<std::string> catalog_table_schema;
+    if (ctx->GetCatalog() != nullptr) {
+        if (!ctx->GetIdentifier()) {
+            return Status::Invalid("a catalog write requires a table identifier");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
+                               ctx->GetCatalog()->LoadTableSchema(ctx->GetIdentifier().value()));
+        PAIMON_ASSIGN_OR_RAISE(catalog_table_schema, schema->GetJsonSchema());
+    }
     std::string branch = ctx->GetBranch();
     // A format table writes plain data files into a directory, so it never reaches the manifest
     // path below.
@@ -148,8 +177,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FormatTable> format_table,
         FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), ctx->GetRootPath(), branch,
-                                   ctx->GetOptions(), /*specific_table_schema=*/std::nullopt,
-                                   schema_manager.get(), &latest_schema));
+                                   ctx->GetOptions(), catalog_table_schema, schema_manager.get(),
+                                   &latest_schema));
     if (format_table != nullptr) {
         return NewFormatTableWrite(format_table, *ctx);
     }
@@ -165,9 +194,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     for (const auto& [key, value] : ctx->GetOptions()) {
         opts[key] = value;
     }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
-                           CoreOptions::FromMap(opts, ctx->GetSpecificFileSystem(),
-                                                ctx->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(
+        CoreOptions options,
+        CoreOptions::FromMap(opts, specific_fs, ctx->GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 
@@ -185,6 +214,15 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                                      options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
     auto snapshot_manager =
         std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath(), branch);
+    if (VersionManagedCatalog* versioned = AsVersionManaged(ctx->GetCatalog())) {
+        std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
+        Identifier identifier = ctx->GetIdentifier().value();
+        // Keep the catalog alive while the writer uses its snapshot loader.
+        snapshot_manager->SetSnapshotLoader(
+            [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
+                return versioned->LoadSnapshot(identifier);
+            });
+    }
     std::shared_ptr<IOManager> io_manager;
     const auto& io_temp_dir = ctx->GetTempDirectory();
     if (!io_temp_dir.empty()) {
@@ -235,6 +273,14 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
             write_schema = arrow::schema(write_fields);
         }
 
+        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
+        if (ctx->GetRealtimeContext()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<RealtimeSchemaLayout> layout,
+                RealtimeSchemaLayout::Create(RealtimeStoreMode::APPEND_ONLY, write_schema));
+            realtime_schema_layout = std::move(layout);
+        }
+
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
         if (need_dv_maintainer_factory) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -252,8 +298,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
 
         auto file_store_write = std::make_unique<AppendOnlyFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
-            ctx->GetRootPath(), schema, arrow_schema, write_schema, partition_schema,
-            dv_maintainer_factory, io_manager, options, ignore_previous_files,
+            ctx->GetRootPath(), schema, arrow_schema, write_schema, realtime_schema_layout,
+            partition_schema, dv_maintainer_factory, io_manager, options, ignore_previous_files,
             ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(), ctx->GetRealtimeContext(),
             ctx->GetExecutor(), ctx->GetMemoryPool());
         return std::unique_ptr<FileStoreWrite>(std::move(file_store_write));
@@ -277,7 +323,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 arrow_schema, partition_schema, io_manager, options, ctx->IsStreamingMode(),
                 ctx->IgnoreNumBucketCheck(), ctx->GetWriteId(),
                 ctx->GetFileSystemSchemeToIdentifierMap(), ctx->GetExecutor(), ctx->GetMemoryPool(),
-                ctx->GetSpecificFileSystem());
+                specific_fs);
         }
         if (options.GetBucket() <= 0) {
             return Status::Invalid(
@@ -320,13 +366,21 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
         }
 
+        std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout;
+        if (ctx->GetRealtimeContext()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<RealtimeSchemaLayout> layout,
+                RealtimeSchemaLayout::Create(RealtimeStoreMode::PRIMARY_KEY, arrow_schema));
+            realtime_schema_layout = std::move(layout);
+        }
+
         return std::make_unique<KeyValueFileStoreWrite>(
             file_store_path_factory, snapshot_manager, schema_manager, ctx->GetCommitUser(),
-            ctx->GetRootPath(), schema, arrow_schema, partition_schema, dv_maintainer_factory,
-            io_manager, key_comparator, sequence_fields_comparator, merge_function_wrapper, options,
-            ignore_previous_files, ctx->IsStreamingMode(), ctx->IgnoreNumBucketCheck(),
-            ctx->EnableMultiThreadSpill(), ctx->GetRealtimeContext(), ctx->GetExecutor(),
-            ctx->GetMemoryPool());
+            ctx->GetRootPath(), schema, arrow_schema, realtime_schema_layout, partition_schema,
+            dv_maintainer_factory, io_manager, key_comparator, sequence_fields_comparator,
+            merge_function_wrapper, options, ignore_previous_files, ctx->IsStreamingMode(),
+            ctx->IgnoreNumBucketCheck(), ctx->EnableMultiThreadSpill(), ctx->GetRealtimeContext(),
+            ctx->GetExecutor(), ctx->GetMemoryPool());
     }
 }
 

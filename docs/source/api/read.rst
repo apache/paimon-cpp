@@ -32,6 +32,8 @@ Interface
    :members:
    :undoc-members:
 
+.. doxygenenum:: paimon::WarmupLevel
+
 .. doxygenclass:: paimon::ReadContext
    :members:
    :undoc-members:

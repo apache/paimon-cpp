@@ -456,4 +456,19 @@ TEST_F(KeyValueDataFileRecordReaderTest, TestKeyFieldAfterValueField) {
     }
 }
 
+TEST_F(KeyValueDataFileRecordReaderTest, TestWarmupForwardsToInnerReader) {
+    auto file_batch_reader = std::make_unique<MockFileBatchReader>(
+        /*data=*/nullptr, arrow::struct_({arrow::field("_SEQUENCE_NUMBER", arrow::int64())}),
+        /*read_batch_size=*/1);
+    auto* inner_reader = file_batch_reader.get();
+    auto key_schema = arrow::schema({arrow::field("k0", arrow::int32())});
+    auto value_schema = arrow::schema({arrow::field("v0", arrow::int32())});
+    KeyValueDataFileRecordReader reader(std::move(file_batch_reader), key_schema, value_schema,
+                                        /*level=*/0, pool_);
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader.Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 }  // namespace paimon::test

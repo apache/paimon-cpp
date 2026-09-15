@@ -62,7 +62,8 @@ class PAIMON_EXPORT ReadContext {
                 const std::shared_ptr<RealtimeContext>& realtime_context,
                 const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
                 const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table);
+                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level);
+
     ~ReadContext();
 
     const std::string& GetPath() const {
@@ -150,6 +151,10 @@ class PAIMON_EXPORT ReadContext {
         return format_table_;
     }
 
+    WarmupLevel GetWarmupLevel() const {
+        return warmup_level_;
+    }
+
     /// Whether a read schema (C ArrowSchema) for nested column pruning was provided.
     bool HasReadSchema() const {
         return read_schema_ != nullptr && read_schema_->release != nullptr;
@@ -190,6 +195,7 @@ class PAIMON_EXPORT ReadContext {
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
     std::shared_ptr<FormatTable> format_table_;
+    WarmupLevel warmup_level_;
     // Owns schema resources and releases ArrowSchema::release in destructor.
     std::unique_ptr<ArrowSchema> read_schema_;
 };
@@ -350,6 +356,19 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @param config The cache configuration to use.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& WithCacheConfig(const CacheConfig& config);
+
+    /// Set how far the reader prepares the next file before it is read.
+    ///
+    /// Warmup overlaps remote-storage latency with the read of the current file. Higher levels hide
+    /// more latency but use more memory, and may warm files that a query never reads (for example
+    /// when a LIMIT stops the scan early).
+    /// @param level The warmup level to use (default: WarmupLevel::DECODED).
+    /// @return Reference to this builder for method chaining.
+    /// @note WarmupLevel::RAW warms the read-ahead cache, so it has no effect and behaves like
+    /// WarmupLevel::NONE when the cache is off (see SetReadAheadCacheEnabled()).
+    /// WarmupLevel::DECODED does not depend on the cache.
+    /// @see WarmupLevel
+    ReadContextBuilder& SetWarmupLevel(WarmupLevel level);
 
     /// Set the total number of batches to prefetch across all files.
     ///

@@ -76,7 +76,8 @@ Result<Snapshot> Tag::TrimToSnapshot() const {
                     DeltaManifestList(), DeltaManifestListSize(), ChangelogManifestList(),
                     ChangelogManifestListSize(), IndexManifest(), CommitUser(), CommitIdentifier(),
                     GetCommitKind(), TimeMillis(), TotalRecordCount(), DeltaRecordCount(),
-                    ChangelogRecordCount(), Watermark(), Statistics(), Properties(), NextRowId());
+                    ChangelogRecordCount(), Watermark(), Statistics(), Properties(), NextRowId(),
+                    Uuid());
 }
 
 rapidjson::Value Tag::ToJson(rapidjson::Document::AllocatorType* allocator) const noexcept(false) {

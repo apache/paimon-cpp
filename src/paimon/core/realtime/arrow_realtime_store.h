@@ -36,11 +36,12 @@ class StructArray;
 
 namespace paimon {
 class MemoryPool;
+class PredicateFilter;
 
 /// Internal Arrow-backed implementation of the default `RealtimeStore`.
-class ArrowRealtimeStore : public RealtimeStore {
+class ArrowRealtimeStore final : public RealtimeStore {
  public:
-    ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema,
+    ArrowRealtimeStore(const std::shared_ptr<arrow::Schema>& write_schema, RealtimeStoreMode mode,
                        StatisticsMode statistics_mode,
                        const std::shared_ptr<MemoryPool>& memory_pool,
                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
@@ -60,10 +61,15 @@ class ArrowRealtimeStore : public RealtimeStore {
 
     Status AdvanceCommittedOffset(int64_t committed_end_offset) override;
 
+    RealtimeStoreDataUsage GetDataUsage() const override;
+
     uint64_t GetMemoryUsage() const override;
 
  private:
     struct BatchStatistics {
+        // Arrow buffers retain a raw MemoryPool pointer. Keep their allocator alive until all
+        // statistics arrays have been released.
+        std::shared_ptr<arrow::MemoryPool> arrow_pool;
         std::shared_ptr<arrow::StructArray> min_values;
         std::shared_ptr<arrow::StructArray> max_values;
         std::shared_ptr<arrow::Array> null_counts;
@@ -71,7 +77,6 @@ class ArrowRealtimeStore : public RealtimeStore {
 
     struct StoredBatch {
         std::shared_ptr<arrow::StructArray> data;
-        std::vector<RecordBatch::RowKind> row_kinds;
         OffsetRange offset_range;
         std::optional<BatchStatistics> statistics;
         uint64_t memory_usage;
@@ -79,21 +84,32 @@ class ArrowRealtimeStore : public RealtimeStore {
 
     class Segment;
     class ReadView;
-    class CommitBatchReader;
-    class QueryBatchReader;
+    class AppendCommitBatchReader;
+    class StoredBatchReader;
+    class AppendQueryBatchReader;
 
     Result<std::optional<BatchStatistics>> CollectStatistics(
         const std::shared_ptr<arrow::StructArray>& data) const;
 
+    static Result<bool> MayMatchStatistics(const StoredBatch& stored,
+                                           const std::shared_ptr<arrow::Schema>& read_schema,
+                                           const std::shared_ptr<PredicateFilter>& predicate_filter,
+                                           const std::vector<int32_t>& statistics_mapping,
+                                           const std::shared_ptr<MemoryPool>& memory_pool);
+
     std::shared_ptr<arrow::Schema> write_schema_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
+    RealtimeStoreMode mode_;
     StatisticsMode statistics_mode_;
     mutable std::mutex mutex_;
     std::vector<StoredBatch> building_batches_;
     std::vector<std::shared_ptr<Segment>> sealed_segments_;
     std::optional<OffsetRange> building_range_;
     uint64_t building_memory_usage_ = 0;
+    uint64_t sealed_memory_usage_ = 0;
+    uint64_t building_row_count_ = 0;
+    uint64_t sealed_row_count_ = 0;
 };
 
 }  // namespace paimon

@@ -636,8 +636,12 @@ Status ConflictDetection::CheckForRowIdFromSnapshot(
         return Status::OK();
     }
 
-    PAIMON_ASSIGN_OR_RAISE(Snapshot check_snapshot,
-                           snapshot_manager_->LoadSnapshot(row_id_check_from_snapshot_.value()));
+    // The latest snapshot may only exist in the catalog. Reuse the one this attempt is based on.
+    PAIMON_ASSIGN_OR_RAISE(
+        Snapshot check_snapshot,
+        row_id_check_from_snapshot_.value() == latest_snapshot.Id()
+            ? Result<Snapshot>(latest_snapshot)
+            : snapshot_manager_->LoadSnapshot(row_id_check_from_snapshot_.value()));
     if (!check_snapshot.NextRowId()) {
         return Status::Invalid(fmt::format("Next row id cannot be null for snapshot {}.",
                                            row_id_check_from_snapshot_.value()));
@@ -662,7 +666,10 @@ Status ConflictDetection::CheckForRowIdFromSnapshot(
 
     for (int64_t snapshot_id = from_snapshot_id; snapshot_id <= latest_snapshot.Id();
          ++snapshot_id) {
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager_->LoadSnapshot(snapshot_id));
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
+                               snapshot_id == latest_snapshot.Id()
+                                   ? Result<Snapshot>(latest_snapshot)
+                                   : snapshot_manager_->LoadSnapshot(snapshot_id));
         if (snapshot.GetCommitKind() == Snapshot::CommitKind::Compact()) {
             continue;
         }

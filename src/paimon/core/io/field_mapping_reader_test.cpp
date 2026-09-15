@@ -916,4 +916,27 @@ TEST_F(FieldMappingReaderTest, TestCreateFailFastOnInvalidMapSelectedKeysMetadat
                             /*skip_map_selected_keys_filter_field_ids=*/{}, GetArrowPool(pool_)),
                         "Duplicate selected key 'a'");
 }
+
+TEST_F(FieldMappingReaderTest, TestWarmupForwardsToInnerReader) {
+    std::vector<DataField> data_fields = {DataField(0, arrow::field("a", arrow::int32()))};
+    auto data_schema = DataField::ConvertDataFieldsToArrowSchema(data_fields);
+    ASSERT_OK_AND_ASSIGN(auto mapping_builder,
+                         FieldMappingBuilder::Create(data_schema, /*partition_keys=*/{},
+                                                     /*predicate=*/nullptr));
+    ASSERT_OK_AND_ASSIGN(auto mapping, mapping_builder->CreateFieldMapping(data_fields));
+    auto mock = std::make_unique<MockFileBatchReader>(
+        /*data=*/nullptr, arrow::struct_(data_schema->fields()), /*read_batch_size=*/1);
+    auto* inner_reader = mock.get();
+
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         FieldMappingReader::Create(data_schema->num_fields(), std::move(mock),
+                                                    BinaryRow::EmptyRow(), std::move(mapping),
+                                                    /*skip_map_selected_keys_filter_field_ids=*/{},
+                                                    GetArrowPool(pool_)));
+
+    ASSERT_EQ(0, inner_reader->GetWarmupCount());
+    reader->Warmup();
+    ASSERT_EQ(1, inner_reader->GetWarmupCount());
+}
+
 }  // namespace paimon::test

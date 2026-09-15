@@ -63,6 +63,10 @@ class MergedKeyValueRecordReader : public KeyValueRecordReader {
 
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
 
+    void Warmup() override {
+        reader_->Warmup();
+    }
+
     void Close() override;
 
  private:

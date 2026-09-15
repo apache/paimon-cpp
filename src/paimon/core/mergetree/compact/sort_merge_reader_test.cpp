@@ -30,6 +30,7 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/core_options.h"
@@ -39,6 +40,7 @@
 #include "paimon/core/key_value.h"
 #include "paimon/core/mergetree/compact/aggregate/aggregate_merge_function.h"
 #include "paimon/core/mergetree/compact/deduplicate_merge_function.h"
+#include "paimon/core/mergetree/compact/loser_tree.h"
 #include "paimon/core/mergetree/compact/reducer_merge_function_wrapper.h"
 #include "paimon/core/mergetree/compact/sort_merge_reader_with_loser_tree.h"
 #include "paimon/core/mergetree/compact/sort_merge_reader_with_min_heap.h"
@@ -898,6 +900,74 @@ TEST_F(SortMergeReaderTest, TestRawSortNoMergeWithMinHeap) {
     CheckSortMergeResult<SortMergeReaderWithMinHeap>({src_array1, src_array2}, user_key_comparator,
                                                      user_defined_seq_comparator, key_schema,
                                                      value_schema, expected, /*need_merge=*/false);
+}
+
+namespace {
+/// Records the order in which a loser tree touches its leaves, so a test can tell a tree that
+/// warms every leaf up front from one that warms each leaf only as it reaches it. NextBatch()
+/// returns no iterator, which puts every leaf at EOF immediately and keeps InitializeIfNeeded()
+/// the only thing under test.
+class LeafTouchRecordingReader : public KeyValueRecordReader {
+ public:
+    LeafTouchRecordingReader(int32_t leaf_index, std::vector<std::string>* events)
+        : leaf_index_(leaf_index), events_(events) {}
+
+    Result<std::unique_ptr<KeyValueRecordReader::Iterator>> NextBatch() override {
+        events_->push_back("read" + std::to_string(leaf_index_));
+        return std::unique_ptr<KeyValueRecordReader::Iterator>();
+    }
+
+    std::shared_ptr<Metrics> GetReaderMetrics() const override {
+        return std::make_shared<MetricsImpl>();
+    }
+
+    void Warmup() override {
+        events_->push_back("warm" + std::to_string(leaf_index_));
+    }
+
+    void Close() override {}
+
+ private:
+    int32_t leaf_index_;
+    std::vector<std::string>* events_;
+};
+}  // namespace
+
+// Every leaf of a section is an independent sorted run whose first read blocks on its own file, so
+// those latencies only overlap when all leaves are warmed before the first one is advanced. The
+// merge then collects reads that are already in flight instead of paying them one after another.
+TEST_F(SortMergeReaderTest, TestLoserTreeWarmsAllLeavesBeforeAdvancingAny) {
+    std::vector<std::string> events;
+    std::vector<std::unique_ptr<KeyValueRecordReader>> readers;
+    constexpr int32_t kLeafCount = 3;
+    for (int32_t i = 0; i < kLeafCount; i++) {
+        readers.push_back(std::make_unique<LeafTouchRecordingReader>(i, &events));
+    }
+    // An exhausted leaf compares as the smallest, which is how the merge reader's own comparators
+    // treat a run that has nothing left.
+    auto exhausted_last_comparator = [](const std::optional<KeyValue>& lhs,
+                                        const std::optional<KeyValue>& rhs) -> int32_t {
+        if (lhs == std::nullopt) {
+            return -1;
+        }
+        if (rhs == std::nullopt) {
+            return 1;
+        }
+        return 0;
+    };
+    LoserTree loser_tree(std::move(readers), exhausted_last_comparator, exhausted_last_comparator);
+
+    ASSERT_OK(loser_tree.InitializeIfNeeded());
+
+    // Warmup visits the leaves in the order the advancing loop consumes them, so the leaf the tree
+    // blocks on first is the one whose read was started first.
+    const std::vector<std::string> expected_events = {"warm2", "warm1", "warm0",
+                                                      "read2", "read1", "read0"};
+    ASSERT_EQ(expected_events, events);
+
+    // Initialization is one-shot: a second call must neither warm nor read again.
+    ASSERT_OK(loser_tree.InitializeIfNeeded());
+    ASSERT_EQ(expected_events, events);
 }
 
 }  // namespace paimon::test

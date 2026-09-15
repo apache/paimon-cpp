@@ -36,7 +36,8 @@ class DataSplit;
 
 DataTableBatchScan::DataTableBatchScan(bool pk_table, const CoreOptions& core_options,
                                        const std::shared_ptr<SnapshotReader>& snapshot_reader,
-                                       bool read_optimized, std::optional<int32_t> push_down_limit)
+                                       bool read_optimized, std::optional<int32_t> push_down_limit,
+                                       bool realtime_pk_scan)
     : AbstractTableScan(core_options, snapshot_reader),
       push_down_limit_(push_down_limit),
       logger_(Logger::GetLogger("DataTableBatchScan")) {
@@ -47,9 +48,14 @@ DataTableBatchScan::DataTableBatchScan(bool pk_table, const CoreOptions& core_op
         snapshot_reader_->EnableValueFilter();
     } else if (pk_table && (core_options.DeletionVectorsEnabled() ||
                             core_options.GetMergeEngine() == MergeEngine::FIRST_ROW)) {
-        auto level_filter = [](int32_t level) -> bool { return level > 0; };
-        snapshot_reader_->WithLevelFilter(level_filter);
-        snapshot_reader_->EnableValueFilter();
+        if (realtime_pk_scan) {
+            snapshot_reader_->EnableValueFilterForLevels(
+                [](int32_t level) -> bool { return level > 0; });
+        } else {
+            auto level_filter = [](int32_t level) -> bool { return level > 0; };
+            snapshot_reader_->WithLevelFilter(level_filter);
+            snapshot_reader_->EnableValueFilter();
+        }
     }
     if (core_options.GetBucket() == BucketModeDefine::POSTPONE_BUCKET) {
         snapshot_reader_->OnlyReadRealBuckets();

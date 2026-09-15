@@ -111,6 +111,10 @@ class InternalReadContext {
         return read_context_->GetCacheConfig();
     }
 
+    WarmupLevel GetWarmupLevel() const {
+        return read_context_->GetWarmupLevel();
+    }
+
     /// Create a new InternalReadContext with a different read schema.
     /// Useful for creating a context with a minimal column set for specialized reads.
     /// All other settings (predicate, options, table_schema, etc.) are inherited

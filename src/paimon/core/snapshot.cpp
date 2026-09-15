@@ -20,10 +20,13 @@
 
 #include <cassert>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "paimon/common/utils/rapidjson_util.h"
+#include "paimon/common/utils/uuid.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/macros.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "rapidjson/allocators.h"
@@ -78,6 +81,7 @@ bool Snapshot::TEST_Equal(const Snapshot& other) const {
         return false;
     }
 
+    // Ignore generated UUIDs when comparing against fixtures; operator== compares them.
     return version_ == other.version_ && id_ == other.id_ && schema_id_ == other.schema_id_ &&
            index_manifest_ == other.index_manifest_ && commit_user_ == other.commit_user_ &&
            commit_identifier_ == other.commit_identifier_ && commit_kind_ == other.commit_kind_ &&
@@ -92,8 +96,8 @@ bool Snapshot::operator==(const Snapshot& other) const {
     if (this == &other) {
         return true;
     }
-    return version_ == other.version_ && id_ == other.id_ && schema_id_ == other.schema_id_ &&
-           base_manifest_list_ == other.base_manifest_list_ &&
+    return version_ == other.version_ && uuid_ == other.uuid_ && id_ == other.id_ &&
+           schema_id_ == other.schema_id_ && base_manifest_list_ == other.base_manifest_list_ &&
            base_manifest_list_size_ == other.base_manifest_list_size_ &&
            delta_manifest_list_ == other.delta_manifest_list_ &&
            delta_manifest_list_size_ == other.delta_manifest_list_size_ &&
@@ -137,22 +141,29 @@ Snapshot::CommitKind Snapshot::CommitKind::FromString(const std::string& kind) {
     return Unknown();
 }
 
-Snapshot::Snapshot(const std::optional<int32_t>& version, int64_t id, int64_t schema_id,
-                   const std::string& base_manifest_list,
-                   const std::optional<int64_t>& base_manifest_list_size,
-                   const std::string& delta_manifest_list,
-                   const std::optional<int64_t>& delta_manifest_list_size,
-                   const std::optional<std::string>& changelog_manifest_list,
-                   const std::optional<int64_t>& changelog_manifest_list_size,
-                   const std::optional<std::string>& index_manifest, const std::string& commit_user,
-                   int64_t commit_identifier, CommitKind commit_kind, int64_t time_millis,
-                   int64_t total_record_count, int64_t delta_record_count,
-                   const std::optional<int64_t>& changelog_record_count,
-                   const std::optional<int64_t>& watermark,
-                   const std::optional<std::string>& statistics,
-                   const std::optional<std::map<std::string, std::string>>& properties,
-                   const std::optional<int64_t>& next_row_id)
+Result<std::string> Snapshot::GenerateUuid() {
+    std::string uuid;
+    if (PAIMON_UNLIKELY(!UUID::Generate(&uuid))) {
+        return Status::Invalid("fail to generate uuid for snapshot");
+    }
+    return uuid;
+}
+
+Snapshot::Snapshot(
+    const std::optional<int32_t>& version, int64_t id, int64_t schema_id,
+    const std::string& base_manifest_list, const std::optional<int64_t>& base_manifest_list_size,
+    const std::string& delta_manifest_list, const std::optional<int64_t>& delta_manifest_list_size,
+    const std::optional<std::string>& changelog_manifest_list,
+    const std::optional<int64_t>& changelog_manifest_list_size,
+    const std::optional<std::string>& index_manifest, const std::string& commit_user,
+    int64_t commit_identifier, CommitKind commit_kind, int64_t time_millis,
+    int64_t total_record_count, int64_t delta_record_count,
+    const std::optional<int64_t>& changelog_record_count, const std::optional<int64_t>& watermark,
+    const std::optional<std::string>& statistics,
+    const std::optional<std::map<std::string, std::string>>& properties,
+    const std::optional<int64_t>& next_row_id, const std::optional<std::string>& uuid)
     : version_(version),
+      uuid_(uuid),
       id_(id),
       schema_id_(schema_id),
       base_manifest_list_(base_manifest_list),
@@ -179,6 +190,10 @@ rapidjson::Value Snapshot::ToJson(rapidjson::Document::AllocatorType* allocator)
     rapidjson::Value obj(rapidjson::kObjectType);
     obj.AddMember(rapidjson::StringRef(FIELD_VERSION),
                   RapidJsonUtil::SerializeValue(Version(), allocator).Move(), *allocator);
+    if (uuid_ != std::nullopt) {
+        obj.AddMember(rapidjson::StringRef(FIELD_UUID),
+                      RapidJsonUtil::SerializeValue(uuid_.value(), allocator).Move(), *allocator);
+    }
     obj.AddMember(rapidjson::StringRef(FIELD_ID),
                   RapidJsonUtil::SerializeValue(id_, allocator).Move(), *allocator);
     obj.AddMember(rapidjson::StringRef(FIELD_SCHEMA_ID),
@@ -267,6 +282,7 @@ rapidjson::Value Snapshot::ToJson(rapidjson::Document::AllocatorType* allocator)
 
 void Snapshot::FromJson(const rapidjson::Value& obj) noexcept(false) {
     version_ = RapidJsonUtil::DeserializeKeyValue<int32_t>(obj, FIELD_VERSION, -1);
+    uuid_ = RapidJsonUtil::DeserializeKeyValue<std::optional<std::string>>(obj, FIELD_UUID);
     id_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, FIELD_ID);
     schema_id_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, FIELD_SCHEMA_ID);
     base_manifest_list_ =

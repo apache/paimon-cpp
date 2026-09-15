@@ -44,8 +44,6 @@
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
-#include "paimon/core/catalog/catalog_snapshot_commit.h"
-#include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/index/index_file_meta.h"
@@ -129,9 +127,10 @@ FileStoreCommitImpl::FileStoreCommitImpl(
     const std::string& commit_user, const CoreOptions& options,
     const std::shared_ptr<FileStorePathFactory>& path_factory,
     std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
-    const std::shared_ptr<SnapshotManager>& snapshot_manager, bool ignore_empty_commit,
-    bool use_rest_catalog_commit, bool append_commit_check_conflict,
-    const std::shared_ptr<TableSchema>& table_schema,
+    const std::shared_ptr<SnapshotManager>& snapshot_manager,
+    const std::shared_ptr<SnapshotCommit>& snapshot_commit, bool ignore_empty_commit,
+    bool append_commit_check_conflict, const std::shared_ptr<TableSchema>& table_schema,
+    FileStoreCommitImpl::SchemaIdLoader schema_id_loader,
     const std::shared_ptr<ManifestFile>& manifest_file,
     const std::shared_ptr<ManifestList>& manifest_list,
     const std::shared_ptr<IndexManifestFile>& index_manifest_file,
@@ -148,12 +147,14 @@ FileStoreCommitImpl::FileStoreCommitImpl(
       fs_(options.GetFileSystem()),
       partition_computer_(std::move(partition_computer)),
       snapshot_manager_(snapshot_manager),
+      snapshot_commit_(snapshot_commit),
       ignore_empty_commit_(ignore_empty_commit),
       append_commit_check_conflict_(append_commit_check_conflict),
       retry_waiter_(options.GetCommitMinRetryWait(), options.GetCommitMaxRetryWait()),
       num_bucket_(options.GetBucket()),
       bucket_mode_(ResolveBucketMode(options.GetBucket(), table_schema)),
       table_schema_(table_schema),
+      schema_id_loader_(std::move(schema_id_loader)),
       commit_scanner_(std::make_shared<CommitScanner>(
           snapshot_manager, schema_manager, manifest_list, manifest_file, index_manifest_file,
           table_schema, schema, options, executor, pool, partition_computer_.get(),
@@ -166,13 +167,7 @@ FileStoreCommitImpl::FileStoreCommitImpl(
       expire_snapshots_(expire_snapshots),
       schema_manager_(schema_manager),
       metrics_(std::make_shared<MetricsImpl>()),
-      logger_(Logger::GetLogger("FileStoreCommitImpl")) {
-    if (use_rest_catalog_commit) {
-        snapshot_commit_ = std::make_shared<CatalogSnapshotCommit>();
-    } else {
-        snapshot_commit_ = std::make_shared<RenamingSnapshotCommit>(fs_, snapshot_manager_);
-    }
-}
+      logger_(Logger::GetLogger("FileStoreCommitImpl")) {}
 
 FileStoreCommitImpl::~FileStoreCommitImpl() = default;
 
@@ -330,6 +325,7 @@ Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id)
     std::optional<int64_t> next_row_id = std::max(latest.NextRowId(), target_snapshot.NextRowId());
     int64_t delta_record_count =
         ManifestEntry::RecordCountAdd(delta_files) - ManifestEntry::RecordCountDelete(delta_files);
+    PAIMON_ASSIGN_OR_RAISE(std::string new_snapshot_uuid, Snapshot::GenerateUuid());
     Snapshot new_snapshot(
         latest.Id() + 1, target_snapshot.SchemaId(), base_manifest_list.first,
         base_manifest_list.second, delta_manifest_list.first, delta_manifest_list.second,
@@ -339,7 +335,7 @@ Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id)
         Snapshot::CommitKind::Overwrite(), DateTimeUtils::GetCurrentUTCTimeUs() / 1000,
         target_snapshot.TotalRecordCount(), delta_record_count,
         /*changelog_record_count=*/std::nullopt, target_snapshot.Watermark(),
-        target_snapshot.Statistics(), target_snapshot.Properties(), next_row_id);
+        target_snapshot.Statistics(), target_snapshot.Properties(), next_row_id, new_snapshot_uuid);
 
     std::unordered_map<BinaryRow, PartitionEntry> partition_entry_map;
     PAIMON_RETURN_NOT_OK(PartitionEntry::Merge(delta_files, &partition_entry_map));
@@ -349,13 +345,16 @@ Result<bool> FileStoreCommitImpl::RollbackToAsLatest(int64_t target_snapshot_id)
         delta_statistics.push_back(partition_entry);
     }
 
-    PAIMON_ASSIGN_OR_RAISE(bool success, CommitSnapshotImpl(new_snapshot, delta_statistics));
+    PAIMON_ASSIGN_OR_RAISE(bool success,
+                           CommitSnapshotImpl(latest_opt, new_snapshot, delta_statistics));
     if (success) {
         PAIMON_LOG_INFO(logger_,
-                        "Successfully rolled back table %s to snapshot %ld as new snapshot %ld by "
-                        "user %s.",
-                        root_path_.c_str(), target_snapshot_id, new_snapshot.Id(),
-                        commit_user_.c_str());
+                        "%s table %s%s to snapshot %ld as new snapshot %ld "
+                        "by user %s.",
+                        snapshot_commit_->IsRequestOnly() ? "Prepared rollback request for"
+                                                          : "Successfully rolled back",
+                        root_path_.c_str(), CommitTargetSuffix().c_str(), target_snapshot_id,
+                        new_snapshot.Id(), commit_user_.c_str());
         last_committed_snapshot_id_ = new_snapshot.Id();
     }
     return success;
@@ -521,6 +520,44 @@ Result<std::vector<std::shared_ptr<ManifestCommittable>>> FileStoreCommitImpl::F
         // if there is no previous snapshots then nothing should be filtered
         return committables;
     }
+}
+
+Result<std::optional<Snapshot>> FileStoreCommitImpl::LatestSnapshotOfCommitUserAtOrBefore(
+    const std::optional<Snapshot>& latest_snapshot, bool latest_from_catalog) const {
+    return snapshot_manager_->LatestSnapshotOfUserAtOrBefore(commit_user_, latest_snapshot,
+                                                             latest_from_catalog);
+}
+
+Result<std::optional<int64_t>> FileStoreCommitImpl::ResolveRealtimeCommit(
+    const SnapshotManager::LatestSnapshotResult& latest, int64_t identifier,
+    const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges) const {
+    const std::optional<Snapshot>& latest_snapshot = latest.snapshot;
+    PAIMON_ASSIGN_OR_RAISE(
+        std::optional<Snapshot> latest_snapshot_of_user,
+        LatestSnapshotOfCommitUserAtOrBefore(latest_snapshot, latest.from_catalog));
+    const bool identifier_committed =
+        latest_snapshot_of_user && identifier <= latest_snapshot_of_user->CommitIdentifier();
+    const std::optional<Snapshot>& offsets_snapshot =
+        identifier_committed ? latest_snapshot_of_user : latest_snapshot;
+    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap committed_offsets,
+                           RealtimeCommitProperties::ReadOffsets(offsets_snapshot, fs_));
+    PAIMON_ASSIGN_OR_RAISE(bool ranges_committed, RealtimeCommitProperties::AreRangesCommitted(
+                                                      committed_offsets, realtime_ranges));
+    if (!identifier_committed) {
+        if (ranges_committed) {
+            return Status::Invalid(
+                "real-time offset ranges were committed by another commit user or identifier");
+        }
+        return std::optional<int64_t>();
+    }
+    if (!ranges_committed) {
+        return Status::Invalid(
+            "real-time commit identifier was committed without the requested offset ranges");
+    }
+    if (!latest_snapshot) {
+        return Status::Invalid("real-time commit ranges are covered without a snapshot");
+    }
+    return std::optional<int64_t>(latest_snapshot->Id());
 }
 
 Status FileStoreCommitImpl::Overwrite(
@@ -696,7 +733,7 @@ Status FileStoreCommitImpl::ExecuteOverwrite(
     }
 
     if (with_compact) {
-        PAIMON_ASSIGN_OR_RAISE(int32_t cnt,
+        PAIMON_ASSIGN_OR_RAISE(TryCommitResult result,
                                TryCommit(changes->compact_table_files, /*changelog_files=*/{},
                                          changes->compact_index_files, identifier, watermark,
                                          committable->Properties(), /*realtime_ranges=*/{},
@@ -705,7 +742,7 @@ Status FileStoreCommitImpl::ExecuteOverwrite(
                                          /*removed_realtime_partitions=*/{},
                                          /*detect_conflicts=*/true,
                                          /*retry_on_conflict=*/true));
-        *attempt += cnt;
+        *attempt += result.attempts;
         *generated_snapshot += 1;
     }
 
@@ -807,11 +844,13 @@ Result<int32_t> FileStoreCommitImpl::TryOverwrite(
     // ExecuteOverwrite has already resolved dynamic overwrite to the concrete affected
     // partitions. Only an empty final partition list denotes a full-table replacement.
     const bool reset_all_realtime_progress = partitions.empty();
-    return TryCommit(changes_provider, commit_identifier, watermark, properties,
-                     /*realtime_ranges=*/{}, Snapshot::CommitKind::Overwrite(),
-                     reset_all_realtime_progress, partitions,
-                     /*detect_conflicts=*/true,
-                     /*retry_on_conflict=*/true);
+    PAIMON_ASSIGN_OR_RAISE(TryCommitResult result,
+                           TryCommit(changes_provider, commit_identifier, watermark, properties,
+                                     /*realtime_ranges=*/{}, Snapshot::CommitKind::Overwrite(),
+                                     reset_all_realtime_progress, partitions,
+                                     /*detect_conflicts=*/true,
+                                     /*retry_on_conflict=*/true));
+    return result.attempts;
 }
 
 Status FileStoreCommitImpl::Commit(
@@ -854,19 +893,22 @@ Status FileStoreCommitImpl::Commit(
         }
 
         PAIMON_ASSIGN_OR_RAISE(
-            int32_t cnt,
+            TryCommitResult result,
             TryCommit(changes.append_table_files, changes.append_changelog,
                       changes.append_index_files, committable->Identifier(),
                       committable->Watermark(), committable->Properties(), realtime_ranges,
                       commit_kind,
                       /*reset_all_realtime_progress=*/false,
                       /*removed_realtime_partitions=*/{}, check_append_files, retry_on_conflict));
-        attempt += cnt;
+        attempt += result.attempts;
+        if (result.already_committed) {
+            return Status::OK();
+        }
         generated_snapshot += 1;
     }
 
     if (changes.HasCompactChanges()) {
-        PAIMON_ASSIGN_OR_RAISE(int32_t cnt,
+        PAIMON_ASSIGN_OR_RAISE(TryCommitResult result,
                                TryCommit(changes.compact_table_files, changes.compact_changelog,
                                          changes.compact_index_files, committable->Identifier(),
                                          committable->Watermark(), committable->Properties(),
@@ -874,7 +916,7 @@ Status FileStoreCommitImpl::Commit(
                                          /*reset_all_realtime_progress=*/false,
                                          /*removed_realtime_partitions=*/{},
                                          /*detect_conflicts=*/true, retry_on_conflict));
-        attempt += cnt;
+        attempt += result.attempts;
         generated_snapshot += 1;
     }
     return Status::OK();
@@ -936,40 +978,25 @@ Result<int64_t> FileStoreCommitImpl::CommitWithProgress(
 
     std::shared_ptr<ManifestCommittable> committable =
         CreateManifestCommittable(identifier, commit_messages, watermark, /*properties=*/{});
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<ManifestCommittable>> pending_committables,
-                           FilterCommitted({committable}));
-    const bool identifier_committed = pending_committables.empty();
-
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
-                           snapshot_manager_->LatestSnapshot());
-    PAIMON_ASSIGN_OR_RAISE(RealtimeOffsetMap committed_offsets,
-                           RealtimeCommitProperties::ReadOffsets(latest_snapshot, fs_));
-    PAIMON_ASSIGN_OR_RAISE(bool ranges_committed, RealtimeCommitProperties::AreRangesCommitted(
-                                                      committed_offsets, realtime_ranges));
-    if (ranges_committed != identifier_committed) {
-        return Status::Invalid(
-            ranges_committed
-                ? "real-time offset ranges were committed by another commit user or identifier"
-                : "real-time commit identifier was committed without the requested offset ranges");
-    }
-    if (ranges_committed) {
-        if (!latest_snapshot) {
-            return Status::Invalid("real-time commit ranges are covered without a snapshot");
-        }
-        return latest_snapshot->Id();
+    PAIMON_ASSIGN_OR_RAISE(SnapshotManager::LatestSnapshotResult latest,
+                           snapshot_manager_->LatestSnapshotWithSource());
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> committed_snapshot_id,
+                           ResolveRealtimeCommit(latest, identifier, realtime_ranges));
+    if (committed_snapshot_id) {
+        return committed_snapshot_id.value();
     }
 
-    PAIMON_RETURN_NOT_OK(CheckFilesExistence(pending_committables));
-    const int64_t previous_snapshot_id = last_committed_snapshot_id_;
+    PAIMON_RETURN_NOT_OK(CheckFilesExistence({committable}));
+    last_committed_snapshot_id_ = -1;
     PAIMON_RETURN_NOT_OK(Commit(committable, /*check_append_files=*/false,
-                                /*retry_on_conflict=*/false, realtime_ranges));
-    if (last_committed_snapshot_id_ <= previous_snapshot_id) {
+                                /*retry_on_conflict=*/true, realtime_ranges));
+    if (last_committed_snapshot_id_ < Snapshot::FIRST_SNAPSHOT_ID) {
         return Status::Invalid("real-time commit did not produce a snapshot");
     }
     return last_committed_snapshot_id_;
 }
 
-Result<int32_t> FileStoreCommitImpl::TryCommit(
+Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
     const std::vector<ManifestEntry>& delta_files,
     const std::vector<ManifestEntry>& changelog_files,
     const std::vector<IndexManifestEntry>& index_entries, int64_t identifier,
@@ -985,7 +1012,7 @@ Result<int32_t> FileStoreCommitImpl::TryCommit(
                      detect_conflicts, retry_on_conflict);
 }
 
-Result<int32_t> FileStoreCommitImpl::TryCommit(
+Result<FileStoreCommitImpl::TryCommitResult> FileStoreCommitImpl::TryCommit(
     const std::shared_ptr<CommitChangesProvider>& changes_provider, int64_t identifier,
     std::optional<int64_t> watermark, const std::map<std::string, std::string>& properties,
     const std::map<RealtimePartitionBucket, OffsetRange>& realtime_ranges,
@@ -995,8 +1022,17 @@ Result<int32_t> FileStoreCommitImpl::TryCommit(
     int32_t retry_count = 0;
     int64_t start_millis = DateTimeUtils::GetCurrentUTCTimeUs() / 1000;
     while (true) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> latest_snapshot,
-                               snapshot_manager_->LatestSnapshot());
+        PAIMON_ASSIGN_OR_RAISE(SnapshotManager::LatestSnapshotResult latest,
+                               snapshot_manager_->LatestSnapshotWithSource());
+        const std::optional<Snapshot>& latest_snapshot = latest.snapshot;
+        if (!realtime_ranges.empty()) {
+            PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> committed_snapshot_id,
+                                   ResolveRealtimeCommit(latest, identifier, realtime_ranges));
+            if (committed_snapshot_id) {
+                last_committed_snapshot_id_ = committed_snapshot_id.value();
+                return TryCommitResult{retry_count, /*already_committed=*/true};
+            }
+        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CommitChanges> commit_changes,
                                changes_provider->Provide(latest_snapshot));
         using SnapshotProperties = std::map<std::string, std::string>;
@@ -1014,22 +1050,36 @@ Result<int32_t> FileStoreCommitImpl::TryCommit(
         if (commit_success) {
             break;
         }
+        if (!realtime_ranges.empty()) {
+            auto offsets_iter = snapshot_properties.find(RealtimeCommitProperties::kOffsetsKey);
+            if (offsets_iter != snapshot_properties.end()) {
+                // AtomicStore reported a known conflict, so this attempt's offsets file is not
+                // referenced by a snapshot and can be removed before rebasing the next attempt.
+                [[maybe_unused]] Status cleanup_status =
+                    fs_->Delete(offsets_iter->second, /*recursive=*/false);
+            }
+        }
         if (!retry_on_conflict) {
-            // TODO(xinyu.lxy): Support failure recovery and idempotent retry for real-time commits.
             return Status::Invalid("real-time commit failed due to snapshot conflict");
         }
         int64_t current_millis = DateTimeUtils::GetCurrentUTCTimeUs() / 1000;
         if (current_millis - start_millis > options_.GetCommitTimeout() ||
             retry_count >= options_.GetCommitMaxRetries()) {
-            return Status::Invalid(
-                fmt::format("Commit failed after {} millis with {} retries, there maybe exist "
-                            "commit conflicts between multiple jobs.",
-                            options_.GetCommitTimeout(), retry_count));
+            return Status::Invalid(fmt::format(
+                "Commit to table {}{} failed after {} millis (commit.timeout is {} millis) with "
+                "{} retries, there maybe exist commit conflicts between multiple jobs.",
+                root_path_, CommitTargetSuffix(), current_millis - start_millis,
+                options_.GetCommitTimeout(), retry_count));
         }
+        PAIMON_LOG_INFO(logger_,
+                        "Commit to table %s%s lost a race with a concurrent commit, rebasing and "
+                        "retrying (retry %d of %d).",
+                        root_path_.c_str(), CommitTargetSuffix().c_str(), retry_count + 1,
+                        options_.GetCommitMaxRetries());
         retry_waiter_.RetryWait(retry_count);
         retry_count++;
     }
-    return retry_count + 1;
+    return TryCommitResult{retry_count + 1, /*already_committed=*/false};
 }
 
 Status FileStoreCommitImpl::CheckSameBucketFromSnapshot(
@@ -1171,6 +1221,9 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
             for (const auto& entry : delta_files) {
                 delta_data_files.push_back(entry.File());
             }
+            if (schema_id_loader_) {
+                PAIMON_RETURN_NOT_OK(CheckRowIdSchemasArePublished(delta_data_files));
+            }
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<RowIdColumnConflictChecker> checker,
                 RowIdColumnConflictChecker::FromDataFiles(schema_manager_, delta_data_files));
@@ -1187,18 +1240,19 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
     std::pair<std::string, int64_t> base_manifest_list;
     std::pair<std::string, int64_t> delta_manifest_list;
     std::vector<PartitionEntry> delta_statistics;
-    std::string new_snapshot_path;
 
     std::optional<std::string> old_index_manifest;
     std::optional<std::string> index_manifest_name;
     ScopeGuard guard([&]() {
         int64_t commit_time = ((DateTimeUtils::GetCurrentUTCTimeUs() / 1000) - start_millis) / 1000;
         PAIMON_LOG_WARN(logger_,
-                        "Atomic commit failed for snapshot #%ld (path %s) by user %s with "
-                        "identifier %ld and kind %s after %ld seconds. Clean up and try again.",
-                        new_snapshot_id, new_snapshot_path.c_str(), commit_user_.c_str(),
-                        identifier, Snapshot::CommitKind::ToString(commit_kind).c_str(),
-                        commit_time);
+                        "Atomic commit failed for snapshot #%ld of table %s%s by user %s with "
+                        "identifier %ld and kind %s, based on snapshot uuid %s, after %ld "
+                        "seconds. Clean up and try again.",
+                        new_snapshot_id, root_path_.c_str(), CommitTargetSuffix().c_str(),
+                        commit_user_.c_str(), identifier,
+                        Snapshot::CommitKind::ToString(commit_kind).c_str(),
+                        FormatBaseSnapshotUuid(latest_snapshot).c_str(), commit_time);
 
         CleanUpTmpManifests(base_manifest_list.first, delta_manifest_list.first,
                             merge_before_manifests, merge_after_manifests, old_index_manifest,
@@ -1290,11 +1344,16 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
         latest_snapshot ? latest_snapshot.value().Statistics() : std::nullopt;
     std::optional<int64_t> changelog_record_count =
         ManifestEntry::NullableRecordCount(changelog_entries);
-    int64_t schema_id = 0;
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> table_schema,
-                           schema_manager_->Latest());
-    if (table_schema) {
-        schema_id = table_schema.value()->Id();
+    // Reload on each attempt to account for concurrent schema changes.
+    int64_t schema_id = table_schema_->Id();
+    if (schema_id_loader_) {
+        PAIMON_ASSIGN_OR_RAISE(schema_id, schema_id_loader_());
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                               schema_manager_->Latest());
+        if (latest_schema) {
+            schema_id = latest_schema.value()->Id();
+        }
     }
 
     // Keep Java semantics: inherit previous stats only when schema matches.
@@ -1315,7 +1374,7 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
             snapshot_properties, latest_max_sequence_number, delta_files);
     }
 
-    // prepare snapshot file
+    PAIMON_ASSIGN_OR_RAISE(std::string new_snapshot_uuid, Snapshot::GenerateUuid());
     Snapshot new_snapshot(
         new_snapshot_id, schema_id, base_manifest_list.first, base_manifest_list.second,
         delta_manifest_list.first, delta_manifest_list.second,
@@ -1329,32 +1388,31 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
         snapshot_properties.empty()
             ? std::nullopt
             : std::optional<std::map<std::string, std::string>>(snapshot_properties),
-        next_row_id_start);
+        next_row_id_start, new_snapshot_uuid);
 
-    Result<bool> commit_result = CommitSnapshotImpl(new_snapshot, delta_statistics);
+    Result<bool> commit_result =
+        CommitSnapshotImpl(latest_snapshot, new_snapshot, delta_statistics);
     if (!commit_result.ok()) {
-        // commit exception, not sure about the situation and should not clean up the files.
+        // The snapshot may have been published before the response was lost. Keep its metadata
+        // and let FilterAndCommit resolve the outcome before retrying.
         PAIMON_LOG_WARN(logger_,
                         "You need to call FilterAndCommit to retry commit for exception. %s",
                         commit_result.status().ToString().c_str());
 
-        // To prevent the case where an atomic write times out but actually succeeds,
-        // retrying the commit could lead to the snapshot file being committed multiple times.
-        // Therefore, retries should be handled by the upper layer,
-        // which should call FilterAndCommit to avoid duplicate commits.
-        // Therefore, we should not trigger cleanup here,
-        // as it may delete meta files from a snapshot that was just written by ourselves,
-        // leading to an incomplete or corrupted snapshot.
         guard.Release();
         return Status::Invalid("You need to call FilterAndCommit to retry commit for exception. ",
                                commit_result.status().ToString());
     }
     bool commit_success = commit_result.value();
     if (commit_success) {
+        const std::string new_snapshot_uuid_str = new_snapshot.Uuid().value_or("none");
         PAIMON_LOG_INFO(logger_,
-                        "Successfully commit snapshot %ld to table %s by user %s with identifier "
-                        "%ld and kind %s.",
-                        new_snapshot.Id(), root_path_.c_str(), commit_user_.c_str(),
+                        "%s snapshot %ld (uuid %s) to table %s%s by user %s with "
+                        "identifier %ld and kind %s.",
+                        snapshot_commit_->IsRequestOnly() ? "Prepared commit request for"
+                                                          : "Successfully committed",
+                        new_snapshot.Id(), new_snapshot_uuid_str.c_str(), root_path_.c_str(),
+                        CommitTargetSuffix().c_str(), commit_user_.c_str(),
                         new_snapshot.CommitIdentifier(),
                         Snapshot::CommitKind::ToString(new_snapshot.GetCommitKind()).c_str());
         last_committed_snapshot_id_ = new_snapshot.Id();
@@ -1366,8 +1424,42 @@ Result<bool> FileStoreCommitImpl::TryCommitOnce(
     }
 }
 
+Status FileStoreCommitImpl::CheckRowIdSchemasArePublished(
+    const std::vector<std::shared_ptr<DataFileMeta>>& delta_files) const {
+    std::set<int64_t> needed_schema_ids;
+    for (const std::shared_ptr<DataFileMeta>& file : delta_files) {
+        if (file != nullptr && file->first_row_id.has_value()) {
+            needed_schema_ids.insert(file->schema_id);
+        }
+    }
+    for (int64_t schema_id : needed_schema_ids) {
+        PAIMON_ASSIGN_OR_RAISE(bool published, schema_manager_->SchemaExists(schema_id));
+        if (!published) {
+            return Status::NotImplemented(fmt::format(
+                "row id conflict checking requires data file schemas in the table directory, "
+                "but schema {} is not there; the catalog supplies only the current schema. "
+                "Publish the required schema before checking conflicts",
+                schema_id));
+        }
+    }
+    return Status::OK();
+}
+
+std::string FileStoreCommitImpl::CommitTargetSuffix() const {
+    const std::string target = snapshot_commit_->DescribeTarget();
+    return target.empty() ? std::string() : " (" + target + ")";
+}
+
+std::string FileStoreCommitImpl::FormatBaseSnapshotUuid(const std::optional<Snapshot>& snapshot) {
+    if (!snapshot || !snapshot.value().Uuid()) {
+        return "none";
+    }
+    return snapshot.value().Uuid().value();
+}
+
 Result<bool> FileStoreCommitImpl::CommitSnapshotImpl(
-    const Snapshot& new_snapshot, const std::vector<PartitionEntry>& delta_statistics) {
+    const std::optional<Snapshot>& base_snapshot, const Snapshot& new_snapshot,
+    const std::vector<PartitionEntry>& delta_statistics) {
     std::vector<PartitionStatistics> statistics;
     statistics.reserve(delta_statistics.size());
     for (const auto& entry : delta_statistics) {
@@ -1375,16 +1467,20 @@ Result<bool> FileStoreCommitImpl::CommitSnapshotImpl(
                                entry.ToPartitionStatistics(partition_computer_.get()));
         statistics.emplace_back(std::move(partition_statistics));
     }
-    Result<bool> commit_result = snapshot_commit_->Commit(new_snapshot, statistics);
+    std::optional<std::string> base_snapshot_uuid =
+        base_snapshot ? base_snapshot.value().Uuid() : std::nullopt;
+    Result<bool> commit_result =
+        snapshot_commit_->Commit(base_snapshot_uuid, new_snapshot, statistics);
     if (!commit_result.ok()) {
-        // exception when performing the atomic rename,
-        // we cannot clean up because we can't determine the success
+        // An error leaves publication uncertain; preserve metadata and report the attempted UUID.
         return Status::Invalid(fmt::format(
-            "Exception occurs when committing snapshot #{} by user {} with identifier {} and kind "
-            "{}. Cannot clean up because we can't determine the success. {}",
-            new_snapshot.Id(), commit_user_, new_snapshot.CommitIdentifier(),
+            "Exception occurs when committing snapshot #{} (uuid {}) of table {}{} by user {} "
+            "with identifier {} and kind {}, based on snapshot uuid {}. Cannot clean up because "
+            "we can't determine the success. {}",
+            new_snapshot.Id(), new_snapshot.Uuid().value_or("none"), root_path_,
+            CommitTargetSuffix(), commit_user_, new_snapshot.CommitIdentifier(),
             Snapshot::CommitKind::ToString(new_snapshot.GetCommitKind()),
-            commit_result.status().ToString()));
+            base_snapshot_uuid.value_or("none"), commit_result.status().ToString()));
     }
     return commit_result;
 }

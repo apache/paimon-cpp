@@ -61,6 +61,8 @@ class SpillReader : public KeyValueRecordReader {
 
     Result<std::unique_ptr<KeyValueRecordReader::Iterator>> NextBatch() override;
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
+    /// Nothing to warm up: the spill file is read directly, without a prefetching reader below.
+    void Warmup() override {}
     void Close() override;
 
  private:

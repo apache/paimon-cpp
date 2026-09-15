@@ -47,6 +47,13 @@ TEST(FieldAggregatorFactoryTest, TestSimple) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldAggregator> agg,
                              FieldAggregatorFactory::CreateFieldAggregator(
+                                 "f0", arrow::int32(), "product", options, GetDefaultPool()));
+        ASSERT_TRUE(dynamic_cast<FieldProductAgg*>(agg.get()));
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FieldAggregator> agg,
+                             FieldAggregatorFactory::CreateFieldAggregator(
                                  "f0", arrow::int32(), "min", options, GetDefaultPool()));
         ASSERT_TRUE(dynamic_cast<FieldMinAgg*>(agg.get()));
     }

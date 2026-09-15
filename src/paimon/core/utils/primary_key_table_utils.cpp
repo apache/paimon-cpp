@@ -122,10 +122,7 @@ Status PrimaryKeyTableUtils::ValidateRealtimeOptions(const CoreOptions& options,
     if (options.GetChangelogProducer() != ChangelogProducer::NONE) {
         return Status::NotImplemented("PK realtime supports only the NONE changelog producer");
     }
-    if (options.DeletionVectorsEnabled()) {
-        return Status::NotImplemented("PK realtime does not support deletion vectors");
-    }
-    if (options.NeedLookup()) {
+    if (options.NeedLookup() && !options.DeletionVectorsEnabled()) {
         return Status::NotImplemented("PK realtime does not support lookup");
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> primary_key_fields,

@@ -63,6 +63,7 @@ set(PAIMON_COMMON_SRCS
     common/data/variant/variant_type_utils.cpp
     common/defs.cpp
     common/executor/executor.cpp
+    common/executor/reader_build_executor.cpp
     common/factories/singleton.cpp
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
@@ -181,6 +182,7 @@ set(PAIMON_COMMON_SRCS
     common/data/shredding/shredding_file_reader.cpp
     common/utils/delta_varint_compressor.cpp
     common/utils/fields_comparator.cpp
+    common/utils/file_block_cache.cpp
     common/utils/path_util.cpp
     common/utils/range.cpp
     common/utils/read_ahead_cache.cpp
@@ -324,6 +326,7 @@ set(PAIMON_CORE_SRCS
     core/mergetree/compact/aggregate/field_collect_agg.cpp
     core/mergetree/compact/aggregate/field_merge_map_agg.cpp
     core/mergetree/compact/aggregate/field_nested_update_agg.cpp
+    core/mergetree/compact/aggregate/field_product_agg.cpp
     core/mergetree/compact/aggregate/field_sketch_agg.cpp
     core/mergetree/compact/aggregate/field_sum_agg.cpp
     core/mergetree/compact/interval_partition.cpp
@@ -391,10 +394,11 @@ set(PAIMON_CORE_SRCS
     core/realtime/arrow_realtime_store_factory.cpp
     core/realtime/realtime_offset_batch_reader.cpp
     core/realtime/realtime_primary_key_reader.cpp
-    core/realtime/primary_key_realtime_store.cpp
     core/realtime/realtime_append_only_writer.cpp
     core/realtime/realtime_context.cpp
     core/realtime/realtime_context_impl.cpp
+    core/realtime/realtime_schema_layout.cpp
+    core/realtime/realtime_snapshot_offsets.cpp
     core/realtime/realtime_store_read_pipeline.cpp
     core/realtime/realtime_primary_key_writer.cpp
     core/postpone/postpone_bucket_writer.cpp
@@ -634,6 +638,7 @@ if(PAIMON_BUILD_TESTS)
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp
                     common/reader/concat_batch_reader_test.cpp
+                    common/reader/data_file_reader_factory_test.cpp
                     common/reader/late_materializing_file_batch_reader_test.cpp
                     common/reader/predicate_batch_reader_test.cpp
                     common/reader/prefetch_file_batch_reader_impl_test.cpp
@@ -687,6 +692,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/roaring_bitmap64_test.cpp
                     common/utils/range_helper_test.cpp
                     common/utils/read_ahead_cache_test.cpp
+                    common/utils/file_block_cache_test.cpp
                     common/io/cache/lru_cache_test.cpp
                     common/io/cache/cache_manager_test.cpp
                     common/utils/byte_range_combiner_test.cpp
@@ -757,6 +763,7 @@ if(PAIMON_BUILD_TESTS)
                     core/casting/cast_executor_test.cpp
                     core/casting/casted_row_test.cpp
                     core/casting/casting_utils_test.cpp
+                    core/catalog/catalog_snapshot_commit_test.cpp
                     core/catalog/commit_table_request_test.cpp
                     core/catalog/renaming_snapshot_commit_test.cpp
                     core/catalog/file_system_catalog_test.cpp
@@ -822,6 +829,7 @@ if(PAIMON_BUILD_TESTS)
                     core/realtime/primary_key_realtime_store_test.cpp
                     core/realtime/realtime_offset_batch_reader_test.cpp
                     core/realtime/realtime_store_read_pipeline_test.cpp
+                    core/realtime/realtime_schema_layout_test.cpp
                     core/realtime/realtime_primary_key_reader_test.cpp
                     core/realtime/realtime_context_test.cpp
                     core/realtime/realtime_reader_test.cpp
@@ -842,6 +850,7 @@ if(PAIMON_BUILD_TESTS)
                     core/mergetree/compact/aggregate/field_min_max_agg_test.cpp
                     core/mergetree/compact/aggregate/field_nested_update_agg_test.cpp
                     core/mergetree/compact/aggregate/field_primary_key_agg_test.cpp
+                    core/mergetree/compact/aggregate/field_product_agg_test.cpp
                     core/mergetree/compact/aggregate/field_sketch_agg_test.cpp
                     core/mergetree/compact/aggregate/field_sum_agg_test.cpp
                     core/mergetree/compact/deduplicate_merge_function_test.cpp

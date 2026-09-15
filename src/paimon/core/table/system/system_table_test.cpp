@@ -40,6 +40,7 @@
 #include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/metrics.h"
+#include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -229,6 +230,49 @@ TEST(SystemTableTest, TestReadOptimizedSystemTablePathParsing) {
     ASSERT_TRUE(parsed->branch.has_value());
     ASSERT_EQ(parsed->branch.value(), "audit");
     ASSERT_EQ(parsed->system_table_name, ReadOptimizedSystemTable::kName);
+}
+
+// A system table builds a fresh ReadContext for the data table underneath it, starting from the
+// defaults, so a setting that is not copied across silently reverts: a caller that asked for NONE
+// or RAW would get DECODED back. `$ro` has its own builder chain and `$audit_log` and `$binlog`
+// share one, so all three are pinned here.
+TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
+    std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
+                                                  {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         CreateTableSchemaForTest(options));
+
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
+
+    for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
+        ReadContextBuilder builder("/tmp/table");
+        builder.SetOptions(options).SetWarmupLevel(level);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> caller_unique_context, builder.Finish());
+        std::shared_ptr<ReadContext> caller_context(std::move(caller_unique_context));
+        ASSERT_EQ(level, caller_context->GetWarmupLevel());
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ro_context,
+                             read_optimized.CreateDataReadContext(caller_context));
+        EXPECT_EQ(level, ro_context->GetWarmupLevel()) << "$ro dropped the caller's WarmupLevel";
+
+        // The changelog chain is checked where the context is built rather than on the read: the
+        // ChangelogTableRead that wraps it is local to audit_log_system_table.cpp, so a test cannot
+        // name the type to reach the read underneath it. EXPECT rather than ASSERT, because the
+        // three chains are independent and one broken chain must not hide another.
+        ASSERT_OK_AND_ASSIGN(auto audit_log_options, audit_log.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context,
+                             audit_log.CreateDataReadContext(caller_context, audit_log_options));
+        EXPECT_EQ(level, audit_log_context->GetWarmupLevel())
+            << "$audit_log dropped the caller's WarmupLevel";
+
+        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context,
+                             binlog.CreateDataReadContext(caller_context, binlog_options));
+        EXPECT_EQ(level, binlog_context->GetWarmupLevel())
+            << "$binlog dropped the caller's WarmupLevel";
+    }
 }
 
 TEST(SystemTableTest, TestGlobalSystemTableWithoutCatalogReturnsNotImplemented) {

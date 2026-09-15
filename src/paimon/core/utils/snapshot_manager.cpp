@@ -24,6 +24,7 @@
 #include <thread>
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/snapshot.h"
@@ -57,41 +58,117 @@ const std::string& SnapshotManager::Branch() const {
 }
 
 Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshotOfUser(const std::string& user) {
-    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> latest_id, LatestSnapshotId());
-    if (latest_id == std::nullopt) {
+    // Catalog snapshots may have no corresponding file in the table directory.
+    PAIMON_ASSIGN_OR_RAISE(LatestSnapshotResult latest, LatestSnapshotWithSource());
+    return LatestSnapshotOfUserAtOrBefore(user, latest.snapshot, latest.from_catalog);
+}
+
+Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshotOfUserAtOrBefore(
+    const std::string& user, const std::optional<Snapshot>& latest,
+    bool latest_from_catalog) const {
+    if (!latest) {
         return std::optional<Snapshot>();
     }
-    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest_id, EarliestSnapshotId());
-    if (earliest_id == std::nullopt) {
-        return Status::Invalid(
-            "Latest snapshot id is not null, but earliest snapshot id is null. This is "
-            "unexpected.");
+    if (latest.value().CommitUser() == user) {
+        return latest;
     }
 
-    for (int64_t id = latest_id.value(); id >= earliest_id.value(); id--) {
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(id));
-        if (snapshot.CommitUser() == user) {
-            return std::optional<Snapshot>(snapshot);
+    // Only EARLIEST proves catalog history expired; the oldest local file may belong to
+    // an incompletely published history.
+    int64_t search_end = Snapshot::FIRST_SNAPSHOT_ID;
+    if (latest_from_catalog) {
+        search_end = ReadHint(EARLIEST, SnapshotDirectory()).value_or(Snapshot::FIRST_SNAPSHOT_ID);
+    } else {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> earliest_id, EarliestSnapshotId());
+        search_end = earliest_id.value_or(Snapshot::FIRST_SNAPSHOT_ID);
+    }
+    search_end = std::max(search_end, Snapshot::FIRST_SNAPSHOT_ID);
+    for (int64_t id = latest.value().Id() - 1; id >= search_end; id--) {
+        Result<Snapshot> snapshot = LoadSnapshot(id);
+        if (!snapshot.ok()) {
+            if (snapshot.status().IsNotExist()) {
+                if (latest_from_catalog) {
+                    if (ExpiredSinceBoundaryWasRead(id)) {
+                        break;
+                    }
+                    // Without proof of expiration, treating this gap as empty history could
+                    // cause a recovering writer to commit twice.
+                    return Status::Invalid(fmt::format(
+                        "cannot tell which snapshot of table {} commit user {} wrote last: "
+                        "snapshot #{} is not under the table directory although it is at or above "
+                        "the earliest retained snapshot #{}, and this client loads only the "
+                        "latest snapshot from the catalog which holds the versions of this table",
+                        root_path_, user, id, search_end));
+                }
+                break;
+            }
+            return snapshot.status();
+        }
+        if (snapshot.value().CommitUser() == user) {
+            return std::optional<Snapshot>(snapshot.value());
         }
     }
     return std::optional<Snapshot>();
+}
+
+bool SnapshotManager::ExpiredSinceBoundaryWasRead(int64_t id) const {
+    // Expiration deletes files before advancing EARLIEST; allow the hint time to catch up.
+    for (int32_t attempt = 0; attempt < READ_HINT_RETRY_NUM; ++attempt) {
+        std::optional<int64_t> earliest = ReadHint(EARLIEST, SnapshotDirectory());
+        if (earliest && earliest.value() > id) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(READ_HINT_RETRY_INTERVAL));
+    }
+    return false;
 }
 
 Result<Snapshot> SnapshotManager::LoadSnapshot(int64_t snapshot_id) const {
     return Snapshot::FromPath(fs_, SnapshotPath(snapshot_id));
 }
 
+void SnapshotManager::SetSnapshotLoader(SnapshotLoader loader) {
+    snapshot_loader_ = std::move(loader);
+}
+
 Result<std::optional<Snapshot>> SnapshotManager::LatestSnapshot() const {
-    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> snapshot_id, LatestSnapshotId());
-    if (snapshot_id == std::nullopt) {
-        return std::optional<Snapshot>();
-    } else {
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(snapshot_id.value()));
-        return std::optional<Snapshot>(snapshot);
+    PAIMON_ASSIGN_OR_RAISE(LatestSnapshotResult latest, LatestSnapshotWithSource());
+    return latest.snapshot;
+}
+
+Result<SnapshotManager::LatestSnapshotResult> SnapshotManager::LatestSnapshotWithSource() const {
+    if (snapshot_loader_) {
+        Result<std::optional<Snapshot>> loaded = snapshot_loader_();
+        if (loaded.ok()) {
+            return LatestSnapshotResult{loaded.value(), /*from_catalog=*/true};
+        }
+        if (!loaded.status().IsNotImplemented()) {
+            return loaded.status();
+        }
     }
+    PAIMON_ASSIGN_OR_RAISE(std::optional<int64_t> snapshot_id, LatestSnapshotIdFromFileSystem());
+    if (snapshot_id == std::nullopt) {
+        return LatestSnapshotResult{std::optional<Snapshot>(), /*from_catalog=*/false};
+    }
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(snapshot_id.value()));
+    return LatestSnapshotResult{std::optional<Snapshot>(snapshot), /*from_catalog=*/false};
 }
 
 Result<std::optional<int64_t>> SnapshotManager::LatestSnapshotId() const {
+    if (snapshot_loader_) {
+        Result<std::optional<Snapshot>> loaded = snapshot_loader_();
+        if (loaded.ok()) {
+            return loaded.value() ? std::optional<int64_t>(loaded.value().value().Id())
+                                  : std::nullopt;
+        }
+        if (!loaded.status().IsNotImplemented()) {
+            return loaded.status();
+        }
+    }
+    return LatestSnapshotIdFromFileSystem();
+}
+
+Result<std::optional<int64_t>> SnapshotManager::LatestSnapshotIdFromFileSystem() const {
     return FindLatest(
         SnapshotDirectory(), std::string(SNAPSHOT_PREFIX),
         [this](int64_t snapshot_id) -> std::string { return SnapshotPath(snapshot_id); });

@@ -68,7 +68,7 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         uint32_t prefetch_max_parallel_num, int32_t batch_size, uint32_t prefetch_batch_count,
         bool enable_adaptive_prefetch_strategy, const std::shared_ptr<Executor>& executor,
         bool initialize_read_ranges, bool read_ahead_cache_enabled, const CacheConfig& cache_config,
-        bool enable_io_metrics, const std::shared_ptr<MemoryPool>& pool,
+        bool enable_io_metrics, WarmupLevel warmup_level, const std::shared_ptr<MemoryPool>& pool,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~PrefetchFileBatchReaderImpl() override;
@@ -103,6 +103,8 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
 
     Status RefreshReadRanges();
 
+    void Warmup() override;
+
     inline PrefetchFileBatchReader* GetFirstReader() const {
         return readers_[0].get();
     }
@@ -122,11 +124,23 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
         const std::vector<std::shared_ptr<PrefetchFileBatchReader>>& readers, int32_t batch_size,
         uint32_t prefetch_queue_capacity, bool enable_adaptive_prefetch_strategy,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<ReadAheadCache>& cache,
-        const std::shared_ptr<PrefetchIoMetricsState>& io_metrics,
+        const std::shared_ptr<PrefetchIoMetricsState>& io_metrics, WarmupLevel warmup_level,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Status CleanUp();
     void Workloop();
+    /// Starts the background prefetch thread if it is not running yet. The first read does this
+    /// itself; Warmup() is the same call made earlier, so the two must not diverge.
+    void EnsureBackgroundThread();
+    /// Initializes and warms the read-ahead cache at most once per read-range generation, using the
+    /// first reader's PreBufferRange(). Shared by Workloop() (DECODED) and Warmup() (RAW), so the
+    /// two never Init the cache twice. The flag only elects the caller that initializes, it does
+    /// not make a second caller wait: the two calls are ordered rather than concurrent, because a
+    /// RAW warmup runs on the reader's own thread before that same thread starts the background
+    /// thread that runs Workloop(). A no-op when there is no cache. Errors are recorded via
+    /// SetReadStatus() rather than returned: a warmup hint for a file that may never be read must
+    /// not fail an in-flight read.
+    void WarmCacheOnce();
     void SetReadStatus(const Status& status);
     Status GetReadStatus() const;
     Result<bool> IsEofRange(const std::pair<uint64_t, uint64_t>& read_range) const;
@@ -179,8 +193,12 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     std::vector<uint64_t> current_batch_global_row_ids_;
     bool need_prefetch_ = false;
     bool read_ranges_freshed_ = false;
+    // Guards the one-shot read-ahead cache Init/Warmup so it runs at most once per read-range
+    // generation. Reset by CleanUp() alongside read_ranges_freshed_.
+    std::atomic<bool> cache_warmed_{false};
     const uint32_t prefetch_queue_capacity_;
     const bool enable_adaptive_prefetch_strategy_;
+    const WarmupLevel warmup_level_;
     int32_t parallel_num_;
     std::shared_ptr<PrefetchMetricsState> prefetch_metrics_;
     std::shared_ptr<PrefetchIoMetricsState> io_metrics_;

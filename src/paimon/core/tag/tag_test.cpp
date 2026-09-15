@@ -162,6 +162,41 @@ TEST_F(TagTest, TestJsonizable) {
     ASSERT_EQ(ReplaceAll(json_str, false), ReplaceAll(new_json_str, true));
 }
 
+TEST_F(TagTest, TestTrimToSnapshotKeepsTheUuid) {
+    const std::string json_str = R"({
+        "version" : 3,
+        "uuid" : "snapshot-uuid-1",
+        "id" : 1,
+        "schemaId" : 0,
+        "baseManifestList" : "manifest-list-d96fcc30-99e8-4f45-962b-a1157c56f378-0",
+        "deltaManifestList" : "manifest-list-d96fcc30-99e8-4f45-962b-a1157c56f378-1",
+        "commitUser" : "0e4d92f7-53b0-40d6-a7c0-102bf3801e6a",
+        "commitIdentifier" : 9223372036854775807,
+        "commitKind" : "APPEND",
+        "timeMillis" : 1711692199281,
+        "totalRecordCount" : 3,
+        "deltaRecordCount" : 3,
+        "tagCreateTime" : [ 2026, 1, 3, 5, 7, 9, 11 ],
+        "tagTimeRetained" : 4.000000000
+    })";
+
+    Tag tag;
+    ASSERT_OK(RapidJsonUtil::FromJsonString(json_str, &tag));
+    ASSERT_EQ(tag.Uuid(), std::optional<std::string>("snapshot-uuid-1"));
+
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, tag.TrimToSnapshot());
+    ASSERT_EQ(snapshot.Uuid(), std::optional<std::string>("snapshot-uuid-1"));
+    ASSERT_EQ(snapshot.Id(), 1);
+    ASSERT_EQ(snapshot.CommitUser(), "0e4d92f7-53b0-40d6-a7c0-102bf3801e6a");
+
+    const Tag without_uuid(3, 1, 0, "bml", std::nullopt, "dml", std::nullopt, std::nullopt,
+                           std::nullopt, std::nullopt, "u", 1, Snapshot::CommitKind::Append(), 1, 1,
+                           1, std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
+                           std::nullopt, std::nullopt);
+    ASSERT_OK_AND_ASSIGN(Snapshot trimmed, without_uuid.TrimToSnapshot());
+    ASSERT_EQ(trimmed.Uuid(), std::nullopt);
+}
+
 TEST_F(TagTest, TestSerializeAndDeserialize) {
     const auto se_and_de = [&](const std::string& data_path) {
         auto fs = std::make_shared<LocalFileSystem>();

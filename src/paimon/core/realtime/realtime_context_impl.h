@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -59,6 +60,11 @@ struct RealtimePartitionBucketView {
     std::shared_ptr<RealtimeReadView> read_view;
 };
 
+struct RealtimeReadState {
+    std::vector<RealtimePartitionBucketView> views;
+    RealtimeOffsetMap committed_offsets;
+};
+
 class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
  public:
     static Result<std::shared_ptr<RealtimeContextImpl>> Create(
@@ -69,13 +75,20 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     static Result<std::shared_ptr<RealtimeContextImpl>> Cast(
         const std::shared_ptr<RealtimeContext>& context);
 
+    // Fences new writers and scans while allowing already pinned views to finish.
+    void Invalidate();
+
+    Status CheckUsable() const;
+
+    std::shared_ptr<Metrics> GetMetrics() const override;
+
     Result<RealtimeStoreState> GetOrCreateRealtimeStore(
         RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket);
 
     Result<int64_t> AdvanceMaterializedMaxSequenceNumber(
         const RealtimePartitionBucket& partition_bucket, int64_t max_sequence_number);
 
-    Result<std::vector<RealtimePartitionBucketView>> AcquireReadViews();
+    Result<RealtimeReadState> AcquireReadState();
 
     Result<std::string> PinReadView(const RealtimePartitionBucketView& view, int64_t ttl_millis);
 
@@ -111,7 +124,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     void CleanupReadViews();
 
     std::shared_ptr<RealtimeStoreFactory> factory_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::mutex progress_mutex_;
     std::map<RealtimePartitionBucket, StoreEntry> stores_;
     // Full-table progress used as the initial offset when a store is created lazily.
@@ -123,6 +136,7 @@ class PAIMON_EXPORT RealtimeContextImpl final : public RealtimeContext {
     std::condition_variable read_views_cv_;
     std::map<std::string, PinnedReadView> pinned_read_views_;
     std::deque<RealtimePartitionBucketView> read_view_release_queue_;
+    std::atomic<bool> invalidated_{false};
     bool stopping_ = false;
     std::thread read_view_cleanup_thread_;
 };

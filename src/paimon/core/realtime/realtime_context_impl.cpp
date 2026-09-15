@@ -39,6 +39,7 @@
 #include "arrow/c/helpers.h"
 #include "fmt/format.h"
 #include "paimon/arrow/abi.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/uuid.h"
@@ -96,8 +97,60 @@ Status RealtimeContextImpl::Start() {
     return Status::OK();
 }
 
+void RealtimeContextImpl::Invalidate() {
+    invalidated_.store(true);
+}
+
+Status RealtimeContextImpl::CheckUsable() const {
+    if (invalidated_.load()) {
+        return Status::Invalid(
+            "real-time context cannot be reused after a writer failure or an unprepared writer "
+            "close; create a new RealtimeContext and FileStoreWrite, then let upstream recover "
+            "input from the durable recovery offset persisted in the snapshot");
+    }
+    return Status::OK();
+}
+
+std::shared_ptr<Metrics> RealtimeContextImpl::GetMetrics() const {
+    std::vector<std::shared_ptr<RealtimeStore>> stores;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stores.reserve(stores_.size());
+        for (const auto& [_, entry] : stores_) {
+            stores.push_back(entry.store);
+        }
+    }
+
+    RealtimeStoreDataUsage total_usage;
+    for (const std::shared_ptr<RealtimeStore>& store : stores) {
+        const RealtimeStoreDataUsage usage = store->GetDataUsage();
+        total_usage.building_memory_bytes += usage.building_memory_bytes;
+        total_usage.sealed_memory_bytes += usage.sealed_memory_bytes;
+        total_usage.building_row_count += usage.building_row_count;
+        total_usage.sealed_row_count += usage.sealed_row_count;
+    }
+
+    auto metrics = std::make_shared<MetricsImpl>();
+    metrics->SetGauge(RealtimeMetrics::kBuildingMemoryBytes,
+                      static_cast<double>(total_usage.building_memory_bytes));
+    metrics->SetGauge(RealtimeMetrics::kSealedMemoryBytes,
+                      static_cast<double>(total_usage.sealed_memory_bytes));
+    metrics->SetGauge(
+        RealtimeMetrics::kTotalMemoryBytes,
+        static_cast<double>(total_usage.building_memory_bytes + total_usage.sealed_memory_bytes));
+    metrics->SetGauge(RealtimeMetrics::kBuildingRowCount,
+                      static_cast<double>(total_usage.building_row_count));
+    metrics->SetGauge(RealtimeMetrics::kSealedRowCount,
+                      static_cast<double>(total_usage.sealed_row_count));
+    metrics->SetGauge(
+        RealtimeMetrics::kTotalRowCount,
+        static_cast<double>(total_usage.building_row_count + total_usage.sealed_row_count));
+    return metrics;
+}
+
 Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     RealtimeStoreCreateRequest&& request, const RealtimePartitionBucket& partition_bucket) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     if (!request.write_schema || !request.write_schema->release) {
         return Status::Invalid("real-time store write schema is null");
     }
@@ -163,6 +216,7 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
 
 Result<int64_t> RealtimeContextImpl::AdvanceMaterializedMaxSequenceNumber(
     const RealtimePartitionBucket& partition_bucket, int64_t max_sequence_number) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     std::lock_guard<std::mutex> lock(mutex_);
     auto iter = stores_.find(partition_bucket);
     if (iter == stores_.end()) {
@@ -177,17 +231,20 @@ Result<int64_t> RealtimeContextImpl::AdvanceMaterializedMaxSequenceNumber(
     return entry.materialized_max_sequence_number;
 }
 
-Result<std::vector<RealtimePartitionBucketView>> RealtimeContextImpl::AcquireReadViews() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<RealtimePartitionBucketView> result;
-    result.reserve(stores_.size());
+Result<RealtimeReadState> RealtimeContextImpl::AcquireReadState() {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
+    std::lock_guard<std::mutex> progress_lock(progress_mutex_);
+    std::lock_guard<std::mutex> registry_lock(mutex_);
+    RealtimeReadState result;
+    result.views.reserve(stores_.size());
+    result.committed_offsets = committed_offsets_;
     for (const auto& [partition_bucket, store] : stores_) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> read_view,
                                store.store->AcquireReadView());
         if (!read_view) {
             return Status::Invalid("real-time store returned a null read view");
         }
-        result.push_back(
+        result.views.push_back(
             RealtimePartitionBucketView{partition_bucket, store.store, std::move(read_view)});
     }
     return result;
@@ -195,6 +252,7 @@ Result<std::vector<RealtimePartitionBucketView>> RealtimeContextImpl::AcquireRea
 
 Result<std::string> RealtimeContextImpl::PinReadView(const RealtimePartitionBucketView& view,
                                                      int64_t ttl_millis) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     if (!view.store || !view.read_view) {
         return Status::Invalid("cannot pin an incomplete real-time read view");
     }
@@ -269,6 +327,7 @@ Status RealtimeContextImpl::ReleaseReadView(const std::string& opaque_ticket) {
 
 Status RealtimeContextImpl::AdvanceCommittedProgress(int64_t snapshot_id,
                                                      const RealtimeOffsetMap& committed_offsets) {
+    PAIMON_RETURN_NOT_OK(CheckUsable());
     if (snapshot_id < 0) {
         return Status::Invalid("real-time refresh snapshot id must not be negative");
     }

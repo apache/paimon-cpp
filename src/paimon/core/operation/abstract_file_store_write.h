@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -65,6 +66,8 @@ class MemoryPool;
 class RecordBatch;
 class RestoreFiles;
 class IOManager;
+class RealtimeContext;
+class RealtimeSchemaLayout;
 
 class AbstractFileStoreWrite : public FileStoreWrite {
  public:
@@ -77,6 +80,7 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<arrow::Schema>& schema,
         const std::shared_ptr<arrow::Schema>& write_schema,
+        const std::shared_ptr<RealtimeSchemaLayout>& realtime_schema_layout,
         const std::shared_ptr<arrow::Schema>& partition_schema,
         const std::shared_ptr<BucketedDvMaintainer::Factory>& dv_maintainer_factory,
         const std::shared_ptr<IOManager>& io_manager, const CoreOptions& options,
@@ -84,6 +88,7 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
+    Status Seal() override;
     Status Compact(const std::map<std::string, std::string>& partition, int32_t bucket,
                    bool full_compaction) override;
 
@@ -123,6 +128,10 @@ class AbstractFileStoreWrite : public FileStoreWrite {
         return false;
     }
 
+    virtual std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
+        return nullptr;
+    }
+
     Result<std::shared_ptr<RestoreFiles>> ScanExistingFileMetas(const BinaryRow& partition,
                                                                 int32_t bucket) const;
     int32_t GetDefaultBucketNum() const;
@@ -136,6 +145,7 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     std::string root_path_;
     std::shared_ptr<arrow::Schema> schema_;
     std::shared_ptr<arrow::Schema> write_schema_;
+    std::shared_ptr<RealtimeSchemaLayout> realtime_schema_layout_;
     std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<arrow::Schema> partition_schema_;
     std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory_;
@@ -148,6 +158,10 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     std::shared_ptr<CompactionMetrics> compaction_metrics_;
 
  private:
+    Status CheckRealtimeWriteUsable() const;
+    void InvalidateRealtimeContext();
+    Status PoisonRealtimeWrite(const Status& cause);
+
     Result<std::shared_ptr<BatchWriter>> GetWriter(const BinaryRow& partition, int32_t bucket);
     Result<std::vector<RealtimeCommitProgress>> PrepareRealtimeCommit();
 
@@ -155,11 +169,13 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     std::unordered_map<BinaryRow, std::unordered_map<int32_t, WriterContainer<BatchWriter>>>
         writers_;
     std::mutex writers_mutex_;
+    std::mutex realtime_seal_prepare_mutex_;
     std::mutex realtime_metrics_mutex_;
     bool ignore_previous_files_ = false;
     bool is_streaming_mode_ = false;
     bool ignore_num_bucket_check_ = false;
     bool batch_committed_ = false;
+    std::atomic<bool> realtime_write_poisoned_{false};
 
     std::shared_ptr<MetricsImpl> metrics_;
     std::unique_ptr<Logger> logger_;

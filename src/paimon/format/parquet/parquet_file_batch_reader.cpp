@@ -54,8 +54,8 @@
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/format/parquet/parquet_field_id_converter.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
+#include "paimon/format/parquet/parquet_read_type_adapter.h"
 #include "paimon/format/parquet/parquet_schema_util.h"
-#include "paimon/format/parquet/parquet_timestamp_converter.h"
 #include "paimon/format/parquet/predicate_converter.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/utils/roaring_bitmap32.h"
@@ -75,10 +75,9 @@ class Predicate;
 namespace paimon::parquet {
 
 namespace {
-// LIST/MAP do not support pruning fields from their nested value types, but physical and
-// logical leaf types may still differ (for example, Parquet reports LTZ timestamps as UTC
-// while Paimon exposes them in the local timezone). Compare only the nested projection shape
-// here so those representation differences are handled by the normal cast path.
+// LIST, MAP, and FIXED_SIZE_LIST do not support partial projection of their nested values.
+// Require matching nested structures while allowing the leaf-type representation differences
+// explicitly handled below.
 bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_type,
                                   const std::shared_ptr<arrow::DataType>& file_type) {
     const bool read_is_nested = ArrowSchemaValidator::IsNestedType(read_type);
@@ -87,8 +86,8 @@ bool HasSameNestedProjectionShape(const std::shared_ptr<arrow::DataType>& read_t
         if (read_is_nested || file_is_nested) {
             return false;
         }
-        // ParquetTimestampConverter explicitly supports timestamp unit and timezone
-        // conversion after reading. Other atomic type differences remain unsupported here.
+        // ParquetReadTypeAdapter supports timezone retyping and the millisecond-to-second
+        // conversion required for Paimon timestamps after reading.
         if (read_type->id() == arrow::Type::TIMESTAMP &&
             file_type->id() == arrow::Type::TIMESTAMP) {
             const auto& read_timestamp = static_cast<const arrow::TimestampType&>(*read_type);
@@ -356,11 +355,11 @@ Result<std::unique_ptr<::ArrowSchema>> ParquetFileBatchReader::GetFileSchema() c
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> new_schema,
                                ParquetFieldIdConverter::GetPaimonIdsFromParquetIds(file_schema));
         PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<arrow::DataType> new_type,
-            ParquetTimestampConverter::AdjustTimezone(arrow::struct_(new_schema->fields())));
+            std::shared_ptr<arrow::DataType> normalized_type,
+            ParquetReadTypeAdapter::NormalizeFileType(arrow::struct_(new_schema->fields())));
 
         auto c_schema = std::make_unique<::ArrowSchema>();
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportType(*new_type, c_schema.get()));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportType(*normalized_type, c_schema.get()));
         return c_schema;
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetFileBatchReader::GetFileSchema")
@@ -378,8 +377,8 @@ Status ParquetFileBatchReader::SetReadSchema(
 
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema, GetLogicalFileSchema());
 
-        // Recursively match read_schema against file_schema by field names.
-        // STRUCT supports sub-field projection; LIST/MAP require exact type match.
+        // Recursively match read_schema against file_schema by field names. STRUCT supports
+        // sub-field projection; LIST, MAP, and FIXED_SIZE_LIST require matching nested shapes.
         PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> column_indices,
                                ComputeNestedColumnIndices(read_schema, file_schema));
 
@@ -773,20 +772,8 @@ Result<BatchReader::ReadBatch> ParquetFileBatchReader::NextBatch() {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
                                           batch->ToStructArray());
         PAIMON_RETURN_NOT_OK_FROM_ARROW(array->Validate());
-        PAIMON_ASSIGN_OR_RAISE(bool need_cast, ParquetTimestampConverter::NeedCastArrayForTimestamp(
-                                                   array->type(), read_data_type_));
-        if (need_cast) {
-            PAIMON_ASSIGN_OR_RAISE(array, ParquetTimestampConverter::CastArrayForTimestamp(
-                                              array, read_data_type_, arrow_pool_));
-        }
-        PAIMON_ASSIGN_OR_RAISE(need_cast, ParquetTimestampConverter::NeedCastArrayForTimestamp(
-                                              array->type(), read_data_type_));
-        if (need_cast) {
-            return Status::Invalid(fmt::format(
-                "unexpected: in parquet, after CastArrayForTimestamp, output type {} not "
-                "equal with read schema {}",
-                array->type()->ToString(), read_data_type_->ToString()));
-        }
+        PAIMON_ASSIGN_OR_RAISE(
+            array, ParquetReadTypeAdapter::AdaptArray(array, read_data_type_, arrow_pool_));
         PAIMON_RETURN_NOT_OK(GenerateRowMapping(array->length()));
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();

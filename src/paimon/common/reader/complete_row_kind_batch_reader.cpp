@@ -72,13 +72,17 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteRowKindBatchReader::NextBatchWi
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> row_kind_array,
                            PrepareRowKindArray(struct_array->length()));
     // complete row kind
-    UpdateFieldNamesWithRowKind(struct_array);
     arrow::ArrayVector fields_with_row_kind = {row_kind_array};
     fields_with_row_kind.insert(fields_with_row_kind.end(), struct_array->fields().begin(),
                                 struct_array->fields().end());
+    arrow::FieldVector schema_fields_with_row_kind = {
+        arrow::field(SpecialFields::ValueKind().Name(), arrow::int8())};
+    const arrow::FieldVector& schema_fields = struct_array->struct_type()->fields();
+    schema_fields_with_row_kind.insert(schema_fields_with_row_kind.end(), schema_fields.begin(),
+                                       schema_fields.end());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         std::shared_ptr<arrow::StructArray> array_with_row_kind,
-        arrow::StructArray::Make(fields_with_row_kind, field_names_with_row_kind_));
+        arrow::StructArray::Make(fields_with_row_kind, schema_fields_with_row_kind));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*array_with_row_kind, c_array.get(), c_schema.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
@@ -96,21 +100,6 @@ Result<std::shared_ptr<arrow::Array>> CompleteRowKindBatchReader::PrepareRowKind
         return row_kind_array_;
     } else {
         return row_kind_array_->Slice(0, struct_array_length);
-    }
-}
-
-void CompleteRowKindBatchReader::UpdateFieldNamesWithRowKind(
-    const std::shared_ptr<arrow::StructArray>& struct_array) {
-    if (static_cast<size_t>(struct_array->struct_type()->num_fields()) + 1 ==
-        field_names_with_row_kind_.size()) {
-        return;
-    }
-    field_names_with_row_kind_.clear();
-    const auto& fields = struct_array->struct_type()->fields();
-    field_names_with_row_kind_.reserve(fields.size() + 1);
-    field_names_with_row_kind_.push_back(SpecialFields::ValueKind().Name());
-    for (const auto& field : fields) {
-        field_names_with_row_kind_.push_back(field->name());
     }
 }
 

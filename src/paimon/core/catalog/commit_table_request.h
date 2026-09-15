@@ -19,6 +19,7 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,14 +33,45 @@
 
 namespace paimon {
 
+/// Request to commit a table snapshot and its partition statistics.
 class CommitTableRequest : public Jsonizable<CommitTableRequest> {
  public:
-    CommitTableRequest(const Snapshot& snapshot, const std::vector<PartitionStatistics>& statistics)
-        : snapshot_(snapshot), statistics_(statistics) {}
+    /// @param table_id Catalog table UUID used to detect table recreation; null if unavailable.
+    /// @param base_snapshot_uuid Base snapshot UUID; null for an absent or legacy snapshot.
+    /// @param snapshot Snapshot to be committed.
+    /// @param statistics Partition statistics for this change.
+    CommitTableRequest(const std::optional<std::string>& table_id,
+                       const std::optional<std::string>& base_snapshot_uuid,
+                       const Snapshot& snapshot, const std::vector<PartitionStatistics>& statistics)
+        : table_id_(table_id),
+          base_snapshot_uuid_(base_snapshot_uuid),
+          snapshot_(snapshot),
+          statistics_(statistics) {}
+
+    const std::optional<std::string>& GetTableId() const {
+        return table_id_;
+    }
+
+    const std::optional<std::string>& GetBaseSnapshotUuid() const {
+        return base_snapshot_uuid_;
+    }
+
+    const Snapshot& GetSnapshot() const {
+        return snapshot_;
+    }
+
+    const std::vector<PartitionStatistics>& GetStatistics() const {
+        return statistics_;
+    }
 
     rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
         noexcept(false) override {
         rapidjson::Value obj(rapidjson::kObjectType);
+        obj.AddMember(rapidjson::StringRef(FIELD_TABLE_ID),
+                      RapidJsonUtil::SerializeValue(table_id_, allocator).Move(), *allocator);
+        obj.AddMember(rapidjson::StringRef(FIELD_BASE_SNAPSHOT_UUID),
+                      RapidJsonUtil::SerializeValue(base_snapshot_uuid_, allocator).Move(),
+                      *allocator);
         obj.AddMember(rapidjson::StringRef(FIELD_SNAPSHOT),
                       RapidJsonUtil::SerializeValue(snapshot_, allocator).Move(), *allocator);
         obj.AddMember(rapidjson::StringRef(FIELD_STATISTICS),
@@ -48,6 +80,10 @@ class CommitTableRequest : public Jsonizable<CommitTableRequest> {
     }
 
     void FromJson(const rapidjson::Value& obj) noexcept(false) override {
+        table_id_ =
+            RapidJsonUtil::DeserializeKeyValue<std::optional<std::string>>(obj, FIELD_TABLE_ID);
+        base_snapshot_uuid_ = RapidJsonUtil::DeserializeKeyValue<std::optional<std::string>>(
+            obj, FIELD_BASE_SNAPSHOT_UUID);
         snapshot_ = RapidJsonUtil::DeserializeKeyValue<Snapshot>(obj, FIELD_SNAPSHOT);
         statistics_ = RapidJsonUtil::DeserializeKeyValue<std::vector<PartitionStatistics>>(
             obj, FIELD_STATISTICS);
@@ -57,20 +93,26 @@ class CommitTableRequest : public Jsonizable<CommitTableRequest> {
         if (this == &other) {
             return true;
         }
-        return snapshot_.TEST_Equal(other.snapshot_) && statistics_ == other.statistics_;
+        return table_id_ == other.table_id_ && base_snapshot_uuid_ == other.base_snapshot_uuid_ &&
+               snapshot_.TEST_Equal(other.snapshot_) && statistics_ == other.statistics_;
     }
 
     bool operator==(const CommitTableRequest& other) const {
-        return snapshot_ == other.snapshot_ && statistics_ == other.statistics_;
+        return table_id_ == other.table_id_ && base_snapshot_uuid_ == other.base_snapshot_uuid_ &&
+               snapshot_ == other.snapshot_ && statistics_ == other.statistics_;
     }
 
  private:
     JSONIZABLE_FRIEND_AND_DEFAULT_CTOR(CommitTableRequest);
 
  private:
+    static constexpr const char* FIELD_TABLE_ID = "tableId";
+    static constexpr const char* FIELD_BASE_SNAPSHOT_UUID = "baseSnapshotUuid";
     static constexpr const char* FIELD_SNAPSHOT = "snapshot";
     static constexpr const char* FIELD_STATISTICS = "statistics";
 
+    std::optional<std::string> table_id_;
+    std::optional<std::string> base_snapshot_uuid_;
     Snapshot snapshot_;
     std::vector<PartitionStatistics> statistics_;
 };

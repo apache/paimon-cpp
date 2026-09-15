@@ -201,8 +201,18 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
     }
     void Close() override {}
 
+    /// Counts the hint instead of acting on it: this mock has no background work to start, so the
+    /// count is what lets a test tell a wrapper that forwards Warmup() from one that swallows it.
+    void Warmup() override {
+        warmup_count_++;
+    }
+
     std::vector<std::pair<uint64_t, uint64_t>> GetReadRanges() const {
         return read_ranges_;
+    }
+
+    int32_t GetWarmupCount() const {
+        return warmup_count_;
     }
 
     bool SupportPreciseBitmapSelection() const override {
@@ -266,6 +276,7 @@ class MockFileBatchReader : public PrefetchFileBatchReader {
     Status next_batch_status_;
     bool enable_randomize_batch_size_ = true;
     std::vector<std::pair<uint64_t, uint64_t>> read_ranges_;
+    int32_t warmup_count_ = 0;
     std::mt19937 random_engine_{std::random_device{}()};  // NOLINT(whitespace/braces)
 };
 

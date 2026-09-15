@@ -69,6 +69,14 @@ class AuditLogSystemTable : public SystemTable {
     Result<std::unique_ptr<TableRead>> NewChangelogRead(
         const std::shared_ptr<ReadContext>& context,
         std::shared_ptr<const ChangelogBatchConverter> converter) const;
+    /// Build the context for the data table underneath this changelog view.
+    ///
+    /// The builder starts from the defaults, so every setting the caller configured has to be
+    /// copied across explicitly: one that is not copied silently reverts to its default for
+    /// `$audit_log` and `$binlog`, and neither end reports it.
+    Result<std::unique_ptr<ReadContext>> CreateDataReadContext(
+        const std::shared_ptr<ReadContext>& context,
+        const std::map<std::string, std::string>& read_options) const;
     Result<std::shared_ptr<arrow::Schema>> BaseReadSchema() const;
     Result<std::map<std::string, std::string>> ReadOptions() const;
 

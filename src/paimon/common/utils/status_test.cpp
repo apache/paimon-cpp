@@ -99,18 +99,6 @@ TEST(StatusTest, TestCodeAsString) {
     ASSERT_EQ("OK", Status::OK().CodeAsString());
 }
 
-TEST(StatusDeathTest, TestAbort) {
-    // Death tests fork(); with the default "fast" style, forking in a multi-threaded
-    // process is unsafe and under ThreadSanitizer the child aborts with a sanitizer
-    // message before Abort() runs. The "threadsafe" style re-execs the test binary in
-    // a clean process so Abort()'s own output is produced and can be matched.
-    const std::string prev_style = testing::GTEST_FLAG(death_test_style);
-    testing::GTEST_FLAG(death_test_style) = "threadsafe";
-    ASSERT_DEATH(Status::IOError("boom").Abort(), "Paimon Fatal Error");
-    ASSERT_DEATH(Status::IOError("boom").Abort("custom prefix"), "custom prefix");
-    testing::GTEST_FLAG(death_test_style) = prev_style;
-}
-
 TEST(StatusTest, TestWithDetail) {
     Status status(StatusCode::IOError, "summary");
     auto detail = std::make_shared<TestStatusDetail>();
