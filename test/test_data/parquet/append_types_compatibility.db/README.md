@@ -1,55 +1,125 @@
-<!--
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements. See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership. The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License. You may obtain a copy of the License at
+# Parquet append type compatibility data
 
-    http://www.apache.org/licenses/LICENSE-2.0
+This database contains equivalent unpartitioned append-only tables written by three Paimon
+implementations. Every table uses `bucket = -1`, `file.format = parquet`, and Avro manifests.
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied. See the License for the
-  specific language governing permissions and limitations
-  under the License.
--->
+Writers:
 
-# Paimon writer compatibility fixtures
+- `python_*`: PyPaimon 2.0.0 with PyArrow 19.0.1.
+- `rust_*`: Paimon Rust 0.4.0 at commit `ced0c86b4db76265b5b2aedcbc9909a208f2c130`,
+  with parquet-rs 58.4.0.
+- `java_*`: Java batch writer from `paimon-bundle-2.2-20260915.220657-5.jar`, with parquet-mr
+  1.16.0.
 
-The `append_types_compatibility.db` database contains append-only compatibility tables written by
-Python, Rust, and Java Paimon. Table names use the writer as a prefix and describe the group of
-types in that table; no individual table is claimed to contain every Paimon type.
+The Python and Rust Parquet files contain `ARROW:schema` metadata. The Java files do not.
 
-The writers and Parquet implementations are:
+## `<writer>_types`
 
-- `python_*`: `pypaimon==2.0.0` with `pyarrow==19.0.1`. The Parquet files contain `ARROW:schema` metadata.
-- `rust_*`: Paimon Rust 0.4.0 at commit `ced0c86b4db76265b5b2aedcbc9909a208f2c130`, using `parquet-rs version 58.4.0`. The Parquet files contain `ARROW:schema` metadata.
-- `java_*`: the Java batch-write API from `paimon-bundle-2-ali-2.6.jar`, using `parquet-mr version 1.16.0`. The Parquet files do not contain `ARROW:schema` metadata.
+The main table has three rows and covers these columns:
 
-## Table groups
+```text
+id INT NOT NULL
+f_boolean BOOLEAN
+f_tinyint TINYINT
+f_smallint SMALLINT
+f_int INT
+f_bigint BIGINT
+f_float FLOAT
+f_double DOUBLE
+f_char CHAR(8)
+f_varchar VARCHAR(64)
+f_string STRING
+f_binary BINARY(8)
+f_varbinary VARBINARY(64)
+f_bytes BYTES
+f_blob BLOB
+f_blob_descriptor BLOB
+f_decimal_1_0 DECIMAL(1, 0)
+f_decimal_9_2 DECIMAL(9, 2)
+f_decimal_18_2 DECIMAL(18, 2)
+f_decimal_19_2 DECIMAL(19, 2)
+f_decimal_38_18 DECIMAL(38, 18)
+f_decimal_38_38 DECIMAL(38, 38)
+f_date DATE
+f_timestamp_0/3/6/9 TIMESTAMP(0/3/6/9)
+f_timestamp_ltz_0/3/6/9 TIMESTAMP_LTZ(0/3/6/9)
+f_variant VARIANT
+f_array_int ARRAY<INT>
+f_map_string_bigint MAP<STRING NOT NULL, BIGINT>
+f_row ROW<nested_int INT, nested_string STRING, nested_decimal DECIMAL(19, 4),
+          nested_timestamp TIMESTAMP(9), nested_timestamp_ltz TIMESTAMP_LTZ(9)>
+f_array_array_int ARRAY<ARRAY<INT>>
+f_array_map ARRAY<MAP<STRING NOT NULL, INT>>
+f_map_array MAP<STRING NOT NULL, ARRAY<INT>>
+f_array_row ARRAY<ROW<name STRING, score DECIMAL(9, 2)>>
+f_map_row MAP<STRING NOT NULL, ROW<enabled BOOLEAN, event_time TIMESTAMP(6)>>
+f_deep_row ROW<children ARRAY<ROW<leaf_id BIGINT, leaf_variant VARIANT>>,
+               labels MAP<STRING NOT NULL, STRING>>
+f_array_variant ARRAY<VARIANT>
+f_map_variant MAP<STRING NOT NULL, VARIANT>
+```
 
-Each writer prefix has five tables with the same declared schema and intended logical values:
+Row contents are identical for the three writers:
 
-- `<writer>_types`: 43 columns and 3 rows covering integral and floating types, BOOLEAN, CHAR/VARCHAR/STRING, BINARY/VARBINARY/BYTES, BLOB, DATE, TIMESTAMP and TIMESTAMP_LTZ at precision 0/3/6/9, multiple DECIMAL precisions, VARIANT, ARRAY, MAP, ROW, and deeply nested combinations. Row 2 is null in every nullable column and row 3 exercises empty values.
-- `<writer>_vector_types`: VECTOR length 3 for BOOLEAN, TINYINT, SMALLINT, INT, BIGINT, FLOAT, and DOUBLE.
-- `<writer>_array_blob_types`: Paimon C++ does not currently support ARRAY&lt;BLOB&gt;.
-- `<writer>_map_blob_types`: MAP&lt;STRING, BLOB&gt;, including non-null, null, and empty map
-  values. Python and Java store these values in standard separate BLOB files, which Paimon C++
-  can read. Rust stores the raw values inline as Parquet `binary`; this is not the Paimon BLOB
-  descriptor representation, cannot be read as BLOB by Java, and is intentionally rejected by
-  Paimon C++.
-- `<writer>_time_types`: TIME declarations at precision 0/3/6/9. Paimon C++ currently rejects `TIME` while parsing the table schema.
+- `id = 1` contains representative non-null values. Numeric values include `-8`, `1234`,
+  `-123456`, `9223372036854770000`, `1.25`, and `-12345.6789`. String and binary values include
+  `char`, `varchar-中文`, `pypaimon 2.0.0`, `12345678`, and values containing an embedded NUL.
+- Decimal values exercise precisions 1, 9, 18, 19, and 38. The date is `2024-02-29`; timestamp
+  values are `2024-02-29 12:34:56[.123[456]]` at precisions 0/3/6/9.
+- Container values include `[1, null, 3]`, `{"one": 1, "null": null}`, nested null elements,
+  empty nested containers, rows, arrays of rows, and maps of rows.
+- The VARIANT values include an object
+  `{"name":"variant-object","count":42,"active":true,"items":[null,1,"x"],"nested":{"decimal":12.34}}`
+  and an array `[1,"two",false,{"k":"v"}]`. `f_deep_row` contains child IDs 10 and 11 and
+  labels `{"language":"python","format":"parquet"}`.
+- `f_blob` contains `ordinary blob payload from pypaimon 2.0.0`. `f_blob_descriptor` is the
+  inline descriptor for `file:///nonexistent/pypaimon-all-types-external-blob.bin`, offset 7,
+  length 11; the URI is intentionally nonexistent.
+- `id = 2` has null in every nullable column.
+- `id = 3` exercises empty strings, byte arrays, BLOB, arrays, and maps; the remaining nullable
+  columns are null.
 
-The tables are separated because Paimon C++ does not allow VECTOR in a data-evolution table, BLOB requires data evolution, and a schema-level incompatibility must not prevent compatible columns from being tested.
+## `<writer>_vector_types`
 
-`MULTISET` is absent because the Python batch writer cannot produce it through its PyArrow conversion and Paimon C++ rejects it while parsing the table schema. Paimon Rust 0.4.0 supports `MULTISET` and represents it as an Arrow map from each element to its `INT` count, but it cannot be included in an equivalent three-writer fixture. Consequently, this fixture is a compatibility matrix, not an assertion that every type supported by every Paimon implementation can be represented by one table.
+The schema contains `id INT NOT NULL` plus length-3 VECTOR columns for BOOLEAN, TINYINT,
+SMALLINT, INT, BIGINT, FLOAT, and DOUBLE. It has two rows:
 
-The `f_blob_descriptor` value intentionally points at a nonexistent external URI. Read it with `blob-as-descriptor=true`; it exercises the inline descriptor and Parquet `ARROW:schema` path rather than external blob fetching.
+```text
+id  boolean             tinyint     smallint             int                       bigint
+1   [true,false,true]   [-1,0,1]    [-1000,0,1000]       [-100000,0,100000]        [-10000000000,0,10000000000]
+2   [false,true,false]  [2,3,4]     [2000,3000,4000]     [200000,300000,400000]    [20000000000,30000000000,40000000000]
 
-Both PyArrow and parquet-rs persist the original Arrow type in `ARROW:schema`, but the stored types
-differ for `f_blob_descriptor`. The Python fixture records the physical Parquet `binary` column as
-Arrow `large_binary`, while the Rust fixture records it as Arrow `binary`. The compatibility test
-verifies that Paimon C++ can read both representations and preserve the descriptor value.
+id  float                 double
+1   [1.25,-2.5,3.75]      [1.125,-2.25,3.5]
+2   [4.25,5.5,6.75]       [4.125,5.25,6.5]
+```
+
+## BLOB container tables
+
+`<writer>_array_blob_types` has schema `id INT NOT NULL, f_array_blob ARRAY<BLOB>` and rows for
+a populated array containing a null element, a null array, and an empty array. Paimon C++ is
+expected to reject this table because it does not support `ARRAY<BLOB>`.
+
+`<writer>_map_blob_types` has schema
+`id INT NOT NULL, f_map_blob MAP<STRING NOT NULL, BLOB>` and these logical rows:
+
+```text
+(1, {"left": "blob-map-left", "right": null})
+(2, null)
+(3, {})
+```
+
+Python and Java store the map values in Paimon's external BLOB representation. Rust stores its
+map values inline as Parquet `binary`; that representation is intentionally rejected as a Paimon
+BLOB map by Java and C++.
+
+## `<writer>_time_types`
+
+The schema is `id INT NOT NULL` plus `TIME(0)`, `TIME(3)`, `TIME(6)`, and `TIME(9)` columns. The
+three rows exercise a daytime value, nulls, and zero/empty values. Paimon C++ is expected to reject
+the table while `TIME` is unsupported.
+
+The tables are separate because VECTOR cannot be combined with data evolution, BLOB requires data
+evolution, and an unsupported table-level type must not prevent compatible columns from being read.
+`MULTISET` is not included because the Python PyArrow conversion cannot write it and Paimon C++
+cannot parse it.
