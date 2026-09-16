@@ -99,6 +99,10 @@ static inline const char PARQUET_READ_PREDICATE_NODE_COUNT_LIMIT[] =
 static inline const char PARQUET_READ_ENABLE_PAGE_INDEX_FILTER[] =
     "parquet.read.enable-page-index-filter";
 
+// Retain parsed OffsetIndex objects within a reader. Disabled by default.
+static inline const char PARQUET_READ_ENABLE_OFFSET_INDEX_CACHE[] =
+    "parquet.read.enable-offset-index-cache";
+
 // Default is true.
 static inline const char PARQUET_READ_ENABLE_PRE_BUFFER[] = "parquet.read.enable-pre-buffer";
 

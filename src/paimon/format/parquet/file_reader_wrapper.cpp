@@ -114,7 +114,7 @@ std::vector<::arrow::io::ReadRange> MergeOverlappingRanges(
 
 Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
     std::unique_ptr<::parquet::arrow::FileReader>&& file_reader, int64_t batch_size,
-    std::shared_ptr<::arrow::MemoryPool> pool) {
+    std::shared_ptr<::arrow::MemoryPool> pool, bool enable_offset_index_cache) {
     try {
         if (file_reader == nullptr) {
             return Status::Invalid("file reader wrapper create failed. file reader is nullptr");
@@ -138,6 +138,7 @@ Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
             arrow::internal::Iota(file_reader->parquet_reader()->metadata()->num_columns());
         auto file_reader_wrapper = std::unique_ptr<FileReaderWrapper>(new FileReaderWrapper(
             std::move(file_reader), all_row_group_ranges, num_rows, batch_size, pool));
+        file_reader_wrapper->enable_offset_index_cache_ = enable_offset_index_cache;
         std::vector<TargetRowGroup> all_target_row_groups;
         for (int32_t i = 0; i < file_reader_wrapper->GetNumberOfRowGroups(); i++) {
             all_target_row_groups.emplace_back(/*rg_index=*/i, /*is_partially_matched=*/false,
@@ -368,7 +369,7 @@ std::shared_ptr<::parquet::RowGroupPageIndexReader> FileReaderWrapper::GetRowGro
     auto page_index_reader = GetPageIndexReader();
     if (page_index_reader) {
         row_group_page_index_reader = page_index_reader->RowGroup(row_group_index);
-        if (row_group_page_index_reader) {
+        if (row_group_page_index_reader && enable_offset_index_cache_) {
             row_group_page_index_reader =
                 std::make_shared<CachedRowGroupPageIndexReader>(row_group_page_index_reader);
         }

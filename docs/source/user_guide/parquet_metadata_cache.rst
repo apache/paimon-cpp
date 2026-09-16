@@ -104,8 +104,12 @@ and opens the Parquet file normally.
 Reader-Local Page Indexes
 -------------------------
 
-Within one file reader, page-range planning and filtered decoding reuse parsed
-OffsetIndex objects for each retained row-group index reader.
+Set ``parquet.read.enable-offset-index-cache=true`` to reuse parsed OffsetIndex
+objects during bitmap trimming, page-range planning and filtered decoding within
+one file reader. The option defaults to ``false``; it does not require
+``WithCache()``. Enable it only after measuring the CPU/memory trade-off for the
+workload, especially when projecting many columns.
+
 These objects are not stored in the caller's shared ``Cache``. They are released
 with their owning row-group index reader; the existing limit of 1,024 retained
 row-group readers is a count limit, not a parsed-index byte budget. Restricted
@@ -123,6 +127,11 @@ This is independent of ``ReadAheadCache`` and its per-file ``FileBlockCache``,
 which reuse bytes rather than parsed objects. That block cache survives resets
 of the prefetch plan, but does not provide reuse across independent file-cache
 lifetimes. This optimization introduces no data-cache option or shared data cache.
+
+Filesystem or read-ahead byte caching does not replace this optimization: Arrow
+deserializes the cached index bytes again on every ``GetOffsetIndex`` call.
+With the option disabled, Paimon retains the existing byte-buffer reuse without
+retaining parsed OffsetIndex objects.
 
 Future Optimizations
 --------------------
