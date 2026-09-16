@@ -21,10 +21,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <ctime>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <regex>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -463,6 +467,155 @@ TEST(DlfAuthProviderTest, RejectsIncompleteOrUnknownConfiguration) {
     options[CatalogOptions::DLF_SIGNING_ALGORITHM] = "default";
     options[CatalogOptions::URI] = "http://127.0.0.1:8080";
     ASSERT_NOK_WITH_MSG(AuthProvider::Create(options).status(), "DLF region");
+}
+
+TEST(DlfDefaultSignerTest, SignsSpecialCharQueryLikeJava) {
+    // Golden produced by the Java DLFDefaultSigner for identical inputs; it locks the
+    // form-encoding of query values (space->'+', '+'->%2B, '='->%3D, '&'->%26, '%'->%25)
+    // that the default signer signs over.
+    DlfDefaultSigner signer("cn-hangzhou");
+    const std::string body = R"({"name":"database"})";
+    DlfToken token("access-key-id", "access-key-secret", "securityToken", std::nullopt);
+    RestAuthParameter parameter = RestAuthParameter::Create(
+        "POST", "/v1/paimon/databases",
+        {{"k1", "a b"}, {"k2", "x+y"}, {"k3", "p=q&r"}, {"k4", "100%"}}, body);
+    const std::chrono::system_clock::time_point signing_time =
+        std::chrono::system_clock::from_time_t(1701605532);  // 2023-12-03T12:12:12Z
+
+    ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                         signer.SignHeaders(body, signing_time, token.GetSecurityToken(), "host"));
+    ASSERT_EQ("20231203T121212Z", headers.at("x-dlf-date"));
+    ASSERT_EQ("F2vHiexkcYvt4XOY5o4tmQ==", headers.at("Content-MD5"));
+    ASSERT_OK_AND_ASSIGN(std::string authorization,
+                         signer.Authorization(parameter, token, "host", headers));
+    ASSERT_EQ(
+        "DLF4-HMAC-SHA256 Credential=access-key-id/20231203/cn-hangzhou/"
+        "DlfNext/aliyun_v4_request,Signature="
+        "3054a64554697227800ff06197e50b2c3de958f6b5584e3b531957207e685b4b",
+        authorization);
+}
+
+TEST(DlfOpenApiSignerTest, OmitsBodyAndSecurityTokenHeadersWhenAbsent) {
+    DlfOpenApiSigner signer;
+    ASSERT_OK_AND_ASSIGN(
+        DlfRequestSigner::Headers headers,
+        signer.SignHeaders("", FixedTime(), std::nullopt, "dlfnext.cn-beijing.aliyuncs.com"));
+    ASSERT_EQ("Wed, 16 Apr 2025 03:44:46 GMT", headers.at("Date"));
+    ASSERT_EQ("application/json", headers.at("Accept"));
+    ASSERT_EQ("dlfnext.cn-beijing.aliyuncs.com", headers.at("Host"));
+    ASSERT_EQ("HMAC-SHA1", headers.at("x-acs-signature-method"));
+    ASSERT_EQ("1.0", headers.at("x-acs-signature-version"));
+    ASSERT_EQ("2026-01-18", headers.at("x-acs-version"));
+    ASSERT_FALSE(headers.at("x-acs-signature-nonce").empty());
+    ASSERT_EQ(0, headers.count("Content-MD5"));
+    ASSERT_EQ(0, headers.count("Content-Type"));
+    ASSERT_EQ(0, headers.count("x-acs-security-token"));
+    ASSERT_EQ(7, headers.size());
+}
+
+TEST(DlfOpenApiSignerTest, FormatsGmtDateAcrossWeekdayAndMonthBounds) {
+    // Guards the fixed weekday/month tables used for the RFC 1123 GMT Date header.
+    const std::vector<std::pair<time_t, std::string>> cases = {
+        {1736060889, "Sun, 05 Jan 2025 07:08:09 GMT"},  // single-digit day, weekday index 0
+        {1709251199, "Thu, 29 Feb 2024 23:59:59 GMT"},  // leap day
+        {1672444800, "Sat, 31 Dec 2022 00:00:00 GMT"},  // month index 11, weekday index 6
+        {1635768000, "Mon, 01 Nov 2021 12:00:00 GMT"},  // month index 10, weekday index 1
+    };
+    DlfOpenApiSigner signer;
+    for (const auto& [epoch, expected] : cases) {
+        ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                             signer.SignHeaders("", std::chrono::system_clock::from_time_t(epoch),
+                                                std::nullopt, "dlfnext.cn-hangzhou.aliyuncs.com"));
+        ASSERT_EQ(expected, headers.at("Date"));
+    }
+}
+
+TEST(DlfOpenApiSignerTest, GeneratesUniqueUuidShapedNonce) {
+    DlfOpenApiSigner signer;
+    static const std::regex kUuidPattern(
+        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    static const std::regex kTimestampPattern("[0-9]{10,}");
+    std::set<std::string> nonces;
+    for (int32_t i = 0; i < 500; ++i) {
+        ASSERT_OK_AND_ASSIGN(DlfRequestSigner::Headers headers,
+                             signer.SignHeaders("", FixedTime(), std::nullopt, "host"));
+        const std::string nonce = headers.at("x-acs-signature-nonce");
+        ASSERT_TRUE(std::regex_search(nonce, kUuidPattern));
+        ASSERT_TRUE(std::regex_search(nonce, kTimestampPattern));
+        nonces.insert(nonce);
+    }
+    ASSERT_EQ(500, nonces.size());
+}
+
+TEST(DlfOpenApiSignerTest, ConcurrentNonceGenerationStaysUnique) {
+    DlfOpenApiSigner signer;
+    std::set<std::string> nonces;
+    std::vector<Status> statuses;
+    std::mutex mutex;
+    std::vector<std::thread> threads;
+    for (int32_t t = 0; t < 8; ++t) {
+        threads.emplace_back([&] {
+            for (int32_t i = 0; i < 50; ++i) {
+                Result<DlfRequestSigner::Headers> headers =
+                    signer.SignHeaders("", FixedTime(), std::nullopt, "host");
+                std::scoped_lock lock(mutex);
+                statuses.push_back(headers.ok() ? Status::OK() : headers.status());
+                if (headers.ok()) {
+                    nonces.insert(headers.value().at("x-acs-signature-nonce"));
+                }
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    ASSERT_EQ(400, statuses.size());
+    for (const Status& status : statuses) {
+        ASSERT_OK(status);
+    }
+    ASSERT_EQ(400, nonces.size());
+}
+
+TEST(DlfSignerTest, ExposesJavaCompatibleIdentifiers) {
+    ASSERT_EQ(std::string("default"), std::string(DlfDefaultSigner::kIdentifier));
+    ASSERT_EQ(std::string("openapi"), std::string(DlfOpenApiSigner::kIdentifier));
+}
+
+TEST(DlfAuthProviderTest, ParsesSigningAlgorithmFromUriBoundaries) {
+    ASSERT_EQ("openapi",
+              DlfAuthProvider::ParseSigningAlgorithmFromUri("dlfnext.cn-hangzhou.aliyuncs.com"));
+    ASSERT_EQ("openapi", DlfAuthProvider::ParseSigningAlgorithmFromUri(
+                             "dlfnext-vpc.cn-hangzhou.aliyuncs.com"));
+    ASSERT_EQ("openapi", DlfAuthProvider::ParseSigningAlgorithmFromUri(
+                             "https://dlfnext.cn-hangzhou.aliyuncs.com"));
+    ASSERT_EQ("default",
+              DlfAuthProvider::ParseSigningAlgorithmFromUri("cn-hangzhou-vpc.dlf.aliyuncs.com"));
+    ASSERT_EQ("default", DlfAuthProvider::ParseSigningAlgorithmFromUri(
+                             "cn-hangzhou-intranet.dlf.aliyuncs.com"));
+    ASSERT_EQ("default", DlfAuthProvider::ParseSigningAlgorithmFromUri(
+                             "https://cn-hangzhou-vpc.dlf.aliyuncs.com"));
+    ASSERT_EQ("default", DlfAuthProvider::ParseSigningAlgorithmFromUri("unknown.example.com"));
+    ASSERT_EQ("default", DlfAuthProvider::ParseSigningAlgorithmFromUri("127.0.0.1"));
+    ASSERT_EQ("default", DlfAuthProvider::ParseSigningAlgorithmFromUri("http://127.0.0.1:8080"));
+    ASSERT_EQ("default", DlfAuthProvider::ParseSigningAlgorithmFromUri(""));
+}
+
+TEST(DlfAuthProviderTest, ParsesRegionFromUriVariants) {
+    const std::vector<std::string> hangzhou_uris = {
+        "https://cn-hangzhou-vpc.dlf.aliyuncs.com", "https://cn-hangzhou-intranet.dlf.aliyuncs.com",
+        "https://cn-hangzhou.dlf.aliyuncs.com", "https://pre-cn-hangzhou-vpc.dlf.aliyuncs.com"};
+    for (const std::string& uri : hangzhou_uris) {
+        ASSERT_OK_AND_ASSIGN(std::string region, DlfAuthProvider::ParseRegionFromUri(uri));
+        ASSERT_EQ("cn-hangzhou", region);
+    }
+    const std::vector<std::string> us_east_uris = {"https://us-east-1-vpc.dlf.aliyuncs.com",
+                                                   "https://us-east-1-intranet.dlf.aliyuncs.com"};
+    for (const std::string& uri : us_east_uris) {
+        ASSERT_OK_AND_ASSIGN(std::string region, DlfAuthProvider::ParseRegionFromUri(uri));
+        ASSERT_EQ("us-east-1", region);
+    }
+    ASSERT_NOK_WITH_MSG(DlfAuthProvider::ParseRegionFromUri("http://127.0.0.1:8080").status(),
+                        "could not determine DLF region");
 }
 
 }  // namespace paimon::test

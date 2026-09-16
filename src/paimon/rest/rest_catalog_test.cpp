@@ -62,6 +62,9 @@ namespace {
 constexpr const char kToken[] = "test-token";
 constexpr const char kPrefix[] = "paimon";
 constexpr const char kWarehouse[] = "wh1";
+// Expiration of the data tokens the mock issues, far enough in the future that they are
+// never refreshed within a test.
+constexpr int64_t kDataTokenExpiresAtMillis = 4102444800000;
 
 // The in-memory catalog state behind the mock rest server.
 struct MockCatalogState {
@@ -70,10 +73,13 @@ struct MockCatalogState {
         int64_t schema_id = 0;
         std::string path;
         std::string id = "1";
+        std::map<std::string, std::string> token = {{"fs.oss.accessKeyId", "ak-1"}};
     };
     std::map<std::string, std::map<std::string, TableData>> databases;
     // headers of the last request, with lower-cased names
     std::map<std::string, std::string> last_headers;
+    // paths the data token endpoint was called at, in order
+    std::vector<std::string> token_requests;
     // when set, every request except "/v1/config" fails with this http code
     std::optional<int32_t> force_error_code;
     // how many times a single table has been fetched, so a caller that needs the path and the
@@ -235,6 +241,28 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
     }
     std::string remainder = rest.substr(databases_prefix.size());
     size_t tables_pos = remainder.find("/tables");
+
+    const std::string token_suffix = "/token";
+    if (tables_pos != std::string::npos && remainder.size() > token_suffix.size() &&
+        remainder.compare(remainder.size() - token_suffix.size(), token_suffix.size(),
+                          token_suffix) == 0) {
+        // The mock issues credentials for any table, so that a test can ask for the token
+        // of a branch or of a table it did not seed.
+        state->token_requests.push_back(request.path);
+        std::map<std::string, std::string> credentials = {{"fs.oss.accessKeyId", "ak-1"}};
+        auto database = state->databases.find(remainder.substr(0, tables_pos));
+        if (database != state->databases.end()) {
+            size_t table_start = tables_pos + std::strlen("/tables/");
+            std::string table_name =
+                remainder.substr(table_start, remainder.size() - table_start - token_suffix.size());
+            auto table = database->second.find(table_name);
+            if (table != database->second.end()) {
+                credentials = table->second.token;
+            }
+        }
+        GetTableTokenResponse token(credentials, kDataTokenExpiresAtMillis);
+        return JsonResponse(200, token.ToJsonString().value());
+    }
 
     if (tables_pos == std::string::npos) {
         const std::string& db_name = remainder;
@@ -496,6 +524,16 @@ class RestCatalogTest : public ::testing::Test {
     std::shared_ptr<MockCatalogState> state_;
     std::unique_ptr<MockRestServer> server_;
     std::map<std::string, std::string> options_;
+
+    // Path the data token of `database`.`table` is requested at.
+    static std::string TokenPath(const std::string& database, const std::string& table) {
+        return fmt::format("/v1/{}/databases/{}/tables/{}/token", kPrefix, database, table);
+    }
+
+    std::vector<std::string> TokenRequests() {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        return state_->token_requests;
+    }
 };
 
 TEST_F(RestCatalogTest, CreateMergesServerConfig) {
@@ -505,6 +543,143 @@ TEST_F(RestCatalogTest, CreateMergesServerConfig) {
     ASSERT_EQ("from-server", merged.at("server-override"));
     ASSERT_EQ(kWarehouse, catalog->GetRootPath());
     ASSERT_NE(nullptr, catalog->GetFileSystem());
+}
+
+TEST_F(RestCatalogTest, TableFileSystemWithoutDataToken) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    // without the data token the catalog wide credentials are used for the data as well
+    ASSERT_EQ(catalog->GetFileSystem(), fs);
+}
+
+TEST_F(RestCatalogTest, TableFileSystemWithDataToken) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    ASSERT_NE(nullptr, fs);
+    ASSERT_NE(catalog->GetFileSystem(), fs);
+
+    // building it asks the server for nothing: the credentials of the table it is bound to
+    // are loaded when it is first used
+    ASSERT_TRUE(TokenRequests().empty());
+    ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists("/no-such-file"));
+    ASSERT_FALSE(exists);
+    ASSERT_EQ(std::vector<std::string>({TokenPath("db1", "t1")}), TokenRequests());
+
+    // a system table reads the files of the table it belongs to, so it is served the
+    // credentials of that table
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> system_table_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$snapshots")));
+    ASSERT_OK(system_table_fs->Exists("/no-such-file").status());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> other_table_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t2")));
+    ASSERT_OK(other_table_fs->Exists("/no-such-file").status());
+    ASSERT_EQ(std::vector<std::string>(
+                  {TokenPath("db1", "t1"), TokenPath("db1", "t1"), TokenPath("db1", "t2")}),
+              TokenRequests());
+}
+
+TEST_F(RestCatalogTest, TableFileSystemIsBoundToTheTableItWasAskedFor) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+
+    // the database and the table are addressed separately, so identifiers that print the
+    // same must not be served the credentials of one another
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> dotted_database,
+                         catalog->GetTableFileSystem(Identifier("db1.a", "t1")));
+    ASSERT_OK(dotted_database->Exists("/no-such-file").status());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> dotted_table,
+                         catalog->GetTableFileSystem(Identifier("db1", "a.t1")));
+    ASSERT_OK(dotted_table->Exists("/no-such-file").status());
+    ASSERT_EQ(std::vector<std::string>({TokenPath("db1.a", "t1"), TokenPath("db1", "a.t1")}),
+              TokenRequests());
+}
+
+TEST_F(RestCatalogTest, TableFileSystemNormalizesTheBranch) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+
+    // the main branch is the table itself, so it shares the credentials
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> main_branch_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_main")));
+    ASSERT_OK(main_branch_fs->Exists("/no-such-file").status());
+
+    // another branch is addressed as its own object on the server, so it gets its own
+    // credentials
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> branch_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1")));
+    ASSERT_OK(branch_fs->Exists("/no-such-file").status());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> branch_system_fs,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1$branch_b1$snapshots")));
+    ASSERT_OK(branch_system_fs->Exists("/no-such-file").status());
+    ASSERT_EQ(std::vector<std::string>({TokenPath("db1", "t1"), TokenPath("db1", "t1$branch_b1"),
+                                        TokenPath("db1", "t1$branch_b1")}),
+              TokenRequests());
+}
+
+TEST_F(RestCatalogTest, TableFileSystemIsNotRetainedPerTable) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+
+    // The catalog remembers no file system of a table, so a table dropped and recreated at
+    // another location is never served the credentials of the dropped one. What is cached
+    // and bounded are the file systems built from the credentials, keyed by them.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> first,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> second,
+                         catalog->GetTableFileSystem(Identifier("db1", "t1")));
+    ASSERT_NE(first, second);
+
+    ASSERT_OK(first->Exists("/no-such-file").status());
+    ASSERT_OK(second->Exists("/no-such-file").status());
+    ASSERT_EQ(std::vector<std::string>({TokenPath("db1", "t1"), TokenPath("db1", "t1")}),
+              TokenRequests());
+}
+
+TEST_F(RestCatalogTest, RecreatedTableLoadsNewCredentialsBeforeOldTokenExpires) {
+    options_[CatalogOptions::DATA_TOKEN_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    Identifier identifier("db1", "t1");
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+    ASSERT_OK_AND_ASSIGN(std::string old_location, catalog->GetTableLocation(identifier));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> first,
+                         catalog->GetTableFileSystem(identifier));
+    std::shared_ptr<RestTokenFileSystem> first_token_fs =
+        std::dynamic_pointer_cast<RestTokenFileSystem>(first);
+    ASSERT_NE(nullptr, first_token_fs);
+    ASSERT_OK_AND_ASSIGN(RestToken old_token, first_token_fs->ValidToken());
+    ASSERT_EQ("ak-1", old_token.token.at("fs.oss.accessKeyId"));
+
+    ASSERT_OK(catalog->DropTable(identifier, /*ignore_if_not_exists=*/false));
+    ASSERT_OK_AND_ASSIGN(bool exists, catalog->TableExists(identifier));
+    ASSERT_FALSE(exists);
+    ASSERT_OK(CreateSampleTable(catalog.get(), identifier));
+    std::string new_location = old_location + "-recreated";
+    {
+        // the server hands the recreated table another location and other credentials, while
+        // the expiration of the credentials of the dropped table stays the same
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        MockCatalogState::TableData& table = state_->databases.at("db1").at("t1");
+        table.path = new_location;
+        table.token = {{"fs.oss.accessKeyId", "ak-2"}};
+    }
+    ASSERT_OK_AND_ASSIGN(std::string location, catalog->GetTableLocation(identifier));
+    ASSERT_EQ(new_location, location);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileSystem> second,
+                         catalog->GetTableFileSystem(identifier));
+    ASSERT_NE(first, second);
+    std::shared_ptr<RestTokenFileSystem> second_token_fs =
+        std::dynamic_pointer_cast<RestTokenFileSystem>(second);
+    ASSERT_NE(nullptr, second_token_fs);
+    ASSERT_OK_AND_ASSIGN(RestToken new_token, second_token_fs->ValidToken());
+    ASSERT_EQ("ak-2", new_token.token.at("fs.oss.accessKeyId"));
+    ASSERT_EQ(old_token.expires_at_millis, new_token.expires_at_millis);
+    ASSERT_EQ(kDataTokenExpiresAtMillis, new_token.expires_at_millis);
+    ASSERT_EQ(std::vector<std::string>({TokenPath("db1", "t1"), TokenPath("db1", "t1")}),
+              TokenRequests());
 }
 
 TEST_F(RestCatalogTest, CatalogFactoryMetastoreDispatch) {
