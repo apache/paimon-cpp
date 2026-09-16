@@ -1341,6 +1341,127 @@ TEST_F(PageFilteredRowGroupReaderTest, BitmapAllPagesSomeRowGroups) {
     }
 }
 
+TEST_F(PageFilteredRowGroupReaderTest, SparsePageSelectionMatchesLinearReference) {
+    std::string file_name = dir_->Str() + "/sparse_page_selection.parquet";
+    WriteTestFile(file_name, MakeSequentialIntData(10000), 10, 10000);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
+    auto input = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+    auto reader = ::parquet::ParquetFileReader::Open(input);
+    auto indexes = reader->GetPageIndexReader()->RowGroup(0);
+    auto offset_index = indexes->GetOffsetIndex(0);
+    const auto& pages = offset_index->page_locations();
+    ASSERT_EQ(size_t{1000}, pages.size());
+    std::vector<RowRanges> selections;
+    selections.emplace_back();
+    selections.push_back(RowRanges::CreateSingle(10000));
+    selections.emplace_back(RowRanges::Range(-10, 10010));
+    selections.emplace_back(RowRanges::Range(10000, 10010));
+    selections.emplace_back(RowRanges::Range(-10, -1));
+    RowRanges dense;
+    for (int64_t row = 0; row < 10000; row += 2) {
+        dense.Add({row, row});
+    }
+    selections.push_back(std::move(dense));
+    for (int32_t seed = 0; seed < 32; ++seed) {
+        RowRanges rows;
+        rows.Add({0, 0});
+        rows.Add({2, 2});
+        rows.Add({9, 10});
+        rows.Add({9999, 9999});
+        for (int32_t i = 0; i < seed; ++i) {
+            int64_t start = (i * 7919 + seed * 13) % 10000;
+            rows.Add({start, std::min<int64_t>(9999, start + seed)});
+        }
+        selections.push_back(std::move(rows));
+    }
+    for (size_t selection = 0; selection < selections.size(); ++selection) {
+        SCOPED_TRACE(selection);
+        const auto& rows = selections[selection];
+        auto actual = PageFilteredRowGroupReader::ComputePageRanges(TargetRowGroup(0, true, rows),
+                                                                    {0}, indexes, reader.get());
+        std::vector<::arrow::io::ReadRange> expected;
+        for (size_t i = 0; i < pages.size(); ++i) {
+            int64_t end = i + 1 == pages.size() ? 9999 : pages[i + 1].first_row_index - 1;
+            if (rows.IsOverlapping(pages[i].first_row_index, end)) {
+                expected.push_back({pages[i].offset, pages[i].compressed_page_size});
+            }
+        }
+        ASSERT_EQ(expected.size(), actual.size());
+        for (size_t i = 0; i < expected.size(); ++i) {
+            ASSERT_EQ(expected[i].offset, actual[i].offset);
+            ASSERT_EQ(expected[i].length, actual[i].length);
+        }
+    }
+}
+
+TEST_F(PageFilteredRowGroupReaderTest, ThousandPageSelectionsDecodeExactValues) {
+    const std::string file_name = dir_->Str() + "/thousand_page_values.parquet";
+    constexpr int32_t kRows = 10003;
+    WriteTestFile(file_name, MakeSequentialIntData(kRows), 10, kRows);
+    auto read_schema = arrow::schema({arrow::field("val", arrow::int32())});
+    for (int32_t selection = 0; selection < 3; ++selection) {
+        RoaringBitmap32 bitmap;
+        std::vector<int32_t> selected_rows;
+        for (int32_t row = 0; row < kRows; ++row) {
+            bool selected = selection == 0 ? (row == 0 || row == 2 || row == 9 || row == 10 ||
+                                              row == 5001 || row == 9999 || row == 10002)
+                                           : row % (selection == 1 ? 127 : 2) == 0;
+            if (selected) {
+                bitmap.Add(row);
+                selected_rows.push_back(row);
+            }
+        }
+        for (const std::string strategy : {"coalesce", "trim"}) {
+            std::vector<int32_t> expected;
+            if (strategy == "coalesce") {
+                expected = selected_rows;
+            } else {
+                // Trim retains gaps between the first and last selected row of each page.
+                for (size_t first = 0; first < selected_rows.size();) {
+                    size_t last = first;
+                    while (last + 1 < selected_rows.size() &&
+                           selected_rows[last + 1] / 10 == selected_rows[first] / 10) {
+                        ++last;
+                    }
+                    for (int32_t row = selected_rows[first]; row <= selected_rows[last]; ++row) {
+                        expected.push_back(row);
+                    }
+                    first = last + 1;
+                }
+            }
+            for (bool pre_buffer : {false, true}) {
+                SCOPED_TRACE(selection);
+                SCOPED_TRACE(strategy);
+                SCOPED_TRACE(pre_buffer);
+                std::map<std::string, std::string> options = {
+                    {PARQUET_READ_BITMAP_ROW_RANGE_REFINING_STRATEGY, strategy},
+                    {PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT, "0"},
+                    {PARQUET_READ_CACHE_OPTION_HOLE_SIZE_LIMIT, "0"},
+                    {PARQUET_READ_ENABLE_PRE_BUFFER, pre_buffer ? "true" : "false"}};
+                std::shared_ptr<arrow::ChunkedArray> result;
+                ReadWithPredicateAndBitmapImpl(file_name, read_schema, nullptr, bitmap, &result,
+                                               options, /*batch_size=*/7);
+                ASSERT_TRUE(result);
+                ASSERT_EQ(static_cast<int64_t>(expected.size()), result->length());
+                size_t seen = 0;
+                for (const auto& chunk : result->chunks()) {
+                    auto rows = std::dynamic_pointer_cast<arrow::StructArray>(chunk);
+                    ASSERT_TRUE(rows);
+                    auto values = std::dynamic_pointer_cast<arrow::Int32Array>(rows->field(0));
+                    ASSERT_TRUE(values);
+                    for (int64_t i = 0; i < values->length(); ++i) {
+                        ASSERT_LT(seen, expected.size());
+                        ASSERT_FALSE(values->IsNull(i));
+                        ASSERT_EQ(expected[seen++], values->Value(i));
+                    }
+                }
+                ASSERT_EQ(expected.size(), seen);
+            }
+        }
+    }
+}
+
 /// Test: OffsetIndex lets the reader jump directly to selected data pages.
 ///
 /// The bitmap selects rows from page 1 and page 8. Synchronous positional reads issued while
