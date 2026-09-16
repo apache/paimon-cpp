@@ -84,19 +84,13 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
 
 }  // namespace
 
-// No registration round is open: Init() never ran, or the round it opened has ended.
-constexpr uint64_t kNoRegistrationRound = 0;
-
 class ReadAheadCache::Impl {
  public:
     Impl(const std::shared_ptr<InputStream>& stream, const CacheConfig& config, uint64_t file_size,
          const std::shared_ptr<MemoryPool>& memory_pool);
     ~Impl();
 
-    Status Init(std::vector<ByteRange>&& ranges);
-    uint64_t RegistrationRound() const;
-    Result<std::optional<uint64_t>> AddRanges(std::vector<ByteRange>&& ranges,
-                                              uint64_t expected_round);
+    Result<std::optional<uint64_t>> AddRanges(std::vector<ByteRange>&& ranges);
     Result<bool> Read(const ByteRange& range, char* dest);
     void Reset();
     void ReleaseBuffers();
@@ -105,6 +99,11 @@ class ReadAheadCache::Impl {
     void CollectMetrics(std::shared_ptr<Metrics>* metrics) const;
 
  private:
+    /// Merge coalesced, validated `new_ranges` into the disjoint, offset-ordered pending_ranges_,
+    /// rebuilding is_cached_ alongside, and return the offset of the first newly registered range
+    /// (nullopt when nothing was added). The caller holds the write lock.
+    std::optional<uint64_t> MergeRangesLocked(std::vector<ByteRange>&& new_ranges);
+
     /// Dispatch the prefetch IOs for entries that have already been published
     /// into entries_.
     void DispatchFetches(const std::vector<PendingFetch>& fetches);
@@ -135,11 +134,6 @@ class ReadAheadCache::Impl {
     mutable std::shared_mutex rw_mutex_;
     std::vector<std::atomic<bool>> is_cached_;
     std::vector<ByteRange> pending_ranges_;
-    // The round the currently registered ranges belong to, or kNoRegistrationRound when no round
-    // is open. Every Init() opens a new one, so ranges reported by a pass that outlived its round
-    // can be told apart from the ranges of the open round.
-    uint64_t registration_round_ = kNoRegistrationRound;
-    uint64_t last_registration_round_ = kNoRegistrationRound;
     // Caches the reads that no registered range covers, or null when the block
     // cache is disabled. Owns its own locking and counters.
     std::unique_ptr<FileBlockCache> block_cache_;
@@ -152,63 +146,27 @@ class ReadAheadCache::Impl {
     // The prefetch IO actually issued to the underlying stream. The block cache
     // counts its own fetches, which CollectMetrics() adds to these.
     AtomicCounterPair ios_;
-    // The ranges registered mid-read: the ones that were registered and the ones that were
-    // dropped, either as already registered or as belonging to a round that has ended.
-    AtomicCounterPair late_registered_;
-    AtomicCounterPair late_dropped_;
 };
 
-Status ReadAheadCache::Impl::Init(std::vector<ByteRange>&& ranges) {
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<ByteRange> pending_ranges,
-        ByteRangeCombiner::CoalesceByteRanges(std::move(ranges), config_.GetHoleSizeLimit(),
-                                              config_.GetRangeSizeLimit()));
-    for (const auto& pending_range : pending_ranges) {
-        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(pending_range.offset, "range offset"));
-        PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(pending_range.length, "range length"));
-    }
-    // Locked like AddRanges(), which extends this very registration round from another thread.
-    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
-    if (registration_round_ != kNoRegistrationRound) {
-        return Status::Invalid("Cache has already been initialized");
-    }
-    pending_ranges_ = std::move(pending_ranges);
-    is_cached_ = std::vector<std::atomic<bool>>(pending_ranges_.size());
-    for (auto& is_cached : is_cached_) {
-        is_cached.store(false);
-    }
-    // Monotonic across Reset(), so that a round is never confused with an earlier one.
-    registration_round_ = ++last_registration_round_;
-    return Status::OK();
-}
-
-uint64_t ReadAheadCache::Impl::RegistrationRound() const {
-    std::shared_lock<std::shared_mutex> lock(rw_mutex_);
-    return registration_round_;
-}
-
-Result<std::optional<uint64_t>> ReadAheadCache::Impl::AddRanges(std::vector<ByteRange>&& ranges,
-                                                                uint64_t expected_round) {
+Result<std::optional<uint64_t>> ReadAheadCache::Impl::AddRanges(std::vector<ByteRange>&& ranges) {
+    // Both an up-front registration and a mid-read one are cut at the plain size limit.
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<ByteRange> new_ranges,
-        ByteRangeCombiner::CoalesceByteRangesAdaptive(
-            std::move(ranges), config_.GetHoleSizeLimit(), config_.GetRangeSizeLimit(),
-            config_.GetRangeSplitAlignment(), config_.GetRangeSplitConcurrency()));
+        ByteRangeCombiner::CoalesceByteRanges(std::move(ranges), config_.GetHoleSizeLimit(),
+                                              config_.GetRangeSizeLimit()));
     for (const auto& new_range : new_ranges) {
         PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(new_range.offset, "range offset"));
         PAIMON_RETURN_NOT_OK(ValidateValueInRange<int64_t>(new_range.length, "range length"));
     }
 
+    // Locked: a registration rewrites the very pending_ranges_ and is_cached_ a concurrent Read()
+    // serves from, so it must not race the read finding its covering entries.
     std::unique_lock<std::shared_mutex> lock(rw_mutex_);
-    if (expected_round == kNoRegistrationRound || expected_round != registration_round_) {
-        // The round these ranges belong to is not the open one: the cache was never initialized,
-        // its buffers were released, or it was reset for a new read-range generation. The reads
-        // keep issuing their own IO, as they did before these ranges became known.
-        for (const auto& new_range : new_ranges) {
-            late_dropped_.Add(new_range.length);
-        }
-        return std::optional<uint64_t>{};
-    }
+    return MergeRangesLocked(std::move(new_ranges));
+}
+
+std::optional<uint64_t> ReadAheadCache::Impl::MergeRangesLocked(
+    std::vector<ByteRange>&& new_ranges) {
     // Merge the two sorted, internally disjoint lists, keeping the result disjoint so that
     // FindCoveringEntries() may keep walking it: of a new range, only the parts no registered
     // range covers are registered. is_cached_ is rebuilt alongside: it is indexed by
@@ -230,13 +188,11 @@ Result<std::optional<uint64_t>> ReadAheadCache::Impl::AddRanges(std::vector<Byte
         }
         merged.emplace_back(offset, length);
         merged_is_cached.push_back(0);
-        late_registered_.Add(length);
     };
     for (const ByteRange& candidate : new_ranges) {
         const uint64_t candidate_end = candidate.offset + candidate.length;
-        // Start of the part of the candidate that is neither registered nor dropped yet.
+        // Start of the part of the candidate that is not registered yet.
         uint64_t cursor = candidate.offset;
-        uint64_t dropped_bytes = 0;
         while (cursor < candidate_end) {
             if (old_idx == pending_ranges_.size()) {
                 register_new(cursor, candidate_end - cursor);
@@ -256,18 +212,12 @@ Result<std::optional<uint64_t>> ReadAheadCache::Impl::AddRanges(std::vector<Byte
                 break;
             }
             // Overlap: the hole before the registered range is new, and the overlapping part is
-            // dropped because the round that registered it is already fetching those bytes. The
-            // registered range is left for the next iteration to settle, as a later candidate may
-            // still start before it.
+            // dropped because it is already being fetched. The registered range is left for the
+            // next iteration to settle, as a later candidate may still start before it.
             if (registered.offset > cursor) {
                 register_new(cursor, registered.offset - cursor);
             }
-            dropped_bytes +=
-                std::min(candidate_end, registered_end) - std::max(cursor, registered.offset);
             cursor = registered_end;
-        }
-        if (dropped_bytes > 0) {
-            late_dropped_.Add(dropped_bytes);
         }
     }
     while (old_idx < pending_ranges_.size()) {
@@ -356,8 +306,6 @@ void ReadAheadCache::Impl::Reset() {
     hits_.Reset();
     misses_.Reset();
     ios_.Reset();
-    late_registered_.Reset();
-    late_dropped_.Reset();
     if (block_cache_ != nullptr) {
         // Only the counters: the blocks cache the file, not the registered
         // ranges, and a reader resetting the cache reads the same file again.
@@ -384,9 +332,6 @@ void ReadAheadCache::Impl::ReleasePrefetchBuffers() {
     entries_.clear();
     is_cached_.clear();
     pending_ranges_.clear();
-    // Ends the registration round: the ranges a pass reports from here on belong to a round that
-    // is over, and AddRanges() drops them instead of registering bytes nobody reads.
-    registration_round_ = kNoRegistrationRound;
     // The read/io counters are deliberately kept: a reader closed at EOF must
     // still be able to report them through CollectMetrics().
 }
@@ -412,14 +357,10 @@ void ReadAheadCache::Impl::CollectMetrics(std::shared_ptr<Metrics>* metrics) con
     m->SetCounter(ReadAheadCacheMetrics::BLOCK_FETCH_BYTES, blocks.fetch_bytes);
     m->SetCounter(ReadAheadCacheMetrics::IO_COUNT, ios_.Count() + blocks.fetches);
     m->SetCounter(ReadAheadCacheMetrics::IO_BYTES, ios_.Bytes() + blocks.fetch_bytes);
-    m->SetCounter(ReadAheadCacheMetrics::LATE_REGISTERED, late_registered_.Count());
-    m->SetCounter(ReadAheadCacheMetrics::LATE_REGISTERED_BYTES, late_registered_.Bytes());
-    m->SetCounter(ReadAheadCacheMetrics::LATE_DROPPED, late_dropped_.Count());
-    m->SetCounter(ReadAheadCacheMetrics::LATE_DROPPED_BYTES, late_dropped_.Bytes());
 }
 
 void ReadAheadCache::Impl::Warmup() {
-    // Init() only registers the pending ranges; without this the first fetch
+    // AddRanges() only registers the pending ranges; without this the first fetch
     // starts when the first Read() arrives, racing the reader's own miss fetch.
     uint64_t from_offset = 0;
     {
@@ -521,17 +462,8 @@ ReadAheadCache::ReadAheadCache(const std::shared_ptr<InputStream>& stream,
 
 ReadAheadCache::~ReadAheadCache() = default;
 
-Status ReadAheadCache::Init(std::vector<ByteRange>&& ranges) {
-    return impl_->Init(std::move(ranges));
-}
-
-Result<std::optional<uint64_t>> ReadAheadCache::AddRanges(std::vector<ByteRange>&& ranges,
-                                                          uint64_t expected_round) {
-    return impl_->AddRanges(std::move(ranges), expected_round);
-}
-
-uint64_t ReadAheadCache::RegistrationRound() const {
-    return impl_->RegistrationRound();
+Result<std::optional<uint64_t>> ReadAheadCache::AddRanges(std::vector<ByteRange>&& ranges) {
+    return impl_->AddRanges(std::move(ranges));
 }
 
 Result<bool> ReadAheadCache::Read(const ByteRange& range, char* dest) {

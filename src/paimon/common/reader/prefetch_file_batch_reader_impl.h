@@ -60,11 +60,6 @@ class Metrics;
 struct PrefetchMetricsState;
 struct PrefetchIoMetricsState;
 
-// No read-ahead cache registration round is open, so the ranges a sub-reader reports belong to a
-// read-range generation that is over. Matches ReadAheadCache::RegistrationRound() when the cache
-// has no open round.
-constexpr uint64_t kNoCacheRound = 0;
-
 class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
  public:
     static Result<std::unique_ptr<PrefetchFileBatchReaderImpl>> Create(
@@ -148,9 +143,9 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     void WarmCacheOnce();
 
     /// Registers byte ranges a sub-reader discovered mid-read (the late-materialization payload
-    /// pass) with the shared cache and starts fetching them from there. A no-op without a cache,
-    /// or when the read-range generation the ranges belong to has ended: the ranges are tagged with
-    /// the cache's registration round, so a report that outlives its generation - a cache reset by
+    /// pass) with the shared cache and starts fetching them from there. A no-op without a cache, or
+    /// once the read-range generation the ranges belong to has ended (CleanUp() cleared
+    /// cache_warmed_): a report that outlives its generation - a cache reset by
     /// SetReadSchema()/RefreshReadRanges(), or released by Close() - registers nothing instead of
     /// prefetching bytes nobody reads. Errors are recorded via SetReadStatus() for the same reason
     /// as in WarmCacheOnce().
@@ -212,12 +207,10 @@ class PrefetchFileBatchReaderImpl : public PrefetchFileBatchReader {
     bool need_prefetch_ = false;
     bool read_ranges_freshed_ = false;
     // Guards the one-shot read-ahead cache Init/Warmup so it runs at most once per read-range
-    // generation. Reset by CleanUp() alongside read_ranges_freshed_.
+    // generation, and gates the mid-read range reports of that generation: CleanUp() clears it, so
+    // a sub-reader reporting after the generation ended registers nothing. Reset by CleanUp()
+    // alongside read_ranges_freshed_.
     std::atomic<bool> cache_warmed_{false};
-    // The cache registration round WarmCacheOnce() opened for the current read-range generation,
-    // or kNoCacheRound when no round is open. Passed to ReadAheadCache::AddRanges() so that the
-    // ranges of a generation that has ended are not registered into the next one.
-    std::atomic<uint64_t> cache_round_{kNoCacheRound};
     const uint32_t prefetch_queue_capacity_;
     const bool enable_adaptive_prefetch_strategy_;
     const WarmupLevel warmup_level_;

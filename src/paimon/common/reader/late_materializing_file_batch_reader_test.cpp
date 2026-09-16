@@ -896,13 +896,6 @@ TEST_F(LateMaterializingFileBatchReaderTest, PrefetchInnerRegistersPayloadPreBuf
     ASSERT_OK_AND_ASSIGN(uint64_t io_bytes, metrics->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
     // Both the probe ranges registered before the read and the payload ranges registered during it.
     EXPECT_EQ(io_bytes, 1024u + 2048u);
-    // The payload ranges are the ones that arrived mid-read, and none of them was dropped.
-    ASSERT_OK_AND_ASSIGN(uint64_t late_registered_bytes,
-                         metrics->GetCounter(ReadAheadCacheMetrics::LATE_REGISTERED_BYTES));
-    EXPECT_EQ(late_registered_bytes, 2048u);
-    ASSERT_OK_AND_ASSIGN(uint64_t late_dropped_bytes,
-                         metrics->GetCounter(ReadAheadCacheMetrics::LATE_DROPPED_BYTES));
-    EXPECT_EQ(late_dropped_bytes, 0u);
     impl->Close();
 }
 

@@ -521,11 +521,10 @@ Status PrefetchFileBatchReaderImpl::CleanUp() {
     current_batch_global_row_ids_.clear();
     read_ranges_freshed_ = false;
     // SetReadSchema()/RefreshReadRanges() call cache_->Reset() right after CleanUp(), clearing the
-    // cache's initialized state, so the next read-range generation must be allowed to Init again.
+    // cache's registered ranges, so the next read-range generation must be allowed to Init again.
+    // Clearing the flag also ends this generation's mid-read reports: a sub-reader reporting from
+    // here on registers nothing until the next generation warms the cache again.
     cache_warmed_.store(false);
-    // The registration round of this generation ends here, before the cache is reset: a sub-reader
-    // reporting ranges from now on registers nothing until the next round is opened.
-    cache_round_.store(kNoCacheRound);
     clean_prefetch_queue();
     prefetch_metrics_->queue_depth.store(0, kMetricsMemoryOrder);
     for (size_t i = 0; i < readers_pos_.size(); i++) {
@@ -780,10 +779,10 @@ void PrefetchFileBatchReaderImpl::WarmCacheOnce() {
     if (!cache_) {
         return;
     }
-    // Init() is not idempotent (a second call returns Invalid), so at most one warmup may run per
-    // read-range generation. A RAW Warmup() and the Workloop() call are ordered by the reader's own
-    // thread, which warms first and only then starts the background thread, so the loser of this
-    // exchange never continues on a cache another thread is still initializing.
+    // At most one warmup may run per read-range generation. A RAW Warmup() and the Workloop() call
+    // are ordered by the reader's own thread, which warms first and only then starts the background
+    // thread, so the loser of this exchange never continues on a cache another thread is still
+    // initializing.
     if (cache_warmed_.exchange(true)) {
         return;
     }
@@ -796,17 +795,14 @@ void PrefetchFileBatchReaderImpl::WarmCacheOnce() {
     for (const auto& read_range : read_ranges.value()) {
         ranges.emplace_back(read_range.first, read_range.second);
     }
-    Status s = cache_->Init(std::move(ranges));
-    if (!s.ok()) {
-        SetReadStatus(s);
+    Result<std::optional<uint64_t>> registered = cache_->AddRanges(std::move(ranges));
+    if (!registered.ok()) {
+        SetReadStatus(registered.status());
         return;
     }
-    // Init() only registers the ranges, so without this the first cache fetch races the readers'
-    // first reads instead of running ahead of them.
+    // AddRanges() only registers the ranges, so without this the first cache fetch races the
+    // readers' first reads instead of running ahead of them.
     cache_->Warmup();
-    // The round the ranges of this generation belong to, for the sub-readers that report theirs
-    // mid-read. Stored after Init() opened it, cleared by CleanUp() when it ends.
-    cache_round_.store(cache_->RegistrationRound());
 }
 
 void PrefetchFileBatchReaderImpl::RegisterLatePreBufferRanges(
@@ -814,10 +810,9 @@ void PrefetchFileBatchReaderImpl::RegisterLatePreBufferRanges(
     if (!cache_ || read_ranges.empty()) {
         return;
     }
-    const uint64_t round = cache_round_.load();
-    if (round == kNoCacheRound) {
+    if (!cache_warmed_.load()) {
         // The read-range generation these ranges belong to has ended, so nothing is going to read
-        // them. WarmCacheOnce() opens the next round.
+        // them. WarmCacheOnce() warms the next generation.
         return;
     }
     std::vector<ByteRange> ranges;
@@ -825,15 +820,13 @@ void PrefetchFileBatchReaderImpl::RegisterLatePreBufferRanges(
     for (const auto& read_range : read_ranges) {
         ranges.emplace_back(read_range.first, read_range.second);
     }
-    Result<std::optional<uint64_t>> first_added = cache_->AddRanges(std::move(ranges), round);
+    Result<std::optional<uint64_t>> first_added = cache_->AddRanges(std::move(ranges));
     if (!first_added.ok()) {
         SetReadStatus(first_added.status());
         return;
     }
     if (!first_added.value().has_value()) {
-        // Every range was already registered, or the registration round has ended (the cache was
-        // reset for a new read-range generation, or released by Close()). Nothing new to fetch
-        // either way.
+        // Every range was already registered, so there is nothing new to fetch.
         return;
     }
     // Fetch from the first new range rather than from the start: the ranges registered before it

@@ -1316,8 +1316,8 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupLevelRaw) {
                                         WarmupLevel::RAW);
 
     reader->Warmup();
-    // A second Warmup() must be a no-op: the one-shot guard prevents a duplicate cache Init(),
-    // which would otherwise fail with "Cache has already been initialized".
+    // A second Warmup() must be a no-op: the one-shot guard prevents opening the cache round
+    // twice, which would otherwise fail with "Cache has already been initialized".
     reader->Warmup();
 
     std::shared_ptr<Metrics> metrics = reader->GetReaderMetrics();
