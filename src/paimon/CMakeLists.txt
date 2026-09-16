@@ -71,6 +71,7 @@ set(PAIMON_COMMON_SRCS
     common/file_index/file_index_format.cpp
     common/file_index/file_index_reader.cpp
     common/file_index/file_index_result.cpp
+    common/file_index/scored_file_index_result.cpp
     common/format/column_stats.cpp
     common/format/file_format_factory.cpp
     common/fs/file_system.cpp
@@ -78,7 +79,6 @@ set(PAIMON_COMMON_SRCS
     common/fs/file_system_factory.cpp
     common/global_index/union_global_index_reader.cpp
     common/global_index/offset_global_index_reader.cpp
-    common/global_index/complete_index_score_batch_reader.cpp
     common/global_index/bitmap_scored_global_index_result.cpp
     common/global_index/bitmap_global_index_result.cpp
     common/global_index/global_index_result.cpp
@@ -135,6 +135,8 @@ set(PAIMON_COMMON_SRCS
     common/predicate/predicate_utils.cpp
     common/predicate/starts_with.cpp
     common/reader/batch_reader.cpp
+    common/reader/complete_index_score_batch_reader.cpp
+    common/reader/complete_index_score_file_batch_reader.cpp
     common/reader/concat_batch_reader.cpp
     common/reader/late_materializing_file_batch_reader.cpp
     common/reader/data_file_reader_factory.cpp
@@ -582,6 +584,7 @@ if(PAIMON_BUILD_TESTS)
                     common/file_index/file_indexer_factory_test.cpp
                     common/file_index/file_index_result_test.cpp
                     common/file_index/file_index_reader_test.cpp
+                    common/file_index/scored_file_index_result_test.cpp
                     common/file_index/file_index_format_test.cpp
                     common/file_index/empty/empty_file_index_reader_test.cpp
                     common/file_index/bitmap/bitmap_index_result_test.cpp
@@ -597,7 +600,6 @@ if(PAIMON_BUILD_TESTS)
                     common/file_index/rangebitmap/range_bitmap_type_adapter_test.cpp
                     common/file_index/bloomfilter/bloom_filter_file_index_test.cpp
                     common/file_index/bloomfilter/fast_hash_test.cpp
-                    common/global_index/complete_index_score_batch_reader_test.cpp
                     common/global_index/global_index_result_test.cpp
                     common/global_index/global_index_utils_test.cpp
                     common/global_index/offset_global_index_reader_test.cpp
@@ -636,6 +638,7 @@ if(PAIMON_BUILD_TESTS)
                     common/predicate/predicate_test.cpp
                     common/predicate/predicate_utils_test.cpp
                     common/predicate/predicate_validator_test.cpp
+                    common/reader/complete_index_score_batch_reader_test.cpp
                     common/reader/concat_batch_reader_test.cpp
                     common/reader/data_file_reader_factory_test.cpp
                     common/reader/late_materializing_file_batch_reader_test.cpp

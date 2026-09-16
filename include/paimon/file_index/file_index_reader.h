@@ -23,7 +23,10 @@
 #include <vector>
 
 #include "paimon/file_index/file_index_result.h"
+#include "paimon/file_index/scored_file_index_result.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/function_visitor.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/result.h"
 #include "paimon/visibility.h"
 
@@ -38,6 +41,8 @@ namespace paimon {
 /// of the indexed data; otherwise, index filtering results may be incorrect.
 class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<FileIndexResult>> {
  public:
+    virtual ~FileIndexReader() = default;
+
     Result<std::shared_ptr<FileIndexResult>> VisitIsNotNull() override;
 
     Result<std::shared_ptr<FileIndexResult>> VisitIsNull() override;
@@ -66,6 +71,14 @@ class PAIMON_EXPORT FileIndexReader : public FunctionVisitor<std::shared_ptr<Fil
     Result<std::shared_ptr<FileIndexResult>> VisitContains(const Literal& literal) override;
 
     Result<std::shared_ptr<FileIndexResult>> VisitLike(const Literal& literal) override;
+
+    /// Execute vector search and return scored file-local physical row positions.
+    virtual Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& vector_search);
+
+    /// Execute full-text search and return matching file-local physical row positions.
+    virtual Result<std::shared_ptr<FileIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& full_text_search);
 };
 
 }  // namespace paimon

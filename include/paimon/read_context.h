@@ -35,11 +35,13 @@
 
 namespace paimon {
 class Executor;
+struct FullTextSearch;
 class FormatTable;
 class MemoryPool;
 class Predicate;
 class FileSystem;
 class RealtimeContext;
+struct VectorSearch;
 
 /// `ReadContext` is some configuration for read operations.
 ///
@@ -51,10 +53,13 @@ class PAIMON_EXPORT ReadContext {
     ReadContext(const std::string& path, const std::string& branch,
                 const std::vector<std::string>& read_field_names,
                 const std::vector<int32_t>& read_field_ids,
-                const std::shared_ptr<Predicate>& predicate, bool enable_predicate_filter,
-                bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
-                uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
-                uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
+                const std::shared_ptr<Predicate>& predicate,
+                const std::shared_ptr<VectorSearch>& vector_search,
+                const std::shared_ptr<FullTextSearch>& full_text_search,
+                bool enable_predicate_filter, bool enable_prefetch, bool enable_late_materializing,
+                uint32_t prefetch_batch_count, uint32_t prefetch_max_parallel_num,
+                bool enable_multi_thread_row_to_batch, uint32_t row_to_batch_thread_number,
+                const std::optional<std::string>& table_schema,
                 const std::shared_ptr<MemoryPool>& memory_pool,
                 const std::shared_ptr<Executor>& executor,
                 const std::shared_ptr<FileSystem>& specific_file_system,
@@ -92,6 +97,18 @@ class PAIMON_EXPORT ReadContext {
 
     const std::shared_ptr<Predicate>& GetPredicate() const {
         return predicate_;
+    }
+
+    const std::shared_ptr<VectorSearch>& GetVectorSearch() const {
+        return vector_search_;
+    }
+
+    const std::shared_ptr<FullTextSearch>& GetFullTextSearch() const {
+        return full_text_search_;
+    }
+
+    bool HasFileIndexSearch() const {
+        return vector_search_ != nullptr || full_text_search_ != nullptr;
     }
 
     bool EnablePredicateFilter() const {
@@ -177,6 +194,8 @@ class PAIMON_EXPORT ReadContext {
     std::vector<std::string> read_field_names_;
     std::vector<int32_t> read_field_ids_;
     std::shared_ptr<Predicate> predicate_;
+    std::shared_ptr<VectorSearch> vector_search_;
+    std::shared_ptr<FullTextSearch> full_text_search_;
     bool enable_predicate_filter_;
     bool enable_prefetch_;
     bool enable_late_materializing_;
@@ -317,6 +336,18 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @param predicate Shared pointer to the predicate for data filtering.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetPredicate(const std::shared_ptr<Predicate>& predicate);
+
+    /// Configure file-local vector search. The limit is applied independently to every data file.
+    /// Vector search and full-text search are mutually exclusive.
+    /// @param vector_search Vector search request, or nullptr to clear it.
+    /// @return Reference to this builder for method chaining.
+    ReadContextBuilder& SetVectorSearch(const std::shared_ptr<VectorSearch>& vector_search);
+
+    /// Configure file-local full-text search. The limit is applied independently to every data
+    /// file. Full-text search and vector search are mutually exclusive.
+    /// @param full_text_search Full-text search request, or nullptr to clear it.
+    /// @return Reference to this builder for method chaining.
+    ReadContextBuilder& SetFullTextSearch(const std::shared_ptr<FullTextSearch>& full_text_search);
 
     /// Whether to perform precise filtering according to predicates for data read from format
     /// reader.

@@ -17,8 +17,8 @@
  */
 #include <future>
 
-#include "paimon/global_index/lumina/lumina_file_reader.h"
-#include "paimon/global_index/lumina/lumina_file_writer.h"
+#include "paimon/indexer/lumina/lumina_file_reader.h"
+#include "paimon/indexer/lumina/lumina_file_writer.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::lumina::test {
 class LuminaFileIOTest : public ::testing::Test {

@@ -43,14 +43,16 @@ TEST(ByteArrayOutputStreamTest, TestWriteAndFinish) {
     ASSERT_EQ(6, position);
     ASSERT_EQ(pool->CurrentUsage(), pool->MaxMemoryUsage());
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish(pool.get()));
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> result, stream->Finish(pool.get()));
     ASSERT_EQ("abcdef", std::string(result->data(), result->size()));
     ASSERT_NOK_WITH_MSG(stream->Write("x", 1), "closed");
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> repeated, stream->Finish(pool.get()));
-    ASSERT_EQ(result, repeated);
+    ASSERT_NOK_WITH_MSG(stream->Finish(pool.get()), "already been finished");
     stream.reset();
+    ASSERT_EQ("abcdef", std::string(result->data(), result->size()));
     ASSERT_EQ(6, pool->CurrentUsage());
+    result.reset();
+    ASSERT_EQ(0, pool->CurrentUsage());
 }
 
 TEST(ByteArrayOutputStreamTest, TestWriteValidation) {
@@ -62,7 +64,7 @@ TEST(ByteArrayOutputStreamTest, TestWriteValidation) {
     ASSERT_NOK(stream->Write("", -1));
     ASSERT_OK_AND_ASSIGN(int64_t written, stream->Write(nullptr, 0));
     ASSERT_EQ(0, written);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish(pool.get()));
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> result, stream->Finish(pool.get()));
     ASSERT_EQ(0, result->size());
 }
 
@@ -73,7 +75,7 @@ TEST(ByteArrayOutputStreamTest, TestCallerKeepsMemoryPoolAlive) {
         std::make_shared<ByteArrayOutputStream>(std::move(output));
     ASSERT_OK_AND_ASSIGN(int64_t written, stream->Write("data", 4));
     ASSERT_EQ(4, written);
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> result, stream->Finish(pool.get()));
+    ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> result, stream->Finish(pool.get()));
 
     stream.reset();
     ASSERT_GT(pool->CurrentUsage(), 0);

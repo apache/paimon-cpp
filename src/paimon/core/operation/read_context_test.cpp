@@ -27,7 +27,9 @@
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
@@ -43,6 +45,7 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_TRUE(ctx->GetReadFieldIds().empty());
     ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetPredicate());
+    ASSERT_FALSE(ctx->HasFileIndexSearch());
     ASSERT_FALSE(ctx->EnablePredicateFilter());
     ASSERT_FALSE(ctx->EnablePrefetch());
     ASSERT_TRUE(ctx->ReadAheadCacheEnabled());
@@ -215,6 +218,41 @@ TEST(ReadContextTest, TestSetInvalidReadSchemaIgnored) {
 
     ASSERT_FALSE(ctx->HasReadSchema());
     ASSERT_EQ(ctx->GetReadSchema(), nullptr);
+}
+
+TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
+    std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
+        "embedding", /*limit=*/3, std::vector<float>{1.0f, 2.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::COSINE, std::map<std::string, std::string>{});
+    ReadContextBuilder builder("table_root_path");
+    ASSERT_EQ(&builder, &builder.SetVectorSearch(vector_search));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context, builder.Finish());
+    EXPECT_EQ(vector_search, vector_context->GetVectorSearch());
+    EXPECT_FALSE(vector_context->GetFullTextSearch());
+    EXPECT_TRUE(vector_context->HasFileIndexSearch());
+
+    std::shared_ptr<FullTextSearch> full_text_search = std::make_shared<FullTextSearch>(
+        "body", /*limit=*/5, "paimon", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
+    ASSERT_EQ(&builder, &builder.SetFullTextSearch(full_text_search));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> full_text_context, builder.Finish());
+    EXPECT_FALSE(full_text_context->GetVectorSearch());
+    EXPECT_EQ(full_text_search, full_text_context->GetFullTextSearch());
+    EXPECT_TRUE(full_text_context->HasFileIndexSearch());
+
+    // Finish resets search configuration just like every other per-read option.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> reset_context, builder.Finish());
+    EXPECT_FALSE(reset_context->HasFileIndexSearch());
+}
+
+TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {
+    std::shared_ptr<VectorSearch> vector_search =
+        std::make_shared<VectorSearch>("embedding", /*limit=*/3, std::vector<float>{1.0f}, nullptr,
+                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    std::shared_ptr<FullTextSearch> full_text_search = std::make_shared<FullTextSearch>(
+        "body", std::nullopt, "paimon", FullTextSearch::SearchType::MATCH_ANY, std::nullopt);
+    ReadContextBuilder conflicting("table_root_path");
+    conflicting.SetVectorSearch(vector_search).SetFullTextSearch(full_text_search);
+    ASSERT_NOK_WITH_MSG(conflicting.Finish(), "cannot be configured together");
 }
 
 }  // namespace paimon::test

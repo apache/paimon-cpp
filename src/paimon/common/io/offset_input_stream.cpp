@@ -118,7 +118,8 @@ void OffsetInputStream::ReadAsync(char* buffer, int64_t size, int64_t offset,
 }
 
 Status OffsetInputStream::Close() {
-    return wrapped_->Close();
+    // TODO(jinli.zjw): Decide whether closing this view should also close the wrapped input stream.
+    return Status::OK();
 }
 
 Result<std::string> OffsetInputStream::GetUri() const {

@@ -29,6 +29,7 @@
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -149,6 +150,50 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
         ASSERT_NOK_WITH_MSG(InternalReadContext::Create(std::move(read_context), table_schema,
                                                         table_schema->Options()),
                             "Get field _INDEX_SCORE failed: not exist in table schema");
+    }
+}
+
+TEST(InternalReadContext, TestFileIndexSearchIndexScoreProjection) {
+    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
+    std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
+        "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
+
+    {
+        ReadContextBuilder builder(path);
+        builder.SetReadFieldNames({"f0", "_INDEX_SCORE"}).SetVectorSearch(vector_search);
+        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(std::move(read_context), table_schema,
+                                                         table_schema->Options()));
+        std::shared_ptr<arrow::Schema> expected = DataField::ConvertDataFieldsToArrowSchema(
+            {DataField(0, arrow::field("f0", arrow::utf8())), SpecialFields::IndexScore()});
+        EXPECT_TRUE(internal_context->GetReadSchema()->Equals(expected));
+    }
+    {
+        ReadContextBuilder builder(path);
+        builder.SetReadFieldIds({0, SpecialFieldIds::INDEX_SCORE}).SetVectorSearch(vector_search);
+        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(std::move(read_context), table_schema,
+                                                         table_schema->Options()));
+        EXPECT_EQ(arrow::Type::FLOAT, internal_context->GetReadSchema()->field(1)->type()->id());
+    }
+    {
+        std::shared_ptr<arrow::Schema> projected = arrow::schema(
+            {arrow::field("_INDEX_SCORE", arrow::float32()), arrow::field("f0", arrow::utf8())});
+        auto c_schema = std::make_unique<ArrowSchema>();
+        ASSERT_TRUE(arrow::ExportSchema(*projected, c_schema.get()).ok());
+        ReadContextBuilder builder(path);
+        builder.SetReadSchema(std::move(c_schema)).SetVectorSearch(vector_search);
+        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto internal_context,
+                             InternalReadContext::Create(std::move(read_context), table_schema,
+                                                         table_schema->Options()));
+        EXPECT_EQ(std::vector<std::string>({"_INDEX_SCORE", "f0"}),
+                  internal_context->GetReadSchema()->field_names());
     }
 }
 

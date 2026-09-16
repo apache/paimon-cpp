@@ -44,6 +44,7 @@
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_result.h"
+#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/status.h"
@@ -194,13 +195,70 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::ApplyIndexAndDvReader
     const std::shared_ptr<arrow::Schema>& data_schema,
     const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     DeletionVector::Factory dv_factory, const std::optional<std::vector<Range>>& ranges,
-    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory) const {
+    const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
+    std::vector<float>* index_scores) const {
+    if (context_->HasFileIndexSearch()) {
+        if (predicate) {
+            return Status::NotImplemented(
+                "File Index search does not support combining with read predicates yet");
+        }
+        if (ranges) {
+            return Status::NotImplemented(
+                "File Index search does not support indexed split row ranges yet");
+        }
+        if (dv_factory) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DeletionVector> deletion_vector,
+                                   dv_factory(file->file_name));
+            if (deletion_vector && !deletion_vector->IsEmpty()) {
+                return Status::NotImplemented(
+                    "File Index search does not support deletion vectors yet");
+            }
+        }
+
+        std::optional<RoaringBitmap32> search_selection;
+        if (context_->GetVectorSearch()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<ScoredFileIndexResult> search_result,
+                FileIndexEvaluator::EvaluateVectorSearch(
+                    data_schema, options_, context_->GetVectorSearch(), data_file_path_factory,
+                    file, options_.GetFileSystem(), pool_));
+            if (search_result->IsEmpty()) {
+                return std::unique_ptr<FileBatchReader>();
+            }
+            search_selection = search_result->GetRowPositions();
+            *index_scores = search_result->GetScores();
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<FileIndexResult> search_result,
+                FileIndexEvaluator::EvaluateFullTextSearch(
+                    data_schema, options_, context_->GetFullTextSearch(), data_file_path_factory,
+                    file, options_.GetFileSystem(), pool_));
+            std::shared_ptr<BitmapIndexResult> bitmap_result =
+                std::dynamic_pointer_cast<BitmapIndexResult>(search_result);
+            if (!bitmap_result) {
+                return std::unique_ptr<FileBatchReader>();
+            }
+            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* bitmap, bitmap_result->GetBitmap());
+            search_selection = *bitmap;
+        }
+
+        ::ArrowSchema c_read_schema;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*read_schema, &c_read_schema));
+        PAIMON_RETURN_NOT_OK(
+            file_reader->SetReadSchema(&c_read_schema, /*predicate=*/nullptr, search_selection));
+        if (!file_reader->SupportPreciseBitmapSelection()) {
+            return std::make_unique<ApplyBitmapIndexBatchReader>(
+                std::move(file_reader), std::move(search_selection).value());
+        }
+        return std::move(file_reader);
+    }
+
     std::shared_ptr<FileIndexResult> file_index_result;
     if (options_.FileIndexReadEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
             file_index_result,
-            FileIndexEvaluator::Evaluate(data_schema, predicate, data_file_path_factory, file,
-                                         options_.GetFileSystem(), pool_));
+            FileIndexEvaluator::Evaluate(data_schema, options_, predicate, data_file_path_factory,
+                                         file, options_.GetFileSystem(), pool_));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {
             return std::unique_ptr<FileBatchReader>();

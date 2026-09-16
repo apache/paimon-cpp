@@ -21,7 +21,9 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/type_fwd.h"
 #include "gtest/gtest.h"
@@ -29,6 +31,7 @@
 #include "paimon/common/fs/external_path_provider.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/date_time_utils.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/manifest/file_source.h"
@@ -86,8 +89,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                 PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {7});
         }
@@ -96,8 +99,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                 PredicateBuilder::IsNotNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 1, 2, 3, 4, 5, 6});
         }
@@ -107,8 +110,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                         Literal(FieldType::STRING, "Alice", 5));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 7});
         }
@@ -118,8 +121,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                         Literal(FieldType::STRING, "Alice", 5));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {1, 2, 3, 4, 5, 6});
         }
@@ -128,8 +131,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                            FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
         }
@@ -138,8 +141,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                 /*field_index=*/1, /*field_name=*/"f1", FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
         }
@@ -148,8 +151,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                         FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
         }
@@ -158,8 +161,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                            FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
         }
@@ -170,8 +173,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                  Literal(FieldType::STRING, "Lucy", 4)});
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 1, 4, 5, 7});
         }
@@ -182,8 +185,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                  Literal(FieldType::STRING, "Lucy", 4)});
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {2, 3, 6});
         }
@@ -197,8 +200,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                  PredicateBuilder::And({f0_predicate, f1_predicate}));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {7});
         }
@@ -212,8 +215,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                  PredicateBuilder::Or({f0_predicate, f1_predicate}));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             CheckResult(file_index_result, {0, 4, 6, 7});
         }
@@ -224,8 +227,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                         Literal(FieldType::STRING, "unknown", 7));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_FALSE(file_index_result->IsRemain().value());
         }
         {
@@ -242,15 +245,15 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                  PredicateBuilder::And({f1_predicate, f2_predicate, f0_predicate}));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, predicate, data_file_path_factory,
-                                             data_file_meta, fs_, pool_));
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                             data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_FALSE(file_index_result->IsRemain().value());
         }
         {
             // test no predicate
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, /*predicate=*/nullptr,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, /*predicate=*/nullptr,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
@@ -261,17 +264,18 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                      FieldType::DOUBLE, Literal(14.1));
             ASSERT_OK_AND_ASSIGN(
                 auto file_index_result,
-                FileIndexEvaluator::Evaluate(data_schema_, /*predicate=*/nullptr,
+                FileIndexEvaluator::Evaluate(data_schema_, core_options_, /*predicate=*/nullptr,
                                              data_file_path_factory, data_file_meta, fs_, pool_));
             ASSERT_TRUE(file_index_result->IsRemain().value());
             ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
         }
     }
 
- private:
+ protected:
     std::shared_ptr<MemoryPool> pool_;
     std::shared_ptr<FileSystem> fs_;
     std::shared_ptr<arrow::Schema> data_schema_;
+    CoreOptions core_options_;
 };
 
 TEST_F(FileIndexEvaluatorTest, TestEvaluateEmbeddingIndex) {
@@ -391,9 +395,10 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
         /*field_index=*/6, /*field_name=*/"ts_tz_micro", FieldType::TIMESTAMP,
         Literal(Timestamp(1745542602001l, 1000)));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({in_predicate, greater_than}));
-    ASSERT_OK_AND_ASSIGN(auto file_index_result, FileIndexEvaluator::Evaluate(
-                                                     data_schema, predicate, data_file_path_factory,
-                                                     data_file_meta, /*file_system=*/fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        auto file_index_result,
+        FileIndexEvaluator::Evaluate(data_schema, core_options_, predicate, data_file_path_factory,
+                                     data_file_meta, /*file_system=*/fs_, pool_));
     CheckResult(file_index_result, {0, 6});
 }
 
@@ -416,8 +421,9 @@ TEST_F(FileIndexEvaluatorTest, TestInvalidEvaluate) {
     auto predicate =
         PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
     ASSERT_NOK_WITH_MSG(
-        FileIndexEvaluator::Evaluate(data_schema_, predicate, /*data_file_path_factory=*/nullptr,
-                                     data_file_meta, /*file_system=*/nullptr, pool_),
+        FileIndexEvaluator::Evaluate(data_schema_, core_options_, predicate,
+                                     /*data_file_path_factory=*/nullptr, data_file_meta,
+                                     /*file_system=*/nullptr, pool_),
         "read process for FileIndexEvaluator must have data_file_path_factory and file_system");
 }
 

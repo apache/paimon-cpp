@@ -48,6 +48,9 @@ class CompleteIndexScoreBatchReader : public BatchReader {
 
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override;
 
+    /// Reset score alignment after the wrapped reader restarts from its first row.
+    void ResetScoreState();
+
     void Close() override {
         reader_->Close();
     }

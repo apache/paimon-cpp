@@ -36,10 +36,12 @@ struct FileIndexDefinition {
     std::map<std::string, std::string> options;
 };
 
-/// Parsed write-side file index configuration.
+/// Parsed file index configuration shared by the write and read paths.
 class FileIndexOptions {
  public:
     static Result<FileIndexOptions> FromCoreOptions(const CoreOptions& options);
+
+    static Result<FileIndexOptions> FromMap(const std::map<std::string, std::string>& options);
 
     const std::vector<FileIndexDefinition>& Definitions() const {
         return definitions_;
@@ -52,6 +54,9 @@ class FileIndexOptions {
     bool Empty() const {
         return definitions_.empty();
     }
+
+    const std::map<std::string, std::string>& GetIndexerOptions(
+        const std::string& column_name, const std::string& index_type) const;
 
  private:
     FileIndexOptions() = default;

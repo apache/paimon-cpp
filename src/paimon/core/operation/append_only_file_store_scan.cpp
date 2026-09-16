@@ -155,9 +155,9 @@ Result<bool> AppendOnlyFileStoreScan::TestFileIndex(
     }
     assert(data_predicate);
     auto data_arrow_schema = DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileIndexResult> index_result,
-        FileIndexEvaluator::Evaluate(data_arrow_schema, data_predicate, meta, pool_));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
+                           FileIndexEvaluator::Evaluate(data_arrow_schema, core_options_,
+                                                        data_predicate, meta, pool_));
     return index_result->IsRemain();
 }
 

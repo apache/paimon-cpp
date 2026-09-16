@@ -22,28 +22,30 @@
 #include <cstdint>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/common/utils/date_time_utils.h"
-#include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_index_reader.h"
+#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/io/byte_array_input_stream.h"
-#include "paimon/memory/bytes.h"
 #include "paimon/predicate/compound_predicate.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
-#include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_utils.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -51,24 +53,26 @@ class MemoryPool;
 enum class FieldType;
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
-    const std::shared_ptr<arrow::Schema>& data_schema, const std::shared_ptr<Predicate>& predicate,
+    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+    const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<MemoryPool>& pool) {
-    return Evaluate(/*only_use_embedding_index=*/false, data_schema, predicate,
+    return Evaluate(/*only_use_embedding_index=*/false, data_schema, core_options, predicate,
                     data_file_path_factory, file_meta, file_system, pool);
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
-    const std::shared_ptr<arrow::Schema>& data_schema, const std::shared_ptr<Predicate>& predicate,
-    const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<MemoryPool>& pool) {
-    return Evaluate(/*only_use_embedding_index=*/true, data_schema, predicate,
+    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+    const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<DataFileMeta>& file_meta,
+    const std::shared_ptr<MemoryPool>& pool) {
+    return Evaluate(/*only_use_embedding_index=*/true, data_schema, core_options, predicate,
                     /*data_file_path_factory=*/nullptr, file_meta, /*file_system=*/nullptr, pool);
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
     bool only_use_embedding_index, const std::shared_ptr<arrow::Schema>& data_schema,
-    const std::shared_ptr<Predicate>& predicate,
+    const CoreOptions& core_options, const std::shared_ptr<Predicate>& predicate,
     const std::shared_ptr<DataFilePathFactory>& data_file_path_factory,
     const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
     const std::shared_ptr<MemoryPool>& pool) {
@@ -83,7 +87,7 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
         return FileIndexResult::Remain();
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Reader> format_reader,
-                           FileIndexFormat::CreateReader(input_stream, pool));
+                           FileIndexFormat::CreateReader(input_stream, pool, core_options.ToMap()));
     std::set<std::string> required_field_names;
     PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &required_field_names));
     std::map<std::string, std::vector<std::shared_ptr<FileIndexReader>>>
@@ -146,6 +150,63 @@ Result<std::shared_ptr<InputStream>> FileIndexEvaluator::ExtractIndexInputStream
     // no index
     return std::shared_ptr<InputStream>();
 }
+
+namespace {
+
+Result<std::vector<std::shared_ptr<FileIndexReader>>> OpenSearchReaders(
+    const std::shared_ptr<arrow::Schema>& data_schema, const std::string& field_name,
+    const CoreOptions& core_options, const std::shared_ptr<DataFileMeta>& file_meta,
+    const std::shared_ptr<InputStream>& input_stream, const std::shared_ptr<MemoryPool>& pool) {
+    std::shared_ptr<arrow::Field> field = data_schema->GetFieldByName(field_name);
+    if (!field) {
+        return Status::Invalid(
+            fmt::format("Search field '{}' does not exist in data schema", field_name));
+    }
+    if (!input_stream) {
+        return Status::Invalid(fmt::format("Data file '{}' has no File Index for search field '{}'",
+                                           file_meta->file_name, field_name));
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Reader> format_reader,
+                           FileIndexFormat::CreateReader(input_stream, pool, core_options.ToMap()));
+    ::ArrowSchema c_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(
+        arrow::ExportSchema(*arrow::schema({std::move(field)}), &c_schema));
+    return format_reader->ReadColumnIndex(field_name, &c_schema);
+}
+
+Result<std::shared_ptr<ScoredFileIndexResult>> ExecuteVectorSearch(
+    const std::vector<std::shared_ptr<FileIndexReader>>& readers,
+    const std::shared_ptr<VectorSearch>& vector_search) {
+    if (readers.empty()) {
+        return Status::NotImplemented(
+            fmt::format("No File Index reader supports vector search for field '{}'",
+                        vector_search->field_name));
+    }
+    if (readers.size() != 1) {
+        return Status::Invalid(
+            fmt::format("Multiple File Index readers exist for vector search field '{}'",
+                        vector_search->field_name));
+    }
+    return readers[0]->VisitVectorSearch(vector_search);
+}
+
+Result<std::shared_ptr<FileIndexResult>> ExecuteFullTextSearch(
+    const std::vector<std::shared_ptr<FileIndexReader>>& readers,
+    const std::shared_ptr<FullTextSearch>& full_text_search) {
+    if (readers.empty()) {
+        return Status::NotImplemented(
+            fmt::format("No File Index reader supports full-text search for field '{}'",
+                        full_text_search->field_name));
+    }
+    if (readers.size() != 1) {
+        return Status::Invalid(
+            fmt::format("Multiple File Index readers exist for full-text search field '{}'",
+                        full_text_search->field_name));
+    }
+    return readers[0]->VisitFullTextSearch(full_text_search);
+}
+
+}  // namespace
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
     const std::shared_ptr<Predicate>& predicate,
@@ -221,6 +282,42 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateCompoundPre
         return compound_result;
     }
     return Status::Invalid("CompoundPredicate only support And/Or function");
+}
+
+Result<std::shared_ptr<ScoredFileIndexResult>> FileIndexEvaluator::EvaluateVectorSearch(
+    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+    const std::shared_ptr<VectorSearch>& vector_search,
+    const std::shared_ptr<DataFilePathFactory>& path_factory,
+    const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
+    const std::shared_ptr<MemoryPool>& pool) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
+                           ExtractIndexInputStream(/*only_use_embedding_index=*/false, path_factory,
+                                                   file_meta, file_system));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
+                           OpenSearchReaders(data_schema, vector_search->field_name, core_options,
+                                             file_meta, input_stream, pool));
+    return ExecuteVectorSearch(readers, vector_search);
+}
+
+Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateFullTextSearch(
+    const std::shared_ptr<arrow::Schema>& data_schema, const CoreOptions& core_options,
+    const std::shared_ptr<FullTextSearch>& full_text_search,
+    const std::shared_ptr<DataFilePathFactory>& path_factory,
+    const std::shared_ptr<DataFileMeta>& file_meta, const std::shared_ptr<FileSystem>& file_system,
+    const std::shared_ptr<MemoryPool>& pool) {
+    if (full_text_search->pre_filter) {
+        return Status::NotImplemented("File full-text search does not support pre-filter yet");
+    }
+    if (full_text_search->with_score) {
+        return Status::NotImplemented("File full-text search does not support score output yet");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
+                           ExtractIndexInputStream(/*only_use_embedding_index=*/false, path_factory,
+                                                   file_meta, file_system));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
+                           OpenSearchReaders(data_schema, full_text_search->field_name,
+                                             core_options, file_meta, input_stream, pool));
+    return ExecuteFullTextSearch(readers, full_text_search);
 }
 
 }  // namespace paimon
