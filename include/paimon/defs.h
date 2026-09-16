@@ -421,6 +421,10 @@ struct PAIMON_EXPORT Options {
     /// "changelog-producer.row-deduplicate" is "true".
     static const char CHANGELOG_PRODUCER_ROW_DEDUPLICATE_IGNORE_FIELDS[];
 
+    /// "changelog-producer.input.parallel-write" - Whether data and changelog files are
+    /// written in parallel for input mode changelog producer. Default value is "true".
+    static const char CHANGELOG_PRODUCER_INPUT_PARALLEL_WRITE[];
+
     /// "changelog-file.prefix" - Specify the file name prefix of changelog files. Default value is
     /// "changelog-".
     static const char CHANGELOG_FILE_PREFIX[];

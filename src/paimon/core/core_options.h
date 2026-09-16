@@ -210,6 +210,7 @@ class PAIMON_EXPORT CoreOptions {
     ChangelogProducer GetChangelogProducer() const;
     bool ChangelogRowDeduplicate() const;
     const std::vector<std::string>& GetChangelogRowDeduplicateIgnoreFields() const;
+    bool InputChangelogParallelWriteEnabled() const;
     std::string ChangelogFilePrefix() const;
     std::shared_ptr<FileFormat> GetChangelogFileFormat() const;
     std::optional<std::string> GetChangelogFileCompression() const;
