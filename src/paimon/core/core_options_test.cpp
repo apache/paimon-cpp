@@ -35,6 +35,18 @@
 #include "paimon/testing/utils/timezone_guard.h"
 namespace paimon::test {
 
+TEST(CoreOptionsTest, TestPrimaryKeyIndexOptions) {
+    ASSERT_OK_AND_ASSIGN(CoreOptions defaults, CoreOptions::FromMap({}));
+    ASSERT_FALSE(defaults.PkClusteringOverrideEnabled());
+    ASSERT_TRUE(defaults.GetPrimaryKeyBTreeIndexColumns().empty());
+    ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                         CoreOptions::FromMap({{Options::PK_CLUSTERING_OVERRIDE, "true"},
+                                               {Options::PK_BTREE_INDEX_COLUMNS, " a , b,a "}}));
+    ASSERT_TRUE(options.PkClusteringOverrideEnabled());
+    ASSERT_EQ(options.GetPrimaryKeyBTreeIndexColumns(), (std::vector<std::string>{"a", "b", "a"}));
+    ASSERT_NOK(CoreOptions::FromMap({{Options::PK_CLUSTERING_OVERRIDE, "invalid"}}));
+}
+
 TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap({}));
     std::shared_ptr<FileFormat> manifest_format = core_options.GetManifestFormat();

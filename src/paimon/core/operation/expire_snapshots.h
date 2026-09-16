@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -39,6 +40,7 @@ class SnapshotManager;
 class FileStorePathFactory;
 class DataFilePathFactory;
 class FileSystem;
+class IndexManifestFile;
 class ManifestEntry;
 class ManifestList;
 class ManifestFile;
@@ -51,6 +53,7 @@ class ExpireSnapshots {
                     const std::shared_ptr<FileStorePathFactory>& path_factory,
                     const std::shared_ptr<ManifestList>& manifest_list,
                     const std::shared_ptr<ManifestFile>& manifest_file,
+                    const std::shared_ptr<IndexManifestFile>& index_manifest_file,
                     const std::shared_ptr<FileSystem>& fs, const ExpireConfig& config,
                     bool realtime_enabled, const std::shared_ptr<Executor>& executor);
 
@@ -69,11 +72,20 @@ class ExpireSnapshots {
                                 DataFilePathFactoryCache* data_file_path_factory_cache);
     Status CleanUnusedManifests(const std::string& manifest_list_name,
                                 const std::set<std::string>& skipping_sets);
+    Status CleanUnusedIndexManifest(const std::optional<std::string>& index_manifest,
+                                    std::set<std::string>* skipping_manifest_set);
     Status CleanEmptyDirectories();
     Status GetDataFilesToDelete(const std::vector<ManifestEntry>& data_file_entries,
                                 std::map<std::string, ManifestEntry>* data_files_to_delete) const;
     Status GetManifestSkippingSet(const std::vector<Snapshot>& retained_snapshots,
                                   std::set<std::string>* skipping_manifest_set) const;
+    Result<std::vector<Snapshot>> GetTaggedSnapshots() const;
+    std::vector<Snapshot> GetTagSnapshotsToRetain(const std::vector<Snapshot>& tagged_snapshots,
+                                                  int64_t begin_inclusive_id,
+                                                  int64_t end_exclusive_id) const;
+    Result<std::set<std::string>> GetTaggedDataFiles(const Snapshot& tagged_snapshot) const;
+    Status AddIndexManifestToSkippingSet(const std::optional<std::string>& index_manifest,
+                                         std::set<std::string>* skipping_manifest_set) const;
     Status GetDataFileSkippingSet(const std::vector<Snapshot>& retained_snapshots,
                                   DataFilePathFactoryCache* data_file_path_factory_cache,
                                   std::set<std::string>* skipping_data_files) const;
@@ -85,6 +97,7 @@ class ExpireSnapshots {
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<ManifestList> manifest_list_;
     std::shared_ptr<ManifestFile> manifest_file_;
+    std::shared_ptr<IndexManifestFile> index_manifest_file_;
     std::shared_ptr<FileSystem> fs_;
     ExpireConfig config_;
     bool realtime_enabled_;

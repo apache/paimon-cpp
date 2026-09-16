@@ -57,7 +57,8 @@ class InMemorySortBuffer : public SortBuffer {
                        const std::vector<std::string>& user_defined_sequence_fields,
                        bool sequence_fields_ascending,
                        const std::shared_ptr<FieldsComparator>& key_comparator,
-                       uint64_t write_buffer_size, const std::shared_ptr<MemoryPool>& pool);
+                       uint64_t write_buffer_size, const std::shared_ptr<MemoryPool>& pool,
+                       const std::shared_ptr<FieldsComparator>& sort_comparator = nullptr);
 
     void Clear() override;
     uint64_t GetMemorySize() const override;
@@ -78,6 +79,7 @@ class InMemorySortBuffer : public SortBuffer {
     const std::vector<std::string> user_defined_sequence_fields_;
     const bool sequence_fields_ascending_;
     const std::shared_ptr<FieldsComparator> key_comparator_;
+    const std::shared_ptr<FieldsComparator> sort_comparator_;
     const uint64_t write_buffer_size_;
 
     std::vector<BufferedWriteBatch> buffered_batches_;

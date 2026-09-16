@@ -443,6 +443,7 @@ struct CoreOptions::Impl {
     bool write_only = false;
     bool bucket_append_ordered = false;
     bool deletion_vectors_enabled = false;
+    bool pk_clustering_override = false;
     bool deletion_vectors_bitmap64 = false;
     bool force_lookup = false;
     bool lookup_wait = true;
@@ -775,6 +776,8 @@ struct CoreOptions::Impl {
         // Parse deletion-vectors.enabled - whether to enable deletion vectors mode, default false
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::DELETION_VECTORS_ENABLED, &deletion_vectors_enabled));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse<bool>(Options::PK_CLUSTERING_OVERRIDE, &pk_clustering_override));
         // Parse deletion-vector.index-file.target-size - target size of dv index file, default 2MB
         PAIMON_RETURN_NOT_OK(parser.ParseMemorySize(Options::DELETION_VECTOR_INDEX_FILE_TARGET_SIZE,
                                                     &deletion_vector_target_file_size));
@@ -1609,6 +1612,22 @@ CoreOptions::GetMapSharedShreddingColumnPlacementPolicy(const std::string& field
 
 bool CoreOptions::DeletionVectorsEnabled() const {
     return impl_->deletion_vectors_enabled;
+}
+
+bool CoreOptions::PkClusteringOverrideEnabled() const {
+    return impl_->pk_clustering_override;
+}
+
+std::vector<std::string> CoreOptions::GetPrimaryKeyBTreeIndexColumns() const {
+    auto iter = ToMap().find(Options::PK_BTREE_INDEX_COLUMNS);
+    if (iter == ToMap().end()) {
+        return {};
+    }
+    std::vector<std::string> columns = StringUtils::Split(iter->second, ",", false);
+    for (std::string& column : columns) {
+        StringUtils::Trim(&column);
+    }
+    return columns;
 }
 
 bool CoreOptions::DeletionVectorsBitmap64() const {

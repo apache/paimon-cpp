@@ -18,8 +18,11 @@
 
 #include "paimon/core/io/key_value_in_memory_record_reader.h"
 
+#include <algorithm>
 #include <cassert>
+#include <numeric>
 #include <utility>
+#include <vector>
 
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_nested.h"
@@ -59,7 +62,8 @@ KeyValueInMemoryRecordReader::KeyValueInMemoryRecordReader(
     const std::vector<std::string>& primary_keys,
     const std::vector<std::string>& user_defined_sequence_fields, bool sequence_fields_ascending,
     const std::shared_ptr<FieldsComparator>& key_comparator,
-    const std::shared_ptr<MemoryPool>& pool)
+    const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<FieldsComparator>& sort_comparator)
     : last_sequence_num_(last_sequence_num),
       primary_keys_(primary_keys),
       user_defined_sequence_fields_(user_defined_sequence_fields),
@@ -68,7 +72,8 @@ KeyValueInMemoryRecordReader::KeyValueInMemoryRecordReader(
       arrow_pool_(GetArrowPool(pool)),
       value_struct_array_(struct_array),
       row_kinds_(row_kinds),
-      key_comparator_(key_comparator) {
+      key_comparator_(key_comparator),
+      sort_comparator_(sort_comparator) {
     assert(value_struct_array_);
     ArrowUtils::TraverseArray(value_struct_array_);
 }
@@ -110,6 +115,21 @@ void KeyValueInMemoryRecordReader::Close() {
 
 Result<std::shared_ptr<arrow::NumericArray<arrow::UInt64Type>>>
 KeyValueInMemoryRecordReader::SortBatch() const {
+    if (sort_comparator_ != nullptr) {
+        std::vector<uint64_t> indices(static_cast<size_t>(value_struct_array_->length()));
+        std::iota(indices.begin(), indices.end(), 0);
+        std::stable_sort(indices.begin(), indices.end(), [&](uint64_t left, uint64_t right) {
+            ColumnarRowRef left_row(value_ctx_, left);
+            ColumnarRowRef right_row(value_ctx_, right);
+            return sort_comparator_->CompareTo(left_row, right_row) < 0;
+        });
+        arrow::UInt64Builder builder(arrow_pool_.get());
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendValues(indices));
+        std::shared_ptr<arrow::UInt64Array> sorted_indices;
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&sorted_indices));
+        return sorted_indices;
+    }
+
     std::vector<arrow::compute::SortKey> sort_keys;
     sort_keys.reserve(primary_keys_.size() + user_defined_sequence_fields_.size());
     for (const auto& name : primary_keys_) {
