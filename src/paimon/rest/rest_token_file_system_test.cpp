@@ -407,7 +407,7 @@ TEST_F(RestTokenFileSystemTest, ConcurrentFirstAccessLoadsTheTokenOnce) {
 TEST_F(RestTokenFileSystemTest, ValidTokenNeedsNoDelegate) {
     // a caller that brings its own file system only needs the credentials, so an option
     // the delegate cannot be built from must not keep it from getting them
-    catalog_options_[Options::MANIFEST_FORMAT] = "no-such-format";
+    catalog_options_["manifest.format"] = "no-such-format";
     std::string path = WriteFile("data", "paimon");
     std::shared_ptr<RestTokenFileSystem> fs = CreateFileSystem();
     ASSERT_NE(nullptr, fs);
