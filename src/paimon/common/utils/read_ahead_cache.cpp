@@ -138,9 +138,9 @@ std::optional<uint64_t> ReadAheadCache::MergeRangesLocked(std::vector<ByteRange>
     while (old_idx < ranges_.size()) {
         keep_registered();
     }
-    if (!first_added.has_value()) {
-        return std::optional<uint64_t>{};
-    }
+    // Always move the merged list back: keep_registered() has already moved the existing entries'
+    // buffer/future out of ranges_, so returning early without this would drop the published state
+    // (and the future to wait on) even when nothing new was registered.
     ranges_ = std::move(merged);
     return first_added;
 }

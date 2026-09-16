@@ -631,6 +631,55 @@ TEST(TestReadAheadCache, TestAddRangesKeepsCachedRanges) {
     ASSERT_EQ(io_count_before, io_count_of());
 }
 
+// Re-registering a range the cache already covers adds nothing, and must leave the published entry
+// intact: the earlier fetch stays valid, so a later read of the same range is still a hit and
+// issues no further IO. A no-op registration that dropped the buffer would turn this read into a
+// miss (and lose the future to wait on an in-flight fetch).
+TEST(TestReadAheadCache, TestReRegisteringCoveredRangeKeepsCache) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/10);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    cache.Warmup();
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+    auto io_count_of = [&cache]() { return CounterOf(ReadAheadCacheMetrics::IO_COUNT, &cache); };
+    const uint64_t io_count_before = io_count_of();
+    ASSERT_EQ(1u, io_count_before);
+
+    // [2,6) is already covered by [0,10), so nothing new is registered.
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added, cache.AddRanges({{2, 6}}));
+    ASSERT_FALSE(first_added.has_value());
+
+    // The published entry survived the no-op registration: still a hit, no new IO.
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+    ASSERT_EQ(io_count_before, io_count_of());
+}
+
+// An empty registration is likewise a no-op that keeps the already published entries.
+TEST(TestReadAheadCache, TestEmptyAddRangesKeepsCache) {
+    CacheConfig config = TestCacheConfig(/*range_size_limit=*/10,
+                                         /*hole_size_limit=*/0, /*pre_buffer_limit=*/10);
+    std::string content = "abcdefghijklmnopqrstuvwxyz";
+    std::shared_ptr<ReadAheadCache> cache_ptr =
+        CreateTestFileAndCache("data_file", content, config, {{0, 10}});
+    ReadAheadCache& cache = *cache_ptr;
+
+    cache.Warmup();
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+    auto io_count_of = [&cache]() { return CounterOf(ReadAheadCacheMetrics::IO_COUNT, &cache); };
+    const uint64_t io_count_before = io_count_of();
+    ASSERT_EQ(1u, io_count_before);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<uint64_t> first_added, cache.AddRanges({}));
+    ASSERT_FALSE(first_added.has_value());
+
+    AssertReadEquals({0, 10}, "abcdefghij", &cache);
+    ASSERT_EQ(io_count_before, io_count_of());
+}
+
 // Warmup(offset) starts fetching from the given range rather than from the first one, which is
 // what a pass registering its ranges mid-read needs: the earlier ranges belong to the pass that
 // has already run.
