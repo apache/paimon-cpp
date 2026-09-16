@@ -64,22 +64,24 @@ Status ValidateReaders(const std::vector<std::unique_ptr<KeyValueRecordReader>>&
     return Status::OK();
 }
 
-Result<std::vector<std::shared_ptr<DataFileMeta>>> WriteSortMergeReaderToFiles(
-    std::unique_ptr<SortMergeReader>&& sort_merge_reader,
-    RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>* rolling_writer,
-    int32_t write_batch_size,
+std::unique_ptr<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>
+CreateSortMergeProducerAndConsumer(
+    std::unique_ptr<SortMergeReader>&& sort_merge_reader, int32_t write_batch_size,
     const AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>::ConsumerCreator&
         create_consumer) {
     assert(sort_merge_reader != nullptr);
-    assert(rolling_writer != nullptr);
-
     std::unique_ptr<AsyncKeyValueBatchProducer> producer =
         std::make_unique<SortMergeReaderBatchProducer>(std::move(sort_merge_reader),
                                                        write_batch_size);
-    auto producer_and_consumer =
-        std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
-            std::move(producer), create_consumer, /*consumer_thread_num=*/1);
-    ScopeGuard producer_guard([&]() -> void { producer_and_consumer->Close(); });
+    return std::make_unique<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>(
+        std::move(producer), create_consumer, /*consumer_thread_num=*/1);
+}
+
+Result<std::vector<std::shared_ptr<DataFileMeta>>> WriteKeyValueBatchesToFiles(
+    AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>* producer_and_consumer,
+    RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>* rolling_writer) {
+    assert(producer_and_consumer != nullptr);
+    assert(rolling_writer != nullptr);
 
     while (true) {
         PAIMON_ASSIGN_OR_RAISE(KeyValueBatch key_value_batch, producer_and_consumer->NextBatch());
@@ -92,8 +94,6 @@ Result<std::vector<std::shared_ptr<DataFileMeta>>> WriteSortMergeReaderToFiles(
     PAIMON_RETURN_NOT_OK(rolling_writer->Close());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<DataFileMeta>> flushed_files,
                            rolling_writer->GetResult());
-    producer_and_consumer->Close();
-    producer_guard.Release();
     return flushed_files;
 }
 
@@ -230,13 +230,18 @@ Status MergeTreeWriter::WriteSortedReadersToFiles(
         -> Result<std::unique_ptr<RowToArrowArrayConverter<KeyValue, KeyValueBatch>>> {
         return KeyValueMetaProjectionConsumer::Create(target_schema, pool);
     };
+    std::unique_ptr<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>
+        producer_and_consumer = CreateSortMergeProducerAndConsumer(
+            std::move(sort_merge_reader), options_.GetWriteBatchSize(), create_consumer);
+    ScopeGuard producer_guard([&]() -> void { producer_and_consumer->Close(); });
     std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>> rolling_writer;
     PAIMON_ASSIGN_OR_RAISE(rolling_writer, CreateRollingRowWriter());
     ScopeGuard abort_writer_guard([&]() -> void { rolling_writer->Abort(); });
     PAIMON_ASSIGN_OR_RAISE(
         std::vector<std::shared_ptr<DataFileMeta>> flushed_files,
-        WriteSortMergeReaderToFiles(std::move(sort_merge_reader), rolling_writer.get(),
-                                    options_.GetWriteBatchSize(), create_consumer));
+        WriteKeyValueBatchesToFiles(producer_and_consumer.get(), rolling_writer.get()));
+    producer_and_consumer->Close();
+    producer_guard.Release();
     abort_writer_guard.Release();
 
     for (const std::shared_ptr<DataFileMeta>& flushed_file : flushed_files) {
@@ -386,15 +391,6 @@ Status MergeTreeWriter::FlushWriteBuffer(bool wait_for_latest_compaction,
             PAIMON_RETURN_NOT_OK(ValidateReaders(raw_readers));
             PAIMON_RETURN_NOT_OK(ValidateReaders(readers));
 
-            std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>
-                changelog_writer;
-            PAIMON_ASSIGN_OR_RAISE(changelog_writer, CreateRollingChangelogWriter());
-            ScopeGuard changelog_writer_guard([&]() -> void { changelog_writer->Abort(); });
-            std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>
-                data_writer;
-            PAIMON_ASSIGN_OR_RAISE(data_writer, CreateRollingRowWriter());
-            ScopeGuard data_writer_guard([&]() -> void { data_writer->Abort(); });
-
             auto raw_sort_merge_reader = std::make_unique<SortMergeReaderWithMinHeap>(
                 std::move(raw_readers), key_comparator_, user_defined_seq_comparator_,
                 /*merge_function_wrapper=*/nullptr);
@@ -405,21 +401,40 @@ Status MergeTreeWriter::FlushWriteBuffer(bool wait_for_latest_compaction,
             readers_guard.Release();
 
             const int32_t write_batch_size = options_.GetWriteBatchSize();
+            std::unique_ptr<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>
+                changelog_producer_and_consumer = CreateSortMergeProducerAndConsumer(
+                    std::move(raw_sort_merge_reader), write_batch_size, create_consumer);
+            std::unique_ptr<AsyncKeyValueProducerAndConsumer<KeyValue, KeyValueBatch>>
+                data_producer_and_consumer = CreateSortMergeProducerAndConsumer(
+                    std::move(sort_merge_reader), write_batch_size, create_consumer);
+            ScopeGuard producers_guard([&]() -> void {
+                data_producer_and_consumer->Close();
+                changelog_producer_and_consumer->Close();
+            });
+
+            // Writers retain key rows backed by the producers' source readers. On error, this
+            // declaration order destroys the writers before the producer guard closes the readers.
+            std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>
+                changelog_writer;
+            PAIMON_ASSIGN_OR_RAISE(changelog_writer, CreateRollingChangelogWriter());
+            ScopeGuard changelog_writer_guard([&]() -> void { changelog_writer->Abort(); });
+            std::unique_ptr<RollingFileWriter<KeyValueBatch, std::shared_ptr<DataFileMeta>>>
+                data_writer;
+            PAIMON_ASSIGN_OR_RAISE(data_writer, CreateRollingRowWriter());
+            ScopeGuard data_writer_guard([&]() -> void { data_writer->Abort(); });
+
             std::vector<std::shared_ptr<DataFileMeta>> data_files;
             std::vector<std::shared_ptr<DataFileMeta>> changelog_files;
             if (options_.InputChangelogParallelWriteEnabled()) {
                 std::future<Result<std::vector<std::shared_ptr<DataFileMeta>>>> changelog_future =
-                    std::async(std::launch::async,
-                               [raw_sort_merge_reader = std::move(raw_sort_merge_reader),
-                                changelog_writer = changelog_writer.get(), write_batch_size,
-                                create_consumer]() mutable {
-                                   return WriteSortMergeReaderToFiles(
-                                       std::move(raw_sort_merge_reader), changelog_writer,
-                                       write_batch_size, create_consumer);
-                               });
+                    std::async(std::launch::async, [producer_and_consumer =
+                                                        changelog_producer_and_consumer.get(),
+                                                    writer = changelog_writer.get()]() {
+                        return WriteKeyValueBatchesToFiles(producer_and_consumer, writer);
+                    });
                 Result<std::vector<std::shared_ptr<DataFileMeta>>> data_result =
-                    WriteSortMergeReaderToFiles(std::move(sort_merge_reader), data_writer.get(),
-                                                write_batch_size, create_consumer);
+                    WriteKeyValueBatchesToFiles(data_producer_and_consumer.get(),
+                                                data_writer.get());
                 Result<std::vector<std::shared_ptr<DataFileMeta>>> changelog_result =
                     changelog_future.get();
                 if (!data_result.ok()) {
@@ -431,16 +446,17 @@ Status MergeTreeWriter::FlushWriteBuffer(bool wait_for_latest_compaction,
                 data_files = std::move(data_result).value();
                 changelog_files = std::move(changelog_result).value();
             } else {
-                PAIMON_ASSIGN_OR_RAISE(changelog_files,
-                                       WriteSortMergeReaderToFiles(
-                                           std::move(raw_sort_merge_reader), changelog_writer.get(),
-                                           write_batch_size, create_consumer));
-                PAIMON_ASSIGN_OR_RAISE(
-                    data_files,
-                    WriteSortMergeReaderToFiles(std::move(sort_merge_reader), data_writer.get(),
-                                                write_batch_size, create_consumer));
+                PAIMON_ASSIGN_OR_RAISE(changelog_files, WriteKeyValueBatchesToFiles(
+                                                            changelog_producer_and_consumer.get(),
+                                                            changelog_writer.get()));
+                PAIMON_ASSIGN_OR_RAISE(data_files,
+                                       WriteKeyValueBatchesToFiles(data_producer_and_consumer.get(),
+                                                                   data_writer.get()));
             }
 
+            data_producer_and_consumer->Close();
+            changelog_producer_and_consumer->Close();
+            producers_guard.Release();
             changelog_writer_guard.Release();
             data_writer_guard.Release();
             new_changelog_files_.insert(new_changelog_files_.end(), changelog_files.begin(),
