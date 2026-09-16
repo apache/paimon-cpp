@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -86,6 +87,9 @@ class SnapshotManager {
         bool latest_from_catalog) const;
     Status CommitLatestHint(int64_t snapshot_id);
     Status CommitEarliestHint(int64_t snapshot_id);
+    /// Returns snapshot metadata, caching up to 64 successfully loaded snapshots by ID.
+    /// A cache hit does not guarantee that the snapshot or its data files still exist.
+    /// Recreate this manager after fast-forward or recreating the table or branch.
     Result<Snapshot> LoadSnapshot(int64_t snapshot_id) const;
     Result<std::optional<int64_t>> EarliestSnapshotId() const;
     Result<std::optional<int64_t>> LatestSnapshotId() const;
@@ -100,6 +104,8 @@ class SnapshotManager {
  private:
     static constexpr int32_t READ_HINT_RETRY_NUM = 3;
     static constexpr int32_t READ_HINT_RETRY_INTERVAL = 1;
+    static constexpr int64_t kSnapshotCacheCapacity = 64;
+    using SnapshotCache = GenericLruCache<int64_t, Snapshot>;
 
     /// Rechecks EARLIEST a bounded number of times to confirm expiration.
     /// False leaves expiration unconfirmed, so the caller must report the missing snapshot.
@@ -126,6 +132,7 @@ class SnapshotManager {
     std::string root_path_;
     std::string branch_;
     SnapshotLoader snapshot_loader_;
+    mutable SnapshotCache snapshot_cache_;
 };
 
 }  // namespace paimon

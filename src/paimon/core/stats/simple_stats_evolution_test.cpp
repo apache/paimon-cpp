@@ -33,6 +33,7 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats.h"
+#include "paimon/core/stats/simple_stats_evolutions.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -212,6 +213,56 @@ class SimpleStatsEvolutionTest : public ::testing::Test {
     std::shared_ptr<TableSchema> old_schema_;
     std::shared_ptr<TableSchema> new_schema_;
 };
+
+TEST_F(SimpleStatsEvolutionTest, EvolutionCacheEvictsAndRetainedObjectsRemainUsable) {
+    SimpleStatsEvolutions evolutions(old_schema_, pool_);
+    ASSERT_OK_AND_ASSIGN(auto retained, evolutions.GetOrCreate(old_schema_));
+    auto fields = DataField::ConvertDataFieldsToArrowSchema(old_schema_->Fields());
+    for (int64_t id = 1; id <= 64; ++id) {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> schema,
+            TableSchema::Create(id, fields, old_schema_->PartitionKeys(),
+                                old_schema_->PrimaryKeys(), old_schema_->Options()));
+        ASSERT_OK(evolutions.GetOrCreate(schema));
+    }
+    ASSERT_OK_AND_ASSIGN(auto reloaded, evolutions.GetOrCreate(old_schema_));
+    ASSERT_NE(retained, reloaded);
+    auto stats = CreateStats();
+    ASSERT_OK_AND_ASSIGN(auto result, retained->Evolution(stats, 4, std::nullopt));
+    CheckResultRow(*result.min_values, stats.min_values_, old_schema_->Fields());
+    ASSERT_OK_AND_ASSIGN(auto repeated, evolutions.GetOrCreate(old_schema_));
+    ASSERT_EQ(repeated, reloaded);
+}
+
+TEST_F(SimpleStatsEvolutionTest, DenseFieldCacheEvictionPreservesStats) {
+    // Eight fields provide more than 64 distinct, valid dense-field layouts.
+    SimpleStatsEvolution evolution(old_schema_->Fields(), old_schema_->Fields(), false, pool_);
+    auto make_stats = [this](const std::vector<std::string>& fields) {
+        std::vector<int64_t> counts(fields.size(), 0);
+        BinaryRowGenerator::ValueType null_values(fields.size(), NullType());
+        auto values = BinaryRowGenerator::GenerateRow(null_values, pool_.get());
+        return SimpleStats(values, values, BinaryArray::FromLongArray(counts, pool_.get()));
+    };
+    std::vector<std::string> first_fields = {old_schema_->Fields()[0].Name()};
+    auto first_stats = make_stats(first_fields);
+    ASSERT_OK_AND_ASSIGN(auto retained, evolution.Evolution(first_stats, 4, first_fields));
+    for (int32_t mask = 2; mask <= 65; ++mask) {
+        std::vector<std::string> fields;
+        for (size_t i = 0; i < old_schema_->Fields().size(); ++i) {
+            if (mask & (1 << i)) {
+                fields.push_back(old_schema_->Fields()[i].Name());
+            }
+        }
+        ASSERT_OK(evolution.Evolution(make_stats(fields), 4, fields));
+    }
+    ASSERT_EQ(evolution.dense_fields_mapping_.Size(), 64);
+    ASSERT_FALSE(evolution.dense_fields_mapping_.GetIfPresent(first_fields));
+    ASSERT_EQ(retained.null_counts->GetLong(0), 0);
+    ASSERT_TRUE(retained.null_counts->IsNullAt(1));
+    ASSERT_OK_AND_ASSIGN(auto reloaded, evolution.Evolution(first_stats, 4, first_fields));
+    ASSERT_EQ(reloaded.null_counts->GetLong(0), 0);
+    ASSERT_TRUE(reloaded.null_counts->IsNullAt(1));
+}
 
 TEST_F(SimpleStatsEvolutionTest, TestNoChangeOfFields) {
     std::string table_root =

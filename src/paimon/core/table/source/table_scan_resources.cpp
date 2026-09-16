@@ -94,25 +94,24 @@ Status TableScanResources::Impl::Validate(
 
 Result<std::shared_ptr<const ScanSchemaResources>> TableScanResources::Impl::GetSchemaResources(
     const std::shared_ptr<TableSchema>& table_schema) {
-    // Only schema-derived construction is serialized here; metadata I/O and scans run outside
-    // this lock. External schemas supplied through SetTableSchema() never enter this cache.
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto iter = schemas_.find(table_schema->Id());
-    if (iter != schemas_.end()) {
-        return iter->second;
-    }
-    auto resources = std::make_shared<ScanSchemaResources>();
-    resources->arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(
-        resources->partition_schema,
-        FieldMapping::GetPartitionSchema(resources->arrow_schema, table_schema->PartitionKeys()));
-    if (!table_schema->PrimaryKeys().empty()) {
-        PAIMON_ASSIGN_OR_RAISE(resources->primary_key_fields,
-                               table_schema->TrimmedPrimaryKeyFields());
-    }
-    resources->stats_evolutions =
-        std::make_shared<SimpleStatsEvolutions>(table_schema, memory_pool_);
-    schemas_.emplace(table_schema->Id(), resources);
-    return std::shared_ptr<const ScanSchemaResources>(std::move(resources));
+    // External schemas supplied through SetTableSchema() never enter this cache.
+    return schemas_.Get(
+        table_schema->Id(),
+        [this,
+         &table_schema](const int64_t&) -> Result<std::shared_ptr<const ScanSchemaResources>> {
+            auto resources = std::make_shared<ScanSchemaResources>();
+            resources->arrow_schema =
+                DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+            PAIMON_ASSIGN_OR_RAISE(resources->partition_schema,
+                                   FieldMapping::GetPartitionSchema(resources->arrow_schema,
+                                                                    table_schema->PartitionKeys()));
+            if (!table_schema->PrimaryKeys().empty()) {
+                PAIMON_ASSIGN_OR_RAISE(resources->primary_key_fields,
+                                       table_schema->TrimmedPrimaryKeyFields());
+            }
+            resources->stats_evolutions =
+                std::make_shared<SimpleStatsEvolutions>(table_schema, memory_pool_);
+            return std::shared_ptr<const ScanSchemaResources>(std::move(resources));
+        });
 }
 }  // namespace paimon

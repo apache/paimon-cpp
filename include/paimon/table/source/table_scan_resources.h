@@ -33,10 +33,15 @@ class TableScanResourcesAccess;
 /// Metadata resources shared by scans of one managed table and branch.
 ///
 /// Share this object through ScanContextBuilder::WithTableResources(). Each scan still discovers
-/// the latest schema ID and chooses its own snapshot. Schema versions and their derived metadata
-/// remain cached for the lifetime of this object. The caller must recreate it after fast-forward,
-/// dropping and recreating a table or branch, or changing the file system's access configuration.
-/// Fast-forward can replace schema contents under existing IDs; cached versions are not refreshed
+/// the latest schema ID and chooses its own snapshot. Schema versions, schema-derived resources
+/// and snapshots use separate LRU caches with at most 64 entries each. Each derived resource caches
+/// up to 64 statistics evolutions, each retaining up to 64 dense-field mappings. Eviction releases
+/// cache references; active scans retain the metadata they use. These are entry limits, not byte
+/// limits. Latest snapshot discovery and existence checks still query the file system.
+/// A cached snapshot does not pin its metadata or data files. The caller must recreate this object
+/// after fast-forward, dropping and recreating a table or branch, or changing the file system's
+/// access configuration.
+/// Fast-forward can replace schema and snapshot contents under existing IDs; they are not refreshed
 /// automatically. Use the new resources for subsequent scans.
 ///
 /// Concurrent scans may share these resources. The supplied file system and metadata memory pool

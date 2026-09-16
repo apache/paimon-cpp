@@ -47,6 +47,51 @@ TEST(SchemaManagerTest, ConcurrentHistoricalSchemaReads) {
     ASSERT_EQ(manager.schema_cache_.Size(), 2);
 }
 
+TEST(SchemaManagerTest, EvictsLeastRecentlyUsedSchemaAndRetriesFailures) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_TRUE(directory);
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager manager(fs, directory->Str());
+    ASSERT_OK(fs->Mkdirs(manager.SchemaDirectory()));
+    auto write_schema = [&](int64_t id) -> Status {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<TableSchema> schema,
+            TableSchema::Create(id, arrow::schema({arrow::field("value", arrow::int32())}), {}, {},
+                                {}));
+        PAIMON_ASSIGN_OR_RAISE(std::string json, schema->GetJsonSchema());
+        return fs->WriteFile(manager.ToSchemaPath(id), json, true);
+    };
+    constexpr int64_t kCapacity = 64;
+    for (int64_t id = 0; id < kCapacity; ++id) {
+        ASSERT_OK(write_schema(id));
+        ASSERT_OK(manager.ReadSchema(id));
+    }
+    ASSERT_OK_AND_ASSIGN(auto first, manager.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(auto second, manager.ReadSchema(1));
+    std::weak_ptr<TableSchema> evicted = second;
+    second.reset();
+    // Refresh every entry except schema 1, making it the least recently used.
+    ASSERT_OK(manager.ReadSchema(0));
+    for (int64_t id = 2; id < kCapacity; ++id) {
+        ASSERT_OK(manager.ReadSchema(id));
+    }
+    ASSERT_OK(write_schema(kCapacity));
+    ASSERT_OK(manager.ReadSchema(kCapacity));
+    ASSERT_TRUE(evicted.expired());
+    ASSERT_OK(fs->Delete(manager.ToSchemaPath(0)));
+    ASSERT_OK_AND_ASSIGN(auto cached, manager.ReadSchema(0));
+    ASSERT_EQ(cached, first);
+
+    ASSERT_OK(fs->Delete(manager.ToSchemaPath(1)));
+    ASSERT_NOK(manager.ReadSchema(1));
+    ASSERT_OK(fs->WriteFile(manager.ToSchemaPath(1), "invalid JSON", true));
+    ASSERT_NOK(manager.ReadSchema(1));
+    ASSERT_OK(write_schema(1));
+    ASSERT_OK_AND_ASSIGN(auto reloaded, manager.ReadSchema(1));
+    ASSERT_EQ(reloaded->Id(), 1);
+    ASSERT_EQ(first->Id(), 0);
+}
+
 TEST(SchemaManagerTest, TestSimple) {
     auto fs = std::make_shared<LocalFileSystem>();
     std::string table_root =

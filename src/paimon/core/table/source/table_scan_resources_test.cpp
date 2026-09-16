@@ -31,6 +31,7 @@
 #include "gtest/gtest.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/table/source/table_scan_resources_impl.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -53,10 +54,14 @@ class SchemaCountingFileSystem : public LocalFileSystem {
                 return Status::IOError("injected schema read failure");
             }
         }
+        if (path.find("/snapshot/snapshot-") != std::string::npos) {
+            snapshot_reads.fetch_add(1);
+        }
         return LocalFileSystem::ReadFile(path, content);
     }
 
     std::atomic<int32_t> schema_reads{0};
+    std::atomic<int32_t> snapshot_reads{0};
     std::atomic<bool> fail_schema_read{false};
 };
 
@@ -134,6 +139,42 @@ TEST_F(TableScanResourcesTest, RepeatedScansReuseSchemasAndKeepFiltersIndependen
     }
 }
 
+TEST_F(TableScanResourcesTest, SharedSnapshotCacheDiscoversNewSnapshot) {
+    auto directory = UniqueTestDirectory::Create();
+    ASSERT_TRUE(directory);
+    const std::string path = directory->Str() + "/table";
+    ASSERT_TRUE(TestUtil::CopyDirectory(append_path_, path));
+    const std::string next_snapshot_path = path + "/snapshot/snapshot-5";
+    std::string next_snapshot_json;
+    ASSERT_OK(fs_->ReadFile(next_snapshot_path, &next_snapshot_json));
+    ASSERT_OK(fs_->Delete(next_snapshot_path));
+    ASSERT_OK(fs_->WriteFile(path + "/snapshot/LATEST", "4", true));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableScanResources> resources,
+                         TableScanResources::Create(path, fs_, "main", GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> first,
+                         NewScan(path, resources, nullptr, {}, false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> first_plan, first->CreatePlan());
+    ASSERT_EQ(first_plan->SnapshotId(), 4);
+    int32_t reads = fs_->snapshot_reads.load();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> repeated,
+                         NewScan(path, resources, nullptr, {}, false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> repeated_plan, repeated->CreatePlan());
+    CheckPlans(first_plan, repeated_plan);
+    ASSERT_EQ(fs_->snapshot_reads.load(), reads);
+
+    // Publish the next snapshot while LATEST still points at the previous one.
+    ASSERT_OK(fs_->WriteFile(next_snapshot_path, next_snapshot_json, false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> next,
+                         NewScan(path, resources, nullptr, {}, false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> next_plan, next->CreatePlan());
+    ASSERT_EQ(next_plan->SnapshotId(), 5);
+    ASSERT_EQ(fs_->snapshot_reads.load(), reads + 1);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> baseline,
+                         NewScan(path, nullptr, nullptr, {}, false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> baseline_plan, baseline->CreatePlan());
+    CheckPlans(baseline_plan, next_plan);
+}
+
 TEST_F(TableScanResourcesTest, NewSchemaDoesNotChangeExistingScans) {
     auto directory = UniqueTestDirectory::Create();
     ASSERT_TRUE(directory);
@@ -171,6 +212,38 @@ TEST_F(TableScanResourcesTest, NewSchemaDoesNotChangeExistingScans) {
     ASSERT_OK_AND_ASSIGN(auto again_plan, again->CreatePlan());
     ASSERT_TRUE(again_plan->Splits().empty());
     ASSERT_EQ(fs_->schema_reads.load(), reads);
+}
+
+TEST_F(TableScanResourcesTest, SchemaResourceEvictionPreservesActiveScans) {
+    ASSERT_OK_AND_ASSIGN(auto resources,
+                         TableScanResources::Create(append_path_, fs_, "main", GetMemoryPool()));
+    auto predicate = PredicateBuilder::IsNotNull(0, "f0", FieldType::STRING);
+    ASSERT_OK_AND_ASSIGN(auto baseline_scan, NewScan(append_path_, nullptr, predicate, {}, false));
+    ASSERT_OK_AND_ASSIGN(auto baseline, baseline_scan->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(auto active_scan, NewScan(append_path_, resources, predicate, {}, false));
+
+    auto& impl = TableScanResourcesAccess::Get(*resources);
+    ASSERT_OK_AND_ASSIGN(auto original_schema, impl.schema_manager_->ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(auto original, impl.GetSchemaResources(original_schema));
+    std::weak_ptr<const ScanSchemaResources> evicted = original;
+    auto original_arrow_schema = original->arrow_schema;
+    original.reset();
+    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(original_schema->Fields());
+    for (int64_t id = 1; id <= 64; ++id) {
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<TableSchema> schema,
+            TableSchema::Create(id, arrow_schema, original_schema->PartitionKeys(),
+                                original_schema->PrimaryKeys(), original_schema->Options()));
+        ASSERT_OK(impl.GetSchemaResources(schema));
+    }
+    ASSERT_TRUE(evicted.expired());
+    ASSERT_OK_AND_ASSIGN(auto actual, active_scan->CreatePlan());
+    CheckPlans(baseline, actual);
+    ASSERT_OK_AND_ASSIGN(auto reloaded, impl.GetSchemaResources(original_schema));
+    ASSERT_NE(reloaded->arrow_schema, original_arrow_schema);
+    ASSERT_TRUE(reloaded->arrow_schema->Equals(*original_arrow_schema));
+    ASSERT_OK_AND_ASSIGN(auto repeated, impl.GetSchemaResources(original_schema));
+    ASSERT_EQ(repeated, reloaded);
 }
 
 TEST_F(TableScanResourcesTest, SuppliedSchemaDoesNotPopulateSharedSchemaCache) {

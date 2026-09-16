@@ -31,6 +31,7 @@
 #include "paimon/common/data/generic_row.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/concurrent_hash_map.h"
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/result.h"
 
@@ -86,8 +87,15 @@ class SimpleStatsEvolution {
     std::map<int32_t, std::pair<int32_t, DataField>> id_to_data_fields_;
     std::map<std::string, DataField> name_to_table_fields_;
 
-    // dense field names -> idx mapping
-    ConcurrentHashMap<std::vector<std::string>, std::vector<int32_t>, VectorStringHashCompare>
-        dense_fields_mapping_;
+    struct DenseFieldsHash {
+        size_t operator()(const std::vector<std::string>& fields) const {
+            return VectorStringHashCompare().hash(fields);
+        }
+    };
+    static constexpr int64_t kDenseFieldsCacheCapacity = 64;
+    using DenseFieldsCache =
+        GenericLruCache<std::vector<std::string>, std::vector<int32_t>, DenseFieldsHash>;
+    DenseFieldsCache dense_fields_mapping_{
+        DenseFieldsCache::Options{/*max_weight=*/kDenseFieldsCacheCapacity}};
 };
 }  // namespace paimon

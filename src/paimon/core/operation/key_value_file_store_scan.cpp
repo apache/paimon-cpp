@@ -186,7 +186,8 @@ Result<bool> KeyValueFileStoreScan::FilterByValueFilter(const ManifestEntry& ent
         PAIMON_ASSIGN_OR_RAISE(data_schema, schema_manager_->ReadSchema(data_schema_id));
     }
 
-    auto evolution = evolutions_->GetOrCreate(data_schema);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SimpleStatsEvolution> evolution,
+                           evolutions_->GetOrCreate(data_schema));
     if (data_schema_id != table_schema_->Id()) {
         PAIMON_ASSIGN_OR_RAISE(trimmed_predicates,
                                ReconstructPredicateWithNonCastedFields(value_filter_, evolution));

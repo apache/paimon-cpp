@@ -19,13 +19,13 @@
 
 #pragma once
 
-#include <map>
+#include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/generic_lru_cache.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/stats/simple_stats_evolutions.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -60,8 +60,9 @@ class TableScanResources::Impl {
     const std::shared_ptr<SnapshotManager> snapshot_manager_;
 
  private:
-    std::mutex mutex_;
-    std::map<int64_t, std::shared_ptr<const ScanSchemaResources>> schemas_;
+    static constexpr int64_t kSchemaCacheCapacity = 64;
+    using SchemaCache = GenericLruCache<int64_t, std::shared_ptr<const ScanSchemaResources>>;
+    SchemaCache schemas_{SchemaCache::Options{/*max_weight=*/kSchemaCacheCapacity}};
 };
 
 /// Keeps implementation types out of the public resource interface.

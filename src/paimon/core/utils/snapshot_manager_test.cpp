@@ -18,8 +18,10 @@
 
 #include "paimon/core/utils/snapshot_manager.h"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <limits>
 #include <optional>
 #include <string>
@@ -36,6 +38,192 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+
+namespace {
+
+class SnapshotCountingFileSystem : public LocalFileSystem {
+ public:
+    Status ReadFile(const std::string& path, std::string* content) override {
+        if (path.find("/snapshot/snapshot-") != std::string::npos) {
+            snapshot_reads.fetch_add(1);
+            if (fail_snapshot_read.exchange(false)) {
+                return Status::IOError("injected snapshot read failure");
+            }
+        }
+        return LocalFileSystem::ReadFile(path, content);
+    }
+
+    std::atomic<int32_t> snapshot_reads{0};
+    std::atomic<bool> fail_snapshot_read{false};
+};
+
+}  // namespace
+
+class SnapshotManagerCacheTest : public testing::Test {
+ protected:
+    void SetUp() override {
+        directory_ = UniqueTestDirectory::Create();
+        ASSERT_TRUE(directory_);
+        manager_ = std::make_unique<SnapshotManager>(fs_, directory_->Str());
+        ASSERT_OK(fs_->Mkdirs(manager_->SnapshotDirectory()));
+    }
+
+    Status WriteSnapshot(const SnapshotManager& manager, int64_t id,
+                         const std::string& user = "user") {
+        Snapshot snapshot(id, /*schema_id=*/0, /*base_manifest_list=*/"base",
+                          /*base_manifest_list_size=*/std::nullopt, /*delta_manifest_list=*/"delta",
+                          /*delta_manifest_list_size=*/std::nullopt,
+                          /*changelog_manifest_list=*/std::nullopt,
+                          /*changelog_manifest_list_size=*/std::nullopt,
+                          /*index_manifest=*/std::nullopt, user, /*commit_identifier=*/id,
+                          Snapshot::CommitKind::Append(), /*time_millis=*/id,
+                          /*total_record_count=*/id, /*delta_record_count=*/1,
+                          /*changelog_record_count=*/std::nullopt, /*watermark=*/std::nullopt,
+                          /*statistics=*/std::nullopt, /*properties=*/std::nullopt,
+                          /*next_row_id=*/std::nullopt);
+        PAIMON_ASSIGN_OR_RAISE(std::string json, snapshot.ToJsonString());
+        return fs_->WriteFile(manager.SnapshotPath(id), json, /*overwrite=*/true);
+    }
+
+    std::unique_ptr<UniqueTestDirectory> directory_;
+    std::shared_ptr<SnapshotCountingFileSystem> fs_ =
+        std::make_shared<SnapshotCountingFileSystem>();
+    std::unique_ptr<SnapshotManager> manager_;
+};
+
+TEST_F(SnapshotManagerCacheTest, LatestSnapshotAdvancesWithCachedHistory) {
+    ASSERT_OK(WriteSnapshot(*manager_, 1));
+    ASSERT_OK(manager_->CommitLatestHint(1));
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> first, manager_->LatestSnapshot());
+    ASSERT_TRUE(first);
+    ASSERT_EQ(first->Id(), 1);
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> repeated, manager_->LatestSnapshot());
+    ASSERT_TRUE(repeated);
+    ASSERT_EQ(*first, *repeated);
+    ASSERT_EQ(fs_->snapshot_reads.load(), 1);
+
+    // The new snapshot is visible before its LATEST hint is updated.
+    ASSERT_OK(WriteSnapshot(*manager_, 2));
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> latest, manager_->LatestSnapshot());
+    ASSERT_TRUE(latest);
+    ASSERT_EQ(latest->Id(), 2);
+    ASSERT_EQ(fs_->snapshot_reads.load(), 2);
+    ASSERT_OK(manager_->CommitLatestHint(2));
+    ASSERT_OK_AND_ASSIGN(Snapshot historical, manager_->LoadSnapshot(1));
+    ASSERT_EQ(historical, *first);
+    ASSERT_OK_AND_ASSIGN(latest, manager_->LatestSnapshot());
+    ASSERT_TRUE(latest);
+    ASSERT_EQ(latest->Id(), 2);
+    ASSERT_EQ(fs_->snapshot_reads.load(), 2);
+}
+
+TEST_F(SnapshotManagerCacheTest, MissingMalformedAndFailedReadsAreRetried) {
+    ASSERT_NOK(manager_->LoadSnapshot(1));
+    ASSERT_OK(fs_->WriteFile(manager_->SnapshotPath(1), "invalid JSON", true));
+    ASSERT_NOK(manager_->LoadSnapshot(1));
+    ASSERT_OK(WriteSnapshot(*manager_, 1));
+    fs_->fail_snapshot_read = true;
+    ASSERT_NOK_WITH_MSG(manager_->LoadSnapshot(1), "injected snapshot read failure");
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, manager_->LoadSnapshot(1));
+    ASSERT_EQ(snapshot.Id(), 1);
+    ASSERT_EQ(fs_->snapshot_reads.load(), 4);
+    ASSERT_OK(manager_->LoadSnapshot(1));
+    ASSERT_EQ(fs_->snapshot_reads.load(), 4);
+}
+
+TEST_F(SnapshotManagerCacheTest, EvictsLeastRecentlyUsedSnapshot) {
+    // The manager retains up to 64 snapshots.
+    constexpr int64_t kCapacity = 64;
+    for (int64_t id = 1; id <= kCapacity; ++id) {
+        ASSERT_OK(WriteSnapshot(*manager_, id));
+        ASSERT_OK(manager_->LoadSnapshot(id));
+    }
+    ASSERT_EQ(fs_->snapshot_reads.load(), kCapacity);
+    ASSERT_OK(manager_->LoadSnapshot(1));
+    ASSERT_EQ(fs_->snapshot_reads.load(), kCapacity);
+    ASSERT_OK(WriteSnapshot(*manager_, kCapacity + 1));
+    ASSERT_OK(manager_->LoadSnapshot(kCapacity + 1));
+    ASSERT_OK(manager_->LoadSnapshot(1));
+    ASSERT_EQ(fs_->snapshot_reads.load(), kCapacity + 1);
+    ASSERT_OK_AND_ASSIGN(Snapshot reloaded, manager_->LoadSnapshot(2));
+    ASSERT_EQ(reloaded.Id(), 2);
+    ASSERT_EQ(fs_->snapshot_reads.load(), kCapacity + 2);
+}
+
+TEST_F(SnapshotManagerCacheTest, CachedMetadataDoesNotMakeExpiredSnapshotExist) {
+    ASSERT_OK(WriteSnapshot(*manager_, 1));
+    ASSERT_OK(WriteSnapshot(*manager_, 2));
+    ASSERT_OK(manager_->CommitEarliestHint(1));
+    ASSERT_OK(manager_->CommitLatestHint(2));
+    ASSERT_OK_AND_ASSIGN(Snapshot cached, manager_->LoadSnapshot(1));
+    ASSERT_OK(fs_->Delete(manager_->SnapshotPath(1)));
+    ASSERT_OK(manager_->CommitEarliestHint(2));
+    ASSERT_OK_AND_ASSIGN(bool exists, manager_->SnapshotExists(1));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(std::optional<int64_t> earliest, manager_->EarliestSnapshotId());
+    ASSERT_EQ(earliest, 2);
+    ASSERT_OK_AND_ASSIGN(Snapshot historical, manager_->LoadSnapshot(1));
+    ASSERT_EQ(historical, cached);
+    ASSERT_EQ(fs_->snapshot_reads.load(), 1);
+    SnapshotManager fresh(fs_, directory_->Str());
+    ASSERT_NOK(fresh.LoadSnapshot(1));
+}
+
+TEST_F(SnapshotManagerCacheTest, RecreatedManagerLoadsReplacedSnapshot) {
+    ASSERT_OK(WriteSnapshot(*manager_, 1, "before"));
+    ASSERT_OK_AND_ASSIGN(Snapshot first, manager_->LoadSnapshot(1));
+    ASSERT_EQ(first.CommitUser(), "before");
+    // Fast-forward can replace contents under the same snapshot ID.
+    ASSERT_OK(WriteSnapshot(*manager_, 1, "after"));
+    ASSERT_OK_AND_ASSIGN(Snapshot cached, manager_->LoadSnapshot(1));
+    ASSERT_EQ(cached.CommitUser(), "before");
+    SnapshotManager fresh(fs_, directory_->Str());
+    ASSERT_OK_AND_ASSIGN(Snapshot reloaded, fresh.LoadSnapshot(1));
+    ASSERT_EQ(reloaded.CommitUser(), "after");
+}
+
+TEST_F(SnapshotManagerCacheTest, TablesAndBranchesKeepSeparateCaches) {
+    SnapshotManager branch(fs_, directory_->Str(), "dev");
+    SnapshotManager other(fs_, PathUtil::JoinPath(directory_->Str(), "other"));
+    ASSERT_OK(fs_->Mkdirs(branch.SnapshotDirectory()));
+    ASSERT_OK(fs_->Mkdirs(other.SnapshotDirectory()));
+    ASSERT_OK(WriteSnapshot(*manager_, 1, "main"));
+    ASSERT_OK(WriteSnapshot(branch, 1, "dev"));
+    ASSERT_OK(WriteSnapshot(other, 1, "other"));
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(Snapshot main_snapshot, manager_->LoadSnapshot(1));
+        ASSERT_EQ(main_snapshot.CommitUser(), "main");
+        ASSERT_OK_AND_ASSIGN(Snapshot branch_snapshot, branch.LoadSnapshot(1));
+        ASSERT_EQ(branch_snapshot.CommitUser(), "dev");
+        ASSERT_OK_AND_ASSIGN(Snapshot other_snapshot, other.LoadSnapshot(1));
+        ASSERT_EQ(other_snapshot.CommitUser(), "other");
+    }
+    ASSERT_EQ(fs_->snapshot_reads.load(), 3);
+}
+
+TEST_F(SnapshotManagerCacheTest, ConcurrentLoadsReturnCompleteSnapshots) {
+    ASSERT_OK(WriteSnapshot(*manager_, 1));
+    std::promise<void> start;
+    std::shared_future<void> ready = start.get_future().share();
+    std::vector<std::future<Result<Snapshot>>> futures;
+    for (int32_t i = 0; i < 8; ++i) {
+        futures.push_back(std::async(std::launch::async, [this, ready]() {
+            ready.wait();
+            return manager_->LoadSnapshot(1);
+        }));
+    }
+    start.set_value();
+    ASSERT_OK_AND_ASSIGN(Snapshot expected, futures.front().get());
+    ASSERT_EQ(expected.Id(), 1);
+    for (size_t i = 1; i < futures.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(Snapshot actual, futures[i].get());
+        ASSERT_EQ(actual, expected);
+    }
+    int32_t reads = fs_->snapshot_reads.load();
+    ASSERT_GE(reads, 1);
+    ASSERT_OK(manager_->LoadSnapshot(1));
+    ASSERT_EQ(fs_->snapshot_reads.load(), reads);
+}
 
 TEST(SnapshotManagerTest, TestSnapshotDirectory) {
     auto fs = std::make_shared<LocalFileSystem>();

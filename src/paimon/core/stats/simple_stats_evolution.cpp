@@ -140,24 +140,21 @@ Result<SimpleStatsEvolution::EvolutionStats> SimpleStatsEvolution::Evolution(
         max_values = empty_values_;
         null_counts = empty_null_counts_;
     } else if (dense_fields != std::nullopt) {
-        // create dense index mapping
-        std::vector<int32_t> data_idx_to_dense_idx;
-        std::optional<std::vector<int32_t>> cached_dense_idx =
-            dense_fields_mapping_.Find(dense_fields.value());
-        if (!cached_dense_idx) {
-            std::map<std::string, int32_t> field_name_to_dense_idx =
-                ObjectUtils::CreateIdentifierToIndexMap(dense_fields.value());
-            data_idx_to_dense_idx.resize(data_fields_.size(), -1);
-            for (size_t i = 0; i < data_fields_.size(); ++i) {
-                auto iter = field_name_to_dense_idx.find(data_fields_[i].Name());
-                if (iter != field_name_to_dense_idx.end()) {
-                    data_idx_to_dense_idx[i] = iter->second;
-                }
-            }
-            dense_fields_mapping_.Insert(dense_fields.value(), data_idx_to_dense_idx);
-        } else {
-            data_idx_to_dense_idx = std::move(cached_dense_idx).value();
-        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<int32_t> data_idx_to_dense_idx,
+            dense_fields_mapping_.Get(
+                dense_fields.value(),
+                [this](const std::vector<std::string>& fields) -> Result<std::vector<int32_t>> {
+                    auto field_name_to_dense_idx = ObjectUtils::CreateIdentifierToIndexMap(fields);
+                    std::vector<int32_t> mapping(data_fields_.size(), -1);
+                    for (size_t i = 0; i < data_fields_.size(); ++i) {
+                        auto iter = field_name_to_dense_idx.find(data_fields_[i].Name());
+                        if (iter != field_name_to_dense_idx.end()) {
+                            mapping[i] = iter->second;
+                        }
+                    }
+                    return mapping;
+                }));
 
         min_values = std::make_shared<ProjectedRow>(min_values, data_idx_to_dense_idx);
         max_values = std::make_shared<ProjectedRow>(max_values, data_idx_to_dense_idx);

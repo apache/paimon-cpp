@@ -2565,6 +2565,10 @@ TEST_F(FileStoreCommitImplTest, TestCatalogExpireWaitsForRollbackPublication) {
                          BuildTestSnapshot(4, "other-uuid").ToJsonString());
     ASSERT_OK(file_system_->AtomicStore(manager.SnapshotPath(4), different_snapshot_json));
     ASSERT_OK(manager.CommitLatestHint(4));
+    auto* commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_NE(commit_impl, nullptr);
+    // Publication checks must observe the later replacement even after this cache is warmed.
+    ASSERT_OK(commit_impl->snapshot_manager_->LoadSnapshot(4));
     ASSERT_OK_AND_ASSIGN(expired_count, commit->Expire());
     ASSERT_EQ(expired_count, 0);
     ASSERT_OK_AND_ASSIGN(exists, file_system_->Exists(restored_data_path));
