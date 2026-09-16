@@ -32,6 +32,20 @@ struct ByteRangeCombiner {
     static Result<std::vector<ByteRange>> CoalesceByteRanges(std::vector<ByteRange>&& ranges,
                                                              uint64_t hole_size_limit,
                                                              uint64_t range_size_limit);
+
+    /// Coalesces `ranges` like CoalesceByteRanges() does, except that the size the ranges are
+    /// cut at is derived from how many bytes they cover instead of being fixed: the bytes are
+    /// spread over `target_concurrency` ranges, the result is rounded up to a multiple of
+    /// `alignment`, and it is kept within `range_size_limit`. So a small batch of ranges is cut
+    /// into as many ranges as can be fetched at once rather than into fewer, longer ones, while
+    /// a batch large enough to reach `range_size_limit` is cut exactly as CoalesceByteRanges()
+    /// would cut it.
+    ///
+    /// A zero `alignment` or `target_concurrency` turns the derivation off, falling back to
+    /// `range_size_limit`.
+    static Result<std::vector<ByteRange>> CoalesceByteRangesAdaptive(
+        std::vector<ByteRange>&& ranges, uint64_t hole_size_limit, uint64_t range_size_limit,
+        uint64_t alignment, uint64_t target_concurrency);
 };
 
 }  // namespace paimon

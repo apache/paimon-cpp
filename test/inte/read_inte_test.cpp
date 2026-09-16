@@ -575,11 +575,22 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
         ASSERT_OK_AND_ASSIGN(uint64_t io_bytes,
                              read_metrics->GetCounter(ReadAheadCacheMetrics::IO_BYTES));
         ASSERT_GT(io_bytes, 0u);
+        // Only a late-materialization payload pass registers ranges mid-read, which this scan does
+        // not do, so the counters must be exposed and stay at zero.
+        ASSERT_OK_AND_ASSIGN(uint64_t late_registered,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::LATE_REGISTERED));
+        ASSERT_EQ(late_registered, 0u);
+        ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::LATE_REGISTERED_BYTES));
+        ASSERT_OK_AND_ASSIGN(uint64_t late_dropped,
+                             read_metrics->GetCounter(ReadAheadCacheMetrics::LATE_DROPPED));
+        ASSERT_EQ(late_dropped, 0u);
+        ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::LATE_DROPPED_BYTES));
     } else {
         ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
         ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_HITS));
         ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
         ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+        ASSERT_NOK(read_metrics->GetCounter(ReadAheadCacheMetrics::LATE_REGISTERED));
     }
 }
 

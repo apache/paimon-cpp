@@ -99,4 +99,53 @@ TEST(ByteRangeCombinerTest, TestRejectsRangesBeyondInt64Bound) {
     check_invalid({{100, 10}, {0, std::numeric_limits<uint64_t>::max()}});
 }
 
+// The adaptive variant derives the size the ranges are cut at from the bytes they cover, so a
+// batch too small to fill the concurrency on its own is cut finer than the fixed limit cuts it.
+TEST(ByteRangeCombinerTest, TestAdaptiveRangeSizeLimit) {
+    auto check = [](std::vector<ByteRange> ranges, uint64_t alignment, uint64_t target_concurrency,
+                    std::vector<ByteRange> expected) -> void {
+        ASSERT_OK_AND_ASSIGN(auto coalesced,
+                             ByteRangeCombiner::CoalesceByteRangesAdaptive(
+                                 std::move(ranges), /*hole_size_limit=*/1,
+                                 /*range_size_limit=*/8, alignment, target_concurrency));
+        ASSERT_EQ(coalesced, expected);
+    };
+
+    // 20 bytes over 10 requests is 2 per request, which the alignment lifts to one 4 byte
+    // range each: cut at 4 instead of at the limit of 8.
+    check({{0, 20}}, /*alignment=*/4, /*target_concurrency=*/10,
+          {{0, 4}, {4, 4}, {8, 4}, {12, 4}, {16, 4}});
+    // The same bytes cut at the fixed limit, for comparison: 3 ranges rather than 5.
+    check({{0, 20}}, /*alignment=*/0, /*target_concurrency=*/10, {{0, 8}, {8, 8}, {16, 4}});
+    check({{0, 20}}, /*alignment=*/4, /*target_concurrency=*/0, {{0, 8}, {8, 8}, {16, 4}});
+    // 30 bytes over 3 requests is 10 each, which rounds up past the limit, so the limit wins
+    // and the batch is cut exactly as the non-adaptive variant cuts it.
+    check({{0, 30}}, /*alignment=*/4, /*target_concurrency=*/3, {{0, 8}, {8, 8}, {16, 8}, {24, 6}});
+    // The alignment is the floor: 10 bytes over 10 requests is 1 each, not cut into 1 byte
+    // requests that could never amortize their own round trip.
+    check({{0, 10}}, /*alignment=*/4, /*target_concurrency=*/10, {{0, 4}, {4, 4}, {8, 2}});
+    // A derived limit still coalesces across the holes that fit within it, and still bounds the
+    // coalesced result: the third range would take it past 4 bytes, so it starts a new range.
+    check({{0, 1}, {2, 1}}, /*alignment=*/4, /*target_concurrency=*/10, {{0, 3}});
+    check({{0, 1}, {2, 1}, {4, 1}}, /*alignment=*/4, /*target_concurrency=*/10, {{0, 3}, {4, 1}});
+    check({}, /*alignment=*/4, /*target_concurrency=*/10, {});
+}
+
+// CoalesceByteRanges() rejects a size limit that does not exceed the hole size, so the derived
+// limit must stay above it however small the batch is.
+TEST(ByteRangeCombinerTest, TestAdaptiveRangeSizeLimitStaysAboveHoleSize) {
+    // 10 bytes over 10 requests would derive 4, below the hole size of 5.
+    ASSERT_OK_AND_ASSIGN(auto coalesced, ByteRangeCombiner::CoalesceByteRangesAdaptive(
+                                             {{0, 10}}, /*hole_size_limit=*/5,
+                                             /*range_size_limit=*/8, /*alignment=*/4,
+                                             /*target_concurrency=*/10));
+    ASSERT_EQ(coalesced, (std::vector<ByteRange>{{0, 8}, {8, 2}}));
+
+    // A limit that cannot exceed the hole size is still reported, not papered over.
+    ASSERT_NOK_WITH_MSG(ByteRangeCombiner::CoalesceByteRangesAdaptive(
+                            {{0, 10}}, /*hole_size_limit=*/8, /*range_size_limit=*/8,
+                            /*alignment=*/4, /*target_concurrency=*/10),
+                        "should be larger than hole size limit");
+}
+
 }  // namespace paimon::test

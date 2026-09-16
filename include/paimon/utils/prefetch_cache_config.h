@@ -34,8 +34,9 @@ namespace paimon {
 /// ReadAheadCache to balance memory usage, I/O efficiency, and latency hiding.
 class PAIMON_EXPORT CacheConfig {
  public:
-    /// Returns the maximum allowed size (in bytes) for a single cached range.
-    /// Defaults to 32 MiB.
+    /// Returns the maximum allowed size (in bytes) for a single cached range, both for the ranges
+    /// registered up front and, as the cap, for the ones registered mid-read.
+    /// Defaults to 8 MiB.
     uint64_t GetRangeSizeLimit() const {
         return range_size_limit_;
     }
@@ -46,7 +47,7 @@ class PAIMON_EXPORT CacheConfig {
     }
 
     /// Returns the maximum gap size (in bytes) considered mergeable between
-    /// adjacent ranges. Defaults to 8 KiB.
+    /// adjacent ranges. Defaults to 512 KiB.
     uint64_t GetHoleSizeLimit() const {
         return hole_size_limit_;
     }
@@ -90,19 +91,65 @@ class PAIMON_EXPORT CacheConfig {
         block_cache_limit_ = block_cache_limit;
     }
 
+    /// Returns the alignment (in bytes) the adaptive range size is rounded up to, which is also
+    /// the smallest size a range is cut to. Defaults to 4 MiB.
+    uint64_t GetRangeSplitAlignment() const {
+        return range_split_alignment_;
+    }
+
+    /// Sets the alignment the adaptive range size is rounded up to. Zero turns the adaptive
+    /// sizing off, so the ranges are cut at the configured size limit instead.
+    void SetRangeSplitAlignment(uint64_t range_split_alignment) {
+        range_split_alignment_ = range_split_alignment;
+    }
+
+    /// Returns the number of requests the adaptive range size aims to spread one round of
+    /// registered ranges over. Defaults to 10.
+    uint64_t GetRangeSplitConcurrency() const {
+        return range_split_concurrency_;
+    }
+
+    /// Sets the number of requests the adaptive range size aims to spread one round of ranges
+    /// over. Zero turns the adaptive sizing off, so the ranges are cut at the configured size
+    /// limit instead.
+    void SetRangeSplitConcurrency(uint64_t range_split_concurrency) {
+        range_split_concurrency_ = range_split_concurrency;
+    }
+
  private:
     // The defaults are aligned with the reader's request granularity and with
     // realistic data file sizes:
-    // - range_size_limit matches the parquet reader's 32 MiB request blocks
-    //   (Arrow ReadRangeCache's own range limit); a smaller limit cuts entries
-    //   below the request size, so a request can never be served from one piece.
+    // - range_size_limit bounds a single coalesced cached range, both for the
+    //   ranges registered up front at Init and, as the cap, for the ones
+    //   registered mid-read (see range_split_alignment below). One range is one
+    //   prefetch IO, so a smaller limit spreads a large pass over several
+    //   concurrent requests instead of one long serial one; a read spanning
+    //   several adjacent ranges is still served as one hit, as they are
+    //   contiguous. 8 MiB keeps a just-in-time mid-read pass concurrent while
+    //   staying large enough to amortize each request's round trip.
     // - pre_buffer_limit must exceed the LARGEST single read a reader issues
     //   (coalesced column-chunk reads of ~128 MiB were observed): fetches are
     //   only dispatched up to this window, so a request reaching past it can
     //   never be served and falls back to a second fetch of the same bytes.
-    uint64_t range_size_limit_ = 32 * 1024 * 1024;
-    uint64_t hole_size_limit_ = 8 * 1024;
+    // - hole_size_limit trades bytes against requests: coalescing across a gap
+    //   reads the gap too, but saves a request, and on remote storage a request
+    //   costs a round trip whatever its size. The limit is therefore well above
+    //   the page-sized gaps a filtered read leaves between the pages it keeps,
+    //   which would otherwise each cost a request of their own.
+    uint64_t range_size_limit_ = 8 * 1024 * 1024;
+    uint64_t hole_size_limit_ = 512 * 1024;
     uint64_t pre_buffer_limit_ = 256 * 1024 * 1024;
+    // A fixed size limit cuts a small round into fewer requests than could be
+    // fetched at once, leaving the storage idle while each of them runs. So the
+    // size a round is cut at is derived from the round instead: its bytes are
+    // spread over range_split_concurrency requests, rounded up to
+    // range_split_alignment, and kept within the size limit above. A round
+    // smaller than alignment * concurrency is therefore cut finer than that
+    // limit and fetched in a single wave, while a larger one still stops at it.
+    // The alignment is also the floor, so the derivation never cuts a round into
+    // requests too small to amortize their own round trip.
+    uint64_t range_split_alignment_ = 4 * 1024 * 1024;
+    uint64_t range_split_concurrency_ = 10;
     // Blocks are aligned to the END of the file, so a block never reaches past
     // EOF. 64 KiB is the granularity the reads no prefetched range covers are
     // shared at: small enough that a metadata read at the tail of a file is

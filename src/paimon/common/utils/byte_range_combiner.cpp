@@ -29,6 +29,37 @@
 
 namespace paimon {
 
+namespace {
+
+/// The size to cut `total_bytes` of ranges at so that they are spread over
+/// `target_concurrency` requests, rounded up to `alignment` and kept in
+/// (hole_size_limit, range_size_limit].
+uint64_t AdaptiveRangeSizeLimit(uint64_t total_bytes, uint64_t target_concurrency,
+                                uint64_t alignment, uint64_t hole_size_limit,
+                                uint64_t range_size_limit) {
+    // Leave the limit alone when the derivation is off, and when it is not larger than the hole
+    // size: CoalesceByteRanges() rejects such a pair, and it must report that as it always did
+    // rather than have a derived limit paper over it.
+    if (alignment == 0 || target_concurrency == 0 || range_size_limit <= hole_size_limit) {
+        return range_size_limit;
+    }
+    const uint64_t per_request =
+        total_bytes / target_concurrency + (total_bytes % target_concurrency == 0 ? 0 : 1);
+    // One alignment unit is the floor, and the limit must stay above the hole size for the
+    // reason above. hole_size_limit + 1 cannot overflow: it is below range_size_limit here.
+    uint64_t limit = std::max({alignment, per_request, hole_size_limit + 1});
+    if (const uint64_t remainder = limit % alignment; remainder != 0) {
+        const uint64_t padding = alignment - remainder;
+        if (limit > std::numeric_limits<uint64_t>::max() - padding) {
+            return range_size_limit;
+        }
+        limit += padding;
+    }
+    return std::min(limit, range_size_limit);
+}
+
+}  // namespace
+
 Result<std::vector<ByteRange>> ByteRangeCombiner::CoalesceByteRanges(
     std::vector<ByteRange>&& ranges, uint64_t hole_size_limit, uint64_t range_size_limit) {
     if (range_size_limit <= hole_size_limit) {
@@ -135,6 +166,22 @@ Result<std::vector<ByteRange>> ByteRangeCombiner::CoalesceByteRanges(
     assert(coalesced.back().offset + coalesced.back().length ==
            ranges.back().offset + ranges.back().length);
     return coalesced;
+}
+
+Result<std::vector<ByteRange>> ByteRangeCombiner::CoalesceByteRangesAdaptive(
+    std::vector<ByteRange>&& ranges, uint64_t hole_size_limit, uint64_t range_size_limit,
+    uint64_t alignment, uint64_t target_concurrency) {
+    uint64_t total_bytes = 0;
+    for (const auto& range : ranges) {
+        // Saturate rather than wrap. CoalesceByteRanges() rejects the ranges that can add up
+        // this far, but only after the limit below has been derived from them.
+        total_bytes = range.length > std::numeric_limits<uint64_t>::max() - total_bytes
+                          ? std::numeric_limits<uint64_t>::max()
+                          : total_bytes + range.length;
+    }
+    return CoalesceByteRanges(std::move(ranges), hole_size_limit,
+                              AdaptiveRangeSizeLimit(total_bytes, target_concurrency, alignment,
+                                                     hole_size_limit, range_size_limit));
 }
 
 }  // namespace paimon
