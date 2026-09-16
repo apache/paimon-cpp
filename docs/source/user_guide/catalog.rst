@@ -162,10 +162,12 @@ already advanced the latest snapshot, the requested snapshot must be published
 under the table path. Recreating the writer restores offsets from the catalog's
 current snapshot.
 
-Both builders use the catalog's file system for manifests and data, preserving
-its object-store credentials. ``WithFileSystem`` overrides it; writers also
-allow ``WithFileSystemSchemeToIdentifierMap`` to override file-system selection.
-For format tables, use ``WriteContextBuilder(FormatTable)`` instead.
+Both builders use the file system of the table being written or committed for
+manifests and data, so a catalog that issues temporary credentials per table
+serves them through ``Catalog::GetTableFileSystem``. ``WithFileSystem`` overrides
+it; writers also allow ``WithFileSystemSchemeToIdentifierMap`` to override
+file-system selection. For format tables, use ``WriteContextBuilder(FormatTable)``
+instead.
 
 The snapshot being committed carries a uuid generated on the client, and the
 commit names the snapshot it is based on by that snapshot's uuid, so the server
